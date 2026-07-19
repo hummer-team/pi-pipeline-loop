@@ -8,6 +8,7 @@
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { PROTECTED_PATHS } from "../constants";
+import { getFileHash } from "../utils/hash";
 
 /**
  * Creates the `tool_call` hook that intercepts and validates tool calls.
@@ -78,6 +79,10 @@ export function createToolGuard(config: PipelineConfig): Hook {
             reason: `FORBIDDEN: Cannot modify protected path '${filePath}' during Loop.`,
           };
         }
+
+        // Record oldHash for diff archiving in loop-breaker
+        const hash = await getFileHash(filePath);
+        (ctx.toolCall as Record<string, unknown>).oldHash = hash;
       }
 
       return undefined;

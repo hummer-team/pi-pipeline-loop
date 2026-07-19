@@ -72,6 +72,7 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         stage,
         pipeline_id: meta.pipelineId,
         generated_at: new Date().toISOString(),
+        generated_by_model: true,
         domain: `${meta.domain.id}@${meta.domain.version}`,
         parent_stage: meta.previousStage || null,
         child_stages: config.stages[stage].nextStage

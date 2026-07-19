@@ -7,24 +7,8 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
-
-/**
- * Computes the SHA-256 hash of a file's content.
- * Returns "file-not-exists" if the file cannot be read.
- *
- * @param filePath - Absolute path to the file
- * @returns Hex-encoded SHA-256 hash or fallback string
- */
-async function getFileHash(filePath: string): Promise<string> {
-  try {
-    const content = await fs.readFile(filePath, "utf-8");
-    return crypto.createHash("sha256").update(content).digest("hex");
-  } catch {
-    return "file-not-exists";
-  }
-}
+import { getFileHash } from "../utils/hash";
 
 /**
  * Ensures a directory exists, creating it recursively if needed.
@@ -63,6 +47,9 @@ function isTestCommand(command: string): boolean {
  * 2. **Diff archiving** — When write/edit tools succeed, computes old/new hashes
  *    and archives a diff file to `.pi/loops/{pipelineId}/step-{n}/loop-{n}/`.
  *    Also writes a file_modified audit log entry.
+ *
+ * 3. **Plan step counting** — When `plan_run_script` succeeds in the plan stage,
+ *    increments currentStepIndex to track plan execution progress.
  *
  * @param config - The pipeline configuration
  * @returns A Hook object for the "tool_result" event
@@ -152,6 +139,19 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           await ensureDir(path.dirname(auditLogPath));
           await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
         }
+      }
+
+      // ── 3. Plan step counting (plan_run_script) ───────────────────────
+      if (
+        ctx.toolCall.name === "plan_run_script" &&
+        meta.currentStage === "plan" &&
+        ctx.result?.success
+      ) {
+        const nextStepIndex = (meta.currentStepIndex ?? 0) + 1;
+        ctx.session.updateMetadata({
+          ...meta,
+          currentStepIndex: nextStepIndex,
+        });
       }
     },
   };
