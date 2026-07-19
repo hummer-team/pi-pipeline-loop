@@ -12,14 +12,14 @@
  * Each stage represents a distinct phase in the agent's workflow loop.
  */
 export type PipelineStage =
-  | "understand"
+  | "clarify"
   | "design"
   | "plan"
-  | "implement"
-  | "test"
+  | "develop"
   | "review"
-  | "refine"
-  | "deliver";
+  | "fix"
+  | "awaiting_human"
+  | "completed";
 
 // ─── Stage Configuration ─────────────────────────────────────────────────────
 
@@ -66,8 +66,8 @@ export interface SummaryMeta {
   /** Content hash of the summary (for change detection) */
   hash: string;
 
-  /** Current status of the summary */
-  status: "pending" | "completed" | "failed";
+  /** Validation status */
+  status: "pending" | "valid" | "invalid";
 }
 
 // ─── Domain Configuration ────────────────────────────────────────────────────
@@ -106,13 +106,13 @@ export interface SessionMeta {
   /** Unique identifier for this pipeline run */
   pipelineId: string;
 
-  /** Active domain identifier for the current pipeline run */
-  domain: string;
+  /** Active domain configuration for the current pipeline run */
+  domain: DomainConfig;
 
   /** Map of stage name to its summary metadata */
   summaries: Record<string, SummaryMeta>;
 
-  /** Number of completed loop iterations (a loop = full cycle through all stages) */
+  /** Number of completed loop iterations within current step */
   loopCount: number;
 
   /** Index of the current step within the current stage */
@@ -149,14 +149,16 @@ export interface PipelineConfig {
 
 /**
  * Stub interface for a pi SDK event hook.
- * Will be populated with concrete event types in Phase 1.
+ * Uses `any` for ctx and return type since the pi SDK types are not installed.
+ * Concrete event types: "session_start", "before_agent_start", "tool_call", "tool_result".
  */
 export interface Hook {
   /** The pi SDK event name to listen for */
   event: string;
 
-  /** The handler function invoked when the event fires */
-  handler: (ctx: unknown) => void | Promise<void>;
+  /** The handler function invoked when the event fires. May return a value (e.g., systemPrompt). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handler: (ctx: any) => any;
 }
 
 /**

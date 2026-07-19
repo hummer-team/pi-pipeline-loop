@@ -11,6 +11,8 @@ import type {
   Tool,
   Command,
 } from "./types";
+import { createSessionStarter } from "./core/session-starter";
+import { createPromptInjector } from "./core/prompt-injector";
 
 // ─── Factory Function ────────────────────────────────────────────────────────
 
@@ -39,8 +41,13 @@ import type {
  * ```
  */
 export function createPipeline(config: PipelineConfig): PipelinePlugin {
-  // Phase 0 stub — hooks, tools, and commands will be populated in Phases 1-4.
-  const hooks: Hook[] = [];
+  // Phase 1: Session lifecycle and prompt injection hooks
+  const hooks: Hook[] = [
+    createSessionStarter(config),
+    createPromptInjector(config),
+  ];
+
+  // Phase 2-4 stubs — tools and commands will be populated in later phases.
   const tools: Tool[] = [];
   const commands: Command[] = [];
 
