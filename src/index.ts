@@ -4,54 +4,48 @@
  * Exports the `createPipeline` factory function and all public types.
  */
 
-import type {
-  PipelineConfig,
-  PipelinePlugin,
-  Hook,
-  Tool,
-  Command,
-} from "./types";
+import type { PipelineConfig, ExtensionAPI, ExtensionFactory } from "./types";
 
-// Phase 1: Session lifecycle and prompt injection
+// Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
 import { createPromptInjector } from "./core/prompt-injector";
 
-// Phase 2: Tool safety and loop circuit breaker
+// Tool safety and loop circuit breaker
 import { createToolGuard } from "./core/tool-guard";
 import { createLoopBreaker } from "./core/loop-breaker";
 
-// Phase 2 (tools): Stage management tools
+// Stage management tools
 import { createStageAdvancer } from "./core/stage-advancer";
 import { createLoopChecker } from "./core/loop-checker";
 import { createPipelineState } from "./core/pipeline-state";
 
-// Phase 3: Orchestration tools
+// Orchestration tools
 import { createGenerateSummary } from "./tools/generate-summary";
 import { createValidateSummary } from "./tools/validate-summary";
 import { createPipelineHandoff } from "./tools/pipeline-handoff";
 
-// Phase 4: Commands and session end audit
+// Commands and session end audit
 import { createPipelineStatusCommand } from "./commands/pipeline-status";
 import { createSessionEnder } from "./core/session-ender";
 
 // ─── Factory Function ────────────────────────────────────────────────────────
 
 /**
- * Creates a pipeline plugin for the pi agent.
+ * Creates a pipeline extension for the Pi agent.
  *
  * Accepts a project-specific `PipelineConfig` that maps each of the 8 pipeline
  * stages to its agent, skill, tool restrictions, and transition rules.
- * Returns a `PipelinePlugin` object containing hooks, tools, and commands
- * that the pi SDK will register.
+ * Returns an `ExtensionFactory` that registers all hooks, tools, and commands
+ * directly with the Pi SDK via the ExtensionAPI.
  *
  * @param config - The pipeline configuration provided by the consuming project
- * @returns A `PipelinePlugin` ready to be registered with the pi SDK
+ * @returns An `ExtensionFactory` to be invoked by the Pi SDK at extension load time
  *
  * @example
  * ```ts
  * import { createPipeline } from "@earendil-works/pi-pipeline";
  *
- * const plugin = createPipeline({
+ * export default createPipeline({
  *   projectRoot: __dirname,
  *   stages: {
  *     clarify: { agentFile: "./agents/clarify.md", skillPath: "design-und/SKILL.md", ... },
@@ -60,41 +54,36 @@ import { createSessionEnder } from "./core/session-ender";
  * });
  * ```
  */
-export function createPipeline(config: PipelineConfig): PipelinePlugin {
-  // ── Hooks ────────────────────────────────────────────────────────────
-  const hooks: Hook[] = [
-    // Phase 1: Session lifecycle and prompt injection
-    createSessionStarter(config),
-    createPromptInjector(config),
-    // Phase 2: Tool safety guard and loop circuit breaker
-    createToolGuard(config),
-    createLoopBreaker(config),
-    // Phase 4: Session end audit logging
-    createSessionEnder(config),
-  ];
+export function createPipeline(config: PipelineConfig): ExtensionFactory {
+  return async (pi: ExtensionAPI): Promise<void> => {
+    // ── Hooks registration ─────────────────────────────────────────────
+    const hooks = [
+      createSessionStarter(config),
+      createPromptInjector(config),
+      createToolGuard(config),
+      createLoopBreaker(config),
+      createSessionEnder(config),
+    ];
+    for (const h of hooks) {
+      pi.on(h.event, h.handler);
+    }
 
-  // ── Tools ────────────────────────────────────────────────────────────
-  const tools: Tool[] = [
-    // Phase 2: Stage management tools
-    createStageAdvancer(config),
-    createLoopChecker(config),
-    createPipelineState(config),
-    // Phase 3: Orchestration tools
-    createGenerateSummary(config),
-    createValidateSummary(config),
-    createPipelineHandoff(config),
-  ];
+    // ── Tools registration ─────────────────────────────────────────────
+    const tools = [
+      createStageAdvancer(config),
+      createLoopChecker(config),
+      createPipelineState(config),
+      createGenerateSummary(config),
+      createValidateSummary(config),
+      createPipelineHandoff(config),
+    ];
+    for (const t of tools) {
+      pi.registerTool(t.name, t.description, t.parameters, t.execute);
+    }
 
-  // ── Commands ─────────────────────────────────────────────────────────
-  const commands: Command[] = [
-    // Phase 4: Status query command
-    createPipelineStatusCommand(config),
-  ];
-
-  return {
-    hooks,
-    tools,
-    commands,
+    // ── Commands registration ──────────────────────────────────────────
+    const cmd = createPipelineStatusCommand(config);
+    pi.registerCommand(cmd.name, cmd.description, cmd.execute);
   };
 }
 
