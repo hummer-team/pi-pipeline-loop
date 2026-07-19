@@ -5,6 +5,7 @@
  * file write protection, and pipeline freeze state.
  */
 
+import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { PROTECTED_PATHS } from "../constants";
 
@@ -60,7 +61,18 @@ export function createToolGuard(config: PipelineConfig): Hook {
       // 4. File write protection for protected paths
       if (toolName === "write" || toolName === "edit") {
         const filePath = (args.file_path || args.path) as string;
-        if (PROTECTED_PATHS.some((p) => filePath.includes(p))) {
+        const normalizedPath = path.normalize(filePath);
+        const pathComponents = normalizedPath.split(path.sep);
+
+        const isProtected = PROTECTED_PATHS.some((p) => {
+          const normalizedP = path.normalize(p);
+          // Check if the protected path appears as a component of the file path.
+          // This avoids false positives like .pipelines/ matching .pi/,
+          // .gitignore matching .git/, or .github/ matching .git/.
+          return pathComponents.includes(normalizedP);
+        });
+
+        if (isProtected) {
           return {
             block: true,
             reason: `FORBIDDEN: Cannot modify protected path '${filePath}' during Loop.`,

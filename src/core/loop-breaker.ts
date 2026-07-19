@@ -36,6 +36,24 @@ async function ensureDir(dirPath: string): Promise<void> {
 }
 
 /**
+ * Tests whether a bash command is likely running tests.
+ *
+ * Matches common test command patterns using word boundaries and
+ * known test runner names, avoiding false positives from words
+ * like "testing", "testament", or URLs containing "test".
+ *
+ * @param command - The bash command string to check
+ * @returns true if the command appears to be a test command
+ */
+function isTestCommand(command: string): boolean {
+  // Pattern matches:
+  // - "test" as a standalone word (npm test, bun test, node --test, make test, etc.)
+  // - Common test runner names invoked directly (jest, vitest, pytest, rspec, mocha, ava)
+  const TEST_PATTERN = /\b(?:test|jest|vitest|pytest|rspec|mocha|ava)\b/i;
+  return TEST_PATTERN.test(command);
+}
+
+/**
  * Creates the `tool_result` hook that intercepts tool results for:
  *
  * 1. **Loop circuit breaker** — When bash test commands fail in develop/fix stages,
@@ -61,7 +79,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
       if (
         ctx.toolCall.name === "bash" &&
         typeof ctx.toolCall.arguments?.command === "string" &&
-        (ctx.toolCall.arguments.command as string).includes("test")
+        isTestCommand(ctx.toolCall.arguments.command as string)
       ) {
         if (
           ctx.result?.exitCode !== 0 &&
