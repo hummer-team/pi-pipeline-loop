@@ -20,3 +20,4 @@ prompts/
 *.md
 AGENTS_bak
 .opencode
+session*
