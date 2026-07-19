@@ -1,0 +1,140 @@
+/**
+ * @module loop-breaker
+ * Factory for the `tool_result` hook.
+ * Handles loop iteration counting, circuit breaking on max failures,
+ * and file modification diff archiving for audit trails.
+ */
+
+import fs from "node:fs/promises";
+import path from "node:path";
+import crypto from "node:crypto";
+import type { PipelineConfig, Hook, SessionMeta } from "../types";
+
+/**
+ * Computes the SHA-256 hash of a file's content.
+ * Returns "file-not-exists" if the file cannot be read.
+ *
+ * @param filePath - Absolute path to the file
+ * @returns Hex-encoded SHA-256 hash or fallback string
+ */
+async function getFileHash(filePath: string): Promise<string> {
+  try {
+    const content = await fs.readFile(filePath, "utf-8");
+    return crypto.createHash("sha256").update(content).digest("hex");
+  } catch {
+    return "file-not-exists";
+  }
+}
+
+/**
+ * Ensures a directory exists, creating it recursively if needed.
+ *
+ * @param dirPath - Absolute path to the directory
+ */
+async function ensureDir(dirPath: string): Promise<void> {
+  await fs.mkdir(dirPath, { recursive: true });
+}
+
+/**
+ * Creates the `tool_result` hook that intercepts tool results for:
+ *
+ * 1. **Loop circuit breaker** — When bash test commands fail in develop/fix stages,
+ *    increments loopCount. After maxLoops failures, freezes the pipeline
+ *    (switches to "awaiting_human") and writes an audit log entry.
+ *
+ * 2. **Diff archiving** — When write/edit tools succeed, computes old/new hashes
+ *    and archives a diff file to `.pi/loops/{pipelineId}/step-{n}/loop-{n}/`.
+ *    Also writes a file_modified audit log entry.
+ *
+ * @param config - The pipeline configuration
+ * @returns A Hook object for the "tool_result" event
+ */
+export function createLoopBreaker(config: PipelineConfig): Hook {
+  return {
+    event: "tool_result",
+    handler: async (ctx: any): Promise<void> => {
+      const meta = ctx.session.getMetadata() as SessionMeta;
+      const projectRoot = config.projectRoot;
+      const auditDir = config.auditDir || ".pi/audit";
+
+      // ── 1. Test failure counting and circuit breaker ─────────────────
+      if (
+        ctx.toolCall.name === "bash" &&
+        typeof ctx.toolCall.arguments?.command === "string" &&
+        (ctx.toolCall.arguments.command as string).includes("test")
+      ) {
+        if (
+          ctx.result?.exitCode !== 0 &&
+          (meta.currentStage === "develop" || meta.currentStage === "fix")
+        ) {
+          const newLoopCount = meta.loopCount + 1;
+          ctx.session.updateMetadata({ ...meta, loopCount: newLoopCount });
+
+          if (newLoopCount >= meta.maxLoops) {
+            // Circuit break: freeze pipeline
+            ctx.session.updateMetadata({
+              ...meta,
+              loopCount: newLoopCount,
+              currentStage: "awaiting_human",
+            });
+
+            const auditLog = {
+              timestamp: new Date().toISOString(),
+              pipelineId: meta.pipelineId,
+              action: "loop_break",
+              stage: meta.currentStage,
+              loopCount: newLoopCount,
+            };
+            const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
+            await ensureDir(path.dirname(auditLogPath));
+            await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+          }
+        }
+      }
+
+      // ── 2. File modification diff archiving ──────────────────────────
+      if (
+        (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit") &&
+        ctx.result?.success
+      ) {
+        const filePath = (ctx.toolCall.arguments.file_path ||
+          ctx.toolCall.arguments.path) as string;
+        const oldHash = (ctx.toolCall as any).oldHash as string | undefined;
+        const newHash = await getFileHash(filePath);
+
+        if (oldHash && oldHash !== newHash) {
+          const diffDir = path.join(
+            projectRoot,
+            auditDir,
+            meta.pipelineId,
+            `step-${meta.currentStepIndex}`,
+            `loop-${meta.loopCount}`,
+          );
+          await ensureDir(diffDir);
+          const diffPath = path.join(
+            diffDir,
+            `${path.basename(filePath)}.diff.md`,
+          );
+
+          const newContent = await fs.readFile(filePath, "utf-8");
+          const diff = `--- Old (hash: ${oldHash})\n+++ New (hash: ${newHash})\n${newContent}`;
+          await fs.writeFile(diffPath, diff);
+
+          const auditLog = {
+            timestamp: new Date().toISOString(),
+            pipelineId: meta.pipelineId,
+            action: "file_modified",
+            stage: meta.currentStage,
+            step: meta.currentStepIndex,
+            loop: meta.loopCount,
+            file: filePath,
+            diff: diffPath,
+          };
+          const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
+          await ensureDir(path.dirname(auditLogPath));
+          await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+        }
+      }
+    },
+  };
+}

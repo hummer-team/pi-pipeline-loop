@@ -175,8 +175,8 @@ export interface Tool {
   /** JSON Schema-like parameter definition */
   parameters: Record<string, unknown>;
 
-  /** The tool's execution function */
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+  /** The tool's execution function. Optional ctx provides session context from the pi SDK. */
+  execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>;
 }
 
 /**
