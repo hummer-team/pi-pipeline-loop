@@ -111,4 +111,6 @@ export type {
   Tool,
   Command,
   PipelinePlugin,
+  ExtensionAPI,
+  ExtensionFactory,
 } from "./types";

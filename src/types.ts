@@ -211,3 +211,38 @@ export interface PipelinePlugin {
   /** Custom slash-commands available to the user */
   commands: Command[];
 }
+
+// ─── Extension API (Pi SDK) ─────────────────────────────────────────────────
+
+/**
+ * Stub interface for the Pi SDK Extension API.
+ * Provides methods to register event hooks, tools, and commands
+ * directly with the Pi runtime in Extension mode.
+ *
+ * Uses `any` for ctx since the pi SDK types are not installed locally.
+ */
+export interface ExtensionAPI {
+  /** Register an event handler for a Pi SDK lifecycle event */
+  on(event: string, handler: (ctx: any) => any): void;
+
+  /** Register a custom tool with the Pi agent */
+  registerTool(
+    name: string,
+    description: string,
+    parameters: Record<string, unknown>,
+    execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>,
+  ): void;
+
+  /** Register a custom slash-command */
+  registerCommand(
+    name: string,
+    description: string,
+    execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>,
+  ): void;
+}
+
+/**
+ * Factory function signature for Pi Extension mode.
+ * Receives the ExtensionAPI and registers all hooks, tools, and commands.
+ */
+export type ExtensionFactory = (pi: ExtensionAPI) => Promise<void>;
