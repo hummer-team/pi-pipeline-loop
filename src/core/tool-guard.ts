@@ -66,7 +66,7 @@ export function createToolGuard(config: PipelineConfig): Hook {
         const pathComponents = normalizedPath.split(path.sep);
 
         const isProtected = PROTECTED_PATHS.some((p) => {
-          const normalizedP = path.normalize(p);
+          const normalizedP = path.normalize(p).replace(/\/+$/, "");
           // Check if the protected path appears as a component of the file path.
           // This avoids false positives like .pipelines/ matching .pi/,
           // .gitignore matching .git/, or .github/ matching .git/.
