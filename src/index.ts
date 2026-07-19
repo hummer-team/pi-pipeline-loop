@@ -28,6 +28,10 @@ import { createPipelineHandoff } from "./tools/pipeline-handoff";
 import { createPipelineStatusCommand } from "./commands/pipeline-status";
 import { createSessionEnder } from "./core/session-ender";
 
+// Agent settled and session shutdown lifecycle hooks
+import { createAgentSettled } from "./core/agent-settled";
+import { createSessionShutdown } from "./core/session-shutdown";
+
 // ─── Factory Function ────────────────────────────────────────────────────────
 
 /**
@@ -63,6 +67,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createToolGuard(config),
       createLoopBreaker(config),
       createSessionEnder(config),
+      createAgentSettled(config),
+      createSessionShutdown(config),
     ];
     for (const h of hooks) {
       pi.on(h.event, h.handler);
