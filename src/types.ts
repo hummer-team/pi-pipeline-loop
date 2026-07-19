@@ -120,6 +120,9 @@ export interface SessionMeta {
 
   /** Maximum number of loop iterations before the pipeline halts */
   maxLoops: number;
+
+  /** Context files passed between stages during handoff (stage -> file paths) */
+  contextFiles?: Record<string, string[]>;
 }
 
 // ─── Pipeline Configuration ──────────────────────────────────────────────────

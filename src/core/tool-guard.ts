@@ -6,9 +6,7 @@
  */
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
-
-/** Paths that agents in loop stages (develop/fix) must not modify */
-const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"];
+import { PROTECTED_PATHS } from "../constants";
 
 /**
  * Creates the `tool_call` hook that intercepts and validates tool calls.
@@ -18,8 +16,6 @@ const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"];
  * 2. Bash prefix — only commands matching allowedBashPrefixes
  * 3. Freeze state — blocks all tools when pipeline is "awaiting_human"
  * 4. File write protection — blocks writes to protected paths
- *
- * Also handles Plan Step switching by resetting loopCount on step change.
  *
  * @param config - The pipeline configuration
  * @returns A Hook object for the "tool_call" event
@@ -69,18 +65,6 @@ export function createToolGuard(config: PipelineConfig): Hook {
             block: true,
             reason: `FORBIDDEN: Cannot modify protected path '${filePath}' during Loop.`,
           };
-        }
-      }
-
-      // Plan Step switching: reset loop count when step index changes
-      if (toolName === "plan_run_script") {
-        const newStepIndex = args.step_index as number;
-        if (newStepIndex !== meta.currentStepIndex) {
-          ctx.session.updateMetadata({
-            ...meta,
-            currentStepIndex: newStepIndex,
-            loopCount: 0,
-          });
         }
       }
 

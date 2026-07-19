@@ -99,16 +99,14 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
       await fs.mkdir(summaryDir, { recursive: true });
       const summaryPath = path.join(summaryDir, `${stage}.md`);
 
-      let content = `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${body}`;
-
-      // Compute SHA-256 hash and backfill into frontmatter
-      frontmatter.hash = crypto
-        .createHash("sha256")
-        .update(content)
-        .digest("hex");
-      content = `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${body}`;
-
-      await fs.writeFile(summaryPath, content);
+      // Placeholder approach: hash covers the full structure including the hash field length
+      const HASH_PLACEHOLDER = "__PLACEHOLDER_HASH__";
+      frontmatter.hash = HASH_PLACEHOLDER;
+      const contentWithPlaceholder = `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${body}`;
+      const hash = crypto.createHash("sha256").update(contentWithPlaceholder).digest("hex");
+      const finalContent = contentWithPlaceholder.replace(HASH_PLACEHOLDER, hash);
+      frontmatter.hash = hash;
+      await fs.writeFile(summaryPath, finalContent);
 
       // Update session metadata with summary reference
       const summaryMeta: SummaryMeta = {

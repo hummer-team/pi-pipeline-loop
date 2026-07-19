@@ -5,9 +5,7 @@
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
-
-/** Paths that agents in loop stages (develop/fix) must not modify */
-const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"];
+import { PROTECTED_PATHS } from "../constants";
 
 /**
  * Creates the `/pipeline-status` command.

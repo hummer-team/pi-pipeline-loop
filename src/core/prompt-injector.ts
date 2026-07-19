@@ -10,9 +10,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
-
-/** Paths that agents in loop stages (develop/fix) must not modify */
-const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"];
+import { PROTECTED_PATHS } from "../constants";
 
 /**
  * Builds Part 1: Context Reference.
@@ -33,15 +31,13 @@ function buildContextReference(meta: SessionMeta): string | null {
   }
 
   // Include any context files for the current stage (set during handoff)
-  const contextFiles = (meta as any).contextFiles;
+  const contextFiles = meta.contextFiles;
   if (contextFiles && contextFiles[meta.currentStage]) {
     const stageContextFiles = contextFiles[meta.currentStage];
     if (Array.isArray(stageContextFiles)) {
       for (const f of stageContextFiles) {
         if (typeof f === "string") {
           filesToRead.push(f);
-        } else if (f && typeof f === "object" && f.path) {
-          filesToRead.push(f.path);
         }
       }
     }

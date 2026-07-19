@@ -76,7 +76,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       }
 
       // Update metadata: transition stage, reset counters, pass context
-      const contextFiles = ((meta as any).contextFiles as Record<string, string[]>) || {};
+      const contextFiles = meta.contextFiles || {};
       ctx.session.updateMetadata({
         ...meta,
         previousStage: currentStage,
