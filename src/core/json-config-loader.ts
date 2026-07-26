@@ -139,6 +139,21 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     }
   }
 
+  // Warn on circular references
+  for (const [stageName, sc] of Object.entries(stages)) {
+    if (sc!.nextStage) {
+      for (const [otherName, otherSc] of Object.entries(stages)) {
+        if (otherName !== stageName && otherSc!.nextStage === stageName) {
+          console.info(
+            `[pi-pipeline] Circular reference detected: ${stageName} → ${sc!.nextStage} → ${stageName}. ` +
+              `maxLoopCycles=${json.maxLoopCycles ?? 3} will limit cycles.`,
+          );
+          break;
+        }
+      }
+    }
+  }
+
   return {
     stages,
     projectRoot,

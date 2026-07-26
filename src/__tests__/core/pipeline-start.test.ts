@@ -72,4 +72,24 @@ describe("createPipelineStartCommand", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("already running");
   });
+
+  it("handles empty file content", async () => {
+    await fs.writeFile(docPath, "", "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+    let updatedMeta: any = null;
+    const ctx = {
+      session: {
+        getMetadata: () => meta,
+        updateMetadata: (m: any) => { updatedMeta = m; },
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.requirementContent).toBe("");
+    expect(updatedMeta.requirementDoc).toBe("req.md");
+  });
 });

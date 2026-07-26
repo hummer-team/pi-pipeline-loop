@@ -42,6 +42,9 @@ import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader
 /**
  * Creates a pipeline extension for the Pi agent.
  *
+ * @deprecated Use {@link createPipelineFromJson} instead, which accepts a
+ * pipeline_loop.json config file and provides sensible defaults for all stages.
+ *
  * Accepts a project-specific `PipelineConfig` that maps each of the 8 pipeline
  * stages to its agent, skill, tool restrictions, and transition rules.
  * Returns an `ExtensionFactory` that registers all hooks, tools, and commands

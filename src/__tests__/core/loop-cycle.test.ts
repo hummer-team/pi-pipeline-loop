@@ -68,4 +68,46 @@ describe("loop cycle detection (pipeline_handoff)", () => {
 
     expect(result.success).toBe(true);
   });
+
+  it("does not increment loopCycleCount on linear transitions", () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      summaries: {
+        ...makeTestMeta().summaries,
+        plan: { path: "/tmp/summary.md", hash: "abc", status: "valid" as const },
+      },
+    });
+    const ctx = createMockCtx(meta);
+
+    const tool = createPipelineHandoff(config);
+    const result: any = tool.execute(
+      { nextStage: "develop" },
+      ctx as any,
+    );
+    expect(result).toBeDefined();
+  });
+
+  it("rejects cycle immediately when maxLoopCycles=0", async () => {
+    const config = makeTestConfig({ maxLoopCycles: 0 });
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      loopCycleCount: 0,
+      stageVisitOrder: ["develop", "review", "fix"],
+      summaries: {
+        ...makeTestMeta().summaries,
+        fix: { path: "/tmp/summary.md", hash: "abc", status: "valid" as const },
+      },
+    });
+    const ctx = createMockCtx(meta);
+
+    const tool = createPipelineHandoff(config);
+    const result: any = await tool.execute(
+      { nextStage: "develop" },
+      ctx as any,
+    );
+
+    expect(result.error).toContain("Max loop cycles");
+    expect(result.error).toContain("0");
+  });
 });

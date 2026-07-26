@@ -94,7 +94,9 @@ describe("createPromptInjector", () => {
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
 
-    expect(result.systemPrompt).toContain("Skill file not found at");
+    expect(result.systemPrompt).not.toContain("Skill file not found at");
+    // With null return, the prompt should not include any skill-related text
+    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
   });
 
   it("shows pending validation when previous summary is pending", async () => {

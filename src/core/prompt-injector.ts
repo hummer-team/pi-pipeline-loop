@@ -96,7 +96,7 @@ async function buildStageSkill(
   config: PipelineConfig,
   stageConfig: StageConfig,
   meta: SessionMeta,
-): Promise<string> {
+): Promise<string | null> {
   const stageSkillPath = path.join(
     config.projectRoot,
     ".pi",
@@ -108,7 +108,7 @@ async function buildStageSkill(
     const skillContent = await fs.readFile(stageSkillPath, "utf-8");
     return `# STAGE-SPECIFIC RULES (${meta.currentStage.toUpperCase()})\n${skillContent}`;
   } catch {
-    return `# STAGE-SPECIFIC RULES (${meta.currentStage.toUpperCase()})\nSkill file not found at: ${stageSkillPath}`;
+    return null;
   }
 }
 
