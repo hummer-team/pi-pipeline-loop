@@ -109,13 +109,43 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
  * This is the simplified entry point — the JSON file only needs stage
  * orchestration data; all other fields receive sensible defaults.
  *
- * @param jsonPath - Path to the pipeline_loop.json file
+ * @param jsonPath - Path to the pipeline_loop.json file (default: ".pi/pipeline_loop.json")
  * @returns An ExtensionFactory to be invoked by the Pi SDK at extension load time
  */
-export function createPipelineFromJson(jsonPath: string): ExtensionFactory {
-  const json = loadJsonConfig(jsonPath);
+export function createPipelineFromJson(jsonPath?: string): ExtensionFactory {
+  const resolvedPath = jsonPath ?? ".pi/pipeline_loop.json";
+  const json = loadJsonConfig(resolvedPath);
   const config = resolvePipelineConfig(json);
   return createPipeline(config);
+}
+
+// ─── Default Export (pi agent plugin entry point) ────────────────────────────
+
+/**
+ * Default export — pi agent plugin entry point.
+ *
+ * Called by the pi agent when it discovers this package via
+ * `package.json` → `"pi.extensions": ["./index.ts"]`.
+ *
+ * Auto-loads `.pi/pipeline_loop.json` and registers all hooks, tools,
+ * and commands with the pi ExtensionAPI. If the config file is missing,
+ * logs a warning and gracefully degrades (no registration).
+ *
+ * @param pi - The pi SDK ExtensionAPI instance
+ */
+export default async function initPipeline(pi: ExtensionAPI): Promise<void> {
+  const fs = await import("node:fs");
+  const defaultPath = ".pi/pipeline_loop.json";
+
+  if (!fs.existsSync(defaultPath)) {
+    console.warn(
+      `[pi-pipeline] ${defaultPath} not found. Pipeline disabled.`
+    );
+    return;
+  }
+
+  const factory = createPipelineFromJson(defaultPath);
+  await factory(pi);
 }
 
 // ─── Type Re-exports ─────────────────────────────────────────────────────────
