@@ -86,10 +86,16 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     PipelineStage,
     StageConfig
   >;
+  const disabledStages = new Set<PipelineStage>();
 
   for (const stageName of VALID_STAGES) {
     const jsonStage = json.stages[stageName];
     if (!jsonStage || jsonStage.require === false) {
+      disabledStages.add(stageName);
+      const reason = !jsonStage ? "not in config" : "require: false";
+      console.info(
+        `[pi-pipeline] Skipping disabled stage: ${stageName} (${reason})`,
+      );
       stages[stageName] = {
         agentFile: resolveStagePath(DEFAULT_AGENT_FILE, stageName),
         skillPath: resolveStagePath(DEFAULT_SKILL_PATH, stageName),
@@ -128,6 +134,34 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
           }
         : undefined,
     };
+  }
+
+  // Post-process: reconnect nextStage chains around disabled stages
+  if (disabledStages.size > 0) {
+    const STAGE_ORDER: PipelineStage[] = [
+      "clarify",
+      "design",
+      "plan",
+      "develop",
+      "review",
+      "fix",
+      "awaiting_human",
+      "completed",
+    ];
+    for (const [stageName, sc] of Object.entries(stages)) {
+      if (disabledStages.has(stageName as PipelineStage)) continue;
+      if (!sc!.nextStage) continue;
+      if (!disabledStages.has(sc!.nextStage)) continue;
+      const startIdx = STAGE_ORDER.indexOf(sc!.nextStage);
+      let resolvedNext: PipelineStage | null = null;
+      for (let i = startIdx + 1; i < STAGE_ORDER.length; i++) {
+        if (!disabledStages.has(STAGE_ORDER[i]) && stages[STAGE_ORDER[i]]) {
+          resolvedNext = STAGE_ORDER[i];
+          break;
+        }
+      }
+      sc!.nextStage = resolvedNext;
+    }
   }
 
   // Validate nextStage references
