@@ -24,6 +24,18 @@ export type PipelineStage =
 // ─── Stage Configuration ─────────────────────────────────────────────────────
 
 /**
+ * Verification configuration for a stage.  When `require` is true the
+ * auto-verifier runs after the agent settles and may auto-advance.
+ */
+export interface VerifyConfig {
+  /** Whether verification is required for this stage (default true) */
+  require?: boolean;
+
+  /** Path to the verify file (YAML frontmatter rules + Markdown body prompt) */
+  verifyFile?: string;
+}
+
+/**
  * Per-stage configuration that maps a pipeline stage to its agent, skill,
  * tool restrictions, and transition rules.
  */
@@ -38,10 +50,10 @@ export interface StageConfig {
   model?: string;
 
   /** List of tool names the agent is allowed to use in this stage */
-  allowedTools: string[];
+  allowedTools?: string[];
 
   /** List of bash command prefixes permitted in this stage (e.g., ["npm test", "git"]) */
-  allowedBashPrefixes: string[];
+  allowedBashPrefixes?: string[];
 
   /**
    * The next stage to transition to after this stage completes.
@@ -51,6 +63,9 @@ export interface StageConfig {
 
   /** Whether this stage requires a domain context to be loaded */
   requireDomain: boolean;
+
+  /** Optional verification configuration for auto-verification */
+  verify?: VerifyConfig;
 }
 
 // ─── Summary Metadata ────────────────────────────────────────────────────────
@@ -123,6 +138,33 @@ export interface SessionMeta {
 
   /** Context files passed between stages during handoff (stage -> file paths) */
   contextFiles?: Record<string, string[]>;
+
+  /** Maximum number of full pipeline cycles allowed (default 3) */
+  maxLoopCycles?: number;
+
+  /** Current cycle count within a circular reference (e.g. fix→develop) */
+  loopCycleCount?: number;
+
+  /** Ordered list of stages visited (for cycle detection) */
+  stageVisitOrder?: PipelineStage[];
+
+  /** Whether the pipeline has been terminated by the loop breaker */
+  terminated?: boolean;
+
+  /** Human-readable reason for termination */
+  terminateReason?: string;
+
+  /** Session-level temporary bash prefix overrides (user-approved) */
+  tempAllowedBash?: string[];
+
+  /** Path to the requirement document loaded by /pipeline_start */
+  requirementDoc?: string;
+
+  /** Cached assistant messages for the current stage (auto-verifier) */
+  assistantMessages?: string[];
+
+  /** Number of verification attempts within the current stage */
+  verifyAttempts?: number;
 }
 
 // ─── Pipeline Configuration ──────────────────────────────────────────────────
@@ -146,6 +188,79 @@ export interface PipelineConfig {
 
   /** Maximum number of pipeline loop iterations; defaults to 3 */
   maxLoops?: number;
+
+  /** Maximum number of full pipeline cycles (e.g. fix→develop loops); defaults to 3 */
+  maxLoopCycles?: number;
+}
+
+// ─── JSON Configuration Interfaces ────────────────────────────────────────────
+
+/**
+ * Verification configuration in pipeline_loop.json.
+ */
+export interface VerifyJsonConfig {
+  /** Whether verification is required (default true) */
+  require?: boolean;
+
+  /** Path to verify.md file (default .pi/references/{stage}_spec/verify.md) */
+  verifyFile?: string;
+}
+
+/**
+ * Per-stage configuration as defined in pipeline_loop.json.
+ * All fields are optional — defaults are filled by the JSON config loader.
+ */
+export interface StageJsonConfig {
+  /** Whether this stage is required; false removes it from the pipeline (default true) */
+  require?: boolean;
+
+  /** Path to agent definition file (default .pi/agents/{stage}/{stage}.md) */
+  agentFile?: string;
+
+  /** Path to skill directory/file (default .pi/skills/{stage}/SKILL.md) */
+  skillPath?: string;
+
+  /** Optional model override for this stage */
+  model?: string;
+
+  /** Allowed tool names (default depends on stage type) */
+  allowedTools?: string[];
+
+  /** Allowed bash command prefixes (default depends on stage type) */
+  allowedBashPrefixes?: string[];
+
+  /** Next stage to transition to; null = terminal */
+  nextStage?: PipelineStage | null;
+
+  /** Whether domain context is required (default false) */
+  requireDomain?: boolean;
+
+  /** Optional verification configuration */
+  verify?: VerifyJsonConfig;
+}
+
+/**
+ * Top-level structure of a pipeline_loop.json file.
+ * This replaces the full TypeScript PipelineConfig for simple use-cases.
+ */
+export interface PipelineJsonConfig {
+  /** Stage definitions — only stages present in this map participate in the pipeline */
+  stages: Partial<Record<PipelineStage, StageJsonConfig>>;
+
+  /** Project root directory (default process.cwd()) */
+  projectRoot?: string;
+
+  /** Audit log directory relative to projectRoot (default ".pi/audit") */
+  auditDir?: string;
+
+  /** Domain definitions directory relative to projectRoot (default ".pi/domains") */
+  domainDir?: string;
+
+  /** Maximum loop iterations per stage (default 3) */
+  maxLoops?: number;
+
+  /** Maximum pipeline cycles (e.g. fix→develop) before termination (default 3) */
+  maxLoopCycles?: number;
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────
@@ -194,7 +309,7 @@ export interface Command {
   description: string;
 
   /** The command's execution function */
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+  execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>;
 }
 
 /**

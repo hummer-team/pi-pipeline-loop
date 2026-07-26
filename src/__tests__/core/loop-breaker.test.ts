@@ -40,12 +40,13 @@ describe("createLoopBreaker", () => {
       await hook.handler(ctx as any);
 
       const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-      expect(lastUpdate.currentStage).toBe("awaiting_human");
+      expect(lastUpdate.terminated).toBe(true);
+      expect(lastUpdate.terminateReason).toBe("loop_overflow");
       expect(lastUpdate.loopCount).toBe(2);
 
       const logContent = await readFile(join(TMP, ".pi", "audit", "audit.log"), "utf-8");
       const entry = JSON.parse(logContent.trim().split("\n")[0]);
-      expect(entry.action).toBe("loop_break");
+      expect(entry.action).toBe("loop_break_fatal");
     });
 
     it("does not break on bash test pass", async () => {

@@ -162,7 +162,8 @@ function buildPipelineStatus(meta: SessionMeta): string {
 /**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
  *
- * The prompt is assembled from 5 parts joined by horizontal rule separators:
+ * The prompt is assembled from up to 6 parts joined by horizontal rule separators:
+ * 0. Requirement Document — user's requirement doc (if loaded via /pipeline_start)
  * 1. Context Reference — previous stage summary + context files
  * 2. Domain Skill — domain rules from ~/.pi/domains/ (if required)
  * 3. Stage Skill — stage-specific rules from project .pi/skills/
@@ -179,19 +180,43 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const meta = ctx.session.getMetadata() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
 
-      // Build all 5 prompt parts (null parts are filtered out)
+      const part0 = await buildRequirementDoc(config, meta);
       const part1 = buildContextReference(meta);
       const part2 = await buildDomainSkill(stageConfig, meta);
       const part3 = await buildStageSkill(config, stageConfig, meta);
       const part4 = buildLoopStatus(meta);
       const part5 = buildPipelineStatus(meta);
 
-      // Filter out null parts and join with horizontal rules
-      const promptParts = [part1, part2, part3, part4, part5].filter(
+      const promptParts = [part0, part1, part2, part3, part4, part5].filter(
         (p): p is string => p !== null,
       );
 
       return { systemPrompt: promptParts.join("\n\n---\n\n") };
     },
   };
+}
+
+/**
+ * Builds Part 0: Requirement Document.
+ * Loads the user's requirement document when running in clarify stage.
+ *
+ * @param config - Pipeline configuration
+ * @param meta - Current session metadata
+ * @returns Prompt section string, or null if no requirement doc
+ */
+async function buildRequirementDoc(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<string | null> {
+  if (!meta.requirementDoc || meta.currentStage !== "clarify") {
+    return null;
+  }
+
+  const docPath = path.join(config.projectRoot, meta.requirementDoc);
+  try {
+    const content = await fs.readFile(docPath, "utf-8");
+    return `# USER REQUIREMENT DOCUMENT\n\n${content}`;
+  } catch {
+    return null;
+  }
 }

@@ -75,10 +75,40 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         return { error: `Unknown stage: "${nextStage}"` };
       }
 
+      // Cycle detection: if nextStage has been visited before, it's a loop
+      const visitOrder = meta.stageVisitOrder || [];
+      if (visitOrder.includes(nextStage)) {
+        const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
+        const cycleCount = (meta.loopCycleCount || 0) + 1;
+        if (cycleCount >= maxCycles) {
+          return {
+            error:
+              `Max loop cycles (${maxCycles}) reached. ` +
+              `Pipeline cannot cycle back to "${nextStage}". ` +
+              `Use /pipeline-restart to begin a new run.`,
+          };
+        }
+        ctx.session.updateMetadata({
+          ...meta,
+          loopCycleCount: cycleCount,
+          stageVisitOrder: [...visitOrder, nextStage],
+        });
+      } else {
+        const newVisitOrder = [...visitOrder, nextStage];
+        ctx.session.updateMetadata({
+          ...meta,
+          loopCycleCount: 0,
+          stageVisitOrder: newVisitOrder,
+        });
+      }
+
+      // Get updated metadata for the actual stage transition
+      const updatedMeta = ctx.session.getMetadata() as SessionMeta;
+
       // Update metadata: transition stage, reset counters, pass context
-      const contextFiles = meta.contextFiles || {};
+      const contextFiles = updatedMeta.contextFiles || {};
       ctx.session.updateMetadata({
-        ...meta,
+        ...updatedMeta,
         previousStage: currentStage,
         currentStage: nextStage,
         stageStartTime: Date.now(),

@@ -23,14 +23,19 @@ import { createPipelineState } from "./core/pipeline-state";
 import { createGenerateSummary } from "./tools/generate-summary";
 import { createValidateSummary } from "./tools/validate-summary";
 import { createPipelineHandoff } from "./tools/pipeline-handoff";
+import { createRequestBashPermission } from "./tools/request-bash-permission";
 
 // Commands and session end audit
 import { createPipelineStatusCommand } from "./commands/pipeline-status";
+import { createPipelineStartCommand } from "./commands/pipeline-start";
 import { createSessionEnder } from "./core/session-ender";
 
 // Agent settled and session shutdown lifecycle hooks
 import { createAgentSettled } from "./core/agent-settled";
 import { createSessionShutdown } from "./core/session-shutdown";
+
+// JSON config loader
+import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader";
 
 // ─── Factory Function ────────────────────────────────────────────────────────
 
@@ -82,6 +87,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createGenerateSummary(config),
       createValidateSummary(config),
       createPipelineHandoff(config),
+      createRequestBashPermission(),
     ];
     for (const t of tools) {
       pi.registerTool(t.name, t.description, t.parameters, t.execute);
@@ -90,7 +96,23 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // ── Commands registration ──────────────────────────────────────────
     const cmd = createPipelineStatusCommand(config);
     pi.registerCommand(cmd.name, cmd.description, cmd.execute);
+    const startCmd = createPipelineStartCommand(config);
+    pi.registerCommand(startCmd.name, startCmd.description, startCmd.execute);
   };
+}
+
+/**
+ * Creates a pipeline extension from a pipeline_loop.json configuration file.
+ * This is the simplified entry point — the JSON file only needs stage
+ * orchestration data; all other fields receive sensible defaults.
+ *
+ * @param jsonPath - Path to the pipeline_loop.json file
+ * @returns An ExtensionFactory to be invoked by the Pi SDK at extension load time
+ */
+export function createPipelineFromJson(jsonPath: string): ExtensionFactory {
+  const json = loadJsonConfig(jsonPath);
+  const config = resolvePipelineConfig(json);
+  return createPipeline(config);
 }
 
 // ─── Type Re-exports ─────────────────────────────────────────────────────────
@@ -108,4 +130,8 @@ export type {
   PipelinePlugin,
   ExtensionAPI,
   ExtensionFactory,
+  VerifyConfig,
+  VerifyJsonConfig,
+  StageJsonConfig,
+  PipelineJsonConfig,
 } from "./types";

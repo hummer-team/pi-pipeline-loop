@@ -76,17 +76,24 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           ctx.session.updateMetadata({ ...meta, loopCount: newLoopCount });
 
           if (newLoopCount >= meta.maxLoops) {
-            // Circuit break: freeze pipeline
+            // Circuit break: terminate pipeline
             ctx.session.updateMetadata({
               ...meta,
               loopCount: newLoopCount,
-              currentStage: "awaiting_human",
+              terminated: true,
+              terminateReason: "loop_overflow",
             });
+
+            if (ctx.ui?.notify) {
+              ctx.ui.notify(
+                `[pi-pipeline] Pipeline ${meta.pipelineId} terminated: max loop iterations (${meta.maxLoops}) reached in "${meta.currentStage}" stage`,
+              );
+            }
 
             const auditLog = {
               timestamp: new Date().toISOString(),
               pipelineId: meta.pipelineId,
-              action: "loop_break",
+              action: "loop_break_fatal",
               stage: meta.currentStage,
               loopCount: newLoopCount,
             };

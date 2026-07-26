@@ -31,7 +31,7 @@ export function createToolGuard(config: PipelineConfig): Hook {
       const { name: toolName, arguments: args } = ctx.toolCall;
 
       // 1. Tool permission check
-      if (!stageConfig.allowedTools.includes(toolName)) {
+      if (!(stageConfig.allowedTools || []).includes(toolName)) {
         return {
           block: true,
           reason: `Tool "${toolName}" not allowed in "${meta.currentStage}" stage`,
@@ -41,16 +41,29 @@ export function createToolGuard(config: PipelineConfig): Hook {
       // 2. Bash command prefix check
       if (toolName === "bash") {
         const command = args.command as string;
+        const mergedPrefixes = [
+          ...(stageConfig.allowedBashPrefixes || []),
+          ...(meta.tempAllowedBash || []),
+        ];
         if (
-          !stageConfig.allowedBashPrefixes.some((p: string) =>
-            command.startsWith(p),
-          )
+          !mergedPrefixes.some((p: string) => command.startsWith(p))
         ) {
-          return { block: true, reason: `Bash command not allowed` };
+          return {
+            block: true,
+            reason: `Bash command "${command}" not in allowedBashPrefixes.`,
+            suggestAsk: true,
+            blockedCommand: command,
+          };
         }
       }
 
-      // 3. Freeze state check (awaiting_human blocks all tools)
+      // 3. Termination / freeze state check
+      if (meta.terminated) {
+        return {
+          block: true,
+          reason: `Pipeline terminated: ${meta.terminateReason || "unknown"}`,
+        };
+      }
       if (meta.currentStage === "awaiting_human") {
         return {
           block: true,

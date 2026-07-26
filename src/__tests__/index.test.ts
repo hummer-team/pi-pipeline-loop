@@ -43,10 +43,12 @@ describe("createPipeline", () => {
     expect(registeredTools).toContain("generate_stage_summary");
     expect(registeredTools).toContain("validate_summary");
     expect(registeredTools).toContain("pipeline_handoff");
-    expect(registeredTools.length).toBe(6);
+    expect(registeredTools).toContain("request_bash_permission");
+    expect(registeredTools.length).toBe(7);
 
     expect(registeredCommands).toContain("pipeline-status");
-    expect(registeredCommands.length).toBe(1);
+    expect(registeredCommands).toContain("pipeline-start");
+    expect(registeredCommands.length).toBe(2);
   });
 
   it("passes correct tool metadata during registration", async () => {

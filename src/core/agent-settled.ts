@@ -1,20 +1,25 @@
 /**
  * @module agent-settled
  * Factory for the `agent_settled` hook.
- * Logs an audit entry when the agent reaches a stable/settled state.
+ * Logs an audit entry when the agent reaches a stable/settled state,
+ * and optionally runs auto-verification if the stage has a verify block.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
+import { runVerification } from "./auto-verifier";
 
 /**
- * Creates the `agent_settled` hook that logs when the agent stabilizes.
+ * Creates the `agent_settled` hook that logs when the agent stabilizes
+ * and optionally runs automatic verification for the current stage.
  *
- * Writes a JSON-lines audit entry with:
- * - timestamp, pipelineId, action: "agent_settled", stage
- *
- * Optionally notifies via `ctx.ui.notify` if available.
+ * 1. Writes a JSON-lines audit entry (action: "agent_settled")
+ * 2. If the current stage has verify.require enabled:
+ *    a. Reads verify.md (YAML frontmatter rules + Markdown prompt)
+ *    b. Runs rule-based verification against assistant messages
+ *    c. If rules pass → auto-advance; if fail → schedule model verification
+ *    d. Stores verification result in SessionMeta for the next agent cycle
  *
  * @param config - The pipeline configuration
  * @returns A Hook object for the "agent_settled" event
@@ -27,6 +32,7 @@ export function createAgentSettled(config: PipelineConfig): Hook {
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
 
+      // 1. Write audit log (existing behavior)
       const auditLog = {
         timestamp: new Date().toISOString(),
         pipelineId: meta.pipelineId,
@@ -38,9 +44,73 @@ export function createAgentSettled(config: PipelineConfig): Hook {
       await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
       await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
 
-      // Optional UI notification if available
       if (ctx.ui?.notify) {
         ctx.ui.notify(`Agent settled in "${meta.currentStage}" stage`);
+      }
+
+      // 2. Auto-verification
+      const stageConfig = config.stages[meta.currentStage];
+      if (!stageConfig.verify?.require) {
+        return;
+      }
+
+      const assistantMessages = meta.assistantMessages || [];
+      const verifyResult = await runVerification(
+        config,
+        meta,
+        assistantMessages,
+      );
+
+      if (verifyResult.rulePassed) {
+        // Rule verification passed — auto-advance
+        const nextStage = stageConfig.nextStage;
+        if (nextStage) {
+          ctx.session.updateMetadata({
+            ...meta,
+            previousStage: meta.currentStage,
+            currentStage: nextStage,
+            stageStartTime: Date.now(),
+            loopCount: 0,
+            currentStepIndex: 0,
+          });
+
+          const verifyLog = {
+            timestamp: new Date().toISOString(),
+            pipelineId: meta.pipelineId,
+            action: "auto_verify_pass",
+            stage: meta.currentStage,
+            nextStage,
+            method: "rule",
+          };
+          await fs.appendFile(
+            auditLogPath,
+            JSON.stringify(verifyLog) + "\n",
+          );
+
+          if (ctx.ui?.notify) {
+            ctx.ui.notify(
+              `Auto-verification passed for "${meta.currentStage}". ` +
+                `Advanced to "${nextStage}".`,
+            );
+          }
+        }
+      } else if (verifyResult.needsModelVerify) {
+        // Rule verification failed — store pending model verification in metadata
+        ctx.session.updateMetadata({
+          ...meta,
+          verifyAttempts: (meta.verifyAttempts || 0) + 1,
+          assistantMessages: [], // reset for next cycle
+        });
+
+        if (ctx.ui?.notify) {
+          const missing =
+            verifyResult.ruleMissing.length > 0
+              ? ` Missing keywords: ${verifyResult.ruleMissing.join(", ")}.`
+              : "";
+          ctx.ui.notify(
+            `Verification for "${meta.currentStage}" requires model review.${missing}`,
+          );
+        }
       }
     },
   };
