@@ -8,6 +8,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
+import { verifyRequiredFiles, verifyFileContentPattern } from "./verifiers/file-verifier";
+import { verifyRequiredCommands } from "./verifiers/command-verifier";
+import { verifyRequiredGit } from "./verifiers/git-verifier";
+import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
 
 /**
  * Parsed verification rules from a verify.md frontmatter.
@@ -166,55 +170,210 @@ export async function parseVerifyFile(
 /**
  * Parses YAML-like frontmatter content into VerifyRules.
  * Uses a simple key-value parser — no full YAML library dependency.
+ * Supports: keywords, mode, requiredFiles, requiredCommands, requiredGit, fileContentPattern.
  */
 function parseFrontmatter(yaml: string): VerifyRules | null {
   try {
     const lines = yaml.split("\n");
-    let inRules = false;
-    let inKeywords = false;
     const keywords: string[] = [];
     let mode: "and" | "or" = "or";
+    const requiredFiles: string[] = [];
+    const requiredCommands: RequiredCommand[] = [];
+    const fileContentPattern: FileContentRule[] = [];
+    let requiredGit: RequiredGitRules | undefined;
+
+    // Section tracking state
+    type Section = "none" | "keywords" | "requiredFiles" | "requiredCommands" | "requiredGit" | "fileContentPattern" | "cmdItem" | "fcItem";
+    let currentSection: Section = "none";
+    let currentCmd: RequiredCommand | null = null;
+    let currentFc: FileContentRule | null = null;
 
     for (const line of lines) {
       const trimmed = line.trim();
+      const indent = line.length - line.trimStart().length;
 
-      if (trimmed.startsWith("rules:")) {
-        inRules = true;
+      // Skip empty lines
+      if (!trimmed) continue;
+
+      // Top-level rules: key
+      if (trimmed.startsWith("rules:") && indent === 0) {
         continue;
       }
 
-      if (inRules && trimmed.startsWith("keywords:")) {
-        inKeywords = true;
+      // Detect section starts (2-space indent under rules:)
+      if (indent <= 2 && trimmed.startsWith("keywords:")) {
+        currentSection = "keywords";
         continue;
       }
-
-      if (inRules && trimmed.startsWith("mode:")) {
+      if (indent <= 2 && trimmed.startsWith("mode:")) {
         const value = trimmed.split(":")[1]?.trim().replace(/["']/g, "");
-        if (value === "and" || value === "or") {
-          mode = value;
+        if (value === "and" || value === "or") mode = value;
+        currentSection = "none";
+        continue;
+      }
+      if (indent <= 2 && trimmed.startsWith("requiredFiles:")) {
+        currentSection = "requiredFiles";
+        continue;
+      }
+      if (indent <= 2 && trimmed.startsWith("requiredCommands:")) {
+        currentSection = "requiredCommands";
+        continue;
+      }
+      if (indent <= 2 && trimmed.startsWith("requiredGit:")) {
+        currentSection = "requiredGit";
+        requiredGit = {};
+        continue;
+      }
+      if (indent <= 2 && trimmed.startsWith("fileContentPattern:")) {
+        currentSection = "fileContentPattern";
+        continue;
+      }
+
+      // List items for simple string arrays
+      if (trimmed.startsWith("- ")) {
+        // Flush previous object items when starting a new list entry
+        if (currentSection === "cmdItem" && currentCmd) {
+          requiredCommands.push({ ...currentCmd });
+          currentCmd = null;
+        }
+        if (currentSection === "fcItem" && currentFc) {
+          fileContentPattern.push({ ...currentFc });
+          currentFc = null;
+        }
+
+        if (currentSection === "keywords" || currentSection === "cmdItem") {
+          if (currentSection === "keywords") {
+            const kw = trimmed.slice(2).trim().replace(/["']/g, "");
+            if (kw) keywords.push(kw);
+          } else {
+            // We were in cmdItem and got flushed above — switch to requiredCommands
+            currentSection = "requiredCommands";
+          }
+        }
+        if (currentSection === "requiredFiles") {
+          const fp = trimmed.slice(2).trim().replace(/["']/g, "");
+          if (fp) requiredFiles.push(fp);
+          continue;
+        }
+        if (currentSection === "requiredCommands") {
+          // Start a new command object — "- cmd: ..." or "- \"command\""
+          currentCmd = { cmd: "" };
+          currentSection = "cmdItem";
+          const afterDash = trimmed.slice(2).trim();
+          if (afterDash.startsWith("cmd:")) {
+            currentCmd.cmd = afterDash.slice(4).trim().replace(/^["']|["']$/g, "");
+          } else if (afterDash) {
+            currentCmd.cmd = afterDash.replace(/^["']|["']$/g, "");
+          }
+          continue;
+        }
+        if (currentSection === "fileContentPattern" || currentSection === "fcItem") {
+          if (currentSection === "fcItem") {
+            // Already flushed above — switch to fileContentPattern
+            currentSection = "fileContentPattern";
+          }
+          // Start a new fileContentRule object — "- path: ..."
+          currentFc = { path: "", pattern: "" };
+          currentSection = "fcItem";
+          const afterDash = trimmed.slice(2).trim();
+          if (afterDash.startsWith("path:")) {
+            currentFc.path = afterDash.slice(5).trim().replace(/^["']|["']$/g, "");
+          }
+          continue;
+        }
+      }
+
+      // Properties within a command item (4+ indent)
+      if (currentSection === "cmdItem" && currentCmd) {
+        if (trimmed.startsWith("cmd:")) {
+          currentCmd.cmd = trimmed.slice(4).trim().replace(/^["']|["']$/g, "");
+        } else if (trimmed.startsWith("expectExit:")) {
+          const val = trimmed.split(":")[1]?.trim();
+          const num = parseInt(val, 10);
+          if (!isNaN(num)) currentCmd.expectExit = num;
+        } else if (trimmed.startsWith("expectOutput:")) {
+          currentCmd.expectOutput = trimmed.slice(13).trim().replace(/^["']|["']$/g, "");
+        } else if (indent <= 2) {
+          // New top-level section — save and exit
+          requiredCommands.push({ ...currentCmd });
+          currentCmd = null;
+          currentSection = "none";
         }
         continue;
       }
 
-      if (inKeywords && trimmed.startsWith("- ")) {
-        const kw = trimmed.slice(2).trim().replace(/["']/g, "");
-        if (kw) {
-          keywords.push(kw);
+      // Properties within a fileContentPattern item (4+ indent)
+      if (currentSection === "fcItem" && currentFc) {
+        if (trimmed.startsWith("path:")) {
+          currentFc.path = trimmed.slice(5).trim().replace(/^["']|["']$/g, "");
+        } else if (trimmed.startsWith("pattern:")) {
+          currentFc.pattern = trimmed.slice(8).trim().replace(/^["']|["']$/g, "");
+        } else if (indent <= 2) {
+          fileContentPattern.push({ ...currentFc });
+          currentFc = null;
+          currentSection = "none";
         }
         continue;
       }
 
-      // Exit keywords section on non-list-item line
-      if (inKeywords && trimmed && !trimmed.startsWith("- ")) {
-        inKeywords = false;
+      // Properties within requiredGit (2+ indent)
+      if (currentSection === "requiredGit" && requiredGit) {
+        if (trimmed.startsWith("lastCommitWithin:")) {
+          requiredGit.lastCommitWithin = trimmed.slice(18).trim().replace(/^["']|["']$/g, "");
+        } else if (trimmed.startsWith("branch:")) {
+          requiredGit.branch = trimmed.slice(7).trim().replace(/^["']|["']$/g, "");
+        } else if (trimmed.startsWith("cleanWorkingTree:")) {
+          const val = trimmed.split(":")[1]?.trim().toLowerCase();
+          requiredGit.cleanWorkingTree = val === "true";
+        } else if (indent === 0) {
+          currentSection = "none";
+        }
+        continue;
+      }
+
+      // Non-matching line at low indent resets section
+      if (indent <= 2) {
+        // Flush pending items
+        if (currentSection === "cmdItem" && currentCmd) {
+          requiredCommands.push({ ...currentCmd });
+          currentCmd = null;
+        }
+        if (currentSection === "fcItem" && currentFc) {
+          fileContentPattern.push({ ...currentFc });
+          currentFc = null;
+        }
+        currentSection = "none";
       }
     }
 
-    if (keywords.length === 0) {
+    // Flush any pending items at end of file
+    if (currentSection === "cmdItem" && currentCmd) {
+      requiredCommands.push({ ...currentCmd });
+    }
+    if (currentSection === "fcItem" && currentFc) {
+      fileContentPattern.push({ ...currentFc });
+    }
+
+    // Determine if any rules exist at all
+    const hasAnyRules =
+      keywords.length > 0 ||
+      requiredFiles.length > 0 ||
+      requiredCommands.length > 0 ||
+      !!requiredGit ||
+      fileContentPattern.length > 0;
+
+    if (!hasAnyRules) {
       return null;
     }
 
-    return { keywords, mode };
+    return {
+      keywords,
+      mode,
+      ...(requiredFiles.length > 0 ? { requiredFiles } : {}),
+      ...(requiredCommands.length > 0 ? { requiredCommands } : {}),
+      ...(requiredGit ? { requiredGit } : {}),
+      ...(fileContentPattern.length > 0 ? { fileContentPattern } : {}),
+    };
   } catch {
     return null;
   }
@@ -247,9 +406,63 @@ export function ruleVerify(
 }
 
 /**
+ * Executes all structured rules from VerifyRules against the filesystem,
+ * git state, and assistant messages. Each rule type is evaluated independently.
+ *
+ * @param rules - The parsed verification rules from verify.md
+ * @param projectRoot - Absolute path to the project root directory
+ * @param assistantMessages - Aggregated assistant messages for keyword checking
+ * @returns StructuredVerifyResult with per-rule-type pass/fail and failure details
+ */
+export async function executeStructuredRules(
+  rules: VerifyRules,
+  projectRoot: string,
+  assistantMessages: string[],
+): Promise<StructuredVerifyResult> {
+  const failures: VerifyFailure[] = [];
+
+  // 1. Required files check
+  const fileResult = await verifyRequiredFiles(rules.requiredFiles, projectRoot);
+  if (!fileResult.passed) {
+    failures.push({ ruleType: "requiredFiles", detail: fileResult.detail });
+  }
+
+  // 2. Required commands check
+  const cmdResult = verifyRequiredCommands(rules.requiredCommands, projectRoot);
+  if (!cmdResult.passed) {
+    failures.push({ ruleType: "requiredCommands", detail: cmdResult.detail });
+  }
+
+  // 3. Required git state check
+  const gitResult = verifyRequiredGit(rules.requiredGit, projectRoot);
+  if (!gitResult.passed) {
+    failures.push({ ruleType: "requiredGit", detail: gitResult.detail });
+  }
+
+  // 4. File content pattern check
+  const fcResult = await verifyFileContentPattern(rules.fileContentPattern, projectRoot);
+  if (!fcResult.passed) {
+    failures.push({ ruleType: "fileContentPattern", detail: fcResult.detail });
+  }
+
+  // 5. Keyword check (legacy)
+  if (rules.keywords.length > 0) {
+    const kwResult = verifyRequiredKeywords(rules.keywords, rules.mode, assistantMessages);
+    if (!kwResult.passed) {
+      failures.push({ ruleType: "keywords", detail: kwResult.detail });
+    }
+  }
+
+  return {
+    passed: failures.length === 0,
+    failures,
+  };
+}
+
+/**
  * Runs the full verification pipeline for a stage:
  * 1. Parse verify.md
- * 2. Run rule verification
+ * 2. Run structured rule verification (if new rule types present) or legacy keyword verification
  * 3. If rules fail or absent, suggest model verification
  */
 export async function runVerification(
@@ -261,6 +474,7 @@ export async function runVerification(
   ruleMissing: string[];
   needsModelVerify: boolean;
   modelPrompt: string;
+  structuredResult?: StructuredVerifyResult;
 }> {
   const stageConfig = config.stages[meta.currentStage];
   const verifyConfig = stageConfig.verify;
@@ -290,6 +504,43 @@ export async function runVerification(
     };
   }
 
+  // Check if any structured (non-keyword) rules are defined
+  const hasStructuredRules =
+    (rules.requiredFiles && rules.requiredFiles.length > 0) ||
+    (rules.requiredCommands && rules.requiredCommands.length > 0) ||
+    !!rules.requiredGit ||
+    (rules.fileContentPattern && rules.fileContentPattern.length > 0);
+
+  if (hasStructuredRules) {
+    // Use the structured rule engine
+    const structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages);
+
+    if (structuredResult.passed) {
+      return {
+        rulePassed: true,
+        ruleMissing: [],
+        needsModelVerify: false,
+        modelPrompt: "",
+        structuredResult,
+      };
+    }
+
+    // Structured rules failed — collect missing keyword info for backward compat
+    const keywordFailures = structuredResult.failures.filter(f => f.ruleType === "keywords");
+    const ruleMissing = keywordFailures.length > 0
+      ? rules.keywords.filter(kw => !assistantMessages.join("\n").includes(kw))
+      : [];
+
+    return {
+      rulePassed: false,
+      ruleMissing,
+      needsModelVerify: true,
+      modelPrompt: prompt,
+      structuredResult,
+    };
+  }
+
+  // Legacy path: keyword-only rules
   const ruleResult = ruleVerify(rules, assistantMessages);
 
   if (ruleResult.passed) {

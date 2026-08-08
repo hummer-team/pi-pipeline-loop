@@ -6,6 +6,7 @@ import {
   parseVerifyFile,
   ruleVerify,
   runVerification,
+  executeStructuredRules,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 
@@ -176,5 +177,221 @@ describe("runVerification", () => {
     const result2 = await runVerification(config, meta, ["方案推荐 found"]);
     expect(result2.rulePassed).toBe(true);
     expect(result2.needsModelVerify).toBe(false);
+  });
+});
+
+describe("parseVerifyFile — structured rules", () => {
+  it("parses requiredFiles from frontmatter", async () => {
+    const fp = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      fp,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "docs/design/commit.md"\n' +
+        '    - "src/index.ts"\n' +
+        "---\n" +
+        "Body text\n",
+      "utf-8",
+    );
+    const result = await parseVerifyFile(fp);
+    expect(result.rules).not.toBeNull();
+    expect(result.rules!.requiredFiles).toEqual(["docs/design/commit.md", "src/index.ts"]);
+  });
+
+  it("parses requiredCommands from frontmatter", async () => {
+    const fp = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      fp,
+      "---\n" +
+        "rules:\n" +
+        "  requiredCommands:\n" +
+        '    - cmd: "bun run build"\n' +
+        "      expectExit: 0\n" +
+        '    - cmd: "echo ok"\n' +
+        '      expectOutput: "ok"\n' +
+        "---\n" +
+        "Body\n",
+      "utf-8",
+    );
+    const result = await parseVerifyFile(fp);
+    expect(result.rules).not.toBeNull();
+    expect(result.rules!.requiredCommands).toHaveLength(2);
+    expect(result.rules!.requiredCommands![0].cmd).toBe("bun run build");
+    expect(result.rules!.requiredCommands![0].expectExit).toBe(0);
+    expect(result.rules!.requiredCommands![1].expectOutput).toBe("ok");
+  });
+
+  it("parses requiredGit from frontmatter", async () => {
+    const fp = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      fp,
+      "---\n" +
+        "rules:\n" +
+        "  requiredGit:\n" +
+        '    lastCommitWithin: "10min"\n' +
+        '    branch: "main"\n' +
+        "    cleanWorkingTree: true\n" +
+        "---\n" +
+        "Body\n",
+      "utf-8",
+    );
+    const result = await parseVerifyFile(fp);
+    expect(result.rules).not.toBeNull();
+    expect(result.rules!.requiredGit).toEqual({
+      lastCommitWithin: "10min",
+      branch: "main",
+      cleanWorkingTree: true,
+    });
+  });
+
+  it("parses fileContentPattern from frontmatter", async () => {
+    const fp = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      fp,
+      "---\n" +
+        "rules:\n" +
+        "  fileContentPattern:\n" +
+        '    - path: "docs/design/commit.md"\n' +
+        '      pattern: "^phase_name:"\n' +
+        "---\n" +
+        "Body\n",
+      "utf-8",
+    );
+    const result = await parseVerifyFile(fp);
+    expect(result.rules).not.toBeNull();
+    expect(result.rules!.fileContentPattern).toHaveLength(1);
+    expect(result.rules!.fileContentPattern![0].path).toBe("docs/design/commit.md");
+    expect(result.rules!.fileContentPattern![0].pattern).toBe("^phase_name:");
+  });
+
+  it("parses mixed rules (keywords + requiredFiles)", async () => {
+    const fp = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      fp,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "output.md"\n' +
+        "  keywords:\n" +
+        '    - "done"\n' +
+        "  mode: and\n" +
+        "---\n" +
+        "Body\n",
+      "utf-8",
+    );
+    const result = await parseVerifyFile(fp);
+    expect(result.rules).not.toBeNull();
+    expect(result.rules!.requiredFiles).toEqual(["output.md"]);
+    expect(result.rules!.keywords).toEqual(["done"]);
+    expect(result.rules!.mode).toBe("and");
+  });
+});
+
+describe("executeStructuredRules", () => {
+  it("passes when all rules are satisfied", async () => {
+    await fs.writeFile(path.join(TMP, "exists.md"), "content");
+
+    const result = await executeStructuredRules(
+      {
+        keywords: [],
+        mode: "or",
+        requiredFiles: ["exists.md"],
+      },
+      TMP,
+      [],
+    );
+    expect(result.passed).toBe(true);
+    expect(result.failures).toHaveLength(0);
+  });
+
+  it("collects failures from multiple rule types", async () => {
+    const result = await executeStructuredRules(
+      {
+        keywords: ["hello"],
+        mode: "and",
+        requiredFiles: ["nonexistent.md"],
+        requiredCommands: [{ cmd: "exit 1", expectExit: 0 }],
+      },
+      TMP,
+      [],
+    );
+    expect(result.passed).toBe(false);
+    expect(result.failures.length).toBeGreaterThanOrEqual(3);
+    const ruleTypes = result.failures.map(f => f.ruleType);
+    expect(ruleTypes).toContain("requiredFiles");
+    expect(ruleTypes).toContain("requiredCommands");
+    expect(ruleTypes).toContain("keywords");
+  });
+
+  it("skips checks for undefined rule types", async () => {
+    const result = await executeStructuredRules(
+      {
+        keywords: [],
+        mode: "or",
+      },
+      TMP,
+      [],
+    );
+    expect(result.passed).toBe(true);
+    expect(result.failures).toHaveLength(0);
+  });
+});
+
+describe("runVerification — structured rules", () => {
+  it("uses structured rules when requiredFiles are present", async () => {
+    await fs.writeFile(path.join(TMP, "output.md"), "content");
+
+    const vrPath = path.join(TMP, "references", "develop_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "output.md"\n' +
+        "---\n" +
+        "Body\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "develop"
+                  ? { require: true, verifyFile: "references/develop_spec/verify.md" }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    // File exists → pass
+    const result1 = await runVerification(config, meta, []);
+    expect(result1.rulePassed).toBe(true);
+    expect(result1.structuredResult).toBeDefined();
+    expect(result1.structuredResult!.passed).toBe(true);
+
+    // Delete the file → fail
+    await fs.rm(path.join(TMP, "output.md"));
+    const result2 = await runVerification(config, meta, []);
+    expect(result2.rulePassed).toBe(false);
+    expect(result2.structuredResult).toBeDefined();
+    expect(result2.structuredResult!.passed).toBe(false);
+    expect(result2.structuredResult!.failures.some(f => f.ruleType === "requiredFiles")).toBe(true);
   });
 });
