@@ -26,10 +26,9 @@ import { createValidateSummary } from "./tools/validate-summary";
 import { createPipelineHandoff } from "./tools/pipeline-handoff";
 import { createRequestBashPermission } from "./tools/request-bash-permission";
 
-// Commands and session end audit
+// Commands
 import { createPipelineStatusCommand } from "./commands/pipeline-status";
 import { createPipelineStartCommand } from "./commands/pipeline-start";
-import { createSessionEnder } from "./core/session-ender";
 
 // Agent settled and session shutdown lifecycle hooks
 import { createAgentSettled } from "./core/agent-settled";
@@ -78,7 +77,6 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createPromptInjector(config),
       createToolGuard(config),
       createLoopBreaker(config),
-      createSessionEnder(config),
       createAgentSettled(config),
       createSessionShutdown(config),
     ];
