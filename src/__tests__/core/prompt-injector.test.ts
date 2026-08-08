@@ -115,4 +115,37 @@ describe("createPromptInjector", () => {
 
     expect(result.systemPrompt).toContain("YES (Validate before proceed)");
   });
+
+  it("includes verification failures in prompt when verifyFailures exist", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyFailures: [
+        { ruleType: "requiredFiles", detail: "Missing: docs/commit.md", timestamp: Date.now() },
+        { ruleType: "requiredGit", detail: "No commit within 10min", timestamp: Date.now() },
+      ],
+    });
+    const ctx = { session: { getMetadata: () => meta } };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    expect(result.systemPrompt).toContain("PREVIOUS VERIFICATION FAILURES");
+    expect(result.systemPrompt).toContain("[requiredFiles] Missing: docs/commit.md");
+    expect(result.systemPrompt).toContain("[requiredGit] No commit within 10min");
+  });
+
+  it("does not include verification failures section when verifyFailures is empty", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyFailures: [],
+    });
+    const ctx = { session: { getMetadata: () => meta } };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    expect(result.systemPrompt).not.toContain("PREVIOUS VERIFICATION FAILURES");
+  });
 });

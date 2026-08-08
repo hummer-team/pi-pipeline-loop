@@ -160,6 +160,28 @@ function buildPipelineStatus(meta: SessionMeta): string {
 }
 
 /**
+ * Builds Part 6: Verification Failures.
+ * Lists previous verification failures that must be fixed before advancing.
+ * Only included when verifyFailures are present in SessionMeta.
+ *
+ * @param meta - Current session metadata
+ * @returns Prompt section string, or null if no failures
+ */
+function buildVerifyFailurePrompt(meta: SessionMeta): string | null {
+  const failures = meta.verifyFailures;
+  if (!failures || failures.length === 0) {
+    return null;
+  }
+
+  const lines = failures.map(f => `- [${f.ruleType}] ${f.detail}`);
+  return (
+    `# PREVIOUS VERIFICATION FAILURES (MUST FIX)\n` +
+    `The following verification checks failed. You MUST fix ALL of them before the stage can advance.\n\n` +
+    lines.join("\n")
+  );
+}
+
+/**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
  *
  * The prompt is assembled from up to 6 parts joined by horizontal rule separators:
@@ -186,8 +208,9 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const part3 = await buildStageSkill(config, stageConfig, meta);
       const part4 = buildLoopStatus(meta);
       const part5 = buildPipelineStatus(meta);
+      const part6 = buildVerifyFailurePrompt(meta);
 
-      const promptParts = [part0, part1, part2, part3, part4, part5].filter(
+      const promptParts = [part0, part1, part2, part3, part4, part5, part6].filter(
         (p): p is string => p !== null,
       );
 

@@ -108,6 +108,44 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
         }
       }
 
+      // ── 1b. Verification failure loop counting ───────────────────────
+      // When verifyFailures exist and the agent is making tool calls without
+      // resolving them, increment loopCount to track the retry attempts.
+      if (
+        meta.verifyFailures &&
+        meta.verifyFailures.length > 0 &&
+        (meta.currentStage === "develop" || meta.currentStage === "fix") &&
+        (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit" || ctx.toolCall.name === "bash")
+      ) {
+        // Only increment on meaningful tool calls, not every tool result
+        if (ctx.toolCall.name === "bash" && ctx.result?.exitCode !== 0) {
+          const newLoopCount = meta.loopCount + 1;
+          ctx.session.updateMetadata({ ...meta, loopCount: newLoopCount });
+
+          if (newLoopCount >= meta.maxLoops) {
+            ctx.session.updateMetadata({
+              ...meta,
+              loopCount: newLoopCount,
+              terminated: true,
+              terminateReason: "verify_failure_loop_overflow",
+            });
+
+            if (ctx.ui?.notify) {
+              ctx.ui.notify(
+                `[pi-pipeline] Pipeline ${meta.pipelineId} terminated: max loop iterations (${meta.maxLoops}) reached with unresolved verification failures in "${meta.currentStage}" stage`,
+              );
+            }
+
+            await writeAuditLog("loop_break_fatal", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+              loopCount: String(newLoopCount),
+              reason: "verify_failure_loop_overflow",
+            });
+          }
+        }
+      }
+
       // ── 2. File modification diff archiving ──────────────────────────
       if (
         (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit") &&

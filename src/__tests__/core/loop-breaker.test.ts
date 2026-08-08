@@ -201,4 +201,44 @@ describe("createLoopBreaker", () => {
       expect(ctx.metadataUpdates.length).toBe(0);
     });
   });
+
+  describe("verification failure loop counting", () => {
+    it("increments loopCount on bash failure when verifyFailures exist", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        loopCount: 0,
+        verifyFailures: [{ ruleType: "requiredFiles", detail: "Missing file", timestamp: Date.now() }],
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx.result = { exitCode: 1 };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      // Should increment (from both test failure counting AND verify failure counting)
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.loopCount).toBeGreaterThan(0);
+    });
+
+    it("does not increment when verifyFailures is empty", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        loopCount: 0,
+        verifyFailures: [],
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git status" } };
+      ctx.result = { exitCode: 1 };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      // Non-test bash command with no verifyFailures should not trigger
+      // (git status is not a test command, and verifyFailures is empty)
+      expect(ctx.metadataUpdates.length).toBe(0);
+    });
+  });
 });
