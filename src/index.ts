@@ -72,13 +72,18 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // Initialize audit log directory (resolves path + creates if needed)
     await initAuditLog(config);
 
+    // LLM stub: throws on invocation — graceful fail-closed until pi SDK provides real callLLM
+    const callLLMStub = async (_prompt: string): Promise<string> => {
+      throw new Error("LLM not available (pi SDK stub)");
+    };
+
     // ── Hooks registration ─────────────────────────────────────────────
     const hooks = [
       createSessionStarter(config),
       createPromptInjector(config),
       createToolGuard(config),
       createLoopBreaker(config),
-      createAgentSettled(config),
+      createAgentSettled(config, { callLLM: callLLMStub }),
       createSessionShutdown(config),
     ];
     for (const h of hooks) {
@@ -104,7 +109,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     pi.registerCommand(cmd.name, cmd.description, cmd.execute);
     const startCmd = createPipelineStartCommand(config);
     pi.registerCommand(startCmd.name, startCmd.description, startCmd.execute);
-    const initVerifyCmd = createPipelineInitVerifyCommand(config);
+    const initVerifyCmd = createPipelineInitVerifyCommand(config, callLLMStub);
     pi.registerCommand(initVerifyCmd.name, initVerifyCmd.description, initVerifyCmd.execute);
   };
 }

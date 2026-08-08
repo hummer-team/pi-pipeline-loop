@@ -213,8 +213,8 @@ export async function runLLMVerification(
 
   if (instructions.length === 0) {
     return {
-      passed: true,
-      reasoning: "No verification instructions could be parsed from the Markdown body",
+      passed: false,
+      reasoning: "LLM parsing failed: could not extract verification instructions from Markdown body. The LLM may be unavailable or returned unparseable output.",
       instructions: [],
     };
   }

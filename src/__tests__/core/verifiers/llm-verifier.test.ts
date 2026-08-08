@@ -184,7 +184,7 @@ describe("runLLMVerification", () => {
     expect(result.reasoning).toBe("Command succeeded");
   });
 
-  it("returns passed when no instructions can be parsed", async () => {
+  it("returns passed: false (fail-closed) when no instructions can be parsed", async () => {
     const mockLLM = createMockLLM(["not valid json"]);
 
     const result = await runLLMVerification(
@@ -195,8 +195,24 @@ describe("runLLMVerification", () => {
       "judge",
     );
 
-    expect(result.passed).toBe(true);
+    expect(result.passed).toBe(false);
     expect(result.instructions).toHaveLength(0);
-    expect(result.reasoning).toContain("No verification instructions");
+    expect(result.reasoning).toContain("LLM parsing failed");
+  });
+
+  it("returns passed: false when callLLM throws (LLM unavailable)", async () => {
+    const mockLLM = async (): Promise<string> => { throw new Error("LLM not available (pi SDK stub)"); };
+
+    const result = await runLLMVerification(
+      "some verify body",
+      process.cwd(),
+      mockLLM,
+      "parse",
+      "judge",
+    );
+
+    // callLLM throws → parseVerifyIntent catches → returns [] → fail-closed
+    expect(result.passed).toBe(false);
+    expect(result.instructions).toHaveLength(0);
   });
 });
