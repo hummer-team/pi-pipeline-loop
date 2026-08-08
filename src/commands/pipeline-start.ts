@@ -5,7 +5,38 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { PipelineConfig, Command, SessionMeta } from "../types";
+import type { PipelineConfig, PipelineStage, Command, SessionMeta } from "../types";
+import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
+
+/**
+ * Checks for missing verify.md files across all stages that require verification.
+ *
+ * @param config - Pipeline configuration
+ * @returns Array of stage names whose verify.md is missing
+ */
+function checkVerifyFiles(config: PipelineConfig): PipelineStage[] {
+  const missingStages: PipelineStage[] = [];
+  const activeStages: PipelineStage[] = [
+    "clarify", "design", "plan", "develop", "review", "fix",
+  ];
+
+  for (const stage of activeStages) {
+    const stageConfig = config.stages[stage];
+    if (!stageConfig.verify?.require) continue;
+
+    const verifyFile = stageConfig.verify.verifyFile
+      ? path.isAbsolute(stageConfig.verify.verifyFile)
+        ? stageConfig.verify.verifyFile
+        : path.join(config.projectRoot, stageConfig.verify.verifyFile)
+      : path.join(config.projectRoot, resolveStagePath(DEFAULT_VERIFY_FILE, stage));
+
+    if (!fs.existsSync(verifyFile)) {
+      missingStages.push(stage);
+    }
+  }
+
+  return missingStages;
+}
 
 export function createPipelineStartCommand(config: PipelineConfig): Command {
   return {
@@ -39,6 +70,17 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           error:
             `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}". ` +
             `End the current session before starting a new pipeline.`,
+        };
+      }
+
+      // Check for missing verify.md files
+      const missingStages = checkVerifyFiles(config);
+      if (missingStages.length > 0) {
+        return {
+          success: false,
+          error: `verify.md missing for stages: [${missingStages.join(", ")}]`,
+          missingStages,
+          suggestion: "Run /pipeline_init_verify to generate verify.md files",
         };
       }
 

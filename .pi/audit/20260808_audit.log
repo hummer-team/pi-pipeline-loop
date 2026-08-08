@@ -61,3 +61,5 @@
 2026-08-08 13:17:13 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
 2026-08-08 13:18:36 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
 2026-08-08 13:18:36 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 13:20:05 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 13:20:05 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=

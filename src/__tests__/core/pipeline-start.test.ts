@@ -92,4 +92,91 @@ describe("createPipelineStartCommand", () => {
     expect(result.requirementContent).toBe("");
     expect(updatedMeta.requirementDoc).toBe("req.md");
   });
+
+  it("returns error when verify.md is missing for stages with verify.require", async () => {
+    await fs.writeFile(docPath, "content", "utf-8");
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "develop" || s === "review"
+                  ? { require: true }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+    const ctx = {
+      session: {
+        getMetadata: () => meta,
+        updateMetadata: () => {},
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("verify.md missing");
+    expect(result.missingStages).toContain("develop");
+    expect(result.missingStages).toContain("review");
+    expect(result.suggestion).toContain("/pipeline_init_verify");
+  });
+
+  it("starts normally when all verify.md files exist", async () => {
+    await fs.writeFile(docPath, "content", "utf-8");
+
+    // Create verify.md files for stages that require them
+    const developVerifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+    await fs.mkdir(developVerifyDir, { recursive: true });
+    await fs.writeFile(path.join(developVerifyDir, "verify.md"), "---\nrules:\n  keywords: []\n---\n", "utf-8");
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify: s === "develop" ? { require: true } : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+    let updatedMeta: any = null;
+    const ctx = {
+      session: {
+        getMetadata: () => meta,
+        updateMetadata: (m: any) => { updatedMeta = m; },
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(updatedMeta).not.toBeNull();
+  });
 });
