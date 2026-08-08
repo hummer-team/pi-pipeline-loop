@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { getFileHash } from "../utils/hash";
+import { writeAuditLog } from "../utils/auditLog";
 
 /**
  * Ensures a directory exists, creating it recursively if needed.
@@ -98,16 +99,11 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
               );
             }
 
-            const auditLog = {
-              timestamp: new Date().toISOString(),
+            await writeAuditLog("loop_break_fatal", {
               pipelineId: meta.pipelineId,
-              action: "loop_break_fatal",
               stage: meta.currentStage,
-              loopCount: newLoopCount,
-            };
-            const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
-            await ensureDir(path.dirname(auditLogPath));
-            await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+              loopCount: String(newLoopCount),
+            });
           }
         }
       }
@@ -140,19 +136,14 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           const diff = `--- Old (hash: ${oldHash})\n+++ New (hash: ${newHash})\n${newContent}`;
           await fs.writeFile(diffPath, diff);
 
-          const auditLog = {
-            timestamp: new Date().toISOString(),
+          await writeAuditLog("file_modified", {
             pipelineId: meta.pipelineId,
-            action: "file_modified",
             stage: meta.currentStage,
-            step: meta.currentStepIndex,
-            loop: meta.loopCount,
+            step: String(meta.currentStepIndex),
+            loop: String(meta.loopCount),
             file: filePath,
             diff: diffPath,
-          };
-          const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
-          await ensureDir(path.dirname(auditLogPath));
-          await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+          });
         }
       }
 

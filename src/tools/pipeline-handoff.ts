@@ -5,9 +5,8 @@
  * model switching, and audit logging.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types";
+import { writeAuditLog } from "../utils/auditLog";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -55,8 +54,6 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       const currentStage = meta.currentStage;
       const nextStage = args.nextStage as PipelineStage;
       const note = (args.note as string) ?? "";
-      const projectRoot = config.projectRoot;
-      const auditDir = config.auditDir || ".pi/audit";
 
       // Precondition: current stage summary must be validated
       const currentSummary = meta.summaries[currentStage];
@@ -126,19 +123,14 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       }
 
       // Write audit log
-      const auditLog = {
-        timestamp: new Date().toISOString(),
+      await writeAuditLog("handoff", {
         pipelineId: meta.pipelineId,
-        action: "handoff",
         from: currentStage,
         to: nextStage,
-        model: nextStageConfig.model || null,
+        model: nextStageConfig.model || "default",
         summaryHash: currentSummary.hash,
         note,
-      };
-      const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
-      await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
-      await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+      });
 
       return {
         success: true,

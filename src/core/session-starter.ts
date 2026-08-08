@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
+import { writeAuditLog } from "../utils/auditLog";
 
 /**
  * Attempts to load a DomainConfig from a domain.md file.
@@ -96,6 +97,12 @@ export function createSessionStarter(config: PipelineConfig): Hook {
         };
 
         ctx.session.updateMetadata(sessionMeta);
+
+        // Write session_start audit log
+        await writeAuditLog("session_start", {
+          pipelineId,
+          stage: "clarify",
+        });
 
         // Set model for the initial "clarify" stage if specified
         const clarifyModel = config.stages["clarify"].model;

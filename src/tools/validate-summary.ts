@@ -6,8 +6,8 @@
  */
 
 import fs from "node:fs/promises";
-import path from "node:path";
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
+import { writeAuditLog } from "../utils/auditLog";
 
 /**
  * Creates the `validate_summary` tool.
@@ -53,8 +53,6 @@ export function createValidateSummary(config: PipelineConfig): Tool {
       }
 
       const meta = ctx.session.getMetadata() as SessionMeta;
-      const projectRoot = config.projectRoot;
-      const auditDir = config.auditDir || ".pi/audit";
       const stage = args.stage as string;
       const isApproved = args.isApproved as boolean;
       const comment = (args.comment as string) ?? "";
@@ -95,17 +93,12 @@ export function createValidateSummary(config: PipelineConfig): Tool {
       });
 
       // Write audit log
-      const auditLog = {
-        timestamp: new Date().toISOString(),
+      await writeAuditLog("summary_validated", {
         pipelineId: meta.pipelineId,
-        action: "summary_validated",
         stage,
-        approved: isApproved,
+        approved: String(isApproved),
         comment,
-      };
-      const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
-      await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
-      await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+      });
 
       return {
         success: true,

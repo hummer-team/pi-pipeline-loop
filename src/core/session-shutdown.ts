@@ -4,9 +4,8 @@
  * Logs an audit entry and cleans up temporary resources on session teardown.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
+import { writeAuditLog } from "../utils/auditLog";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -24,19 +23,11 @@ export function createSessionShutdown(config: PipelineConfig): Hook {
     event: "session_shutdown",
     handler: async (ctx: any): Promise<void> => {
       const meta = ctx.session.getMetadata() as SessionMeta;
-      const projectRoot = config.projectRoot;
-      const auditDir = config.auditDir || ".pi/audit";
 
-      const auditLog = {
-        timestamp: new Date().toISOString(),
+      await writeAuditLog("session_shutdown", {
         pipelineId: meta.pipelineId,
-        action: "session_shutdown",
         finalStage: meta.currentStage,
-      };
-
-      const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
-      await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
-      await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+      });
     },
   };
 }

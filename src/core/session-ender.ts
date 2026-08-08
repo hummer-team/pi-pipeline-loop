@@ -4,9 +4,8 @@
  * Writes a final audit log entry when the session ends.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
+import { writeAuditLog } from "../utils/auditLog";
 
 /**
  * Creates the `session_end` hook that logs session termination.
@@ -26,19 +25,11 @@ export function createSessionEnder(config: PipelineConfig): Hook {
     event: "session_end",
     handler: async (ctx: any): Promise<void> => {
       const meta = ctx.session.getMetadata() as SessionMeta;
-      const projectRoot = config.projectRoot;
-      const auditDir = config.auditDir || ".pi/audit";
 
-      const auditLog = {
-        timestamp: new Date().toISOString(),
+      await writeAuditLog("session_end", {
         pipelineId: meta.pipelineId,
-        action: "session_end",
         finalStage: meta.currentStage,
-      };
-
-      const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
-      await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
-      await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+      });
     },
   };
 }

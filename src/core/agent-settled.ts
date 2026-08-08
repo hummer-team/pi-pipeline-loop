@@ -5,11 +5,9 @@
  * and optionally runs auto-verification if the stage has a verify block.
  */
 
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { runVerification } from "./auto-verifier";
-import { getDateAuditFileName } from "./tool-guard";
+import { writeAuditLog } from "../utils/auditLog";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -30,20 +28,12 @@ export function createAgentSettled(config: PipelineConfig): Hook {
     event: "agent_settled",
     handler: async (ctx: any): Promise<void> => {
       const meta = ctx.session.getMetadata() as SessionMeta;
-      const projectRoot = config.projectRoot;
-      const auditDir = config.auditDir || ".pi/audit";
 
-      // 1. Write audit log (existing behavior)
-      const auditLog = {
-        timestamp: new Date().toISOString(),
+      // 1. Write audit log
+      await writeAuditLog("agent_settled", {
         pipelineId: meta.pipelineId,
-        action: "agent_settled",
         stage: meta.currentStage,
-      };
-
-      const auditLogPath = path.join(projectRoot, auditDir, getDateAuditFileName());
-      await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
-      await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
+      });
 
       if (ctx.ui?.notify) {
         ctx.ui.notify(`Agent settled in "${meta.currentStage}" stage`);
@@ -75,18 +65,12 @@ export function createAgentSettled(config: PipelineConfig): Hook {
             currentStepIndex: 0,
           });
 
-          const verifyLog = {
-            timestamp: new Date().toISOString(),
+          await writeAuditLog("auto_verify_pass", {
             pipelineId: meta.pipelineId,
-            action: "auto_verify_pass",
-            stage: meta.currentStage,
+            fromStage: meta.currentStage,
             nextStage,
             method: "rule",
-          };
-          await fs.appendFile(
-            auditLogPath,
-            JSON.stringify(verifyLog) + "\n",
-          );
+          });
 
           if (ctx.ui?.notify) {
             ctx.ui.notify(
