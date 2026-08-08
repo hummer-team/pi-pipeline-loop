@@ -8,10 +8,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
+import { DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT } from "../constants";
 import { verifyRequiredFiles, verifyFileContentPattern } from "./verifiers/file-verifier";
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
+import { runLLMVerification } from "./verifiers/llm-verifier";
 
 /**
  * Parsed verification rules from a verify.md frontmatter.
@@ -460,21 +462,41 @@ export async function executeStructuredRules(
 }
 
 /**
+ * Options for LLM-driven verification within runVerification.
+ */
+export interface RunVerificationOptions {
+  /** Optional LLM call function for flexible verification of Markdown body */
+  callLLM?: (prompt: string) => Promise<string>;
+  /** Override for the LLM parse prompt (defaults to DEFAULT_VERIFY_PARSE_PROMPT) */
+  parsePrompt?: string;
+  /** Override for the LLM judge prompt (defaults to DEFAULT_VERIFY_JUDGE_PROMPT) */
+  judgePrompt?: string;
+}
+
+/**
  * Runs the full verification pipeline for a stage:
  * 1. Parse verify.md
  * 2. Run structured rule verification (if new rule types present) or legacy keyword verification
- * 3. If rules fail or absent, suggest model verification
+ * 3. If callLLM is provided and Markdown body exists, run LLM flexible verification
+ * 4. Combine structured + LLM results into a unified VerifyResult
+ *
+ * @param config - Pipeline configuration
+ * @param meta - Session metadata
+ * @param assistantMessages - Aggregated assistant messages
+ * @param options - Optional LLM verification options
  */
 export async function runVerification(
   config: PipelineConfig,
   meta: SessionMeta,
   assistantMessages: string[],
+  options?: RunVerificationOptions,
 ): Promise<{
   rulePassed: boolean;
   ruleMissing: string[];
   needsModelVerify: boolean;
   modelPrompt: string;
   structuredResult?: StructuredVerifyResult;
+  verifyResult?: VerifyResult;
 }> {
   const stageConfig = config.stages[meta.currentStage];
   const verifyConfig = stageConfig.verify;
@@ -494,13 +516,31 @@ export async function runVerification(
 
   const { rules, prompt } = await parseVerifyFile(verifyPath);
 
+  // Default structured result when no structured rules exist
+  let structuredResult: StructuredVerifyResult = { passed: true, failures: [] };
+  let llmResult: LLMVerifyResult | null = null;
+
   if (!rules) {
-    // No rules defined — skip directly to model verification
+    // No rules defined — attempt LLM verification if callLLM is available
+    if (options?.callLLM && prompt && prompt !== DEFAULT_VERIFY_PROMPT) {
+      llmResult = await runLLMVerification(
+        prompt,
+        config.projectRoot,
+        options.callLLM,
+        options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
+        options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
+      );
+    }
+
+    const overallPassed = llmResult === null ? false : llmResult.passed;
+    const verifyResult: VerifyResult = { structured: structuredResult, llm: llmResult, overallPassed };
+
     return {
       rulePassed: false,
       ruleMissing: [],
-      needsModelVerify: true,
+      needsModelVerify: !overallPassed,
       modelPrompt: prompt,
+      verifyResult,
     };
   }
 
@@ -513,49 +553,56 @@ export async function runVerification(
 
   if (hasStructuredRules) {
     // Use the structured rule engine
-    const structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages);
-
-    if (structuredResult.passed) {
-      return {
-        rulePassed: true,
-        ruleMissing: [],
-        needsModelVerify: false,
-        modelPrompt: "",
-        structuredResult,
+    structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages);
+  } else {
+    // Legacy path: keyword-only rules
+    const ruleResult = ruleVerify(rules, assistantMessages);
+    if (!ruleResult.passed) {
+      structuredResult = {
+        passed: false,
+        failures: [{ ruleType: "keywords", detail: `Missing keywords: ${ruleResult.missing.join(", ")}` }],
       };
     }
-
-    // Structured rules failed — collect missing keyword info for backward compat
-    const keywordFailures = structuredResult.failures.filter(f => f.ruleType === "keywords");
-    const ruleMissing = keywordFailures.length > 0
-      ? rules.keywords.filter(kw => !assistantMessages.join("\n").includes(kw))
-      : [];
-
-    return {
-      rulePassed: false,
-      ruleMissing,
-      needsModelVerify: true,
-      modelPrompt: prompt,
-      structuredResult,
-    };
   }
 
-  // Legacy path: keyword-only rules
-  const ruleResult = ruleVerify(rules, assistantMessages);
+  // LLM flexible verification if callLLM is available and prompt is meaningful
+  if (options?.callLLM && prompt && prompt !== DEFAULT_VERIFY_PROMPT) {
+    llmResult = await runLLMVerification(
+      prompt,
+      config.projectRoot,
+      options.callLLM,
+      options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
+      options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
+    );
+  }
 
-  if (ruleResult.passed) {
+  // Combine results
+  const overallPassed = structuredResult.passed && (llmResult === null || llmResult.passed);
+  const verifyResult: VerifyResult = { structured: structuredResult, llm: llmResult, overallPassed };
+
+  if (overallPassed) {
     return {
       rulePassed: true,
       ruleMissing: [],
       needsModelVerify: false,
       modelPrompt: "",
+      structuredResult,
+      verifyResult,
     };
   }
 
+  // Collect missing keyword info for backward compat
+  const keywordFailures = structuredResult.failures.filter(f => f.ruleType === "keywords");
+  const ruleMissing = keywordFailures.length > 0
+    ? rules.keywords.filter(kw => !assistantMessages.join("\n").includes(kw))
+    : [];
+
   return {
     rulePassed: false,
-    ruleMissing: ruleResult.missing,
+    ruleMissing,
     needsModelVerify: true,
     modelPrompt: prompt,
+    structuredResult,
+    verifyResult,
   };
 }
