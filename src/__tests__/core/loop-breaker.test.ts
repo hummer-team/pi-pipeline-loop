@@ -240,5 +240,149 @@ describe("createLoopBreaker", () => {
       // (git status is not a test command, and verifyFailures is empty)
       expect(ctx.metadataUpdates.length).toBe(0);
     });
+
+    it("increments loopCount on write success when verifyFailures exist", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        loopCount: 0,
+        verifyAttempts: 1,
+        verifyFailures: [{ ruleType: "requiredFiles", detail: "Missing file", timestamp: Date.now() }],
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/some-file.ts" } };
+      ctx.result = { success: true };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.loopCount).toBe(1);
+    });
+
+    it("increments loopCount on edit success when verifyFailures exist", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "fix",
+        loopCount: 0,
+        verifyAttempts: 2,
+        verifyFailures: [{ ruleType: "requiredCommands", detail: "Build failed", timestamp: Date.now() }],
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "edit", arguments: { file_path: "/tmp/some-file.ts" } };
+      ctx.result = { success: true };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.loopCount).toBe(1);
+    });
+
+    it("throttles: same verifyAttempts + multiple writes → loopCount increments only once", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        loopCount: 0,
+        verifyAttempts: 3,
+        verifyFailures: [{ ruleType: "requiredFiles", detail: "Missing", timestamp: Date.now() }],
+      });
+      const ctx = createMockCtx(meta);
+
+      const hook = createLoopBreaker(config);
+
+      // First write — should increment
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/a.ts" } };
+      ctx.result = { success: true };
+      await hook.handler(ctx as any);
+      expect(ctx.metadataUpdates[ctx.metadataUpdates.length - 1].loopCount).toBe(1);
+
+      // Second write (same verifyAttempts=3) — should NOT increment again
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/b.ts" } };
+      ctx.result = { success: true };
+      await hook.handler(ctx as any);
+      // metadataUpdates should not have a new entry with loopCount > 1
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.loopCount).toBe(1); // Still 1, throttled
+
+      // Third write (same verifyAttempts=3) — still throttled
+      ctx.toolCall = { name: "edit", arguments: { file_path: "/tmp/c.ts" } };
+      ctx.result = { success: true };
+      await hook.handler(ctx as any);
+      const finalUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(finalUpdate.loopCount).toBe(1); // Still 1
+    });
+
+    it("increments again when verifyAttempts changes (new verification cycle)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        loopCount: 0,
+        verifyAttempts: 1,
+        verifyFailures: [{ ruleType: "requiredFiles", detail: "Missing", timestamp: Date.now() }],
+      });
+      const ctx = createMockCtx(meta);
+
+      const hook = createLoopBreaker(config);
+
+      // First write at verifyAttempts=1
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/a.ts" } };
+      ctx.result = { success: true };
+      await hook.handler(ctx as any);
+      expect(ctx.metadataUpdates[ctx.metadataUpdates.length - 1].loopCount).toBe(1);
+
+      // Simulate new verification cycle: verifyAttempts incremented to 2
+      Object.assign(meta, { verifyAttempts: 2 });
+
+      // Second write at verifyAttempts=2 — should increment again
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/b.ts" } };
+      ctx.result = { success: true };
+      await hook.handler(ctx as any);
+      expect(ctx.metadataUpdates[ctx.metadataUpdates.length - 1].loopCount).toBe(2);
+    });
+
+    it("does not increment loopCount on write success when verifyFailures is empty", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        loopCount: 0,
+        verifyFailures: [],
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/some-file.ts" } };
+      ctx.result = { success: true };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      // Normal development flow — no verifyFailures means no loopCount increment from 1b
+      expect(ctx.metadataUpdates.length).toBe(0);
+    });
+
+    it("freezes pipeline on write/edit loop overflow when verifyFailures persist", async () => {
+      const TMP = join(tmpdir(), "pi-breaker-write-freeze-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP, maxLoops: 2 });
+      await initAuditLog(config);
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        loopCount: 1,
+        maxLoops: 2,
+        verifyAttempts: 1,
+        verifyFailures: [{ ruleType: "requiredFiles", detail: "Missing", timestamp: Date.now() }],
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/file.ts" } };
+      ctx.result = { success: true };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.terminated).toBe(true);
+      expect(lastUpdate.terminateReason).toBe("verify_failure_loop_overflow");
+      expect(lastUpdate.loopCount).toBe(2);
+    });
   });
 });

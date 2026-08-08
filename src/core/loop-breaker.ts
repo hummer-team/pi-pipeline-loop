@@ -56,6 +56,11 @@ function isTestCommand(command: string): boolean {
  * @returns A Hook object for the "tool_result" event
  */
 export function createLoopBreaker(config: PipelineConfig): Hook {
+  // Tracks the verifyAttempts value at which loopCount was last incremented
+  // via write/edit throttling. Prevents multiple increments within the same
+  // verification cycle (between consecutive agent_settled failures).
+  let lastLoopIncrementAttempt = -1;
+
   return {
     event: "tool_result",
     handler: async (ctx: any): Promise<void> => {
@@ -111,14 +116,28 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
       // ── 1b. Verification failure loop counting ───────────────────────
       // When verifyFailures exist and the agent is making tool calls without
       // resolving them, increment loopCount to track the retry attempts.
+      // - bash + exitCode !== 0: unconditional increment (original behavior)
+      // - write/edit + success: throttled increment — only once per verifyAttempts value
       if (
         meta.verifyFailures &&
         meta.verifyFailures.length > 0 &&
         (meta.currentStage === "develop" || meta.currentStage === "fix") &&
         (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit" || ctx.toolCall.name === "bash")
       ) {
-        // Only increment on meaningful tool calls, not every tool result
-        if (ctx.toolCall.name === "bash" && ctx.result?.exitCode !== 0) {
+        const isBashFailure = ctx.toolCall.name === "bash" && ctx.result?.exitCode !== 0;
+        const isWriteEditSuccess =
+          (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit") &&
+          ctx.result?.success;
+
+        // Throttle write/edit increments: only increment once per verifyAttempts cycle
+        const shouldThrottleIncrement = isWriteEditSuccess &&
+          meta.verifyAttempts !== lastLoopIncrementAttempt;
+
+        if (isBashFailure || shouldThrottleIncrement) {
+          if (shouldThrottleIncrement) {
+            lastLoopIncrementAttempt = meta.verifyAttempts ?? 0;
+          }
+
           const newLoopCount = meta.loopCount + 1;
           ctx.session.updateMetadata({ ...meta, loopCount: newLoopCount });
 
