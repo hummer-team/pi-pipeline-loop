@@ -28,7 +28,8 @@ export interface ParsedVerifyFile {
   prompt: string;
 }
 
-const DEFAULT_VERIFY_PROMPT = "是否完全理解了用户需求？";
+const DEFAULT_VERIFY_PROMPT = "- Fully understand the requirement context (goals, scope, boundaries)\n" +
+    "- Clear and unambiguous solution selection that covers all requirement boundaries\n";
 
 /**
  * Parses a verify.md file into rules and a verification prompt.
