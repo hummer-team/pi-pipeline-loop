@@ -17,6 +17,7 @@ describe("createSessionShutdown", () => {
   it("creates a hook with event 'session_shutdown'", () => {
     const hook = createSessionShutdown(makeTestConfig());
     expect(hook.event).toBe("session_shutdown");
+    expect(typeof hook.handler).toBe("function");
   });
 
   it("writes audit log with session_shutdown action and finalStage", async () => {
@@ -34,5 +35,49 @@ describe("createSessionShutdown", () => {
     expect(line).toContain(" - session_shutdown");
     expect(line).toContain("pipelineId=pipe-test-001");
     expect(line).toContain("finalStage=review");
+  });
+
+  // Migrated from session-ender.test.ts — Case A: handler is function type
+  it("creates a hook whose handler is a function", () => {
+    const hook = createSessionShutdown(makeTestConfig());
+    expect(typeof hook.handler).toBe("function");
+  });
+
+  // Migrated from session-ender.test.ts — Case B: finalStage=completed, timestamp + pipelineId
+  it("writes audit log with finalStage=completed and correct format", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "completed" });
+    const ctx = createMockCtx(meta);
+
+    const hook = createSessionShutdown(config);
+    await hook.handler(ctx as any);
+
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const lines = content.trim().split("\n");
+    const line = lines.find((l: string) => l.includes("completed"))!;
+
+    expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
+    expect(line).toContain(" - session_shutdown");
+    expect(line).toContain("pipelineId=pipe-test-001");
+    expect(line).toContain("finalStage=completed");
+  });
+
+  // Migrated from session-ender.test.ts — Case C: finalStage=fix, verify last line
+  it("writes audit log with finalStage=fix on last line", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "fix" });
+    const ctx = createMockCtx(meta);
+
+    const hook = createSessionShutdown(config);
+    await hook.handler(ctx as any);
+
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const lines = content.trim().split("\n");
+    const lastLine = lines[lines.length - 1];
+
+    expect(lastLine).toContain(" - session_shutdown");
+    expect(lastLine).toContain("finalStage=fix");
   });
 });

@@ -34,10 +34,9 @@ describe("createPipeline", () => {
     expect(registeredEvents).toContain("before_agent_start");
     expect(registeredEvents).toContain("tool_call");
     expect(registeredEvents).toContain("tool_result");
-    expect(registeredEvents).toContain("session_end");
     expect(registeredEvents).toContain("agent_settled");
     expect(registeredEvents).toContain("session_shutdown");
-    expect(registeredEvents.length).toBe(7);
+    expect(registeredEvents.length).toBe(6);
 
     expect(registeredTools).toContain("stage_advance");
     expect(registeredTools).toContain("loop_check");
@@ -136,7 +135,7 @@ describe("default export", () => {
     const { pi, registeredEvents, registeredTools, registeredCommands } = createMockPi();
     await defaultExport(pi as any);
 
-    expect(registeredEvents.length).toBe(7);
+    expect(registeredEvents.length).toBe(6);
     expect(registeredEvents).toContain("session_start");
     expect(registeredEvents).toContain("before_agent_start");
 
