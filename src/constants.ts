@@ -47,6 +47,10 @@ export function resolveStagePath(template: string, stage: string): string {
   return template.replace(/\{stage\}/g, stage);
 }
 
+/** Default verification prompt used when no verify.md body is available */
+export const DEFAULT_VERIFY_PROMPT = "- Fully understand the requirement context (goals, scope, boundaries)\n" +
+    "- Clear and unambiguous solution selection that covers all requirement boundaries\n";
+
 /**
  * System prompt for the LLM parse stage — instructs the LLM to extract
  * structured VerificationInstruction[] from Markdown verification descriptions.

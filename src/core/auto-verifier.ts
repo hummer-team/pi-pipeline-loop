@@ -8,7 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
-import { DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT } from "../constants";
+import { DEFAULT_VERIFY_PROMPT, DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT, DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
 import { verifyRequiredFiles, verifyFileContentPattern } from "./verifiers/file-verifier";
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
@@ -133,9 +133,6 @@ export interface ParsedVerifyFile {
   /** Model verification prompt (Markdown body or default) */
   prompt: string;
 }
-
-const DEFAULT_VERIFY_PROMPT = "- Fully understand the requirement context (goals, scope, boundaries)\n" +
-    "- Clear and unambiguous solution selection that covers all requirement boundaries\n";
 
 /**
  * Parses a verify.md file into rules and a verification prompt.
@@ -510,9 +507,11 @@ export async function runVerification(
     };
   }
 
-  const verifyPath = path.isAbsolute(verifyConfig.verifyFile || "")
-    ? verifyConfig.verifyFile!
-    : path.join(config.projectRoot, verifyConfig.verifyFile || "");
+  const verifyPath = verifyConfig.verifyFile
+    ? (path.isAbsolute(verifyConfig.verifyFile)
+      ? verifyConfig.verifyFile
+      : path.join(config.projectRoot, verifyConfig.verifyFile))
+    : path.join(config.projectRoot, resolveStagePath(DEFAULT_VERIFY_FILE, meta.currentStage));
 
   const { rules, prompt } = await parseVerifyFile(verifyPath);
 
