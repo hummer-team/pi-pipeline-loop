@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { runVerification } from "./auto-verifier";
+import { getDateAuditFileName } from "./tool-guard";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -40,7 +41,7 @@ export function createAgentSettled(config: PipelineConfig): Hook {
         stage: meta.currentStage,
       };
 
-      const auditLogPath = path.join(projectRoot, auditDir, "audit.log");
+      const auditLogPath = path.join(projectRoot, auditDir, getDateAuditFileName());
       await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
       await fs.appendFile(auditLogPath, JSON.stringify(auditLog) + "\n");
 
