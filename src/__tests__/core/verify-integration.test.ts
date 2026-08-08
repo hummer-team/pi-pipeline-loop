@@ -320,6 +320,37 @@ describe("verify-integration", () => {
     expect(receivedPrompt).toContain("API endpoint deliverables");
   });
 
+  // Scenario L: structured rules pass + LLM unavailable (callLLM throws) → overallPassed = true
+  it("Scenario L: callLLM stub throws + structured rules pass → LLM layer skipped, structured result stands", async () => {
+    const config = makeConfigWithVerify(["develop"]);
+
+    // Create verify.md with structured rules that WILL pass + Markdown body (triggers LLM path)
+    const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+    await fs.mkdir(verifyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(verifyDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n---\nCheck that the build output is valid and all tests pass.\n",
+    );
+    // Create the required file so structured rules pass
+    await fs.writeFile(path.join(TMP, "output.md"), "content");
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    // callLLM stub that throws (simulates pi SDK stub behavior)
+    const callLLMStub = async (_prompt: string): Promise<string> => {
+      throw new Error("LLM not available (pi SDK stub)");
+    };
+
+    const result = await runVerification(config, meta, [], { callLLM: callLLMStub });
+
+    // Structured rules pass (file exists), LLM unavailable (stub throws)
+    // Fix: LLM layer is skipped when callLLM throws → structured result stands alone
+    expect(result.verifyResult).toBeDefined();
+    expect(result.verifyResult!.structured.passed).toBe(true);
+    expect(result.verifyResult!.llm).toBeNull(); // LLM unavailable → not included
+    expect(result.verifyResult!.overallPassed).toBe(true);
+  });
+
   // Scenario K: verifyFailures + write/edit loop → loopCount increments → freeze
   it("Scenario K: verifyFailures + write/edit cycle → loopCount throttled increment → freeze", async () => {
     const config = makeConfigWithVerify(["develop"]);

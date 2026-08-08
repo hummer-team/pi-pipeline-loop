@@ -104,8 +104,8 @@ export interface VerifyFailure {
  * Result of LLM-driven flexible verification (Phase 2).
  */
 export interface LLMVerifyResult {
-  /** Whether the LLM judged the verification as passed */
-  passed: boolean;
+  /** Whether the LLM judged the verification as passed (null when LLM unavailable) */
+  passed: boolean | null;
   /** LLM's reasoning for the judgment */
   reasoning: string;
   /** Instructions that were parsed and executed */
@@ -531,8 +531,10 @@ export async function runVerification(
       );
     }
 
-    const overallPassed = llmResult === null ? false : llmResult.passed;
-    const verifyResult: VerifyResult = { structured: structuredResult, llm: llmResult, overallPassed };
+    // LLM unavailable (null) or returned result — treat null as not-passed for no-rules path
+    const hasLlm = llmResult !== null && llmResult.passed !== null;
+    const overallPassed = hasLlm ? llmResult!.passed as boolean : false;
+    const verifyResult: VerifyResult = { structured: structuredResult, llm: hasLlm ? llmResult : null, overallPassed };
 
     return {
       rulePassed: false,
@@ -575,9 +577,10 @@ export async function runVerification(
     );
   }
 
-  // Combine results
-  const overallPassed = structuredResult.passed && (llmResult === null || llmResult.passed);
-  const verifyResult: VerifyResult = { structured: structuredResult, llm: llmResult, overallPassed };
+  // Combine results: LLM unavailable (null) → skip LLM layer, use structured result only
+  const hasLlm = llmResult !== null && llmResult.passed !== null;
+  const overallPassed = structuredResult.passed && (!hasLlm || (llmResult!.passed as boolean));
+  const verifyResult: VerifyResult = { structured: structuredResult, llm: hasLlm ? llmResult : null, overallPassed };
 
   if (overallPassed) {
     return {

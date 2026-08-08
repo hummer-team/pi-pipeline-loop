@@ -67,10 +67,10 @@ describe("parseVerifyIntent", () => {
     expect(instructions[0].checkType).toBe("fileExists");
   });
 
-  it("returns empty array on LLM error", async () => {
+  it("returns null on LLM error (signals LLM unavailable)", async () => {
     const mockLLM = async (): Promise<string> => { throw new Error("LLM unavailable"); };
     const instructions = await parseVerifyIntent("check", "prompt", mockLLM);
-    expect(instructions).toHaveLength(0);
+    expect(instructions).toBeNull();
   });
 });
 
@@ -200,7 +200,7 @@ describe("runLLMVerification", () => {
     expect(result.reasoning).toContain("LLM parsing failed");
   });
 
-  it("returns passed: false when callLLM throws (LLM unavailable)", async () => {
+  it("returns null when callLLM throws (LLM unavailable — caller skips LLM layer)", async () => {
     const mockLLM = async (): Promise<string> => { throw new Error("LLM not available (pi SDK stub)"); };
 
     const result = await runLLMVerification(
@@ -211,8 +211,8 @@ describe("runLLMVerification", () => {
       "judge",
     );
 
-    // callLLM throws → parseVerifyIntent catches → returns [] → fail-closed
-    expect(result.passed).toBe(false);
-    expect(result.instructions).toHaveLength(0);
+    // callLLM throws → parseVerifyIntent returns null → runLLMVerification returns null
+    // This signals to the caller (auto-verifier) to skip the LLM layer entirely
+    expect(result).toBeNull();
   });
 });

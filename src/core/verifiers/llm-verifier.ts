@@ -37,15 +37,15 @@ export async function parseVerifyIntent(
   markdownBody: string,
   systemPrompt: string,
   callLLM: (prompt: string) => Promise<string>,
-): Promise<VerificationInstruction[]> {
+): Promise<VerificationInstruction[] | null> {
   const userPrompt = `${systemPrompt}\n\n---\n\nVerify description to parse:\n\n${markdownBody}`;
 
   try {
     const response = await callLLM(userPrompt);
     return extractInstructionsFromJSON(response);
   } catch {
-    // If LLM call fails, return empty instructions (graceful degradation)
-    return [];
+    // LLM call failed (unavailable) — return null to signal LLM layer should be skipped
+    return null;
   }
 }
 
@@ -207,9 +207,15 @@ export async function runLLMVerification(
   callLLM: (prompt: string) => Promise<string>,
   parsePrompt: string,
   judgePrompt: string,
-): Promise<LLMVerifyResult> {
+): Promise<LLMVerifyResult | null> {
   // Stage 1: Parse — LLM extracts instructions from Markdown
   const instructions = await parseVerifyIntent(markdownBody, parsePrompt, callLLM);
+
+  // LLM call threw → instructions is null → signal LLM unavailable
+  // Caller should skip LLM layer and fall back to structured-only verification
+  if (instructions === null) {
+    return null;
+  }
 
   if (instructions.length === 0) {
     return {
