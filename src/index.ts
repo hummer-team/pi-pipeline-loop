@@ -5,6 +5,7 @@
  */
 
 import type { PipelineConfig, ExtensionAPI, ExtensionFactory } from "./types";
+import { initAuditLog } from "./utils/auditLog";
 
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
@@ -68,6 +69,9 @@ import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader
  */
 export function createPipeline(config: PipelineConfig): ExtensionFactory {
   return async (pi: ExtensionAPI): Promise<void> => {
+    // Initialize audit log directory (resolves path + creates if needed)
+    await initAuditLog(config);
+
     // ── Hooks registration ─────────────────────────────────────────────
     const hooks = [
       createSessionStarter(config),
