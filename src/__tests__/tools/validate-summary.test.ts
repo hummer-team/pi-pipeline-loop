@@ -4,6 +4,7 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -117,6 +118,7 @@ describe("createValidateSummary", () => {
     await writeFile(summaryPath, `---\n${JSON.stringify(SAMPLE_FM)}\n---\n# Body`);
 
     const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
     const meta = makeTestMeta({
       summaries: { develop: { path: summaryPath, hash: "abc", status: "pending" as const } },
     });
@@ -125,13 +127,13 @@ describe("createValidateSummary", () => {
     const tool = createValidateSummary(config);
     await tool.execute({ stage: "develop", isApproved: true, comment: "ok" }, ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", "audit.log");
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
     const logContent = await readFile(logPath, "utf-8");
-    const entry = JSON.parse(logContent.trim().split("\n")[0]);
+    const line = logContent.trim().split("\n")[0];
 
-    expect(entry.action).toBe("summary_validated");
-    expect(entry.stage).toBe("develop");
-    expect(entry.approved).toBe(true);
-    expect(entry.comment).toBe("ok");
+    expect(line).toContain(" - summary_validated");
+    expect(line).toContain("stage=develop");
+    expect(line).toContain("approved=true");
+    expect(line).toContain("comment=ok");
   });
 });

@@ -4,11 +4,13 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-" + Date.now());
 
 beforeAll(async () => {
   await mkdir(TMP, { recursive: true });
+  await initAuditLog(makeTestConfig({ projectRoot: TMP }));
 });
 
 describe("createAgentSettled", () => {
@@ -25,13 +27,13 @@ describe("createAgentSettled", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", "audit.log");
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
-    const entry = JSON.parse(content.trim().split("\n")[0]);
+    const line = content.trim().split("\n")[0];
 
-    expect(entry.action).toBe("agent_settled");
-    expect(entry.pipelineId).toBe("pipe-test-001");
-    expect(entry.stage).toBe("design");
+    expect(line).toContain(" - agent_settled");
+    expect(line).toContain("pipelineId=pipe-test-001");
+    expect(line).toContain("stage=design");
   });
 
   it("notifies ui when notify is available", async () => {

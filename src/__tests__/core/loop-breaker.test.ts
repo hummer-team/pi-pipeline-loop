@@ -4,6 +4,7 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 
 describe("createLoopBreaker", () => {
   it("creates a hook with event 'tool_result'", () => {
@@ -31,6 +32,7 @@ describe("createLoopBreaker", () => {
       await mkdir(TMP, { recursive: true });
 
       const config = makeTestConfig({ projectRoot: TMP, maxLoops: 2 });
+      await initAuditLog(config);
       const meta = makeTestMeta({ currentStage: "develop", loopCount: 1, maxLoops: 2 });
       const ctx = createMockCtx(meta);
       ctx.toolCall = { name: "bash", arguments: { command: "npm test" } };
@@ -44,9 +46,9 @@ describe("createLoopBreaker", () => {
       expect(lastUpdate.terminateReason).toBe("loop_overflow");
       expect(lastUpdate.loopCount).toBe(2);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", "audit.log"), "utf-8");
-      const entry = JSON.parse(logContent.trim().split("\n")[0]);
-      expect(entry.action).toBe("loop_break_fatal");
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const line = logContent.trim().split("\n")[0];
+      expect(line).toContain(" - loop_break_fatal");
     });
 
     it("does not break on bash test pass", async () => {
@@ -104,6 +106,7 @@ describe("createLoopBreaker", () => {
       const oldHash = crypto.createHash("sha256").update("initial content").digest("hex");
 
       const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
       const meta = makeTestMeta();
       const ctx = createMockCtx(meta);
       (ctx.toolCall as any) = { name: "write", arguments: { file_path: testFile }, oldHash };
@@ -114,9 +117,9 @@ describe("createLoopBreaker", () => {
       const hook = createLoopBreaker(config);
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", "audit.log"), "utf-8");
-      const entry = JSON.parse(logContent.trim().split("\n")[0]);
-      expect(entry.action).toBe("file_modified");
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const line = logContent.trim().split("\n")[0];
+      expect(line).toContain(" - file_modified");
     });
 
     it("skips diff when oldHash equals newHash", async () => {
@@ -129,6 +132,7 @@ describe("createLoopBreaker", () => {
       const hash = crypto.createHash("sha256").update("same content").digest("hex");
 
       const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
       const meta = makeTestMeta();
       const ctx = createMockCtx(meta);
       (ctx.toolCall as any) = { name: "write", arguments: { file_path: testFile }, oldHash: hash };
@@ -138,7 +142,7 @@ describe("createLoopBreaker", () => {
       await hook.handler(ctx as any);
 
       let logExists = true;
-      try { await readFile(join(TMP, ".pi", "audit", "audit.log"), "utf-8"); } catch { logExists = false; }
+      try { await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8"); } catch { logExists = false; }
       expect(logExists).toBe(false);
     });
 

@@ -4,6 +4,7 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -105,6 +106,7 @@ describe("createPipelineHandoff", () => {
     await mkdir(TMP, { recursive: true });
 
     const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
     config.stages["plan"] = { ...config.stages["plan"], model: "gpt-4o" } as any;
     const meta = makeTestMeta({
       currentStage: "design",
@@ -115,16 +117,16 @@ describe("createPipelineHandoff", () => {
     const tool = createPipelineHandoff(config);
     await tool.execute({ nextStage: "plan", note: "All tests pass" }, ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", "audit.log");
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
     const logContent = await readFile(logPath, "utf-8");
-    const entry = JSON.parse(logContent.trim().split("\n")[0]);
+    const line = logContent.trim().split("\n")[0];
 
-    expect(entry.action).toBe("handoff");
-    expect(entry.from).toBe("design");
-    expect(entry.to).toBe("plan");
-    expect(entry.model).toBe("gpt-4o");
-    expect(entry.summaryHash).toBe("xyz");
-    expect(entry.note).toBe("All tests pass");
+    expect(line).toContain(" - handoff");
+    expect(line).toContain("from=design");
+    expect(line).toContain("to=plan");
+    expect(line).toContain("model=gpt-4o");
+    expect(line).toContain("summaryHash=xyz");
+    expect(line).toContain("note=All tests pass");
   });
 
   it("returns error for unknown next stage", async () => {

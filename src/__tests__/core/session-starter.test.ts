@@ -1,9 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import { createSessionStarter } from "../../core/session-starter";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -35,6 +36,7 @@ describe("createSessionStarter", () => {
       await writeFile(join(domainDir, "domain.md"), "---\nid: ecommerce\nversion: 2.0\n---\n# Domain");
 
       const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
       const ctx = createCtx({});
 
       const hook = createSessionStarter(config);
@@ -52,6 +54,7 @@ describe("createSessionStarter", () => {
       await mkdir(TMP, { recursive: true });
 
       const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
       const ctx = createCtx({});
 
       const hook = createSessionStarter(config);
@@ -66,6 +69,7 @@ describe("createSessionStarter", () => {
       await mkdir(TMP, { recursive: true });
 
       const config = makeTestConfig({ projectRoot: TMP, maxLoops: 5 });
+      await initAuditLog(config);
       const ctx = createCtx({});
 
       const hook = createSessionStarter(config);
@@ -79,6 +83,7 @@ describe("createSessionStarter", () => {
       await mkdir(TMP, { recursive: true });
 
       const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
       config.stages["clarify"] = { ...config.stages["clarify"], model: "claude-sonnet" } as any;
       const ctx = createCtx({});
 
@@ -98,12 +103,37 @@ describe("createSessionStarter", () => {
       await writeFile(join(domainDir, "domain.md"), "# Just a markdown file without frontmatter");
 
       const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
       const ctx = createCtx({});
 
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
       expect(ctx.updates[0].domain.id).toBe("domain");
+    });
+
+    it("writes audit log with session_start action", async () => {
+      const TMP = join(tmpdir(), "pi-ss-audit-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const ctx = createCtx({});
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const line = content.trim().split("\n")[0];
+
+      expect(line).toContain(" - session_start");
+      expect(line).toContain("pipelineId=");
+      expect(line).toContain("stage=clarify");
+
+      // Verify pipelineId in the log matches the one in metadata
+      const meta = ctx.updates[0];
+      expect(line).toContain(`pipelineId=${meta.pipelineId}`);
     });
   });
 

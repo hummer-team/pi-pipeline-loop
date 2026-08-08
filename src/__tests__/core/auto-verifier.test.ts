@@ -55,7 +55,7 @@ describe("parseVerifyFile", () => {
     const fp = path.join(TMP, "nonexistent.md");
     const result = await parseVerifyFile(fp);
     expect(result.rules).toBeNull();
-    expect(result.prompt).toContain("是否完全理解了用户需求？");
+    expect(result.prompt).toContain("Fully understand the requirement context");
   });
 
   it("handles empty frontmatter gracefully", async () => {
