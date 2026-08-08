@@ -102,6 +102,35 @@ export interface DomainConfig {
   skillPath: string;
 }
 
+// ─── Verification Failure Tracking ───────────────────────────────────────────
+
+/**
+ * A single verification failure item stored in SessionMeta.
+ * Tracks the rule type, detail, and when it was recorded.
+ */
+export interface VerifyFailureItem {
+  /** The type of rule that failed (e.g., "requiredFiles", "requiredCommands") */
+  ruleType: string;
+  /** Human-readable failure detail */
+  detail: string;
+  /** Unix timestamp (ms) when the failure was recorded */
+  timestamp: number;
+}
+
+/**
+ * A self-contained snapshot of the unified verification result.
+ * Mirrors the full VerifyResult type from auto-verifier without importing it,
+ * avoiding circular dependencies between types.ts and auto-verifier.ts.
+ */
+export interface VerifyResultSnapshot {
+  /** Result from the structured rule engine */
+  structured: { passed: boolean; failures: { ruleType: string; detail: string }[] };
+  /** Result from the LLM flexible verification layer (null if not run) */
+  llm: { passed: boolean; reasoning: string; instructions: { checkType: string; target: string; expected?: string }[] } | null;
+  /** Combined overall pass: structured.passed && (llm === null || llm.passed) */
+  overallPassed: boolean;
+}
+
 // ─── Session Metadata ────────────────────────────────────────────────────────
 
 /**
@@ -112,7 +141,7 @@ export interface SessionMeta {
   /** The stage currently being executed */
   currentStage: PipelineStage;
 
-  /** The stage that was executed before the current one (undefined on first stage) */
+  /** The stage that was used before the current one (undefined on first stage) */
   previousStage?: PipelineStage;
 
   /** Unix timestamp (ms) when the current stage started */
@@ -165,6 +194,12 @@ export interface SessionMeta {
 
   /** Number of verification attempts within the current stage */
   verifyAttempts?: number;
+
+  /** Verification failures for the current stage (populated on failed verification) */
+  verifyFailures?: VerifyFailureItem[];
+
+  /** The most recent unified verification result (structured + LLM) */
+  lastVerifyResult?: VerifyResultSnapshot;
 }
 
 // ─── Pipeline Configuration ──────────────────────────────────────────────────

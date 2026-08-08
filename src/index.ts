@@ -169,4 +169,6 @@ export type {
   VerifyJsonConfig,
   StageJsonConfig,
   PipelineJsonConfig,
+  VerifyFailureItem,
+  VerifyResultSnapshot,
 } from "./types";

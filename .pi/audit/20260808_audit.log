@@ -1,0 +1,45 @@
+2026-08-08 09:40:28 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 09:40:28 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 09:40:28 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=gpt-4o | summaryHash=xyz | note=All tests pass
+2026-08-08 09:40:29 - summary_validated | pipelineId=pipe-test-001 | stage=develop | approved=true | comment=Looks good
+2026-08-08 09:40:29 - summary_validated | pipelineId=pipe-test-001 | stage=develop | approved=false | comment=
+2026-08-08 09:40:29 - summary_validated | pipelineId=pipe-test-001 | stage=develop | approved=true | comment=
+2026-08-08 09:40:29 - summary_validated | pipelineId=pipe-test-001 | stage=develop | approved=true | comment=ok
+2026-08-08 09:40:29 - handoff | pipelineId=pipe-test-001 | from=fix | to=develop | model=default | summaryHash=abc | note=
+2026-08-08 09:40:29 - handoff | pipelineId=pipe-test-001 | from=develop | to=review | model=default | summaryHash=abc | note=
+2026-08-08 09:40:29 - handoff | pipelineId=pipe-test-001 | from=plan | to=develop | model=default | summaryHash=abc | note=
+2026-08-08 09:40:29 - loop_break_fatal | pipelineId=pipe-test-001 | stage=develop | loopCount=2
+2026-08-08 09:40:29 - file_modified | pipelineId=pipe-test-001 | stage=develop | step=0 | loop=0 | file=/var/folders/wd/gvdpyv2d4mq2pdxhqdqkj5r40000gn/T/pi-diff-archive-1786182029335/test-file.ts | diff=/var/folders/wd/gvdpyv2d4mq2pdxhqdqkj5r40000gn/T/pi-diff-archive-1786182029335/.pi/audit/pipe-test-001/step-0/loop-0/test-file.ts.diff.md
+2026-08-08 09:40:29 - session_shutdown | pipelineId=pipe-test-001 | finalStage=review
+2026-08-08 09:40:29 - agent_settled | pipelineId=pipe-test-001 | stage=design
+2026-08-08 09:40:29 - agent_settled | pipelineId=pipe-test-001 | stage=review
+2026-08-08 09:40:29 - agent_settled | pipelineId=pipe-test-001 | stage=develop
+2026-08-08 09:40:29 - session_start | pipelineId=pipe-1786182029385-c14737 | stage=clarify
+2026-08-08 09:40:29 - session_start | pipelineId=pipe-1786182029392-f1c1f8 | stage=clarify
+2026-08-08 09:40:29 - session_start | pipelineId=pipe-1786182029397-c204d0 | stage=clarify
+2026-08-08 09:40:29 - session_start | pipelineId=pipe-1786182029401-424842 | stage=clarify
+2026-08-08 09:40:29 - session_start | pipelineId=pipe-1786182029405-d4b3ba | stage=clarify
+2026-08-08 09:40:29 - session_end | pipelineId=pipe-test-001 | finalStage=completed
+2026-08-08 09:40:29 - session_end | pipelineId=pipe-test-001 | finalStage=fix
+2026-08-08 09:46:03 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 09:46:03 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 09:46:49 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 09:46:49 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 09:52:18 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 09:52:18 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 11:33:42 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 11:33:42 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 11:34:21 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 11:34:21 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 11:38:15 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 11:38:15 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 11:38:49 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 11:38:49 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 11:39:51 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 11:39:51 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 11:46:51 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 11:46:51 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 12:58:14 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 12:58:14 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
+2026-08-08 12:59:54 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=ready
+2026-08-08 12:59:54 - handoff | pipelineId=pipe-test-001 | from=design | to=plan | model=claude | summaryHash=xyz | note=
