@@ -29,6 +29,7 @@ import { createRequestBashPermission } from "./tools/request-bash-permission";
 // Commands
 import { createPipelineStatusCommand } from "./commands/pipeline-status";
 import { createPipelineStartCommand } from "./commands/pipeline-start";
+import { createPipelineInitVerifyCommand } from "./commands/pipeline-init-verify";
 
 // Agent settled and session shutdown lifecycle hooks
 import { createAgentSettled } from "./core/agent-settled";
@@ -103,6 +104,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     pi.registerCommand(cmd.name, cmd.description, cmd.execute);
     const startCmd = createPipelineStartCommand(config);
     pi.registerCommand(startCmd.name, startCmd.description, startCmd.execute);
+    const initVerifyCmd = createPipelineInitVerifyCommand(config);
+    pi.registerCommand(initVerifyCmd.name, initVerifyCmd.description, initVerifyCmd.execute);
   };
 }
 

@@ -49,7 +49,8 @@ describe("createPipeline", () => {
 
     expect(registeredCommands).toContain("pipeline-status");
     expect(registeredCommands).toContain("pipeline-start");
-    expect(registeredCommands.length).toBe(2);
+    expect(registeredCommands).toContain("pipeline_init_verify");
+    expect(registeredCommands.length).toBe(3);
   });
 
   it("passes correct tool metadata during registration", async () => {
@@ -143,9 +144,10 @@ describe("default export", () => {
     expect(registeredTools).toContain("stage_advance");
     expect(registeredTools).toContain("pipeline_handoff");
 
-    expect(registeredCommands.length).toBe(2);
+    expect(registeredCommands.length).toBe(3);
     expect(registeredCommands).toContain("pipeline-status");
     expect(registeredCommands).toContain("pipeline-start");
+    expect(registeredCommands).toContain("pipeline_init_verify");
   });
 
   // Test C: config file missing → console.warn + graceful degradation
