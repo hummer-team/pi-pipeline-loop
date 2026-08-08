@@ -127,7 +127,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       requireDomain: jsonStage.requireDomain ?? false,
       verify: jsonStage.verify
         ? {
-            require: jsonStage.verify.require ?? true,
+            // Plan stage defaults to verify.require = false (plan has no deliverables to verify)
+            require: jsonStage.verify.require ?? (stageName !== "plan"),
             verifyFile:
               jsonStage.verify.verifyFile ||
               resolveStagePath(DEFAULT_VERIFY_FILE, stageName),
