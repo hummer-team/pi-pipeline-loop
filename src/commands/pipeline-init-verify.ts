@@ -12,6 +12,28 @@ import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
 import { DEFAULT_VERIFY_EXTRACT_PROMPT } from "../constants";
 
 /**
+ * Resolves the extraction prompt for LLM-based delivery item extraction.
+ * If `.pi/references/verify_prompt.md` exists in the project, its content is
+ * used as the custom extraction prompt; otherwise the built-in default is returned.
+ *
+ * @param projectRoot - Absolute path to the project root
+ * @returns The extraction prompt string (custom or default)
+ */
+async function resolveExtractPrompt(projectRoot: string): Promise<string> {
+  const customPromptPath = path.join(projectRoot, ".pi", "references", "verify_prompt.md");
+  try {
+    const content = await fs.readFile(customPromptPath, "utf-8");
+    // If file exists but is empty, fall back to default
+    if (content.trim().length === 0) {
+      return DEFAULT_VERIFY_EXTRACT_PROMPT;
+    }
+    return content;
+  } catch {
+    return DEFAULT_VERIFY_EXTRACT_PROMPT;
+  }
+}
+
+/**
  * A delivery item extracted from a skill file.
  */
 interface DeliveryItem {
@@ -289,7 +311,8 @@ export function createPipelineInitVerifyCommand(
         // Step 2: LLM extraction (if available)
         let llmItems: DeliveryItem[] = [];
         if (callLLM) {
-          llmItems = await extractLLMItems(skillBody, callLLM, DEFAULT_VERIFY_EXTRACT_PROMPT);
+          const extractPrompt = await resolveExtractPrompt(config.projectRoot);
+          llmItems = await extractLLMItems(skillBody, callLLM, extractPrompt);
         }
 
         // Step 3: Merge and deduplicate

@@ -162,6 +162,72 @@ describe("createPipelineInitVerifyCommand", () => {
     expect(content).toContain("bun test");
   });
 
+  it("uses custom verify_prompt.md when it exists", async () => {
+    const skillContent = "# Test Skill\n\nSome content without markers.\n";
+
+    const config = await setupConfigWithSkill("develop", skillContent);
+
+    // Create custom verify_prompt.md
+    const refsDir = path.join(TMP, ".pi", "references");
+    await fs.mkdir(refsDir, { recursive: true });
+    const customPrompt = "Custom extraction prompt: focus on API endpoints";
+    await fs.writeFile(path.join(refsDir, "verify_prompt.md"), customPrompt, "utf-8");
+
+    let receivedPrompt = "";
+    const mockLLM = async (prompt: string): Promise<string> => {
+      receivedPrompt = prompt;
+      return JSON.stringify([{ type: "file", target: "custom.md" }]);
+    };
+
+    const cmd = createPipelineInitVerifyCommand(config, mockLLM);
+    await cmd.execute({ stage: "develop" });
+
+    expect(receivedPrompt).toContain("Custom extraction prompt");
+    expect(receivedPrompt).toContain("API endpoints");
+  });
+
+  it("falls back to DEFAULT prompt when verify_prompt.md does not exist", async () => {
+    const skillContent = "# Test Skill\n\nSome content without markers.\n";
+
+    const config = await setupConfigWithSkill("develop", skillContent);
+    // No verify_prompt.md created
+
+    let receivedPrompt = "";
+    const mockLLM = async (prompt: string): Promise<string> => {
+      receivedPrompt = prompt;
+      return JSON.stringify([{ type: "file", target: "default.md" }]);
+    };
+
+    const cmd = createPipelineInitVerifyCommand(config, mockLLM);
+    await cmd.execute({ stage: "develop" });
+
+    // Should contain the DEFAULT prompt text
+    expect(receivedPrompt).toContain("delivery item extractor");
+  });
+
+  it("falls back to DEFAULT prompt when verify_prompt.md is empty", async () => {
+    const skillContent = "# Test Skill\n\nSome content without markers.\n";
+
+    const config = await setupConfigWithSkill("develop", skillContent);
+
+    // Create empty verify_prompt.md
+    const refsDir = path.join(TMP, ".pi", "references");
+    await fs.mkdir(refsDir, { recursive: true });
+    await fs.writeFile(path.join(refsDir, "verify_prompt.md"), "   \n  ", "utf-8");
+
+    let receivedPrompt = "";
+    const mockLLM = async (prompt: string): Promise<string> => {
+      receivedPrompt = prompt;
+      return JSON.stringify([{ type: "file", target: "fallback.md" }]);
+    };
+
+    const cmd = createPipelineInitVerifyCommand(config, mockLLM);
+    await cmd.execute({ stage: "develop" });
+
+    // Empty file → fallback to DEFAULT
+    expect(receivedPrompt).toContain("delivery item extractor");
+  });
+
   it("processes all stages when no stage argument is given", async () => {
     // Set up skill files for multiple stages with markers
     for (const stage of ["clarify", "develop"]) {
