@@ -472,6 +472,8 @@ export interface RunVerificationOptions {
   judgePrompt?: string;
   /** Dependency-injected shell execution function (replaces child_process.execSync) */
   execFn?: ExecFn;
+  /** Override verify.md path; takes precedence over stage config verifyFile */
+  verifyFile?: string;
 }
 
 /**
@@ -511,10 +513,12 @@ export async function runVerification(
     };
   }
 
-  const verifyPath = verifyConfig.verifyFile
-    ? (path.isAbsolute(verifyConfig.verifyFile)
-      ? verifyConfig.verifyFile
-      : path.join(config.projectRoot, verifyConfig.verifyFile))
+  // Override from options takes precedence over stage config
+  const verifyFile = options?.verifyFile ?? verifyConfig.verifyFile;
+  const verifyPath = verifyFile
+    ? (path.isAbsolute(verifyFile)
+      ? verifyFile
+      : path.join(config.projectRoot, verifyFile))
     : path.join(config.projectRoot, resolveStagePath(DEFAULT_VERIFY_FILE, meta.currentStage));
 
   const { rules, prompt } = await parseVerifyFile(verifyPath);

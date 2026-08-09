@@ -167,4 +167,63 @@ describe("createPipelineVerify", () => {
 
     expect(result.error).toContain("does not have verification enabled");
   });
+
+  // ── Phase 0: verifyFile override without config pollution ──
+
+  it("verifyFile arg resolves to override path without polluting stageConfig", async () => {
+    // Config where develop stage has verify.require=true but NO verifyFile
+    const overrideTmp = join(tmpdir(), "pi-pipeline-verify-override-" + Date.now());
+    await mkdir(overrideTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: overrideTmp }));
+
+    // Create a custom verify.md at a non-default location
+    const customVerifyDir = join(overrideTmp, "custom-verify");
+    await mkdir(customVerifyDir, { recursive: true });
+    await writeFile(
+      join(customVerifyDir, "my-verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n---\nBody\n",
+    );
+    // Create the required file so verification passes
+    await writeFile(join(overrideTmp, "output.md"), "content");
+
+    const config = makeTestConfig({
+      projectRoot: overrideTmp,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: `${s}/SKILL.md`,
+              allowedTools: ["read", "bash"],
+              allowedBashPrefixes: ["ls", "bun"],
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              // develop stage: verify.require=true, but NO verifyFile set
+              verify: s === "develop" ? { require: true } : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createCtx(meta);
+
+    // Verify stageConfig.verify.verifyFile is undefined BEFORE the call
+    expect(config.stages.develop.verify!.verifyFile).toBeUndefined();
+
+    const tool = createPipelineVerify(config);
+    const result = await tool.execute(
+      { verifyFile: "custom-verify/my-verify.md" },
+      ctx as any,
+    ) as Record<string, unknown>;
+
+    // Should have passed (found output.md via the override verify file)
+    expect(result.success).toBe(true);
+    expect(result.passed).toBe(true);
+
+    // stageConfig.verify.verifyFile must remain undefined — NOT polluted
+    expect(config.stages.develop.verify!.verifyFile).toBeUndefined();
+  });
 });

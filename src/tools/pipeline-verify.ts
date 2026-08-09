@@ -100,58 +100,49 @@ export function createPipelineVerify(
         verifyOptions.execFn = deps.execFn;
       }
 
-      // If verifyFile override is provided, temporarily override the stage config
-      let originalVerifyFile: string | undefined;
+      // Pass verifyFile override via options (no shared config mutation)
       if (args.verifyFile && typeof args.verifyFile === "string") {
-        originalVerifyFile = stageConfig.verify.verifyFile;
-        stageConfig.verify.verifyFile = args.verifyFile;
+        verifyOptions.verifyFile = args.verifyFile;
       }
 
       const assistantMessages = meta.assistantMessages || [];
 
-      try {
-        const verifyResult = await runVerification(
-          config,
-          { ...meta, currentStage: stageName },
-          assistantMessages,
-          verifyOptions,
-        );
+      const verifyResult = await runVerification(
+        config,
+        { ...meta, currentStage: stageName },
+        assistantMessages,
+        verifyOptions,
+      );
 
-        if (verifyResult.verifyResult?.overallPassed) {
-          // Verification passed — auto-advance
-          return handleVerifyPass(
-            sessionCtx,
-            meta,
-            stageName,
-            stageConfig,
-            verifyResult,
-          );
-        }
-
-        // Check rulePassed for backward compat
-        if (verifyResult.rulePassed) {
-          return handleVerifyPass(
-            sessionCtx,
-            meta,
-            stageName,
-            stageConfig,
-            verifyResult,
-          );
-        }
-
-        // Verification failed
-        return handleVerifyFail(
+      if (verifyResult.verifyResult?.overallPassed) {
+        // Verification passed — auto-advance
+        return handleVerifyPass(
           sessionCtx,
           meta,
           stageName,
+          stageConfig,
           verifyResult,
         );
-      } finally {
-        // Restore original verifyFile if overridden
-        if (originalVerifyFile !== undefined) {
-          stageConfig.verify.verifyFile = originalVerifyFile;
-        }
       }
+
+      // Check rulePassed for backward compat
+      if (verifyResult.rulePassed) {
+        return handleVerifyPass(
+          sessionCtx,
+          meta,
+          stageName,
+          stageConfig,
+          verifyResult,
+        );
+      }
+
+      // Verification failed
+      return handleVerifyFail(
+        sessionCtx,
+        meta,
+        stageName,
+        verifyResult,
+      );
     },
   };
 }
