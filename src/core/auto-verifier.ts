@@ -411,12 +411,14 @@ export function ruleVerify(
  * @param rules - The parsed verification rules from verify.md
  * @param projectRoot - Absolute path to the project root directory
  * @param assistantMessages - Aggregated assistant messages for keyword checking
+ * @param execFn - Injected shell execution function
  * @returns StructuredVerifyResult with per-rule-type pass/fail and failure details
  */
 export async function executeStructuredRules(
   rules: VerifyRules,
   projectRoot: string,
   assistantMessages: string[],
+  execFn?: ExecFn,
 ): Promise<StructuredVerifyResult> {
   const failures: VerifyFailure[] = [];
 
@@ -427,13 +429,13 @@ export async function executeStructuredRules(
   }
 
   // 2. Required commands check
-  const cmdResult = verifyRequiredCommands(rules.requiredCommands, projectRoot);
+  const cmdResult = await verifyRequiredCommands(rules.requiredCommands, projectRoot, execFn);
   if (!cmdResult.passed) {
     failures.push({ ruleType: "requiredCommands", detail: cmdResult.detail });
   }
 
   // 3. Required git state check
-  const gitResult = verifyRequiredGit(rules.requiredGit, projectRoot);
+  const gitResult = await verifyRequiredGit(rules.requiredGit, projectRoot, execFn);
   if (!gitResult.passed) {
     failures.push({ ruleType: "requiredGit", detail: gitResult.detail });
   }
@@ -530,6 +532,7 @@ export async function runVerification(
         options.callLLM,
         options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
         options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
+        options.execFn,
       );
     }
 
@@ -556,7 +559,7 @@ export async function runVerification(
 
   if (hasStructuredRules) {
     // Use the structured rule engine
-    structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages);
+    structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages, options?.execFn);
   } else {
     // Legacy path: keyword-only rules
     const ruleResult = ruleVerify(rules, assistantMessages);
@@ -576,6 +579,7 @@ export async function runVerification(
       options.callLLM,
       options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
       options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
+      options.execFn,
     );
   }
 

@@ -5,6 +5,7 @@
  */
 
 import type { VerificationInstruction, LLMVerifyResult } from "../auto-verifier";
+import type { ExecFn } from "../../types";
 import { verifyRequiredFiles, verifyFileContentPattern } from "./file-verifier";
 import { verifyRequiredCommands } from "./command-verifier";
 import { verifyRequiredGit } from "./git-verifier";
@@ -83,11 +84,13 @@ function extractInstructionsFromJSON(response: string): VerificationInstruction[
  *
  * @param instructions - Parsed verification instructions
  * @param projectRoot - Absolute path to the project root
+ * @param execFn - Injected shell execution function
  * @returns Array of execution results with pass/fail and detail
  */
 export async function executeLLMInstructions(
   instructions: VerificationInstruction[],
   projectRoot: string,
+  execFn?: ExecFn,
 ): Promise<InstructionExecutionResult[]> {
   const results: InstructionExecutionResult[] = [];
 
@@ -112,9 +115,10 @@ export async function executeLLMInstructions(
         break;
       }
       case "command": {
-        const result = verifyRequiredCommands(
+        const result = await verifyRequiredCommands(
           [{ cmd: instruction.target, expectExit: 0 }],
           projectRoot,
+          execFn,
         );
         passed = result.passed;
         detail = result.detail;
@@ -130,7 +134,7 @@ export async function executeLLMInstructions(
         } else {
           gitRules.lastCommitWithin = instruction.expected || "10min";
         }
-        const result = verifyRequiredGit(gitRules, projectRoot);
+        const result = await verifyRequiredGit(gitRules, projectRoot, execFn);
         passed = result.passed;
         detail = result.detail;
         break;
@@ -199,6 +203,7 @@ export async function judgeLLMResult(
  * @param callLLM - Function to invoke the LLM
  * @param parsePrompt - System prompt for the parse stage
  * @param judgePrompt - System prompt for the judge stage
+ * @param execFn - Injected shell execution function
  * @returns LLMVerifyResult with overall pass/fail, reasoning, and instructions
  */
 export async function runLLMVerification(
@@ -207,6 +212,7 @@ export async function runLLMVerification(
   callLLM: (prompt: string) => Promise<string>,
   parsePrompt: string,
   judgePrompt: string,
+  execFn?: ExecFn,
 ): Promise<LLMVerifyResult | null> {
   // Stage 1: Parse — LLM extracts instructions from Markdown
   const instructions = await parseVerifyIntent(markdownBody, parsePrompt, callLLM);
@@ -226,7 +232,7 @@ export async function runLLMVerification(
   }
 
   // Stage 2: Execute — dispatch to verifiers
-  const executionResults = await executeLLMInstructions(instructions, projectRoot);
+  const executionResults = await executeLLMInstructions(instructions, projectRoot, execFn);
 
   // Stage 3: Judge — LLM evaluates execution results
   const judgment = await judgeLLMResult(instructions, executionResults, judgePrompt, callLLM);

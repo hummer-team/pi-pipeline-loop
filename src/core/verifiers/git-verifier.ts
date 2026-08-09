@@ -3,7 +3,7 @@
  * Verifies git repository state: last commit time, branch name, working tree cleanliness.
  */
 
-import { execSync } from "node:child_process";
+import type { ExecFn } from "../../types";
 import type { VerifierResult } from "./file-verifier";
 
 /**
@@ -28,20 +28,39 @@ function parseTimeWindow(timeStr: string): number | null {
 
 /**
  * Verifies git repository state against the specified rules.
+ * Uses dependency-injected execFn to route git commands through pi SDK sandbox.
  *
  * @param rules - Git verification rules (lastCommitWithin, branch, cleanWorkingTree)
  * @param projectRoot - Working directory for git commands
+ * @param execFn - Injected shell execution function
  * @returns Verification result with git state failure details
  */
-export function verifyRequiredGit(
+export async function verifyRequiredGit(
   rules: { lastCommitWithin?: string; branch?: string; cleanWorkingTree?: boolean } | undefined,
   projectRoot: string,
-): VerifierResult {
+  execFn?: ExecFn,
+): Promise<VerifierResult> {
   if (!rules) {
     return { passed: true, detail: "No git rules to check" };
   }
 
   const failures: string[] = [];
+
+  /** Helper to execute a command via execFn or fallback to child_process */
+  async function runCmd(args: string[]): Promise<string> {
+    if (execFn) {
+      const result = await execFn("git", args, projectRoot);
+      return result.stdout;
+    }
+    // Fallback for backward compatibility
+    const { execSync } = await import("node:child_process");
+    return execSync(`git ${args.join(" ")}`, {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      timeout: 10_000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  }
 
   // Check last commit time
   if (rules.lastCommitWithin) {
@@ -50,12 +69,7 @@ export function verifyRequiredGit(
       failures.push(`Invalid time window format: "${rules.lastCommitWithin}"`);
     } else {
       try {
-        const commitTimestamp = execSync("git log -1 --format=%ct", {
-          cwd: projectRoot,
-          encoding: "utf-8",
-          timeout: 10_000,
-          stdio: ["pipe", "pipe", "pipe"],
-        }).trim();
+        const commitTimestamp = (await runCmd(["log", "-1", "--format=%ct"])).trim();
 
         const commitTime = parseInt(commitTimestamp, 10);
         if (isNaN(commitTime)) {
@@ -78,12 +92,7 @@ export function verifyRequiredGit(
   // Check current branch
   if (rules.branch) {
     try {
-      const currentBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-        cwd: projectRoot,
-        encoding: "utf-8",
-        timeout: 10_000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      const currentBranch = (await runCmd(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 
       if (currentBranch !== rules.branch) {
         failures.push(`Expected branch "${rules.branch}", currently on "${currentBranch}"`);
@@ -96,12 +105,7 @@ export function verifyRequiredGit(
   // Check working tree cleanliness
   if (rules.cleanWorkingTree === true) {
     try {
-      const status = execSync("git status --porcelain", {
-        cwd: projectRoot,
-        encoding: "utf-8",
-        timeout: 10_000,
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      const status = (await runCmd(["status", "--porcelain"])).trim();
 
       if (status.length > 0) {
         failures.push("Working tree is not clean (uncommitted changes detected)");
