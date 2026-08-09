@@ -6,6 +6,7 @@
  */
 
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types";
+import { createPipelineUI } from "./pipeline-ui";
 
 /**
  * Creates the `stage_advance` tool.
@@ -19,6 +20,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types"
  * @returns A Tool object for the "stage_advance" tool
  */
 export function createStageAdvancer(config: PipelineConfig): Tool {
+  const ui = createPipelineUI(config);
   return {
     name: "stage_advance",
     description:
@@ -59,12 +61,15 @@ export function createStageAdvancer(config: PipelineConfig): Tool {
       });
 
       if (nextStage === null) {
+        ui.clearStage(ctx);
         return {
           success: true,
           message: "Pipeline completed — no further stages",
           currentStage: "completed",
         };
       }
+
+      ui.transition(ctx, currentStage, nextStage);
 
       return {
         success: true,

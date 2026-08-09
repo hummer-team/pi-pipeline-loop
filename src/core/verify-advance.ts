@@ -7,6 +7,7 @@
 
 import type { SessionMeta, PipelineStage, VerifyFailureItem } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
+import type { PipelineUI } from "./pipeline-ui";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -47,6 +48,8 @@ interface ApplyVerifyPassOpts {
    * - false (hook path): returns void
    */
   returnResult: boolean;
+  /** Optional PipelineUI for TUI output */
+  ui?: PipelineUI;
 }
 
 /**
@@ -131,6 +134,9 @@ export async function applyVerifyPass(
       );
     }
 
+    // TUI stage transition output
+    opts.ui?.transition(ctx, stageName, nextStage);
+
     if (opts.returnResult) {
       return {
         success: true,
@@ -151,6 +157,8 @@ export async function applyVerifyPass(
   });
 
   if (opts.handleTerminal && opts.returnResult) {
+    // Pipeline reaching completed — clear status bar
+    opts.ui?.clearStage(ctx);
     return {
       success: true,
       passed: true,
@@ -181,6 +189,7 @@ export async function applyVerifyFail(
   stageName: PipelineStage,
   verifyResult: VerifyAdvanceResult,
   method: "tool" | "rule",
+  ui?: PipelineUI,
 ): Promise<VerifyFailReturn> {
   const now = Date.now();
   const verifyFailures: VerifyFailureItem[] = [];
@@ -232,6 +241,9 @@ export async function applyVerifyFail(
       `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and try again.`,
     );
   }
+
+  // TUI failure output
+  ui?.fail(ctx, stageName, "verify failed");
 
   return {
     success: false,

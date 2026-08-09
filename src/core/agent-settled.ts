@@ -10,6 +10,7 @@ import { runVerification } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
+import { createPipelineUI } from "./pipeline-ui";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -30,6 +31,7 @@ export function createAgentSettled(
   config: PipelineConfig,
   verifyOptions?: RunVerificationOptions,
 ): Hook {
+  const ui = createPipelineUI(config);
   return {
     event: "agent_settled",
     handler: async (ctx: any): Promise<void> => {
@@ -41,9 +43,7 @@ export function createAgentSettled(
         stage: meta.currentStage,
       });
 
-      if (ctx.ui?.notify) {
-        ctx.ui.notify(`Agent settled in "${meta.currentStage}" stage`);
-      }
+      ui.notify(ctx, `Agent settled in "${meta.currentStage}" stage`);
 
       // 2. Auto-verification
       const stageConfig = config.stages[meta.currentStage];
@@ -81,9 +81,10 @@ export function createAgentSettled(
           method: "rule",
           handleTerminal: false,
           returnResult: false,
+          ui,
         });
       } else {
-        await applyVerifyFail(ctx, meta, meta.currentStage, sharedResult, "rule");
+        await applyVerifyFail(ctx, meta, meta.currentStage, sharedResult, "rule", ui);
       }
     },
   };

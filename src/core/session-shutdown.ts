@@ -6,6 +6,7 @@
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
+import { createPipelineUI } from "./pipeline-ui";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -19,6 +20,7 @@ import { writeAuditLog } from "../utils/auditLog";
  * @returns A Hook object for the "session_shutdown" event
  */
 export function createSessionShutdown(config: PipelineConfig): Hook {
+  const ui = createPipelineUI(config);
   return {
     event: "session_shutdown",
     handler: async (ctx: any): Promise<void> => {
@@ -28,6 +30,9 @@ export function createSessionShutdown(config: PipelineConfig): Hook {
         pipelineId: meta.pipelineId,
         finalStage: meta.currentStage,
       });
+
+      // Clear status bar on session shutdown
+      ui.clearStage(ctx);
     },
   };
 }

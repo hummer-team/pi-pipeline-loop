@@ -7,6 +7,7 @@
 
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
+import { createPipelineUI } from "../core/pipeline-ui";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -25,6 +26,7 @@ import { writeAuditLog } from "../utils/auditLog";
  * @returns A Tool object for the "pipeline_handoff" tool
  */
 export function createPipelineHandoff(config: PipelineConfig): Tool {
+  const ui = createPipelineUI(config);
   return {
     name: "pipeline_handoff",
     description:
@@ -131,6 +133,13 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         summaryHash: currentSummary.hash,
         note,
       });
+
+      // TUI stage transition output
+      if (nextStage === "completed") {
+        ui.clearStage(ctx);
+      } else {
+        ui.transition(ctx, currentStage, nextStage);
+      }
 
       return {
         success: true,

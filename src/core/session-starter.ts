@@ -10,6 +10,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
+import { createPipelineUI } from "./pipeline-ui";
 
 /**
  * Attempts to load a DomainConfig from a domain.md file.
@@ -70,6 +71,7 @@ async function loadDomainFromFile(domainFilePath: string): Promise<DomainConfig>
  * @returns A Hook object for the "session_start" event
  */
 export function createSessionStarter(config: PipelineConfig): Hook {
+  const ui = createPipelineUI(config);
   return {
     event: "session_start",
     handler: async (ctx: any): Promise<void> => {
@@ -110,7 +112,7 @@ export function createSessionStarter(config: PipelineConfig): Hook {
           await ctx.session.setModel(clarifyModel);
         }
 
-        ctx.ui.notify(`Pipeline ${pipelineId} started`);
+        ui.stageEntry(ctx, "clarify");
       } else {
         // ── Resumed session: ensure correct model ──────────────────────
         const stageModel = config.stages[meta.currentStage].model;

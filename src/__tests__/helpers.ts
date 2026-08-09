@@ -24,6 +24,7 @@ export function makeTestConfig(overrides?: Partial<PipelineConfig>): PipelineCon
     maxLoops: 3,
     auditDir: ".pi/audit",
     domainDir: ".pi/domains",
+    output: { pipelineStage: true },
     ...overrides,
   } as PipelineConfig;
 }
@@ -49,14 +50,15 @@ export type MockCtx = {
     updateMetadata: (meta: SessionMeta) => void;
     setModel: (model: string) => Promise<void>;
   };
-  ui: { notify: (msg: string) => void };
+  ui: { notify: (msg: string) => void; setStatus: (key: string, text: string) => void };
   toolCall: { name: string; arguments: Record<string, unknown> };
   result: { success?: boolean; exitCode?: number; error?: string } | undefined;
 };
 
-export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[] } {
+export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string }[] } {
   const metadataUpdates: SessionMeta[] = [];
   const notifications: string[] = [];
+  const statusCalls: { key: string; text: string }[] = [];
 
   return {
     session: {
@@ -71,11 +73,15 @@ export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: S
       notify: (msg: string) => {
         notifications.push(msg);
       },
+      setStatus: (key: string, text: string) => {
+        statusCalls.push({ key, text });
+      },
     },
     toolCall: { name: "read", arguments: {} },
     result: undefined,
     metadataUpdates,
     notifications,
+    statusCalls,
   };
 }
 

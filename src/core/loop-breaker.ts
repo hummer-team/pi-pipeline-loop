@@ -10,6 +10,7 @@ import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { getFileHash } from "../utils/hash";
 import { writeAuditLog } from "../utils/auditLog";
+import { createPipelineUI } from "./pipeline-ui";
 
 /**
  * Ensures a directory exists, creating it recursively if needed.
@@ -56,6 +57,7 @@ function isTestCommand(command: string): boolean {
  * @returns A Hook object for the "tool_result" event
  */
 export function createLoopBreaker(config: PipelineConfig): Hook {
+  const ui = createPipelineUI(config);
   // Tracks the verifyAttempts value at which loopCount was last incremented
   // via write/edit throttling. Prevents multiple increments within the same
   // verification cycle (between consecutive agent_settled failures).
@@ -103,6 +105,8 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
                 `[pi-pipeline] Pipeline ${meta.pipelineId} terminated: max loop iterations (${meta.maxLoops}) reached in "${meta.currentStage}" stage`,
               );
             }
+
+            ui.fail(ctx, meta.currentStage, "pipeline frozen");
 
             await writeAuditLog("loop_break_fatal", {
               pipelineId: meta.pipelineId,
@@ -154,6 +158,8 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
                 `[pi-pipeline] Pipeline ${meta.pipelineId} terminated: max loop iterations (${meta.maxLoops}) reached with unresolved verification failures in "${meta.currentStage}" stage`,
               );
             }
+
+            ui.fail(ctx, meta.currentStage, "pipeline frozen");
 
             await writeAuditLog("loop_break_fatal", {
               pipelineId: meta.pipelineId,

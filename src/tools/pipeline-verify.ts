@@ -9,6 +9,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from ".
 import { runVerification } from "../core/auto-verifier";
 import type { RunVerificationOptions } from "../core/auto-verifier";
 import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
+import { createPipelineUI } from "../core/pipeline-ui";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -37,6 +38,7 @@ export function createPipelineVerify(
   config: PipelineConfig,
   deps?: PipelineVerifyDeps,
 ): Tool {
+  const ui = createPipelineUI(config);
   return {
     name: "pipeline_verify",
     description:
@@ -126,10 +128,11 @@ export function createPipelineVerify(
           method: "tool",
           handleTerminal: true,
           returnResult: true,
+          ui,
         })) as unknown as Record<string, unknown>;
       }
 
-      return (await applyVerifyFail(sessionCtx, meta, stageName, sharedResult, "tool")) as unknown as Record<string, unknown>;
+      return (await applyVerifyFail(sessionCtx, meta, stageName, sharedResult, "tool", ui)) as unknown as Record<string, unknown>;
     },
   };
 }

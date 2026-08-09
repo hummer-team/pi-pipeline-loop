@@ -6,6 +6,7 @@
  */
 
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
+import { createPipelineUI } from "./pipeline-ui";
 
 /**
  * Creates the `loop_check` tool.
@@ -22,6 +23,7 @@ import type { PipelineConfig, Tool, SessionMeta } from "../types";
  * @returns A Tool object for the "loop_check" tool
  */
 export function createLoopChecker(config: PipelineConfig): Tool {
+  const ui = createPipelineUI(config);
   return {
     name: "loop_check",
     description:
@@ -81,6 +83,7 @@ export function createLoopChecker(config: PipelineConfig): Tool {
       });
 
       if (newLoopCount >= maxLoops) {
+        ui.fail(ctx, currentStage, "max loops reached");
         return {
           action: "halt",
           message:
