@@ -5,10 +5,10 @@
  * Reads verify.md, runs structured rules + optional LLM verification, and auto-advances on success.
  */
 
-import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn, VerifyFailureItem } from "../types";
+import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from "../types";
 import { runVerification } from "../core/auto-verifier";
 import type { RunVerificationOptions } from "../core/auto-verifier";
-import { writeAuditLog } from "../utils/auditLog";
+import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -107,184 +107,29 @@ export function createPipelineVerify(
 
       const assistantMessages = meta.assistantMessages || [];
 
-      const verifyResult = await runVerification(
+      const vr = await runVerification(
         config,
         { ...meta, currentStage: stageName },
         assistantMessages,
         verifyOptions,
       );
 
-      if (verifyResult.verifyResult?.overallPassed) {
-        // Verification passed — auto-advance
-        return handleVerifyPass(
-          sessionCtx,
-          meta,
-          stageName,
-          stageConfig,
-          verifyResult,
-        );
+      // Build the shared result shape consumed by applyVerifyPass/applyVerifyFail
+      const sharedResult = {
+        structuredResult: vr.structuredResult,
+        ruleMissing: vr.ruleMissing,
+        verifyResult: vr.verifyResult ?? null,
+      };
+
+      if (vr.verifyResult?.overallPassed || vr.rulePassed) {
+        return (await applyVerifyPass(sessionCtx, meta, stageName, stageConfig.nextStage, sharedResult, {
+          method: "tool",
+          handleTerminal: true,
+          returnResult: true,
+        })) as unknown as Record<string, unknown>;
       }
 
-      // Check rulePassed for backward compat
-      if (verifyResult.rulePassed) {
-        return handleVerifyPass(
-          sessionCtx,
-          meta,
-          stageName,
-          stageConfig,
-          verifyResult,
-        );
-      }
-
-      // Verification failed
-      return handleVerifyFail(
-        sessionCtx,
-        meta,
-        stageName,
-        verifyResult,
-      );
+      return (await applyVerifyFail(sessionCtx, meta, stageName, sharedResult, "tool")) as unknown as Record<string, unknown>;
     },
-  };
-}
-
-/**
- * Handles successful verification: auto-advance to next stage.
- */
-async function handleVerifyPass(
-  ctx: {
-    session: {
-      getMetadata: () => SessionMeta;
-      updateMetadata: (meta: SessionMeta) => void;
-    };
-    ui?: { notify: (msg: string) => void };
-  },
-  meta: SessionMeta,
-  stageName: PipelineStage,
-  stageConfig: { nextStage: PipelineStage | null },
-  verifyResult: { verifyResult?: { structured: { passed: boolean }; llm: unknown; overallPassed: boolean } | undefined },
-): Promise<Record<string, unknown>> {
-  const nextStage = stageConfig.nextStage;
-  if (nextStage) {
-    ctx.session.updateMetadata({
-      ...meta,
-      previousStage: stageName,
-      currentStage: nextStage,
-      stageStartTime: Date.now(),
-      loopCount: 0,
-      currentStepIndex: 0,
-      verifyFailures: [],
-    });
-
-    await writeAuditLog("auto_verify_pass", {
-      pipelineId: meta.pipelineId,
-      fromStage: stageName,
-      nextStage,
-      method: "tool",
-    });
-
-    if (ctx.ui?.notify) {
-      ctx.ui.notify(
-        `Verification passed for "${stageName}". Advanced to "${nextStage}".`,
-      );
-    }
-
-    return {
-      success: true,
-      passed: true,
-      message: `Verification passed for "${stageName}". Advanced to "${nextStage}".`,
-      verifyResult: verifyResult.verifyResult || null,
-    };
-  }
-
-  // No next stage (terminal stage)
-  await writeAuditLog("auto_verify_pass", {
-    pipelineId: meta.pipelineId,
-    stage: stageName,
-    method: "tool",
-    note: "terminal stage, no advance",
-  });
-
-  return {
-    success: true,
-    passed: true,
-    message: `Verification passed for terminal stage "${stageName}".`,
-    verifyResult: verifyResult.verifyResult || null,
-  };
-}
-
-/**
- * Handles failed verification: write verifyFailures to SessionMeta.
- */
-async function handleVerifyFail(
-  ctx: {
-    session: {
-      getMetadata: () => SessionMeta;
-      updateMetadata: (meta: SessionMeta) => void;
-    };
-    ui?: { notify: (msg: string) => void };
-  },
-  meta: SessionMeta,
-  stageName: PipelineStage,
-  verifyResult: {
-    structuredResult?: { failures: { ruleType: string; detail: string }[] };
-    ruleMissing: string[];
-  },
-): Promise<Record<string, unknown>> {
-  const now = Date.now();
-  const verifyFailures: VerifyFailureItem[] = [];
-
-  // Convert structured failures to VerifyFailureItem format
-  if (verifyResult.structuredResult) {
-    for (const f of verifyResult.structuredResult.failures) {
-      verifyFailures.push({
-        ruleType: f.ruleType,
-        detail: f.detail,
-        timestamp: now,
-      });
-    }
-  }
-
-  // Convert keyword missing to failures if not already captured
-  if (
-    verifyResult.ruleMissing.length > 0 &&
-    !verifyFailures.some((f) => f.ruleType === "keywords")
-  ) {
-    verifyFailures.push({
-      ruleType: "keywords",
-      detail: `Missing keywords: ${verifyResult.ruleMissing.join(", ")}`,
-      timestamp: now,
-    });
-  }
-
-  ctx.session.updateMetadata({
-    ...meta,
-    verifyAttempts: (meta.verifyAttempts || 0) + 1,
-    verifyFailures,
-    assistantMessages: [],
-  });
-
-  await writeAuditLog("auto_verify_fail", {
-    pipelineId: meta.pipelineId,
-    stage: stageName,
-    method: "tool",
-    failureCount: String(verifyFailures.length),
-    failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
-  });
-
-  const failureSummary = verifyFailures
-    .map((f) => `[${f.ruleType}] ${f.detail}`)
-    .join("; ");
-
-  if (ctx.ui?.notify) {
-    ctx.ui.notify(
-      `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and try again.`,
-    );
-  }
-
-  return {
-    success: false,
-    passed: false,
-    message: `Verification failed for "${stageName}": ${failureSummary}`,
-    failures: verifyFailures,
   };
 }
