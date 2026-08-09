@@ -5,7 +5,7 @@
  */
 
 import type { VerificationInstruction, LLMVerifyResult } from "../auto-verifier";
-import type { ExecFn } from "../../types";
+import type { ExecFn, AuditLogFn } from "../../types";
 import { verifyRequiredFiles, verifyFileContentPattern } from "./file-verifier";
 import { verifyRequiredCommands } from "./command-verifier";
 import { verifyRequiredGit } from "./git-verifier";
@@ -32,20 +32,23 @@ interface InstructionExecutionResult {
  * @param markdownBody - The Markdown body text from verify.md
  * @param systemPrompt - System prompt instructing the LLM on output format
  * @param callLLM - Function to invoke the LLM
+ * @param logError - Optional audit log callback for recording errors
  * @returns Array of VerificationInstruction parsed from the LLM response
  */
 export async function parseVerifyIntent(
   markdownBody: string,
   systemPrompt: string,
   callLLM: (prompt: string) => Promise<string>,
+  logError?: AuditLogFn,
 ): Promise<VerificationInstruction[] | null> {
   const userPrompt = `${systemPrompt}\n\n---\n\nVerify description to parse:\n\n${markdownBody}`;
 
   try {
     const response = await callLLM(userPrompt);
-    return extractInstructionsFromJSON(response);
-  } catch {
+    return extractInstructionsFromJSON(response, logError);
+  } catch (err) {
     // LLM call failed (unavailable) — return null to signal LLM layer should be skipped
+    await logError?.("verify_error", { verifier: "llm_parse", error: String(err) });
     return null;
   }
 }
@@ -54,7 +57,7 @@ export async function parseVerifyIntent(
  * Extracts VerificationInstruction array from a JSON response string.
  * Handles both raw JSON arrays and JSON wrapped in markdown code blocks.
  */
-function extractInstructionsFromJSON(response: string): VerificationInstruction[] {
+function extractInstructionsFromJSON(response: string, logError?: AuditLogFn): VerificationInstruction[] {
   // Strip markdown code blocks if present
   let cleaned = response.trim();
   const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
@@ -73,7 +76,9 @@ function extractInstructionsFromJSON(response: string): VerificationInstruction[
       ) as VerificationInstruction[];
     }
     return [];
-  } catch {
+  } catch (err) {
+    // Sync function — logError is async, fire-and-forget
+    void logError?.("verify_error", { verifier: "llm_parse_json", error: String(err) });
     return [];
   }
 }
@@ -85,12 +90,14 @@ function extractInstructionsFromJSON(response: string): VerificationInstruction[
  * @param instructions - Parsed verification instructions
  * @param projectRoot - Absolute path to the project root
  * @param execFn - Injected shell execution function
+ * @param logError - Optional audit log callback for recording errors
  * @returns Array of execution results with pass/fail and detail
  */
 export async function executeLLMInstructions(
   instructions: VerificationInstruction[],
   projectRoot: string,
   execFn?: ExecFn,
+  logError?: AuditLogFn,
 ): Promise<InstructionExecutionResult[]> {
   const results: InstructionExecutionResult[] = [];
 
@@ -109,6 +116,7 @@ export async function executeLLMInstructions(
         const result = await verifyFileContentPattern(
           [{ path: instruction.target, pattern: instruction.expected || ".*" }],
           projectRoot,
+          logError,
         );
         passed = result.passed;
         detail = result.detail;
@@ -119,6 +127,7 @@ export async function executeLLMInstructions(
           [{ cmd: instruction.target, expectExit: 0 }],
           projectRoot,
           execFn,
+          logError,
         );
         passed = result.passed;
         detail = result.detail;
@@ -134,7 +143,7 @@ export async function executeLLMInstructions(
         } else {
           gitRules.lastCommitWithin = instruction.expected || "10min";
         }
-        const result = await verifyRequiredGit(gitRules, projectRoot, execFn);
+        const result = await verifyRequiredGit(gitRules, projectRoot, execFn, logError);
         passed = result.passed;
         detail = result.detail;
         break;
@@ -156,6 +165,7 @@ export async function executeLLMInstructions(
  * @param executionResults - Results of each instruction execution
  * @param systemPrompt - System prompt for the judge LLM call
  * @param callLLM - Function to invoke the LLM
+ * @param logError - Optional audit log callback for recording errors
  * @returns LLMVerifyResult with passed/reasoning
  */
 export async function judgeLLMResult(
@@ -163,6 +173,7 @@ export async function judgeLLMResult(
   executionResults: InstructionExecutionResult[],
   systemPrompt: string,
   callLLM: (prompt: string) => Promise<string>,
+  logError?: AuditLogFn,
 ): Promise<{ passed: boolean; reasoning: string }> {
   const resultsSummary = executionResults
     .map((r) => `- [${r.instruction.checkType}] ${r.instruction.target}: ${r.passed ? "PASS" : "FAIL"} — ${r.detail}`)
@@ -182,8 +193,9 @@ export async function judgeLLMResult(
       passed: !!parsed.passed,
       reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "No reasoning provided",
     };
-  } catch {
+  } catch (err) {
     // Fallback: if LLM judge fails, pass only if all instructions passed
+    await logError?.("verify_error", { verifier: "llm_judge", error: String(err) });
     const allPassed = executionResults.every(r => r.passed);
     return {
       passed: allPassed,
@@ -204,6 +216,7 @@ export async function judgeLLMResult(
  * @param parsePrompt - System prompt for the parse stage
  * @param judgePrompt - System prompt for the judge stage
  * @param execFn - Injected shell execution function
+ * @param logError - Optional audit log callback for recording errors
  * @returns LLMVerifyResult with overall pass/fail, reasoning, and instructions
  */
 export async function runLLMVerification(
@@ -213,9 +226,10 @@ export async function runLLMVerification(
   parsePrompt: string,
   judgePrompt: string,
   execFn?: ExecFn,
+  logError?: AuditLogFn,
 ): Promise<LLMVerifyResult | null> {
   // Stage 1: Parse — LLM extracts instructions from Markdown
-  const instructions = await parseVerifyIntent(markdownBody, parsePrompt, callLLM);
+  const instructions = await parseVerifyIntent(markdownBody, parsePrompt, callLLM, logError);
 
   // LLM call threw → instructions is null → signal LLM unavailable
   // Caller should skip LLM layer and fall back to structured-only verification
@@ -232,10 +246,10 @@ export async function runLLMVerification(
   }
 
   // Stage 2: Execute — dispatch to verifiers
-  const executionResults = await executeLLMInstructions(instructions, projectRoot, execFn);
+  const executionResults = await executeLLMInstructions(instructions, projectRoot, execFn, logError);
 
   // Stage 3: Judge — LLM evaluates execution results
-  const judgment = await judgeLLMResult(instructions, executionResults, judgePrompt, callLLM);
+  const judgment = await judgeLLMResult(instructions, executionResults, judgePrompt, callLLM, logError);
 
   return {
     passed: judgment.passed,

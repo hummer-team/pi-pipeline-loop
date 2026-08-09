@@ -9,7 +9,7 @@
  * rules or use a script file invoked as a single command.
  */
 
-import type { ExecFn } from "../../types";
+import type { ExecFn, AuditLogFn } from "../../types";
 import type { VerifierResult } from "./file-verifier";
 
 /** Shell operators not supported in requiredCommands (pipeline |, redirect >, &&/||, quotes, etc.) */
@@ -35,12 +35,14 @@ function hasShellOperator(cmd: string): boolean {
  * @param rules - Array of command rules with cmd, expectExit, expectOutput
  * @param projectRoot - Working directory for command execution
  * @param execFn - Injected shell execution function (required when rules are present)
+ * @param logError - Optional audit log callback for recording errors
  * @returns Verification result with command failure details
  */
 export async function verifyRequiredCommands(
   rules: { cmd: string; expectExit?: number; expectOutput?: string }[] | undefined,
   projectRoot: string,
   execFn?: ExecFn,
+  logError?: AuditLogFn,
 ): Promise<VerifierResult> {
   if (!rules || rules.length === 0) {
     return { passed: true, detail: "No required commands to check" };
@@ -82,6 +84,7 @@ export async function verifyRequiredCommands(
       const execErr = err as { status?: number; code?: number; stderr?: string };
       actualExit = execErr.code ?? execErr.status ?? 1;
       stdout = "";
+      await logError?.("verify_error", { ruleType: "requiredCommands", cmd: rule.cmd, error: String(err) });
     }
 
     // Check exit code

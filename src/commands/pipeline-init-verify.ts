@@ -10,6 +10,7 @@ import path from "node:path";
 import type { PipelineConfig, PipelineStage, Command } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
 import { DEFAULT_VERIFY_EXTRACT_PROMPT } from "../constants";
+import { safeWriteAuditLog } from "../utils/auditLog";
 
 /**
  * Resolves the extraction prompt for LLM-based delivery item extraction.
@@ -343,6 +344,7 @@ export function createPipelineInitVerifyCommand(
           });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
+          await safeWriteAuditLog("verify_md_generate_error", { stage, file: verifyPath, error: errMsg }, "error");
           results.push({
             stage,
             status: "error",

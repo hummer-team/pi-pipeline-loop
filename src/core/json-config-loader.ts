@@ -37,6 +37,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
   try {
     parsed = JSON.parse(raw);
   } catch {
+    console.error("[pi-pipeline] Invalid JSON in pipeline config file: " + jsonPath);
     throw new Error(`Invalid JSON in pipeline config file: ${jsonPath}`);
   }
 

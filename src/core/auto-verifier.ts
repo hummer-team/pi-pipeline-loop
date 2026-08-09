@@ -7,13 +7,14 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { PipelineConfig, PipelineStage, SessionMeta, ExecFn } from "../types";
+import type { PipelineConfig, PipelineStage, SessionMeta, ExecFn, AuditLogFn } from "../types";
 import { DEFAULT_VERIFY_PROMPT, DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT, DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
 import { verifyRequiredFiles, verifyFileContentPattern } from "./verifiers/file-verifier";
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
 import { runLLMVerification } from "./verifiers/llm-verifier";
+import { safeWriteAuditLog } from "../utils/auditLog";
 
 /**
  * Parsed verification rules from a verify.md frontmatter.
@@ -412,6 +413,7 @@ export function ruleVerify(
  * @param projectRoot - Absolute path to the project root directory
  * @param assistantMessages - Aggregated assistant messages for keyword checking
  * @param execFn - Injected shell execution function
+ * @param logError - Optional audit log callback for recording errors
  * @returns StructuredVerifyResult with per-rule-type pass/fail and failure details
  */
 export async function executeStructuredRules(
@@ -419,6 +421,7 @@ export async function executeStructuredRules(
   projectRoot: string,
   assistantMessages: string[],
   execFn?: ExecFn,
+  logError?: AuditLogFn,
 ): Promise<StructuredVerifyResult> {
   const failures: VerifyFailure[] = [];
 
@@ -429,19 +432,19 @@ export async function executeStructuredRules(
   }
 
   // 2. Required commands check
-  const cmdResult = await verifyRequiredCommands(rules.requiredCommands, projectRoot, execFn);
+  const cmdResult = await verifyRequiredCommands(rules.requiredCommands, projectRoot, execFn, logError);
   if (!cmdResult.passed) {
     failures.push({ ruleType: "requiredCommands", detail: cmdResult.detail });
   }
 
   // 3. Required git state check
-  const gitResult = await verifyRequiredGit(rules.requiredGit, projectRoot, execFn);
+  const gitResult = await verifyRequiredGit(rules.requiredGit, projectRoot, execFn, logError);
   if (!gitResult.passed) {
     failures.push({ ruleType: "requiredGit", detail: gitResult.detail });
   }
 
   // 4. File content pattern check
-  const fcResult = await verifyFileContentPattern(rules.fileContentPattern, projectRoot);
+  const fcResult = await verifyFileContentPattern(rules.fileContentPattern, projectRoot, logError);
   if (!fcResult.passed) {
     failures.push({ ruleType: "fileContentPattern", detail: fcResult.detail });
   }
@@ -474,6 +477,8 @@ export interface RunVerificationOptions {
   execFn?: ExecFn;
   /** Override verify.md path; takes precedence over stage config verifyFile */
   verifyFile?: string;
+  /** Optional audit log callback override (defaults to auto-constructed closure from meta.pipelineId) */
+  logError?: AuditLogFn;
 }
 
 /**
@@ -523,6 +528,10 @@ export async function runVerification(
 
   const { rules, prompt } = await parseVerifyFile(verifyPath);
 
+  // Build audit log closure: injects pipelineId into every error-level audit entry
+  const logError: AuditLogFn = options?.logError ??
+    ((stage, msg) => safeWriteAuditLog(stage, { pipelineId: meta.pipelineId, ...msg }, "error"));
+
   // Default structured result when no structured rules exist
   let structuredResult: StructuredVerifyResult = { passed: true, failures: [] };
   let llmResult: LLMVerifyResult | null = null;
@@ -537,6 +546,7 @@ export async function runVerification(
         options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
         options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
         options.execFn,
+        logError,
       );
     }
 
@@ -563,7 +573,7 @@ export async function runVerification(
 
   if (hasStructuredRules) {
     // Use the structured rule engine
-    structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages, options?.execFn);
+    structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages, options?.execFn, logError);
   } else {
     // Legacy path: keyword-only rules
     const ruleResult = ruleVerify(rules, assistantMessages);
@@ -584,6 +594,7 @@ export async function runVerification(
       options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
       options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
       options.execFn,
+      logError,
     );
   }
 

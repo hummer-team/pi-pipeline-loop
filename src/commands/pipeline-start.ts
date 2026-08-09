@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, Command, SessionMeta } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
+import { safeWriteAuditLog } from "../utils/auditLog";
 
 /**
  * Checks for missing verify.md files across all stages that require verification.
@@ -55,10 +56,12 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       let content: string;
       try {
         content = fs.readFileSync(docPath, "utf-8");
-      } catch {
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await safeWriteAuditLog("pipeline_start_error", { file, error: errMsg }, "error");
         return {
           success: false,
-          error: `File not found: ${file}`,
+          error: `File not found: ${file} (${errMsg})`,
         };
       }
 

@@ -5,6 +5,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { AuditLogFn } from "../../types";
 
 /** Result of a single verification check */
 export interface VerifierResult {
@@ -56,11 +57,13 @@ export async function verifyRequiredFiles(
  *
  * @param rules - Array of { path, pattern } rules
  * @param projectRoot - Absolute path to the project root directory
+ * @param logError - Optional audit log callback for recording errors
  * @returns Verification result with pattern mismatch details on failure
  */
 export async function verifyFileContentPattern(
   rules: { path: string; pattern: string }[] | undefined,
   projectRoot: string,
+  logError?: AuditLogFn,
 ): Promise<VerifierResult> {
   if (!rules || rules.length === 0) {
     return { passed: true, detail: "No file content patterns to check" };
@@ -82,6 +85,7 @@ export async function verifyFileContentPattern(
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       failures.push(`${rule.path}: file read error (${errMsg})`);
+      await logError?.("verify_error", { ruleType: "fileContentPattern", path: rule.path, error: errMsg });
     }
   }
 

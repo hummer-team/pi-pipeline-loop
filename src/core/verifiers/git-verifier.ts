@@ -3,7 +3,7 @@
  * Verifies git repository state: last commit time, branch name, working tree cleanliness.
  */
 
-import type { ExecFn } from "../../types";
+import type { ExecFn, AuditLogFn } from "../../types";
 import type { VerifierResult } from "./file-verifier";
 
 /**
@@ -37,12 +37,14 @@ function parseTimeWindow(timeStr: string): number | null {
  * @param rules - Git verification rules (lastCommitWithin, branch, cleanWorkingTree)
  * @param projectRoot - Working directory for git commands
  * @param execFn - Injected shell execution function (required when rules are present)
+ * @param logError - Optional audit log callback for recording errors
  * @returns Verification result with git state failure details
  */
 export async function verifyRequiredGit(
   rules: { lastCommitWithin?: string; branch?: string; cleanWorkingTree?: boolean } | undefined,
   projectRoot: string,
   execFn?: ExecFn,
+  logError?: AuditLogFn,
 ): Promise<VerifierResult> {
   if (!rules) {
     return { passed: true, detail: "No git rules to check" };
@@ -91,8 +93,9 @@ export async function verifyRequiredGit(
             );
           }
         }
-      } catch {
+      } catch (err) {
         failures.push("Failed to read git log (not a git repository or no commits)");
+        await logError?.("verify_error", { ruleType: "requiredGit", check: "last_commit", error: String(err) });
       }
     }
   }
@@ -105,8 +108,9 @@ export async function verifyRequiredGit(
       if (currentBranch !== rules.branch) {
         failures.push(`Expected branch "${rules.branch}", currently on "${currentBranch}"`);
       }
-    } catch {
+    } catch (err) {
       failures.push("Failed to read current git branch");
+      await logError?.("verify_error", { ruleType: "requiredGit", check: "branch", error: String(err) });
     }
   }
 
@@ -118,8 +122,9 @@ export async function verifyRequiredGit(
       if (status.length > 0) {
         failures.push("Working tree is not clean (uncommitted changes detected)");
       }
-    } catch {
+    } catch (err) {
       failures.push("Failed to check git working tree status");
+      await logError?.("verify_error", { ruleType: "requiredGit", check: "working_tree", error: String(err) });
     }
   }
 
