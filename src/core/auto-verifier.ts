@@ -7,7 +7,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
+import type { PipelineConfig, PipelineStage, SessionMeta, ExecFn } from "../types";
 import { DEFAULT_VERIFY_PROMPT, DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT, DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
 import { verifyRequiredFiles, verifyFileContentPattern } from "./verifiers/file-verifier";
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
@@ -468,6 +468,8 @@ export interface RunVerificationOptions {
   parsePrompt?: string;
   /** Override for the LLM judge prompt (defaults to DEFAULT_VERIFY_JUDGE_PROMPT) */
   judgePrompt?: string;
+  /** Dependency-injected shell execution function (replaces child_process.execSync) */
+  execFn?: ExecFn;
 }
 
 /**

@@ -80,6 +80,22 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
   };
 }
 
+/**
+ * Parses a verify mode string from JSON config, validating and defaulting.
+ * Returns "hook" for undefined/invalid values with a console warning.
+ */
+function parseVerifyMode(raw: unknown): "hook" | "tool" {
+  if (raw === "hook" || raw === "tool") {
+    return raw;
+  }
+  if (raw !== undefined) {
+    console.warn(
+      `[pi-pipeline] Invalid verify.mode "${String(raw)}" — falling back to "hook"`,
+    );
+  }
+  return "hook";
+}
+
 export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig {
   const projectRoot = json.projectRoot || process.cwd();
   const stages: Record<PipelineStage, StageConfig> = {} as Record<
@@ -132,6 +148,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
             verifyFile:
               jsonStage.verify.verifyFile ||
               resolveStagePath(DEFAULT_VERIFY_FILE, stageName),
+            mode: parseVerifyMode(jsonStage.verify.mode),
           }
         : undefined,
     };

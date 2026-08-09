@@ -5,6 +5,23 @@
  * and configuration interfaces that projects use to customize their pipeline.
  */
 
+// ─── Execution Function Type (DI) ────────────────────────────────────────────
+
+/**
+ * Dependency-injected shell execution function.
+ * Wraps pi.exec() so verifiers never call child_process directly.
+ *
+ * @param cmd - The command to execute (e.g., "git", "npm")
+ * @param args - Arguments array (e.g., ["log", "-1"])
+ * @param cwd - Working directory for the command
+ * @returns Object with stdout, stderr, and exit code
+ */
+export type ExecFn = (
+  cmd: string,
+  args: string[],
+  cwd: string
+) => Promise<{ stdout: string; stderr: string; code: number }>;
+
 // ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 /**
@@ -33,6 +50,13 @@ export interface VerifyConfig {
 
   /** Path to the verify file (YAML frontmatter rules + Markdown body prompt) */
   verifyFile?: string;
+
+  /**
+   * Verification trigger mode (default "hook").
+   * - "hook": auto-verification runs in agent_settled hook (existing behavior)
+   * - "tool": agent calls pipeline_verify tool explicitly; agent_settled skips verification
+   */
+  mode?: "hook" | "tool";
 }
 
 /**
@@ -239,6 +263,9 @@ export interface VerifyJsonConfig {
 
   /** Path to verify.md file (default .pi/references/{stage}_spec/verify.md) */
   verifyFile?: string;
+
+  /** Verification trigger mode: "hook" (default) or "tool" */
+  mode?: "hook" | "tool";
 }
 
 /**
@@ -389,6 +416,16 @@ export interface ExtensionAPI {
     description: string,
     execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>,
   ): void;
+
+  /**
+   * Execute a shell command through the pi SDK sandbox.
+   * Optional — not all pi SDK versions expose this method.
+   */
+  exec?(
+    command: string,
+    args?: string[],
+    options?: { cwd?: string },
+  ): Promise<{ stdout: string; stderr: string; code: number }>;
 }
 
 /**

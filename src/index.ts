@@ -4,7 +4,7 @@
  * Exports the `createPipeline` factory function and all public types.
  */
 
-import type { PipelineConfig, ExtensionAPI, ExtensionFactory } from "./types";
+import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./types";
 import { initAuditLog } from "./utils/auditLog";
 
 // Session lifecycle and prompt injection
@@ -77,13 +77,21 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       throw new Error("LLM not available (pi SDK stub)");
     };
 
+    // Wrap pi.exec() as ExecFn for DI into verifiers (avoids child_process.execSync)
+    const execFn: ExecFn | undefined = pi.exec
+      ? async (cmd: string, args: string[], cwd: string) => {
+          const result = await pi.exec!(cmd, args, { cwd });
+          return { stdout: result.stdout, stderr: result.stderr, code: result.code };
+        }
+      : undefined;
+
     // ── Hooks registration ─────────────────────────────────────────────
     const hooks = [
       createSessionStarter(config),
       createPromptInjector(config),
       createToolGuard(config),
       createLoopBreaker(config),
-      createAgentSettled(config, { callLLM: callLLMStub }),
+      createAgentSettled(config, { callLLM: callLLMStub, execFn }),
       createSessionShutdown(config),
     ];
     for (const h of hooks) {
@@ -179,4 +187,5 @@ export type {
   PipelineJsonConfig,
   VerifyFailureItem,
   VerifyResultSnapshot,
+  ExecFn,
 } from "./types";
