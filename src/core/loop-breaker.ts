@@ -108,7 +108,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
               pipelineId: meta.pipelineId,
               stage: meta.currentStage,
               loopCount: String(newLoopCount),
-            });
+            }, "warn");
           }
         }
       }
@@ -160,7 +160,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
               stage: meta.currentStage,
               loopCount: String(newLoopCount),
               reason: "verify_failure_loop_overflow",
-            });
+            }, "warn");
           }
         }
       }

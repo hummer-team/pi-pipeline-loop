@@ -48,7 +48,8 @@ describe("createLoopBreaker", () => {
 
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
       const line = logContent.trim().split("\n")[0];
-      expect(line).toContain(" - loop_break_fatal");
+      expect(line).toContain("loop_break_fatal");
+      expect(line).toContain("[WARN]");
     });
 
     it("does not break on bash test pass", async () => {

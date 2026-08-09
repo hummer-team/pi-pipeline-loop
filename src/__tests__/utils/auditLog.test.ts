@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import {
   initAuditLog,
   writeAuditLog,
+  safeWriteAuditLog,
   getDateAuditFileName,
+  __resetAuditDirPath,
 } from "../../utils/auditLog";
 import type { PipelineConfig } from "../../types";
 
@@ -172,5 +174,100 @@ describe("writeAuditLog", () => {
     expect(lines[2]).not.toContain("|");
 
     await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("writeAuditLog level parameter", () => {
+  it('level "warn" produces [WARN] prefix', async () => {
+    const root = makeTmpRoot("level-warn");
+    await initAuditLog(makeConfig(root));
+
+    await writeAuditLog("auto_verify_fail", { stage: "design" }, "warn");
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const line = content.trim();
+
+    expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - \[WARN\] auto_verify_fail/);
+    expect(line).toContain("[WARN] auto_verify_fail");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('level "error" produces [ERROR] prefix', async () => {
+    const root = makeTmpRoot("level-error");
+    await initAuditLog(makeConfig(root));
+
+    await writeAuditLog("pipeline_start_error", { file: "missing.md", error: "not found" }, "error");
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const line = content.trim();
+
+    expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - \[ERROR\] pipeline_start_error/);
+    expect(line).toContain("[ERROR] pipeline_start_error");
+    expect(line).toContain("file=missing.md");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('default level "info" has no prefix (backward compatible)', async () => {
+    const root = makeTmpRoot("level-info");
+    await initAuditLog(makeConfig(root));
+
+    // Explicit "info"
+    await writeAuditLog("agent_settled", { pipelineId: "p1" }, "info");
+    // Default (no level arg)
+    await writeAuditLog("session_end", { pipelineId: "p2" });
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const lines = content.trim().split("\n");
+
+    // Neither line should contain [WARN] or [ERROR]
+    expect(lines[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - agent_settled/);
+    expect(lines[0]).not.toContain("[WARN]");
+    expect(lines[0]).not.toContain("[ERROR]");
+    expect(lines[1]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - session_end/);
+    expect(lines[1]).not.toContain("[WARN]");
+    expect(lines[1]).not.toContain("[ERROR]");
+
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("writeAuditLog guard: uninitialized auditDirPath", () => {
+  it("does not throw or produce files when auditDirPath is empty", async () => {
+    // Reset the module-level state to simulate uninitialized condition
+    __resetAuditDirPath();
+
+    // Should silently return without throwing
+    await expect(writeAuditLog("should_not_write", { test: "true" })).resolves.toBeUndefined();
+
+    // Restore state for other tests by re-initializing to a temp directory
+    const root = makeTmpRoot("guard-restore");
+    await initAuditLog(makeConfig(root));
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("safeWriteAuditLog", () => {
+  it("writes to audit log like writeAuditLog but never throws", async () => {
+    const root = makeTmpRoot("safe-write");
+    await initAuditLog(makeConfig(root));
+
+    // Should succeed normally
+    await safeWriteAuditLog("test_action", { key: "val" }, "error");
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content.trim()).toContain("[ERROR] test_action");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("silently handles errors without throwing", async () => {
+    // Even with arbitrary state, safeWriteAuditLog should never throw
+    await expect(safeWriteAuditLog("test", {}, "error")).resolves.toBeUndefined();
   });
 });

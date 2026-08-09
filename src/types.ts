@@ -5,6 +5,26 @@
  * and configuration interfaces that projects use to customize their pipeline.
  */
 
+// ─── Audit Log Types ──────────────────────────────────────────────────────────
+
+/**
+ * Audit log severity levels.
+ * - "info": Default level, no prefix in log line (backward compatible)
+ * - "warn": Adds [WARN] prefix, used for auto_verify_fail and loop_break_fatal
+ * - "error": Adds [ERROR] prefix, used for real-error catch blocks
+ */
+export type AuditLogLevel = "info" | "warn" | "error";
+
+/**
+ * Function signature for injecting audit logging into verifiers.
+ * Used by Phase 1 to propagate error-level logging through the verifier chain.
+ */
+export type AuditLogFn = (
+  stage: string,
+  message?: Record<string, string>,
+  level?: AuditLogLevel,
+) => Promise<void>;
+
 // ─── Execution Function Type (DI) ────────────────────────────────────────────
 
 /**

@@ -221,7 +221,7 @@ export async function applyVerifyFail(
     method,
     failureCount: String(verifyFailures.length),
     failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
-  });
+  }, "warn");
 
   const failureSummary = verifyFailures
     .map((f) => `[${f.ruleType}] ${f.detail}`)
