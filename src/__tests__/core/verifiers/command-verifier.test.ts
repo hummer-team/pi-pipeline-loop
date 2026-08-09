@@ -153,4 +153,57 @@ describe("verifyRequiredCommands", () => {
     expect(result.passed).toBe(false);
     expect(result.detail).toContain("expected exit code 0, got 1");
   });
+
+  // ── Phase 2: shell operator fail-fast tests ──
+
+  it("fails on && operator in cmd (shell operators not supported)", async () => {
+    const mockExecFn: ExecFn = async () => ({
+      stdout: "",
+      stderr: "",
+      code: 0,
+    });
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "npm test && npm run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("shell operators");
+  });
+
+  it("fails on > redirect operator in cmd", async () => {
+    const mockExecFn: ExecFn = async () => ({
+      stdout: "",
+      stderr: "",
+      code: 0,
+    });
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: 'echo "x" > file', expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("shell operators");
+  });
+
+  it("simple command passes without shell operator false positive", async () => {
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      if (cmd === "echo" && args[0] === "hello") {
+        return { stdout: "hello\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "unknown", code: 1 };
+    };
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "echo hello", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+    );
+
+    expect(result.passed).toBe(true);
+  });
 });

@@ -1,10 +1,24 @@
 /**
  * @module command-verifier
  * Verifies shell command execution results (exit code, stdout content).
+ *
+ * Limitations: requiredCommands only supports simple commands (command name +
+ * space-separated arguments). Shell operators such as pipes (|), redirects (>/>>),
+ * logical operators (&&/||), quotes, subshells, and environment variable expansion
+ * are NOT supported. To verify complex shell pipelines, split them into multiple
+ * rules or use a script file invoked as a single command.
  */
 
 import type { ExecFn } from "../../types";
 import type { VerifierResult } from "./file-verifier";
+
+/** Shell operators not supported in requiredCommands (pipeline |, redirect >, &&/||, quotes, etc.) */
+const SHELL_OPERATOR_PATTERN = /[|><&;`$()]/;
+
+/** Checks whether a command string contains shell operators */
+function hasShellOperator(cmd: string): boolean {
+  return SHELL_OPERATOR_PATTERN.test(cmd);
+}
 
 /**
  * Verifies that required commands execute with expected exit codes and output.
@@ -13,6 +27,10 @@ import type { VerifierResult } from "./file-verifier";
  * Fail-closed: when rules exist but execFn is not provided, verification
  * immediately fails with an error indicating pi.exec is unavailable.
  * This prevents silent bypass of the SDK sandbox via child_process fallback.
+ *
+ * Shell operator fail-fast: if a rule's cmd contains shell operators (|, >, <,
+ * &&, ||, ;, `, $, (), etc.), verification immediately fails with a descriptive
+ * error. requiredCommands only supports simple commands (name + space-separated args).
  *
  * @param rules - Array of command rules with cmd, expectExit, expectOutput
  * @param projectRoot - Working directory for command execution
@@ -39,6 +57,14 @@ export async function verifyRequiredCommands(
   const failures: string[] = [];
 
   for (const rule of rules) {
+    // Fail-fast: reject shell operators in cmd (not supported by split-based execution)
+    if (hasShellOperator(rule.cmd)) {
+      return {
+        passed: false,
+        detail: `"${rule.cmd}": shell operators are not supported in requiredCommands. Split into multiple rules or use a script file.`,
+      };
+    }
+
     const expectedExit = rule.expectExit ?? 0;
     let stdout = "";
     let actualExit = 0;
