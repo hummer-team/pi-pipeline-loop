@@ -81,7 +81,7 @@ interface VerifyFailReturn {
  * Side effects:
  * - On advance: updates metadata (previousStage, currentStage, resets loopCount/stepIndex/verifyFailures)
  * - Writes audit log "auto_verify_pass" with method tag
- * - Sends ui.notify (except silent terminal skip when handleTerminal=false)
+ * - Sends TUI stage transition via opts.ui?.transition (gated by output.pipelineStage; silent terminal skip when handleTerminal=false)
  *
  * @returns VerifyPassReturn when returnResult=true; void when returnResult=false
  */
@@ -128,13 +128,7 @@ export async function applyVerifyPass(
       method: opts.method,
     });
 
-    if (ctx.ui?.notify) {
-      ctx.ui.notify(
-        `Verification passed for "${stageName}". Advanced to "${nextStage}".`,
-      );
-    }
-
-    // TUI stage transition output
+    // TUI stage transition output (gated by output.pipelineStage)
     opts.ui?.transition(ctx, stageName, nextStage);
 
     if (opts.returnResult) {
@@ -179,7 +173,7 @@ export async function applyVerifyPass(
  * - Converts structuredResult.failures + ruleMissing → VerifyFailureItem[] (with timestamp)
  * - Updates metadata: verifyAttempts+1, verifyFailures, clears assistantMessages
  * - Writes audit log "auto_verify_fail" with method, failureCount, failureTypes
- * - Sends ui.notify with failure summary
+ * - Sends TUI failure output via ui?.fail (gated by output.pipelineStage)
  *
  * @returns VerifyFailReturn with structured failure details
  */
@@ -236,13 +230,7 @@ export async function applyVerifyFail(
     .map((f) => `[${f.ruleType}] ${f.detail}`)
     .join("; ");
 
-  if (ctx.ui?.notify) {
-    ctx.ui.notify(
-      `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and try again.`,
-    );
-  }
-
-  // TUI failure output
+  // TUI failure output (gated by output.pipelineStage)
   ui?.fail(ctx, stageName, "verify failed");
 
   return {

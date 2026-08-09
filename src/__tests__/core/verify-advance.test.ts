@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import type { SessionMeta, PipelineStage } from "../../types";
+import { createPipelineUI, STAGE_STATUS_KEY } from "../../core/pipeline-ui";
 
 const TMP = join(tmpdir(), "pi-verify-advance-test-" + Date.now());
 
 function createCtx(meta: SessionMeta) {
   const updates: SessionMeta[] = [];
   const notifications: string[] = [];
+  const statusCalls: { key: string; text: string }[] = [];
+  const config = makeTestConfig(); // output.pipelineStage: true
+  const pipelineUI = createPipelineUI(config);
   return {
     session: {
       getMetadata: () => meta,
@@ -25,9 +29,14 @@ function createCtx(meta: SessionMeta) {
       notify: (msg: string) => {
         notifications.push(msg);
       },
+      setStatus: (key: string, text: string) => {
+        statusCalls.push({ key, text });
+      },
     },
+    pipelineUI,
     updates,
     notifications,
+    statusCalls,
   };
 }
 
@@ -54,7 +63,7 @@ describe("applyVerifyPass", () => {
       "develop",
       "review" as PipelineStage,
       sharedResult,
-      { method: "tool", handleTerminal: true, returnResult: true },
+      { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
     // Should have advanced
@@ -65,10 +74,9 @@ describe("applyVerifyPass", () => {
     expect(lastUpdate.currentStepIndex).toBe(0);
     expect(lastUpdate.verifyFailures).toEqual([]);
 
-    // Should have notified
-    expect(ctx.notifications).toContain(
-      'Verification passed for "develop". Advanced to "review".',
-    );
+    // Should have TUI transition output (gated by output.pipelineStage)
+    expect(ctx.notifications).toContain("develop → review");
+    expect(ctx.statusCalls).toContainEqual({ key: STAGE_STATUS_KEY, text: "develop → review" });
 
     // Should have audit log
     const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
@@ -99,7 +107,7 @@ describe("applyVerifyPass", () => {
       "develop",
       "review" as PipelineStage,
       sharedResult,
-      { method: "rule", handleTerminal: false, returnResult: false },
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
     );
 
     const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
@@ -124,7 +132,7 @@ describe("applyVerifyPass", () => {
       "completed",
       null,
       sharedResult,
-      { method: "tool", handleTerminal: true, returnResult: true },
+      { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
     // Should NOT advance (terminal stage) — no metadata update occurs
@@ -158,7 +166,7 @@ describe("applyVerifyPass", () => {
       "completed",
       null,
       sharedResult,
-      { method: "rule", handleTerminal: false, returnResult: false },
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
     );
 
     // No notifications should be sent (silent skip)
@@ -188,7 +196,7 @@ describe("applyVerifyPass", () => {
       "develop",
       "review" as PipelineStage,
       sharedResult,
-      { method: "tool", handleTerminal: true, returnResult: true },
+      { method: "tool", handleTerminal: true, returnResult: true, ui: ctx1.pipelineUI },
     );
     expect(result1).toBeDefined();
     expect(result1!.success).toBe(true);
@@ -201,7 +209,7 @@ describe("applyVerifyPass", () => {
       "develop",
       "review" as PipelineStage,
       sharedResult,
-      { method: "rule", handleTerminal: false, returnResult: false },
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx2.pipelineUI },
     );
     expect(result2).toBeUndefined();
   });
@@ -230,6 +238,7 @@ describe("applyVerifyFail", () => {
       "develop",
       sharedResult,
       "tool",
+      ctx.pipelineUI,
     );
 
     // Should NOT advance
@@ -248,8 +257,9 @@ describe("applyVerifyFail", () => {
     expect(logContent).toContain("auto_verify_fail");
     expect(logContent).toContain("method=tool");
 
-    // Should have notification
-    expect(ctx.notifications.some(n => n.includes("Verification failed"))).toBe(true);
+    // Should have TUI failure output (gated by output.pipelineStage)
+    expect(ctx.notifications).toContain("develop ⚠ verify failed");
+    expect(ctx.statusCalls).toContainEqual({ key: STAGE_STATUS_KEY, text: "develop ⚠ verify failed" });
 
     // Should return structured result
     expect(result.success).toBe(false);
@@ -270,7 +280,7 @@ describe("applyVerifyFail", () => {
       verifyResult: null,
     };
 
-    await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule");
+    await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI);
 
     const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
     const logContent = await readFile(logPath, "utf-8");
@@ -296,10 +306,85 @@ describe("applyVerifyFail", () => {
       "develop",
       sharedResult,
       "tool",
+      ctx.pipelineUI,
     );
 
     // Should NOT duplicate keywords — only 1 failure
     expect(result.failures.length).toBe(1);
     expect(result.failures[0].ruleType).toBe("keywords");
+  });
+});
+
+describe("output.pipelineStage: false (silent)", () => {
+  function createSilentCtx(meta: SessionMeta) {
+    const updates: SessionMeta[] = [];
+    const notifications: string[] = [];
+    const statusCalls: { key: string; text: string }[] = [];
+    const config = makeTestConfig({ output: { pipelineStage: false } });
+    const pipelineUI = createPipelineUI(config);
+    return {
+      session: {
+        getMetadata: () => meta,
+        updateMetadata: (m: SessionMeta) => {
+          updates.push(m);
+          Object.assign(meta, m);
+        },
+        setModel: async (_model: string) => {},
+      },
+      ui: {
+        notify: (msg: string) => { notifications.push(msg); },
+        setStatus: (key: string, text: string) => { statusCalls.push({ key, text }); },
+      },
+      pipelineUI,
+      updates,
+      notifications,
+      statusCalls,
+    };
+  }
+
+  it("applyVerifyPass produces no TUI output when pipelineStage is false", async () => {
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createSilentCtx(meta);
+    const sharedResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: { structured: { passed: true }, llm: null, overallPassed: true },
+    };
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "develop",
+      "review" as PipelineStage,
+      sharedResult,
+      { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
+    );
+
+    // Should have advanced (metadata updated)
+    expect(ctx.updates.length).toBeGreaterThan(0);
+    expect(ctx.updates[ctx.updates.length - 1].currentStage).toBe("review");
+
+    // But no TUI output
+    expect(ctx.notifications).toEqual([]);
+    expect(ctx.statusCalls).toEqual([]);
+  });
+
+  it("applyVerifyFail produces no TUI output when pipelineStage is false", async () => {
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createSilentCtx(meta);
+    const sharedResult = {
+      structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "missing" }] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "tool", ctx.pipelineUI);
+
+    // Should have updated metadata (verifyFailures)
+    expect(ctx.updates.length).toBeGreaterThan(0);
+
+    // But no TUI output
+    expect(ctx.notifications).toEqual([]);
+    expect(ctx.statusCalls).toEqual([]);
   });
 });

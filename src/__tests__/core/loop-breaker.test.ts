@@ -386,4 +386,50 @@ describe("createLoopBreaker", () => {
       expect(lastUpdate.loopCount).toBe(2);
     });
   });
+
+  describe("TUI output gating (output.pipelineStage)", () => {
+    it("freeze produces TUI fail output when pipelineStage is true", async () => {
+      const TMP = join(tmpdir(), "pi-breaker-tui-on-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP, maxLoops: 2, output: { pipelineStage: true } });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 1, maxLoops: 2 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx.result = { exitCode: 1 };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.terminated).toBe(true);
+
+      // TUI fail output: "develop ⚠ pipeline frozen"
+      expect(ctx.notifications).toContain("develop ⚠ pipeline frozen");
+      expect(ctx.statusCalls).toContainEqual({ key: "pipeline-stage", text: "develop ⚠ pipeline frozen" });
+    });
+
+    it("freeze produces no TUI output when pipelineStage is false (default)", async () => {
+      const TMP = join(tmpdir(), "pi-breaker-tui-off-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP, maxLoops: 2, output: { pipelineStage: false } });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 1, maxLoops: 2 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx.result = { exitCode: 1 };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.terminated).toBe(true);
+
+      // No TUI output when switch is off
+      expect(ctx.notifications).toEqual([]);
+      expect(ctx.statusCalls).toEqual([]);
+    });
+  });
 });

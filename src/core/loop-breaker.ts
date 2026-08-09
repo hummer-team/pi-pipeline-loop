@@ -100,12 +100,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
               terminateReason: "loop_overflow",
             });
 
-            if (ctx.ui?.notify) {
-              ctx.ui.notify(
-                `[pi-pipeline] Pipeline ${meta.pipelineId} terminated: max loop iterations (${meta.maxLoops}) reached in "${meta.currentStage}" stage`,
-              );
-            }
-
+            // TUI failure output (gated by output.pipelineStage)
             ui.fail(ctx, meta.currentStage, "pipeline frozen");
 
             await writeAuditLog("loop_break_fatal", {
@@ -153,12 +148,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
               terminateReason: "verify_failure_loop_overflow",
             });
 
-            if (ctx.ui?.notify) {
-              ctx.ui.notify(
-                `[pi-pipeline] Pipeline ${meta.pipelineId} terminated: max loop iterations (${meta.maxLoops}) reached with unresolved verification failures in "${meta.currentStage}" stage`,
-              );
-            }
-
+            // TUI failure output (gated by output.pipelineStage)
             ui.fail(ctx, meta.currentStage, "pipeline frozen");
 
             await writeAuditLog("loop_break_fatal", {
