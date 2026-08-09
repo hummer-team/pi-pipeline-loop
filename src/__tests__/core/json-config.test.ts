@@ -166,6 +166,30 @@ describe("resolvePipelineConfig", () => {
     );
   });
 
+  it("verify.mode defaults to 'hook' when not specified", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: { verify: {} } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.verify!.mode).toBe("hook");
+  });
+
+  it("verify.mode 'tool' is parsed correctly", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: { verify: { mode: "tool" } } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.verify!.mode).toBe("tool");
+  });
+
+  it("verify.mode invalid value falls back to 'hook' with warning", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: { verify: { mode: "invalid" as any } } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.verify!.mode).toBe("hook");
+  });
+
   it("Case A: require:false reconnects to next active stage", () => {
     const json: PipelineJsonConfig = {
       stages: {

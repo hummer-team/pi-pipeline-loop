@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { verifyRequiredGit } from "../../../core/verifiers/git-verifier";
+import type { ExecFn } from "../../../types";
 
 describe("verifyRequiredGit", () => {
   // These tests run within the pi-pipeline-loop git repo
@@ -64,5 +65,58 @@ describe("verifyRequiredGit", () => {
     // Result depends on working tree state — just check it returns a valid result
     expect(typeof result.passed).toBe("boolean");
     expect(typeof result.detail).toBe("string");
+  });
+
+  // ── Phase 3: mock execFn tests ──────────────────────────────────────────────
+
+  it("uses execFn — valid git log output → time window check passes", async () => {
+    const nowTimestamp = Math.floor(Date.now() / 1000).toString();
+    const mockExecFn: ExecFn = async (_cmd, args) => {
+      if (args[0] === "log") {
+        return { stdout: nowTimestamp + "\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    const result = await verifyRequiredGit(
+      { lastCommitWithin: "10min" },
+      projectRoot,
+      mockExecFn,
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.detail).toContain("All git rules satisfied");
+  });
+
+  it("uses execFn — clean working tree → passes", async () => {
+    const mockExecFn: ExecFn = async (_cmd, args) => {
+      if (args[0] === "status") {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    const result = await verifyRequiredGit(
+      { cleanWorkingTree: true },
+      projectRoot,
+      mockExecFn,
+    );
+
+    expect(result.passed).toBe(true);
+  });
+
+  it("uses execFn — throws exception → verification fails", async () => {
+    const mockExecFn: ExecFn = async () => {
+      throw new Error("sandbox execution failed");
+    };
+
+    const result = await verifyRequiredGit(
+      { lastCommitWithin: "10min" },
+      projectRoot,
+      mockExecFn,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("Failed to read git log");
   });
 });

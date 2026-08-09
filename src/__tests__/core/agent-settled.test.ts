@@ -5,6 +5,7 @@ import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import type { PipelineStage } from "../../types";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-" + Date.now());
 
@@ -106,6 +107,108 @@ describe("createAgentSettled", () => {
     // Should have audit log for verify failure
     const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("auto_verify_fail");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // ── Phase 3: verify.mode tests ──────────────────────────────────────────────
+
+  it("mode 'tool': skips verification — does NOT run runVerification", async () => {
+    const stageTmp = join(tmpdir(), "pi-agent-settled-tool-mode-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create a verify.md that would FAIL (file doesn't exist)
+    const vrDir = join(stageTmp, "references", "develop_spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"nonexistent.md\"\n---\nBody\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "develop"
+                ? { require: true, verifyFile: "references/develop_spec/verify.md", mode: "tool" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // In tool mode, no verification runs and no metadata update occurs
+    // The handler simply returns after audit log + skip notification
+    // Check audit log for mode=tool skip
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_mode_tool_skip");
+    expect(logContent).toContain("verify.mode=tool");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("mode 'hook': keeps existing behavior — runs verification", async () => {
+    const stageTmp = join(tmpdir(), "pi-agent-settled-hook-mode-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create verify.md with a file that EXISTS → should pass and advance
+    const vrDir = join(stageTmp, "references", "develop_spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nBody\n",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "develop"
+                ? { require: true, verifyFile: "references/develop_spec/verify.md", mode: "hook" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should advance to review (next after develop)
+    const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(lastMeta.currentStage).toBe("review");
 
     await rm(stageTmp, { recursive: true, force: true });
   });
