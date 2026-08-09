@@ -78,6 +78,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     maxLoops: typeof json.maxLoops === "number" ? json.maxLoops : undefined,
     maxLoopCycles:
       typeof json.maxLoopCycles === "number" ? json.maxLoopCycles : undefined,
+    output: parseOutputConfig(json.output),
   };
 }
 
@@ -95,6 +96,28 @@ function parseVerifyMode(raw: unknown): "hook" | "tool" {
     );
   }
   return "hook";
+}
+
+/**
+ * Parses the output configuration from JSON config.
+ * Validates that output is an object and pipelineStage is boolean.
+ * Returns undefined for missing/invalid output; logs warning for invalid values.
+ */
+function parseOutputConfig(raw: unknown): { pipelineStage?: boolean } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    console.warn(`[pi-pipeline] Invalid output config — expected object, got ${typeof raw}`);
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const pipelineStage = obj.pipelineStage;
+  if (pipelineStage !== undefined && typeof pipelineStage !== "boolean") {
+    console.warn(
+      `[pi-pipeline] Invalid output.pipelineStage "${String(pipelineStage)}" — expected boolean, ignoring`,
+    );
+    return undefined;
+  }
+  return { pipelineStage: typeof pipelineStage === "boolean" ? pipelineStage : undefined };
 }
 
 export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig {
@@ -214,5 +237,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     domainDir: json.domainDir || ".pi/domains",
     maxLoops: json.maxLoops ?? 3,
     maxLoopCycles: json.maxLoopCycles ?? 3,
+    output: { pipelineStage: json.output?.pipelineStage ?? false },
   };
 }

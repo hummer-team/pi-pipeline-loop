@@ -270,6 +270,13 @@ export interface PipelineConfig {
 
   /** Maximum number of full pipeline cycles (e.g. fix→develop loops); defaults to 3 */
   maxLoopCycles?: number;
+
+  /**
+   * TUI output configuration.
+   * When pipelineStage is true, pipeline stage transitions are displayed via notify + setStatus.
+   * Default: false (all TUI output silenced).
+   */
+  output?: { pipelineStage?: boolean };
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -343,6 +350,9 @@ export interface PipelineJsonConfig {
 
   /** Maximum pipeline cycles (e.g. fix→develop) before termination (default 3) */
   maxLoopCycles?: number;
+
+  /** TUI output configuration (default: { pipelineStage: false }) */
+  output?: { pipelineStage?: boolean };
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────
