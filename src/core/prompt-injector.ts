@@ -182,6 +182,26 @@ function buildVerifyFailurePrompt(meta: SessionMeta): string | null {
 }
 
 /**
+ * Builds Part 7: Verify Tool Guidance.
+ * When verify.mode is "tool", injects guidance for the agent to call pipeline_verify.
+ *
+ * @param stageConfig - Current stage configuration
+ * @returns Prompt section string, or null if not in tool mode
+ */
+function buildVerifyToolGuidance(stageConfig: StageConfig): string | null {
+  if (stageConfig.verify?.mode !== "tool") {
+    return null;
+  }
+
+  return (
+    `# VERIFICATION MODE: TOOL\n` +
+    `After completing your work for this stage, call the \`pipeline_verify\` tool ` +
+    `to validate your output before advancing. The hook-based auto-verification is ` +
+    `disabled for this stage — you must verify explicitly.`
+  );
+}
+
+/**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
  *
  * The prompt is assembled from up to 6 parts joined by horizontal rule separators:
@@ -209,8 +229,9 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const part4 = buildLoopStatus(meta);
       const part5 = buildPipelineStatus(meta);
       const part6 = buildVerifyFailurePrompt(meta);
+      const part7 = buildVerifyToolGuidance(stageConfig);
 
-      const promptParts = [part0, part1, part2, part3, part4, part5, part6].filter(
+      const promptParts = [part0, part1, part2, part3, part4, part5, part6, part7].filter(
         (p): p is string => p !== null,
       );
 

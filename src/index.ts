@@ -25,6 +25,7 @@ import { createGenerateSummary } from "./tools/generate-summary";
 import { createValidateSummary } from "./tools/validate-summary";
 import { createPipelineHandoff } from "./tools/pipeline-handoff";
 import { createRequestBashPermission } from "./tools/request-bash-permission";
+import { createPipelineVerify } from "./tools/pipeline-verify";
 
 // Commands
 import { createPipelineStatusCommand } from "./commands/pipeline-status";
@@ -110,6 +111,23 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     ];
     for (const t of tools) {
       pi.registerTool(t.name, t.description, t.parameters, t.execute);
+    }
+
+    // ── Conditional tool: pipeline_verify (only if any stage uses mode: "tool") ──
+    const hasToolModeStage = Object.values(config.stages).some(
+      (sc) => sc.verify?.mode === "tool",
+    );
+    if (hasToolModeStage) {
+      const verifyTool = createPipelineVerify(config, {
+        callLLM: callLLMStub,
+        execFn,
+      });
+      pi.registerTool(
+        verifyTool.name,
+        verifyTool.description,
+        verifyTool.parameters,
+        verifyTool.execute,
+      );
     }
 
     // ── Commands registration ──────────────────────────────────────────

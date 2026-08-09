@@ -50,6 +50,16 @@ export function createAgentSettled(
         return;
       }
 
+      // Tool mode: skip hook-based verification — agent calls pipeline_verify tool explicitly
+      if (stageConfig.verify.mode === "tool") {
+        await writeAuditLog("verify_mode_tool_skip", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          reason: "verify.mode=tool, verification deferred to pipeline_verify tool",
+        });
+        return;
+      }
+
       const assistantMessages = meta.assistantMessages || [];
       const verifyResult = await runVerification(
         config,
