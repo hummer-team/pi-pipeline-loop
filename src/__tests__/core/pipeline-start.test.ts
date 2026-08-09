@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
 import { makeTestConfig, createMockCtx, makeTestMeta } from "../helpers";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 
 let TMP: string;
 let docPath: string;
@@ -178,5 +179,38 @@ describe("createPipelineStartCommand", () => {
 
     expect(result.success).toBe(true);
     expect(updatedMeta).not.toBeNull();
+  });
+
+  it("writes pipeline_start_error to audit when file is missing", async () => {
+    // Set up audit log to a temp directory
+    const auditDir = path.join(TMP, ".pi", "audit");
+    await fs.mkdir(auditDir, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+    const ctx = {
+      session: {
+        getMetadata: () => meta,
+        updateMetadata: () => {},
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "nonexistent.md" }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("File not found");
+
+    // Read the audit log and verify
+    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logContent = await fs.readFile(logFile, "utf-8");
+
+    expect(logContent).toContain("pipeline_start_error");
+    expect(logContent).toContain("[ERROR]");
+    expect(logContent).toContain("nonexistent.md");
+
+    // Clean up audit state
+    __resetAuditDirPath();
   });
 });

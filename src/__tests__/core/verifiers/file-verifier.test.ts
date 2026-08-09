@@ -88,4 +88,24 @@ describe("verifyFileContentPattern", () => {
     expect((await verifyFileContentPattern(undefined, TMP)).passed).toBe(true);
     expect((await verifyFileContentPattern([], TMP)).passed).toBe(true);
   });
+
+  it("calls logError when file read fails (real error path)", async () => {
+    const logCalls: { stage: string; msg: Record<string, string> }[] = [];
+    const logError = async (stage: string, msg?: Record<string, string>) => {
+      logCalls.push({ stage, msg: msg ?? {} });
+    };
+
+    const result = await verifyFileContentPattern(
+      [{ path: "nonexistent.md", pattern: ".*" }],
+      TMP,
+      logError,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0].stage).toBe("verify_error");
+    expect(logCalls[0].msg.ruleType).toBe("fileContentPattern");
+    expect(logCalls[0].msg.path).toBe("nonexistent.md");
+    expect(logCalls[0].msg.error).toBeTruthy();
+  });
 });

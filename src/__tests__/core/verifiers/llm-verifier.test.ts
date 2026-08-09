@@ -73,6 +73,39 @@ describe("parseVerifyIntent", () => {
     const instructions = await parseVerifyIntent("check", "prompt", mockLLM);
     expect(instructions).toBeNull();
   });
+
+  it("calls logError when LLM throws (llm_parse error)", async () => {
+    const mockLLM = async (): Promise<string> => { throw new Error("LLM connection timeout"); };
+    const logCalls: { stage: string; msg: Record<string, string> }[] = [];
+    const logError = async (stage: string, msg?: Record<string, string>) => {
+      logCalls.push({ stage, msg: msg ?? {} });
+    };
+
+    const instructions = await parseVerifyIntent("check", "prompt", mockLLM, logError);
+
+    expect(instructions).toBeNull();
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0].stage).toBe("verify_error");
+    expect(logCalls[0].msg.verifier).toBe("llm_parse");
+    expect(logCalls[0].msg.error).toContain("LLM connection timeout");
+  });
+
+  it("calls logError when LLM returns unparseable JSON (llm_parse_json error)", async () => {
+    const mockLLM = async (): Promise<string> => "this is not json at all";
+    const logCalls: { stage: string; msg: Record<string, string> }[] = [];
+    const logError = async (stage: string, msg?: Record<string, string>) => {
+      logCalls.push({ stage, msg: msg ?? {} });
+    };
+
+    const instructions = await parseVerifyIntent("check", "prompt", mockLLM, logError);
+
+    // Returns empty array (not null — LLM responded but JSON was invalid)
+    expect(instructions).not.toBeNull();
+    expect(instructions).toHaveLength(0);
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0].stage).toBe("verify_error");
+    expect(logCalls[0].msg.verifier).toBe("llm_parse_json");
+  });
 });
 
 describe("executeLLMInstructions", () => {
@@ -175,6 +208,30 @@ describe("judgeLLMResult", () => {
 
     const judgment = await judgeLLMResult(instructions, executionResults, "prompt", mockLLM);
     expect(judgment.passed).toBe(false);
+  });
+
+  it("calls logError when LLM judge throws (llm_judge error)", async () => {
+    const mockLLM = async (): Promise<string> => { throw new Error("judge LLM down"); };
+    const logCalls: { stage: string; msg: Record<string, string> }[] = [];
+    const logError = async (stage: string, msg?: Record<string, string>) => {
+      logCalls.push({ stage, msg: msg ?? {} });
+    };
+
+    const instructions: VerificationInstruction[] = [
+      { checkType: "command", target: "echo ok" },
+    ];
+    const executionResults = [
+      { instruction: instructions[0], passed: true, detail: "ok" },
+    ];
+
+    const judgment = await judgeLLMResult(instructions, executionResults, "prompt", mockLLM, logError);
+
+    expect(judgment.passed).toBe(true); // fallback: all passed
+    expect(judgment.reasoning).toContain("LLM judge unavailable");
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0].stage).toBe("verify_error");
+    expect(logCalls[0].msg.verifier).toBe("llm_judge");
+    expect(logCalls[0].msg.error).toContain("judge LLM down");
   });
 });
 

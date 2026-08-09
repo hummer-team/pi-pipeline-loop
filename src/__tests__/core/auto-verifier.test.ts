@@ -9,6 +9,7 @@ import {
   executeStructuredRules,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 
 let TMP: string;
 
@@ -393,5 +394,71 @@ describe("runVerification — structured rules", () => {
     expect(result2.structuredResult).toBeDefined();
     expect(result2.structuredResult!.passed).toBe(false);
     expect(result2.structuredResult!.failures.some(f => f.ruleType === "requiredFiles")).toBe(true);
+  });
+
+  it("writes verify_error + [ERROR] + pipelineId= to audit when execFn throws", async () => {
+    // Set up audit log to a temp directory
+    const auditDir = path.join(TMP, ".pi", "audit");
+    await fs.mkdir(auditDir, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+    await initAuditLog(config);
+
+    // Create a verify.md with requiredCommands rule
+    const vrPath = path.join(TMP, "references", "develop_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredCommands:\n" +
+        '    - cmd: "bun run build"\n' +
+        "      expectExit: 0\n" +
+        "---\n" +
+        "Body\n",
+      "utf-8",
+    );
+
+    const fullConfig = makeTestConfig({
+      projectRoot: TMP,
+      auditDir: ".pi/audit",
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "develop"
+                  ? { require: true, verifyFile: "references/develop_spec/verify.md" }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-audit-test-001" });
+
+    // Inject an execFn that throws (simulates real error)
+    const throwingExecFn = async () => { throw new Error("execFn crashed"); };
+
+    await runVerification(fullConfig, meta, [], { execFn: throwingExecFn });
+
+    // Read the audit log and verify
+    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logContent = await fs.readFile(logFile, "utf-8");
+
+    expect(logContent).toContain("verify_error");
+    expect(logContent).toContain("[ERROR]");
+    expect(logContent).toContain("pipelineId=pipe-audit-test-001");
+    expect(logContent).toContain("execFn crashed");
+
+    // Clean up audit state
+    __resetAuditDirPath();
   });
 });

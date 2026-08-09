@@ -190,6 +190,30 @@ describe("verifyRequiredCommands", () => {
     expect(result.detail).toContain("shell operators");
   });
 
+  it("calls logError when execFn throws (real error path)", async () => {
+    const mockExecFn: ExecFn = async () => {
+      throw new Error("sandbox crashed");
+    };
+    const logCalls: { stage: string; msg: Record<string, string> }[] = [];
+    const logError = async (stage: string, msg?: Record<string, string>) => {
+      logCalls.push({ stage, msg: msg ?? {} });
+    };
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "dangerous-cmd", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      logError,
+    );
+
+    expect(result.passed).toBe(false);
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0].stage).toBe("verify_error");
+    expect(logCalls[0].msg.ruleType).toBe("requiredCommands");
+    expect(logCalls[0].msg.cmd).toBe("dangerous-cmd");
+    expect(logCalls[0].msg.error).toContain("sandbox crashed");
+  });
+
   it("simple command passes without shell operator false positive", async () => {
     const mockExecFn: ExecFn = async (cmd, args) => {
       if (cmd === "echo" && args[0] === "hello") {

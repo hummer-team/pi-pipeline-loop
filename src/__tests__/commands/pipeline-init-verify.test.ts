@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineInitVerifyCommand } from "../../commands/pipeline-init-verify";
 import { makeTestConfig } from "../helpers";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 
 let TMP: string;
 
@@ -286,5 +287,60 @@ describe("createPipelineInitVerifyCommand", () => {
     // "shared-output.md" should appear exactly once in the requiredFiles list
     const matches = content.match(/shared-output\.md/g);
     expect(matches).toHaveLength(1);
+  });
+
+  it("writes verify_md_generate_error to audit when file write fails", async () => {
+    const skillContent = "- **Must** output.md\n";
+
+    // Set up skill file
+    const skillDir = path.join(TMP, ".pi", "skills", "develop");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), skillContent, "utf-8");
+
+    // Create a file where the verify directory should be created, causing mkdir to fail
+    const blockPath = path.join(TMP, ".pi", "references", "develop_spec");
+    await fs.mkdir(path.join(TMP, ".pi", "references"), { recursive: true });
+    await fs.writeFile(blockPath, "I am a file, not a directory", "utf-8");
+
+    // Set up audit log
+    const auditDir = path.join(TMP, ".pi", "audit");
+    await fs.mkdir(auditDir, { recursive: true });
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      auditDir: ".pi/audit",
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: `${s}/SKILL.md`,
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+            },
+          ],
+        ),
+      ) as any,
+    });
+    await initAuditLog(config);
+
+    const cmd = createPipelineInitVerifyCommand(config);
+    const result: any = await cmd.execute({ stage: "develop" });
+
+    expect(result.success).toBe(true); // command itself succeeds, but the stage has an error result
+    const errored = result.results.filter((r: any) => r.status === "error");
+    expect(errored).toHaveLength(1);
+
+    // Read the audit log and verify
+    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logContent = await fs.readFile(logFile, "utf-8");
+
+    expect(logContent).toContain("verify_md_generate_error");
+    expect(logContent).toContain("[ERROR]");
+
+    // Clean up audit state
+    __resetAuditDirPath();
   });
 });

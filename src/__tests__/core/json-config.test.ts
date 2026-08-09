@@ -251,3 +251,42 @@ describe("resolvePipelineConfig", () => {
     expect(result.stages.develop.nextStage).toBeNull();
   });
 });
+
+describe("output.pipelineStage config", () => {
+  it("loadJsonConfig parses output.pipelineStage: true", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      output: { pipelineStage: true },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.output).toBeDefined();
+    expect(result.output!.pipelineStage).toBe(true);
+  });
+
+  it("resolvePipelineConfig defaults output.pipelineStage to false", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.output!.pipelineStage).toBe(false);
+  });
+
+  it("resolvePipelineConfig passes through output.pipelineStage: true", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      output: { pipelineStage: true },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.output!.pipelineStage).toBe(true);
+  });
+
+  it("resolvePipelineConfig falls back to false for invalid output.pipelineStage", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      output: { pipelineStage: "yes" },
+    });
+    // loadJsonConfig should warn + ignore the invalid value
+    const loaded = loadJsonConfig(jsonPath);
+    // resolvePipelineConfig should default to false
+    const result = resolvePipelineConfig(loaded);
+    expect(result.output!.pipelineStage).toBe(false);
+  });
+});
