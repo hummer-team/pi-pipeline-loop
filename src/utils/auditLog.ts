@@ -84,7 +84,7 @@ export async function writeAuditLog(
   ].join(":");
 
   // Only warn/error get a prefix; info remains backward compatible (no prefix)
-  const levelPrefix = level === "warn" ? "[WARN] " : level === "error" ? "[ERROR] " : "";
+  const levelPrefix = level === "warn" ? "[WARN] " : level === "error" ? "[ERROR] " : "[INFO]";
   let line = `${datePart} ${timePart} - ${levelPrefix}${stage}`;
   if (message && Object.keys(message).length > 0) {
     for (const [k, v] of Object.entries(message)) {
