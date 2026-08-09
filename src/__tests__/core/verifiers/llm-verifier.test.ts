@@ -6,6 +6,7 @@ import {
   runLLMVerification,
 } from "../../../core/verifiers/llm-verifier";
 import type { VerificationInstruction } from "../../../core/auto-verifier";
+import type { ExecFn } from "../../../types";
 import { DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT } from "../../../constants";
 
 /** Mock LLM that returns predefined responses */
@@ -87,9 +88,17 @@ describe("executeLLMInstructions", () => {
   });
 
   it("dispatches command to command verifier", async () => {
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      if (cmd === "echo") {
+        return { stdout: "hello\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "unknown", code: 1 };
+    };
+
     const results = await executeLLMInstructions(
       [{ checkType: "command", target: "echo hello" }],
       process.cwd(),
+      mockExecFn,
     );
 
     expect(results).toHaveLength(1);
@@ -97,9 +106,16 @@ describe("executeLLMInstructions", () => {
   });
 
   it("handles unknown checkType gracefully", async () => {
+    const mockExecFn: ExecFn = async () => ({
+      stdout: "",
+      stderr: "",
+      code: 0,
+    });
+
     const results = await executeLLMInstructions(
       [{ checkType: "gitStatus" as any, target: "unknown" }],
       process.cwd(),
+      mockExecFn,
     );
 
     expect(results).toHaveLength(1);

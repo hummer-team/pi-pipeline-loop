@@ -11,60 +11,95 @@ describe("verifyRequiredGit", () => {
     expect(result.passed).toBe(true);
   });
 
-  it("passes when branch matches current branch", async () => {
-    // We don't know the exact branch, but we can check the logic
-    // by using an empty rules object
+  it("passes when rules object is empty (no checks needed)", async () => {
     const result = await verifyRequiredGit({}, projectRoot);
     expect(result.passed).toBe(true);
     expect(result.detail).toContain("All git rules satisfied");
   });
 
-  it("fails when branch does not match", async () => {
+  it("fails when branch does not match (mock execFn)", async () => {
+    const mockExecFn: ExecFn = async (_cmd, args) => {
+      if (args[0] === "rev-parse") {
+        return { stdout: "main\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
     const result = await verifyRequiredGit(
       { branch: "nonexistent-branch-xyz-123" },
       projectRoot,
+      mockExecFn,
     );
     expect(result.passed).toBe(false);
     expect(result.detail).toContain("Expected branch");
   });
 
-  it("passes lastCommitWithin with large window", async () => {
-    // The repo has commits, so a 365-day window should pass
+  it("passes lastCommitWithin with large window (mock execFn)", async () => {
+    const nowTimestamp = Math.floor(Date.now() / 1000).toString();
+    const mockExecFn: ExecFn = async (_cmd, args) => {
+      if (args[0] === "log") {
+        return { stdout: nowTimestamp + "\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
     const result = await verifyRequiredGit(
       { lastCommitWithin: "365d" },
       projectRoot,
+      mockExecFn,
     );
     expect(result.passed).toBe(true);
   });
 
-  it("fails lastCommitWithin with tiny window", async () => {
-    // 1 second window should almost certainly fail
+  it("fails lastCommitWithin with tiny window (mock execFn)", async () => {
+    // Use a timestamp from 1 hour ago
+    const oldTimestamp = Math.floor(Date.now() / 1000 - 3600).toString();
+    const mockExecFn: ExecFn = async (_cmd, args) => {
+      if (args[0] === "log") {
+        return { stdout: oldTimestamp + "\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
     const result = await verifyRequiredGit(
       { lastCommitWithin: "1s" },
       projectRoot,
+      mockExecFn,
     );
     expect(result.passed).toBe(false);
     expect(result.detail).toContain("Last commit was");
   });
 
-  it("fails on invalid time window format", async () => {
+  it("fails on invalid time window format (mock execFn)", async () => {
+    const mockExecFn: ExecFn = async () => ({
+      stdout: "",
+      stderr: "",
+      code: 0,
+    });
+
     const result = await verifyRequiredGit(
       { lastCommitWithin: "invalid" },
       projectRoot,
+      mockExecFn,
     );
     expect(result.passed).toBe(false);
     expect(result.detail).toContain("Invalid time window");
   });
 
-  it("reports cleanWorkingTree correctly", async () => {
-    // We cannot guarantee working tree state in test, but we can check it doesn't crash
+  it("reports cleanWorkingTree correctly (mock execFn)", async () => {
+    const mockExecFn: ExecFn = async (_cmd, args) => {
+      if (args[0] === "status") {
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
     const result = await verifyRequiredGit(
       { cleanWorkingTree: true },
       projectRoot,
+      mockExecFn,
     );
-    // Result depends on working tree state — just check it returns a valid result
-    expect(typeof result.passed).toBe("boolean");
-    expect(typeof result.detail).toBe("string");
+    expect(result.passed).toBe(true);
   });
 
   // ── Phase 3: mock execFn tests ──────────────────────────────────────────────
@@ -118,5 +153,18 @@ describe("verifyRequiredGit", () => {
 
     expect(result.passed).toBe(false);
     expect(result.detail).toContain("Failed to read git log");
+  });
+
+  // ── Phase 1: fail-closed when execFn unavailable ──
+
+  it("fails when execFn is not provided but rules exist (fail-closed)", async () => {
+    const result = await verifyRequiredGit(
+      { branch: "main" },
+      projectRoot,
+      // execFn intentionally omitted
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("pi.exec unavailable");
   });
 });

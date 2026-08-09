@@ -30,9 +30,13 @@ function parseTimeWindow(timeStr: string): number | null {
  * Verifies git repository state against the specified rules.
  * Uses dependency-injected execFn to route git commands through pi SDK sandbox.
  *
+ * Fail-closed: when rules exist but execFn is not provided, verification
+ * immediately fails with an error indicating pi.exec is unavailable.
+ * This prevents silent bypass of the SDK sandbox via child_process fallback.
+ *
  * @param rules - Git verification rules (lastCommitWithin, branch, cleanWorkingTree)
  * @param projectRoot - Working directory for git commands
- * @param execFn - Injected shell execution function
+ * @param execFn - Injected shell execution function (required when rules are present)
  * @returns Verification result with git state failure details
  */
 export async function verifyRequiredGit(
@@ -44,22 +48,26 @@ export async function verifyRequiredGit(
     return { passed: true, detail: "No git rules to check" };
   }
 
+  // Check whether any actual rules are set
+  const hasRules = rules.lastCommitWithin || rules.branch || rules.cleanWorkingTree === true;
+  if (!hasRules) {
+    return { passed: true, detail: "All git rules satisfied" };
+  }
+
+  // Fail-closed: execFn is required to execute git commands through pi SDK sandbox
+  if (!execFn) {
+    return {
+      passed: false,
+      detail: "pi.exec unavailable: requiredGit verification requires execFn (pi SDK sandbox)",
+    };
+  }
+
   const failures: string[] = [];
 
-  /** Helper to execute a command via execFn or fallback to child_process */
+  /** Helper to execute a git command via execFn */
   async function runCmd(args: string[]): Promise<string> {
-    if (execFn) {
-      const result = await execFn("git", args, projectRoot);
-      return result.stdout;
-    }
-    // Fallback for backward compatibility
-    const { execSync } = await import("node:child_process");
-    return execSync(`git ${args.join(" ")}`, {
-      cwd: projectRoot,
-      encoding: "utf-8",
-      timeout: 10_000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const result = await execFn!("git", args, projectRoot);
+    return result.stdout;
   }
 
   // Check last commit time

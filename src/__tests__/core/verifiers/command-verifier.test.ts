@@ -3,36 +3,68 @@ import { verifyRequiredCommands } from "../../../core/verifiers/command-verifier
 import type { ExecFn } from "../../../types";
 
 describe("verifyRequiredCommands", () => {
+  // ── Mock execFn-based tests (fail-closed: execFn required) ──
+
   it("passes when command exits with expected code", async () => {
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      if (cmd === "echo" && args[0] === "hello") {
+        return { stdout: "hello\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "unknown command", code: 1 };
+    };
+
     const result = await verifyRequiredCommands(
       [{ cmd: "echo hello", expectExit: 0 }],
       process.cwd(),
+      mockExecFn,
     );
     expect(result.passed).toBe(true);
     expect(result.detail).toContain("1 required commands passed");
   });
 
   it("passes when output contains expected substring", async () => {
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      if (cmd === "echo") {
+        return { stdout: "hello world\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "unknown", code: 1 };
+    };
+
     const result = await verifyRequiredCommands(
       [{ cmd: "echo hello world", expectExit: 0, expectOutput: "hello" }],
       process.cwd(),
+      mockExecFn,
     );
     expect(result.passed).toBe(true);
   });
 
   it("fails when output does not contain expected substring", async () => {
+    const mockExecFn: ExecFn = async () => ({
+      stdout: "hello\n",
+      stderr: "",
+      code: 0,
+    });
+
     const result = await verifyRequiredCommands(
       [{ cmd: "echo hello", expectExit: 0, expectOutput: "goodbye" }],
       process.cwd(),
+      mockExecFn,
     );
     expect(result.passed).toBe(false);
     expect(result.detail).toContain("expected output containing");
   });
 
   it("fails when exit code does not match", async () => {
+    const mockExecFn: ExecFn = async () => ({
+      stdout: "",
+      stderr: "error",
+      code: 1,
+    });
+
     const result = await verifyRequiredCommands(
-      [{ cmd: "exit 1", expectExit: 0 }],
+      [{ cmd: "some-cmd", expectExit: 0 }],
       process.cwd(),
+      mockExecFn,
     );
     expect(result.passed).toBe(false);
     expect(result.detail).toContain("expected exit code 0, got 1");
@@ -44,11 +76,31 @@ describe("verifyRequiredCommands", () => {
   });
 
   it("defaults expectExit to 0 when not specified", async () => {
+    const mockExecFn: ExecFn = async () => ({
+      stdout: "ok\n",
+      stderr: "",
+      code: 0,
+    });
+
     const result = await verifyRequiredCommands(
       [{ cmd: "echo ok" }],
       process.cwd(),
+      mockExecFn,
     );
     expect(result.passed).toBe(true);
+  });
+
+  // ── Fail-closed: no execFn + rules present → immediate failure ──
+
+  it("fails when execFn is not provided but rules exist (fail-closed)", async () => {
+    const result = await verifyRequiredCommands(
+      [{ cmd: "echo hello", expectExit: 0 }],
+      process.cwd(),
+      // execFn intentionally omitted
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("pi.exec unavailable");
   });
 
   // ── Phase 3: mock execFn tests ──────────────────────────────────────────────

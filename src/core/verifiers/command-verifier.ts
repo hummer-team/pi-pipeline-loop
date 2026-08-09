@@ -10,9 +10,13 @@ import type { VerifierResult } from "./file-verifier";
  * Verifies that required commands execute with expected exit codes and output.
  * Uses dependency-injected execFn to route commands through pi SDK sandbox.
  *
+ * Fail-closed: when rules exist but execFn is not provided, verification
+ * immediately fails with an error indicating pi.exec is unavailable.
+ * This prevents silent bypass of the SDK sandbox via child_process fallback.
+ *
  * @param rules - Array of command rules with cmd, expectExit, expectOutput
  * @param projectRoot - Working directory for command execution
- * @param execFn - Injected shell execution function
+ * @param execFn - Injected shell execution function (required when rules are present)
  * @returns Verification result with command failure details
  */
 export async function verifyRequiredCommands(
@@ -24,6 +28,14 @@ export async function verifyRequiredCommands(
     return { passed: true, detail: "No required commands to check" };
   }
 
+  // Fail-closed: execFn is required to execute commands through pi SDK sandbox
+  if (!execFn) {
+    return {
+      passed: false,
+      detail: "pi.exec unavailable: requiredCommands verification requires execFn (pi SDK sandbox)",
+    };
+  }
+
   const failures: string[] = [];
 
   for (const rule of rules) {
@@ -32,28 +44,15 @@ export async function verifyRequiredCommands(
     let actualExit = 0;
 
     try {
-      if (execFn) {
-        // Parse cmd string into command + args for execFn
-        const parts = rule.cmd.split(/\s+/);
-        const cmd = parts[0];
-        const args = parts.slice(1);
-        const result = await execFn(cmd, args, projectRoot);
-        stdout = result.stdout;
-        actualExit = result.code;
-      } else {
-        // Fallback: should not happen in production (execFn always injected via index.ts)
-        // Kept for backward compatibility during migration
-        const { execSync } = await import("node:child_process");
-        stdout = execSync(rule.cmd, {
-          cwd: projectRoot,
-          encoding: "utf-8",
-          timeout: 30_000,
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        actualExit = 0;
-      }
+      // Parse cmd string into command + args for execFn
+      const parts = rule.cmd.split(/\s+/);
+      const cmd = parts[0];
+      const args = parts.slice(1);
+      const result = await execFn(cmd, args, projectRoot);
+      stdout = result.stdout;
+      actualExit = result.code;
     } catch (err: unknown) {
-      // execFn or execSync throws on non-zero exit code
+      // execFn throws on non-zero exit code
       const execErr = err as { status?: number; code?: number; stderr?: string };
       actualExit = execErr.code ?? execErr.status ?? 1;
       stdout = "";
