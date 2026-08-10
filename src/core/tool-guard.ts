@@ -68,7 +68,7 @@ export function createToolGuard(config: PipelineConfig): Hook {
         return {
           block: true,
           reason:
-            "Pipeline frozen. Use /pipeline-resume or /pipeline-restart-design",
+            "Pipeline frozen. Contact the user to resume the pipeline",
         };
       }
 

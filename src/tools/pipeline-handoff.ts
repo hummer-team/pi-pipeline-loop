@@ -84,7 +84,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
             error:
               `Max loop cycles (${maxCycles}) reached. ` +
               `Pipeline cannot cycle back to "${nextStage}". ` +
-              `Use /pipeline-restart to begin a new run.`,
+              `Pipeline terminated. Start a new run with /pipeline_start.`,
           };
         }
         ctx.session.updateMetadata({
