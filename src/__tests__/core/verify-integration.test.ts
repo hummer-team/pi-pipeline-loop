@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
-import { createPipelineInitVerifyCommand } from "../../commands/pipeline-init-verify";
+import { generateVerifyFiles } from "../../core/verify-generator";
 import { createAgentSettled } from "../../core/agent-settled";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { createLoopBreaker } from "../../core/loop-breaker";
@@ -64,11 +64,11 @@ describe("verify-integration", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("verify.md missing");
     expect(result.missingStages).toContain("develop");
-    expect(result.suggestion).toContain("/pipeline_init_verify");
+    expect(result.suggestion).toContain("/pipeline_init 1");
   });
 
-  // Scenario B: pipeline_init_verify → generate verify.md → start succeeds
-  it("Scenario B: pipeline_init_verify generates verify.md, then pipeline_start succeeds", async () => {
+  // Scenario B: pipeline_init 1 → generate verify.md → start succeeds
+  it("Scenario B: pipeline_init 1 generates verify.md, then pipeline_start succeeds", async () => {
     const config = makeConfigWithVerify(["develop"]);
 
     // Create a skill file with delivery markers
@@ -79,10 +79,10 @@ describe("verify-integration", () => {
       "- **Must** run bun run build\n- **Must** create output.md\n",
     );
 
-    // Run pipeline_init_verify
-    const initCmd = createPipelineInitVerifyCommand(config);
-    const initResult: any = await initCmd.execute({ stage: "develop" });
-    expect(initResult.success).toBe(true);
+    // Run generateVerifyFiles (shared module)
+    const results = await generateVerifyFiles(config, { stage: "develop" });
+    expect(results.length).toBe(1);
+    expect(results[0].status).toBe("generated");
 
     // Verify the file was created
     const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
@@ -313,10 +313,10 @@ describe("verify-integration", () => {
       return JSON.stringify([{ type: "file", target: "api-routes.md" }]);
     };
 
-    const cmd = createPipelineInitVerifyCommand(config, mockLLM);
-    const result: any = await cmd.execute({ stage: "develop" });
+    const results = await generateVerifyFiles(config, { stage: "develop", callLLM: mockLLM });
 
-    expect(result.success).toBe(true);
+    expect(results.length).toBe(1);
+    expect(results[0].status).toBe("generated");
     expect(receivedPrompt).toContain("API endpoint deliverables");
   });
 

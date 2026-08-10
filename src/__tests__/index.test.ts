@@ -49,7 +49,7 @@ describe("createPipeline", () => {
 
     expect(registeredCommands).toContain("pipeline-status");
     expect(registeredCommands).toContain("pipeline-start");
-    expect(registeredCommands).toContain("pipeline_init_verify");
+    expect(registeredCommands).toContain("pipeline_init");
     expect(registeredCommands.length).toBe(3);
   });
 
@@ -147,7 +147,7 @@ describe("default export", () => {
     expect(registeredCommands.length).toBe(3);
     expect(registeredCommands).toContain("pipeline-status");
     expect(registeredCommands).toContain("pipeline-start");
-    expect(registeredCommands).toContain("pipeline_init_verify");
+    expect(registeredCommands).toContain("pipeline_init");
   });
 
   // Test C: config file missing → console.warn + graceful degradation

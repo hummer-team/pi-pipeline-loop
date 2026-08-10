@@ -3,6 +3,12 @@
  * Shared constants used across pipeline modules.
  */
 
+/**
+ * Configuration directory name — consistent with pi SDK CONFIG_DIR_NAME.
+ * Used by pipeline_init to create the .pi/ directory structure.
+ */
+export const CONFIG_DIR_NAME = ".pi";
+
 /** Paths that agents in loop stages (develop/fix) must not modify */
 export const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"] as const;
 

@@ -1,0 +1,258 @@
+/**
+ * @module pipeline-init
+ * /pipeline_init [0|1] — initializes the .pi/ directory structure and generates verify.md files.
+ *
+ * - `0` (dir): Creates .pi/ directory and copies template files from src/template/
+ * - `1` (verify): Generates verify.md files from skill definitions
+ * - No argument: Runs dir first, then verify
+ */
+
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import type { PipelineConfig, Command } from "../types";
+import { CONFIG_DIR_NAME } from "../constants";
+import { generateVerifyFiles } from "../core/verify-generator";
+import { safeWriteAuditLog } from "../utils/auditLog";
+
+/** Template directory — resolves to dist/template/ in production or src/template/ in dev */
+const TEMPLATE_DIR = path.resolve(__dirname, "..", "template");
+
+/**
+ * Recursively collects all files in a directory, returning paths relative to the root.
+ */
+function collectTemplateFiles(dir: string, base: string = dir): string[] {
+  const results: string[] = [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectTemplateFiles(fullPath, base));
+    } else {
+      results.push(path.relative(base, fullPath));
+    }
+  }
+  return results;
+}
+
+/**
+ * Counts how many template files already exist in the target .pi/ directory.
+ * Excludes guide.md from the check (guide.md is always overwritten).
+ */
+function countExistingFiles(templateFiles: string[], targetDir: string): number {
+  let count = 0;
+  for (const relPath of templateFiles) {
+    // Skip guide.md — it's always overwritten, not checked
+    if (relPath === "guide.md") continue;
+    const targetPath = path.join(targetDir, relPath);
+    if (fs.existsSync(targetPath)) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Creates the `/pipeline_init` command.
+ *
+ * @param config - Pipeline configuration
+ * @param callLLM - Optional LLM call function for enhanced verify extraction
+ * @returns Command object
+ */
+export function createPipelineInitCommand(
+  config: PipelineConfig,
+  callLLM?: (prompt: string) => Promise<string>,
+): Command {
+  return {
+    name: "pipeline_init",
+    description:
+      "Initialize the .pi/ directory structure and generate verify.md files. " +
+      "Use 0 for directory setup, 1 for verify generation, or no argument for both.",
+    execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
+      // Parse argument — supports string "0"/"1"/"" or object { sub: "0"|"1"|"" }
+      const sub = typeof args === "string"
+        ? (args as string).trim()
+        : String((args as Record<string, unknown>)?.sub ?? "").trim();
+
+      const runDir = sub === "0" || sub === "";
+      const runVerify = sub === "1" || sub === "";
+
+      // ── Dir branch ─────────────────────────────────────────────────────
+      if (runDir) {
+        const dirResult = await executeDirBranch(config, ctx);
+        if (!dirResult.success) {
+          return dirResult;
+        }
+        // If sub === "0", return dir result only
+        if (sub === "0") {
+          return dirResult;
+        }
+        // sub === "" → continue to verify branch after dir
+      }
+
+      // ── Verify branch ──────────────────────────────────────────────────
+      if (runVerify) {
+        return await executeVerifyBranch(config, callLLM);
+      }
+
+      return { success: true, summary: "pipeline_init completed" };
+    },
+  };
+}
+
+/**
+ * Dir branch: copies template files to .pi/ directory.
+ */
+async function executeDirBranch(
+  config: PipelineConfig,
+  ctx?: any,
+): Promise<{ success: boolean; summary?: string; error?: string }> {
+  const targetDir = path.join(config.projectRoot, CONFIG_DIR_NAME);
+
+  // Check template directory exists
+  if (!fs.existsSync(TEMPLATE_DIR)) {
+    const errMsg = `Template directory not found: ${TEMPLATE_DIR}`;
+    await safeWriteAuditLog("pipeline_init_error", { error: errMsg }, "error");
+    return { success: false, error: errMsg };
+  }
+
+  // Collect all template files
+  const templateFiles = collectTemplateFiles(TEMPLATE_DIR);
+
+  // File-mark check: how many template files already exist in target?
+  const existingCount = countExistingFiles(templateFiles, targetDir);
+
+  if (existingCount > 0) {
+    // Multiple execution detected — prompt user for action
+    const hasUI = typeof ctx?.ui?.select === "function";
+
+    if (hasUI) {
+      const choice: string | undefined = await ctx.ui.select(
+        "pipeline_init has been run before. Please select:",
+        [
+          "1. Force overwrite all files",
+          "2. Skip existing files",
+          "3. Re-run verify generation",
+          "4. Cancel",
+        ],
+      );
+
+      // undefined = Escape / cancel
+      if (!choice || choice === "4. Cancel" || choice === "4") {
+        return { success: true, summary: "Cancelled by user" };
+      }
+
+      if (choice === "1. Force overwrite all files" || choice === "1") {
+        return copyTemplateFiles(templateFiles, targetDir, "overwrite", config);
+      }
+      if (choice === "2. Skip existing files" || choice === "2") {
+        return copyTemplateFiles(templateFiles, targetDir, "skip", config);
+      }
+      if (choice === "3. Re-run verify generation" || choice === "3") {
+        const copyResult = await copyTemplateFiles(templateFiles, targetDir, "skip", config);
+        if (!copyResult.success) return copyResult;
+        // Fall through to verify branch
+        return { success: true, summary: "Files copied (skip mode), verify will run next" };
+      }
+
+      // Fallback: treat as skip
+      return copyTemplateFiles(templateFiles, targetDir, "skip", config);
+    } else {
+      // No UI — default to skip strategy
+      return copyTemplateFiles(templateFiles, targetDir, "skip", config);
+    }
+  }
+
+  // First time — copy all files
+  return copyTemplateFiles(templateFiles, targetDir, "overwrite", config);
+}
+
+/**
+ * Copies template files to the target directory with the specified strategy.
+ */
+async function copyTemplateFiles(
+  templateFiles: string[],
+  targetDir: string,
+  strategy: "overwrite" | "skip",
+  config: PipelineConfig,
+): Promise<{ success: boolean; summary?: string; error?: string }> {
+  try {
+    let copiedCount = 0;
+    let skippedCount = 0;
+
+    for (const relPath of templateFiles) {
+      const srcPath = path.join(TEMPLATE_DIR, relPath);
+      const destPath = path.join(targetDir, relPath);
+
+      // guide.md is always overwritten regardless of strategy
+      const alwaysOverwrite = relPath === "guide.md";
+
+      if (strategy === "skip" && !alwaysOverwrite && fs.existsSync(destPath)) {
+        skippedCount++;
+        continue;
+      }
+
+      // Ensure parent directory exists
+      await fsp.mkdir(path.dirname(destPath), { recursive: true });
+      await fsp.copyFile(srcPath, destPath);
+      copiedCount++;
+    }
+
+    // Also copy pipeline_loop.json to project root if it exists in template
+    const loopJsonRelPath = "pipeline_loop.json";
+    if (templateFiles.includes(loopJsonRelPath)) {
+      const destLoopJson = path.join(config.projectRoot, loopJsonRelPath);
+      if (!fs.existsSync(destLoopJson) || strategy === "overwrite") {
+        await fsp.copyFile(
+          path.join(TEMPLATE_DIR, loopJsonRelPath),
+          destLoopJson,
+        );
+      }
+    }
+
+    await safeWriteAuditLog("pipeline_init_done", {
+      files: String(copiedCount),
+      skipped: String(skippedCount),
+      target: targetDir,
+    });
+
+    return {
+      success: true,
+      summary: `Copied ${copiedCount} file(s) to ${CONFIG_DIR_NAME}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}`,
+    };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog("pipeline_init_error", { error: errMsg }, "error");
+    return { success: false, error: errMsg };
+  }
+}
+
+/**
+ * Verify branch: generates verify.md files from skill definitions.
+ */
+async function executeVerifyBranch(
+  config: PipelineConfig,
+  callLLM?: (prompt: string) => Promise<string>,
+): Promise<{ success: boolean; summary?: string; results?: unknown[] }> {
+  // Pre-check: .pi/skills must exist
+  const skillsDir = path.join(config.projectRoot, CONFIG_DIR_NAME, "skills");
+  if (!fs.existsSync(skillsDir)) {
+    return {
+      success: true,
+      summary: `skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline_init 0 first`,
+      results: [],
+    };
+  }
+
+  const results = await generateVerifyFiles(config, { callLLM });
+
+  const generated = results.filter(r => r.status === "generated");
+  const skipped = results.filter(r => r.status === "skipped");
+  const errored = results.filter(r => r.status === "error");
+
+  return {
+    success: true,
+    summary: `Generated ${generated.length} verify.md file(s), skipped ${skipped.length}, errors ${errored.length}`,
+    results,
+  };
+}

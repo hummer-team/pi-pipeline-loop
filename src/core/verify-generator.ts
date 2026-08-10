@@ -1,16 +1,38 @@
 /**
- * @module pipeline-init-verify
- * /pipeline_init_verify [stage] — generates verify.md files from skill definitions.
- * Extracts delivery items marked with bold Must or Required keywords
- * and optionally uses LLM to extract additional structured verification items.
+ * @module verify-generator
+ * Shared module for generating verify.md files from skill definitions.
+ * Extracted from pipeline-init-verify.ts to be reusable by pipeline_init command.
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { PipelineConfig, PipelineStage, Command } from "../types";
-import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
-import { DEFAULT_VERIFY_EXTRACT_PROMPT } from "../constants";
+import type { PipelineConfig, PipelineStage } from "../types";
+import { DEFAULT_VERIFY_FILE, resolveStagePath, DEFAULT_VERIFY_EXTRACT_PROMPT } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+/**
+ * A delivery item extracted from a skill file.
+ */
+export interface DeliveryItem {
+  /** Type of deliverable */
+  type: "file" | "command" | "git" | "keyword";
+  /** Target (file path, command string, keyword, etc.) */
+  target: string;
+}
+
+/**
+ * Result of verify file generation for a single stage.
+ */
+export type VerifyGenerateResult = {
+  stage: string;
+  status: string;
+  filePath?: string;
+  error?: string;
+};
+
+// ─── Exported Functions ───────────────────────────────────────────────────────
 
 /**
  * Resolves the extraction prompt for LLM-based delivery item extraction.
@@ -20,7 +42,7 @@ import { safeWriteAuditLog } from "../utils/auditLog";
  * @param projectRoot - Absolute path to the project root
  * @returns The extraction prompt string (custom or default)
  */
-async function resolveExtractPrompt(projectRoot: string): Promise<string> {
+export async function resolveExtractPrompt(projectRoot: string): Promise<string> {
   const customPromptPath = path.join(projectRoot, ".pi", "references", "verify_prompt.md");
   try {
     const content = await fs.readFile(customPromptPath, "utf-8");
@@ -35,23 +57,13 @@ async function resolveExtractPrompt(projectRoot: string): Promise<string> {
 }
 
 /**
- * A delivery item extracted from a skill file.
- */
-interface DeliveryItem {
-  /** Type of deliverable */
-  type: "file" | "command" | "git" | "keyword";
-  /** Target (file path, command string, keyword, etc.) */
-  target: string;
-}
-
-/**
  * Resolves which stages need verify.md generation.
  *
  * @param stage - Optional stage filter (undefined = all stages)
  * @param config - Pipeline configuration
  * @returns List of stage names to process
  */
-function resolveTargetStages(
+export function resolveTargetStages(
   stage: string | undefined,
   config: PipelineConfig,
 ): PipelineStage[] {
@@ -77,7 +89,7 @@ function resolveTargetStages(
  * @param projectRoot - Absolute project root path
  * @returns The skill file body content (without frontmatter), or null if file doesn't exist
  */
-async function readSkillBody(
+export async function readSkillBody(
   skillPath: string,
   projectRoot: string,
 ): Promise<string | null> {
@@ -101,7 +113,7 @@ async function readSkillBody(
  * @param skillBody - The skill file content (without frontmatter)
  * @returns Array of delivery items extracted via keyword matching
  */
-function extractHardcodedItems(skillBody: string): DeliveryItem[] {
+export function extractHardcodedItems(skillBody: string): DeliveryItem[] {
   const items: DeliveryItem[] = [];
   const MARKER_PATTERN = /\*\*(必须|Must|MUST|Required|REQUIRED)\*\*/gi;
 
@@ -130,7 +142,7 @@ function extractHardcodedItems(skillBody: string): DeliveryItem[] {
 /**
  * Classifies a delivery item description into a type.
  */
-function classifyDeliveryItem(description: string): DeliveryItem {
+export function classifyDeliveryItem(description: string): DeliveryItem {
   const lower = description.toLowerCase();
 
   // File path patterns (contains extension or path separators)
@@ -160,7 +172,7 @@ function classifyDeliveryItem(description: string): DeliveryItem {
  * @param extractPrompt - System prompt for the extraction
  * @returns Array of delivery items extracted by LLM
  */
-async function extractLLMItems(
+export async function extractLLMItems(
   skillBody: string,
   callLLM: (prompt: string) => Promise<string>,
   extractPrompt: string,
@@ -196,7 +208,7 @@ async function extractLLMItems(
 /**
  * Merges and deduplicates delivery items from hardcoded and LLM extraction.
  */
-function mergeDeliveryItems(hardcoded: DeliveryItem[], llm: DeliveryItem[]): DeliveryItem[] {
+export function mergeDeliveryItems(hardcoded: DeliveryItem[], llm: DeliveryItem[]): DeliveryItem[] {
   const seen = new Set<string>();
   const merged: DeliveryItem[] = [];
 
@@ -218,7 +230,7 @@ function mergeDeliveryItems(hardcoded: DeliveryItem[], llm: DeliveryItem[]): Del
  * @param stage - The pipeline stage name
  * @returns String content for the verify.md file
  */
-function generateVerifyMdContent(items: DeliveryItem[], stage: string): string {
+export function generateVerifyMdContent(items: DeliveryItem[], stage: string): string {
   const requiredFiles = items.filter(i => i.type === "file").map(i => i.target);
   const requiredCommands = items.filter(i => i.type === "command").map(i => i.target);
   const requiredKeywords = items.filter(i => i.type === "keyword").map(i => i.target);
@@ -260,108 +272,92 @@ function generateVerifyMdContent(items: DeliveryItem[], stage: string): string {
 }
 
 /**
- * Creates the `/pipeline_init_verify` command.
+ * Top-level function that encapsulates the full verify generation flow.
+ * Iterates over target stages, reads skill files, extracts delivery items,
+ * and generates verify.md files.
  *
  * @param config - Pipeline configuration
- * @param callLLM - Optional LLM call function for enhanced extraction
- * @returns Command object
+ * @param options - Optional configuration
+ * @param options.stage - Filter to a specific stage
+ * @param options.callLLM - Optional LLM function for enhanced extraction
+ * @returns Array of results per stage
  */
-export function createPipelineInitVerifyCommand(
+export async function generateVerifyFiles(
   config: PipelineConfig,
-  callLLM?: (prompt: string) => Promise<string>,
-): Command {
-  return {
-    name: "pipeline_init_verify",
-    description:
-      "Generate verify.md files from skill definitions. " +
-      "Extracts delivery items marked with **必须**/**Must**/**Required** keywords " +
-      "and generates structured verification rules.",
-    execute: async (args: Record<string, unknown>, _ctx?: any): Promise<unknown> => {
-      const stageArg = args.stage as string | undefined;
-      const stages = resolveTargetStages(stageArg, config);
+  options?: {
+    stage?: string;
+    callLLM?: (prompt: string) => Promise<string>;
+  },
+): Promise<VerifyGenerateResult[]> {
+  const { stage, callLLM } = options ?? {};
+  const stages = resolveTargetStages(stage, config);
+  const results: VerifyGenerateResult[] = [];
 
-      if (stages.length === 0) {
-        return {
-          success: false,
-          error: stageArg
-            ? `Unknown stage: "${stageArg}"`
-            : "No stages configured for verification",
-        };
-      }
+  if (stages.length === 0) {
+    return results;
+  }
 
-      const results: { stage: string; status: string; filePath?: string; error?: string }[] = [];
+  for (const s of stages) {
+    const stageConfig = config.stages[s];
+    // skillPath in config is relative to .pi/skills/ (consistent with prompt-injector)
+    const resolvedSkillPath = path.join(".pi", "skills", stageConfig.skillPath || `${s}/SKILL.md`);
 
-      for (const stage of stages) {
-        const stageConfig = config.stages[stage];
-        // skillPath in config is relative to .pi/skills/ (consistent with prompt-injector)
-        const resolvedSkillPath = path.join(".pi", "skills", stageConfig.skillPath || `${stage}/SKILL.md`);
+    const skillBody = await readSkillBody(resolvedSkillPath, config.projectRoot);
+    if (!skillBody) {
+      results.push({
+        stage: s,
+        status: "skipped",
+        error: `Skill file not found: ${resolvedSkillPath}`,
+      });
+      continue;
+    }
 
-        const skillBody = await readSkillBody(resolvedSkillPath, config.projectRoot);
-        if (!skillBody) {
-          results.push({
-            stage,
-            status: "skipped",
-            error: `Skill file not found: ${resolvedSkillPath}`,
-          });
-          continue;
-        }
+    // Step 1: Hardcoded extraction
+    const hardcodedItems = extractHardcodedItems(skillBody);
 
-        // Step 1: Hardcoded extraction
-        const hardcodedItems = extractHardcodedItems(skillBody);
+    // Step 2: LLM extraction (if available)
+    let llmItems: DeliveryItem[] = [];
+    if (callLLM) {
+      const extractPrompt = await resolveExtractPrompt(config.projectRoot);
+      llmItems = await extractLLMItems(skillBody, callLLM, extractPrompt);
+    }
 
-        // Step 2: LLM extraction (if available)
-        let llmItems: DeliveryItem[] = [];
-        if (callLLM) {
-          const extractPrompt = await resolveExtractPrompt(config.projectRoot);
-          llmItems = await extractLLMItems(skillBody, callLLM, extractPrompt);
-        }
+    // Step 3: Merge and deduplicate
+    const allItems = mergeDeliveryItems(hardcodedItems, llmItems);
 
-        // Step 3: Merge and deduplicate
-        const allItems = mergeDeliveryItems(hardcodedItems, llmItems);
+    if (allItems.length === 0) {
+      results.push({
+        stage: s,
+        status: "skipped",
+        error: "No delivery items found in skill file",
+      });
+      continue;
+    }
 
-        if (allItems.length === 0) {
-          results.push({
-            stage,
-            status: "skipped",
-            error: "No delivery items found in skill file",
-          });
-          continue;
-        }
+    // Step 4: Generate verify.md
+    const verifyContent = generateVerifyMdContent(allItems, s);
+    const verifyPath = resolveStagePath(DEFAULT_VERIFY_FILE, s);
+    const absVerifyPath = path.join(config.projectRoot, verifyPath);
 
-        // Step 4: Generate verify.md
-        const verifyContent = generateVerifyMdContent(allItems, stage);
-        const verifyPath = resolveStagePath(DEFAULT_VERIFY_FILE, stage);
-        const absVerifyPath = path.join(config.projectRoot, verifyPath);
+    try {
+      await fs.mkdir(path.dirname(absVerifyPath), { recursive: true });
+      await fs.writeFile(absVerifyPath, verifyContent, "utf-8");
 
-        try {
-          await fs.mkdir(path.dirname(absVerifyPath), { recursive: true });
-          await fs.writeFile(absVerifyPath, verifyContent, "utf-8");
+      results.push({
+        stage: s,
+        status: "generated",
+        filePath: verifyPath,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await safeWriteAuditLog("verify_md_generate_error", { stage: s, file: verifyPath, error: errMsg }, "error");
+      results.push({
+        stage: s,
+        status: "error",
+        error: errMsg,
+      });
+    }
+  }
 
-          results.push({
-            stage,
-            status: "generated",
-            filePath: verifyPath,
-          });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          await safeWriteAuditLog("verify_md_generate_error", { stage, file: verifyPath, error: errMsg }, "error");
-          results.push({
-            stage,
-            status: "error",
-            error: errMsg,
-          });
-        }
-      }
-
-      const generated = results.filter(r => r.status === "generated");
-      const skipped = results.filter(r => r.status === "skipped");
-      const errored = results.filter(r => r.status === "error");
-
-      return {
-        success: true,
-        summary: `Generated ${generated.length} verify.md file(s), skipped ${skipped.length}, errors ${errored.length}`,
-        results,
-      };
-    },
-  };
+  return results;
 }
