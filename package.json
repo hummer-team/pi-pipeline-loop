@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('fs').cpSync('src/template','dist/template',{recursive:true})\"",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
