@@ -7,7 +7,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage } from "../types";
-import { DEFAULT_VERIFY_FILE, resolveStagePath, DEFAULT_VERIFY_EXTRACT_PROMPT } from "../constants";
+import { DEFAULT_VERIFY_FILE, resolveStagePath, DEFAULT_VERIFY_EXTRACT_PROMPT, CONFIG_DIR_NAME } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ export type VerifyGenerateResult = {
  * @returns The extraction prompt string (custom or default)
  */
 export async function resolveExtractPrompt(projectRoot: string): Promise<string> {
-  const customPromptPath = path.join(projectRoot, ".pi", "references", "verify_prompt.md");
+  const customPromptPath = path.join(projectRoot, CONFIG_DIR_NAME, "references", "verify_prompt.md");
   try {
     const content = await fs.readFile(customPromptPath, "utf-8");
     // If file exists but is empty, fall back to default
@@ -300,7 +300,7 @@ export async function generateVerifyFiles(
   for (const s of stages) {
     const stageConfig = config.stages[s];
     // skillPath in config is relative to .pi/skills/ (consistent with prompt-injector)
-    const resolvedSkillPath = path.join(".pi", "skills", stageConfig.skillPath || `${s}/SKILL.md`);
+    const resolvedSkillPath = path.join(CONFIG_DIR_NAME, "skills", stageConfig.skillPath || `${s}/SKILL.md`);
 
     const skillBody = await readSkillBody(resolvedSkillPath, config.projectRoot);
     if (!skillBody) {

@@ -121,11 +121,13 @@ describe("createPipelineInitCommand", () => {
     it("accepts string argument '0'", async () => {
       const config = makeInitConfig();
       const cmd = createPipelineInitCommand(config);
-      // String "0" should trigger dir branch only
-      // Since TEMPLATE_DIR won't exist, it will fail gracefully
+      // String "0" should trigger dir branch only.
+      // TEMPLATE_DIR resolves to src/template (exists in dev/test).
       const result: any = await cmd.execute("0" as any);
-      // Should attempt dir branch (template won't be found at dist path in test)
-      expect(result.success === false || result.success === true).toBe(true);
+      expect(result.success).toBe(true);
+      expect(fsSync.existsSync(path.join(TMP, ".pi", "guide.md"))).toBe(true);
+      expect(fsSync.existsSync(path.join(TMP, ".pi", "skills", "design", "SKILL.md"))).toBe(true);
+      expect(fsSync.existsSync(path.join(TMP, "pipeline_loop.json"))).toBe(true);
     });
 
     it("accepts string argument '1'", async () => {
@@ -141,8 +143,9 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
       const cmd = createPipelineInitCommand(config);
       const result: any = await cmd.execute("" as any);
-      // dir will fail (no template), so verify won't run
-      expect(result.success === false || result.success === true).toBe(true);
+      // sub="" runs dir then verify; .pi/skills should exist after dir copy
+      expect(result.success).toBe(true);
+      expect(fsSync.existsSync(path.join(TMP, ".pi", "skills"))).toBe(true);
     });
 
     it("accepts object { sub: '1' }", async () => {
@@ -165,10 +168,9 @@ describe("createPipelineInitCommand", () => {
 
       const cmd = createPipelineInitCommand(config);
       // No ctx.ui provided — should default to skip strategy
-      // Template dir won't exist in test env, so it'll fail
       const result: any = await cmd.execute({ sub: "0" });
-      // Either succeeds with skip or fails because template dir missing
-      expect(result.success === false || result.success === true).toBe(true);
+      expect(result.success).toBe(true);
+      expect(fsSync.existsSync(path.join(TMP, ".pi", "guide.md"))).toBe(true);
     });
   });
 

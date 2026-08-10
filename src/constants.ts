@@ -94,7 +94,7 @@ Respond with JSON: {"passed": true/false, "reasoning": "brief explanation"}
 Respond ONLY with JSON. No explanation outside the JSON object.`;
 
 /**
- * System prompt for the LLM extraction stage in pipeline_init_verify —
+ * System prompt for the LLM extraction stage in pipeline_init 1 / verify-generator shared module —
  * instructs the LLM to extract delivery items from skill file content.
  */
 export const DEFAULT_VERIFY_EXTRACT_PROMPT = `You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
