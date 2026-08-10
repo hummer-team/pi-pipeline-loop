@@ -83,11 +83,14 @@ export function createPipelineInitCommand(
         if (!dirResult.success) {
           return dirResult;
         }
-        // If sub === "0", return dir result only
+        // If sub === "0", check if option 3 flagged verify-after
         if (sub === "0") {
+          if (dirResult.verifyAfter) {
+            return await executeVerifyBranch(config, callLLM);
+          }
           return dirResult;
         }
-        // sub === "" → continue to verify branch after dir
+        // sub === "" → continue to verify branch after dir (runVerify path, no duplicate verify)
       }
 
       // ── Verify branch ──────────────────────────────────────────────────
@@ -106,7 +109,7 @@ export function createPipelineInitCommand(
 async function executeDirBranch(
   config: PipelineConfig,
   ctx?: any,
-): Promise<{ success: boolean; summary?: string; error?: string }> {
+): Promise<{ success: boolean; verifyAfter?: boolean; summary?: string; error?: string }> {
   const targetDir = path.join(config.projectRoot, CONFIG_DIR_NAME);
 
   // Check template directory exists
@@ -130,29 +133,29 @@ async function executeDirBranch(
       const choice: string | undefined = await ctx.ui.select(
         "pipeline_init has been run before. Please select:",
         [
-          "1. Force overwrite all files",
-          "2. Skip existing files",
-          "3. Re-run verify generation",
-          "4. Cancel",
+          "1. 强制覆盖所有文件",
+          "2. 跳过已存在文件",
+          "3. 重新执行 verify 生成",
+          "4. 取消",
         ],
       );
 
       // undefined = Escape / cancel
-      if (!choice || choice === "4. Cancel" || choice === "4") {
+      if (!choice || choice === "4. 取消" || choice === "4") {
         return { success: true, summary: "Cancelled by user" };
       }
 
-      if (choice === "1. Force overwrite all files" || choice === "1") {
+      if (choice === "1. 强制覆盖所有文件" || choice === "1") {
         return copyTemplateFiles(templateFiles, targetDir, "overwrite", config);
       }
-      if (choice === "2. Skip existing files" || choice === "2") {
+      if (choice === "2. 跳过已存在文件" || choice === "2") {
         return copyTemplateFiles(templateFiles, targetDir, "skip", config);
       }
-      if (choice === "3. Re-run verify generation" || choice === "3") {
+      if (choice === "3. 重新执行 verify 生成" || choice === "3") {
         const copyResult = await copyTemplateFiles(templateFiles, targetDir, "skip", config);
         if (!copyResult.success) return copyResult;
-        // Fall through to verify branch
-        return { success: true, summary: "Files copied (skip mode), verify will run next" };
+        // Flag outer execute() to run verify branch after returning
+        return { success: true, verifyAfter: true, summary: "Files copied (skip mode)" };
       }
 
       // Fallback: treat as skip

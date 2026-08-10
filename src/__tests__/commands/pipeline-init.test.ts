@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineInitCommand } from "../../commands/pipeline-init";
@@ -203,7 +204,7 @@ describe("createPipelineInitCommand", () => {
 
       const ctx = {
         ui: {
-          select: async (): Promise<string> => "4. Cancel",
+          select: async (): Promise<string> => "4. 取消",
         },
       };
 
@@ -211,6 +212,75 @@ describe("createPipelineInitCommand", () => {
       const result: any = await cmd.execute({ sub: "0" }, ctx);
       expect(result.success).toBe(true);
       expect(result.summary).toContain("Cancelled");
+    });
+  });
+
+  describe("option 3 - verify after skip (Phase 1 bug fix)", () => {
+    it("runs verify generation after option 3 Chinese text selected", async () => {
+      const config = makeInitConfig();
+
+      // Pre-create .pi/skills/design/SKILL.md with Must marker so verify can extract items.
+      // Also pre-create an agent file to ensure existingCount > 0 triggers multi-execution UI.
+      const piDir = path.join(TMP, ".pi");
+      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "skills", "design", "SKILL.md"),
+        "- **Must** design-output.md\n",
+        "utf-8",
+      );
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "agents", "clarify", "clarify.md"),
+        "existing agent",
+        "utf-8",
+      );
+
+      const ctx = {
+        ui: {
+          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" }, ctx);
+
+      // Verify branch should have run and generated design verify.md
+      expect(result.success).toBe(true);
+      expect(
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+      ).toBe(true);
+    });
+
+    it("runs verify generation after option 3 numeric fallback selected", async () => {
+      const config = makeInitConfig();
+
+      const piDir = path.join(TMP, ".pi");
+      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "skills", "design", "SKILL.md"),
+        "- **Must** design-output.md\n",
+        "utf-8",
+      );
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "agents", "clarify", "clarify.md"),
+        "existing agent",
+        "utf-8",
+      );
+
+      const ctx = {
+        ui: {
+          select: async (): Promise<string> => "3",
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+      ).toBe(true);
     });
   });
 });
