@@ -1,0 +1,33 @@
+{
+  "stages": {
+    "clarify":    {
+      "nextStage": "design",
+      "verify": {
+        "require": true
+      }
+    },
+    "design":     {
+      "nextStage": "plan",
+      "verify": {
+        "require": true
+      }
+    },
+    "plan":       {
+      "nextStage": "develop",
+      "verify": {
+        "require": true
+      }
+    },
+    "develop":    {
+      "nextStage": "review"
+    },
+    "review":     {
+      "nextStage": "fix"
+    },
+    "fix":        {
+      "nextStage": "develop"
+    },
+    "awaiting_human": { "nextStage": null },
+    "completed":  { "nextStage": null }
+  }
+}
