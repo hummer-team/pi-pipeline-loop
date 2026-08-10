@@ -120,7 +120,7 @@ describe("createLoopBreaker", () => {
 
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
       const line = logContent.trim().split("\n")[0];
-      expect(line).toContain(" - file_modified");
+      expect(line).toContain(" - [INFO] file_modified");
     });
 
     it("skips diff when oldHash equals newHash", async () => {

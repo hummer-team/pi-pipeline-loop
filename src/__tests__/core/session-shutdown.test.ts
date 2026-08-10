@@ -32,7 +32,7 @@ describe("createSessionShutdown", () => {
     const content = await readFile(logPath, "utf-8");
     const line = content.trim().split("\n").find((l: string) => l.includes("session_shutdown"))!;
 
-    expect(line).toContain(" - session_shutdown");
+    expect(line).toContain(" - [INFO] session_shutdown");
     expect(line).toContain("pipelineId=pipe-test-001");
     expect(line).toContain("finalStage=review");
   });
@@ -58,7 +58,7 @@ describe("createSessionShutdown", () => {
     const line = lines.find((l: string) => l.includes("completed"))!;
 
     expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
-    expect(line).toContain(" - session_shutdown");
+    expect(line).toContain(" - [INFO] session_shutdown");
     expect(line).toContain("pipelineId=pipe-test-001");
     expect(line).toContain("finalStage=completed");
   });
@@ -77,7 +77,7 @@ describe("createSessionShutdown", () => {
     const lines = content.trim().split("\n");
     const lastLine = lines[lines.length - 1];
 
-    expect(lastLine).toContain(" - session_shutdown");
+    expect(lastLine).toContain(" - [INFO] session_shutdown");
     expect(lastLine).toContain("finalStage=fix");
   });
 });

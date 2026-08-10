@@ -121,7 +121,7 @@ describe("createPipelineHandoff", () => {
     const logContent = await readFile(logPath, "utf-8");
     const line = logContent.trim().split("\n")[0];
 
-    expect(line).toContain(" - handoff");
+    expect(line).toContain(" - [INFO] handoff");
     expect(line).toContain("from=design");
     expect(line).toContain("to=plan");
     expect(line).toContain("model=gpt-4o");

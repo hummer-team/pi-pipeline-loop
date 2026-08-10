@@ -49,7 +49,7 @@ export function getDateAuditFileName(): string {
  * Writes a formatted audit log line and appends it to today's log file.
  *
  * Format:
- * - info (default): `YYYY-MM-DD HH:mm:ss - {stage} | key1=val1 | key2=val2`
+ * - info (default): `YYYY-MM-DD HH:mm:ss - [INFO] {stage} | key1=val1 | key2=val2`
  * - warn:           `YYYY-MM-DD HH:mm:ss - [WARN] {stage} | key1=val1 | key2=val2`
  * - error:          `YYYY-MM-DD HH:mm:ss - [ERROR] {stage} | key1=val1 | key2=val2`
  *
@@ -83,8 +83,8 @@ export async function writeAuditLog(
     String(now.getSeconds()).padStart(2, "0"),
   ].join(":");
 
-  // Only warn/error get a prefix; info remains backward compatible (no prefix)
-  const levelPrefix = level === "warn" ? "[WARN] " : level === "error" ? "[ERROR] " : "[INFO]";
+  // All levels get a prefix: info=[INFO], warn=[WARN], error=[ERROR]
+  const levelPrefix = level === "warn" ? "[WARN] " : level === "error" ? "[ERROR] " : "[INFO] ";
   let line = `${datePart} ${timePart} - ${levelPrefix}${stage}`;
   if (message && Object.keys(message).length > 0) {
     for (const [k, v] of Object.entries(message)) {

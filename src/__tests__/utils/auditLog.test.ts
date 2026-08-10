@@ -88,7 +88,7 @@ describe("writeAuditLog", () => {
 
     // Timestamp format: YYYY-MM-DD HH:mm:ss
     expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - /);
-    expect(line).toContain(" - agent_settled");
+    expect(line).toContain(" - [INFO] agent_settled");
     expect(line).toContain("pipelineId=pipe-001");
     expect(line).toContain("stage=design");
 
@@ -105,7 +105,7 @@ describe("writeAuditLog", () => {
     const content = await readFile(logPath, "utf-8");
     const line = content.trim();
 
-    expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - session_end$/);
+    expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - \[INFO\] session_end$/);
     // Should NOT contain any pipe separators (no key=value pairs)
     expect(line).not.toContain("|");
 
@@ -122,7 +122,7 @@ describe("writeAuditLog", () => {
     const content = await readFile(logPath, "utf-8");
     const line = content.trim();
 
-    expect(line).toMatch(/- test_action$/);
+    expect(line).toMatch(/- \[INFO\] test_action$/);
     expect(line).not.toContain("|");
 
     await rm(root, { recursive: true, force: true });
@@ -166,11 +166,11 @@ describe("writeAuditLog", () => {
     const lines = content.trim().split("\n");
 
     expect(lines.length).toBe(3);
-    expect(lines[0]).toContain(" - first_action");
+    expect(lines[0]).toContain(" - [INFO] first_action");
     expect(lines[0]).toContain("key=val1");
-    expect(lines[1]).toContain(" - second_action");
+    expect(lines[1]).toContain(" - [INFO] second_action");
     expect(lines[1]).toContain("key=val2");
-    expect(lines[2]).toContain(" - third_action");
+    expect(lines[2]).toContain(" - [INFO] third_action");
     expect(lines[2]).not.toContain("|");
 
     await rm(root, { recursive: true, force: true });
@@ -211,7 +211,7 @@ describe("writeAuditLog level parameter", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('default level "info" has no prefix (backward compatible)', async () => {
+  it('default level "info" produces [INFO] prefix', async () => {
     const root = makeTmpRoot("level-info");
     await initAuditLog(makeConfig(root));
 
@@ -224,13 +224,15 @@ describe("writeAuditLog level parameter", () => {
     const content = await readFile(logPath, "utf-8");
     const lines = content.trim().split("\n");
 
-    // Neither line should contain [WARN] or [ERROR]
-    expect(lines[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - agent_settled/);
+    // Neither line should contain [WARN] or [ERROR], but should contain [INFO]
+    expect(lines[0]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - \[INFO\] agent_settled/);
     expect(lines[0]).not.toContain("[WARN]");
     expect(lines[0]).not.toContain("[ERROR]");
-    expect(lines[1]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - session_end/);
+    expect(lines[0]).toContain("[INFO]");
+    expect(lines[1]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - \[INFO\] session_end/);
     expect(lines[1]).not.toContain("[WARN]");
     expect(lines[1]).not.toContain("[ERROR]");
+    expect(lines[1]).toContain("[INFO]");
 
     await rm(root, { recursive: true, force: true });
   });

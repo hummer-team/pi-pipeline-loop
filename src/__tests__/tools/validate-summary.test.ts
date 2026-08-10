@@ -131,7 +131,7 @@ describe("createValidateSummary", () => {
     const logContent = await readFile(logPath, "utf-8");
     const line = logContent.trim().split("\n")[0];
 
-    expect(line).toContain(" - summary_validated");
+    expect(line).toContain(" - [INFO] summary_validated");
     expect(line).toContain("stage=develop");
     expect(line).toContain("approved=true");
     expect(line).toContain("comment=ok");

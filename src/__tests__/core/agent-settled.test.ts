@@ -32,7 +32,7 @@ describe("createAgentSettled", () => {
     const content = await readFile(logPath, "utf-8");
     const line = content.trim().split("\n")[0];
 
-    expect(line).toContain(" - agent_settled");
+    expect(line).toContain(" - [INFO] agent_settled");
     expect(line).toContain("pipelineId=pipe-test-001");
     expect(line).toContain("stage=design");
   });

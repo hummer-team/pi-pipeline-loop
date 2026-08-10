@@ -127,7 +127,7 @@ describe("createSessionStarter", () => {
       const content = await readFile(logPath, "utf-8");
       const line = content.trim().split("\n")[0];
 
-      expect(line).toContain(" - session_start");
+      expect(line).toContain(" - [INFO] session_start");
       expect(line).toContain("pipelineId=");
       expect(line).toContain("stage=clarify");
 
