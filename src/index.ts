@@ -99,7 +99,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     ];
     for (const h of hooks) {
       // TSDoc: temporary cast — Phase 2 replaces with buildRuntimeCtx bridge
-      (pi.on as (event: string, handler: (...args: unknown[]) => unknown) => void)(h.event, h.handler);
+      (pi.on as (event: string, handler: (ctx: unknown) => unknown) => void)(h.event, h.handler as (ctx: unknown) => unknown);
     }
 
     // ── Tools registration ─────────────────────────────────────────────
@@ -116,8 +116,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // and registerCommand(name, options) object-style registration.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const piAny = pi as unknown as {
-      registerTool(name: string, description: string, parameters: unknown, execute: any): void;
-      registerCommand(name: string, description: string, execute: any): void;
+      registerTool(name: string, description: string, parameters: unknown, execute: (args: any, ctx?: any) => Promise<unknown>): void;
+      registerCommand(name: string, description: string, execute: (args: any, ctx?: any) => Promise<unknown>): void;
     };
     for (const t of tools) {
       piAny.registerTool(t.name, t.description, t.parameters, t.execute);

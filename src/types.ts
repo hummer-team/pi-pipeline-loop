@@ -7,6 +7,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { RuntimeCtx } from "./core/runtime-ctx";
 
 // ─── Audit Log Types ──────────────────────────────────────────────────────────
 
@@ -353,8 +354,8 @@ export interface PipelineJsonConfig {
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────
 
 /**
- * Stub interface for a pi SDK event hook.
- * Uses `any` for ctx and return type since the pi SDK types are not installed.
+ * Internal hook interface for pi SDK lifecycle events.
+ * The handler receives a RuntimeCtx (built by the registration bridge in Phase 2).
  * Concrete event types: "session_start", "before_agent_start", "tool_call", "tool_result".
  */
 export interface Hook {
@@ -362,13 +363,12 @@ export interface Hook {
   event: string;
 
   /** The handler function invoked when the event fires. May return a value (e.g., systemPrompt). */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handler: (ctx: any) => any;
+  handler: (ctx: RuntimeCtx) => unknown;
 }
 
 /**
- * Stub interface for a pi SDK custom tool.
- * Will be populated with concrete parameter schemas in Phase 2.
+ * Internal tool interface for pi SDK custom tools.
+ * The execute function receives typed args and a RuntimeCtx.
  */
 export interface Tool {
   /** Unique tool name registered with pi */
@@ -380,13 +380,13 @@ export interface Tool {
   /** JSON Schema-like parameter definition */
   parameters: Record<string, unknown>;
 
-  /** The tool's execution function. Optional ctx provides session context from the pi SDK. */
-  execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>;
+  /** The tool's execution function. Receives RuntimeCtx with session state adapter. */
+  execute: (args: Record<string, unknown>, ctx?: RuntimeCtx) => Promise<unknown>;
 }
 
 /**
- * Stub interface for a pi SDK custom command.
- * Will be populated with concrete command logic in Phase 3.
+ * Internal command interface for pi SDK slash-commands.
+ * The execute function receives parsed args and a RuntimeCtx.
  */
 export interface Command {
   /** Unique command name (invoked as `/command`) */
@@ -396,7 +396,7 @@ export interface Command {
   description: string;
 
   /** The command's execution function */
-  execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>;
+  execute: (args: Record<string, unknown>, ctx?: RuntimeCtx) => Promise<unknown>;
 }
 
 /**

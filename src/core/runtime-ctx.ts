@@ -1,0 +1,78 @@
+/**
+ * @module runtime-ctx
+ * RuntimeCtx bridge — translates real pi SDK event/ctx shapes into the
+ * internal RuntimeCtx shape consumed by all pipeline hooks and tools.
+ *
+ * This is the adapter layer that allows internal business logic to keep
+ * using a consistent context interface while the registration bridge
+ * (Phase 2) translates between SDK signatures and internal signatures.
+ */
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { SessionState } from "./session-state";
+import { createSessionState } from "./session-state";
+
+/**
+ * Internal runtime context consumed by all pipeline hooks and tools.
+ * Provides a unified interface regardless of the specific pi SDK event type.
+ */
+export interface RuntimeCtx {
+  /** Session state adapter for reading/writing pipeline metadata */
+  session: SessionState;
+
+  /** UI context for notifications and status updates */
+  ui: ExtensionUIContext;
+
+  /** Tool call information (populated for tool_call and tool_result events) */
+  toolCall?: { name: string; arguments: Record<string, unknown> };
+
+  /** Tool result information (populated for tool_result events) */
+  result?: { success: boolean; exitCode?: number };
+}
+
+/**
+ * Build a RuntimeCtx from the real pi SDK ExtensionAPI, ExtensionContext, and optional event.
+ *
+ * Event mapping:
+ * - tool_call: extracts toolName → toolCall.name, input → toolCall.arguments
+ * - tool_result: extracts toolName → toolCall.name, input → toolCall.arguments,
+ *   isError → result.success (inverted), exitCode 1 if error
+ * - other events: toolCall and result are undefined
+ */
+export function buildRuntimeCtx(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  event?: Record<string, unknown>,
+): RuntimeCtx {
+  const session = createSessionState(pi, ctx);
+  const ui = ctx.ui;
+
+  const rctx: RuntimeCtx = { session, ui };
+
+  if (event && typeof event === "object") {
+    const eventType = event.type;
+
+    if (eventType === "tool_call" || eventType === "tool_result") {
+      const toolName = event.toolName as string | undefined;
+      const input = event.input as Record<string, unknown> | undefined;
+
+      if (toolName) {
+        rctx.toolCall = {
+          name: toolName,
+          arguments: input ?? {},
+        };
+      }
+
+      if (eventType === "tool_result") {
+        const isError = event.isError as boolean | undefined;
+        rctx.result = {
+          success: !isError,
+          exitCode: isError ? 1 : 0,
+        };
+      }
+    }
+  }
+
+  return rctx;
+}
