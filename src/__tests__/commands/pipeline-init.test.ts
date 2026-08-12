@@ -4,6 +4,7 @@ import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineInitCommand } from "../../commands/pipeline-init";
+import { STAGE_STATUS_KEY } from "../../core/pipeline-ui";
 import { makeTestConfig } from "../helpers";
 
 let TMP: string;
@@ -420,6 +421,60 @@ describe("createPipelineInitCommand", () => {
       expect(result.content).toContain(".pi/ directory setup");
       // Verify section present
       expect(result.content).toContain("verify.md generation");
+    });
+  });
+
+  describe("Phase 2 — PipelineUI status bar lifecycle", () => {
+    function makeUICtx() {
+      const notifications: string[] = [];
+      const statusCalls: { key: string; text: string }[] = [];
+      return {
+        ctx: {
+          ui: {
+            notify: (msg: string) => { notifications.push(msg); },
+            setStatus: (key: string, text: string) => { statusCalls.push({ key, text }); },
+          },
+        },
+        notifications,
+        statusCalls,
+      };
+    }
+
+    it("output.pipelineStage: true — setStatus receives 'Pipeline → init' then empty string", async () => {
+      const config = makeInitConfig();
+      // Override output to enable pipelineStage
+      (config as any).output = { pipelineStage: true };
+
+      const { ctx, statusCalls } = makeUICtx();
+      const cmd = createPipelineInitCommand(config);
+      await cmd.execute({ sub: "1" }, ctx);
+
+      // First call: stageEntry sets "Pipeline → init"
+      expect(statusCalls[0]).toEqual({ key: STAGE_STATUS_KEY, text: "Pipeline → init" });
+      // Last call: clearStage sets ""
+      expect(statusCalls[statusCalls.length - 1]).toEqual({ key: STAGE_STATUS_KEY, text: "" });
+    });
+
+    it("output.pipelineStage: false — no setStatus or notify calls", async () => {
+      const config = makeInitConfig();
+      // Override output to disable pipelineStage (default)
+      (config as any).output = { pipelineStage: false };
+
+      const { ctx, notifications, statusCalls } = makeUICtx();
+      const cmd = createPipelineInitCommand(config);
+      await cmd.execute({ sub: "1" }, ctx);
+
+      expect(notifications).toEqual([]);
+      expect(statusCalls).toEqual([]);
+    });
+
+    it("ctx without ui — does not throw (no-op safe)", async () => {
+      const config = makeInitConfig();
+      (config as any).output = { pipelineStage: true };
+
+      const cmd = createPipelineInitCommand(config);
+      // ctx without ui — should not throw
+      await expect(cmd.execute({ sub: "1" }, {})).resolves.toBeDefined();
     });
   });
 });
