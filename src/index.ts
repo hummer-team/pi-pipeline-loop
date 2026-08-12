@@ -5,7 +5,9 @@
  */
 
 import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./types";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { initAuditLog } from "./utils/auditLog";
+import { buildRuntimeCtx } from "./core/runtime-ctx";
 
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
@@ -38,6 +40,25 @@ import { createSessionShutdown } from "./core/session-shutdown";
 
 // JSON config loader
 import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader";
+
+// ─── Command argument parser ────────────────────────────────────────────────
+
+/**
+ * Parse command-line string args into the Record<string, unknown> shape
+ * expected by internal Command.execute() implementations.
+ */
+function parseCommandArgs(commandName: string, args: string): Record<string, unknown> {
+  switch (commandName) {
+    case "pipeline_init":
+      return { sub: args.trim() };
+    case "pipeline_start":
+      return { file: args.trim() };
+    case "pipeline_status":
+      return {};
+    default:
+      return { raw: args };
+  }
+}
 
 // ─── Factory Function ────────────────────────────────────────────────────────
 
@@ -73,11 +94,6 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // Initialize audit log directory (resolves path + creates if needed)
     await initAuditLog(config);
 
-    // LLM stub: throws on invocation — graceful fail-closed until pi SDK provides real callLLM
-    const callLLMStub = async (_prompt: string): Promise<string> => {
-      throw new Error("LLM not available (pi SDK stub)");
-    };
-
     // Wrap pi.exec() as ExecFn for DI into verifiers (avoids child_process.execSync)
     const execFn: ExecFn | undefined = pi.exec
       ? async (cmd: string, args: string[], cwd: string) => {
@@ -86,23 +102,26 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         }
       : undefined;
 
-    // ── Hooks registration ─────────────────────────────────────────────
-    // NOTE: Phase 0 transitional — real ExtensionAPI uses typed overloads for `on()`.
-    // Phase 2 will bridge internal Hook shape to real SDK signatures properly.
+    // ── Hooks registration (bridge: SDK (event, ctx) → internal RuntimeCtx) ──
     const hooks = [
       createSessionStarter(config),
       createPromptInjector(config),
       createToolGuard(config),
       createLoopBreaker(config),
-      createAgentSettled(config, { callLLM: callLLMStub, execFn }),
+      createAgentSettled(config, { execFn }),
       createSessionShutdown(config),
     ];
     for (const h of hooks) {
-      // TSDoc: temporary cast — Phase 2 replaces with buildRuntimeCtx bridge
-      (pi.on as (event: string, handler: (ctx: unknown) => unknown) => void)(h.event, h.handler as (ctx: unknown) => unknown);
+      // TSDoc: event type cast — internal Hook uses string event names,
+      // SDK uses overloaded typed events. Cast needed for generic registration.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pi.on as any)(h.event, async (event: unknown, ctx: ExtensionContext) => {
+        const rctx = buildRuntimeCtx(pi, ctx, event as Record<string, unknown>);
+        return h.handler(rctx);
+      });
     }
 
-    // ── Tools registration ─────────────────────────────────────────────
+    // ── Tools registration (bridge: SDK registerTool(object) → internal Tool) ──
     const tools = [
       createStageAdvancer(config),
       createLoopChecker(config),
@@ -112,15 +131,23 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createPipelineHandoff(config),
       createRequestBashPermission(),
     ];
-    // TSDoc: temporary cast — Phase 2 replaces with registerTool(tool) single-object bridge
-    // and registerCommand(name, options) object-style registration.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const piAny = pi as unknown as {
-      registerTool(name: string, description: string, parameters: unknown, execute: (args: any, ctx?: any) => Promise<unknown>): void;
-      registerCommand(name: string, description: string, execute: (args: any, ctx?: any) => Promise<unknown>): void;
-    };
     for (const t of tools) {
-      piAny.registerTool(t.name, t.description, t.parameters, t.execute);
+      // TSDoc: parameters cast — internal JSON Schema passed to TypeBox TSchema slot.
+      // Runtime: pi-ai validation.js has non-TypeBox fallback path for plain JSON Schema.
+      pi.registerTool({
+        name: t.name,
+        label: t.name,
+        description: t.description,
+        parameters: t.parameters as never,
+        execute: async (_toolCallId: string, params: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx: ExtensionContext) => {
+          const rctx = buildRuntimeCtx(pi, ctx);
+          const result = await t.execute(params, rctx);
+          return {
+            content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result) }],
+            details: result,
+          };
+        },
+      });
     }
 
     // ── Conditional tool: pipeline_verify (only if any stage uses mode: "tool") ──
@@ -128,25 +155,45 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       (sc) => sc.verify?.mode === "tool",
     );
     if (hasToolModeStage) {
-      const verifyTool = createPipelineVerify(config, {
-        callLLM: callLLMStub,
-        execFn,
+      const verifyTool = createPipelineVerify(config, { execFn });
+      pi.registerTool({
+        name: verifyTool.name,
+        label: verifyTool.name,
+        description: verifyTool.description,
+        parameters: verifyTool.parameters as never,
+        execute: async (_toolCallId: string, params: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx: ExtensionContext) => {
+          const rctx = buildRuntimeCtx(pi, ctx);
+          const result = await verifyTool.execute(params, rctx);
+          return {
+            content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result) }],
+            details: result,
+          };
+        },
       });
-      piAny.registerTool(
-        verifyTool.name,
-        verifyTool.description,
-        verifyTool.parameters,
-        verifyTool.execute,
-      );
     }
 
-    // ── Commands registration ──────────────────────────────────────────
-    const cmd = createPipelineStatusCommand(config);
-    piAny.registerCommand(cmd.name, cmd.description, cmd.execute);
-    const startCmd = createPipelineStartCommand(config);
-    piAny.registerCommand(startCmd.name, startCmd.description, startCmd.execute);
-    const initCmd = createPipelineInitCommand(config, callLLMStub);
-    piAny.registerCommand(initCmd.name, initCmd.description, initCmd.execute);
+    // ── Commands registration (bridge: SDK registerCommand(name, { handler }) → internal Command) ──
+    const commands = [
+      createPipelineStatusCommand(config),
+      createPipelineStartCommand(config),
+      createPipelineInitCommand(config),
+    ];
+    for (const cmd of commands) {
+      pi.registerCommand(cmd.name, {
+        description: cmd.description,
+        handler: async (args: string, ctx: ExtensionContext) => {
+          const rctx = buildRuntimeCtx(pi, ctx);
+          const parsed = parseCommandArgs(cmd.name, args);
+          const result = await cmd.execute(parsed, rctx);
+          if (result && typeof result === "object") {
+            const r = result as Record<string, unknown>;
+            if (r.error) ctx.ui.notify(String(r.error), "error");
+            else if (r.message) ctx.ui.notify(String(r.message));
+            else if (r.content) ctx.ui.notify(String(r.content));
+          }
+        },
+      });
+    }
   };
 }
 

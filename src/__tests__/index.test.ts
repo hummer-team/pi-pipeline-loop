@@ -19,12 +19,13 @@ describe("createPipeline", () => {
       on: (event: string, _handler: any) => {
         registeredEvents.push(event);
       },
-      registerTool: (name: string, _description: string, _parameters: any, _execute: any) => {
-        registeredTools.push(name);
+      registerTool: (tool: { name: string }) => {
+        registeredTools.push(tool.name);
       },
-      registerCommand: (name: string, _description: string, _execute: any) => {
+      registerCommand: (name: string, _options: any) => {
         registeredCommands.push(name);
       },
+      exec: undefined,
     };
 
     const factory = createPipeline(makeTestConfig());
@@ -58,10 +59,11 @@ describe("createPipeline", () => {
 
     const mockPi = {
       on: () => {},
-      registerTool: (name: string, description: string, _parameters: any, _execute: any) => {
-        toolRegistrations.push({ name, description });
+      registerTool: (tool: { name: string; description: string }) => {
+        toolRegistrations.push({ name: tool.name, description: tool.description });
       },
       registerCommand: () => {},
+      exec: undefined,
     };
 
     const factory = createPipeline(makeTestConfig());
@@ -113,12 +115,13 @@ describe("default export", () => {
     return {
       pi: {
         on: (event: string, _handler: any) => { registeredEvents.push(event); },
-        registerTool: (name: string, _desc: string, _params: any, _exec: any) => {
-          registeredTools.push(name);
+        registerTool: (tool: { name: string }) => {
+          registeredTools.push(tool.name);
         },
-        registerCommand: (name: string, _desc: string, _exec: any) => {
+        registerCommand: (name: string, _options: any) => {
           registeredCommands.push(name);
         },
+        exec: undefined,
       },
       registeredEvents,
       registeredTools,
