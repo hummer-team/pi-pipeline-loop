@@ -87,11 +87,14 @@ export function createPipelineInitCommand(
         // If sub === "0", check if option 3 flagged verify-after
         if (sub === "0") {
           if (dirResult.verifyAfter) {
-            return await executeVerifyBranch(config);
+            const verifyResult = await executeVerifyBranch(config);
+            return mergeInitResults(dirResult, verifyResult);
           }
           return dirResult;
         }
-        // sub === "" → continue to verify branch after dir (runVerify path, no duplicate verify)
+        // sub === "" → continue to verify branch after dir
+        const verifyResult = await executeVerifyBranch(config);
+        return mergeInitResults(dirResult, verifyResult);
       }
 
       // ── Verify branch ──────────────────────────────────────────────────
@@ -99,7 +102,7 @@ export function createPipelineInitCommand(
         return await executeVerifyBranch(config);
       }
 
-      return { success: true, summary: "pipeline_init completed" };
+      return { success: true, summary: "pipeline_init completed", content: "# pipeline_init — nothing to do" };
     },
   };
 }
@@ -278,17 +281,24 @@ async function copyTemplateFiles(
 }
 
 /**
+ * Import type for verify generation results.
+ */
+import type { VerifyGenerateResult } from "../core/verify-generator";
+
+/**
  * Verify branch: generates verify.md files from skill definitions.
+ * Returns `content` with generated/skipped/errored counts and file lists.
  */
 async function executeVerifyBranch(
   config: PipelineConfig,
-): Promise<{ success: boolean; summary?: string; results?: unknown[] }> {
+): Promise<{ success: boolean; summary?: string; content?: string; results?: VerifyGenerateResult[] }> {
   // Pre-check: .pi/skills must exist
   const skillsDir = path.join(config.projectRoot, CONFIG_DIR_NAME, "skills");
   if (!fs.existsSync(skillsDir)) {
     return {
       success: true,
       summary: `skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline_init 0 first`,
+      content: `# pipeline_init — verify.md generation\n- skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline_init 0 first`,
       results: [],
     };
   }
@@ -299,9 +309,52 @@ async function executeVerifyBranch(
   const skipped = results.filter(r => r.status === "skipped");
   const errored = results.filter(r => r.status === "error");
 
+  // Build content string for bridge display
+  const lines: string[] = [
+    "# pipeline_init — verify.md generation",
+    `- generated: ${generated.length}`,
+    `- skipped: ${skipped.length}`,
+    `- errors: ${errored.length}`,
+  ];
+  if (generated.length > 0) {
+    lines.push("Generated:");
+    for (const r of generated) {
+      lines.push(`  - ${r.filePath ?? r.stage} (${r.stage})`);
+    }
+  }
+  if (skipped.length > 0) {
+    lines.push("Skipped:");
+    for (const r of skipped) {
+      lines.push(`  - ${r.stage} (${r.error ?? "unknown reason"})`);
+    }
+  }
+  if (errored.length > 0) {
+    lines.push("Errors:");
+    for (const r of errored) {
+      lines.push(`  - ${r.stage} (${r.error ?? "unknown error"})`);
+    }
+  }
+
   return {
     success: true,
     summary: `Generated ${generated.length} verify.md file(s), skipped ${skipped.length}, errors ${errored.length}`,
+    content: lines.join("\n"),
     results,
+  };
+}
+
+/**
+ * Merges dir and verify branch results into a single result object.
+ * Combines `summary` (`; `), `content` (`\n\n`), and passes through `results`.
+ */
+function mergeInitResults(
+  dir: { success: boolean; summary?: string; content?: string },
+  verify: { success: boolean; summary?: string; content?: string; results?: VerifyGenerateResult[] },
+): { success: boolean; summary?: string; content?: string; results?: VerifyGenerateResult[] } {
+  return {
+    success: dir.success && verify.success,
+    summary: [dir.summary, verify.summary].filter(Boolean).join("; "),
+    content: [dir.content, verify.content].filter(Boolean).join("\n\n"),
+    results: verify.results,
   };
 }

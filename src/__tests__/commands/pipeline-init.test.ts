@@ -338,4 +338,88 @@ describe("createPipelineInitCommand", () => {
       ).toBe(true);
     });
   });
+
+  describe("Phase 1 — verify branch content and combined merge", () => {
+    it('sub="1" with successful generation returns content with generated count and verify.md path', async () => {
+      const config = makeInitConfig();
+
+      // Create .pi/skills with skill files
+      for (const stage of ["design", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-result.md\n`,
+          "utf-8",
+        );
+      }
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("generated:");
+      expect(result.content).toContain("verify.md");
+      expect(result.content).toContain("Generated:");
+    });
+
+    it("sub=\"1\" with missing .pi/skills returns content with 'not found'", async () => {
+      const config = makeInitConfig();
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("not found");
+      expect(result.content).toContain("verify.md generation");
+    });
+
+    it('sub="" merges dir + verify content (both sections present)', async () => {
+      const config = makeInitConfig();
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute("" as any);
+
+      expect(result.success).toBe(true);
+      expect(result.content).toBeDefined();
+      // Dir section: should contain .pi/ directory setup info
+      expect(result.content).toContain(".pi/ directory setup");
+      expect(result.content).toContain(".pi/guide.md");
+      // Verify section: should contain verify.md generation info
+      expect(result.content).toContain("verify.md generation");
+    });
+
+    it("option 3 (verifyAfter) merges dir + verify content (both sections present)", async () => {
+      const config = makeInitConfig();
+
+      // Pre-create files to trigger multi-execution detection
+      const piDir = path.join(TMP, ".pi");
+      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "skills", "design", "SKILL.md"),
+        "- **Must** design-output.md\n",
+        "utf-8",
+      );
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "agents", "clarify", "clarify.md"),
+        "existing agent",
+        "utf-8",
+      );
+
+      const ctx = {
+        ui: {
+          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.content).toBeDefined();
+      // Dir section present
+      expect(result.content).toContain(".pi/ directory setup");
+      // Verify section present
+      expect(result.content).toContain("verify.md generation");
+    });
+  });
 });
