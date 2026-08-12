@@ -27,8 +27,8 @@ describe("createPipelineStartCommand", () => {
     let updatedMeta: any = null;
     const ctx = {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: (m: any) => { updatedMeta = m; },
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
       },
     };
 
@@ -49,8 +49,8 @@ describe("createPipelineStartCommand", () => {
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     const ctx = {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: () => {},
+        getMeta: () => meta,
+        updateMeta: () => {},
       },
     };
 
@@ -81,8 +81,8 @@ describe("createPipelineStartCommand", () => {
     let updatedMeta: any = null;
     const ctx = {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: (m: any) => { updatedMeta = m; },
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
       },
     };
 
@@ -122,8 +122,8 @@ describe("createPipelineStartCommand", () => {
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     const ctx = {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: () => {},
+        getMeta: () => meta,
+        updateMeta: () => {},
       },
     };
 
@@ -169,8 +169,8 @@ describe("createPipelineStartCommand", () => {
     let updatedMeta: any = null;
     const ctx = {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: (m: any) => { updatedMeta = m; },
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
       },
     };
 
@@ -191,8 +191,8 @@ describe("createPipelineStartCommand", () => {
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     const ctx = {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: () => {},
+        getMeta: () => meta,
+        updateMeta: () => {},
       },
     };
 

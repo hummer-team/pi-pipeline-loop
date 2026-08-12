@@ -55,7 +55,7 @@ describe("verify-integration", () => {
 
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     const ctx = {
-      session: { getMetadata: () => meta, updateMetadata: () => {} },
+      session: { getMeta: () => meta, updateMeta: () => {} },
     };
 
     const startCmd = createPipelineStartCommand(config);
@@ -95,8 +95,8 @@ describe("verify-integration", () => {
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     const ctx = {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: (m: any) => Object.assign(meta, m),
+        getMeta: () => meta,
+        updateMeta: (m: any) => Object.assign(meta, m),
       },
     };
 
@@ -159,7 +159,7 @@ describe("verify-integration", () => {
     // Now run prompt-injector — should include failures
     const injectorHook = createPromptInjector(config);
     const promptResult = await injectorHook.handler({
-      session: { getMetadata: () => lastMeta },
+      session: { getMeta: () => lastMeta },
     } as any);
 
     expect(promptResult.systemPrompt).toContain("PREVIOUS VERIFICATION FAILURES");

@@ -52,7 +52,7 @@ export function createValidateSummary(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const stage = args.stage as string;
       const isApproved = args.isApproved as boolean;
       const comment = (args.comment as string) ?? "";
@@ -81,7 +81,7 @@ export function createValidateSummary(config: PipelineConfig): Tool {
       }
 
       // Update session metadata
-      ctx.session.updateMetadata({
+      ctx.session.updateMeta({
         ...meta,
         summaries: {
           ...meta.summaries,

@@ -51,7 +51,7 @@ export function createLoopChecker(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const currentStage = meta.currentStage;
 
       if (currentStage !== "develop" && currentStage !== "fix") {
@@ -76,7 +76,7 @@ export function createLoopChecker(config: PipelineConfig): Tool {
       const newLoopCount = meta.loopCount + 1;
       const maxLoops = meta.maxLoops;
 
-      ctx.session.updateMetadata({
+      ctx.session.updateMeta({
         ...meta,
         loopCount: newLoopCount,
         currentStepIndex: meta.currentStepIndex + 1,

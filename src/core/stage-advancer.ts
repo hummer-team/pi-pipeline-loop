@@ -37,7 +37,7 @@ export function createStageAdvancer(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const currentStage: PipelineStage = meta.currentStage;
 
       if (currentStage === "completed") {
@@ -51,7 +51,7 @@ export function createStageAdvancer(config: PipelineConfig): Tool {
       const stageConfig = config.stages[currentStage];
       const nextStage = stageConfig.nextStage;
 
-      ctx.session.updateMetadata({
+      ctx.session.updateMeta({
         ...meta,
         previousStage: currentStage,
         currentStage: nextStage ?? "completed",

@@ -24,7 +24,7 @@ export function createSessionShutdown(config: PipelineConfig): Hook {
   return {
     event: "session_shutdown",
     handler: async (ctx: any): Promise<void> => {
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
 
       await writeAuditLog("session_shutdown", {
         pipelineId: meta.pipelineId,

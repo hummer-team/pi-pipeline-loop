@@ -4,7 +4,7 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 
 function createCtx(meta: any) {
   return {
-    session: { getMetadata: () => meta },
+    session: { getMeta: () => meta },
   };
 }
 

@@ -15,8 +15,8 @@ import type { PipelineUI } from "./pipeline-ui";
  */
 interface VerifyAdvanceCtx {
   session: {
-    getMetadata: () => SessionMeta;
-    updateMetadata: (meta: SessionMeta) => void;
+    getMeta: () => SessionMeta | undefined;
+    updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
   };
   ui?: { notify: (msg: string) => void };
 }
@@ -111,7 +111,7 @@ export async function applyVerifyPass(
 ): Promise<VerifyPassReturn | void> {
   if (nextStage) {
     // Advance to next stage
-    ctx.session.updateMetadata({
+    ctx.session.updateMeta({
       ...meta,
       previousStage: stageName,
       currentStage: nextStage,
@@ -211,7 +211,7 @@ export async function applyVerifyFail(
     });
   }
 
-  ctx.session.updateMetadata({
+  ctx.session.updateMeta({
     ...meta,
     verifyAttempts: (meta.verifyAttempts || 0) + 1,
     verifyFailures,

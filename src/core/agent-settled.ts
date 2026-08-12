@@ -35,7 +35,7 @@ export function createAgentSettled(
   return {
     event: "agent_settled",
     handler: async (ctx: any): Promise<void> => {
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
 
       // 1. Write audit log
       await writeAuditLog("agent_settled", {
@@ -61,9 +61,8 @@ export function createAgentSettled(
         return;
       }
 
-      // NOTE: assistantMessages source changed — Phase 3 will use extractAssistantMessages(ctx)
-      // for real-time extraction from session branch.
-      const assistantMessages: string[] = [];
+      // Extract assistant messages from session branch for verification
+      const assistantMessages = ctx.session.extractAssistantMessages();
       const vr = await runVerification(
         config,
         meta,

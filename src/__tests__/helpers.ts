@@ -46,9 +46,9 @@ export function makeTestMeta(overrides?: Partial<SessionMeta>): SessionMeta {
 
 export type MockCtx = {
   session: {
-    getMetadata: () => SessionMeta;
-    updateMetadata: (meta: SessionMeta) => void;
-    setModel: (model: string) => Promise<void>;
+    getMeta: () => SessionMeta;
+    updateMeta: (patch: Partial<SessionMeta>) => SessionMeta;
+    extractAssistantMessages: () => string[];
   };
   ui: { notify: (msg: string) => void; setStatus: (key: string, text: string) => void };
   toolCall: { name: string; arguments: Record<string, unknown> };
@@ -62,12 +62,14 @@ export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: S
 
   return {
     session: {
-      getMetadata: () => meta,
-      updateMetadata: (newMeta: SessionMeta) => {
-        metadataUpdates.push(newMeta);
-        Object.assign(meta, newMeta);
+      getMeta: () => meta,
+      updateMeta: (patch: Partial<SessionMeta>) => {
+        const merged = { ...meta, ...patch };
+        metadataUpdates.push(merged);
+        Object.assign(meta, merged);
+        return merged;
       },
-      setModel: async (_model: string) => {},
+      extractAssistantMessages: () => [],
     },
     ui: {
       notify: (msg: string) => {

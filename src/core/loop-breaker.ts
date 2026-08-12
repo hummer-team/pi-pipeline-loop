@@ -66,7 +66,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
   return {
     event: "tool_result",
     handler: async (ctx: any): Promise<void> => {
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
 
@@ -84,11 +84,11 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           (meta.currentStage === "develop" || meta.currentStage === "fix")
         ) {
           const newLoopCount = meta.loopCount + 1;
-          ctx.session.updateMetadata({ ...meta, loopCount: newLoopCount });
+          ctx.session.updateMeta({ ...meta, loopCount: newLoopCount });
 
           if (newLoopCount >= meta.maxLoops) {
             // Circuit break: terminate pipeline
-            ctx.session.updateMetadata({
+            ctx.session.updateMeta({
               ...meta,
               loopCount: newLoopCount,
               terminated: true,
@@ -133,10 +133,10 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           }
 
           const newLoopCount = meta.loopCount + 1;
-          ctx.session.updateMetadata({ ...meta, loopCount: newLoopCount });
+          ctx.session.updateMeta({ ...meta, loopCount: newLoopCount });
 
           if (newLoopCount >= meta.maxLoops) {
-            ctx.session.updateMetadata({
+            ctx.session.updateMeta({
               ...meta,
               loopCount: newLoopCount,
               terminated: true,
@@ -202,7 +202,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
         ctx.result?.success
       ) {
         const nextStepIndex = (meta.currentStepIndex ?? 0) + 1;
-        ctx.session.updateMetadata({
+        ctx.session.updateMeta({
           ...meta,
           currentStepIndex: nextStepIndex,
         });

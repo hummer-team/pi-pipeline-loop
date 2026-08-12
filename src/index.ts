@@ -121,6 +121,21 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       });
     }
 
+    // ── Model selection recording (Q4-A: read-only observation) ──
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (pi.on as any)("model_select", async (event: any, ctx: ExtensionContext) => {
+      const rctx = buildRuntimeCtx(pi, ctx);
+      const meta = rctx.session.getMeta();
+      if (meta && event?.model) {
+        rctx.session.updateMeta({
+          currentModel: {
+            provider: event.model.provider ?? "unknown",
+            modelId: event.model.modelId ?? event.model.id ?? "unknown",
+          },
+        });
+      }
+    });
+
     // ── Tools registration (bridge: SDK registerTool(object) → internal Tool) ──
     const tools = [
       createStageAdvancer(config),

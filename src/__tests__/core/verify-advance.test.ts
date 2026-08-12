@@ -18,8 +18,8 @@ function createCtx(meta: SessionMeta) {
   const pipelineUI = createPipelineUI(config);
   return {
     session: {
-      getMetadata: () => meta,
-      updateMetadata: (m: SessionMeta) => {
+      getMeta: () => meta,
+      updateMeta: (m: SessionMeta) => {
         updates.push(m);
         Object.assign(meta, m);
       },
@@ -324,8 +324,8 @@ describe("output.pipelineStage: false (silent)", () => {
     const pipelineUI = createPipelineUI(config);
     return {
       session: {
-        getMetadata: () => meta,
-        updateMetadata: (m: SessionMeta) => {
+        getMeta: () => meta,
+        updateMeta: (m: SessionMeta) => {
           updates.push(m);
           Object.assign(meta, m);
         },

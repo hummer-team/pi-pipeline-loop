@@ -62,7 +62,7 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
       const stage = meta.currentStage;
@@ -116,7 +116,7 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         status: "pending",
       };
 
-      ctx.session.updateMetadata({
+      ctx.session.updateMeta({
         ...meta,
         summaries: {
           ...meta.summaries,

@@ -28,7 +28,7 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
       const currentSummary = meta.summaries[meta.currentStage];
 

@@ -15,8 +15,8 @@ function createCtx(meta: any) {
   const updates: any[] = [];
   return {
     session: {
-      getMetadata: () => meta,
-      updateMetadata: (m: any) => {
+      getMeta: () => meta,
+      updateMeta: (m: any) => {
         updates.push(m);
         Object.assign(meta, m);
       },

@@ -32,7 +32,7 @@ export function createPipelineState(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const currentStage = meta.currentStage;
       const stageConfig = config.stages[currentStage];
       const nextStage = stageConfig.nextStage;

@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
+import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 
@@ -74,9 +75,9 @@ export function createSessionStarter(config: PipelineConfig): Hook {
   const ui = createPipelineUI(config);
   return {
     event: "session_start",
-    handler: async (ctx: any): Promise<void> => {
+    handler: async (ctx: RuntimeCtx): Promise<void> => {
       const projectRoot = config.projectRoot;
-      const meta = ctx.session.getMetadata() as SessionMeta | undefined;
+      const meta = ctx.session.getMeta() as SessionMeta;
 
       if (!meta?.currentStage) {
         // ── New pipeline: initialize metadata ──────────────────────────
@@ -98,7 +99,7 @@ export function createSessionStarter(config: PipelineConfig): Hook {
           maxLoops: config.maxLoops || 3,
         };
 
-        ctx.session.updateMetadata(sessionMeta);
+        ctx.session.updateMeta(sessionMeta);
 
         // Write session_start audit log
         await writeAuditLog("session_start", {

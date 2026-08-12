@@ -26,7 +26,7 @@ export function createToolGuard(config: PipelineConfig): Hook {
   return {
     event: "tool_call",
     handler: async (ctx: any): Promise<unknown> => {
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
       const { name: toolName, arguments: args } = ctx.toolCall;
 

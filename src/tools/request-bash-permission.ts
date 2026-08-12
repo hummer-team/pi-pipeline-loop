@@ -30,7 +30,7 @@ export function createRequestBashPermission(): Tool {
         return { success: false, error: 'Missing required parameter "prefix"' };
       }
 
-      const meta = ctx?.session?.getMetadata?.();
+      const meta = ctx?.session?.getMeta?.();
       if (!meta) {
         return { success: false, error: "No session metadata available" };
       }
@@ -40,7 +40,7 @@ export function createRequestBashPermission(): Tool {
         tempList.push(prefix);
       }
 
-      ctx.session.updateMetadata({ ...meta, tempAllowedBash: tempList });
+      ctx.session.updateMeta({ ...meta, tempAllowedBash: tempList });
       return {
         success: true,
         message: `Bash prefix "${prefix}" has been temporarily allowed for this session.`,

@@ -20,7 +20,7 @@ describe("createPromptInjector", () => {
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["develop"] = { ...config.stages["develop"], requireDomain: true, skillPath: "test-skill/SKILL.md" } as any;
     const meta = makeTestMeta({ currentStage: "develop", previousStage: "plan" });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -34,7 +34,7 @@ describe("createPromptInjector", () => {
   it("skips domain skill when requireDomain is false", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "clarify" });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -45,7 +45,7 @@ describe("createPromptInjector", () => {
   it("skips loop status for non-loop stages", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "design" });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -62,7 +62,7 @@ describe("createPromptInjector", () => {
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["fix"] = { ...config.stages["fix"], requireDomain: false, skillPath: "test-skill/SKILL.md" } as any;
     const meta = makeTestMeta({ currentStage: "fix" });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -73,7 +73,7 @@ describe("createPromptInjector", () => {
   it("includes pipeline status in every prompt", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta();
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -89,7 +89,7 @@ describe("createPromptInjector", () => {
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["clarify"] = { ...config.stages["clarify"], skillPath: "nonexistent/SKILL.md" } as any;
     const meta = makeTestMeta({ currentStage: "clarify" });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -108,7 +108,7 @@ describe("createPromptInjector", () => {
         clarify: { path: "/tmp/clarify.md", hash: "abc", status: "pending" as const },
       },
     });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -125,7 +125,7 @@ describe("createPromptInjector", () => {
         { ruleType: "requiredGit", detail: "No commit within 10min", timestamp: Date.now() },
       ],
     });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
@@ -141,7 +141,7 @@ describe("createPromptInjector", () => {
       currentStage: "develop",
       verifyFailures: [],
     });
-    const ctx = { session: { getMetadata: () => meta } };
+    const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);

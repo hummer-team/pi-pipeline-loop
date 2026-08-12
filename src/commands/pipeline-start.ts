@@ -65,7 +65,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         };
       }
 
-      const meta = ctx?.session?.getMetadata?.() as SessionMeta | undefined;
+      const meta = ctx?.session?.getMeta?.();
 
       if (meta?.currentStage && meta.pipelineId) {
         return {
@@ -102,7 +102,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         requirementDoc: file,
       };
 
-      ctx?.session?.updateMetadata?.(newMeta);
+      ctx?.session?.updateMeta?.(newMeta);
 
       return {
         success: true,

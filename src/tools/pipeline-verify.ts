@@ -69,8 +69,9 @@ export function createPipelineVerify(
 
       const sessionCtx = ctx as {
         session: {
-          getMetadata: () => SessionMeta;
-          updateMetadata: (meta: SessionMeta) => void;
+          getMeta: () => SessionMeta | undefined;
+          updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
+          extractAssistantMessages: () => string[];
         };
         ui?: { notify: (msg: string) => void };
       };
@@ -79,7 +80,7 @@ export function createPipelineVerify(
         return { error: "No session context available" };
       }
 
-      const meta = sessionCtx.session.getMetadata();
+      const meta = sessionCtx.session.getMeta() as SessionMeta;
       const stageName = (args.stage as PipelineStage) || meta.currentStage;
       const stageConfig = config.stages[stageName];
 
@@ -107,9 +108,8 @@ export function createPipelineVerify(
         verifyOptions.verifyFile = args.verifyFile;
       }
 
-      // NOTE: assistantMessages source changed — Phase 3 will use extractAssistantMessages(ctx)
-      // for real-time extraction from session branch.
-      const assistantMessages: string[] = [];
+      // Extract assistant messages from session branch for verification
+      const assistantMessages = sessionCtx.session.extractAssistantMessages();
 
       const vr = await runVerification(
         config,

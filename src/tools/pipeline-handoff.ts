@@ -52,7 +52,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMetadata() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta;
       const currentStage = meta.currentStage;
       const nextStage = args.nextStage as PipelineStage;
       const note = (args.note as string) ?? "";
@@ -87,14 +87,14 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
               `Pipeline terminated. Start a new run with /pipeline_start.`,
           };
         }
-        ctx.session.updateMetadata({
+        ctx.session.updateMeta({
           ...meta,
           loopCycleCount: cycleCount,
           stageVisitOrder: [...visitOrder, nextStage],
         });
       } else {
         const newVisitOrder = [...visitOrder, nextStage];
-        ctx.session.updateMetadata({
+        ctx.session.updateMeta({
           ...meta,
           loopCycleCount: 0,
           stageVisitOrder: newVisitOrder,
@@ -102,11 +102,11 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       }
 
       // Get updated metadata for the actual stage transition
-      const updatedMeta = ctx.session.getMetadata() as SessionMeta;
+      const updatedMeta = ctx.session.getMeta() as SessionMeta;
 
       // Update metadata: transition stage, reset counters, pass context
       const contextFiles = updatedMeta.contextFiles || {};
-      ctx.session.updateMetadata({
+      ctx.session.updateMeta({
         ...updatedMeta,
         previousStage: currentStage,
         currentStage: nextStage,

@@ -16,12 +16,14 @@ function createCtx(meta: SessionMeta) {
   const notifications: string[] = [];
   return {
     session: {
-      getMetadata: () => meta,
-      updateMetadata: (m: SessionMeta) => {
-        updates.push(m);
-        Object.assign(meta, m);
+      getMeta: () => meta,
+      updateMeta: (patch: Partial<SessionMeta>) => {
+        const merged = { ...meta, ...patch };
+        updates.push(merged);
+        Object.assign(meta, merged);
+        return merged;
       },
-      setModel: async (_model: string) => {},
+      extractAssistantMessages: () => [] as string[],
     },
     ui: {
       notify: (msg: string) => {
