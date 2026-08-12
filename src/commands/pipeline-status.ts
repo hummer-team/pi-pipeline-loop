@@ -4,7 +4,7 @@
  * Returns a formatted overview of the current pipeline state.
  */
 
-import type { PipelineConfig, Command, SessionMeta } from "../types";
+import type { PipelineConfig, Command, SessionMeta, PipelineStage } from "../types";
 import { PROTECTED_PATHS } from "../constants";
 
 /**
@@ -28,9 +28,9 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta;
-      const stageConfig = config.stages[meta.currentStage];
-      const currentSummary = meta.summaries[meta.currentStage];
+      const meta: SessionMeta = ctx.session.getMeta();
+      const stageConfig = config.stages[meta.currentStage as PipelineStage];
+      const currentSummary = meta.summaries[meta.currentStage as PipelineStage];
 
       const content =
         `# Pipeline Status\n` +

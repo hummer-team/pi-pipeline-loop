@@ -55,7 +55,8 @@ describe("verify-integration", () => {
 
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     const ctx = {
-      session: { getMeta: () => meta, updateMeta: () => {} },
+      session: { getMeta: () => meta, updateMeta: (_p: any) => meta, extractAssistantMessages: () => [] },
+      ui: { notify: () => {}, setStatus: () => {} },
     };
 
     const startCmd = createPipelineStartCommand(config);
