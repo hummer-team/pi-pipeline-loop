@@ -5,6 +5,9 @@
  * - `0` (dir): Creates .pi/ directory and copies template files from src/template/
  * - `1` (verify): Generates verify.md files from skill definitions
  * - No argument: Runs dir first, then verify
+ *
+ * Emits stage-convention status via PipelineUI and returns detailed result content
+ * for the command bridge.
  */
 
 import fs from "node:fs";
@@ -103,11 +106,12 @@ export function createPipelineInitCommand(
 
 /**
  * Dir branch: copies template files to .pi/ directory.
+ * Returns `content` with copied/skipped file lists for bridge display.
  */
 async function executeDirBranch(
   config: PipelineConfig,
   ctx?: any,
-): Promise<{ success: boolean; verifyAfter?: boolean; summary?: string; error?: string }> {
+): Promise<{ success: boolean; verifyAfter?: boolean; summary?: string; content?: string; error?: string }> {
   const targetDir = path.join(config.projectRoot, CONFIG_DIR_NAME);
 
   // Check template directory exists
@@ -140,7 +144,7 @@ async function executeDirBranch(
 
       // undefined = Escape / cancel
       if (!choice || choice === "4. 取消" || choice === "4") {
-        return { success: true, summary: "Cancelled by user" };
+        return { success: true, summary: "Cancelled by user", content: "# pipeline_init — cancelled by user" };
       }
 
       if (choice === "1. 强制覆盖所有文件" || choice === "1") {
@@ -152,8 +156,8 @@ async function executeDirBranch(
       if (choice === "3. 重新执行 verify 生成" || choice === "3") {
         const copyResult = await copyTemplateFiles(templateFiles, targetDir, "skip", config);
         if (!copyResult.success) return copyResult;
-        // Flag outer execute() to run verify branch after returning
-        return { success: true, verifyAfter: true, summary: "Files copied (skip mode)" };
+        // Flag outer execute() to run verify branch after returning; propagate content
+        return { success: true, verifyAfter: true, summary: "Files copied (skip mode)", content: copyResult.content };
       }
 
       // Fallback: treat as skip
@@ -169,17 +173,29 @@ async function executeDirBranch(
 }
 
 /**
+ * Returns the display path for a template file.
+ * `pipeline_loop.json` lives at project root; all others live under `.pi/`.
+ */
+function displayPath(rel: string): string {
+  return rel === "pipeline_loop.json" ? rel : `${CONFIG_DIR_NAME}/${rel}`;
+}
+
+/**
  * Copies template files to the target directory with the specified strategy.
+ * Collects copied/skipped file lists and returns a detailed `content` string
+ * for the command bridge.
  */
 async function copyTemplateFiles(
   templateFiles: string[],
   targetDir: string,
   strategy: "overwrite" | "skip",
   config: PipelineConfig,
-): Promise<{ success: boolean; summary?: string; error?: string }> {
+): Promise<{ success: boolean; summary?: string; content?: string; error?: string }> {
   try {
     let copiedCount = 0;
     let skippedCount = 0;
+    const copiedFiles: string[] = [];
+    const skippedFiles: string[] = [];
 
     for (const relPath of templateFiles) {
       const srcPath = path.join(TEMPLATE_DIR, relPath);
@@ -190,6 +206,7 @@ async function copyTemplateFiles(
 
       if (strategy === "skip" && !alwaysOverwrite && fs.existsSync(destPath)) {
         skippedCount++;
+        skippedFiles.push(displayPath(relPath));
         continue;
       }
 
@@ -197,6 +214,7 @@ async function copyTemplateFiles(
       await fsp.mkdir(path.dirname(destPath), { recursive: true });
       await fsp.copyFile(srcPath, destPath);
       copiedCount++;
+      copiedFiles.push(displayPath(relPath));
     }
 
     // Also copy pipeline_loop.json to project root if it exists in template
@@ -208,6 +226,16 @@ async function copyTemplateFiles(
           path.join(TEMPLATE_DIR, loopJsonRelPath),
           destLoopJson,
         );
+        // Only add to copiedFiles if not already counted via templateFiles loop
+        if (!copiedFiles.includes(displayPath(loopJsonRelPath))) {
+          copiedFiles.push(displayPath(loopJsonRelPath));
+          copiedCount++;
+        }
+      } else if (strategy === "skip") {
+        if (!skippedFiles.includes(displayPath(loopJsonRelPath))) {
+          skippedFiles.push(displayPath(loopJsonRelPath));
+          skippedCount++;
+        }
       }
     }
 
@@ -217,9 +245,30 @@ async function copyTemplateFiles(
       target: targetDir,
     });
 
+    // Build content string for bridge display
+    const lines: string[] = [
+      "# pipeline_init — .pi/ directory setup",
+      `- copied: ${copiedCount}`,
+      `- skipped: ${skippedCount}`,
+      `- target: ${CONFIG_DIR_NAME}/`,
+    ];
+    if (copiedFiles.length > 0) {
+      lines.push("Copied files:");
+      for (const f of copiedFiles) {
+        lines.push(`  - ${f}`);
+      }
+    }
+    if (skippedFiles.length > 0) {
+      lines.push("Skipped files:");
+      for (const f of skippedFiles) {
+        lines.push(`  - ${f}`);
+      }
+    }
+
     return {
       success: true,
       summary: `Copied ${copiedCount} file(s) to ${CONFIG_DIR_NAME}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}`,
+      content: lines.join("\n"),
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);

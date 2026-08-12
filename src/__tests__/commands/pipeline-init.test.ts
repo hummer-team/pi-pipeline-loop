@@ -217,6 +217,59 @@ describe("createPipelineInitCommand", () => {
     });
   });
 
+  describe("Phase 0 — content result with file lists (dir branch)", () => {
+    it('sub="0" returns content with copied count and .pi/guide.md in file list', async () => {
+      const config = makeInitConfig();
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toBeDefined();
+      expect(result.content).toContain("# pipeline_init — .pi/ directory setup");
+      expect(result.content).toContain("copied:");
+      expect(result.content).toContain(".pi/guide.md");
+      expect(result.content).toContain("Copied files:");
+    });
+
+    it("skip strategy produces Skipped files section with existing paths", async () => {
+      const config = makeInitConfig();
+
+      // Pre-create some .pi files to trigger skip strategy
+      const piDir = path.join(TMP, ".pi");
+      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.writeFile(path.join(piDir, "skills", "design", "SKILL.md"), "existing", "utf-8");
+
+      const cmd = createPipelineInitCommand(config);
+      // No UI → defaults to skip strategy
+      const result: any = await cmd.execute({ sub: "0" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("Skipped files:");
+      expect(result.content).toContain(".pi/skills/design/SKILL.md");
+    });
+
+    it("cancel branch returns content with 'cancelled'", async () => {
+      const config = makeInitConfig();
+
+      // Pre-create files to trigger multi-execution detection
+      const piDir = path.join(TMP, ".pi");
+      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.writeFile(path.join(piDir, "skills", "design", "SKILL.md"), "existing", "utf-8");
+
+      const ctx = {
+        ui: {
+          select: async (): Promise<string | undefined> => undefined,
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("cancelled");
+    });
+  });
+
   describe("option 3 - verify after skip (Phase 1 bug fix)", () => {
     it("runs verify generation after option 3 Chinese text selected", async () => {
       const config = makeInitConfig();
