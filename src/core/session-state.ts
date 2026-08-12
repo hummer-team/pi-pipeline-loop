@@ -9,7 +9,7 @@
 
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SessionMeta } from "../types";
-import { writeAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog } from "../utils/auditLog";
 import type { PipelineConfig } from "../types";
 
 /** CustomEntry type identifier for pipeline metadata persistence. */
@@ -18,6 +18,9 @@ export const PIPELINE_META_CUSTOM_TYPE = "pi-pipeline:meta";
 /**
  * Unified interface for reading and writing pipeline SessionMeta
  * via the pi SDK's CustomEntry mechanism.
+ *
+ * Per plan, the interface only contains getMeta/updateMeta.
+ * extractAssistantMessages is a standalone exported function.
  */
 export interface SessionState {
   /** Read the latest SessionMeta from session entries. Returns undefined if none exists. */
@@ -28,12 +31,6 @@ export interface SessionState {
    * Uses pi.appendEntry() for persistence. Failures are logged but not thrown (fail-open).
    */
   updateMeta(patch: Partial<SessionMeta>): SessionMeta | undefined;
-
-  /**
-   * Extract assistant messages from the current session branch.
-   * Scans for message entries where role === "assistant" and extracts text content.
-   */
-  extractAssistantMessages(): string[];
 }
 
 /**
@@ -78,44 +75,15 @@ export function createSessionState(pi: ExtensionAPI, ctx: ExtensionContext): Ses
       } catch (err) {
         // Fail-open: log but don't throw to avoid blocking the pipeline
         const errMsg = err instanceof Error ? err.message : String(err);
-        // Use fire-and-forget for audit log (non-blocking)
-        writeAuditLog("session_state_error", {
+        // Use safeWriteAuditLog (fire-and-forget, never throws)
+        safeWriteAuditLog("session_state_error", {
           error: errMsg,
           operation: "updateMeta",
-        }, "error").catch(() => {});
+        }, "error");
         return undefined;
       }
     },
 
-    extractAssistantMessages(): string[] {
-      try {
-        const entries = ctx.sessionManager.getBranch();
-        const messages: string[] = [];
-
-        for (const entry of entries) {
-          if (entry.type !== "message") continue;
-
-          const msgEntry = entry as { type: "message"; message: { role: string; content?: unknown } };
-          if (msgEntry.message.role !== "assistant") continue;
-
-          const content = msgEntry.message.content;
-          if (typeof content === "string") {
-            messages.push(content);
-          } else if (Array.isArray(content)) {
-            const textParts = content
-              .filter((part: { type?: string }) => part.type === "text")
-              .map((part: { text?: string }) => part.text ?? "");
-            if (textParts.length > 0) {
-              messages.push(textParts.join(""));
-            }
-          }
-        }
-
-        return messages;
-      } catch {
-        return [];
-      }
-    },
   };
 }
 

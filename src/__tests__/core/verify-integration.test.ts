@@ -55,7 +55,8 @@ describe("verify-integration", () => {
 
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     const ctx = {
-      session: { getMeta: () => meta, updateMeta: (_p: any) => meta, extractAssistantMessages: () => [] },
+      session: { getMeta: () => meta, updateMeta: (_p: any) => meta },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
       ui: { notify: () => {}, setStatus: () => {} },
     };
 
@@ -99,10 +100,11 @@ describe("verify-integration", () => {
         getMeta: () => meta,
         updateMeta: (m: any) => Object.assign(meta, m),
       },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
     };
 
     const startCmd = createPipelineStartCommand(config);
-    const startResult: any = await startCmd.execute({ file: "req.md" }, ctx);
+    const startResult: any = await startCmd.execute({ file: "req.md" }, ctx as any);
     expect(startResult.success).toBe(true);
   });
 

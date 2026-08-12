@@ -11,6 +11,7 @@ import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
+import { extractAssistantMessages } from "./session-state";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -62,7 +63,7 @@ export function createAgentSettled(
       }
 
       // Extract assistant messages from session branch for verification
-      const assistantMessages = ctx.session.extractAssistantMessages();
+      const assistantMessages = extractAssistantMessages(ctx._ctx);
       const vr = await runVerification(
         config,
         meta,

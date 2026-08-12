@@ -48,11 +48,12 @@ export type MockCtx = {
   session: {
     getMeta: () => SessionMeta;
     updateMeta: (patch: Partial<SessionMeta>) => SessionMeta;
-    extractAssistantMessages: () => string[];
   };
   ui: { notify: (msg: string) => void; setStatus: (key: string, text: string) => void };
   toolCall: { name: string; arguments: Record<string, unknown> };
   result: { success?: boolean; exitCode?: number; error?: string } | undefined;
+  /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
+  _ctx: { sessionManager: { getBranch(): any[]; getEntries(): any[] } };
 };
 
 export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string }[] } {
@@ -69,7 +70,6 @@ export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: S
         Object.assign(meta, merged);
         return merged;
       },
-      extractAssistantMessages: () => [],
     },
     ui: {
       notify: (msg: string) => {
@@ -81,9 +81,23 @@ export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: S
     },
     toolCall: { name: "read", arguments: {} },
     result: undefined,
+    _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
     metadataUpdates,
     notifications,
     statusCalls,
+  };
+}
+
+/**
+ * Minimal mock of ExtensionContext.sessionManager for testing SessionState
+ * and extractAssistantMessages.
+ *
+ * @param entries - Array of session entries to return from both getEntries() and getBranch()
+ */
+export function makeMockSessionManager(entries: unknown[] = []) {
+  return {
+    getEntries: () => entries as any[],
+    getBranch: () => entries as any[],
   };
 }
 

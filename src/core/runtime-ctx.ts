@@ -29,6 +29,9 @@ export interface RuntimeCtx {
 
   /** Tool result information (populated for tool_result events) */
   result?: { success: boolean; exitCode?: number };
+
+  /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
+  _ctx: ExtensionContext;
 }
 
 /**
@@ -48,7 +51,7 @@ export function buildRuntimeCtx(
   const session = createSessionState(pi, ctx);
   const ui = ctx.ui;
 
-  const rctx: RuntimeCtx = { session, ui };
+  const rctx: RuntimeCtx = { session, ui, _ctx: ctx };
 
   if (event && typeof event === "object") {
     const eventType = event.type;

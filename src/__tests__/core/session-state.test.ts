@@ -1,17 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { createSessionState, extractAssistantMessages, PIPELINE_META_CUSTOM_TYPE } from "../../core/session-state";
 import type { SessionMeta } from "../../types";
-import { makeTestMeta } from "../helpers";
-
-/**
- * Minimal mock of ExtensionContext.sessionManager for testing SessionState.
- */
-function makeMockSessionManager(entries: unknown[] = []) {
-  return {
-    getEntries: () => entries as any[],
-    getBranch: () => entries as any[],
-  };
-}
+import { makeTestMeta, makeMockSessionManager } from "../helpers";
 
 /**
  * Minimal mock of ExtensionAPI for testing SessionState.

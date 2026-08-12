@@ -23,13 +23,13 @@ function createCtx(meta: SessionMeta) {
         Object.assign(meta, merged);
         return merged;
       },
-      extractAssistantMessages: () => [] as string[],
     },
     ui: {
       notify: (msg: string) => {
         notifications.push(msg);
       },
     },
+    _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
     updates,
     notifications,
   };

@@ -10,6 +10,7 @@ import { runVerification } from "../core/auto-verifier";
 import type { RunVerificationOptions } from "../core/auto-verifier";
 import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
 import { createPipelineUI } from "../core/pipeline-ui";
+import { extractAssistantMessages } from "../core/session-state";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -69,9 +70,10 @@ export function createPipelineVerify(
         session: {
           getMeta: () => SessionMeta | undefined;
           updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
-          extractAssistantMessages: () => string[];
         };
         ui?: { notify: (msg: string) => void };
+        /** @internal Original ExtensionContext for standalone functions */
+        _ctx: { sessionManager: { getBranch(): any[] } };
       };
 
       if (!sessionCtx.session) {
@@ -104,7 +106,7 @@ export function createPipelineVerify(
       }
 
       // Extract assistant messages from session branch for verification
-      const assistantMessages = sessionCtx.session.extractAssistantMessages();
+      const assistantMessages = extractAssistantMessages(sessionCtx._ctx as any);
 
       const vr = await runVerification(
         config,

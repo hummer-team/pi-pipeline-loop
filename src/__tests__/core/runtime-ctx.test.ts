@@ -29,8 +29,9 @@ describe("buildRuntimeCtx", () => {
     expect(rctx.session).toBeDefined();
     expect(typeof rctx.session.getMeta).toBe("function");
     expect(typeof rctx.session.updateMeta).toBe("function");
-    expect(typeof rctx.session.extractAssistantMessages).toBe("function");
     expect(rctx.ui).toBeDefined();
+    expect(rctx._ctx).toBeDefined();
+    expect(rctx._ctx).toBe(ctx);
     expect(rctx.toolCall).toBeUndefined();
     expect(rctx.result).toBeUndefined();
   });
