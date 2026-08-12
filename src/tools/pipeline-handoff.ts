@@ -119,17 +119,14 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         },
       });
 
-      // Switch model for the next stage
-      if (nextStageConfig.model) {
-        await ctx.session.setModel(nextStageConfig.model);
-      }
+      // NOTE: model management removed (Q4-A) — model is managed by user via /model command.
 
       // Write audit log
       await writeAuditLog("handoff", {
         pipelineId: meta.pipelineId,
         from: currentStage,
         to: nextStage,
-        model: nextStageConfig.model || "default",
+        model: meta.currentModel?.modelId ?? "default",
         summaryHash: currentSummary.hash,
         note,
       });

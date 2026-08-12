@@ -36,7 +36,7 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         `# Pipeline Status\n` +
         `- ID: ${meta.pipelineId}\n` +
         `- Stage: ${meta.currentStage}\n` +
-        `- Model: ${stageConfig.model || "default"}\n` +
+        `- Model: ${meta.currentModel?.modelId || "default"}\n` +
         `- Domain: ${meta.domain.id}@${meta.domain.version}\n` +
         `- Summary Status: ${currentSummary?.status || "Missing"} (Path: ${currentSummary?.path || "N/A"})\n` +
         `- Loop: ${meta.loopCount}/${meta.maxLoops} (Step: ${meta.currentStepIndex})\n` +

@@ -70,13 +70,8 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
 
-      // ── 0. Collect assistant messages for auto-verification ──────────
-      // Populates SessionMeta.assistantMessages so the auto-verifier
-      // has material to run keyword-based rule checks against.
-      if (ctx.assistantMessage && typeof ctx.assistantMessage === "string") {
-        const msgs = [...(meta.assistantMessages || []), ctx.assistantMessage];
-        ctx.session.updateMetadata({ ...meta, assistantMessages: msgs });
-      }
+      // ── 0. Assistant message collection removed (Q4-A) ──────────
+      // Phase 3 will use extractAssistantMessages(ctx) for real-time extraction.
 
       // ── 1. Test failure counting and circuit breaker ─────────────────
       if (

@@ -107,9 +107,9 @@ describe("createPipelineHandoff", () => {
 
     const config = makeTestConfig({ projectRoot: TMP });
     await initAuditLog(config);
-    config.stages["plan"] = { ...config.stages["plan"], model: "gpt-4o" } as any;
     const meta = makeTestMeta({
       currentStage: "design",
+      currentModel: { provider: "openai", modelId: "gpt-4o" },
       summaries: { design: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
     });
     const ctx = createCtx(meta);

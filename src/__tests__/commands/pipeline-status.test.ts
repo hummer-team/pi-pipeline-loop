@@ -22,12 +22,12 @@ describe("createPipelineStatusCommand", () => {
 
   it("returns formatted pipeline status", async () => {
     const config = makeTestConfig();
-    config.stages["develop"] = { ...config.stages["develop"], model: "deepseek-v4" } as any;
     const meta = makeTestMeta({
       currentStage: "develop",
       pipelineId: "pipe-status-001",
       loopCount: 2,
       currentStepIndex: 3,
+      currentModel: { provider: "openai", modelId: "deepseek-v4" },
     });
     const ctx = createCtx(meta);
 
@@ -48,7 +48,6 @@ describe("createPipelineStatusCommand", () => {
 
   it("shows 'default' when no model configured", async () => {
     const config = makeTestConfig();
-    config.stages["develop"] = { ...config.stages["develop"], model: undefined } as any;
     const meta = makeTestMeta();
     const ctx = createCtx(meta);
 

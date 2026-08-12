@@ -249,7 +249,7 @@ describe("applyVerifyFail", () => {
     expect(lastUpdate.verifyFailures![0].ruleType).toBe("requiredFiles");
     expect(lastUpdate.verifyFailures![0].timestamp).toBeGreaterThan(0);
     expect(lastUpdate.verifyAttempts).toBe(1);
-    expect(lastUpdate.assistantMessages).toEqual([]);
+    // NOTE: assistantMessages removed from metadata (Q4-A) — Phase 3 will use extractAssistantMessages
 
     // Should have audit log
     const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());

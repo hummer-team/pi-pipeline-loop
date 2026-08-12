@@ -215,7 +215,6 @@ export async function applyVerifyFail(
     ...meta,
     verifyAttempts: (meta.verifyAttempts || 0) + 1,
     verifyFailures,
-    assistantMessages: [],
   });
 
   await writeAuditLog("auto_verify_fail", {

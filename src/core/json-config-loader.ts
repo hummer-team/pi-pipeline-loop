@@ -158,7 +158,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       skillPath:
         jsonStage.skillPath ||
         resolveStagePath(DEFAULT_SKILL_PATH, stageName),
-      model: jsonStage.model,
       allowedTools: jsonStage.allowedTools || defaults.tools,
       allowedBashPrefixes:
         jsonStage.allowedBashPrefixes || defaults.bash,

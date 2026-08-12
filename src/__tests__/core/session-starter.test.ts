@@ -78,23 +78,8 @@ describe("createSessionStarter", () => {
       expect(ctx.updates[0].maxLoops).toBe(5);
     });
 
-    it("sets model for clarify stage if configured", async () => {
-      const TMP = join(tmpdir(), "pi-ss-model-" + Date.now());
-      await mkdir(TMP, { recursive: true });
-
-      const config = makeTestConfig({ projectRoot: TMP });
-      await initAuditLog(config);
-      config.stages["clarify"] = { ...config.stages["clarify"], model: "claude-sonnet" } as any;
-      const ctx = createCtx({});
-
-      let modelSet = "";
-      ctx.session.setModel = async (m: string) => { modelSet = m; };
-
-      const hook = createSessionStarter(config);
-      await hook.handler(ctx as any);
-
-      expect(modelSet).toBe("claude-sonnet");
-    });
+    // NOTE: model management tests removed (Q4-A) — model is managed by user via /model command.
+    // Phase 3 will add model_select event tests.
 
     it("parses domain from filename when no frontmatter", async () => {
       const TMP = join(tmpdir(), "pi-ss-nofm-" + Date.now());
@@ -138,21 +123,6 @@ describe("createSessionStarter", () => {
   });
 
   describe("session resume", () => {
-    it("sets the correct model on resume", async () => {
-      const config = makeTestConfig();
-      config.stages["design"] = { ...config.stages["design"], model: "gpt-4o" } as any;
-      const meta = makeTestMeta({ currentStage: "design" });
-      const ctx = createCtx(meta);
-
-      let modelSet = "";
-      ctx.session.setModel = async (m: string) => { modelSet = m; };
-
-      const hook = createSessionStarter(config);
-      await hook.handler(ctx as any);
-
-      expect(modelSet).toBe("gpt-4o");
-    });
-
     it("does not overwrite metadata on resume", async () => {
       const config = makeTestConfig();
       const meta = makeTestMeta({ currentStage: "review", pipelineId: "existing-pipe-1" });

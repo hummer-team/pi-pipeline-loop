@@ -5,6 +5,9 @@
  * and configuration interfaces that projects use to customize their pipeline.
  */
 
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+export type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
 // ─── Audit Log Types ──────────────────────────────────────────────────────────
 
 /**
@@ -90,9 +93,6 @@ export interface StageConfig {
   /** Path to the skill directory or file for this stage (relative to projectRoot) */
   skillPath: string;
 
-  /** Optional model override for this stage (e.g., "claude-sonnet-4-20250514", "gpt-4o") */
-  model?: string;
-
   /** List of tool names the agent is allowed to use in this stage */
   allowedTools?: string[];
 
@@ -169,9 +169,7 @@ export interface VerifyFailureItem {
 export interface VerifyResultSnapshot {
   /** Result from the structured rule engine */
   structured: { passed: boolean; failures: { ruleType: string; detail: string }[] };
-  /** Result from the LLM flexible verification layer (null if not run) */
-  llm: { passed: boolean; reasoning: string; instructions: { checkType: string; target: string; expected?: string }[] } | null;
-  /** Combined overall pass: structured.passed && (llm === null || llm.passed) */
+  /** Combined overall pass: structured.passed */
   overallPassed: boolean;
 }
 
@@ -233,8 +231,8 @@ export interface SessionMeta {
   /** Path to the requirement document loaded by /pipeline_start */
   requirementDoc?: string;
 
-  /** Cached assistant messages for the current stage (auto-verifier) */
-  assistantMessages?: string[];
+  /** Read-only record of the currently selected model (populated via model_select event) */
+  currentModel?: { provider: string; modelId: string };
 
   /** Number of verification attempts within the current stage */
   verifyAttempts?: number;
@@ -308,9 +306,6 @@ export interface StageJsonConfig {
 
   /** Path to skill directory/file (default .pi/skills/{stage}/SKILL.md) */
   skillPath?: string;
-
-  /** Optional model override for this stage */
-  model?: string;
 
   /** Allowed tool names (default depends on stage type) */
   allowedTools?: string[];
@@ -420,43 +415,7 @@ export interface PipelinePlugin {
 }
 
 // ─── Extension API (Pi SDK) ─────────────────────────────────────────────────
-
-/**
- * Stub interface for the Pi SDK Extension API.
- * Provides methods to register event hooks, tools, and commands
- * directly with the Pi runtime in Extension mode.
- *
- * Uses `any` for ctx since the pi SDK types are not installed locally.
- */
-export interface ExtensionAPI {
-  /** Register an event handler for a Pi SDK lifecycle event */
-  on(event: string, handler: (ctx: any) => any): void;
-
-  /** Register a custom tool with the Pi agent */
-  registerTool(
-    name: string,
-    description: string,
-    parameters: Record<string, unknown>,
-    execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>,
-  ): void;
-
-  /** Register a custom slash-command */
-  registerCommand(
-    name: string,
-    description: string,
-    execute: (args: Record<string, unknown>, ctx?: any) => Promise<unknown>,
-  ): void;
-
-  /**
-   * Execute a shell command through the pi SDK sandbox.
-   * Optional — not all pi SDK versions expose this method.
-   */
-  exec?(
-    command: string,
-    args?: string[],
-    options?: { cwd?: string },
-  ): Promise<{ stdout: string; stderr: string; code: number }>;
-}
+// ExtensionAPI is imported from @earendil-works/pi-coding-agent at the top of this file.
 
 /**
  * Factory function signature for Pi Extension mode.

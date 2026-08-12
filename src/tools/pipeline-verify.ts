@@ -107,7 +107,9 @@ export function createPipelineVerify(
         verifyOptions.verifyFile = args.verifyFile;
       }
 
-      const assistantMessages = meta.assistantMessages || [];
+      // NOTE: assistantMessages source changed — Phase 3 will use extractAssistantMessages(ctx)
+      // for real-time extraction from session branch.
+      const assistantMessages: string[] = [];
 
       const vr = await runVerification(
         config,

@@ -87,6 +87,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       : undefined;
 
     // ── Hooks registration ─────────────────────────────────────────────
+    // NOTE: Phase 0 transitional — real ExtensionAPI uses typed overloads for `on()`.
+    // Phase 2 will bridge internal Hook shape to real SDK signatures properly.
     const hooks = [
       createSessionStarter(config),
       createPromptInjector(config),
@@ -96,7 +98,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createSessionShutdown(config),
     ];
     for (const h of hooks) {
-      pi.on(h.event, h.handler);
+      // TSDoc: temporary cast — Phase 2 replaces with buildRuntimeCtx bridge
+      (pi.on as (event: string, handler: (...args: unknown[]) => unknown) => void)(h.event, h.handler);
     }
 
     // ── Tools registration ─────────────────────────────────────────────
@@ -109,8 +112,15 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createPipelineHandoff(config),
       createRequestBashPermission(),
     ];
+    // TSDoc: temporary cast — Phase 2 replaces with registerTool(tool) single-object bridge
+    // and registerCommand(name, options) object-style registration.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const piAny = pi as unknown as {
+      registerTool(name: string, description: string, parameters: unknown, execute: any): void;
+      registerCommand(name: string, description: string, execute: any): void;
+    };
     for (const t of tools) {
-      pi.registerTool(t.name, t.description, t.parameters, t.execute);
+      piAny.registerTool(t.name, t.description, t.parameters, t.execute);
     }
 
     // ── Conditional tool: pipeline_verify (only if any stage uses mode: "tool") ──
@@ -122,7 +132,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         callLLM: callLLMStub,
         execFn,
       });
-      pi.registerTool(
+      piAny.registerTool(
         verifyTool.name,
         verifyTool.description,
         verifyTool.parameters,
@@ -132,11 +142,11 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
 
     // ── Commands registration ──────────────────────────────────────────
     const cmd = createPipelineStatusCommand(config);
-    pi.registerCommand(cmd.name, cmd.description, cmd.execute);
+    piAny.registerCommand(cmd.name, cmd.description, cmd.execute);
     const startCmd = createPipelineStartCommand(config);
-    pi.registerCommand(startCmd.name, startCmd.description, startCmd.execute);
+    piAny.registerCommand(startCmd.name, startCmd.description, startCmd.execute);
     const initCmd = createPipelineInitCommand(config, callLLMStub);
-    pi.registerCommand(initCmd.name, initCmd.description, initCmd.execute);
+    piAny.registerCommand(initCmd.name, initCmd.description, initCmd.execute);
   };
 }
 

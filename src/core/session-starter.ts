@@ -106,19 +106,13 @@ export function createSessionStarter(config: PipelineConfig): Hook {
           stage: "clarify",
         });
 
-        // Set model for the initial "clarify" stage if specified
-        const clarifyModel = config.stages["clarify"].model;
-        if (clarifyModel) {
-          await ctx.session.setModel(clarifyModel);
-        }
+        // NOTE: model management removed (Q4-A) — model is managed by user via /model command.
+        // Phase 3 will add model_select event hook for read-only recording.
 
         ui.stageEntry(ctx, "clarify");
       } else {
-        // ── Resumed session: ensure correct model ──────────────────────
-        const stageModel = config.stages[meta.currentStage].model;
-        if (stageModel) {
-          await ctx.session.setModel(stageModel);
-        }
+        // ── Resumed session: no model management needed (Q4-A) ──────────
+        // NOTE: model management removed — model is managed by user via /model command.
       }
     },
   };
