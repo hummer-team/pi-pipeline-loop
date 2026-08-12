@@ -165,48 +165,7 @@ export function classifyDeliveryItem(description: string): DeliveryItem {
 }
 
 /**
- * Uses LLM to extract structured delivery items from skill content.
- *
- * @param skillBody - The skill file content (without frontmatter)
- * @param callLLM - Function to call the LLM
- * @param extractPrompt - System prompt for the extraction
- * @returns Array of delivery items extracted by LLM
- */
-export async function extractLLMItems(
-  skillBody: string,
-  callLLM: (prompt: string) => Promise<string>,
-  extractPrompt: string,
-): Promise<DeliveryItem[]> {
-  try {
-    const response = await callLLM(`${extractPrompt}\n\n---\n\nSkill content:\n\n${skillBody}`);
-
-    // Parse JSON from response
-    let cleaned = response.trim();
-    const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-    if (codeBlockMatch) {
-      cleaned = codeBlockMatch[1].trim();
-    }
-
-    const parsed = JSON.parse(cleaned);
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed
-      .filter((item: Record<string, unknown>) =>
-        typeof item.type === "string" &&
-        typeof item.target === "string" &&
-        ["file", "command", "git", "keyword"].includes(item.type as string),
-      )
-      .map((item: Record<string, unknown>) => ({
-        type: item.type as DeliveryItem["type"],
-        target: item.target as string,
-      }));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Merges and deduplicates delivery items from hardcoded and LLM extraction.
+ * Merges and deduplicates delivery items from multiple sources.
  */
 export function mergeDeliveryItems(hardcoded: DeliveryItem[], llm: DeliveryItem[]): DeliveryItem[] {
   const seen = new Set<string>();
@@ -279,17 +238,15 @@ export function generateVerifyMdContent(items: DeliveryItem[], stage: string): s
  * @param config - Pipeline configuration
  * @param options - Optional configuration
  * @param options.stage - Filter to a specific stage
- * @param options.callLLM - Optional LLM function for enhanced extraction
  * @returns Array of results per stage
  */
 export async function generateVerifyFiles(
   config: PipelineConfig,
   options?: {
     stage?: string;
-    callLLM?: (prompt: string) => Promise<string>;
   },
 ): Promise<VerifyGenerateResult[]> {
-  const { stage, callLLM } = options ?? {};
+  const { stage } = options ?? {};
   const stages = resolveTargetStages(stage, config);
   const results: VerifyGenerateResult[] = [];
 
@@ -315,15 +272,8 @@ export async function generateVerifyFiles(
     // Step 1: Hardcoded extraction
     const hardcodedItems = extractHardcodedItems(skillBody);
 
-    // Step 2: LLM extraction (if available)
-    let llmItems: DeliveryItem[] = [];
-    if (callLLM) {
-      const extractPrompt = await resolveExtractPrompt(config.projectRoot);
-      llmItems = await extractLLMItems(skillBody, callLLM, extractPrompt);
-    }
-
-    // Step 3: Merge and deduplicate
-    const allItems = mergeDeliveryItems(hardcodedItems, llmItems);
+    // Step 2: Merge (LLM extraction removed — Q6-B)
+    const allItems = mergeDeliveryItems(hardcodedItems, []);
 
     if (allItems.length === 0) {
       results.push({

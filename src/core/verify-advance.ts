@@ -29,7 +29,7 @@ interface VerifyAdvanceCtx {
 interface VerifyAdvanceResult {
   structuredResult?: { failures: { ruleType: string; detail: string }[] };
   ruleMissing: string[];
-  verifyResult?: { structured: { passed: boolean }; llm: unknown; overallPassed: boolean } | null;
+  verifyResult?: { structured: { passed: boolean }; overallPassed: boolean } | null;
 }
 
 /** Options controlling applyVerifyPass behavior for different callers */
@@ -59,7 +59,7 @@ interface VerifyPassReturn {
   success: boolean;
   passed: boolean;
   message: string;
-  verifyResult: { structured: { passed: boolean }; llm: unknown; overallPassed: boolean } | null;
+  verifyResult: { structured: { passed: boolean }; overallPassed: boolean } | null;
 }
 
 /**

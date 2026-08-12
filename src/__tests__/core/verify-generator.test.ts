@@ -226,42 +226,7 @@ describe("verify-generator", () => {
       expect(results[0].status).toBe("skipped");
     });
 
-    it("uses LLM extraction when callLLM is provided", async () => {
-      const skillContent = "# Test Skill\n\nSome content without markers.\n";
-
-      const config = await setupConfigWithSkill("develop", skillContent);
-      const mockLLM = async (_prompt: string): Promise<string> => {
-        return JSON.stringify([
-          { type: "file", target: "llm-generated.md" },
-          { type: "command", target: "bun test" },
-        ]);
-      };
-
-      const results = await generateVerifyFiles(config, { stage: "develop", callLLM: mockLLM });
-      expect(results[0].status).toBe("generated");
-
-      const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
-      const content = await fs.readFile(verifyPath, "utf-8");
-      expect(content).toContain("llm-generated.md");
-      expect(content).toContain("bun test");
-    });
-
-    it("deduplicates items from hardcoded and LLM extraction", async () => {
-      const skillContent = "- **Must** shared-output.md\n";
-
-      const config = await setupConfigWithSkill("develop", skillContent);
-      const mockLLM = async (): Promise<string> => {
-        return JSON.stringify([{ type: "file", target: "shared-output.md" }]);
-      };
-
-      const results = await generateVerifyFiles(config, { stage: "develop", callLLM: mockLLM });
-      expect(results[0].status).toBe("generated");
-
-      const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
-      const content = await fs.readFile(verifyPath, "utf-8");
-      const matches = content.match(/shared-output\.md/g);
-      expect(matches).toHaveLength(1);
-    });
+    // NOTE: LLM extraction tests removed (Q6-B) — verification is now structured-only.
 
     it("processes all stages when no stage argument is given", async () => {
       for (const stage of ["clarify", "develop"]) {

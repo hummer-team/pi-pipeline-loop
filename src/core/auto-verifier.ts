@@ -13,7 +13,6 @@ import { verifyRequiredFiles, verifyFileContentPattern } from "./verifiers/file-
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
-import { runLLMVerification } from "./verifiers/llm-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
 
 /**
@@ -102,26 +101,13 @@ export interface VerifyFailure {
 }
 
 /**
- * Result of LLM-driven flexible verification (Phase 2).
- */
-export interface LLMVerifyResult {
-  /** Whether the LLM judged the verification as passed (null when LLM unavailable) */
-  passed: boolean | null;
-  /** LLM's reasoning for the judgment */
-  reasoning: string;
-  /** Instructions that were parsed and executed */
-  instructions: VerificationInstruction[];
-}
-
-/**
- * Unified verification result combining structured rules and LLM verification.
+ * Unified verification result from structured rules.
+ * LLM verification layer removed (Q6-B) — agent-native structured verification only.
  */
 export interface VerifyResult {
   /** Result from the structured rule engine */
   structured: StructuredVerifyResult;
-  /** Result from the LLM flexible verification layer (null if not run) */
-  llm: LLMVerifyResult | null;
-  /** Combined overall pass: structured.passed && (llm === null || llm.passed) */
+  /** Combined overall pass: structured.passed */
   overallPassed: boolean;
 }
 
@@ -464,15 +450,9 @@ export async function executeStructuredRules(
 }
 
 /**
- * Options for LLM-driven verification within runVerification.
+ * Options for structured verification within runVerification.
  */
 export interface RunVerificationOptions {
-  /** Optional LLM call function for flexible verification of Markdown body */
-  callLLM?: (prompt: string) => Promise<string>;
-  /** Override for the LLM parse prompt (defaults to DEFAULT_VERIFY_PARSE_PROMPT) */
-  parsePrompt?: string;
-  /** Override for the LLM judge prompt (defaults to DEFAULT_VERIFY_JUDGE_PROMPT) */
-  judgePrompt?: string;
   /** Dependency-injected shell execution function (replaces child_process.execSync) */
   execFn?: ExecFn;
   /** Override verify.md path; takes precedence over stage config verifyFile */
@@ -485,8 +465,7 @@ export interface RunVerificationOptions {
  * Runs the full verification pipeline for a stage:
  * 1. Parse verify.md
  * 2. Run structured rule verification (if new rule types present) or legacy keyword verification
- * 3. If callLLM is provided and Markdown body exists, run LLM flexible verification
- * 4. Combine structured + LLM results into a unified VerifyResult
+ * 3. Combine structured results into a unified VerifyResult
  *
  * @param config - Pipeline configuration
  * @param meta - Session metadata
@@ -534,31 +513,15 @@ export async function runVerification(
 
   // Default structured result when no structured rules exist
   let structuredResult: StructuredVerifyResult = { passed: true, failures: [] };
-  let llmResult: LLMVerifyResult | null = null;
 
   if (!rules) {
-    // No rules defined — attempt LLM verification if callLLM is available
-    if (options?.callLLM && prompt && prompt !== DEFAULT_VERIFY_PROMPT) {
-      llmResult = await runLLMVerification(
-        prompt,
-        config.projectRoot,
-        options.callLLM,
-        options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
-        options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
-        options.execFn,
-        logError,
-      );
-    }
-
-    // LLM unavailable (null) or returned result — treat null as not-passed for no-rules path
-    const hasLlm = llmResult !== null && llmResult.passed !== null;
-    const overallPassed = hasLlm ? llmResult!.passed as boolean : false;
-    const verifyResult: VerifyResult = { structured: structuredResult, llm: hasLlm ? llmResult : null, overallPassed };
+    // No rules defined — structured-only path, no LLM fallback (Q6-B)
+    const verifyResult: VerifyResult = { structured: structuredResult, overallPassed: false };
 
     return {
       rulePassed: false,
       ruleMissing: [],
-      needsModelVerify: !overallPassed,
+      needsModelVerify: true,
       modelPrompt: prompt,
       verifyResult,
     };
@@ -585,23 +548,9 @@ export async function runVerification(
     }
   }
 
-  // LLM flexible verification if callLLM is available and prompt is meaningful
-  if (options?.callLLM && prompt && prompt !== DEFAULT_VERIFY_PROMPT) {
-    llmResult = await runLLMVerification(
-      prompt,
-      config.projectRoot,
-      options.callLLM,
-      options.parsePrompt || DEFAULT_VERIFY_PARSE_PROMPT,
-      options.judgePrompt || DEFAULT_VERIFY_JUDGE_PROMPT,
-      options.execFn,
-      logError,
-    );
-  }
-
-  // Combine results: LLM unavailable (null) → skip LLM layer, use structured result only
-  const hasLlm = llmResult !== null && llmResult.passed !== null;
-  const overallPassed = structuredResult.passed && (!hasLlm || (llmResult!.passed as boolean));
-  const verifyResult: VerifyResult = { structured: structuredResult, llm: hasLlm ? llmResult : null, overallPassed };
+  // Combine results: structured-only path (Q6-B: LLM layer removed)
+  const overallPassed = structuredResult.passed;
+  const verifyResult: VerifyResult = { structured: structuredResult, overallPassed };
 
   if (overallPassed) {
     return {

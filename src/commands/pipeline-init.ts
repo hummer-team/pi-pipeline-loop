@@ -56,12 +56,10 @@ function countExistingFiles(templateFiles: string[], targetDir: string): number 
  * Creates the `/pipeline_init` command.
  *
  * @param config - Pipeline configuration
- * @param callLLM - Optional LLM call function for enhanced verify extraction
  * @returns Command object
  */
 export function createPipelineInitCommand(
   config: PipelineConfig,
-  callLLM?: (prompt: string) => Promise<string>,
 ): Command {
   return {
     name: "pipeline_init",
@@ -86,7 +84,7 @@ export function createPipelineInitCommand(
         // If sub === "0", check if option 3 flagged verify-after
         if (sub === "0") {
           if (dirResult.verifyAfter) {
-            return await executeVerifyBranch(config, callLLM);
+            return await executeVerifyBranch(config);
           }
           return dirResult;
         }
@@ -95,7 +93,7 @@ export function createPipelineInitCommand(
 
       // ── Verify branch ──────────────────────────────────────────────────
       if (runVerify) {
-        return await executeVerifyBranch(config, callLLM);
+        return await executeVerifyBranch(config);
       }
 
       return { success: true, summary: "pipeline_init completed" };
@@ -235,7 +233,6 @@ async function copyTemplateFiles(
  */
 async function executeVerifyBranch(
   config: PipelineConfig,
-  callLLM?: (prompt: string) => Promise<string>,
 ): Promise<{ success: boolean; summary?: string; results?: unknown[] }> {
   // Pre-check: .pi/skills must exist
   const skillsDir = path.join(config.projectRoot, CONFIG_DIR_NAME, "skills");
@@ -247,7 +244,7 @@ async function executeVerifyBranch(
     };
   }
 
-  const results = await generateVerifyFiles(config, { callLLM });
+  const results = await generateVerifyFiles(config);
 
   const generated = results.filter(r => r.status === "generated");
   const skipped = results.filter(r => r.status === "skipped");

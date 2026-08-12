@@ -15,8 +15,6 @@ import { createPipelineUI } from "../core/pipeline-ui";
  * Options injected into the pipeline_verify tool via closure.
  */
 export interface PipelineVerifyDeps {
-  /** Optional LLM call function for flexible verification */
-  callLLM?: (prompt: string) => Promise<string>;
   /** Injected shell execution function (replaces child_process.execSync) */
   execFn?: ExecFn;
 }
@@ -31,7 +29,7 @@ export interface PipelineVerifyDeps {
  * On failure: writes verifyFailures to SessionMeta for prompt injection feedback.
  *
  * @param config - The pipeline configuration
- * @param deps - Injected dependencies (callLLM, execFn)
+ * @param deps - Injected dependencies (execFn)
  * @returns A Tool object for the "pipeline_verify" tool
  */
 export function createPipelineVerify(
@@ -96,9 +94,6 @@ export function createPipelineVerify(
 
       // Build verification options
       const verifyOptions: RunVerificationOptions = {};
-      if (deps?.callLLM) {
-        verifyOptions.callLLM = deps.callLLM;
-      }
       if (deps?.execFn) {
         verifyOptions.execFn = deps.execFn;
       }
