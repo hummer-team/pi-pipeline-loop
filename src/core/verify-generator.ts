@@ -282,9 +282,19 @@ export function mergeDeliveryItems(hardcoded: DeliveryItem[], llm: DeliveryItem[
 /**
  * Generates verify.md content from delivery items.
  *
- * @param items - Merged delivery items
+ * **Generation path**: verify.md is NOT LLM-generated. It uses a deterministic
+ * template: YAML frontmatter rules are built from the structured `items` array
+ * (file → requiredFiles, command → requiredCommands, git → requiredGit,
+ * keyword → keywords), and the body is a fixed template string.
+ *
+ * The `items` array comes from two extraction sources merged via `mergeDeliveryItems`:
+ * 1. **Hardcoded** — regex extraction of `**Must**`/`**必须**` markers from skill files
+ * 2. **LLM** — when `llmExtract=true`, the LLM extracts additional items from skill
+ *    content via `extractLLMItems` (JSON array of `{type, target}` objects)
+ *
+ * @param items - Merged delivery items (hardcoded + LLM)
  * @param stage - The pipeline stage name
- * @returns String content for the verify.md file
+ * @returns String content for the verify.md file (YAML frontmatter + fixed body)
  */
 export function generateVerifyMdContent(items: DeliveryItem[], stage: string): string {
   const requiredFiles = items.filter(i => i.type === "file").map(i => i.target);

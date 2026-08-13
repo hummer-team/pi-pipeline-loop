@@ -947,6 +947,33 @@ describe("createPipelineInitCommand", () => {
       // Hardcoded items fallback still generates verify
       expect(designResult.status).toBe("generated");
     });
+
+    it("Phase 4 — compat complete returns empty array → llmStatus='ok' (no false failure)", async () => {
+      const config = await makeLLMConfig();
+      const modelCtx = makeModelCtx();
+
+      // Mock compat complete to return a valid empty array
+      const mockComplete = mock(() =>
+        Promise.resolve({
+          content: [{ type: "text", text: "[]" }],
+          stopReason: "end_turn",
+        }),
+      );
+      mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+
+      expect(result.success).toBe(true);
+      const designResult = result.results?.find((r: any) => r.stage === "design");
+      expect(designResult).toBeDefined();
+      // Empty array is valid — should NOT be judged as failure
+      expect(designResult.llmStatus).toBe("ok");
+      expect(designResult.llmCount).toBe(0);
+      // Hardcoded items still generate verify.md
+      expect(designResult.status).toBe("generated");
+      expect(designResult.hardcodedCount).toBe(1);
+    });
   });
 
   describe("Phase 3 — LLM extraction working indicator", () => {
