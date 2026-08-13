@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
@@ -775,4 +775,183 @@ describe("createPipelineInitCommand", () => {
       expect(result.content).toContain("skipped: skill_not_found");
     });
   });
+
+  describe("Phase 0 — buildCallLLM compat complete() mode", () => {
+    afterEach(() => {
+      mock.restore();
+    });
+
+    /** Helper: create config with llmExtract enabled and skills dir */
+    async function makeLLMConfig(): Promise<PipelineConfig> {
+      const config = makeInitConfig();
+      (config as any).llmExtract = true;
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      (config as any).auditDir = ".pi/audit";
+
+      // Initialize audit log
+      const { initAuditLog } = await import("../../utils/auditLog");
+      await initAuditLog(config);
+
+      // Create skill files with Must markers
+      for (const stage of ["design"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-output.md\n`,
+          "utf-8",
+        );
+      }
+
+      return config;
+    }
+
+    /** Helper: create mock ctx with modelRegistry */
+    function makeModelCtx(mockModel: Record<string, unknown> = { name: "test-model", api: "openai" }) {
+      return {
+        _ctx: {
+          modelRegistry: {
+            getAvailable: () => [mockModel],
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
+          },
+          model: mockModel,
+          sessionManager: { getBranch: () => [], getEntries: () => [] },
+        },
+      };
+    }
+
+    it("llmExtract:true + compat complete success → llmStatus='ok' with extracted items", async () => {
+      const config = await makeLLMConfig();
+      const modelCtx = makeModelCtx();
+
+      // Mock compat complete to return a valid LLM response with JSON items
+      const mockComplete = mock(() =>
+        Promise.resolve({
+          content: [{ type: "text", text: '[{"type":"file","target":"llm-extracted.md"}]' }],
+          stopReason: "end_turn",
+        }),
+      );
+      mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+
+      expect(result.success).toBe(true);
+      // llmExtract should be "on" and llm items should be extracted
+      expect(result.content).toContain("llmExtract: on");
+      // The result should have generated verify with both hardcoded and llm items
+      const designResult = result.results?.find((r: any) => r.stage === "design");
+      expect(designResult).toBeDefined();
+      expect(designResult.llmStatus).toBe("ok");
+      expect(designResult.llmCount).toBe(1);
+      expect(mockComplete).toHaveBeenCalled();
+    });
+
+    it("compat complete returns stopReason='error' → callLLM throws → llmStatus='fail'", async () => {
+      const config = await makeLLMConfig();
+      const modelCtx = makeModelCtx();
+
+      // Mock compat complete to return an error response
+      const mockComplete = mock(() =>
+        Promise.resolve({
+          content: [],
+          stopReason: "error",
+          errorMessage: "provider not found",
+        }),
+      );
+      mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+
+      expect(result.success).toBe(true);
+      // LLM should have failed but hardcoded items still work (fallback)
+      const designResult = result.results?.find((r: any) => r.stage === "design");
+      expect(designResult).toBeDefined();
+      expect(designResult.llmStatus).toBe("fail");
+      // Hardcoded items should still generate verify.md (fallback)
+      expect(designResult.status).toBe("generated");
+      expect(designResult.hardcodedCount).toBe(1);
+    });
+
+    it("no available models → buildCallLLM returns null → llmStatus='off'", async () => {
+      const config = await makeLLMConfig();
+      const modelCtx = {
+        _ctx: {
+          modelRegistry: {
+            getAvailable: () => [],
+            getApiKeyAndHeaders: async () => ({ ok: false }),
+          },
+          sessionManager: { getBranch: () => [], getEntries: () => [] },
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("llm: unavailable");
+      // No LLM extraction
+      const designResult = result.results?.find((r: any) => r.stage === "design");
+      expect(designResult.llmStatus).toBe("off");
+    });
+
+    it("modelRegistry.getAvailable throws → llm_build_error audit + buildCallLLM returns null", async () => {
+      const config = await makeLLMConfig();
+      const brokenModelCtx = {
+        _ctx: {
+          modelRegistry: {
+            getAvailable: () => { throw new Error("Registry corrupted"); },
+            getApiKeyAndHeaders: async () => ({ ok: false }),
+          },
+          sessionManager: { getBranch: () => [], getEntries: () => [] },
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" }, brokenModelCtx);
+
+      expect(result.success).toBe(true);
+      // Should show unavailable (buildCallLLM caught the error)
+      expect(result.content).toContain("llm: unavailable");
+
+      // Verify llm_build_error audit was written
+      const { getDateAuditFileName, __resetAuditDirPath } = await import("../../utils/auditLog");
+      const auditDir = path.join(TMP, ".pi", "audit");
+      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logContent = await fs.readFile(logFile, "utf-8");
+      expect(logContent).toContain("llm_build_error");
+
+      __resetAuditDirPath();
+    });
+
+    it("compat complete returns errorMessage (no stopReason) → callLLM throws → llmStatus='fail'", async () => {
+      const config = await makeLLMConfig();
+      const modelCtx = makeModelCtx();
+
+      // Mock compat complete to return error via errorMessage field only
+      const mockComplete = mock(() =>
+        Promise.resolve({
+          content: [],
+          stopReason: "end_turn",
+          errorMessage: "API rate limit exceeded",
+        }),
+      );
+      mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+
+      expect(result.success).toBe(true);
+      const designResult = result.results?.find((r: any) => r.stage === "design");
+      expect(designResult).toBeDefined();
+      expect(designResult.llmStatus).toBe("fail");
+      // Hardcoded items fallback still generates verify
+      expect(designResult.status).toBe("generated");
+    });
+  });
 });
+
+// Need to import PipelineConfig type for the Phase 0 tests
+import type { PipelineConfig } from "../../types";

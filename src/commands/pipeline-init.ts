@@ -297,8 +297,35 @@ function extractAssistantText(msg: { content: Array<{ type: string; text?: strin
 }
 
 /**
- * Constructs a callLLM function using pi SDK createModels + ctx.modelRegistry.
+ * Minimal type for pi-ai compat `complete()` function.
+ * Avoids importing from `@earendil-works/pi-ai/compat` at compile time
+ * (subpath export not resolvable under moduleResolution:"node").
+ */
+type CompatCompleteFn = (
+  model: unknown,
+  options: {
+    messages: Array<{ role: string; content: string; timestamp: number }>;
+    apiKey?: string;
+    transformHeaders?: (h: Record<string, string>) => Record<string, string>;
+  },
+) => Promise<{
+  content: Array<{ type: string; text?: string }>;
+  stopReason?: string;
+  errorMessage?: string;
+}>;
+
+/**
+ * Constructs a callLLM function using pi-ai compat `complete()` + ctx.modelRegistry.
  * Returns null if model is unavailable or llmExtract is disabled.
+ *
+ * Uses the official compat `complete()` entry point (auto-resolves provider via
+ * `resolveApiProvider(model.api)` from the built-in registry) instead of
+ * `createModels()` which creates an empty provider instance that swallows errors
+ * via lazyStream, producing silent "fake success" (llmStatus="ok" but LLM never called).
+ *
+ * Error explicit: compat `complete()` returns (not rejects) error messages with
+ * `errorMessage` / `stopReason === "error"`. We detect these and throw, so the
+ * caller's catch → `llmStatus="fail"` + `verify_llm_extract_error` audit fires.
  *
  * @param config - Pipeline configuration
  * @param ctx - Runtime context with modelRegistry access
@@ -319,28 +346,37 @@ async function buildCallLLM(
 
     const model = extCtx.model ?? available[0];
 
-    // Dynamic import to avoid hard compile-time dependency
-    const { createModels } = await import("@earendil-works/pi-ai");
-    const models = createModels();
+    // Dynamic import: compat module auto-registers built-in providers on load.
+    // @ts-expect-error subpath export not resolvable under moduleResolution:"node" — exists at runtime
+    const compat = await import("@earendil-works/pi-ai/compat") as { complete: CompatCompleteFn };
+    const { complete } = compat;
 
-    // Lazy singleton — reuse within single pipeline-init invocation
+    // callLLM closure — reuse within single pipeline-init invocation
     const callLLM = async (prompt: string): Promise<string> => {
       const authResult = await extCtx.modelRegistry.getApiKeyAndHeaders(model);
       const apiKey = authResult?.ok ? authResult.apiKey : undefined;
       const headers = authResult?.ok ? authResult.headers : undefined;
 
-      const msg = await models.complete(model, {
+      const msg = await complete(model, {
         messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
         ...(apiKey ? { apiKey } : {}),
         ...(headers ? { transformHeaders: (h: Record<string, string>) => ({ ...h, ...headers }) } : {}),
       });
 
+      // Error explicit: compat complete() returns error messages instead of rejecting.
+      // Detect and throw so caller's catch → llmStatus="fail" + audit.
+      if (msg.errorMessage || msg.stopReason === "error") {
+        throw new Error(msg.errorMessage || "LLM returned error (stopReason=error)");
+      }
+
       return extractAssistantText(msg);
     };
 
     return callLLM;
-  } catch {
-    // Model unavailable or import failed — degrade gracefully
+  } catch (err) {
+    // Model unavailable or import failed — audit + degrade gracefully
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog("llm_build_error", { error: errMsg }, "error");
     return null;
   }
 }
