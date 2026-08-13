@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import {
   parseVerifyFile,
+  parseFrontmatter,
   ruleVerify,
   runVerification,
   executeStructuredRules,
@@ -462,19 +463,24 @@ describe("runVerification — structured rules", () => {
     __resetAuditDirPath();
   });
 
-  it("Phase 1 — malformed frontmatter with extreme input is handled gracefully (parseFrontmatter catch safety net)", async () => {
-    // parseFrontmatter uses only safe string operations, so the catch is a safety net.
-    // This test verifies graceful degradation: even extreme input returns null rules.
-    const fp = path.join(TMP, "verify.md");
-    // Write a file with a frontmatter section that has rules: but malformed content
-    await fs.writeFile(
-      fp,
-      "---\nrules:\n  keywords:\n    - \"test\"\n---\nbody\n",
-      "utf-8",
-    );
-    const result = await parseVerifyFile(fp);
-    // Valid frontmatter should parse correctly
-    expect(result.rules).not.toBeNull();
-    expect(result.rules!.keywords).toEqual(["test"]);
+  it("Phase 1 — malformed frontmatter triggers verify_frontmatter_parse_error audit", async () => {
+    // parseFrontmatter catch is a safety net for unexpected errors.
+    // Force the catch by calling with invalid input (non-string) directly.
+    const auditDir = path.join(TMP, ".pi", "audit");
+    await fs.mkdir(auditDir, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+    await initAuditLog(config);
+
+    // Call parseFrontmatter directly with invalid input to trigger catch block
+    const result = await parseFrontmatter(null as any);
+    expect(result).toBeNull();
+
+    // Verify audit log contains verify_frontmatter_parse_error
+    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logContent = await fs.readFile(logFile, "utf-8");
+    expect(logContent).toContain("verify_frontmatter_parse_error");
+    expect(logContent).toContain("[ERROR]");
+
+    __resetAuditDirPath();
   });
 });

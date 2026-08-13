@@ -291,13 +291,20 @@ function extractAssistantText(msg: { content: Array<{ type: string; text?: strin
  * Minimal type for pi-ai compat `complete()` function.
  * Avoids importing from `@earendil-works/pi-ai/compat` at compile time
  * (subpath export not resolvable under moduleResolution:"node").
+ *
+ * Signature: complete(model, context, options?)
+ * - context: { messages } — conversation messages
+ * - options: { apiKey?, transformHeaders?, env? } — auth/provider overrides
  */
 type CompatCompleteFn = (
   model: unknown,
-  options: {
+  context: {
     messages: Array<{ role: string; content: string; timestamp: number }>;
+  },
+  options?: {
     apiKey?: string;
     transformHeaders?: (h: Record<string, string>) => Record<string, string>;
+    env?: Record<string, string>;
   },
 ) => Promise<{
   content: Array<{ type: string; text?: string }>;
@@ -330,10 +337,16 @@ async function buildCallLLM(
 
   try {
     const extCtx = ctx?._ctx;
-    if (!extCtx?.modelRegistry) return null;
+    if (!extCtx?.modelRegistry) {
+      await safeWriteAuditLog("llm_build_error", { error: "no modelRegistry available in context" }, "error");
+      return null;
+    }
 
     const available = extCtx.modelRegistry.getAvailable();
-    if (!available || available.length === 0) return null;
+    if (!available || available.length === 0) {
+      await safeWriteAuditLog("llm_build_error", { error: "no models available in registry" }, "error");
+      return null;
+    }
 
     const model = extCtx.model ?? available[0];
 
@@ -348,11 +361,14 @@ async function buildCallLLM(
       const apiKey = authResult?.ok ? authResult.apiKey : undefined;
       const headers = authResult?.ok ? authResult.headers : undefined;
 
-      const msg = await complete(model, {
-        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-        ...(apiKey ? { apiKey } : {}),
-        ...(headers ? { transformHeaders: (h: Record<string, string>) => ({ ...h, ...headers }) } : {}),
-      });
+      const msg = await complete(
+        model,
+        { messages: [{ role: "user", content: prompt, timestamp: Date.now() }] },
+        {
+          ...(apiKey ? { apiKey } : {}),
+          ...(headers ? { transformHeaders: (h: Record<string, string>) => ({ ...h, ...headers }) } : {}),
+        },
+      );
 
       // Error explicit: compat complete() returns error messages instead of rejecting.
       // Detect and throw so caller's catch → llmStatus="fail" + audit.

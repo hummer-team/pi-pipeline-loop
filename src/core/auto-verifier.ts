@@ -147,7 +147,7 @@ export async function parseVerifyFile(
   const frontmatter = parts[1].trim();
   const body = parts.slice(2).join("---").trim();
 
-  const rules = parseFrontmatter(frontmatter);
+  const rules = await parseFrontmatter(frontmatter);
   const prompt = body || DEFAULT_VERIFY_PROMPT;
 
   return { rules, prompt };
@@ -158,7 +158,7 @@ export async function parseVerifyFile(
  * Uses a simple key-value parser — no full YAML library dependency.
  * Supports: keywords, mode, requiredFiles, requiredCommands, requiredGit, fileContentPattern.
  */
-function parseFrontmatter(yaml: string): VerifyRules | null {
+export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null> {
   try {
     const lines = yaml.split("\n");
     const keywords: string[] = [];
@@ -362,7 +362,7 @@ function parseFrontmatter(yaml: string): VerifyRules | null {
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    safeWriteAuditLog("verify_frontmatter_parse_error", { error: errMsg }, "error");
+    await safeWriteAuditLog("verify_frontmatter_parse_error", { error: errMsg }, "error");
     return null;
   }
 }
