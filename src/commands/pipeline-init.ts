@@ -334,6 +334,9 @@ async function executeVerifyBranch(
       lines.push(`  - ${r.stage} (${r.error ?? "unknown error"})`);
     }
   }
+  if (generated.length === 0) {
+    lines.push("- hint: no **Must**/**必须** markers found in skills, add them then re-run");
+  }
 
   return {
     success: true,
