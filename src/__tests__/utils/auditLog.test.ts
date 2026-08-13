@@ -79,7 +79,7 @@ describe("writeAuditLog", () => {
 
     await writeAuditLog("agent_settled", {
       pipelineId: "pipe-001",
-      stage: "design",
+      stage: "plan",
     });
 
     const logPath = join(root, ".pi", "audit", getDateAuditFileName());
@@ -90,7 +90,7 @@ describe("writeAuditLog", () => {
     expect(line).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} - /);
     expect(line).toContain(" - [INFO] agent_settled");
     expect(line).toContain("pipelineId=pipe-001");
-    expect(line).toContain("stage=design");
+    expect(line).toContain("stage=plan");
 
     await rm(root, { recursive: true, force: true });
   });
@@ -133,7 +133,7 @@ describe("writeAuditLog", () => {
     await initAuditLog(makeConfig(root));
 
     await writeAuditLog("handoff", {
-      from: "design",
+      from: "clarify",
       to: "plan",
       model: "gpt-4o",
     });
@@ -143,7 +143,7 @@ describe("writeAuditLog", () => {
     const line = content.trim();
 
     // Verify ordering: from=... appears before to=... which appears before model=...
-    const fromIdx = line.indexOf("from=design");
+    const fromIdx = line.indexOf("from=clarify");
     const toIdx = line.indexOf("to=plan");
     const modelIdx = line.indexOf("model=gpt-4o");
     expect(fromIdx).toBeGreaterThan(-1);
@@ -182,7 +182,7 @@ describe("writeAuditLog level parameter", () => {
     const root = makeTmpRoot("level-warn");
     await initAuditLog(makeConfig(root));
 
-    await writeAuditLog("auto_verify_fail", { stage: "design" }, "warn");
+    await writeAuditLog("auto_verify_fail", { stage: "plan" }, "warn");
 
     const logPath = join(root, ".pi", "audit", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");

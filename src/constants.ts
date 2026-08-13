@@ -23,27 +23,23 @@ export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   { tools: string[]; bash: string[] }
 > = {
   clarify: {
-    tools: ["read", "bash"],
-    bash: ["ls", "cat", "find", "git log"],
-  },
-  design: {
-    tools: ["read", "bash"],
+    tools: ["read", "bash", "stage_advance"],
     bash: ["ls", "cat", "find", "git log"],
   },
   plan: {
-    tools: ["read", "bash"],
+    tools: ["read", "bash", "stage_advance"],
     bash: ["ls", "cat", "find", "git log"],
   },
   develop: {
-    tools: ["read", "bash", "write", "edit"],
+    tools: ["read", "bash", "write", "edit", "stage_advance"],
     bash: ["npm test", "npm run", "git", "tsc", "bun test"],
   },
   review: {
-    tools: ["read", "bash"],
+    tools: ["read", "bash", "stage_advance"],
     bash: ["ls", "cat", "find", "git log"],
   },
   fix: {
-    tools: ["read", "bash", "write", "edit"],
+    tools: ["read", "bash", "write", "edit", "stage_advance"],
     bash: ["npm test", "npm run", "git", "tsc", "bun test"],
   },
 };

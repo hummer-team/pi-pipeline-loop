@@ -32,8 +32,8 @@ describe("createPipelineUI", () => {
       ui.setStage(ctx, "label");
       ui.clearStage(ctx);
       ui.stageEntry(ctx, "clarify");
-      ui.transition(ctx, "design", "plan");
-      ui.fail(ctx, "design", "verify failed");
+      ui.transition(ctx, "plan", "plan");
+      ui.fail(ctx, "plan", "verify failed");
 
       expect(notifications).toEqual([]);
       expect(statusCalls).toEqual([]);
@@ -46,7 +46,7 @@ describe("createPipelineUI", () => {
       expect(() => ui.notify({}, "test")).not.toThrow();
       expect(() => ui.stageEntry({}, "clarify")).not.toThrow();
       expect(() => ui.transition({}, "a", "b")).not.toThrow();
-      expect(() => ui.fail({}, "design", "reason")).not.toThrow();
+      expect(() => ui.fail({}, "plan", "reason")).not.toThrow();
       expect(() => ui.setStage({}, "label")).not.toThrow();
       expect(() => ui.clearStage({})).not.toThrow();
     });
@@ -80,10 +80,10 @@ describe("createPipelineUI", () => {
       const ui = createPipelineUI(config);
       const { ctx, notifications, statusCalls } = makeCtx();
 
-      ui.transition(ctx, "design", "plan");
+      ui.transition(ctx, "clarify", "plan");
 
-      expect(notifications).toEqual(["design → plan"]);
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "design → plan" }]);
+      expect(notifications).toEqual(["clarify → plan"]);
+      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "clarify → plan" }]);
     });
 
     it("fail produces '{stage} ⚠ {reason}' + setStatus", () => {
@@ -91,10 +91,10 @@ describe("createPipelineUI", () => {
       const ui = createPipelineUI(config);
       const { ctx, notifications, statusCalls } = makeCtx();
 
-      ui.fail(ctx, "design", "verify failed");
+      ui.fail(ctx, "plan", "verify failed");
 
-      expect(notifications).toEqual(["design ⚠ verify failed"]);
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "design ⚠ verify failed" }]);
+      expect(notifications).toEqual(["plan ⚠ verify failed"]);
+      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "plan ⚠ verify failed" }]);
     });
 
     it("notify produces message + no setStatus", () => {
@@ -237,7 +237,7 @@ describe("createPipelineUI", () => {
       await sleep(15);
 
       // Call progressStart again — should clear old timer
-      ui.progressStart(ctx, "design", undefined, 5);
+      ui.progressStart(ctx, "plan", undefined, 5);
       await sleep(30);
 
       // End and check no dangling timers
@@ -247,7 +247,7 @@ describe("createPipelineUI", () => {
       expect(statusCalls.length).toBe(countAfterEnd);
 
       // Verify second label was used
-      expect(statusCalls.some(c => c.text?.includes("Pipeline → design"))).toBe(true);
+      expect(statusCalls.some(c => c.text?.includes("Pipeline → plan"))).toBe(true);
     });
 
     it("ctx without ui → progress methods don't throw", () => {

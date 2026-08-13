@@ -68,7 +68,7 @@ function parseCommandArgs(commandName: string, args: string): Record<string, unk
  * @deprecated Use {@link createPipelineFromJson} instead, which accepts a
  * pipeline_loop.json config file and provides sensible defaults for all stages.
  *
- * Accepts a project-specific `PipelineConfig` that maps each of the 8 pipeline
+ * Accepts a project-specific `PipelineConfig` that maps each of the 7 pipeline
  * stages to its agent, skill, tool restrictions, and transition rules.
  * Returns an `ExtensionFactory` that registers all hooks, tools, and commands
  * directly with the Pi SDK via the ExtensionAPI.
@@ -84,7 +84,7 @@ function parseCommandArgs(commandName: string, args: string): Record<string, unk
  *   projectRoot: __dirname,
  *   stages: {
  *     clarify: { agentFile: "./agents/clarify.md", skillPath: "design-und/SKILL.md", ... },
- *     // ... all 8 stages
+ *     // ... all 7 stages
  *   },
  * });
  * ```

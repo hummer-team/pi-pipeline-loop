@@ -46,7 +46,7 @@ describe("SessionState", () => {
 
     it("returns the latest pipeline meta entry when multiple exist", () => {
       const meta1: Partial<SessionMeta> = { currentStage: "clarify", pipelineId: "pipe-1" } as SessionMeta;
-      const meta2: Partial<SessionMeta> = { currentStage: "design", pipelineId: "pipe-1" } as SessionMeta;
+      const meta2: Partial<SessionMeta> = { currentStage: "plan", pipelineId: "pipe-1" } as SessionMeta;
       const entries = [
         { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: meta1 },
         { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: meta2 },
@@ -57,7 +57,7 @@ describe("SessionState", () => {
 
       const result = state.getMeta();
       expect(result).toBeDefined();
-      expect(result!.currentStage).toBe("design");
+      expect(result!.currentStage).toBe("plan");
     });
   });
 
@@ -71,10 +71,10 @@ describe("SessionState", () => {
       const ctx = { sessionManager: makeMockSessionManager(entries) } as any;
       const state = createSessionState(pi as any, ctx);
 
-      const result = state.updateMeta({ currentStage: "design" });
+      const result = state.updateMeta({ currentStage: "plan" });
 
       expect(result).toBeDefined();
-      expect(result!.currentStage).toBe("design");
+      expect(result!.currentStage).toBe("plan");
       expect(result!.pipelineId).toBe(existing.pipelineId); // preserved from existing
       expect(pi.appended.length).toBe(1);
       expect(pi.appended[0].customType).toBe(PIPELINE_META_CUSTOM_TYPE);

@@ -35,7 +35,7 @@ describe("createPipelineHandoff", () => {
 
   it("blocks handoff when current stage summary is not validated", async () => {
     const config = makeTestConfig();
-    const meta = makeTestMeta({ currentStage: "design", summaries: {} });
+    const meta = makeTestMeta({ currentStage: "clarify", summaries: {} });
     const ctx = createCtx(meta);
 
     const tool = createPipelineHandoff(config);
@@ -47,8 +47,8 @@ describe("createPipelineHandoff", () => {
   it("blocks handoff when summary status is pending", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({
-      currentStage: "design",
-      summaries: { design: { path: "/tmp/design.md", hash: "abc", status: "pending" as const } },
+      currentStage: "clarify",
+      summaries: { clarify: { path: "/tmp/design.md", hash: "abc", status: "pending" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -65,8 +65,8 @@ describe("createPipelineHandoff", () => {
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["plan"] = { ...config.stages["plan"], model: "claude" } as any;
     const meta = makeTestMeta({
-      currentStage: "design",
-      summaries: { design: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
+      currentStage: "clarify",
+      summaries: { clarify: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -84,10 +84,10 @@ describe("createPipelineHandoff", () => {
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["plan"] = { ...config.stages["plan"], model: "claude" } as any;
     const meta = makeTestMeta({
-      currentStage: "design",
+      currentStage: "clarify",
       loopCount: 3,
       currentStepIndex: 5,
-      summaries: { design: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
+      summaries: { clarify: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -96,7 +96,7 @@ describe("createPipelineHandoff", () => {
 
     const lastUpdate = ctx.updates[ctx.updates.length - 1];
     expect(lastUpdate.currentStage).toBe("plan");
-    expect(lastUpdate.previousStage).toBe("design");
+    expect(lastUpdate.previousStage).toBe("clarify");
     expect(lastUpdate.loopCount).toBe(0);
     expect(lastUpdate.currentStepIndex).toBe(0);
   });
@@ -108,9 +108,9 @@ describe("createPipelineHandoff", () => {
     const config = makeTestConfig({ projectRoot: TMP });
     await initAuditLog(config);
     const meta = makeTestMeta({
-      currentStage: "design",
+      currentStage: "clarify",
       currentModel: { provider: "openai", modelId: "gpt-4o" },
-      summaries: { design: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
+      summaries: { clarify: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -122,7 +122,7 @@ describe("createPipelineHandoff", () => {
     const line = logContent.trim().split("\n")[0];
 
     expect(line).toContain(" - [INFO] handoff");
-    expect(line).toContain("from=design");
+    expect(line).toContain("from=clarify");
     expect(line).toContain("to=plan");
     expect(line).toContain("model=gpt-4o");
     expect(line).toContain("summaryHash=xyz");
@@ -132,8 +132,8 @@ describe("createPipelineHandoff", () => {
   it("returns error for unknown next stage", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({
-      currentStage: "design",
-      summaries: { design: { path: "/tmp/design.md", hash: "xyz", status: "valid" as const } },
+      currentStage: "clarify",
+      summaries: { clarify: { path: "/tmp/design.md", hash: "xyz", status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 

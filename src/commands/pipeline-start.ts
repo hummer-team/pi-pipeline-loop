@@ -18,7 +18,7 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 function checkVerifyFiles(config: PipelineConfig): PipelineStage[] {
   const missingStages: PipelineStage[] = [];
   const activeStages: PipelineStage[] = [
-    "clarify", "design", "plan", "develop", "review", "fix",
+    "clarify", "plan", "develop", "review", "fix",
   ];
 
   for (const stage of activeStages) {

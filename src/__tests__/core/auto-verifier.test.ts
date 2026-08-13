@@ -143,7 +143,7 @@ describe("runVerification", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -361,7 +361,7 @@ describe("runVerification — structured rules", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -424,7 +424,7 @@ describe("runVerification — structured rules", () => {
       projectRoot: TMP,
       auditDir: ".pi/audit",
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -556,7 +556,7 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -609,7 +609,7 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

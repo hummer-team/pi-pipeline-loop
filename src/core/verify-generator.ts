@@ -76,7 +76,7 @@ export function resolveTargetStages(
   config: PipelineConfig,
 ): PipelineStage[] {
   const allStages: PipelineStage[] = [
-    "clarify", "design", "plan", "develop", "review", "fix",
+    "clarify", "plan", "develop", "review", "fix",
   ];
 
   if (stage) {

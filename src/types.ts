@@ -49,12 +49,13 @@ export type ExecFn = (
 // ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 /**
- * Union type of all 8 pipeline stages.
+ * Union type of all pipeline stages.
  * Each stage represents a distinct phase in the agent's workflow loop.
+ * 7-stage state machine: clarify → plan → develop → review → fix → completed
+ * (awaiting_human is a fallback only, not in normal nextStage chain)
  */
 export type PipelineStage =
   | "clarify"
-  | "design"
   | "plan"
   | "develop"
   | "review"

@@ -39,7 +39,7 @@ describe("createGenerateSummary", () => {
 
   it("generates summary with frontmatter and body", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
-    const meta = makeTestMeta({ currentStage: "design", pipelineId: "pipe-gen-1" });
+    const meta = makeTestMeta({ currentStage: "plan", pipelineId: "pipe-gen-1" });
     const ctx = createCtx(meta);
 
     const tool = createGenerateSummary(config);
@@ -51,7 +51,7 @@ describe("createGenerateSummary", () => {
     }, ctx as any)) as any;
 
     expect(result.success).toBe(true);
-    expect(result.summaryPath).toContain("design.md");
+    expect(result.summaryPath).toContain("plan.md");
     expect(typeof result.hash).toBe("string");
     expect(result.hash).toMatch(/^[a-f0-9]{64}$/);
   });

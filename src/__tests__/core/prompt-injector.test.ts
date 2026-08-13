@@ -44,7 +44,7 @@ describe("createPromptInjector", () => {
 
   it("skips loop status for non-loop stages", async () => {
     const config = makeTestConfig();
-    const meta = makeTestMeta({ currentStage: "design" });
+    const meta = makeTestMeta({ currentStage: "plan" });
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
@@ -102,7 +102,7 @@ describe("createPromptInjector", () => {
   it("shows pending validation when previous summary is pending", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({
-      currentStage: "design",
+      currentStage: "plan",
       previousStage: "clarify",
       summaries: {
         clarify: { path: "/tmp/clarify.md", hash: "abc", status: "pending" as const },

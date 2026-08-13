@@ -99,7 +99,7 @@ describe("createPipelineStartCommand", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -148,7 +148,7 @@ describe("createPipelineStartCommand", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

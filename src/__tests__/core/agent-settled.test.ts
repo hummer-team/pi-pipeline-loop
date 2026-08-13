@@ -22,7 +22,7 @@ describe("createAgentSettled", () => {
 
   it("writes audit log with agent_settled action", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
-    const meta = makeTestMeta({ currentStage: "design" });
+    const meta = makeTestMeta({ currentStage: "plan" });
     const ctx = createMockCtx(meta);
 
     const hook = createAgentSettled(config);
@@ -34,7 +34,7 @@ describe("createAgentSettled", () => {
 
     expect(line).toContain(" - [INFO] agent_settled");
     expect(line).toContain("pipelineId=pipe-test-001");
-    expect(line).toContain("stage=design");
+    expect(line).toContain("stage=plan");
   });
 
   it("notifies ui when notify is available", async () => {
@@ -74,7 +74,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -129,7 +129,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -181,7 +181,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

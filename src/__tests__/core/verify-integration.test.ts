@@ -29,7 +29,7 @@ function makeConfigWithVerify(stages: string[] = ["develop"]) {
   return makeTestConfig({
     projectRoot: TMP,
     stages: Object.fromEntries(
-      ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+      ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
         (s, i, a) => [
           s,
           {
@@ -391,8 +391,8 @@ describe("verify-integration", () => {
     const generated = results.filter(r => r.status === "generated");
     const skipped = results.filter(r => r.status === "skipped");
 
-    // All 6 active stages should generate verify.md (template skills have **必须** markers)
-    expect(generated.length).toBe(6);
+    // All 5 active stages should generate verify.md (template skills have **必须** markers)
+    expect(generated.length).toBe(5);
     expect(skipped.length).toBe(0);
 
     // Verify no keyword-only items leaked through (phrase-bold filtering works)

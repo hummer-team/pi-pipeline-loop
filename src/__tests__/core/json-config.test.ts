@@ -24,10 +24,10 @@ async function writeJson(obj: unknown) {
 
 describe("loadJsonConfig", () => {
   it("parses a minimal pipeline_loop.json", async () => {
-    await writeJson({ stages: { clarify: { nextStage: "design" } } });
+    await writeJson({ stages: { clarify: { nextStage: "plan" } } });
     const result = loadJsonConfig(jsonPath);
     expect(result.stages.clarify).toBeDefined();
-    expect(result.stages.clarify!.nextStage).toBe("design");
+    expect(result.stages.clarify!.nextStage).toBe("plan");
   });
 
   it("fills defaults for missing top-level fields", async () => {
@@ -71,18 +71,17 @@ describe("resolvePipelineConfig", () => {
     expect(result.stages.clarify.skillPath).not.toContain(".pi/skills/");
   });
 
-  it("fills all 8 stages with defaults (even missing ones)", () => {
+  it("fills all 7 stages with defaults (even missing ones)", () => {
     const json: PipelineJsonConfig = {
-      stages: { clarify: { nextStage: "design" } },
+      stages: { clarify: { nextStage: "plan" }, plan: {} },
     };
     const result = resolvePipelineConfig(json);
-    // design is not in config → disabled → chain reconnect resolves to null
-    expect(result.stages.clarify.nextStage).toBeNull();
+    // plan is the next stage for clarify
+    expect(result.stages.clarify.nextStage).toBe("plan");
     expect(result.stages.clarify.agentFile).toContain("clarify");
     expect(result.stages.clarify.skillPath).toContain("clarify");
-    // All 8 stages present
+    // All 7 stages present
     expect(result.stages.clarify).toBeDefined();
-    expect(result.stages.design).toBeDefined();
     expect(result.stages.plan).toBeDefined();
     expect(result.stages.develop).toBeDefined();
     expect(result.stages.review).toBeDefined();
@@ -91,10 +90,10 @@ describe("resolvePipelineConfig", () => {
     expect(result.stages.completed).toBeDefined();
   });
 
-  it("uses clarify/design/plan defaults for read-only stages", () => {
+  it("uses clarify/plan defaults for read-only stages", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };
     const result = resolvePipelineConfig(json);
-    expect(result.stages.clarify.allowedTools).toEqual(["read", "bash"]);
+    expect(result.stages.clarify.allowedTools).toEqual(["read", "bash", "stage_advance"]);
     expect(result.stages.clarify.allowedBashPrefixes).toEqual([
       "ls",
       "cat",
@@ -119,7 +118,7 @@ describe("resolvePipelineConfig", () => {
         clarify: {
           agentFile: "custom/agent.md",
           allowedTools: ["read"],
-          nextStage: "design",
+          nextStage: "plan",
         },
       },
     };
@@ -130,11 +129,11 @@ describe("resolvePipelineConfig", () => {
 
   it("handles require: false by creating empty config for that stage", () => {
     const json: PipelineJsonConfig = {
-      stages: { design: { require: false } },
+      stages: { plan: { require: false } },
     };
     const result = resolvePipelineConfig(json);
-    expect(result.stages.design.allowedTools).toEqual([]);
-    expect(result.stages.design.requireDomain).toBe(false);
+    expect(result.stages.plan.allowedTools).toEqual([]);
+    expect(result.stages.plan.requireDomain).toBe(false);
   });
 
   it("throws on unknown nextStage reference", () => {
@@ -205,47 +204,48 @@ describe("resolvePipelineConfig", () => {
   it("Case A: require:false reconnects to next active stage", () => {
     const json: PipelineJsonConfig = {
       stages: {
-        clarify: { nextStage: "design" },
-        design: { require: false },
-        plan: {},
-      },
-    };
-    const result = resolvePipelineConfig(json);
-    expect(result.stages.clarify.nextStage).toBe("plan");
-    expect(result.stages.design.nextStage).toBeNull();
-  });
-
-  it("Case B: stage missing from config is treated as disabled", () => {
-    const json: PipelineJsonConfig = {
-      stages: {
-        clarify: { nextStage: "design" },
-        plan: { nextStage: "develop" },
-        develop: {},
-      },
-    };
-    const result = resolvePipelineConfig(json);
-    // design not in config → disabled → clarify.nextStage resolves to plan
-    expect(result.stages.clarify.nextStage).toBe("plan");
-  });
-
-  it("Case C: two consecutive disabled stages are both skipped", () => {
-    const json: PipelineJsonConfig = {
-      stages: {
-        clarify: { nextStage: "design" },
-        design: { require: false },
+        clarify: { nextStage: "plan" },
         plan: { require: false },
         develop: {},
       },
     };
     const result = resolvePipelineConfig(json);
     expect(result.stages.clarify.nextStage).toBe("develop");
+    expect(result.stages.plan.nextStage).toBeNull();
+  });
+
+  it("Case B: stage missing from config is treated as disabled", () => {
+    const json: PipelineJsonConfig = {
+      stages: {
+        clarify: { nextStage: "plan" },
+        plan: { nextStage: "develop" },
+        develop: { nextStage: "review" },
+        fix: {},
+      },
+    };
+    const result = resolvePipelineConfig(json);
+    // review not in config → disabled → develop.nextStage resolves to fix
+    expect(result.stages.develop.nextStage).toBe("fix");
+  });
+
+  it("Case C: two consecutive disabled stages are both skipped", () => {
+    const json: PipelineJsonConfig = {
+      stages: {
+        clarify: { nextStage: "plan" },
+        plan: { require: false },
+        develop: { require: false },
+        review: {},
+      },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.nextStage).toBe("review");
   });
 
   it("Case D: only one active stage → nextStage resolves to null", () => {
     const json: PipelineJsonConfig = {
       stages: {
-        clarify: { nextStage: "design" },
-        design: { require: false },
+        clarify: { nextStage: "plan" },
+        plan: { require: false },
       },
     };
     const result = resolvePipelineConfig(json);

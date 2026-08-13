@@ -39,7 +39,7 @@ async function setupConfigWithSkill(
   return makeTestConfig({
     projectRoot: TMP,
     stages: Object.fromEntries(
-      ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+      ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
         (s, i, a) => [
           s,
           {
@@ -61,7 +61,7 @@ describe("verify-generator", () => {
     it("returns all active stages when stage is undefined", () => {
       const config = makeTestConfig();
       const stages = resolveTargetStages(undefined, config);
-      expect(stages).toEqual(["clarify", "design", "plan", "develop", "review", "fix"]);
+      expect(stages).toEqual(["clarify", "plan", "develop", "review", "fix"]);
     });
 
     it("returns single stage when valid stage is given", () => {
@@ -257,7 +257,7 @@ describe("verify-generator", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -450,7 +450,7 @@ describe("verify-generator", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -489,7 +489,7 @@ describe("verify-generator", () => {
         projectRoot: TMP,
         auditDir: ".pi/audit",
         stages: Object.fromEntries(
-          ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {

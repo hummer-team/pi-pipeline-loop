@@ -2,7 +2,7 @@ import type { PipelineConfig, SessionMeta, PipelineStage } from "../types";
 import { PROTECTED_PATHS } from "../constants";
 
 export const STAGE_LIST: PipelineStage[] = [
-  "clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed",
+  "clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed",
 ];
 
 export function makeStageConfig(overrides?: Partial<Record<string, unknown>>) {
@@ -11,7 +11,7 @@ export function makeStageConfig(overrides?: Partial<Record<string, unknown>>) {
     skillPath: "test-skill/SKILL.md",
     allowedTools: ["read", "bash", "write", "edit", "generate_stage_summary", "validate_summary", "pipeline_handoff", "stage_advance", "loop_check", "pipeline_state"],
     allowedBashPrefixes: ["ls", "npm", "bun", "git", "cat"],
-    nextStage: "design" as PipelineStage | null,
+    nextStage: "plan" as PipelineStage | null,
     requireDomain: false,
     ...overrides,
   };

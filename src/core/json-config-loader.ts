@@ -22,7 +22,6 @@ import {
 
 const VALID_STAGES = new Set<PipelineStage>([
   "clarify",
-  "design",
   "plan",
   "develop",
   "review",
@@ -167,8 +166,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       requireDomain: jsonStage.requireDomain ?? false,
       verify: jsonStage.verify
         ? {
-            // Plan stage defaults to verify.require = false (plan has no deliverables to verify)
-            require: jsonStage.verify.require ?? (stageName !== "plan"),
+            // All stages default to verify.require = true
+            require: jsonStage.verify.require ?? true,
             verifyFile:
               jsonStage.verify.verifyFile ||
               resolveStagePath(DEFAULT_VERIFY_FILE, stageName),
@@ -182,7 +181,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
   if (disabledStages.size > 0) {
     const STAGE_ORDER: PipelineStage[] = [
       "clarify",
-      "design",
       "plan",
       "develop",
       "review",

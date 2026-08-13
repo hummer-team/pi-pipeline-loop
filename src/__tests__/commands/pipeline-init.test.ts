@@ -25,7 +25,7 @@ afterEach(async () => {
 /** Create a minimal template directory for testing */
 async function createMinimalTemplate(dir: string) {
   // skills
-  for (const stage of ["design", "plan", "develop", "review", "fix"]) {
+  for (const stage of ["plan", "develop", "review", "fix"]) {
     const skillDir = path.join(dir, "skills", stage);
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(
@@ -36,7 +36,7 @@ async function createMinimalTemplate(dir: string) {
   }
 
   // agents
-  for (const stage of ["clarify", "design", "plan", "develop", "review", "fix"]) {
+  for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
     const agentDir = path.join(dir, "agents", stage);
     await fs.mkdir(agentDir, { recursive: true });
     await fs.writeFile(path.join(agentDir, `${stage}.md`), `# ${stage} agent\n`, "utf-8");
@@ -48,7 +48,7 @@ async function createMinimalTemplate(dir: string) {
   // pipeline_loop.json
   await fs.writeFile(
     path.join(dir, "pipeline_loop.json"),
-    JSON.stringify({ stages: { clarify: { nextStage: "design" } } }),
+    JSON.stringify({ stages: { clarify: { nextStage: "plan" } } }),
     "utf-8",
   );
 }
@@ -58,7 +58,7 @@ function makeInitConfig() {
   return makeTestConfig({
     projectRoot: TMP,
     stages: Object.fromEntries(
-      ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+      ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
         (s, i, a) => [
           s,
           {
@@ -98,7 +98,7 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       // Create .pi/skills with skill files
-      for (const stage of ["design", "develop"]) {
+      for (const stage of ["plan", "develop"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -161,10 +161,10 @@ describe("createPipelineInitCommand", () => {
     it("defaults to skip strategy when files exist and no UI is available", async () => {
       const config = makeInitConfig();
 
-      // Pre-create some .pi files so existingCount > 0
+      // Pre-create a .pi file that matches a template file to trigger existingCount > 0
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "skills", "design", "SKILL.md"), "existing", "utf-8");
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
 
       const cmd = createPipelineInitCommand(config);
       // No ctx.ui provided — should default to skip strategy
@@ -180,8 +180,8 @@ describe("createPipelineInitCommand", () => {
 
       // Pre-create files to trigger multi-execution detection
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "skills", "design", "SKILL.md"), "existing", "utf-8");
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
 
       const ctx = {
         ui: {
@@ -201,8 +201,8 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "skills", "design", "SKILL.md"), "existing", "utf-8");
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
 
       const ctx = {
         ui: {
@@ -234,10 +234,10 @@ describe("createPipelineInitCommand", () => {
     it("skip strategy produces Skipped files section with existing paths", async () => {
       const config = makeInitConfig();
 
-      // Pre-create some .pi files to trigger skip strategy
+      // Pre-create a .pi file that matches a template file to trigger existingCount > 0
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "skills", "design", "SKILL.md"), "existing", "utf-8");
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
 
       const cmd = createPipelineInitCommand(config);
       // No UI → defaults to skip strategy
@@ -245,7 +245,7 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(result.content).toContain("Skipped files:");
-      expect(result.content).toContain(".pi/skills/design/SKILL.md");
+      expect(result.content).toContain(".pi/agents/clarify/clarify.md");
     });
 
     it("cancel branch returns content with 'cancelled'", async () => {
@@ -253,8 +253,8 @@ describe("createPipelineInitCommand", () => {
 
       // Pre-create files to trigger multi-execution detection
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "skills", "design", "SKILL.md"), "existing", "utf-8");
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
 
       const ctx = {
         ui: {
@@ -277,9 +277,9 @@ describe("createPipelineInitCommand", () => {
       // Pre-create .pi/skills/design/SKILL.md with Must marker so verify can extract items.
       // Also pre-create an agent file to ensure existingCount > 0 triggers multi-execution UI.
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.mkdir(path.join(piDir, "skills", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "skills", "design", "SKILL.md"),
+        path.join(piDir, "skills", "clarify", "SKILL.md"),
         "- **Must** design-output.md\n",
         "utf-8",
       );
@@ -302,7 +302,7 @@ describe("createPipelineInitCommand", () => {
       // Verify branch should have run and generated design verify.md
       expect(result.success).toBe(true);
       expect(
-        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "clarify_spec", "verify.md")),
       ).toBe(true);
     });
 
@@ -310,9 +310,9 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.mkdir(path.join(piDir, "skills", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "skills", "design", "SKILL.md"),
+        path.join(piDir, "skills", "clarify", "SKILL.md"),
         "- **Must** design-output.md\n",
         "utf-8",
       );
@@ -334,7 +334,7 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(
-        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "clarify_spec", "verify.md")),
       ).toBe(true);
     });
   });
@@ -344,7 +344,7 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       // Create .pi/skills with skill files
-      for (const stage of ["design", "develop"]) {
+      for (const stage of ["plan", "develop"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -392,9 +392,9 @@ describe("createPipelineInitCommand", () => {
 
       // Pre-create files to trigger multi-execution detection
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.mkdir(path.join(piDir, "skills", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "skills", "design", "SKILL.md"),
+        path.join(piDir, "skills", "clarify", "SKILL.md"),
         "- **Must** design-output.md\n",
         "utf-8",
       );
@@ -491,10 +491,19 @@ describe("createPipelineInitCommand", () => {
       await fs.mkdir(piDir, { recursive: true });
       await fs.writeFile(path.join(piDir, "guide.md"), "# OLD Guide Content\n", "utf-8");
 
-      // Pre-create a skill file to trigger multi-execution detection (existingCount > 0)
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      // Pre-create a file that matches a template file to trigger multi-execution detection (existingCount > 0)
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "skills", "design", "SKILL.md"),
+        path.join(piDir, "agents", "clarify", "clarify.md"),
+        "existing agent",
+        "utf-8",
+      );
+
+      // Also pre-create a skill file with Must marker for verify generation to find
+      // (Note: skills/clarify/SKILL.md is NOT in the template, so this won't affect existingCount)
+      await fs.mkdir(path.join(piDir, "skills", "clarify"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "skills", "clarify", "SKILL.md"),
         "- **Must** design-output.md\n",
         "utf-8",
       );
@@ -516,14 +525,14 @@ describe("createPipelineInitCommand", () => {
       const guideContent = await fs.readFile(path.join(piDir, "guide.md"), "utf-8");
       expect(guideContent).toBe("# OLD Guide Content\n");
 
-      // agents/clarify/clarify.md should NOT have been copied (option 3 does no file copy)
+      // agents/plan/plan.md should NOT have been copied (option 3 does no file copy)
       expect(
-        fsSync.existsSync(path.join(piDir, "agents", "clarify", "clarify.md")),
+        fsSync.existsSync(path.join(piDir, "agents", "plan", "plan.md")),
       ).toBe(false);
 
       // verify.md should still be generated (verify ran)
       expect(
-        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "clarify_spec", "verify.md")),
       ).toBe(true);
     });
 
@@ -531,7 +540,7 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       // Create .pi/skills with SKILL.md that has NO Must markers — ALL stages
-      for (const stage of ["clarify", "design", "plan", "develop", "review", "fix"]) {
+      for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -570,7 +579,7 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       // Only create skills for design and develop (no markers); rest will be skill_not_found
-      for (const stage of ["design", "develop"]) {
+      for (const stage of ["plan", "develop"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -595,9 +604,9 @@ describe("createPipelineInitCommand", () => {
 
       // Pre-create .pi files to trigger multi-execution detection
       const piDir = path.join(TMP, ".pi");
-      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.mkdir(path.join(piDir, "skills", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "skills", "design", "SKILL.md"),
+        path.join(piDir, "skills", "clarify", "SKILL.md"),
         "- **Must** design-output.md\n",
         "utf-8",
       );
@@ -624,7 +633,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.content).toContain("Generated:");
       // verify.md file should exist
       expect(
-        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "clarify_spec", "verify.md")),
       ).toBe(true);
     });
   });
@@ -634,7 +643,7 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       // Create .pi/skills with Must markers
-      for (const stage of ["design"]) {
+      for (const stage of ["plan"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -658,7 +667,7 @@ describe("createPipelineInitCommand", () => {
       (config as any).llmExtract = true;
 
       // Create .pi/skills with Must markers
-      for (const stage of ["design"]) {
+      for (const stage of ["plan"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -683,7 +692,7 @@ describe("createPipelineInitCommand", () => {
       (config as any).auditDir = ".pi/audit";
 
       // Create .pi/skills with Must markers
-      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      const skillDir = path.join(TMP, ".pi", "skills", "clarify");
       await fs.mkdir(skillDir, { recursive: true });
       await fs.writeFile(
         path.join(skillDir, "SKILL.md"),
@@ -716,7 +725,7 @@ describe("createPipelineInitCommand", () => {
       (config as any).auditDir = ".pi/audit";
 
       // Create .pi/skills with Must markers (verify side will use these)
-      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      const skillDir = path.join(TMP, ".pi", "skills", "clarify");
       await fs.mkdir(skillDir, { recursive: true });
       await fs.writeFile(
         path.join(skillDir, "SKILL.md"),
@@ -746,7 +755,7 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       // Create .pi/skills with Must markers
-      for (const stage of ["design", "develop"]) {
+      for (const stage of ["plan", "develop"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -796,7 +805,7 @@ describe("createPipelineInitCommand", () => {
       await initAuditLog(config);
 
       // Create skill files with Must markers
-      for (const stage of ["design"]) {
+      for (const stage of ["plan"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -843,7 +852,7 @@ describe("createPipelineInitCommand", () => {
       // llmExtract should be "on" and llm items should be extracted
       expect(result.content).toContain("llmExtract: on");
       // The result should have generated verify with both hardcoded and llm items
-      const designResult = result.results?.find((r: any) => r.stage === "design");
+      const designResult = result.results?.find((r: any) => r.stage === "plan");
       expect(designResult).toBeDefined();
       expect(designResult.llmStatus).toBe("ok");
       expect(designResult.llmCount).toBe(1);
@@ -869,7 +878,7 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       // LLM should have failed but hardcoded items still work (fallback)
-      const designResult = result.results?.find((r: any) => r.stage === "design");
+      const designResult = result.results?.find((r: any) => r.stage === "plan");
       expect(designResult).toBeDefined();
       expect(designResult.llmStatus).toBe("fail");
       // Hardcoded items should still generate verify.md (fallback)
@@ -895,7 +904,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.success).toBe(true);
       expect(result.content).toContain("llm: unavailable");
       // No LLM extraction
-      const designResult = result.results?.find((r: any) => r.stage === "design");
+      const designResult = result.results?.find((r: any) => r.stage === "plan");
       expect(designResult.llmStatus).toBe("off");
     });
 
@@ -946,7 +955,7 @@ describe("createPipelineInitCommand", () => {
       const result: any = await cmd.execute({ sub: "1" }, modelCtx);
 
       expect(result.success).toBe(true);
-      const designResult = result.results?.find((r: any) => r.stage === "design");
+      const designResult = result.results?.find((r: any) => r.stage === "plan");
       expect(designResult).toBeDefined();
       expect(designResult.llmStatus).toBe("fail");
       // Hardcoded items fallback still generates verify
@@ -970,7 +979,7 @@ describe("createPipelineInitCommand", () => {
       const result: any = await cmd.execute({ sub: "1" }, modelCtx);
 
       expect(result.success).toBe(true);
-      const designResult = result.results?.find((r: any) => r.stage === "design");
+      const designResult = result.results?.find((r: any) => r.stage === "plan");
       expect(designResult).toBeDefined();
       // Empty array is valid — should NOT be judged as failure
       expect(designResult.llmStatus).toBe("ok");
@@ -992,7 +1001,7 @@ describe("createPipelineInitCommand", () => {
       (config as any).output = { pipelineStage: true };
 
       // Create skill files
-      for (const stage of ["design", "develop"]) {
+      for (const stage of ["plan", "develop"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(
@@ -1048,7 +1057,7 @@ describe("createPipelineInitCommand", () => {
       (config as any).llmExtract = true;
       (config as any).output = { pipelineStage: false };
 
-      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      const skillDir = path.join(TMP, ".pi", "skills", "clarify");
       await fs.mkdir(skillDir, { recursive: true });
       await fs.writeFile(
         path.join(skillDir, "SKILL.md"),
@@ -1091,7 +1100,7 @@ describe("createPipelineInitCommand", () => {
       (config as any).output = { pipelineStage: true };
       // llmExtract is NOT set (defaults to false)
 
-      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      const skillDir = path.join(TMP, ".pi", "skills", "clarify");
       await fs.mkdir(skillDir, { recursive: true });
       await fs.writeFile(
         path.join(skillDir, "SKILL.md"),
