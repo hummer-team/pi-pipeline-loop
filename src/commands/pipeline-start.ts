@@ -43,12 +43,58 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
   return {
     name: "pipeline-start",
     description:
-      "Start a new pipeline run. Reads the specified requirement document and " +
-      "injects it into the clarify stage.",
+      "Start a new pipeline run. Optionally reads the specified requirement document and " +
+      "injects it into the clarify stage. Without a file, initializes the state machine only.",
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
-      const file = args.file as string;
-      if (!file || typeof file !== "string") {
-        return { success: false, error: "Usage: /pipeline_start <file.md>" };
+      const file = (args.file as string) || "";
+
+      const meta = ctx?.session?.getMeta?.();
+
+      if (meta?.currentStage && meta.pipelineId) {
+        return {
+          success: false,
+          error:
+            `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}". ` +
+            `End the current session before starting a new pipeline.`,
+        };
+      }
+
+      // No file provided — initialize state machine only
+      if (!file) {
+        // Check for missing verify.md files
+        const missingStages = checkVerifyFiles(config);
+        if (missingStages.length > 0) {
+          return {
+            success: false,
+            error: `verify.md missing for stages: [${missingStages.join(", ")}]`,
+            missingStages,
+            suggestion: "Run /pipeline-init 1 to generate verify.md files",
+          };
+        }
+
+        const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        const newMeta: SessionMeta = {
+          currentStage: "clarify",
+          stageStartTime: Date.now(),
+          pipelineId,
+          domain: { id: "general", version: "latest", skillPath: "" },
+          summaries: {},
+          loopCount: 0,
+          currentStepIndex: 0,
+          maxLoops: config.maxLoops || 3,
+          maxLoopCycles: config.maxLoopCycles ?? 3,
+        };
+
+        ctx?.session?.updateMeta?.(newMeta);
+
+        return {
+          success: true,
+          message: `Pipeline "${pipelineId}" initialized at stage "clarify". ` +
+            `下一步请输入 @feat-design-plan-agent <需求文档路径> 1 开始需求澄清`,
+          pipelineId,
+          currentStage: "clarify",
+        };
       }
 
       const docPath = path.join(config.projectRoot, file);
@@ -62,17 +108,6 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         return {
           success: false,
           error: `File not found: ${file} (${errMsg})`,
-        };
-      }
-
-      const meta = ctx?.session?.getMeta?.();
-
-      if (meta?.currentStage && meta.pipelineId) {
-        return {
-          success: false,
-          error:
-            `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}". ` +
-            `End the current session before starting a new pipeline.`,
         };
       }
 
@@ -106,7 +141,8 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
       return {
         success: true,
-        message: `Pipeline "${pipelineId}" started with document: ${file}`,
+        message: `Pipeline "${pipelineId}" started with document: ${file}. ` +
+          `下一步请输入 @feat-design-plan-agent ${file} 1 开始需求澄清`,
         pipelineId,
         currentStage: "clarify",
         requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),

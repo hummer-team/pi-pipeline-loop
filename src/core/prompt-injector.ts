@@ -183,7 +183,8 @@ function buildVerifyFailurePrompt(meta: SessionMeta): string | null {
 
 /**
  * Builds Part 7: Verify Tool Guidance.
- * When verify.mode is "tool", injects guidance for the agent to call pipeline_verify.
+ * When verify.mode is "tool", injects guidance for the agent to call stage_advance
+ * (primary) or pipeline_verify (fallback for re-verification).
  *
  * @param stageConfig - Current stage configuration
  * @returns Prompt section string, or null if not in tool mode
@@ -195,9 +196,9 @@ function buildVerifyToolGuidance(stageConfig: StageConfig): string | null {
 
   return (
     `# VERIFICATION MODE: TOOL\n` +
-    `After completing your work for this stage, call the \`pipeline_verify\` tool ` +
-    `to validate your output before advancing. The hook-based auto-verification is ` +
-    `disabled for this stage — you must verify explicitly.`
+    `本阶段验证模式为 TOOL：完成本阶段工作后调用 \`stage_advance\` 宣告完成` +
+    `（其内部执行验证门，通过后自动进入下一阶段）；` +
+    `验证失败可调用 \`pipeline_verify\` 重新验证。`
   );
 }
 

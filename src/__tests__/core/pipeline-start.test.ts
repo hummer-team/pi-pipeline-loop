@@ -61,6 +61,29 @@ describe("createPipelineStartCommand", () => {
     expect(result.error).toContain("File not found");
   });
 
+  it("no file → initializes state machine and returns guidance", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+    let updatedMeta: any = null;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "" }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.pipelineId).toMatch(/^pipe-/);
+    expect(result.currentStage).toBe("clarify");
+    expect(result.message).toContain("@feat-design-plan-agent");
+    expect(updatedMeta).not.toBeNull();
+    expect(updatedMeta.currentStage).toBe("clarify");
+    expect(updatedMeta.requirementDoc).toBeUndefined();
+  });
+
   it("returns error when pipeline already running", async () => {
     await fs.writeFile(docPath, "content", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP });
