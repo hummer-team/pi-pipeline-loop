@@ -319,6 +319,15 @@ export async function generateVerifyFiles(
 
     const skillBody = await readSkillBody(resolvedSkillPath, config.projectRoot);
     if (!skillBody) {
+      await safeWriteAuditLog("verify_md_generate", {
+        stage: s,
+        status: "skipped",
+        skillPath: resolvedSkillPath,
+        hardcodedCount: "0",
+        llmCount: "0",
+        llmStatus: "off",
+        reason: "skill_not_found",
+      });
       results.push({
         stage: s,
         status: "skipped",
@@ -326,7 +335,7 @@ export async function generateVerifyFiles(
         reason: "skill_not_found",
         hardcodedCount: 0,
         llmCount: 0,
-        llmStatus: llmEnabled ? "off" : "off",
+        llmStatus: "off",
       });
       continue;
     }

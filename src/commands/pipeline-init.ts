@@ -317,7 +317,7 @@ async function buildCallLLM(
     const available = extCtx.modelRegistry.getAvailable();
     if (!available || available.length === 0) return null;
 
-    const model = available[0];
+    const model = extCtx.model ?? available[0];
 
     // Dynamic import to avoid hard compile-time dependency
     const { createModels } = await import("@earendil-works/pi-ai");

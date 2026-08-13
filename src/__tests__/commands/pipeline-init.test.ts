@@ -707,6 +707,39 @@ describe("createPipelineInitCommand", () => {
       __resetAuditDirPath();
     });
 
+    it("pipeline_init_verify audit is written on sub='' (combined dir+verify) with llmEnabled field", async () => {
+      const config = makeInitConfig();
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      (config as any).auditDir = ".pi/audit";
+
+      // Create .pi/skills with Must markers (verify side will use these)
+      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        `- **Must** design-output.md\n`,
+        "utf-8",
+      );
+
+      // Initialize audit log
+      const { initAuditLog, getDateAuditFileName, __resetAuditDirPath } = await import("../../utils/auditLog");
+      await initAuditLog(config);
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "" });
+
+      expect(result.success).toBe(true);
+
+      // Verify audit log contains pipeline_init_verify
+      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logContent = await fs.readFile(logFile, "utf-8");
+      expect(logContent).toContain("pipeline_init_verify");
+      expect(logContent).toContain("llmEnabled=false");
+
+      __resetAuditDirPath();
+    });
+
     it("per-stage TUI shows hardcoded count when llmExtract is off", async () => {
       const config = makeInitConfig();
 
