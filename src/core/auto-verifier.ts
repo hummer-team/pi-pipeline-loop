@@ -360,7 +360,9 @@ function parseFrontmatter(yaml: string): VerifyRules | null {
       ...(requiredGit ? { requiredGit } : {}),
       ...(fileContentPattern.length > 0 ? { fileContentPattern } : {}),
     };
-  } catch {
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    safeWriteAuditLog("verify_frontmatter_parse_error", { error: errMsg }, "error");
     return null;
   }
 }

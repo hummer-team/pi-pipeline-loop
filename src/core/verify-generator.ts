@@ -222,12 +222,14 @@ export function classifyDeliveryItem(description: string): DeliveryItem {
  * @param skillBody - The skill file content (without frontmatter)
  * @param callLLM - Function to call the LLM
  * @param extractPrompt - System prompt for the extraction
+ * @param onParseError - Optional callback invoked when JSON.parse fails, for audit/logging
  * @returns Array of delivery items extracted by LLM
  */
 export async function extractLLMItems(
   skillBody: string,
   callLLM: (prompt: string) => Promise<string>,
   extractPrompt: string,
+  onParseError?: (err: unknown) => void,
 ): Promise<DeliveryItem[]> {
   // callLLM errors propagate to caller for audit/degradation handling
   const response = await callLLM(`${extractPrompt}\n\n---\n\nSkill content:\n\n${skillBody}`);
@@ -253,7 +255,8 @@ export async function extractLLMItems(
         type: item.type as DeliveryItem["type"],
         target: item.target as string,
       }));
-  } catch {
+  } catch (err) {
+    onParseError?.(err);
     return [];
   }
 }
@@ -392,7 +395,12 @@ export async function generateVerifyFiles(
       const llmStart = Date.now();
       try {
         const extractPrompt = await resolveExtractPrompt(config.projectRoot);
-        llmItems = await extractLLMItems(skillBody, callLLM!, extractPrompt);
+        llmItems = await extractLLMItems(skillBody, callLLM!, extractPrompt, (e) => {
+          safeWriteAuditLog("verify_llm_extract_error", {
+            stage: s,
+            error: "invalid JSON from LLM: " + String(e),
+          }, "warn");
+        });
         llmStatus = "ok";
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);

@@ -1,7 +1,13 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { tmpdir } from "node:os";
 import { createSessionState, extractAssistantMessages, PIPELINE_META_CUSTOM_TYPE } from "../../core/session-state";
 import type { SessionMeta } from "../../types";
-import { makeTestMeta, makeMockSessionManager } from "../helpers";
+import { makeTestMeta, makeTestConfig, makeMockSessionManager } from "../helpers";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+
+let AUDIT_TMP: string;
 
 /**
  * Minimal mock of ExtensionAPI for testing SessionState.
@@ -137,5 +143,75 @@ describe("extractAssistantMessages", () => {
     const result = extractAssistantMessages(ctx);
 
     expect(result).toEqual([]);
+  });
+});
+
+describe("Phase 1 — catch block audit logging", () => {
+  beforeEach(async () => {
+    AUDIT_TMP = path.join(tmpdir(), "pi-ss-audit-" + Date.now());
+    await fs.mkdir(AUDIT_TMP, { recursive: true });
+  });
+
+  afterEach(async () => {
+    __resetAuditDirPath();
+    await fs.rm(AUDIT_TMP, { recursive: true, force: true });
+  });
+
+  it("getMeta throws → session_state_error audit with operation='getMeta'", async () => {
+    const config = makeTestConfig({ projectRoot: AUDIT_TMP, auditDir: ".pi/audit" });
+    const auditDir = path.join(AUDIT_TMP, ".pi", "audit");
+    await fs.mkdir(auditDir, { recursive: true });
+    await initAuditLog(config);
+
+    // Create a ctx where getEntries() throws
+    const brokenCtx = {
+      sessionManager: {
+        getEntries: () => { throw new Error("Session store unavailable"); },
+        getBranch: () => [],
+      },
+    } as any;
+    const pi = { appendEntry: () => {} } as any;
+    const state = createSessionState(pi, brokenCtx);
+
+    // Should return undefined (graceful degradation)
+    expect(state.getMeta()).toBeUndefined();
+
+    // Wait for async safeWriteAuditLog (fire-and-forget) to flush
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Verify audit
+    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logContent = await fs.readFile(logFile, "utf-8");
+    expect(logContent).toContain("session_state_error");
+    expect(logContent).toContain("getMeta");
+    expect(logContent).toContain("Session store unavailable");
+  });
+
+  it("extractAssistantMessages throws → session_state_error audit with operation='extractAssistantMessages'", async () => {
+    const config = makeTestConfig({ projectRoot: AUDIT_TMP, auditDir: ".pi/audit" });
+    const auditDir = path.join(AUDIT_TMP, ".pi", "audit");
+    await fs.mkdir(auditDir, { recursive: true });
+    await initAuditLog(config);
+
+    // Create a ctx where getBranch() throws
+    const brokenCtx = {
+      sessionManager: {
+        getEntries: () => [],
+        getBranch: () => { throw new Error("Branch read failure"); },
+      },
+    } as any;
+
+    // Should return [] (graceful degradation)
+    expect(extractAssistantMessages(brokenCtx)).toEqual([]);
+
+    // Wait for async safeWriteAuditLog (fire-and-forget) to flush
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Verify audit
+    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logContent = await fs.readFile(logFile, "utf-8");
+    expect(logContent).toContain("session_state_error");
+    expect(logContent).toContain("extractAssistantMessages");
+    expect(logContent).toContain("Branch read failure");
   });
 });

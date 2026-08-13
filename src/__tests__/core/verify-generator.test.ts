@@ -387,6 +387,35 @@ describe("verify-generator", () => {
       __resetAuditDirPath();
     });
 
+    it("Phase 1 — callLLM returns invalid JSON → verify_llm_extract_error audit (warn) + llmStatus='ok'", async () => {
+      // callLLM returns invalid JSON (not a throw) — extractLLMItems catches parse error
+      // and calls onParseError → verify_llm_extract_error audit (warn level)
+      // llmStatus should still be "ok" because callLLM didn't throw
+      const callLLM = async (): Promise<string> => "this is not valid JSON {{{";
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      const config = await setupConfigWithSkill("develop", "- **Must** fallback.md\n");
+      (config as any).llmExtract = true;
+      await initAuditLog(config);
+
+      const results = await generateVerifyFiles(config, { stage: "develop", callLLM });
+      // LLM didn't throw, so llmStatus is "ok" (even though JSON was invalid)
+      expect(results[0].llmStatus).toBe("ok");
+      expect(results[0].llmCount).toBe(0);
+      // Hardcoded items still generate verify
+      expect(results[0].status).toBe("generated");
+      expect(results[0].hardcodedCount).toBe(1);
+
+      // Verify audit log contains verify_llm_extract_error (warn level)
+      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logContent = await fs.readFile(logFile, "utf-8");
+      expect(logContent).toContain("verify_llm_extract_error");
+      expect(logContent).toContain("invalid JSON from LLM");
+      expect(logContent).toContain("[WARN]");
+
+      __resetAuditDirPath();
+    });
+
     it("generateVerifyFiles: per-stage verify_md_generate audit fields", async () => {
       const auditDir = path.join(TMP, ".pi", "audit");
       await fs.mkdir(auditDir, { recursive: true });

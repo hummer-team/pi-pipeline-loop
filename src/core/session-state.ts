@@ -61,7 +61,9 @@ export function createSessionState(pi: ExtensionAPI, ctx: ExtensionContext): Ses
           }
         }
         return undefined;
-      } catch {
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        safeWriteAuditLog("session_state_error", { operation: "getMeta", error: errMsg }, "error");
         return undefined;
       }
     },
@@ -122,7 +124,9 @@ export function extractAssistantMessages(ctx: ExtensionContext): string[] {
     }
 
     return messages;
-  } catch {
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    safeWriteAuditLog("session_state_error", { operation: "extractAssistantMessages", error: errMsg }, "error");
     return [];
   }
 }
