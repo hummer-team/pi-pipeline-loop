@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
 import { generateVerifyFiles } from "../../core/verify-generator";
+import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-loader";
 import { createAgentSettled } from "../../core/agent-settled";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { createLoopBreaker } from "../../core/loop-breaker";
@@ -380,30 +381,11 @@ describe("verify-integration", () => {
       await fs.writeFile(path.join(destDir, "SKILL.md"), content, "utf-8");
     }
 
-    // Build config matching template pipeline_loop.json with skillPath
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      stages: Object.fromEntries(
-        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
-          (s, i, a) => [
-            s,
-            {
-              agentFile: "a.md",
-              skillPath: s === "clarify"
-                ? "design/SKILL.md"  // clarify shares design skill
-                : `${s}/SKILL.md`,
-              allowedTools: ["read", "bash", "write", "edit"],
-              allowedBashPrefixes: ["ls", "bun", "git"],
-              nextStage: a[i + 1] ?? null,
-              requireDomain: false,
-              verify: ["clarify", "design", "plan"].includes(s)
-                ? { require: true }
-                : undefined,
-            },
-          ],
-        ),
-      ) as any,
-    });
+    // Load actual template pipeline_loop.json and resolve to full PipelineConfig
+    const templateJsonPath = path.resolve(__dirname, "..", "..", "template", "pipeline_loop.json");
+    const json = loadJsonConfig(templateJsonPath);
+    json.projectRoot = TMP;
+    const config = resolvePipelineConfig(json);
 
     const results = await generateVerifyFiles(config);
     const generated = results.filter(r => r.status === "generated");
