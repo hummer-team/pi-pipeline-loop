@@ -138,7 +138,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
 
     // ── Tools registration (bridge: SDK registerTool(object) → internal Tool) ──
     const tools = [
-      createStageAdvancer(config),
+      createStageAdvancer(config, { execFn }),
       createLoopChecker(config),
       createPipelineState(config),
       createGenerateSummary(config),
