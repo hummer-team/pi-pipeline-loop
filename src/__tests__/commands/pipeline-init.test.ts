@@ -948,6 +948,109 @@ describe("createPipelineInitCommand", () => {
       expect(designResult.status).toBe("generated");
     });
   });
+
+  describe("Phase 3 — LLM extraction working indicator", () => {
+    afterEach(() => {
+      mock.restore();
+    });
+
+    it("pipelineStage:true + llmExtract:true → setWorkingMessage called per stage + restored", async () => {
+      const config = makeInitConfig();
+      (config as any).llmExtract = true;
+      (config as any).output = { pipelineStage: true };
+
+      // Create skill files
+      for (const stage of ["design", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-output.md\n`,
+          "utf-8",
+        );
+      }
+
+      const workingMessages: (string | undefined)[] = [];
+      const modelCtx = {
+        _ctx: {
+          modelRegistry: {
+            getAvailable: () => [{ name: "test-model", api: "openai" }],
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
+          },
+          model: { name: "test-model", api: "openai" },
+          sessionManager: { getBranch: () => [], getEntries: () => [] },
+        },
+        ui: {
+          setWorkingMessage: (msg?: string) => { workingMessages.push(msg); },
+          setWorkingIndicator: () => {},
+        },
+      };
+
+      // Mock compat complete to return valid JSON
+      const mockComplete = mock(() =>
+        Promise.resolve({
+          content: [{ type: "text", text: "[]" }],
+          stopReason: "end_turn",
+        }),
+      );
+      mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
+
+      const cmd = createPipelineInitCommand(config);
+      await cmd.execute({ sub: "1" }, modelCtx);
+
+      // Each stage with LLM extraction should trigger a working message
+      const stageMessages = workingMessages.filter(m => m !== undefined);
+      expect(stageMessages.length).toBe(2); // design + develop
+      expect(stageMessages[0]).toContain("Extracting items for");
+      expect(stageMessages[0]).toContain("(LLM)");
+      // Last call should be undefined (restore default)
+      expect(workingMessages[workingMessages.length - 1]).toBeUndefined();
+    });
+
+    it("pipelineStage:false → no working message calls", async () => {
+      const config = makeInitConfig();
+      (config as any).llmExtract = true;
+      (config as any).output = { pipelineStage: false };
+
+      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "- **Must** design-output.md\n",
+        "utf-8",
+      );
+
+      const workingMessages: (string | undefined)[] = [];
+      const modelCtx = {
+        _ctx: {
+          modelRegistry: {
+            getAvailable: () => [{ name: "test-model", api: "openai" }],
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
+          },
+          model: { name: "test-model", api: "openai" },
+          sessionManager: { getBranch: () => [], getEntries: () => [] },
+        },
+        ui: {
+          setWorkingMessage: (msg?: string) => { workingMessages.push(msg); },
+          setWorkingIndicator: () => {},
+        },
+      };
+
+      const mockComplete = mock(() =>
+        Promise.resolve({
+          content: [{ type: "text", text: "[]" }],
+          stopReason: "end_turn",
+        }),
+      );
+      mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
+
+      const cmd = createPipelineInitCommand(config);
+      await cmd.execute({ sub: "1" }, modelCtx);
+
+      // pipelineStage:false → no working messages
+      expect(workingMessages).toEqual([]);
+    });
+  });
 });
 
 // Need to import PipelineConfig type for the Phase 0 tests

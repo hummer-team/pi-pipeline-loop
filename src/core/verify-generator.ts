@@ -343,9 +343,11 @@ export async function generateVerifyFiles(
   options?: {
     stage?: string;
     callLLM?: (prompt: string) => Promise<string>;
+    /** Called before each stage's LLM extraction starts (for TUI working indicator) */
+    onLLMStageStart?: (stage: string) => void;
   },
 ): Promise<VerifyGenerateResult[]> {
-  const { stage, callLLM } = options ?? {};
+  const { stage, callLLM, onLLMStageStart } = options ?? {};
   const stages = resolveTargetStages(stage, config);
   const results: VerifyGenerateResult[] = [];
 
@@ -392,6 +394,7 @@ export async function generateVerifyFiles(
     let llmMs = 0;
 
     if (llmEnabled) {
+      onLLMStageStart?.(s);
       const llmStart = Date.now();
       try {
         const extractPrompt = await resolveExtractPrompt(config.projectRoot);

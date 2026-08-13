@@ -395,7 +395,22 @@ async function executeVerifyBranch(
   const callLLM = await buildCallLLM(config, ctx);
   const llmEnabled = callLLM !== null;
 
-  const results = await generateVerifyFiles(config, { callLLM: callLLM ?? undefined });
+  // LLM extraction working indicator (gated by output.pipelineStage)
+  const showWorking = config.output?.pipelineStage === true && llmEnabled;
+  const onLLMStageStart = showWorking
+    ? (stage: string) => { ctx?.ui?.setWorkingMessage?.(`Extracting items for ${stage} (LLM)...`); }
+    : undefined;
+
+  const results = await generateVerifyFiles(config, {
+    callLLM: callLLM ?? undefined,
+    onLLMStageStart,
+  });
+
+  // Restore default working message after LLM extraction
+  if (showWorking) {
+    ctx?.ui?.setWorkingMessage?.();
+    ctx?.ui?.setWorkingIndicator?.();
+  }
 
   const generated = results.filter(r => r.status === "generated");
   const skipped = results.filter(r => r.status === "skipped");
