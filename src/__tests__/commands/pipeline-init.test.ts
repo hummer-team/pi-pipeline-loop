@@ -388,7 +388,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.content).toContain("verify.md generation");
     });
 
-    it("option 3 (verifyAfter) merges dir + verify content (both sections present)", async () => {
+    it("option 3 (verifyAfter) only outputs verify section (no dir copy)", async () => {
       const config = makeInitConfig();
 
       // Pre-create files to trigger multi-execution detection
@@ -417,10 +417,11 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(result.content).toBeDefined();
-      // Dir section present
-      expect(result.content).toContain(".pi/ directory setup");
+      // Dir section NOT present — option 3 no longer copies template files
+      expect(result.content).not.toContain(".pi/ directory setup");
       // Verify section present
       expect(result.content).toContain("verify.md generation");
+      expect(result.content).toContain("Generated:");
     });
   });
 
@@ -475,6 +476,113 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       // ctx without ui — should not throw
       await expect(cmd.execute({ sub: "1" }, {})).resolves.toBeDefined();
+    });
+  });
+
+  describe("Phase 3 — E2E fix: no-copy, zero-hint, sub=\"\" option 3", () => {
+    it("option 3 does NOT trigger copyTemplateFiles — preserves existing guide.md and missing files", async () => {
+      const config = makeInitConfig();
+
+      const piDir = path.join(TMP, ".pi");
+
+      // Pre-create guide.md with OLD content (should NOT be overwritten)
+      await fs.mkdir(piDir, { recursive: true });
+      await fs.writeFile(path.join(piDir, "guide.md"), "# OLD Guide Content\n", "utf-8");
+
+      // Pre-create a skill file to trigger multi-execution detection (existingCount > 0)
+      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "skills", "design", "SKILL.md"),
+        "- **Must** design-output.md\n",
+        "utf-8",
+      );
+
+      // Note: agents/clarify/clarify.md does NOT exist — option 3 should NOT copy it
+
+      const ctx = {
+        ui: {
+          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" }, ctx);
+
+      expect(result.success).toBe(true);
+
+      // guide.md should NOT have been overwritten (still old content)
+      const guideContent = await fs.readFile(path.join(piDir, "guide.md"), "utf-8");
+      expect(guideContent).toBe("# OLD Guide Content\n");
+
+      // agents/clarify/clarify.md should NOT have been copied (option 3 does no file copy)
+      expect(
+        fsSync.existsSync(path.join(piDir, "agents", "clarify", "clarify.md")),
+      ).toBe(false);
+
+      // verify.md should still be generated (verify ran)
+      expect(
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+      ).toBe(true);
+    });
+
+    it("zero-result hint: sub=1 with skills but no Must markers shows hint in content", async () => {
+      const config = makeInitConfig();
+
+      // Create .pi/skills with SKILL.md that has NO Must markers
+      for (const stage of ["design", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `# ${stage} skill\nNo markers here.\n`,
+          "utf-8",
+        );
+      }
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("generated: 0");
+      expect(result.content).toContain("no **Must**/**必须** markers");
+    });
+
+    it('sub="" with UI option 3 — unified dispatch runs verify once and succeeds', async () => {
+      const config = makeInitConfig();
+
+      // Pre-create .pi files to trigger multi-execution detection
+      const piDir = path.join(TMP, ".pi");
+      await fs.mkdir(path.join(piDir, "skills", "design"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "skills", "design", "SKILL.md"),
+        "- **Must** design-output.md\n",
+        "utf-8",
+      );
+      await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
+      await fs.writeFile(
+        path.join(piDir, "agents", "clarify", "clarify.md"),
+        "existing agent",
+        "utf-8",
+      );
+
+      const ctx = {
+        ui: {
+          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      // sub="" triggers both runDir and runVerify; option 3 in dir branch flags verifyAfter
+      const result: any = await cmd.execute("" as any, ctx);
+
+      expect(result.success).toBe(true);
+      // Verify output should be present (unified dispatch path)
+      expect(result.content).toContain("verify.md generation");
+      expect(result.content).toContain("Generated:");
+      // verify.md file should exist
+      expect(
+        fsSync.existsSync(path.join(TMP, ".pi", "references", "design_spec", "verify.md")),
+      ).toBe(true);
     });
   });
 });
