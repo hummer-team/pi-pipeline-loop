@@ -118,29 +118,69 @@ export async function readSkillBody(
  * Hardcoded extraction: finds lines marked with bold Must, Required, or MUST keywords
  * and extracts the delivery item description following the marker.
  *
+ * Two match types (Phase 1 — Plan D):
+ * - **独立标记** (explicit): `**必须**` / `**Must**` etc. — text after marker is extracted,
+ *   all item types kept (including keyword). Author explicitly declared delivery intent.
+ * - **短语粗体** (phrase-bold): `**必须完成**` / `**Must run build**` etc. — bold phrase
+ *   itself is extracted, only file/command/git types kept; keyword items discarded to
+ *   prevent procedural sentences from being mis-matched.
+ *
+ * If both patterns match on the same line, the independent marker takes priority.
+ *
  * @param skillBody - The skill file content (without frontmatter)
  * @returns Array of delivery items extracted via keyword matching
  */
 export function extractHardcodedItems(skillBody: string): DeliveryItem[] {
   const items: DeliveryItem[] = [];
-  const MARKER_PATTERN = /\*\*(必须|Must|MUST|Required|REQUIRED)\*\*/gi;
+
+  // Pattern A: Independent marker — standalone bold keyword
+  const INDEPENDENT_MARKER = /\*\*(必须|Must|MUST|Required|REQUIRED)\*\*/gi;
+  // Pattern B: Phrase-bold — bold phrase containing keyword
+  const PHRASE_BOLD = /\*\*[^*]*(?:必须|Must|MUST|Required|REQUIRED)[^*]*\*\*/gi;
 
   const lines = skillBody.split("\n");
   for (const line of lines) {
-    if (MARKER_PATTERN.test(line)) {
-      // Reset regex lastIndex
-      MARKER_PATTERN.lastIndex = 0;
+    // Reset lastIndex (global regexes are stateful)
+    INDEPENDENT_MARKER.lastIndex = 0;
+    PHRASE_BOLD.lastIndex = 0;
 
-      // Extract the text after the marker, stripping list markers and extra whitespace
+    if (INDEPENDENT_MARKER.test(line)) {
+      // ── Type A: Independent marker ──
+      // Extract text after the marker, stripping list markers and extra whitespace
+      INDEPENDENT_MARKER.lastIndex = 0;
       const afterMarker = line
-        .replace(MARKER_PATTERN, "")
+        .replace(INDEPENDENT_MARKER, "")
         .replace(/^[\s]*[-*+][\s]*/, "")  // strip list markers (-, *, +)
         .trim();
       if (!afterMarker) continue;
 
-      // Try to classify the item
-      const item = classifyDeliveryItem(afterMarker);
-      items.push(item);
+      // Classify and keep ALL types (including keyword) — explicit declaration
+      items.push(classifyDeliveryItem(afterMarker));
+    } else if (PHRASE_BOLD.test(line)) {
+      // ── Type B: Phrase-bold ──
+      // Extract bold phrase content + text after it.
+      // Classification uses the after-bold text (actual deliverable) when present,
+      // falling back to the phrase content alone.
+      // E.g. "- **必须创建** docs/design/commit.md" → classify "docs/design/commit.md" → file
+      PHRASE_BOLD.lastIndex = 0;
+      const match = line.match(PHRASE_BOLD);
+      if (!match) continue;
+
+      const phraseContent = match[0].replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
+      if (!phraseContent) continue;
+
+      // Get text after the bold phrase (colon, space, etc. stripped)
+      const afterBold = line.slice(line.indexOf(match[0]) + match[0].length)
+        .replace(/^[\s:：]*/, "").trim();
+
+      // Classification target: after-bold text (the actual deliverable) or phrase itself
+      const classifyTarget = afterBold || phraseContent;
+
+      // Classify and keep only file/command/git — discard keyword
+      const item = classifyDeliveryItem(classifyTarget);
+      if (item.type !== "keyword") {
+        items.push({ type: item.type, target: classifyTarget });
+      }
     }
   }
 

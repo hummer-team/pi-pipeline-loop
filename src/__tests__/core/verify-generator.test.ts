@@ -123,6 +123,57 @@ describe("verify-generator", () => {
       const items = extractHardcodedItems("Normal line without marker\n- **Must** output.md");
       expect(items).toHaveLength(1);
     });
+
+    // ── Phase 1: phrase-bold extraction + keyword filtering (Plan D) ──
+
+    it("phrase-bold with keyword-only content → discarded (empty result)", () => {
+      // **必须完成** followed by abstract description → classified as keyword → filtered out
+      const items = extractHardcodedItems("- **必须完成**：对最后一轮...分析");
+      expect(items).toHaveLength(0);
+    });
+
+    it("phrase-bold with file path → extracted as file item", () => {
+      const items = extractHardcodedItems("- **必须创建** docs/design/commit.md");
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe("file");
+      expect(items[0].target).toContain("docs/design/commit.md");
+    });
+
+    it("phrase-bold with command → extracted as command item", () => {
+      const items = extractHardcodedItems("- **必须运行** bun run build");
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe("command");
+      expect(items[0].target).toContain("bun run build");
+    });
+
+    it("independent marker preserves keyword type", () => {
+      // **必须** (standalone) followed by abstract text → keyword is KEPT
+      const items = extractHardcodedItems("- **必须** 澄清问题");
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe("keyword");
+      expect(items[0].target).toBe("澄清问题");
+    });
+
+    it("independent marker takes priority when both patterns match same line", () => {
+      // Line has **必须** (independent) — phrase-bold also matches but independent wins
+      const items = extractHardcodedItems("- **必须** 澄清问题");
+      expect(items).toHaveLength(1);
+      expect(items[0].type).toBe("keyword");
+    });
+
+    it("mixed lines: independent + phrase-bold on different lines", () => {
+      const skillBody = [
+        "- **必须** 澄清问题",               // independent → keyword kept
+        "- **必须创建** docs/design/spec.md", // phrase-bold → file kept
+        "- **必须完成** 分析报告",             // phrase-bold → keyword discarded
+        "- **Must** bun run test",            // independent → command kept
+      ].join("\n");
+      const items = extractHardcodedItems(skillBody);
+      expect(items).toHaveLength(3);
+      expect(items[0].type).toBe("keyword");   // 澄清问题
+      expect(items[1].type).toBe("file");      // docs/design/spec.md
+      expect(items[2].type).toBe("command");   // bun run test
+    });
   });
 
   describe("classifyDeliveryItem", () => {
