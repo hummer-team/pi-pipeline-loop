@@ -8,6 +8,7 @@ import {
   resolveTargetStages,
   readSkillBody,
   extractHardcodedItems,
+  extractLLMItems,
   classifyDeliveryItem,
   mergeDeliveryItems,
   generateVerifyMdContent,
@@ -235,7 +236,125 @@ describe("verify-generator", () => {
       expect(results[0].reason).toBe("no_items");
     });
 
-    // NOTE: LLM extraction tests removed (Q6-B) — verification is now structured-only.
+    // NOTE: LLM extraction tests restored (117 Phase 1)
+
+    it("extractLLMItems: valid JSON response", async () => {
+      const callLLM = async (_prompt: string): Promise<string> => {
+        return JSON.stringify([
+          { type: "file", target: "output.md" },
+          { type: "command", target: "bun run build" },
+        ]);
+      };
+      const items = await extractLLMItems("skill body", callLLM, "extract prompt");
+      expect(items).toHaveLength(2);
+      expect(items[0].type).toBe("file");
+      expect(items[1].type).toBe("command");
+    });
+
+    it("extractLLMItems: strips code block wrapper", async () => {
+      const callLLM = async (): Promise<string> => {
+        return '```json\n[{"type":"file","target":"a.md"}]\n```';
+      };
+      const items = await extractLLMItems("body", callLLM, "prompt");
+      expect(items).toHaveLength(1);
+      expect(items[0].target).toBe("a.md");
+    });
+
+    it("extractLLMItems: invalid JSON returns empty array", async () => {
+      const callLLM = async (): Promise<string> => "not json at all";
+      const items = await extractLLMItems("body", callLLM, "prompt");
+      expect(items).toEqual([]);
+    });
+
+    it("extractLLMItems: filters by valid type/target", async () => {
+      const callLLM = async (): Promise<string> => {
+        return JSON.stringify([
+          { type: "file", target: "a.md" },
+          { type: "invalid_type", target: "b.md" },
+          { type: "command" }, // missing target
+          { type: "keyword", target: "pass" },
+        ]);
+      };
+      const items = await extractLLMItems("body", callLLM, "prompt");
+      expect(items).toHaveLength(2);
+      expect(items.map(i => i.type)).toEqual(["file", "keyword"]);
+    });
+
+    it("generateVerifyFiles: llmExtract=false does not call callLLM", async () => {
+      let callCount = 0;
+      const callLLM = async (): Promise<string> => {
+        callCount++;
+        return "[]";
+      };
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+      // llmExtract defaults to false/undefined in makeTestConfig
+      const results = await generateVerifyFiles(config, { stage: "develop", callLLM });
+      expect(callCount).toBe(0);
+      expect(results[0].llmStatus).toBe("off");
+    });
+
+    it("generateVerifyFiles: llmExtract=true + callLLM merges hardcoded and LLM items", async () => {
+      const callLLM = async (): Promise<string> => {
+        return JSON.stringify([{ type: "file", target: "llm-output.md" }]);
+      };
+      const config = await setupConfigWithSkill("develop", "- **Must** hardcoded-output.md\n");
+      (config as any).llmExtract = true;
+      const results = await generateVerifyFiles(config, { stage: "develop", callLLM });
+      expect(results[0].status).toBe("generated");
+      expect(results[0].hardcodedCount).toBe(1);
+      expect(results[0].llmCount).toBe(1);
+      expect(results[0].llmStatus).toBe("ok");
+
+      const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
+      const content = await fs.readFile(verifyPath, "utf-8");
+      expect(content).toContain("hardcoded-output.md");
+      expect(content).toContain("llm-output.md");
+    });
+
+    it("generateVerifyFiles: callLLM throws → fallback to hardcoded + audit error", async () => {
+      const callLLM = async (): Promise<string> => {
+        throw new Error("LLM timeout");
+      };
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      const config = await setupConfigWithSkill("develop", "- **Must** fallback.md\n");
+      (config as any).llmExtract = true;
+      await initAuditLog(config);
+
+      const results = await generateVerifyFiles(config, { stage: "develop", callLLM });
+      expect(results[0].status).toBe("generated");
+      expect(results[0].hardcodedCount).toBe(1);
+      expect(results[0].llmCount).toBe(0);
+      expect(results[0].llmStatus).toBe("fail");
+
+      // Verify audit log contains error
+      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logContent = await fs.readFile(logFile, "utf-8");
+      expect(logContent).toContain("verify_llm_extract_error");
+      expect(logContent).toContain("LLM timeout");
+
+      __resetAuditDirPath();
+    });
+
+    it("generateVerifyFiles: per-stage verify_md_generate audit fields", async () => {
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+      await initAuditLog(config);
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results[0].status).toBe("generated");
+
+      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logContent = await fs.readFile(logFile, "utf-8");
+      expect(logContent).toContain("verify_md_generate");
+      expect(logContent).toContain("stage=develop");
+      expect(logContent).toContain("status=generated");
+      expect(logContent).toContain("hardcodedCount=1");
+      expect(logContent).toContain("llmStatus=off");
+
+      __resetAuditDirPath();
+    });
 
     it("processes all stages when no stage argument is given", async () => {
       for (const stage of ["clarify", "develop"]) {

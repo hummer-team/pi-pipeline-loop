@@ -32,6 +32,12 @@ export type VerifyGenerateResult = {
   error?: string;
   /** Discriminated skip reason — present only when status === "skipped" */
   reason?: "skill_not_found" | "no_items";
+  /** Number of items extracted via hardcoded marker matching */
+  hardcodedCount?: number;
+  /** Number of items extracted via LLM */
+  llmCount?: number;
+  /** LLM extraction status: "ok" = success, "fail" = error/degraded, "off" = not enabled */
+  llmStatus?: "ok" | "fail" | "off";
 };
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
@@ -167,6 +173,52 @@ export function classifyDeliveryItem(description: string): DeliveryItem {
 }
 
 /**
+ * LLM-based extraction: sends skill content to the LLM and parses structured delivery items.
+ *
+ * Uses LLM to extract structured delivery items from skill content.
+ * Throws if callLLM itself fails (caller handles audit/degradation).
+ * Returns [] only for JSON parse failures or empty/invalid responses.
+ *
+ * @param skillBody - The skill file content (without frontmatter)
+ * @param callLLM - Function to call the LLM
+ * @param extractPrompt - System prompt for the extraction
+ * @returns Array of delivery items extracted by LLM
+ */
+export async function extractLLMItems(
+  skillBody: string,
+  callLLM: (prompt: string) => Promise<string>,
+  extractPrompt: string,
+): Promise<DeliveryItem[]> {
+  // callLLM errors propagate to caller for audit/degradation handling
+  const response = await callLLM(`${extractPrompt}\n\n---\n\nSkill content:\n\n${skillBody}`);
+
+  // Parse JSON from response — catch parse errors only
+  let cleaned = response.trim();
+  const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (codeBlockMatch) {
+    cleaned = codeBlockMatch[1].trim();
+  }
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((item: Record<string, unknown>) =>
+        typeof item.type === "string" &&
+        typeof item.target === "string" &&
+        ["file", "command", "git", "keyword"].includes(item.type as string),
+      )
+      .map((item: Record<string, unknown>) => ({
+        type: item.type as DeliveryItem["type"],
+        target: item.target as string,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Merges and deduplicates delivery items from multiple sources.
  */
 export function mergeDeliveryItems(hardcoded: DeliveryItem[], llm: DeliveryItem[]): DeliveryItem[] {
@@ -240,21 +292,25 @@ export function generateVerifyMdContent(items: DeliveryItem[], stage: string): s
  * @param config - Pipeline configuration
  * @param options - Optional configuration
  * @param options.stage - Filter to a specific stage
+ * @param options.callLLM - Optional LLM function for enhanced extraction (only used when config.llmExtract is true)
  * @returns Array of results per stage
  */
 export async function generateVerifyFiles(
   config: PipelineConfig,
   options?: {
     stage?: string;
+    callLLM?: (prompt: string) => Promise<string>;
   },
 ): Promise<VerifyGenerateResult[]> {
-  const { stage } = options ?? {};
+  const { stage, callLLM } = options ?? {};
   const stages = resolveTargetStages(stage, config);
   const results: VerifyGenerateResult[] = [];
 
   if (stages.length === 0) {
     return results;
   }
+
+  const llmEnabled = config.llmExtract === true && typeof callLLM === "function";
 
   for (const s of stages) {
     const stageConfig = config.stages[s];
@@ -268,6 +324,9 @@ export async function generateVerifyFiles(
         status: "skipped",
         error: `Skill file not found: ${resolvedSkillPath}`,
         reason: "skill_not_found",
+        hardcodedCount: 0,
+        llmCount: 0,
+        llmStatus: llmEnabled ? "off" : "off",
       });
       continue;
     }
@@ -275,15 +334,55 @@ export async function generateVerifyFiles(
     // Step 1: Hardcoded extraction
     const hardcodedItems = extractHardcodedItems(skillBody);
 
-    // Step 2: Merge (LLM extraction removed — Q6-B)
-    const allItems = mergeDeliveryItems(hardcodedItems, []);
+    // Step 2: LLM extraction (if enabled)
+    let llmItems: DeliveryItem[] = [];
+    let llmStatus: "ok" | "fail" | "off" = "off";
+    let llmMs = 0;
+
+    if (llmEnabled) {
+      const llmStart = Date.now();
+      try {
+        const extractPrompt = await resolveExtractPrompt(config.projectRoot);
+        llmItems = await extractLLMItems(skillBody, callLLM!, extractPrompt);
+        llmStatus = "ok";
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        llmMs = Date.now() - llmStart;
+        llmStatus = "fail";
+        await safeWriteAuditLog("verify_llm_extract_error", {
+          stage: s,
+          error: errMsg,
+          llmMs: String(llmMs),
+        }, "error");
+        llmItems = [];
+      }
+      if (llmStatus === "ok") {
+        llmMs = Date.now() - llmStart;
+      }
+    }
+
+    // Step 3: Merge and deduplicate
+    const allItems = mergeDeliveryItems(hardcodedItems, llmItems);
 
     if (allItems.length === 0) {
+      await safeWriteAuditLog("verify_md_generate", {
+        stage: s,
+        status: "skipped",
+        skillPath: resolvedSkillPath,
+        hardcodedCount: String(hardcodedItems.length),
+        llmCount: String(llmItems.length),
+        llmStatus,
+        llmMs: String(llmMs),
+        reason: "no_items",
+      });
       results.push({
         stage: s,
         status: "skipped",
         error: "No delivery items found in skill file",
         reason: "no_items",
+        hardcodedCount: hardcodedItems.length,
+        llmCount: llmItems.length,
+        llmStatus,
       });
       continue;
     }
@@ -297,10 +396,23 @@ export async function generateVerifyFiles(
       await fs.mkdir(path.dirname(absVerifyPath), { recursive: true });
       await fs.writeFile(absVerifyPath, verifyContent, "utf-8");
 
+      await safeWriteAuditLog("verify_md_generate", {
+        stage: s,
+        status: "generated",
+        skillPath: resolvedSkillPath,
+        hardcodedCount: String(hardcodedItems.length),
+        llmCount: String(llmItems.length),
+        llmStatus,
+        llmMs: String(llmMs),
+      });
+
       results.push({
         stage: s,
         status: "generated",
         filePath: verifyPath,
+        hardcodedCount: hardcodedItems.length,
+        llmCount: llmItems.length,
+        llmStatus,
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -309,6 +421,9 @@ export async function generateVerifyFiles(
         stage: s,
         status: "error",
         error: errMsg,
+        hardcodedCount: hardcodedItems.length,
+        llmCount: llmItems.length,
+        llmStatus,
       });
     }
   }

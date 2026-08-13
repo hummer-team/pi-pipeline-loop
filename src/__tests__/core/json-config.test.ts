@@ -302,3 +302,38 @@ describe("output.pipelineStage config", () => {
     expect(result.output!.pipelineStage).toBe(false);
   });
 });
+
+describe("llmExtract config", () => {
+  it("resolvePipelineConfig defaults llmExtract to false", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.llmExtract).toBe(false);
+  });
+
+  it("resolvePipelineConfig preserves llmExtract: true", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      llmExtract: true,
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.llmExtract).toBe(true);
+  });
+
+  it("loadJsonConfig parses llmExtract from JSON", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      llmExtract: true,
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.llmExtract).toBe(true);
+  });
+
+  it("loadJsonConfig ignores non-boolean llmExtract", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      llmExtract: "yes",
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.llmExtract).toBeUndefined();
+  });
+});

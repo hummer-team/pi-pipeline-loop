@@ -79,6 +79,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     maxLoopCycles:
       typeof json.maxLoopCycles === "number" ? json.maxLoopCycles : undefined,
     output: parseOutputConfig(json.output),
+    llmExtract: typeof json.llmExtract === "boolean" ? json.llmExtract : undefined,
   };
 }
 
@@ -237,5 +238,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     maxLoops: json.maxLoops ?? 3,
     maxLoopCycles: json.maxLoopCycles ?? 3,
     output: { pipelineStage: json.output?.pipelineStage ?? false },
+    llmExtract: json.llmExtract ?? false,
   };
 }

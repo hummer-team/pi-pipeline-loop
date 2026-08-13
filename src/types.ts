@@ -276,6 +276,13 @@ export interface PipelineConfig {
    * Default: false (all TUI output silenced).
    */
   output?: { pipelineStage?: boolean };
+
+  /**
+   * Enable LLM-based delivery item extraction during verify generation.
+   * When true, uses pi SDK LLM (createModels + ctx.modelRegistry) to extract items
+   * from skill files alongside hardcoded marker extraction. Default: false.
+   */
+  llmExtract?: boolean;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -349,6 +356,9 @@ export interface PipelineJsonConfig {
 
   /** TUI output configuration (default: { pipelineStage: false }) */
   output?: { pipelineStage?: boolean };
+
+  /** Enable LLM-based delivery item extraction during verify generation (default false) */
+  llmExtract?: boolean;
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────
