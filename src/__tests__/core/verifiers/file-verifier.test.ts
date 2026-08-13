@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { verifyRequiredFiles, verifyFileContentPattern } from "../../../core/verifiers/file-verifier";
+import { verifyRequiredFiles, verifyFileContentPattern, globMatchFiles } from "../../../core/verifiers/file-verifier";
 
 let TMP: string;
 
@@ -107,5 +107,95 @@ describe("verifyFileContentPattern", () => {
     expect(logCalls[0].msg.ruleType).toBe("fileContentPattern");
     expect(logCalls[0].msg.path).toBe("nonexistent.md");
     expect(logCalls[0].msg.error).toBeTruthy();
+  });
+});
+
+describe("globMatchFiles", () => {
+  it("matches files with * wildcard", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "design", "101_plan.md"), "content");
+    await fs.writeFile(path.join(TMP, "docs", "design", "102_plan.md"), "content");
+    await fs.writeFile(path.join(TMP, "docs", "design", "101_commit.md"), "content");
+
+    const matches = await globMatchFiles("docs/design/*_plan.md", TMP);
+    expect(matches).toHaveLength(2);
+    expect(matches.map(m => path.basename(m)).sort()).toEqual(["101_plan.md", "102_plan.md"]);
+  });
+
+  it("returns empty array when no files match", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "design", "readme.md"), "content");
+
+    const matches = await globMatchFiles("docs/design/*_plan.md", TMP);
+    expect(matches).toHaveLength(0);
+  });
+
+  it("matches with ? wildcard", async () => {
+    await fs.mkdir(path.join(TMP, "src"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "src", "a.ts"), "content");
+    await fs.writeFile(path.join(TMP, "src", "b.ts"), "content");
+    await fs.writeFile(path.join(TMP, "src", "ab.ts"), "content");
+
+    const matches = await globMatchFiles("src/?.ts", TMP);
+    expect(matches).toHaveLength(2);
+  });
+});
+
+describe("verifyRequiredFiles with glob", () => {
+  it("passes when glob pattern matches at least one file", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "design", "101_plan.md"), "content");
+
+    const result = await verifyRequiredFiles(["docs/design/*_plan.md"], TMP);
+    expect(result.passed).toBe(true);
+  });
+
+  it("fails when glob pattern matches no files", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+
+    const result = await verifyRequiredFiles(["docs/design/*_plan.md"], TMP);
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("docs/design/*_plan.md");
+  });
+
+  it("mixes glob and exact paths", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "design", "101_plan.md"), "content");
+    await fs.writeFile(path.join(TMP, "src.ts"), "content");
+
+    const result = await verifyRequiredFiles(["docs/design/*_plan.md", "src.ts"], TMP);
+    expect(result.passed).toBe(true);
+  });
+});
+
+describe("verifyFileContentPattern with glob", () => {
+  it("checks most recent file when glob matches multiple", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "review"), { recursive: true });
+
+    // Write older file without the pattern
+    const oldPath = path.join(TMP, "docs", "review", "code_review_old.md");
+    await fs.writeFile(oldPath, "no match here");
+    // Set old mtime
+    const oldTime = new Date(Date.now() - 100000);
+    await fs.utimes(oldPath, oldTime, oldTime);
+
+    // Write newer file with the pattern
+    const newPath = path.join(TMP, "docs", "review", "code_review_new.md");
+    await fs.writeFile(newPath, "结论：通过");
+
+    const result = await verifyFileContentPattern(
+      [{ path: "docs/review/code_review_*.md", pattern: "结论：通过" }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("fails when no glob matches and pattern cannot be checked", async () => {
+    const result = await verifyFileContentPattern(
+      [{ path: "docs/review/code_review_*.md", pattern: "结论：通过" }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("no files matched");
   });
 });

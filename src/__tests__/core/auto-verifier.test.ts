@@ -8,6 +8,7 @@ import {
   ruleVerify,
   runVerification,
   executeStructuredRules,
+  resolvePlaceholders,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -482,5 +483,160 @@ describe("runVerification — structured rules", () => {
     expect(logContent).toContain("[ERROR]");
 
     __resetAuditDirPath();
+  });
+});
+
+describe("resolvePlaceholders", () => {
+  it("replaces {requirementDoc} in requiredFiles paths", () => {
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["{requirementDoc}"],
+    };
+    const meta = makeTestMeta({ requirementDoc: "docs/design/121_req.md" });
+    const resolved = resolvePlaceholders(rules, meta);
+    expect(resolved.requiredFiles).toEqual(["docs/design/121_req.md"]);
+  });
+
+  it("replaces {requirementDoc} in fileContentPattern paths", () => {
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      fileContentPattern: [{ path: "{requirementDoc}", pattern: "confirmed" }],
+    };
+    const meta = makeTestMeta({ requirementDoc: "docs/design/121_req.md" });
+    const resolved = resolvePlaceholders(rules, meta);
+    expect(resolved.fileContentPattern![0].path).toBe("docs/design/121_req.md");
+  });
+
+  it("leaves paths unchanged when no placeholder present", () => {
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/fixed.md"],
+    };
+    const meta = makeTestMeta({ requirementDoc: "docs/design/121_req.md" });
+    const resolved = resolvePlaceholders(rules, meta);
+    expect(resolved.requiredFiles).toEqual(["docs/design/fixed.md"]);
+  });
+
+  it("replaces with empty string when requirementDoc is undefined", () => {
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["{requirementDoc}"],
+    };
+    const meta = makeTestMeta();
+    const resolved = resolvePlaceholders(rules, meta);
+    expect(resolved.requiredFiles).toEqual([""]);
+  });
+});
+
+describe("runVerification — {requirementDoc} placeholder integration", () => {
+  it("resolves placeholder in requiredFiles and passes when file exists", async () => {
+    // Create the requirement doc file
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    const reqDocPath = path.join(TMP, "docs", "design", "121_req.md");
+    await fs.writeFile(reqDocPath, "## 模型确认\nfull-und? 理解确认：是\n");
+
+    const vrPath = path.join(TMP, "references", "clarify_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  fileContentPattern:\n" +
+        '    - path: "{requirementDoc}"\n' +
+        '      pattern: "full-und. 理解确认：是"\n' +
+        "---\n" +
+        "Verify model confirmation\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "clarify"
+                  ? { require: true, verifyFile: "references/clarify_spec/verify.md" }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: "docs/design/121_req.md",
+    });
+
+    const result = await runVerification(config, meta, []);
+    expect(result.rulePassed).toBe(true);
+    expect(result.structuredResult?.passed).toBe(true);
+  });
+
+  it("resolves placeholder and fails when pattern not found", async () => {
+    // Create the requirement doc file WITHOUT the expected pattern
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    const reqDocPath = path.join(TMP, "docs", "design", "121_req.md");
+    await fs.writeFile(reqDocPath, "Just some content without confirmation\n");
+
+    const vrPath = path.join(TMP, "references", "clarify_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  fileContentPattern:\n" +
+        '    - path: "{requirementDoc}"\n' +
+        '      pattern: "full-und. 理解确认：是"\n' +
+        "---\n" +
+        "Verify model confirmation\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "clarify"
+                  ? { require: true, verifyFile: "references/clarify_spec/verify.md" }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: "docs/design/121_req.md",
+    });
+
+    const result = await runVerification(config, meta, []);
+    expect(result.rulePassed).toBe(false);
+    expect(result.structuredResult?.passed).toBe(false);
+    expect(result.structuredResult?.failures.some(f => f.ruleType === "fileContentPattern")).toBe(true);
   });
 });

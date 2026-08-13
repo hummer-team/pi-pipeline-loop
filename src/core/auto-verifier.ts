@@ -464,6 +464,33 @@ export interface RunVerificationOptions {
 }
 
 /**
+ * Replaces `{requirementDoc}` placeholders in rule paths with the actual
+ * requirement document path from session metadata.
+ *
+ * @param rules - Parsed verification rules
+ * @param meta - Session metadata (may contain requirementDoc)
+ * @returns A new VerifyRules object with placeholders resolved
+ */
+export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): VerifyRules {
+  const reqDoc = meta.requirementDoc ?? "";
+  const replace = (s: string): string => s.replace(/\{requirementDoc\}/g, reqDoc);
+
+  const resolved: VerifyRules = { ...rules };
+
+  if (resolved.requiredFiles) {
+    resolved.requiredFiles = resolved.requiredFiles.map(replace);
+  }
+  if (resolved.fileContentPattern) {
+    resolved.fileContentPattern = resolved.fileContentPattern.map((rule) => ({
+      ...rule,
+      path: replace(rule.path),
+    }));
+  }
+
+  return resolved;
+}
+
+/**
  * Runs the full verification pipeline for a stage:
  * 1. Parse verify.md
  * 2. Run structured rule verification (if new rule types present) or legacy keyword verification
@@ -529,19 +556,22 @@ export async function runVerification(
     };
   }
 
+  // Resolve {requirementDoc} placeholders in rule paths using session metadata
+  const resolvedRules = resolvePlaceholders(rules, meta);
+
   // Check if any structured (non-keyword) rules are defined
   const hasStructuredRules =
-    (rules.requiredFiles && rules.requiredFiles.length > 0) ||
-    (rules.requiredCommands && rules.requiredCommands.length > 0) ||
-    !!rules.requiredGit ||
-    (rules.fileContentPattern && rules.fileContentPattern.length > 0);
+    (resolvedRules.requiredFiles && resolvedRules.requiredFiles.length > 0) ||
+    (resolvedRules.requiredCommands && resolvedRules.requiredCommands.length > 0) ||
+    !!resolvedRules.requiredGit ||
+    (resolvedRules.fileContentPattern && resolvedRules.fileContentPattern.length > 0);
 
   if (hasStructuredRules) {
     // Use the structured rule engine
-    structuredResult = await executeStructuredRules(rules, config.projectRoot, assistantMessages, options?.execFn, logError);
+    structuredResult = await executeStructuredRules(resolvedRules, config.projectRoot, assistantMessages, options?.execFn, logError);
   } else {
     // Legacy path: keyword-only rules
-    const ruleResult = ruleVerify(rules, assistantMessages);
+    const ruleResult = ruleVerify(resolvedRules, assistantMessages);
     if (!ruleResult.passed) {
       structuredResult = {
         passed: false,
@@ -568,7 +598,7 @@ export async function runVerification(
   // Collect missing keyword info for backward compat
   const keywordFailures = structuredResult.failures.filter(f => f.ruleType === "keywords");
   const ruleMissing = keywordFailures.length > 0
-    ? rules.keywords.filter(kw => !assistantMessages.join("\n").includes(kw))
+    ? resolvedRules.keywords.filter(kw => !assistantMessages.join("\n").includes(kw))
     : [];
 
   return {
