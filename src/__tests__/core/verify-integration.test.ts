@@ -361,4 +361,61 @@ describe("verify-integration", () => {
     expect(lastUpdate.terminated).toBe(true);
     expect(lastUpdate.terminateReason).toBe("verify_failure_loop_overflow");
   });
+
+  // ── Phase 2: Template default config → 6 stages all generated ────────────
+
+  it("template default: 6 active stages with skillPath config all generate verify.md", async () => {
+    // Resolve template directory (src/template/ in dev/test)
+    const templateDir = path.resolve(__dirname, "..", "..", "template");
+
+    // Copy template skill files into .pi/skills/ in the temp directory
+    const templateSkillsDir = path.join(templateDir, "skills");
+    const piSkillsDir = path.join(TMP, ".pi", "skills");
+
+    for (const stageDir of ["design", "plan", "develop", "review", "fix"]) {
+      const srcDir = path.join(templateSkillsDir, stageDir);
+      const destDir = path.join(piSkillsDir, stageDir);
+      await fs.mkdir(destDir, { recursive: true });
+      const content = await fs.readFile(path.join(srcDir, "SKILL.md"), "utf-8");
+      await fs.writeFile(path.join(destDir, "SKILL.md"), content, "utf-8");
+    }
+
+    // Build config matching template pipeline_loop.json with skillPath
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "design", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: s === "clarify"
+                ? "design/SKILL.md"  // clarify shares design skill
+                : `${s}/SKILL.md`,
+              allowedTools: ["read", "bash", "write", "edit"],
+              allowedBashPrefixes: ["ls", "bun", "git"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify: ["clarify", "design", "plan"].includes(s)
+                ? { require: true }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const results = await generateVerifyFiles(config);
+    const generated = results.filter(r => r.status === "generated");
+    const skipped = results.filter(r => r.status === "skipped");
+
+    // All 6 active stages should generate verify.md (template skills have **必须** markers)
+    expect(generated.length).toBe(6);
+    expect(skipped.length).toBe(0);
+
+    // Verify no keyword-only items leaked through (phrase-bold filtering works)
+    for (const r of generated) {
+      expect(r.hardcodedCount).toBeGreaterThan(0);
+    }
+  });
 });
