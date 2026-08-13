@@ -134,7 +134,7 @@ describe("createPipelineStartCommand", () => {
     expect(result.error).toContain("verify.md missing");
     expect(result.missingStages).toContain("develop");
     expect(result.missingStages).toContain("review");
-    expect(result.suggestion).toContain("/pipeline_init 1");
+    expect(result.suggestion).toContain("/pipeline-init 1");
   });
 
   it("starts normally when all verify.md files exist", async () => {

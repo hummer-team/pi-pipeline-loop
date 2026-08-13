@@ -75,7 +75,7 @@ describe("registerCommand bridge", () => {
     const factory = createPipeline(makeTestConfig());
     await factory(pi);
 
-    // Three commands: pipeline-status, pipeline-start, pipeline_init
+    // Three commands: pipeline-status, pipeline-start, pipeline-init
     expect(registeredCommands.length).toBe(3);
 
     for (const reg of registeredCommands) {
@@ -90,7 +90,7 @@ describe("registerCommand bridge", () => {
     const names = registeredCommands.map((c) => c.name);
     expect(names).toContain("pipeline-status");
     expect(names).toContain("pipeline-start");
-    expect(names).toContain("pipeline_init");
+    expect(names).toContain("pipeline-init");
   });
 
   it("command handler is an async function accepting (args: string, ctx)", async () => {

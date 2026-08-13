@@ -1,7 +1,7 @@
 /**
  * @module verify-generator
  * Shared module for generating verify.md files from skill definitions.
- * Extracted from pipeline-init-verify.ts to be reusable by pipeline_init command.
+ * Extracted from pipeline-init-verify.ts to be reusable by pipeline-init command.
  */
 
 import fs from "node:fs/promises";

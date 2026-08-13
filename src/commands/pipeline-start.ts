@@ -83,7 +83,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           success: false,
           error: `verify.md missing for stages: [${missingStages.join(", ")}]`,
           missingStages,
-          suggestion: "Run /pipeline_init 1 to generate verify.md files",
+          suggestion: "Run /pipeline-init 1 to generate verify.md files",
         };
       }
 

@@ -1,6 +1,6 @@
 /**
  * @module pipeline-init
- * /pipeline_init [0|1] — initializes the .pi/ directory structure and generates verify.md files.
+ * /pipeline-init [0|1] — initializes the .pi/ directory structure and generates verify.md files.
  *
  * - `0` (dir): Creates .pi/ directory and copies template files from src/template/
  * - `1` (verify): Generates verify.md files from skill definitions
@@ -57,7 +57,7 @@ function countExistingFiles(templateFiles: string[], targetDir: string): number 
 }
 
 /**
- * Creates the `/pipeline_init` command.
+ * Creates the `/pipeline-init` command.
  *
  * @param config - Pipeline configuration
  * @returns Command object
@@ -66,7 +66,7 @@ export function createPipelineInitCommand(
   config: PipelineConfig,
 ): Command {
   return {
-    name: "pipeline_init",
+    name: "pipeline-init",
     description:
       "Initialize the .pi/ directory structure and generate verify.md files. " +
       "Use 0 for directory setup, 1 for verify generation, or no argument for both.",
@@ -101,7 +101,7 @@ export function createPipelineInitCommand(
           return await executeVerifyBranch(config, ctx);
         }
 
-        return { success: true, summary: "pipeline_init completed", content: "# pipeline_init — nothing to do" };
+        return { success: true, summary: "pipeline-init completed", content: "# pipeline-init — nothing to do" };
       } finally {
         ui.clearStage(ctx);
       }
@@ -122,7 +122,7 @@ async function executeDirBranch(
   // Check template directory exists
   if (!fs.existsSync(TEMPLATE_DIR)) {
     const errMsg = `Template directory not found: ${TEMPLATE_DIR}`;
-    await safeWriteAuditLog("pipeline_init_error", { error: errMsg }, "error");
+    await safeWriteAuditLog("pipeline-init_error", { error: errMsg }, "error");
     return { success: false, error: errMsg };
   }
 
@@ -138,7 +138,7 @@ async function executeDirBranch(
 
     if (hasUI) {
       const choice: string | undefined = await ctx.ui.select(
-        "pipeline_init has been run before. Please select:",
+        "pipeline-init has been run before. Please select:",
         [
           "1. 强制覆盖所有文件",
           "2. 跳过已存在文件",
@@ -149,7 +149,7 @@ async function executeDirBranch(
 
       // undefined = Escape / cancel
       if (!choice || choice === "4. 取消" || choice === "4") {
-        return { success: true, summary: "Cancelled by user", content: "# pipeline_init — cancelled by user" };
+        return { success: true, summary: "Cancelled by user", content: "# pipeline-init — cancelled by user" };
       }
 
       if (choice === "1. 强制覆盖所有文件" || choice === "1") {
@@ -242,7 +242,7 @@ async function copyTemplateFiles(
       }
     }
 
-    await safeWriteAuditLog("pipeline_init_done", {
+    await safeWriteAuditLog("pipeline-init_done", {
       files: String(copiedCount),
       skipped: String(skippedCount),
       target: targetDir,
@@ -250,7 +250,7 @@ async function copyTemplateFiles(
 
     // Build content string for bridge display
     const lines: string[] = [
-      "# pipeline_init — .pi/ directory setup",
+      "# pipeline-init — .pi/ directory setup",
       `- copied: ${copiedCount}`,
       `- skipped: ${skippedCount}`,
       `- target: ${CONFIG_DIR_NAME}/`,
@@ -275,7 +275,7 @@ async function copyTemplateFiles(
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await safeWriteAuditLog("pipeline_init_error", { error: errMsg }, "error");
+    await safeWriteAuditLog("pipeline-init_error", { error: errMsg }, "error");
     return { success: false, error: errMsg };
   }
 }
@@ -323,7 +323,7 @@ async function buildCallLLM(
     const { createModels } = await import("@earendil-works/pi-ai");
     const models = createModels();
 
-    // Lazy singleton — reuse within single pipeline_init invocation
+    // Lazy singleton — reuse within single pipeline-init invocation
     const callLLM = async (prompt: string): Promise<string> => {
       const authResult = await extCtx.modelRegistry.getApiKeyAndHeaders(model);
       const apiKey = authResult?.ok ? authResult.apiKey : undefined;
@@ -358,8 +358,8 @@ async function executeVerifyBranch(
   if (!fs.existsSync(skillsDir)) {
     return {
       success: true,
-      summary: `skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline_init 0 first`,
-      content: `# pipeline_init — verify.md generation\n- skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline_init 0 first`,
+      summary: `skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline-init 0 first`,
+      content: `# pipeline-init — verify.md generation\n- skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline-init 0 first`,
       results: [],
     };
   }
@@ -376,7 +376,7 @@ async function executeVerifyBranch(
 
   // Build content string for bridge display — per-stage annotation
   const lines: string[] = [
-    "# pipeline_init — verify.md generation",
+    "# pipeline-init — verify.md generation",
     `- generated: ${generated.length}`,
     `- skipped: ${skipped.length}`,
     `- errors: ${errored.length}`,
@@ -410,7 +410,7 @@ async function executeVerifyBranch(
   if (generated.length === 0) {
     const hasSkillNotFound = skipped.some(r => r.reason === "skill_not_found");
     if (hasSkillNotFound) {
-      lines.push(`- hint: some skill files not found under ${CONFIG_DIR_NAME}/skills/. Run /pipeline_init 0 first or check .pi/skills layout`);
+      lines.push(`- hint: some skill files not found under ${CONFIG_DIR_NAME}/skills/. Run /pipeline-init 0 first or check .pi/skills layout`);
     } else {
       lines.push("- hint: no **Must**/**必须** markers found in skills, add them then re-run");
     }
@@ -420,7 +420,7 @@ async function executeVerifyBranch(
   }
 
   // Summary audit — unified for sub="1" and sub="" paths
-  await safeWriteAuditLog("pipeline_init_verify", {
+  await safeWriteAuditLog("pipeline-init_verify", {
     generated: String(generated.length),
     skipped: String(skipped.length),
     errors: String(errored.length),
@@ -472,7 +472,7 @@ async function runVerifyWithAudit(
   try {
     const verify = await executeVerifyBranch(config, ctx);
     if (opts.audit) {
-      await safeWriteAuditLog("pipeline_init_verify_rerun", {
+      await safeWriteAuditLog("pipeline-init_verify_rerun", {
         stage: "option3",
         generated: String(verify.results?.filter(r => r.status === "generated").length ?? 0),
         skipped: String(verify.results?.filter(r => r.status === "skipped").length ?? 0),
@@ -483,7 +483,7 @@ async function runVerifyWithAudit(
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     if (opts.audit) {
-      await safeWriteAuditLog("pipeline_init_verify_rerun", { stage: "option3", error: errMsg }, "error");
+      await safeWriteAuditLog("pipeline-init_verify_rerun", { stage: "option3", error: errMsg }, "error");
     }
     return { success: false, error: errMsg };
   }

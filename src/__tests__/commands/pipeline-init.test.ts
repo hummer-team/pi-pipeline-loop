@@ -80,7 +80,7 @@ describe("createPipelineInitCommand", () => {
   it("creates a command with correct name and description", () => {
     const config = makeInitConfig();
     const cmd = createPipelineInitCommand(config);
-    expect(cmd.name).toBe("pipeline_init");
+    expect(cmd.name).toBe("pipeline-init");
     expect(cmd.description).toContain("Initialize");
   });
 
@@ -226,7 +226,7 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(result.content).toBeDefined();
-      expect(result.content).toContain("# pipeline_init — .pi/ directory setup");
+      expect(result.content).toContain("# pipeline-init — .pi/ directory setup");
       expect(result.content).toContain("copied:");
       expect(result.content).toContain(".pi/guide.md");
       expect(result.content).toContain("Copied files:");
@@ -674,7 +674,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.content).toContain("llm: unavailable");
     });
 
-    it("pipeline_init_verify audit is written on sub='1' with llmEnabled field", async () => {
+    it("pipeline-init_verify audit is written on sub='1' with llmEnabled field", async () => {
       const config = makeInitConfig();
       const auditDir = path.join(TMP, ".pi", "audit");
       await fs.mkdir(auditDir, { recursive: true });
@@ -698,16 +698,16 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
 
-      // Verify audit log contains pipeline_init_verify
+      // Verify audit log contains pipeline-init_verify
       const logFile = path.join(auditDir, getDateAuditFileName());
       const logContent = await fs.readFile(logFile, "utf-8");
-      expect(logContent).toContain("pipeline_init_verify");
+      expect(logContent).toContain("pipeline-init_verify");
       expect(logContent).toContain("llmEnabled=false");
 
       __resetAuditDirPath();
     });
 
-    it("pipeline_init_verify audit is written on sub='' (combined dir+verify) with llmEnabled field", async () => {
+    it("pipeline-init_verify audit is written on sub='' (combined dir+verify) with llmEnabled field", async () => {
       const config = makeInitConfig();
       const auditDir = path.join(TMP, ".pi", "audit");
       await fs.mkdir(auditDir, { recursive: true });
@@ -731,10 +731,10 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
 
-      // Verify audit log contains pipeline_init_verify
+      // Verify audit log contains pipeline-init_verify
       const logFile = path.join(auditDir, getDateAuditFileName());
       const logContent = await fs.readFile(logFile, "utf-8");
-      expect(logContent).toContain("pipeline_init_verify");
+      expect(logContent).toContain("pipeline-init_verify");
       expect(logContent).toContain("llmEnabled=false");
 
       __resetAuditDirPath();

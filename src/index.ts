@@ -49,7 +49,7 @@ import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader
  */
 function parseCommandArgs(commandName: string, args: string): Record<string, unknown> {
   switch (commandName) {
-    case "pipeline_init":
+    case "pipeline-init":
       return { sub: args.trim() };
     case "pipeline_start":
       return { file: args.trim() };

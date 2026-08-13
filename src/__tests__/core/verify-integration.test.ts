@@ -66,11 +66,11 @@ describe("verify-integration", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("verify.md missing");
     expect(result.missingStages).toContain("develop");
-    expect(result.suggestion).toContain("/pipeline_init 1");
+    expect(result.suggestion).toContain("/pipeline-init 1");
   });
 
-  // Scenario B: pipeline_init 1 → generate verify.md → start succeeds
-  it("Scenario B: pipeline_init 1 generates verify.md, then pipeline_start succeeds", async () => {
+  // Scenario B: pipeline-init 1 → generate verify.md → start succeeds
+  it("Scenario B: pipeline-init 1 generates verify.md, then pipeline_start succeeds", async () => {
     const config = makeConfigWithVerify(["develop"]);
 
     // Create a skill file with delivery markers
