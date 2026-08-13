@@ -440,7 +440,7 @@ describe("createPipelineInitCommand", () => {
       };
     }
 
-    it("output.pipelineStage: true — command-level no longer calls setStatus", async () => {
+    it("output.pipelineStage: true — command sets Pipeline → init then restores session stage", async () => {
       const config = makeInitConfig();
       // Override output to enable pipelineStage
       (config as any).output = { pipelineStage: true };
@@ -449,8 +449,13 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, ctx);
 
-      // Command-level stageEntry/clearStage removed — no status bar calls from the command
-      expect(statusCalls).toEqual([]);
+      // Command-level setStage("init") at start, restore "clarify" in finally (ctx has no session → fallback)
+      const texts = statusCalls.map(c => c.text);
+      expect(texts).toContain("init");
+      expect(texts).toContain("clarify");
+      // First call should be "init", last call should be "clarify"
+      expect(texts[0]).toBe("init");
+      expect(texts[texts.length - 1]).toBe("clarify");
     });
 
     it("output.pipelineStage: false — no setStatus or notify calls", async () => {
@@ -976,12 +981,12 @@ describe("createPipelineInitCommand", () => {
     });
   });
 
-  describe("Phase 3 — LLM extraction working indicator", () => {
+  describe("Phase 3 — LLM extraction progress animation (PipelineUI)", () => {
     afterEach(() => {
       mock.restore();
     });
 
-    it("pipelineStage:true + llmExtract:true → setWorkingMessage called per stage + restored", async () => {
+    it("pipelineStage:true + llmExtract:true → setStatus shows Pipeline → init progress + restore", async () => {
       const config = makeInitConfig();
       (config as any).llmExtract = true;
       (config as any).output = { pipelineStage: true };
@@ -997,6 +1002,7 @@ describe("createPipelineInitCommand", () => {
         );
       }
 
+      const statusCalls: { key: string; text: string | undefined }[] = [];
       const workingMessages: (string | undefined)[] = [];
       const modelCtx = {
         _ctx: {
@@ -1008,6 +1014,7 @@ describe("createPipelineInitCommand", () => {
           sessionManager: { getBranch: () => [], getEntries: () => [] },
         },
         ui: {
+          setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
           setWorkingMessage: (msg?: string) => { workingMessages.push(msg); },
           setWorkingIndicator: () => {},
         },
@@ -1025,16 +1032,18 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, modelCtx);
 
-      // Each stage with LLM extraction should trigger a working message
-      const stageMessages = workingMessages.filter(m => m !== undefined);
-      expect(stageMessages.length).toBe(2); // design + develop
-      expect(stageMessages[0]).toContain("Extracting items for");
-      expect(stageMessages[0]).toContain("(LLM)");
-      // Last call should be undefined (restore default)
-      expect(workingMessages[workingMessages.length - 1]).toBeUndefined();
+      // statusCalls should contain Pipeline → init (progressStart first frame)
+      const texts = statusCalls.map(c => c.text);
+      expect(texts.some(t => t?.includes("Pipeline → init"))).toBe(true);
+      // statusCalls should contain Pipeline → init base text (progressEnd)
+      expect(texts.some(t => t === "Pipeline → init")).toBe(true);
+      // statusCalls should contain Pipeline → clarify (execute finally restore)
+      expect(texts[texts.length - 1]).toBe("clarify");
+      // setWorkingMessage should NOT be called (replaced by PipelineUI progress)
+      expect(workingMessages).toEqual([]);
     });
 
-    it("pipelineStage:false → no working message calls", async () => {
+    it("pipelineStage:false → no status calls for progress", async () => {
       const config = makeInitConfig();
       (config as any).llmExtract = true;
       (config as any).output = { pipelineStage: false };
@@ -1047,7 +1056,7 @@ describe("createPipelineInitCommand", () => {
         "utf-8",
       );
 
-      const workingMessages: (string | undefined)[] = [];
+      const statusCalls: { key: string; text: string | undefined }[] = [];
       const modelCtx = {
         _ctx: {
           modelRegistry: {
@@ -1058,8 +1067,7 @@ describe("createPipelineInitCommand", () => {
           sessionManager: { getBranch: () => [], getEntries: () => [] },
         },
         ui: {
-          setWorkingMessage: (msg?: string) => { workingMessages.push(msg); },
-          setWorkingIndicator: () => {},
+          setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
         },
       };
 
@@ -1074,8 +1082,39 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, modelCtx);
 
-      // pipelineStage:false → no working messages
-      expect(workingMessages).toEqual([]);
+      // pipelineStage:false → no status calls (all PipelineUI methods are no-ops)
+      expect(statusCalls).toEqual([]);
+    });
+
+    it("llmExtract:false + pipelineStage:true → only setStage init + restore, no animation frames", async () => {
+      const config = makeInitConfig();
+      (config as any).output = { pipelineStage: true };
+      // llmExtract is NOT set (defaults to false)
+
+      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "- **Must** design-output.md\n",
+        "utf-8",
+      );
+
+      const statusCalls: { key: string; text: string | undefined }[] = [];
+      const ctx = {
+        ui: {
+          setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      await cmd.execute({ sub: "1" }, ctx);
+
+      // Only setStage("init") + restore setStage("clarify") — no progress animation
+      const texts = statusCalls.map(c => c.text);
+      expect(texts[0]).toBe("init");
+      expect(texts[texts.length - 1]).toBe("clarify");
+      // No progress frames (no "Pipeline → init" text, just raw "init")
+      expect(texts.filter(t => t?.includes("Pipeline → init"))).toEqual([]);
     });
   });
 });

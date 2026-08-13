@@ -16,6 +16,7 @@ import path from "node:path";
 import type { PipelineConfig, Command } from "../types";
 import { CONFIG_DIR_NAME } from "../constants";
 import { generateVerifyFiles } from "../core/verify-generator";
+import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
 
 /** Template directory — resolves to dist/template/ in production or src/template/ in dev */
@@ -70,32 +71,42 @@ export function createPipelineInitCommand(
       "Initialize the .pi/ directory structure and generate verify.md files. " +
       "Use 0 for directory setup, 1 for verify generation, or no argument for both.",
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
-      // Parse argument — supports string "0"/"1"/"" or object { sub: "0"|"1"|"" }
-      const sub = typeof args === "string"
-        ? (args as string).trim()
-        : String((args as Record<string, unknown>)?.sub ?? "").trim();
+      const ui = createPipelineUI(config);
+      try {
+        // Goal 1: Override status bar to "Pipeline → init" during command execution
+        ui.setStage(ctx, "init");
 
-      const runDir = sub === "0" || sub === "";
-      const runVerify = sub === "1" || sub === "";
+        // Parse argument — supports string "0"/"1"/"" or object { sub: "0"|"1"|"" }
+        const sub = typeof args === "string"
+          ? (args as string).trim()
+          : String((args as Record<string, unknown>)?.sub ?? "").trim();
 
-      // ── Dir branch ─────────────────────────────────────────────────────
-      if (runDir) {
-        const dirResult = await executeDirBranch(config, ctx);
-        if (!dirResult.success) return dirResult;
-        // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
-        const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
-        if (needVerify) {
-          return runVerifyWithAudit(config, dirResult, { audit: !!dirResult.verifyAfter }, ctx);
+        const runDir = sub === "0" || sub === "";
+        const runVerify = sub === "1" || sub === "";
+
+        // ── Dir branch ─────────────────────────────────────────────────────
+        if (runDir) {
+          const dirResult = await executeDirBranch(config, ctx);
+          if (!dirResult.success) return dirResult;
+          // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
+          const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
+          if (needVerify) {
+            return runVerifyWithAudit(config, dirResult, { audit: !!dirResult.verifyAfter }, ctx);
+          }
+          return dirResult;
         }
-        return dirResult;
-      }
 
-      // ── Verify branch ──────────────────────────────────────────────────
-      if (runVerify) {
-        return await executeVerifyBranch(config, ctx);
-      }
+        // ── Verify branch ──────────────────────────────────────────────────
+        if (runVerify) {
+          return await executeVerifyBranch(config, ctx);
+        }
 
-      return { success: true, summary: "pipeline-init completed", content: "# pipeline-init — nothing to do" };
+        return { success: true, summary: "pipeline-init completed", content: "# pipeline-init — nothing to do" };
+      } finally {
+        // Restore session-level status (方案 A): use meta.currentStage if available, fallback to "clarify"
+        const stage = ctx?.session?.getMeta?.()?.currentStage ?? "clarify";
+        ui.setStage(ctx, stage);
+      }
     },
   };
 }
@@ -411,21 +422,21 @@ async function executeVerifyBranch(
   const callLLM = await buildCallLLM(config, ctx);
   const llmEnabled = callLLM !== null;
 
-  // LLM extraction working indicator (gated by output.pipelineStage)
+  // LLM extraction progress animation (gated by output.pipelineStage)
+  const ui = createPipelineUI(config);
   const showWorking = config.output?.pipelineStage === true && llmEnabled;
-  const onLLMStageStart = showWorking
-    ? (stage: string) => { ctx?.ui?.setWorkingMessage?.(`Extracting items for ${stage} (LLM)...`); }
-    : undefined;
+  if (showWorking) ui.progressStart(ctx, "init");
 
-  const results = await generateVerifyFiles(config, {
-    callLLM: callLLM ?? undefined,
-    onLLMStageStart,
-  });
-
-  // Restore default working message after LLM extraction
-  if (showWorking) {
-    ctx?.ui?.setWorkingMessage?.();
-    ctx?.ui?.setWorkingIndicator?.();
+  let results: VerifyGenerateResult[];
+  try {
+    results = await generateVerifyFiles(config, {
+      callLLM: callLLM ?? undefined,
+      onLLMStageStart: showWorking
+        ? (stage: string) => { ui.progressUpdate(ctx, `(${stage})`); }
+        : undefined,
+    });
+  } finally {
+    if (showWorking) ui.progressEnd(ctx);
   }
 
   const generated = results.filter(r => r.status === "generated");
