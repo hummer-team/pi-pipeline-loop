@@ -166,10 +166,8 @@ async function executeDirBranch(
         return copyTemplateFiles(templateFiles, targetDir, "skip", config);
       }
       if (choice === "3. 重新执行 verify 生成" || choice === "3") {
-        const copyResult = await copyTemplateFiles(templateFiles, targetDir, "skip", config);
-        if (!copyResult.success) return copyResult;
-        // Flag outer execute() to run verify branch after returning; propagate content
-        return { success: true, verifyAfter: true, summary: "Files copied (skip mode)", content: copyResult.content };
+        // Flag outer execute() to run verify branch (regenerate verify.md from skill Must markers)
+        return { success: true, verifyAfter: true };
       }
 
       // Fallback: treat as skip
