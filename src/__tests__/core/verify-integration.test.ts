@@ -232,6 +232,85 @@ describe("verify-integration", () => {
   // ── Phase 4: LLM verification layer removed (Q6-B) ─────────────────────
   // LLM-related scenarios (H, I, J, L) removed — verification is now structured-only.
 
+  // ── Phase 117-2: LLM extraction restored with audit ─────────────────────
+
+  it("Scenario LLM-1: llmExtract=true + callLLM merges items into verify.md", async () => {
+    const config = makeConfigWithVerify(["develop"]);
+    (config as any).llmExtract = true;
+
+    // Create a skill file with one hardcoded marker
+    const skillDir = path.join(TMP, ".pi", "skills", "develop");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "- **Must** hardcoded-file.md\n",
+    );
+
+    // Mock callLLM returns one LLM item
+    const callLLM = async (_prompt: string): Promise<string> => {
+      return JSON.stringify([{ type: "file", target: "llm-extracted-file.md" }]);
+    };
+
+    const results = await generateVerifyFiles(config, { stage: "develop", callLLM });
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe("generated");
+    expect(results[0].hardcodedCount).toBe(1);
+    expect(results[0].llmCount).toBe(1);
+    expect(results[0].llmStatus).toBe("ok");
+
+    // Verify both items appear in verify.md
+    const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
+    const content = await fs.readFile(verifyPath, "utf-8");
+    expect(content).toContain("hardcoded-file.md");
+    expect(content).toContain("llm-extracted-file.md");
+  });
+
+  it("Scenario LLM-2: llmExtract=true + callLLM failure → fallback to hardcoded only", async () => {
+    const config = makeConfigWithVerify(["develop"]);
+    (config as any).llmExtract = true;
+
+    const skillDir = path.join(TMP, ".pi", "skills", "develop");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "- **Must** fallback-file.md\n",
+    );
+
+    const callLLM = async (): Promise<string> => {
+      throw new Error("LLM connection failed");
+    };
+
+    const results = await generateVerifyFiles(config, { stage: "develop", callLLM });
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe("generated");
+    expect(results[0].hardcodedCount).toBe(1);
+    expect(results[0].llmCount).toBe(0);
+    expect(results[0].llmStatus).toBe("fail");
+  });
+
+  it("Scenario LLM-3: llmExtract=false ignores callLLM even if provided", async () => {
+    const config = makeConfigWithVerify(["develop"]);
+    // llmExtract defaults to undefined/false
+
+    const skillDir = path.join(TMP, ".pi", "skills", "develop");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "- **Must** only-hardcoded.md\n",
+    );
+
+    let callCount = 0;
+    const callLLM = async (): Promise<string> => {
+      callCount++;
+      return JSON.stringify([{ type: "file", target: "should-not-appear.md" }]);
+    };
+
+    const results = await generateVerifyFiles(config, { stage: "develop", callLLM });
+    expect(callCount).toBe(0);
+    expect(results[0].llmStatus).toBe("off");
+    expect(results[0].llmCount).toBe(0);
+  });
+
   // Scenario K: verifyFailures + write/edit loop → loopCount increments → freeze
   it("Scenario K: verifyFailures + write/edit cycle → loopCount throttled increment → freeze", async () => {
     const config = makeConfigWithVerify(["develop"]);

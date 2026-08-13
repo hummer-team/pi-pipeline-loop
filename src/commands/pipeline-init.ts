@@ -91,14 +91,14 @@ export function createPipelineInitCommand(
           // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
           const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
           if (needVerify) {
-            return runVerifyWithAudit(config, dirResult, { audit: !!dirResult.verifyAfter });
+            return runVerifyWithAudit(config, dirResult, { audit: !!dirResult.verifyAfter }, ctx);
           }
           return dirResult;
         }
 
         // ── Verify branch ──────────────────────────────────────────────────
         if (runVerify) {
-          return await executeVerifyBranch(config);
+          return await executeVerifyBranch(config, ctx);
         }
 
         return { success: true, summary: "pipeline_init completed", content: "# pipeline_init — nothing to do" };
@@ -286,11 +286,72 @@ async function copyTemplateFiles(
 import type { VerifyGenerateResult } from "../core/verify-generator";
 
 /**
+ * Extracts text content from a pi-ai AssistantMessage.
+ * Filters TextContent blocks and joins their text.
+ */
+function extractAssistantText(msg: { content: Array<{ type: string; text?: string }> }): string {
+  return msg.content
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string)
+    .join("\n");
+}
+
+/**
+ * Constructs a callLLM function using pi SDK createModels + ctx.modelRegistry.
+ * Returns null if model is unavailable or llmExtract is disabled.
+ *
+ * @param config - Pipeline configuration
+ * @param ctx - Runtime context with modelRegistry access
+ * @returns callLLM function or null
+ */
+async function buildCallLLM(
+  config: PipelineConfig,
+  ctx?: any,
+): Promise<((prompt: string) => Promise<string>) | null> {
+  if (config.llmExtract !== true) return null;
+
+  try {
+    const extCtx = ctx?._ctx;
+    if (!extCtx?.modelRegistry) return null;
+
+    const available = extCtx.modelRegistry.getAvailable();
+    if (!available || available.length === 0) return null;
+
+    const model = available[0];
+
+    // Dynamic import to avoid hard compile-time dependency
+    const { createModels } = await import("@earendil-works/pi-ai");
+    const models = createModels();
+
+    // Lazy singleton — reuse within single pipeline_init invocation
+    const callLLM = async (prompt: string): Promise<string> => {
+      const authResult = await extCtx.modelRegistry.getApiKeyAndHeaders(model);
+      const apiKey = authResult?.ok ? authResult.apiKey : undefined;
+      const headers = authResult?.ok ? authResult.headers : undefined;
+
+      const msg = await models.complete(model, {
+        messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+        ...(apiKey ? { apiKey } : {}),
+        ...(headers ? { transformHeaders: (h: Record<string, string>) => ({ ...h, ...headers }) } : {}),
+      });
+
+      return extractAssistantText(msg);
+    };
+
+    return callLLM;
+  } catch {
+    // Model unavailable or import failed — degrade gracefully
+    return null;
+  }
+}
+
+/**
  * Verify branch: generates verify.md files from skill definitions.
  * Returns `content` with generated/skipped/errored counts and file lists.
  */
 async function executeVerifyBranch(
   config: PipelineConfig,
+  ctx?: any,
 ): Promise<{ success: boolean; summary?: string; content?: string; results?: VerifyGenerateResult[] }> {
   // Pre-check: .pi/skills must exist
   const skillsDir = path.join(config.projectRoot, CONFIG_DIR_NAME, "skills");
@@ -303,29 +364,41 @@ async function executeVerifyBranch(
     };
   }
 
-  const results = await generateVerifyFiles(config);
+  // Construct callLLM if llmExtract is enabled
+  const callLLM = await buildCallLLM(config, ctx);
+  const llmEnabled = callLLM !== null;
+
+  const results = await generateVerifyFiles(config, { callLLM: callLLM ?? undefined });
 
   const generated = results.filter(r => r.status === "generated");
   const skipped = results.filter(r => r.status === "skipped");
   const errored = results.filter(r => r.status === "error");
 
-  // Build content string for bridge display
+  // Build content string for bridge display — per-stage annotation
   const lines: string[] = [
     "# pipeline_init — verify.md generation",
     `- generated: ${generated.length}`,
     `- skipped: ${skipped.length}`,
     `- errors: ${errored.length}`,
+    `- llmExtract: ${llmEnabled ? "on" : "off"}`,
   ];
   if (generated.length > 0) {
     lines.push("Generated:");
     for (const r of generated) {
-      lines.push(`  - ${r.filePath ?? r.stage} (${r.stage})`);
+      const detail = formatStageDetail(r);
+      lines.push(`  - ${r.stage} (${detail})`);
     }
   }
   if (skipped.length > 0) {
     lines.push("Skipped:");
     for (const r of skipped) {
-      lines.push(`  - ${r.stage} (${r.error ?? "unknown reason"})`);
+      if (r.reason === "skill_not_found") {
+        lines.push(`  - ${r.stage} (skipped: skill_not_found)`);
+      } else if (r.reason === "no_items") {
+        lines.push(`  - ${r.stage} (skipped: no_items)`);
+      } else {
+        lines.push(`  - ${r.stage} (${r.error ?? "unknown reason"})`);
+      }
     }
   }
   if (errored.length > 0) {
@@ -342,6 +415,17 @@ async function executeVerifyBranch(
       lines.push("- hint: no **Must**/**必须** markers found in skills, add them then re-run");
     }
   }
+  if (config.llmExtract === true && !llmEnabled) {
+    lines.push("- llm: unavailable (no model configured)");
+  }
+
+  // Summary audit — unified for sub="1" and sub="" paths
+  await safeWriteAuditLog("pipeline_init_verify", {
+    generated: String(generated.length),
+    skipped: String(skipped.length),
+    errors: String(errored.length),
+    llmEnabled: String(llmEnabled),
+  });
 
   return {
     success: true,
@@ -349,6 +433,25 @@ async function executeVerifyBranch(
     content: lines.join("\n"),
     results,
   };
+}
+
+/**
+ * Formats per-stage detail for TUI display.
+ * Shows hardcoded/llm counts and status.
+ */
+function formatStageDetail(r: VerifyGenerateResult): string {
+  const parts: string[] = [];
+  if (r.hardcodedCount !== undefined) {
+    parts.push(`hardcoded: ${r.hardcodedCount}`);
+  }
+  if (r.llmStatus === "ok" && r.llmCount !== undefined) {
+    parts.push(`llm: ${r.llmCount}`);
+  } else if (r.llmStatus === "fail") {
+    parts.push("llm: fail, fallback");
+  } else if (r.llmStatus === "off") {
+    // LLM not enabled — don't show llm detail
+  }
+  return parts.length > 0 ? `${r.status}, ${parts.join(", ")}` : r.status;
 }
 
 /**
@@ -364,9 +467,10 @@ async function runVerifyWithAudit(
   config: PipelineConfig,
   dir: { success: boolean; summary?: string; content?: string },
   opts: { audit: boolean },
+  ctx?: any,
 ): Promise<{ success: boolean; summary?: string; content?: string; results?: VerifyGenerateResult[]; error?: string }> {
   try {
-    const verify = await executeVerifyBranch(config);
+    const verify = await executeVerifyBranch(config, ctx);
     if (opts.audit) {
       await safeWriteAuditLog("pipeline_init_verify_rerun", {
         stage: "option3",

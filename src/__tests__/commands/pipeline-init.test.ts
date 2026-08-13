@@ -626,4 +626,120 @@ describe("createPipelineInitCommand", () => {
       ).toBe(true);
     });
   });
+
+  describe("Phase 2 — llmExtract TUI/audit observability", () => {
+    it("llmExtract: off → TUI shows 'llmExtract: off' and no per-stage llm detail", async () => {
+      const config = makeInitConfig();
+
+      // Create .pi/skills with Must markers
+      for (const stage of ["design"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-output.md\n`,
+          "utf-8",
+        );
+      }
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("llmExtract: off");
+      // No llm detail in per-stage output when llmExtract is off
+      expect(result.content).not.toContain("llm:");
+    });
+
+    it("llmExtract: true + model unavailable → TUI shows 'llm: unavailable'", async () => {
+      const config = makeInitConfig();
+      (config as any).llmExtract = true;
+
+      // Create .pi/skills with Must markers
+      for (const stage of ["design"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-output.md\n`,
+          "utf-8",
+        );
+      }
+
+      const cmd = createPipelineInitCommand(config);
+      // No modelRegistry in ctx → model unavailable
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("llm: unavailable");
+    });
+
+    it("pipeline_init_verify audit is written on sub='1' with llmEnabled field", async () => {
+      const config = makeInitConfig();
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      (config as any).auditDir = ".pi/audit";
+
+      // Create .pi/skills with Must markers
+      const skillDir = path.join(TMP, ".pi", "skills", "design");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        `- **Must** design-output.md\n`,
+        "utf-8",
+      );
+
+      // Initialize audit log
+      const { initAuditLog, getDateAuditFileName, __resetAuditDirPath } = await import("../../utils/auditLog");
+      await initAuditLog(config);
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+
+      // Verify audit log contains pipeline_init_verify
+      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logContent = await fs.readFile(logFile, "utf-8");
+      expect(logContent).toContain("pipeline_init_verify");
+      expect(logContent).toContain("llmEnabled=false");
+
+      __resetAuditDirPath();
+    });
+
+    it("per-stage TUI shows hardcoded count when llmExtract is off", async () => {
+      const config = makeInitConfig();
+
+      // Create .pi/skills with Must markers
+      for (const stage of ["design", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-output.md\n`,
+          "utf-8",
+        );
+      }
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      // Per-stage should show hardcoded count
+      expect(result.content).toContain("hardcoded: 1");
+    });
+
+    it("skipped stages show reason in TUI (skill_not_found / no_items)", async () => {
+      const config = makeInitConfig();
+
+      // Create .pi/skills directory but no skill files → all skill_not_found
+      await fs.mkdir(path.join(TMP, ".pi", "skills"), { recursive: true });
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("skipped: skill_not_found");
+    });
+  });
 });
