@@ -5,6 +5,7 @@
  */
 
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath, DEFAULT_VERIFY_EXTRACT_PROMPT, CONFIG_DIR_NAME } from "../constants";
@@ -31,7 +32,7 @@ export type VerifyGenerateResult = {
   filePath?: string;
   error?: string;
   /** Discriminated skip reason — present only when status === "skipped" */
-  reason?: "skill_not_found" | "no_items";
+  reason?: "skill_not_found" | "no_items" | "exists";
   /** Number of items extracted via hardcoded marker matching */
   hardcodedCount?: number;
   /** Number of items extracted via LLM */
@@ -369,6 +370,29 @@ export async function generateVerifyFiles(
 
   for (const s of stages) {
     const stageConfig = config.stages[s];
+    const verifyPath = resolveStagePath(DEFAULT_VERIFY_FILE, s);
+    const absVerifyPath = path.join(config.projectRoot, verifyPath);
+
+    // Skip if verify.md already exists (template is authoritative)
+    if (fsSync.existsSync(absVerifyPath)) {
+      await safeWriteAuditLog("verify_md_generate", {
+        stage: s,
+        status: "skipped",
+        filePath: verifyPath,
+        reason: "exists",
+      });
+      results.push({
+        stage: s,
+        status: "skipped",
+        filePath: verifyPath,
+        reason: "exists",
+        hardcodedCount: 0,
+        llmCount: 0,
+        llmStatus: "off",
+      });
+      continue;
+    }
+
     // skillPath in config is relative to .pi/skills/ (consistent with prompt-injector)
     const resolvedSkillPath = path.join(CONFIG_DIR_NAME, "skills", stageConfig.skillPath || `${s}/SKILL.md`);
 
@@ -434,7 +458,12 @@ export async function generateVerifyFiles(
     // Step 3: Merge and deduplicate
     const allItems = mergeDeliveryItems(hardcodedItems, llmItems);
 
-    if (allItems.length === 0) {
+    // Drop command-type items for develop/fix (project tech stack is irrelevant)
+    const filteredItems = (s === "develop" || s === "fix")
+      ? allItems.filter(i => i.type !== "command")
+      : allItems;
+
+    if (filteredItems.length === 0) {
       await safeWriteAuditLog("verify_md_generate", {
         stage: s,
         status: "skipped",
@@ -458,9 +487,7 @@ export async function generateVerifyFiles(
     }
 
     // Step 4: Generate verify.md
-    const verifyContent = generateVerifyMdContent(allItems, s);
-    const verifyPath = resolveStagePath(DEFAULT_VERIFY_FILE, s);
-    const absVerifyPath = path.join(config.projectRoot, verifyPath);
+    const verifyContent = generateVerifyMdContent(filteredItems, s);
 
     try {
       await fs.mkdir(path.dirname(absVerifyPath), { recursive: true });

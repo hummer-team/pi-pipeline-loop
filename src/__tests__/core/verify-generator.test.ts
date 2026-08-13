@@ -471,6 +471,75 @@ describe("verify-generator", () => {
       expect(generated.length).toBeGreaterThanOrEqual(2);
     });
 
+    it("skips generation when verify.md already exists (template authoritative)", async () => {
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+
+      // Pre-create the verify.md file
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(path.join(verifyDir, "verify.md"), "---\nrules: {}\n---\nExisting template content\n", "utf-8");
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("skipped");
+      expect(results[0].reason).toBe("exists");
+
+      // Existing content should NOT be overwritten
+      const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(content).toContain("Existing template content");
+    });
+
+    it("drops command items for develop stage", async () => {
+      const skillContent = [
+        "- **Must** create docs/design/commit.md",
+        "- **Must** bun run build",
+      ].join("\n");
+      const config = await setupConfigWithSkill("develop", skillContent);
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("generated");
+
+      const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
+      const content = await fs.readFile(verifyPath, "utf-8");
+      expect(content).toContain("docs/design/commit.md");
+      expect(content).not.toContain("bun run build");
+    });
+
+    it("drops command items for fix stage", async () => {
+      const skillContent = [
+        "- **Must** create docs/design/commit.md",
+        "- **Must** npm test",
+      ].join("\n");
+      const config = await setupConfigWithSkill("fix", skillContent);
+      const results = await generateVerifyFiles(config, { stage: "fix" });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("generated");
+
+      const verifyPath = path.join(TMP, ".pi", "references", "fix_spec", "verify.md");
+      const content = await fs.readFile(verifyPath, "utf-8");
+      expect(content).toContain("docs/design/commit.md");
+      expect(content).not.toContain("npm test");
+    });
+
+    it("keeps command items for non-develop/fix stages", async () => {
+      const skillContent = [
+        "- **Must** create output.md",
+        "- **Must** bun run build",
+      ].join("\n");
+      const config = await setupConfigWithSkill("plan", skillContent);
+      const results = await generateVerifyFiles(config, { stage: "plan" });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("generated");
+
+      const verifyPath = path.join(TMP, ".pi", "references", "plan_spec", "verify.md");
+      const content = await fs.readFile(verifyPath, "utf-8");
+      expect(content).toContain("output.md");
+      expect(content).toContain("bun run build");
+    });
+
     it("writes verify_md_generate_error to audit when file write fails", async () => {
       const skillContent = "- **Must** output.md\n";
 
