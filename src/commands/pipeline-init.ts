@@ -87,20 +87,13 @@ export function createPipelineInitCommand(
         // ── Dir branch ─────────────────────────────────────────────────────
         if (runDir) {
           const dirResult = await executeDirBranch(config, ctx);
-          if (!dirResult.success) {
-            return dirResult;
+          if (!dirResult.success) return dirResult;
+          // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
+          const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
+          if (needVerify) {
+            return runVerifyWithAudit(config, dirResult, { audit: !!dirResult.verifyAfter });
           }
-          // If sub === "0", check if option 3 flagged verify-after
-          if (sub === "0") {
-            if (dirResult.verifyAfter) {
-              const verifyResult = await executeVerifyBranch(config);
-              return mergeInitResults(dirResult, verifyResult);
-            }
-            return dirResult;
-          }
-          // sub === "" → continue to verify branch after dir
-          const verifyResult = await executeVerifyBranch(config);
-          return mergeInitResults(dirResult, verifyResult);
+          return dirResult;
         }
 
         // ── Verify branch ──────────────────────────────────────────────────
@@ -348,6 +341,40 @@ async function executeVerifyBranch(
     content: lines.join("\n"),
     results,
   };
+}
+
+/**
+ * Runs verify generation with try/catch protection and optional audit logging.
+ *
+ * Used by the unified verify dispatch in execute() — both sub="0" (option 3 rerun)
+ * and sub="" (combined dir+verify) paths converge here.
+ *
+ * @param dir  - The dir branch result to merge with verify output
+ * @param opts.audit - Whether to record audit log (true only for option 3 rerun)
+ */
+async function runVerifyWithAudit(
+  config: PipelineConfig,
+  dir: { success: boolean; summary?: string; content?: string },
+  opts: { audit: boolean },
+): Promise<{ success: boolean; summary?: string; content?: string; results?: VerifyGenerateResult[]; error?: string }> {
+  try {
+    const verify = await executeVerifyBranch(config);
+    if (opts.audit) {
+      await safeWriteAuditLog("pipeline_init_verify_rerun", {
+        stage: "option3",
+        generated: String(verify.results?.filter(r => r.status === "generated").length ?? 0),
+        skipped: String(verify.results?.filter(r => r.status === "skipped").length ?? 0),
+        errors: String(verify.results?.filter(r => r.status === "error").length ?? 0),
+      });
+    }
+    return mergeInitResults(dir, verify);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (opts.audit) {
+      await safeWriteAuditLog("pipeline_init_verify_rerun", { stage: "option3", error: errMsg }, "error");
+    }
+    return { success: false, error: errMsg };
+  }
 }
 
 /**
