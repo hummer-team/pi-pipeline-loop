@@ -74,7 +74,7 @@ export function createPipelineInitCommand(
       const ui = createPipelineUI(config);
       try {
         // Goal 1: Override status bar to "Pipeline → init" during command execution
-        ui.setStage(ctx, "init");
+        ui.setStage(ctx, "Pipeline → init");
 
         // Parse argument — supports string "0"/"1"/"" or object { sub: "0"|"1"|"" }
         const sub = typeof args === "string"
@@ -105,7 +105,7 @@ export function createPipelineInitCommand(
       } finally {
         // Restore session-level status (方案 A): use meta.currentStage if available, fallback to "clarify"
         const stage = ctx?.session?.getMeta?.()?.currentStage ?? "clarify";
-        ui.setStage(ctx, stage);
+        ui.setStage(ctx, `Pipeline → ${stage}`);
       }
     },
   };

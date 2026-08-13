@@ -449,13 +449,13 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, ctx);
 
-      // Command-level setStage("init") at start, restore "clarify" in finally (ctx has no session → fallback)
+      // Command-level setStage("Pipeline → init") at start, restore "Pipeline → clarify" in finally (ctx has no session → fallback)
       const texts = statusCalls.map(c => c.text);
-      expect(texts).toContain("init");
-      expect(texts).toContain("clarify");
-      // First call should be "init", last call should be "clarify"
-      expect(texts[0]).toBe("init");
-      expect(texts[texts.length - 1]).toBe("clarify");
+      expect(texts).toContain("Pipeline → init");
+      expect(texts).toContain("Pipeline → clarify");
+      // First call should be "Pipeline → init", last call should be "Pipeline → clarify"
+      expect(texts[0]).toBe("Pipeline → init");
+      expect(texts[texts.length - 1]).toBe("Pipeline → clarify");
     });
 
     it("output.pipelineStage: false — no setStatus or notify calls", async () => {
@@ -1038,7 +1038,7 @@ describe("createPipelineInitCommand", () => {
       // statusCalls should contain Pipeline → init base text (progressEnd)
       expect(texts.some(t => t === "Pipeline → init")).toBe(true);
       // statusCalls should contain Pipeline → clarify (execute finally restore)
-      expect(texts[texts.length - 1]).toBe("clarify");
+      expect(texts[texts.length - 1]).toBe("Pipeline → clarify");
       // setWorkingMessage should NOT be called (replaced by PipelineUI progress)
       expect(workingMessages).toEqual([]);
     });
@@ -1109,12 +1109,12 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, ctx);
 
-      // Only setStage("init") + restore setStage("clarify") — no progress animation
+      // Only setStage("Pipeline → init") + restore setStage("Pipeline → clarify") — no progress animation
       const texts = statusCalls.map(c => c.text);
-      expect(texts[0]).toBe("init");
-      expect(texts[texts.length - 1]).toBe("clarify");
-      // No progress frames (no "Pipeline → init" text, just raw "init")
-      expect(texts.filter(t => t?.includes("Pipeline → init"))).toEqual([]);
+      expect(texts[0]).toBe("Pipeline → init");
+      expect(texts[texts.length - 1]).toBe("Pipeline → clarify");
+      // No progress frames with spinner characters — llmExtract is off so no animation
+      expect(texts.filter(t => t?.includes("⠋"))).toEqual([]);
     });
   });
 });
