@@ -148,4 +148,28 @@ describe("createPromptInjector", () => {
 
     expect(result.systemPrompt).not.toContain("PREVIOUS VERIFICATION FAILURES");
   });
+
+  it("loader default skillPath resolves correctly under real .pi/skills/ layout (no double prefix)", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-default-" + Date.now());
+    // Create skill file at the real .pi/skills/{stage}/SKILL.md location
+    const skillDir = join(TMP, ".pi", "skills", "clarify");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Clarify Skill\n\n- **Must** produce clarification doc");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    // Simulate the loader default: skillPath = "clarify/SKILL.md" (relative to .pi/skills/)
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "clarify/SKILL.md",
+    } as any;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = { session: { getMeta: () => meta } };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // Skill content should be injected successfully (no double prefix bug)
+    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt).toContain("Clarify Skill");
+  });
 });

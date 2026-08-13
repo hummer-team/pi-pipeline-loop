@@ -30,6 +30,8 @@ export type VerifyGenerateResult = {
   status: string;
   filePath?: string;
   error?: string;
+  /** Discriminated skip reason — present only when status === "skipped" */
+  reason?: "skill_not_found" | "no_items";
 };
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
@@ -265,6 +267,7 @@ export async function generateVerifyFiles(
         stage: s,
         status: "skipped",
         error: `Skill file not found: ${resolvedSkillPath}`,
+        reason: "skill_not_found",
       });
       continue;
     }
@@ -280,6 +283,7 @@ export async function generateVerifyFiles(
         stage: s,
         status: "skipped",
         error: "No delivery items found in skill file",
+        reason: "no_items",
       });
       continue;
     }

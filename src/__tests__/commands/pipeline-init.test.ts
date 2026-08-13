@@ -525,10 +525,49 @@ describe("createPipelineInitCommand", () => {
       ).toBe(true);
     });
 
-    it("zero-result hint: sub=1 with skills but no Must markers shows hint in content", async () => {
+    it("zero-result hint: sub=1 with all skills present but no Must markers shows marker hint", async () => {
       const config = makeInitConfig();
 
-      // Create .pi/skills with SKILL.md that has NO Must markers
+      // Create .pi/skills with SKILL.md that has NO Must markers — ALL stages
+      for (const stage of ["clarify", "design", "plan", "develop", "review", "fix"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `# ${stage} skill\nNo markers here.\n`,
+          "utf-8",
+        );
+      }
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("generated: 0");
+      // All skills read but no markers → marker hint
+      expect(result.content).toContain("no **Must**/**必须** markers");
+    });
+
+    it("zero-result hint: sub=1 with all skill_not_found shows path fix guidance instead of marker hint", async () => {
+      const config = makeInitConfig();
+
+      // Create .pi/skills directory (so early return doesn't trigger) but no skill files
+      await fs.mkdir(path.join(TMP, ".pi", "skills"), { recursive: true });
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("generated: 0");
+      // skill_not_found → path fix hint, NOT marker hint
+      expect(result.content).toContain("skill files not found");
+      expect(result.content).not.toContain("no **Must**/**必须** markers");
+    });
+
+    it("zero-result hint: sub=1 with mix of skill_not_found and no_items shows path fix hint", async () => {
+      const config = makeInitConfig();
+
+      // Only create skills for design and develop (no markers); rest will be skill_not_found
       for (const stage of ["design", "develop"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
@@ -544,7 +583,9 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(result.content).toContain("generated: 0");
-      expect(result.content).toContain("no **Must**/**必须** markers");
+      // Mix: skill_not_found present → path fix hint takes precedence
+      expect(result.content).toContain("skill files not found");
+      expect(result.content).not.toContain("no **Must**/**必须** markers");
     });
 
     it('sub="" with UI option 3 — unified dispatch runs verify once and succeeds', async () => {

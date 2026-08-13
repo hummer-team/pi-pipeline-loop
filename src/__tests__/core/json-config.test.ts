@@ -59,6 +59,18 @@ describe("loadJsonConfig", () => {
 });
 
 describe("resolvePipelineConfig", () => {
+  it("default skillPath is relative to .pi/skills/ (no double prefix)", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {}, develop: {} },
+    };
+    const result = resolvePipelineConfig(json);
+    // DEFAULT_SKILL_PATH is "{stage}/SKILL.md" — relative to .pi/skills/
+    expect(result.stages.clarify.skillPath).toBe("clarify/SKILL.md");
+    expect(result.stages.develop.skillPath).toBe("develop/SKILL.md");
+    // Must NOT contain the .pi/skills/ prefix (consumers prepend it)
+    expect(result.stages.clarify.skillPath).not.toContain(".pi/skills/");
+  });
+
   it("fills all 8 stages with defaults (even missing ones)", () => {
     const json: PipelineJsonConfig = {
       stages: { clarify: { nextStage: "design" } },

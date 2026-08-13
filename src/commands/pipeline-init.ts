@@ -335,7 +335,12 @@ async function executeVerifyBranch(
     }
   }
   if (generated.length === 0) {
-    lines.push("- hint: no **Must**/**必须** markers found in skills, add them then re-run");
+    const hasSkillNotFound = skipped.some(r => r.reason === "skill_not_found");
+    if (hasSkillNotFound) {
+      lines.push(`- hint: some skill files not found under ${CONFIG_DIR_NAME}/skills/. Run /pipeline_init 0 first or check .pi/skills layout`);
+    } else {
+      lines.push("- hint: no **Must**/**必须** markers found in skills, add them then re-run");
+    }
   }
 
   return {

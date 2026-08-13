@@ -224,6 +224,15 @@ describe("verify-generator", () => {
       const results = await generateVerifyFiles(config, { stage: "develop" });
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe("skipped");
+      expect(results[0].reason).toBe("skill_not_found");
+    });
+
+    it("skips stages with skill file but no Must markers", async () => {
+      const config = await setupConfigWithSkill("develop", "# Develop\nNo markers here.");
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("skipped");
+      expect(results[0].reason).toBe("no_items");
     });
 
     // NOTE: LLM extraction tests removed (Q6-B) — verification is now structured-only.

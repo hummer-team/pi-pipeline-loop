@@ -91,7 +91,7 @@ export interface StageConfig {
   /** Path to the agent definition file (relative to projectRoot) */
   agentFile: string;
 
-  /** Path to the skill directory or file for this stage (relative to projectRoot) */
+  /** Path to the skill directory or file for this stage (relative to `.pi/skills/` directory, e.g. `"{stage}/SKILL.md"`) */
   skillPath: string;
 
   /** List of tool names the agent is allowed to use in this stage */
@@ -305,7 +305,7 @@ export interface StageJsonConfig {
   /** Path to agent definition file (default .pi/agents/{stage}/{stage}.md) */
   agentFile?: string;
 
-  /** Path to skill directory/file (default .pi/skills/{stage}/SKILL.md) */
+  /** Path to skill directory/file relative to `.pi/skills/` (default `{stage}/SKILL.md`) */
   skillPath?: string;
 
   /** Allowed tool names (default depends on stage type) */

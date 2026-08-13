@@ -14,7 +14,7 @@ export const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"] as const;
 
 /** Default path templates for stage resources (use {stage} placeholder) */
 export const DEFAULT_AGENT_FILE = ".pi/agents/{stage}/{stage}.md";
-export const DEFAULT_SKILL_PATH = ".pi/skills/{stage}/SKILL.md";
+export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
 
 /** Default tool permissions by stage type */
