@@ -564,7 +564,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.content).not.toContain("no **Must**/**必须** markers");
     });
 
-    it("zero-result hint: sub=1 with mix of skill_not_found and no_items shows path fix hint", async () => {
+    it("zero-result hint: sub=1 with mix of skill_not_found and no_items shows both hints", async () => {
       const config = makeInitConfig();
 
       // Only create skills for design and develop (no markers); rest will be skill_not_found
@@ -583,9 +583,9 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(result.content).toContain("generated: 0");
-      // Mix: skill_not_found present → path fix hint takes precedence
+      // Mixed case: both hints shown
       expect(result.content).toContain("skill files not found");
-      expect(result.content).not.toContain("no **Must**/**必须** markers");
+      expect(result.content).toContain("no **Must**/**必须** markers");
     });
 
     it('sub="" with UI option 3 — unified dispatch runs verify once and succeeds', async () => {

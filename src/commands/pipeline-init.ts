@@ -409,10 +409,15 @@ async function executeVerifyBranch(
   }
   if (generated.length === 0) {
     const hasSkillNotFound = skipped.some(r => r.reason === "skill_not_found");
-    if (hasSkillNotFound) {
-      lines.push(`- hint: some skill files not found under ${CONFIG_DIR_NAME}/skills/. Run /pipeline-init 0 first or check .pi/skills layout`);
-    } else {
-      lines.push("- hint: no **Must**/**必须** markers found in skills, add them then re-run");
+    const hasNoItems = skipped.some(r => r.reason === "no_items");
+    if (hasSkillNotFound && hasNoItems) {
+      // Mixed: show both hints
+      lines.push(`- hint: skill files not found for some stages — check pipeline_loop.json skillPath and ${CONFIG_DIR_NAME}/skills/ layout`);
+      lines.push("- hint: other stages have skill files but no **Must**/**必须** markers — add `**必须**` marker lines to those SKILL.md files");
+    } else if (hasSkillNotFound) {
+      lines.push(`- hint: skill files not found under ${CONFIG_DIR_NAME}/skills/. Check pipeline_loop.json skillPath config and ${CONFIG_DIR_NAME}/skills/ layout`);
+    } else if (hasNoItems) {
+      lines.push("- hint: skill files found but no **Must**/**必须** markers — add `**必须**` marker lines to SKILL.md files, then re-run");
     }
   }
   if (config.llmExtract === true && !llmEnabled) {
