@@ -16,7 +16,6 @@ import path from "node:path";
 import type { PipelineConfig, Command } from "../types";
 import { CONFIG_DIR_NAME } from "../constants";
 import { generateVerifyFiles } from "../core/verify-generator";
-import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
 
 /** Template directory — resolves to dist/template/ in production or src/template/ in dev */
@@ -71,40 +70,32 @@ export function createPipelineInitCommand(
       "Initialize the .pi/ directory structure and generate verify.md files. " +
       "Use 0 for directory setup, 1 for verify generation, or no argument for both.",
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
-      // Stage-convention status bar lifecycle (gated by output.pipelineStage)
-      const ui = createPipelineUI(config);
-      ui.stageEntry(ctx, "init");
+      // Parse argument — supports string "0"/"1"/"" or object { sub: "0"|"1"|"" }
+      const sub = typeof args === "string"
+        ? (args as string).trim()
+        : String((args as Record<string, unknown>)?.sub ?? "").trim();
 
-      try {
-        // Parse argument — supports string "0"/"1"/"" or object { sub: "0"|"1"|"" }
-        const sub = typeof args === "string"
-          ? (args as string).trim()
-          : String((args as Record<string, unknown>)?.sub ?? "").trim();
+      const runDir = sub === "0" || sub === "";
+      const runVerify = sub === "1" || sub === "";
 
-        const runDir = sub === "0" || sub === "";
-        const runVerify = sub === "1" || sub === "";
-
-        // ── Dir branch ─────────────────────────────────────────────────────
-        if (runDir) {
-          const dirResult = await executeDirBranch(config, ctx);
-          if (!dirResult.success) return dirResult;
-          // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
-          const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
-          if (needVerify) {
-            return runVerifyWithAudit(config, dirResult, { audit: !!dirResult.verifyAfter }, ctx);
-          }
-          return dirResult;
+      // ── Dir branch ─────────────────────────────────────────────────────
+      if (runDir) {
+        const dirResult = await executeDirBranch(config, ctx);
+        if (!dirResult.success) return dirResult;
+        // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
+        const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
+        if (needVerify) {
+          return runVerifyWithAudit(config, dirResult, { audit: !!dirResult.verifyAfter }, ctx);
         }
-
-        // ── Verify branch ──────────────────────────────────────────────────
-        if (runVerify) {
-          return await executeVerifyBranch(config, ctx);
-        }
-
-        return { success: true, summary: "pipeline-init completed", content: "# pipeline-init — nothing to do" };
-      } finally {
-        ui.clearStage(ctx);
+        return dirResult;
       }
+
+      // ── Verify branch ──────────────────────────────────────────────────
+      if (runVerify) {
+        return await executeVerifyBranch(config, ctx);
+      }
+
+      return { success: true, summary: "pipeline-init completed", content: "# pipeline-init — nothing to do" };
     },
   };
 }

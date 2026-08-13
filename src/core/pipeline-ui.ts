@@ -53,7 +53,7 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
 
     clearStage(ctx: any): void {
       if (!enabled) return;
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, "");
+      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, undefined);
     },
 
     stageEntry(ctx: any, stage: string): void {

@@ -4,7 +4,6 @@ import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineInitCommand } from "../../commands/pipeline-init";
-import { STAGE_STATUS_KEY } from "../../core/pipeline-ui";
 import { makeTestConfig } from "../helpers";
 
 let TMP: string;
@@ -425,15 +424,15 @@ describe("createPipelineInitCommand", () => {
     });
   });
 
-  describe("Phase 2 — PipelineUI status bar lifecycle", () => {
+  describe("Phase 2 — PipelineUI status bar lifecycle (command-level removed)", () => {
     function makeUICtx() {
       const notifications: string[] = [];
-      const statusCalls: { key: string; text: string }[] = [];
+      const statusCalls: { key: string; text: string | undefined }[] = [];
       return {
         ctx: {
           ui: {
             notify: (msg: string) => { notifications.push(msg); },
-            setStatus: (key: string, text: string) => { statusCalls.push({ key, text }); },
+            setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
           },
         },
         notifications,
@@ -441,7 +440,7 @@ describe("createPipelineInitCommand", () => {
       };
     }
 
-    it("output.pipelineStage: true — setStatus receives 'Pipeline → init' then empty string", async () => {
+    it("output.pipelineStage: true — command-level no longer calls setStatus", async () => {
       const config = makeInitConfig();
       // Override output to enable pipelineStage
       (config as any).output = { pipelineStage: true };
@@ -450,10 +449,8 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, ctx);
 
-      // First call: stageEntry sets "Pipeline → init"
-      expect(statusCalls[0]).toEqual({ key: STAGE_STATUS_KEY, text: "Pipeline → init" });
-      // Last call: clearStage sets ""
-      expect(statusCalls[statusCalls.length - 1]).toEqual({ key: STAGE_STATUS_KEY, text: "" });
+      // Command-level stageEntry/clearStage removed — no status bar calls from the command
+      expect(statusCalls).toEqual([]);
     });
 
     it("output.pipelineStage: false — no setStatus or notify calls", async () => {

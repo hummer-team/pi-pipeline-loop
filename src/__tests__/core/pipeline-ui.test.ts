@@ -5,12 +5,12 @@ import type { PipelineConfig } from "../../types";
 
 function makeCtx() {
   const notifications: string[] = [];
-  const statusCalls: { key: string; text: string }[] = [];
+  const statusCalls: { key: string; text: string | undefined }[] = [];
   return {
     ctx: {
       ui: {
         notify: (msg: string) => { notifications.push(msg); },
-        setStatus: (key: string, text: string) => { statusCalls.push({ key, text }); },
+        setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
       },
     },
     notifications,
@@ -115,14 +115,14 @@ describe("createPipelineUI", () => {
       expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "working..." }]);
     });
 
-    it("clearStage clears status bar (empty string)", () => {
+    it("clearStage clears status bar (undefined)", () => {
       const config = makeTestConfig({ output: { pipelineStage: true } });
       const ui = createPipelineUI(config);
       const { ctx, statusCalls } = makeCtx();
 
       ui.clearStage(ctx);
 
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "" }]);
+      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: undefined }]);
     });
   });
 });
