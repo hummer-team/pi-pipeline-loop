@@ -65,26 +65,30 @@ export function extractBashFileTargets(command: string): BashTarget[] {
     const token = tokens[i];
 
     // Check for redirection operators (possibly attached to token)
-    for (const op of REDIRECT_OPS) {
-      const opIndex = token.indexOf(op);
-      if (opIndex !== -1) {
-        // Redirect found
-        const afterOp = token.slice(opIndex + op.length);
-        if (afterOp) {
-          // Target is attached: >file
-          targets.push({ kind: "redirect", target: stripQuotes(afterOp) });
-        } else if (i + 1 < tokens.length) {
-          // Target is next token: > file
-          targets.push({ kind: "redirect", target: stripQuotes(tokens[i + 1]) });
-          i++; // Skip next token
+    // Skip tokens that are fully quoted (they are literal arguments, not redirects)
+    if (!token.startsWith("'") && !token.startsWith('"')) {
+      for (const op of REDIRECT_OPS) {
+        const opIndex = token.indexOf(op);
+        if (opIndex !== -1) {
+          // Redirect found
+          const afterOp = token.slice(opIndex + op.length);
+          if (afterOp) {
+            // Target is attached: >file
+            targets.push({ kind: "redirect", target: stripQuotes(afterOp) });
+          } else if (i + 1 < tokens.length) {
+            // Target is next token: > file
+            targets.push({ kind: "redirect", target: stripQuotes(tokens[i + 1]) });
+            i++; // Skip next token
+          }
+          break; // Only process first redirect operator in this token
         }
-        break; // Only process first redirect operator in this token
       }
     }
 
     // Check for file-argument commands
     if (FILE_ARG_COMMANDS.has(token)) {
-      // Find the first non-flag argument
+      // Collect all non-flag arguments
+      const fileArgs: string[] = [];
       let j = i + 1;
       let foundDoubleDash = false;
       while (j < tokens.length) {
@@ -95,10 +99,20 @@ export function extractBashFileTargets(command: string): BashTarget[] {
           continue;
         }
         if (foundDoubleDash || !isFlag(arg)) {
-          targets.push({ kind: "file-arg", target: stripQuotes(arg) });
-          break;
+          fileArgs.push(stripQuotes(arg));
         }
         j++;
+      }
+
+      if (fileArgs.length > 0) {
+        // For mv/cp: check both source (first) and destination (last) arguments
+        if ((token === "mv" || token === "cp") && fileArgs.length >= 2) {
+          targets.push({ kind: "file-arg", target: fileArgs[0] });
+          targets.push({ kind: "file-arg", target: fileArgs[fileArgs.length - 1] });
+        } else {
+          // For rm/touch/tee: check first non-flag argument only
+          targets.push({ kind: "file-arg", target: fileArgs[0] });
+        }
       }
     }
   }

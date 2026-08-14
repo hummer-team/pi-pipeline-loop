@@ -307,6 +307,35 @@ describe("createToolGuard", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
+    it("blocks git add for user-configured protect.paths (Problem 1 fix)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-git-add-userpath-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { paths: ["dist/"] },
+      });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git add dist/bundle.js" } };
+
+      // Mock execFn that simulates git add --dry-run output
+      const mockExecFn: ExecFn = async (cmd, args, cwd) => {
+        if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "add 'dist/bundle.js'\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("'git add' would stage protected path");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
     it("allows git add for safe paths", async () => {
       const TMP = join(tmpdir(), "pi-tg-git-add-safe-" + Date.now());
       await mkdir(join(TMP, "src"), { recursive: true });
@@ -350,6 +379,34 @@ describe("createToolGuard", () => {
 
       await rm(TMP, { recursive: true, force: true });
     });
+
+    it("provides precise reason when dry-run fails with ignored hint (Problem 12 fix)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-git-add-ignored-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "dist\n");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git add dist/bundle.js" } };
+
+      // Mock execFn: dry-run fails with stderr hint about ignored files
+      const mockExecFn: ExecFn = async (cmd, args, cwd) => {
+        if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "", stderr: "The following paths are ignored:\ndist/bundle.js\n", code: 1 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("rejected by git");
+      expect((result as any).reason).toContain("ignored");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
   });
 
   describe("git commit protection", () => {
@@ -390,6 +447,64 @@ describe("createToolGuard", () => {
       ctx.toolCall = { name: "bash", arguments: { command: "git commit -a -m 'test'" } };
 
       // Mock execFn: cached diff is empty, unstaged diff has protected file
+      const mockExecFn: ExecFn = async (cmd, args, cwd) => {
+        if (cmd === "git" && args[0] === "diff" && args[1] === "--cached") {
+          return { stdout: "", stderr: "", code: 0 };
+        }
+        if (cmd === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return { stdout: "logs/app.log\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("'git commit -a' includes protected path");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("blocks git commit -am (combined flag) with unstaged protected path (Problem 2 fix)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-git-commit-am-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "logs\n");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git commit -am 'test msg'" } };
+
+      const mockExecFn: ExecFn = async (cmd, args, cwd) => {
+        if (cmd === "git" && args[0] === "diff" && args[1] === "--cached") {
+          return { stdout: "", stderr: "", code: 0 };
+        }
+        if (cmd === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return { stdout: "logs/app.log\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("'git commit -a' includes protected path");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("blocks git commit -A (uppercase) with unstaged protected path (Problem 2 fix)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-git-commit-A-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "logs\n");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git commit -A -m 'test'" } };
+
       const mockExecFn: ExecFn = async (cmd, args, cwd) => {
         if (cmd === "git" && args[0] === "diff" && args[1] === "--cached") {
           return { stdout: "", stderr: "", code: 0 };
@@ -499,6 +614,65 @@ describe("createToolGuard", () => {
       expect(meta.currentStage).toBe(initialStage);
       // Not terminated
       expect(meta.terminated).toBeUndefined();
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
+  describe("git channel config respect", () => {
+    it("respects protect.gitignore=false for git add (Problem 3 fix)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-git-no-gitignore-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "logs\n");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { gitignore: false },
+      });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git add logs/app.log" } };
+
+      // Mock execFn: dry-run shows gitignored file
+      const mockExecFn: ExecFn = async (cmd, args, cwd) => {
+        if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "add 'logs/app.log'\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      // When gitignore is disabled, gitignored paths should NOT be blocked for git
+      expect(result).toBeUndefined();
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("still blocks hardcoded paths when gitignore is disabled", async () => {
+      const TMP = join(tmpdir(), "pi-tg-git-hardcoded-nogi-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { gitignore: false },
+      });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git add AGENTS.md" } };
+
+      const mockExecFn: ExecFn = async (cmd, args, cwd) => {
+        if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "add 'AGENTS.md'\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
 
       await rm(TMP, { recursive: true, force: true });
     });

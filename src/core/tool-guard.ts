@@ -32,7 +32,7 @@ import {
   toProjectRelative,
   type ProtectState,
 } from "../utils/protect";
-import { loadGitignoreInfo, type GitignoreInfo } from "../utils/gitignore";
+import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 
@@ -77,6 +77,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
     return resolveProtectConfig(config, gitignore);
   }
 
+  // Build protection state for git operations (no allow, respects config)
+  // Fixes: merges config.protect.paths (Problem 1), respects gitignore:false (Problem 3),
+  // reuses resolveProtectConfig instead of duplicate implementation (Problem 14)
+  async function getProtectStateForGit(): Promise<ProtectState> {
+    const gitignore = await getGitignore();
+    const state = resolveProtectConfig(config, gitignore);
+    return { ...state, allow: [] }; // Allow does not exempt from git protection
+  }
+
   return {
     event: "tool_call",
     handler: async (ctx: any): Promise<unknown> => {
@@ -112,13 +121,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
         // 2b. Git command protection check
         if (GIT_ADD_PATTERN.test(command)) {
-          const blockResult = await checkGitAdd(command, config.projectRoot, execFn);
+          const gitState = await getProtectStateForGit();
+          const blockResult = await checkGitAdd(command, gitState, config.projectRoot, execFn);
           if (blockResult) {
             ui.notify(ctx, blockResult.reason);
             return blockResult;
           }
         } else if (GIT_COMMIT_PATTERN.test(command)) {
-          const blockResult = await checkGitCommit(command, config.projectRoot, execFn);
+          const gitState = await getProtectStateForGit();
+          const blockResult = await checkGitCommit(command, gitState, config.projectRoot, execFn);
           if (blockResult) {
             ui.notify(ctx, blockResult.reason);
             return blockResult;
@@ -160,8 +171,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       // 4. File write protection for write/edit tools
       if (toolName === "write" || toolName === "edit") {
         const filePath = (args.file_path || args.path) as string;
-        const normalizedPath = path.normalize(filePath);
-        const relPath = toProjectRelative(config.projectRoot, normalizedPath);
+        // Resolve relative paths against projectRoot to avoid cwd dependency (Problem 11)
+        const absPath = path.isAbsolute(filePath)
+          ? path.normalize(filePath)
+          : path.resolve(config.projectRoot, filePath);
+        const relPath = toProjectRelative(config.projectRoot, absPath);
 
         if (relPath) {
           const state = await getProtectState();
@@ -178,7 +192,6 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             // Allowed - proceed with hash recording
           } else if (state.gitignore) {
             // Check gitignore protection
-            const { isGitignored } = await import("../utils/gitignore");
             if (isGitignored(state.gitignore, relPath)) {
               const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
               ui.notify(ctx, reason);
@@ -202,12 +215,14 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
  * Uses `git add --dry-run` to preview what would be staged.
  *
  * @param command - The git add command
+ * @param state - Protection state (pre-built by caller)
  * @param projectRoot - Project root directory
  * @param execFn - Optional execution function
  * @returns Block result if protected paths would be staged, undefined otherwise
  */
 async function checkGitAdd(
   command: string,
+  state: ProtectState,
   projectRoot: string,
   execFn?: ExecFn
 ): Promise<{ block: true; reason: string } | undefined> {
@@ -228,18 +243,9 @@ async function checkGitAdd(
     const dryRunArgs = ["add", "--dry-run", ...addArgs.split(/\s+/).filter(Boolean)];
     const result = await execFn("git", dryRunArgs, projectRoot);
 
-    if (result.code !== 0) {
-      // Git command failed - fail closed
-      return {
-        block: true,
-        reason: `FORBIDDEN: 'git add --dry-run' failed (exit ${result.code}).`,
-      };
-    }
-
     // Parse output: "add 'path'" or "add path"
+    // Even on non-zero exit, try to extract paths for precise error messages
     const lines = result.stdout.split("\n");
-    const state = await getProtectStateForGit(projectRoot);
-
     for (const line of lines) {
       const match = line.match(/^add\s+['"]?([^'"]+)['"]?$/);
       if (match) {
@@ -252,8 +258,27 @@ async function checkGitAdd(
         }
       }
     }
-  } catch {
-    // Fail closed on any error
+
+    if (result.code !== 0) {
+      // Check stderr for hints about ignored files
+      const stderrLower = result.stderr.toLowerCase();
+      if (stderrLower.includes("ignored") || stderrLower.includes("did not match")) {
+        // Provide more precise feedback based on stderr
+        return {
+          block: true,
+          reason: `FORBIDDEN: 'git add' rejected by git (possibly includes ignored/protected paths): ${result.stderr.trim()}`,
+        };
+      }
+      // Generic fail-closed
+      return {
+        block: true,
+        reason: `FORBIDDEN: 'git add --dry-run' failed (exit ${result.code}).`,
+      };
+    }
+  } catch (err) {
+    // Fail closed on any error — log for diagnostics (Problem 7)
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[tool-guard] checkGitAdd error: command="${command}", projectRoot="${projectRoot}", error=${errMsg}`);
     return {
       block: true,
       reason: "FORBIDDEN: Cannot verify 'git add' safety (execution error).",
@@ -268,12 +293,14 @@ async function checkGitAdd(
  * Uses `git diff --cached --name-only` to see staged files.
  *
  * @param command - The git commit command
+ * @param state - Protection state (pre-built by caller)
  * @param projectRoot - Project root directory
  * @param execFn - Optional execution function
  * @returns Block result if protected paths would be committed, undefined otherwise
  */
 async function checkGitCommit(
   command: string,
+  state: ProtectState,
   projectRoot: string,
   execFn?: ExecFn
 ): Promise<{ block: true; reason: string } | undefined> {
@@ -295,7 +322,6 @@ async function checkGitCommit(
       };
     }
 
-    const state = await getProtectStateForGit(projectRoot);
     const stagedFiles = stagedResult.stdout.trim().split("\n").filter(Boolean);
 
     for (const file of stagedFiles) {
@@ -307,8 +333,9 @@ async function checkGitCommit(
       }
     }
 
-    // If -a or --all flag, also check unstaged changes
-    if (/\s-a\b|\s--all\b/.test(command)) {
+    // If -a, -A, --all flag (including combined flags like -am), also check unstaged changes
+    // Problem 2 fix: detect combined flags like -am, -aM, -A etc.
+    if (hasGitCommitAllFlag(command)) {
       const unstagedResult = await execFn("git", ["diff", "--name-only"], projectRoot);
       if (unstagedResult.code === 0) {
         const unstagedFiles = unstagedResult.stdout.trim().split("\n").filter(Boolean);
@@ -322,8 +349,10 @@ async function checkGitCommit(
         }
       }
     }
-  } catch {
-    // Fail closed on any error
+  } catch (err) {
+    // Fail closed on any error — log for diagnostics (Problem 7)
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[tool-guard] checkGitCommit error: command="${command}", projectRoot="${projectRoot}", error=${errMsg}`);
     return {
       block: true,
       reason: "FORBIDDEN: Cannot verify 'git commit' safety (execution error).",
@@ -334,16 +363,17 @@ async function checkGitCommit(
 }
 
 /**
- * Gets protection state for git operations (cached gitignore).
+ * Detects if a git commit command contains -a, -A, or --all flag.
+ * Handles combined flags like -am, -aM, -amc etc.
  */
-async function getProtectStateForGit(projectRoot: string): Promise<ProtectState> {
-  const gitignore = await loadGitignoreInfo(projectRoot);
-  // For git protection, we don't use allow list
-  return {
-    hardcoded: [...(await import("../constants")).PROTECTED_PATHS],
-    allow: [], // Allow does not exempt from git protection
-    gitignore,
-  };
+function hasGitCommitAllFlag(command: string): boolean {
+  const tokens = command.split(/\s+/);
+  for (const token of tokens) {
+    if (token === "--all") return true;
+    // Match combined single-char flags containing 'a' or 'A' (e.g., -am, -aM, -A)
+    if (/^-[a-zA-Z]*[aA][a-zA-Z]*$/.test(token)) return true;
+  }
+  return false;
 }
 
 // Re-exported from the centralized auditLog module for backward compatibility.

@@ -78,6 +78,43 @@ describe("loadGitignoreInfo", () => {
     expect(isGitignored(result!, "other/temp.tmp")).toBe(false);
   });
 
+  it("handles nested .gitignore with anchored pattern (Problem 4 fix)", async () => {
+    // Root .gitignore
+    await fs.writeFile(path.join(TMP, ".gitignore"), "build/\n");
+    // Create sub directory with anchored pattern in its .gitignore
+    await fs.mkdir(path.join(TMP, "sub"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "sub/.gitignore"), "/cache/\n");
+
+    const result = await loadGitignoreInfo(TMP);
+    expect(result).not.toBeNull();
+
+    // Anchored pattern /cache/ in sub/.gitignore should match sub/cache/
+    // (NOT produce "sub//cache/" which would fail matching)
+    expect(isGitignored(result!, "sub/cache/x.txt")).toBe(true);
+    expect(isGitignored(result!, "sub/cache/deep/file.txt")).toBe(true);
+
+    // But should NOT match cache/ at root level
+    expect(isGitignored(result!, "cache/x.txt")).toBe(false);
+  });
+
+  it("handles nested .gitignore with anchored negation pattern (Problem 4 fix)", async () => {
+    await fs.writeFile(path.join(TMP, ".gitignore"), "build/\n");
+    await fs.mkdir(path.join(TMP, "sub"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "sub/.gitignore"), "*.log\n!/tmp/\n");
+
+    const result = await loadGitignoreInfo(TMP);
+    expect(result).not.toBeNull();
+
+    // *.log in sub/ applies to sub/**/*.log
+    expect(isGitignored(result!, "sub/error.log")).toBe(true);
+    expect(isGitignored(result!, "error.log")).toBe(false);
+
+    // !/tmp/ negation in sub/ should un-ignore sub/tmp/
+    // First, *.log ignores sub/tmp/test.log, then !/tmp/ un-ignores sub/tmp/
+    // But since tmp/ is un-ignored, files inside it are not ignored
+    expect(isGitignored(result!, "sub/tmp/keep.txt")).toBe(false);
+  });
+
   it("caches results for same projectRoot", async () => {
     await fs.writeFile(path.join(TMP, ".gitignore"), "docs\n");
 

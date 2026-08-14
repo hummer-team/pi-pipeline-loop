@@ -76,9 +76,16 @@ function collectGitignoreFiles(
         }
 
         // Add prefix to make root-relative
-        const prefixedPattern = prefix
-          ? prefix + pattern
-          : pattern;
+        // For nested gitignore files, strip leading "/" from anchored patterns
+        // to avoid double slashes (e.g., "sub/" + "/cache/" → "sub/cache/")
+        let prefixedPattern: string;
+        if (prefix) {
+          const stripped = pattern.startsWith("/") ? pattern.slice(1) : pattern;
+          prefixedPattern = prefix + stripped;
+        } else {
+          // Root-level patterns keep their original form (including leading /)
+          prefixedPattern = pattern;
+        }
 
         const finalPattern = isNegation ? "!" + prefixedPattern : prefixedPattern;
         ig.add(finalPattern);

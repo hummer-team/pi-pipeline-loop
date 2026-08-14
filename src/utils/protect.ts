@@ -56,7 +56,11 @@ export function normalizeAllow(entries: string[]): string[] {
   return entries.map((entry) => {
     // If entry already ends with /, keep as-is
     if (entry.endsWith("/")) return entry;
-    // If entry has a file extension, treat as file (exact match)
+    // Entries containing "/" are directory paths — always add trailing /
+    // This fixes dotted directories like "docs/design.v2" being misclassified
+    // as files due to path.extname() returning ".v2"
+    if (entry.includes("/")) return entry + "/";
+    // Root-level entries with a file extension are treated as files (e.g., AGENTS.md)
     if (path.extname(entry)) return entry;
     // Otherwise, treat as directory and add trailing /
     return entry + "/";
@@ -181,8 +185,9 @@ export function toProjectRelative(
 ): string | null {
   const normalized = path.normalize(absPath);
   const rel = path.relative(projectRoot, normalized);
-  // If relative path starts with .., it's outside the project
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+  // If relative path is outside the project (starts with ../ or equals ..)
+  // Use exact check to avoid false positive on paths like "..foo" inside project
+  if (rel === ".." || rel.startsWith("../") || path.isAbsolute(rel)) {
     return null;
   }
   return rel;

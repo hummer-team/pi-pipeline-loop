@@ -52,12 +52,14 @@ describe("extractBashFileTargets", () => {
 
     it("extracts mv target (first file arg)", () => {
       const targets = extractBashFileTargets("mv src/file.ts dest/");
-      expect(targets).toEqual([{ kind: "file-arg", target: "src/file.ts" }]);
+      expect(targets).toContainEqual({ kind: "file-arg", target: "src/file.ts" });
+      expect(targets).toContainEqual({ kind: "file-arg", target: "dest/" });
     });
 
     it("extracts cp target", () => {
       const targets = extractBashFileTargets("cp src/file.ts backup/");
-      expect(targets).toEqual([{ kind: "file-arg", target: "src/file.ts" }]);
+      expect(targets).toContainEqual({ kind: "file-arg", target: "src/file.ts" });
+      expect(targets).toContainEqual({ kind: "file-arg", target: "backup/" });
     });
 
     it("extracts touch target", () => {
@@ -103,6 +105,23 @@ describe("extractBashFileTargets", () => {
       const targets = extractBashFileTargets("cat file.txt");
       expect(targets).toEqual([]);
     });
+
+    it("does not extract redirect from double-quoted argument (Problem 6 fix)", () => {
+      // "a > b" is a quoted argument — the > is literal, not a redirect
+      const targets = extractBashFileTargets('echo "a > b"');
+      expect(targets).toEqual([]);
+    });
+
+    it("does not extract redirect from single-quoted argument (Problem 6 fix)", () => {
+      const targets = extractBashFileTargets("echo 'a > b'");
+      expect(targets).toEqual([]);
+    });
+
+    it("does not extract redirect targeting protected path inside quotes (Problem 6 fix)", () => {
+      // Even if quoted content looks like a protected path, it should not be extracted
+      const targets = extractBashFileTargets('echo "x > AGENTS.md"');
+      expect(targets).toEqual([]);
+    });
   });
 
   describe("complex cases", () => {
@@ -121,6 +140,24 @@ describe("extractBashFileTargets", () => {
     it("handles rm with multiple flags before file", () => {
       const targets = extractBashFileTargets("rm -r -f -v docs/");
       expect(targets).toEqual([{ kind: "file-arg", target: "docs/" }]);
+    });
+
+    it("extracts both source and destination for mv (Problem 8 fix)", () => {
+      const targets = extractBashFileTargets("mv src/x AGENTS.md");
+      expect(targets).toContainEqual({ kind: "file-arg", target: "src/x" });
+      expect(targets).toContainEqual({ kind: "file-arg", target: "AGENTS.md" });
+    });
+
+    it("extracts both source and destination for cp (Problem 8 fix)", () => {
+      const targets = extractBashFileTargets("cp src/x docs/y.md");
+      expect(targets).toContainEqual({ kind: "file-arg", target: "src/x" });
+      expect(targets).toContainEqual({ kind: "file-arg", target: "docs/y.md" });
+    });
+
+    it("extracts only source for rm (not destination-like)", () => {
+      // rm only takes one target conceptually
+      const targets = extractBashFileTargets("rm src/file.txt");
+      expect(targets).toEqual([{ kind: "file-arg", target: "src/file.txt" }]);
     });
   });
 });

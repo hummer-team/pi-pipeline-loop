@@ -58,6 +58,17 @@ describe("normalizeAllow", () => {
     expect(normalizeAllow(["README.md"])).toEqual(["README.md"]);
     expect(normalizeAllow(["package.json"])).toEqual(["package.json"]);
   });
+
+  it("treats dotted directory paths as directories (Problem 5 fix)", () => {
+    // "docs/design.v2" contains "/" so it's a directory path, not a file
+    expect(normalizeAllow(["docs/design.v2"])).toEqual(["docs/design.v2/"]);
+    expect(normalizeAllow(["src/template.v2"])).toEqual(["src/template.v2/"]);
+  });
+
+  it("treats root-level dotted entries as files", () => {
+    // Root-level "v1.0" has no "/" and has extension → treated as file
+    expect(normalizeAllow(["v1.0"])).toEqual(["v1.0"]);
+  });
 });
 
 describe("isPathAllowed", () => {
@@ -199,5 +210,16 @@ describe("toProjectRelative", () => {
   it("handles path normalization", () => {
     const result = toProjectRelative("/project", "/project/src/../src/index.ts");
     expect(result).toBe("src/index.ts");
+  });
+
+  it("does not misidentify ..foo as outside project (Problem 10 fix)", () => {
+    // A path named "..foo" inside the project should NOT be treated as outside
+    const result = toProjectRelative("/project", "/project/..foo");
+    expect(result).toBe("..foo");
+  });
+
+  it("returns null for parent directory reference", () => {
+    const result = toProjectRelative("/project", "/project/../other");
+    expect(result).toBeNull();
   });
 });
