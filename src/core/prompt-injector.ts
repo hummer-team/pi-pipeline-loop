@@ -11,6 +11,7 @@ import path from "node:path";
 import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import { PROTECTED_PATHS } from "../constants";
+import { loadGitignoreInfo } from "../utils/gitignore";
 
 /**
  * Builds Part 1: Context Reference.
@@ -116,13 +117,56 @@ async function buildStageSkill(
  * Builds Part 4: Loop Status.
  * Only included for "develop" and "fix" stages.
  * Shows current step, loop attempts, constraints, and protected paths.
+ * Dynamically includes allow list and gitignore patterns.
  *
+ * @param config - Pipeline configuration
  * @param meta - Current session metadata
  * @returns Prompt section string, or null if not a loop stage
  */
-function buildLoopStatus(meta: SessionMeta): string | null {
+async function buildLoopStatus(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<string | null> {
   if (meta.currentStage !== "develop" && meta.currentStage !== "fix") {
     return null;
+  }
+
+  // Build protection information
+  const allowList = config.protect?.allow ?? [];
+  const userPaths = config.protect?.paths ?? [];
+  const allHardcoded = [...PROTECTED_PATHS, ...userPaths];
+
+  // Load gitignore patterns if enabled
+  let gitignorePatterns: string[] = [];
+  if (config.protect?.gitignore !== false) {
+    const gitignoreInfo = await loadGitignoreInfo(config.projectRoot);
+    if (gitignoreInfo) {
+      gitignorePatterns = gitignoreInfo.patterns;
+    }
+  }
+
+  // Build the scope line with dynamic protection info
+  const scopeParts: string[] = [];
+
+  // List allow exceptions first (if any)
+  if (allowList.length > 0) {
+    scopeParts.push(`Allowed (editable): ${allowList.join(", ")}`);
+  }
+
+  // List protected paths
+  const protectedItems: string[] = [...allHardcoded];
+  // Limit gitignore patterns to first 20 to avoid prompt bloat
+  const maxPatterns = 20;
+  if (gitignorePatterns.length > 0) {
+    const displayPatterns = gitignorePatterns.slice(0, maxPatterns);
+    protectedItems.push(...displayPatterns);
+    if (gitignorePatterns.length > maxPatterns) {
+      scopeParts.push(`Protected: ${protectedItems.join(", ")} (+${gitignorePatterns.length - maxPatterns} more gitignore patterns)`);
+    } else {
+      scopeParts.push(`Protected: ${protectedItems.join(", ")}`);
+    }
+  } else {
+    scopeParts.push(`Protected: ${protectedItems.join(", ")}`);
   }
 
   return (
@@ -131,7 +175,7 @@ function buildLoopStatus(meta: SessionMeta): string | null {
     `- Loop Attempts: ${meta.loopCount + 1} / ${meta.maxLoops}\n` +
     `- Constraint: You MUST run tests after changes. If tests fail, this counts as an attempt.\n` +
     `- Limit: After ${meta.maxLoops} failed attempts, the pipeline will freeze.\n` +
-    `- Scope: ONLY modify source code. DO NOT touch ${PROTECTED_PATHS.join(", ")}.`
+    `- ${scopeParts.join("\n- ")}`
   );
 }
 
@@ -227,7 +271,7 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const part1 = buildContextReference(meta);
       const part2 = await buildDomainSkill(stageConfig, meta);
       const part3 = await buildStageSkill(config, stageConfig, meta);
-      const part4 = buildLoopStatus(meta);
+      const part4 = await buildLoopStatus(config, meta);
       const part5 = buildPipelineStatus(meta);
       const part6 = buildVerifyFailurePrompt(meta);
       const part7 = buildVerifyToolGuidance(stageConfig);

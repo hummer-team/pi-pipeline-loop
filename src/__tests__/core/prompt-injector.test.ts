@@ -1,11 +1,16 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { resetGitignoreCache } from "../../utils/gitignore";
 
 describe("createPromptInjector", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+  });
+
   it("creates a hook with event 'before_agent_start'", () => {
     const hook = createPromptInjector(makeTestConfig());
     expect(hook.event).toBe("before_agent_start");
@@ -188,5 +193,92 @@ describe("createPromptInjector", () => {
     expect(result.systemPrompt).toContain("VERIFICATION MODE: TOOL");
     expect(result.systemPrompt).toContain("本阶段验证模式为 TOOL");
     expect(result.systemPrompt).toContain("stage_advance");
+  });
+
+  describe("dynamic protection paths in loop status", () => {
+    it("includes allow list and gitignore patterns in develop stage", async () => {
+      const TMP = join(tmpdir(), "pi-pi-protect-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+      await mkdir(join(TMP, "src/template"), { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "docs\n/src/template/\n");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { allow: ["src/template/"] },
+      });
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should contain LOOP ENGINEERING STATUS
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      // Should list allow first
+      expect(result.systemPrompt).toContain("Allowed (editable): src/template/");
+      // Should list protected paths
+      expect(result.systemPrompt).toContain("Protected:");
+      // Should include hardcoded paths
+      expect(result.systemPrompt).toContain(".pi/");
+      expect(result.systemPrompt).toContain("AGENTS.md");
+      // Should include gitignore patterns
+      expect(result.systemPrompt).toContain("docs");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("shows only hardcoded paths when no gitignore exists", async () => {
+      const TMP = join(tmpdir(), "pi-pi-no-gitignore-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt).toContain("Protected:");
+      expect(result.systemPrompt).toContain(".pi/");
+      expect(result.systemPrompt).toContain("AGENTS.md");
+      // Should not contain allow line (no allow configured)
+      expect(result.systemPrompt).not.toContain("Allowed (editable):");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("fix stage also shows protection paths", async () => {
+      const TMP = join(tmpdir(), "pi-pi-fix-protect-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "fix" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt).toContain("Protected:");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("non-loop stages do not show loop status", async () => {
+      const TMP = join(tmpdir(), "pi-pi-clarify-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).not.toContain("LOOP ENGINEERING STATUS");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
   });
 });
