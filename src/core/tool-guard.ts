@@ -2,27 +2,81 @@
  * @module tool-guard
  * Factory for the `tool_call` hook.
  * Enforces tool permissions, bash command prefix restrictions,
- * file write protection, and pipeline freeze state.
+ * file write protection (hardcoded + gitignore), and pipeline freeze state.
+ *
+ * Protection layers:
+ * 1. Hardcoded paths (.pi/, AGENTS.md, .git/) - always protected
+ * 2. Dynamic gitignore protection - parsed from .gitignore files
+ * 3. Allow list - exempts from gitignore for edit only (not git add/commit)
+ *
+ * Interception channels:
+ * - write/edit: hardcoded + allow + gitignore
+ * - bash file modification (redirect, rm, mv, cp, touch, tee): same as write/edit
+ * - git add: hardcoded + gitignore (allow does NOT exempt)
+ * - git commit: hardcoded + gitignore (allow does NOT exempt)
+ *
+ * Side effects (R4Q2): Protection blocks only return { block, reason } and
+ * optionally notify via TUI. They do NOT update meta, freeze pipeline, or
+ * increment loop counts.
  */
 
 import path from "node:path";
-import type { PipelineConfig, Hook, SessionMeta } from "../types";
-import { PROTECTED_PATHS } from "../constants";
+import type { PipelineConfig, Hook, SessionMeta, ExecFn } from "../types";
 import { getFileHash } from "../utils/hash";
+import {
+  resolveProtectConfig,
+  isHardcodedProtected,
+  isPathAllowed,
+  isPathProtectedForModify,
+  isPathProtectedForGit,
+  toProjectRelative,
+  type ProtectState,
+} from "../utils/protect";
+import { loadGitignoreInfo, type GitignoreInfo } from "../utils/gitignore";
+import { extractBashFileTargets } from "../utils/bash-parse";
+import { createPipelineUI } from "./pipeline-ui";
+
+/** Dependencies for tool-guard (execFn for git dry-run) */
+export interface ToolGuardDeps {
+  execFn?: ExecFn;
+}
+
+/** Regex patterns for git command detection */
+const GIT_ADD_PATTERN = /^\s*git\s+add\b/;
+const GIT_COMMIT_PATTERN = /^\s*git\s+commit\b/;
 
 /**
  * Creates the `tool_call` hook that intercepts and validates tool calls.
  *
- * Performs four levels of enforcement:
- * 1. Tool permission — only tools listed in StageConfig.allowedTools
- * 2. Bash prefix — only commands matching allowedBashPrefixes
- * 3. Freeze state — blocks all tools when pipeline is "awaiting_human"
- * 4. File write protection — blocks writes to protected paths
- *
  * @param config - The pipeline configuration
+ * @param deps - Optional dependencies (execFn for git operations)
  * @returns A Hook object for the "tool_call" event
  */
-export function createToolGuard(config: PipelineConfig): Hook {
+export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): Hook {
+  const ui = createPipelineUI(config);
+  const execFn = deps?.execFn;
+
+  // Cache for gitignore info
+  let gitignoreCache: GitignoreInfo | null | undefined = undefined;
+
+  // Lazy-load gitignore info
+  async function getGitignore(): Promise<GitignoreInfo | null> {
+    if (gitignoreCache === undefined) {
+      if (config.protect?.gitignore === false) {
+        gitignoreCache = null;
+      } else {
+        gitignoreCache = await loadGitignoreInfo(config.projectRoot);
+      }
+    }
+    return gitignoreCache;
+  }
+
+  // Build protection state
+  async function getProtectState(): Promise<ProtectState> {
+    const gitignore = await getGitignore();
+    return resolveProtectConfig(config, gitignore);
+  }
+
   return {
     event: "tool_call",
     handler: async (ctx: any): Promise<unknown> => {
@@ -55,6 +109,37 @@ export function createToolGuard(config: PipelineConfig): Hook {
             blockedCommand: command,
           };
         }
+
+        // 2b. Git command protection check
+        if (GIT_ADD_PATTERN.test(command)) {
+          const blockResult = await checkGitAdd(command, config.projectRoot, execFn);
+          if (blockResult) {
+            ui.notify(ctx, blockResult.reason);
+            return blockResult;
+          }
+        } else if (GIT_COMMIT_PATTERN.test(command)) {
+          const blockResult = await checkGitCommit(command, config.projectRoot, execFn);
+          if (blockResult) {
+            ui.notify(ctx, blockResult.reason);
+            return blockResult;
+          }
+        } else {
+          // 2c. Bash file modification protection check
+          const state = await getProtectState();
+          const targets = extractBashFileTargets(command);
+          for (const t of targets) {
+            // Resolve target path relative to projectRoot
+            const absTarget = path.isAbsolute(t.target)
+              ? t.target
+              : path.join(config.projectRoot, t.target);
+            const relPath = toProjectRelative(config.projectRoot, absTarget);
+            if (relPath && isPathProtectedForModify(relPath, state)) {
+              const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
+          }
+        }
       }
 
       // 3. Termination / freeze state check
@@ -72,25 +157,34 @@ export function createToolGuard(config: PipelineConfig): Hook {
         };
       }
 
-      // 4. File write protection for protected paths
+      // 4. File write protection for write/edit tools
       if (toolName === "write" || toolName === "edit") {
         const filePath = (args.file_path || args.path) as string;
         const normalizedPath = path.normalize(filePath);
-        const pathComponents = normalizedPath.split(path.sep);
+        const relPath = toProjectRelative(config.projectRoot, normalizedPath);
 
-        const isProtected = PROTECTED_PATHS.some((p) => {
-          const normalizedP = path.normalize(p).replace(/\/+$/, "");
-          // Check if the protected path appears as a component of the file path.
-          // This avoids false positives like .pipelines/ matching .pi/,
-          // .gitignore matching .git/, or .github/ matching .git/.
-          return pathComponents.includes(normalizedP);
-        });
+        if (relPath) {
+          const state = await getProtectState();
 
-        if (isProtected) {
-          return {
-            block: true,
-            reason: `FORBIDDEN: Cannot modify protected path '${filePath}' during Loop.`,
-          };
+          // Check hardcoded protection (allow cannot exempt)
+          if (isHardcodedProtected(relPath, state.hardcoded)) {
+            const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+            ui.notify(ctx, reason);
+            return { block: true, reason };
+          }
+
+          // Check allow exemption (only for gitignore protection)
+          if (isPathAllowed(relPath, state.allow)) {
+            // Allowed - proceed with hash recording
+          } else if (state.gitignore) {
+            // Check gitignore protection
+            const { isGitignored } = await import("../utils/gitignore");
+            if (isGitignored(state.gitignore, relPath)) {
+              const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
+          }
         }
 
         // Record oldHash for diff archiving in loop-breaker
@@ -100,6 +194,155 @@ export function createToolGuard(config: PipelineConfig): Hook {
 
       return undefined;
     },
+  };
+}
+
+/**
+ * Checks if a git add command would stage protected paths.
+ * Uses `git add --dry-run` to preview what would be staged.
+ *
+ * @param command - The git add command
+ * @param projectRoot - Project root directory
+ * @param execFn - Optional execution function
+ * @returns Block result if protected paths would be staged, undefined otherwise
+ */
+async function checkGitAdd(
+  command: string,
+  projectRoot: string,
+  execFn?: ExecFn
+): Promise<{ block: true; reason: string } | undefined> {
+  // Fail-closed: if no execFn, block for safety
+  if (!execFn) {
+    return {
+      block: true,
+      reason: "FORBIDDEN: Cannot verify 'git add' safety (execFn not available).",
+    };
+  }
+
+  try {
+    // Extract args from the original command (after "git add")
+    const argsMatch = command.match(/^\s*git\s+add\s+(.*)$/);
+    const addArgs = argsMatch ? argsMatch[1].trim() : "";
+
+    // Run dry-run to see what would be added
+    const dryRunArgs = ["add", "--dry-run", ...addArgs.split(/\s+/).filter(Boolean)];
+    const result = await execFn("git", dryRunArgs, projectRoot);
+
+    if (result.code !== 0) {
+      // Git command failed - fail closed
+      return {
+        block: true,
+        reason: `FORBIDDEN: 'git add --dry-run' failed (exit ${result.code}).`,
+      };
+    }
+
+    // Parse output: "add 'path'" or "add path"
+    const lines = result.stdout.split("\n");
+    const state = await getProtectStateForGit(projectRoot);
+
+    for (const line of lines) {
+      const match = line.match(/^add\s+['"]?([^'"]+)['"]?$/);
+      if (match) {
+        const stagedPath = match[1];
+        if (isPathProtectedForGit(stagedPath, state)) {
+          return {
+            block: true,
+            reason: `FORBIDDEN: 'git add' would stage protected path '${stagedPath}'.`,
+          };
+        }
+      }
+    }
+  } catch {
+    // Fail closed on any error
+    return {
+      block: true,
+      reason: "FORBIDDEN: Cannot verify 'git add' safety (execution error).",
+    };
+  }
+
+  return undefined;
+}
+
+/**
+ * Checks if a git commit command would include protected paths.
+ * Uses `git diff --cached --name-only` to see staged files.
+ *
+ * @param command - The git commit command
+ * @param projectRoot - Project root directory
+ * @param execFn - Optional execution function
+ * @returns Block result if protected paths would be committed, undefined otherwise
+ */
+async function checkGitCommit(
+  command: string,
+  projectRoot: string,
+  execFn?: ExecFn
+): Promise<{ block: true; reason: string } | undefined> {
+  // Fail-closed: if no execFn, block for safety
+  if (!execFn) {
+    return {
+      block: true,
+      reason: "FORBIDDEN: Cannot verify 'git commit' safety (execFn not available).",
+    };
+  }
+
+  try {
+    // Check staged files
+    const stagedResult = await execFn("git", ["diff", "--cached", "--name-only"], projectRoot);
+    if (stagedResult.code !== 0) {
+      return {
+        block: true,
+        reason: `FORBIDDEN: 'git diff --cached' failed (exit ${stagedResult.code}).`,
+      };
+    }
+
+    const state = await getProtectStateForGit(projectRoot);
+    const stagedFiles = stagedResult.stdout.trim().split("\n").filter(Boolean);
+
+    for (const file of stagedFiles) {
+      if (isPathProtectedForGit(file, state)) {
+        return {
+          block: true,
+          reason: `FORBIDDEN: 'git commit' includes protected path '${file}'.`,
+        };
+      }
+    }
+
+    // If -a or --all flag, also check unstaged changes
+    if (/\s-a\b|\s--all\b/.test(command)) {
+      const unstagedResult = await execFn("git", ["diff", "--name-only"], projectRoot);
+      if (unstagedResult.code === 0) {
+        const unstagedFiles = unstagedResult.stdout.trim().split("\n").filter(Boolean);
+        for (const file of unstagedFiles) {
+          if (isPathProtectedForGit(file, state)) {
+            return {
+              block: true,
+              reason: `FORBIDDEN: 'git commit -a' includes protected path '${file}'.`,
+            };
+          }
+        }
+      }
+    }
+  } catch {
+    // Fail closed on any error
+    return {
+      block: true,
+      reason: "FORBIDDEN: Cannot verify 'git commit' safety (execution error).",
+    };
+  }
+
+  return undefined;
+}
+
+/**
+ * Gets protection state for git operations (cached gitignore).
+ */
+async function getProtectStateForGit(projectRoot: string): Promise<ProtectState> {
+  const gitignore = await loadGitignoreInfo(projectRoot);
+  // For git protection, we don't use allow list
+  return {
+    hardcoded: [...(await import("../constants")).PROTECTED_PATHS],
+    allow: [], // Allow does not exempt from git protection
+    gitignore,
   };
 }
 

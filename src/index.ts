@@ -106,7 +106,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     const hooks = [
       createSessionStarter(config),
       createPromptInjector(config),
-      createToolGuard(config),
+      createToolGuard(config, { execFn }),
       createLoopBreaker(config),
       createAgentSettled(config, { execFn }),
       createSessionShutdown(config),
