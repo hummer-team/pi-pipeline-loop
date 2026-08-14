@@ -137,11 +137,13 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         verifyFailures: [],
       });
 
-      if (resolvedTarget === null) {
+      if (resolvedTarget === null || resolvedTarget === "completed") {
         ui.clearStage(ctx);
         return {
           success: true,
-          message: "Pipeline completed — no further stages",
+          message: resolvedTarget === null
+            ? "Pipeline completed — no further stages"
+            : `Advanced from "${currentStage}" to "completed"`,
           currentStage: "completed",
         };
       }

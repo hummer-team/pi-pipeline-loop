@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { createStageAdvancer } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, STAGE_LIST } from "../helpers";
+import { writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 /** Minimal mock ctx with session + _ctx for extractAssistantMessages */
 function createCtx(meta: any) {
@@ -81,6 +84,23 @@ describe("createStageAdvancer", () => {
     expect((result as any).success).toBe(true);
     expect((result as any).message).toContain("Pipeline completed");
     expect(meta.currentStage).toBe("completed");
+  });
+
+  it("clearStage when resolvedTarget is explicitly 'completed'", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "review" });
+    // review → completed (explicit, not null)
+    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as any };
+
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+    const result = await tool.execute({}, ctx as any);
+
+    expect((result as any).success).toBe(true);
+    expect(meta.currentStage).toBe("completed");
+    // clearStage path: message contains "Advanced" (not "Pipeline completed — no further stages")
+    expect((result as any).message).toContain("Advanced");
+    expect((result as any).message).toContain("completed");
   });
 
   it("resets loopCount and currentStepIndex on advance", async () => {
@@ -228,6 +248,45 @@ describe("createStageAdvancer", () => {
       expect((result as any).success).toBe(false);
       expect((result as any).message).toContain("Verification failed");
       expect(meta.currentStage).toBe("clarify"); // did NOT advance
+    });
+
+    it("verify.require=true and verification passes → advance to nextStage", async () => {
+      // Set up a temp directory with a verify.md containing a passing rule
+      const TMP = join(tmpdir(), "pi-advancer-verify-pass-" + Date.now());
+      const verifyDir = join(TMP, ".pi", "references", "clarify_spec");
+      await mkdir(verifyDir, { recursive: true });
+      // Create a target file that the requiredFiles rule will check
+      const targetFile = join(TMP, "docs", "design", "test_plan.md");
+      await mkdir(join(TMP, "docs", "design"), { recursive: true });
+      await writeFile(targetFile, "# Plan");
+      // Create verify.md with a requiredFiles rule that will pass
+      await writeFile(
+        join(verifyDir, "verify.md"),
+        `---
+rules:
+  requiredFiles:
+    - "docs/design/test_plan.md"
+---
+Verify plan document exists.`,
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        nextStage: "plan",
+        verify: { require: true, mode: "tool", verifyFile: ".pi/references/clarify_spec/verify.md" },
+      };
+      const meta = makeTestMeta({ currentStage: "clarify" });
+
+      const ctx = createCtx(meta);
+      const tool = createStageAdvancer(config);
+      const result = await tool.execute({}, ctx as any);
+
+      // Verification passes → should advance
+      expect((result as any).success).toBe(true);
+      expect((result as any).currentStage).toBe("plan");
+      expect(meta.currentStage).toBe("plan");
+      expect(meta.previousStage).toBe("clarify");
     });
 
     it("accepts deps with execFn", () => {

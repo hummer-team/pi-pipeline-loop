@@ -172,4 +172,21 @@ describe("createPromptInjector", () => {
     expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES");
     expect(result.systemPrompt).toContain("Clarify Skill");
   });
+
+  it("includes Part7 verification tool guidance when verify.mode is 'tool'", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      verify: { require: true, mode: "tool" },
+    };
+    const ctx = { session: { getMeta: () => meta } };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    expect(result.systemPrompt).toContain("VERIFICATION MODE: TOOL");
+    expect(result.systemPrompt).toContain("本阶段验证模式为 TOOL");
+    expect(result.systemPrompt).toContain("stage_advance");
+  });
 });
