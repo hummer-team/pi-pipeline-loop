@@ -9,6 +9,7 @@ import type {
   PipelineConfig,
   PipelineJsonConfig,
   PipelineStage,
+  ProtectConfig,
   StageConfig,
   StageJsonConfig,
 } from "../types";
@@ -79,6 +80,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
       typeof json.maxLoopCycles === "number" ? json.maxLoopCycles : undefined,
     output: parseOutputConfig(json.output),
     llmExtract: typeof json.llmExtract === "boolean" ? json.llmExtract : undefined,
+    protect: parseProtectConfig(json.protect),
   };
 }
 
@@ -118,6 +120,56 @@ function parseOutputConfig(raw: unknown): { pipelineStage?: boolean } | undefine
     return undefined;
   }
   return { pipelineStage: typeof pipelineStage === "boolean" ? pipelineStage : undefined };
+}
+
+/**
+ * Parses the protect configuration from JSON config.
+ * Validates gitignore (boolean), paths (string[]), and allow (string[]).
+ * Invalid types are logged as warnings and ignored.
+ */
+function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    console.warn(`[pi-pipeline] Invalid protect config — expected object, got ${typeof raw}`);
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const result: ProtectConfig = {};
+
+  // Parse gitignore (boolean)
+  if (obj.gitignore !== undefined) {
+    if (typeof obj.gitignore === "boolean") {
+      result.gitignore = obj.gitignore;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.gitignore "${String(obj.gitignore)}" — expected boolean, ignoring`,
+      );
+    }
+  }
+
+  // Parse paths (string[])
+  if (obj.paths !== undefined) {
+    if (Array.isArray(obj.paths) && obj.paths.every((p) => typeof p === "string")) {
+      result.paths = obj.paths as string[];
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.paths — expected string[], ignoring`,
+      );
+    }
+  }
+
+  // Parse allow (string[])
+  if (obj.allow !== undefined) {
+    if (Array.isArray(obj.allow) && obj.allow.every((a) => typeof a === "string")) {
+      result.allow = obj.allow as string[];
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.allow — expected string[], ignoring`,
+      );
+    }
+  }
+
+  return result;
 }
 
 export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig {
@@ -235,7 +287,12 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     domainDir: json.domainDir || ".pi/domains",
     maxLoops: json.maxLoops ?? 3,
     maxLoopCycles: json.maxLoopCycles ?? 3,
-    output: { pipelineStage: json.output?.pipelineStage ?? false },
+    output: { pipelineStage: json.output?.pipelineStage ?? true },
     llmExtract: json.llmExtract ?? false,
+    protect: {
+      gitignore: json.protect?.gitignore ?? true,
+      paths: json.protect?.paths ?? [],
+      allow: json.protect?.allow ?? [],
+    },
   };
 }

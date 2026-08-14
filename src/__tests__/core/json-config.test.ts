@@ -275,10 +275,10 @@ describe("output.pipelineStage config", () => {
     expect(result.output!.pipelineStage).toBe(true);
   });
 
-  it("resolvePipelineConfig defaults output.pipelineStage to false", () => {
+  it("resolvePipelineConfig defaults output.pipelineStage to true", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };
     const result = resolvePipelineConfig(json);
-    expect(result.output!.pipelineStage).toBe(false);
+    expect(result.output!.pipelineStage).toBe(true);
   });
 
   it("resolvePipelineConfig passes through output.pipelineStage: true", () => {
@@ -290,16 +290,16 @@ describe("output.pipelineStage config", () => {
     expect(result.output!.pipelineStage).toBe(true);
   });
 
-  it("resolvePipelineConfig falls back to false for invalid output.pipelineStage", async () => {
+  it("resolvePipelineConfig falls back to true for invalid output.pipelineStage", async () => {
     await writeJson({
       stages: { clarify: {} },
       output: { pipelineStage: "yes" },
     });
     // loadJsonConfig should warn + ignore the invalid value
     const loaded = loadJsonConfig(jsonPath);
-    // resolvePipelineConfig should default to false
+    // resolvePipelineConfig should default to true
     const result = resolvePipelineConfig(loaded);
-    expect(result.output!.pipelineStage).toBe(false);
+    expect(result.output!.pipelineStage).toBe(true);
   });
 });
 
@@ -335,5 +335,94 @@ describe("llmExtract config", () => {
     });
     const result = loadJsonConfig(jsonPath);
     expect(result.llmExtract).toBeUndefined();
+  });
+});
+
+describe("protect config", () => {
+  it("loadJsonConfig parses protect with all three fields", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: {
+        gitignore: false,
+        paths: ["dist/", "build/"],
+        allow: ["docs/", "src/template/"],
+      },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect).toBeDefined();
+    expect(result.protect!.gitignore).toBe(false);
+    expect(result.protect!.paths).toEqual(["dist/", "build/"]);
+    expect(result.protect!.allow).toEqual(["docs/", "src/template/"]);
+  });
+
+  it("resolvePipelineConfig defaults protect to { gitignore: true, paths: [], allow: [] }", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.protect).toBeDefined();
+    expect(result.protect!.gitignore).toBe(true);
+    expect(result.protect!.paths).toEqual([]);
+    expect(result.protect!.allow).toEqual([]);
+  });
+
+  it("resolvePipelineConfig preserves user-specified protect values", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      protect: {
+        gitignore: false,
+        paths: ["custom/"],
+        allow: ["allowed/"],
+      },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.protect!.gitignore).toBe(false);
+    expect(result.protect!.paths).toEqual(["custom/"]);
+    expect(result.protect!.allow).toEqual(["allowed/"]);
+  });
+
+  it("resolvePipelineConfig merges partial protect with defaults", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      protect: { paths: ["dist/"] },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.protect!.gitignore).toBe(true); // default
+    expect(result.protect!.paths).toEqual(["dist/"]);
+    expect(result.protect!.allow).toEqual([]); // default
+  });
+
+  it("loadJsonConfig ignores non-boolean protect.gitignore", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { gitignore: "yes" },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.gitignore).toBeUndefined();
+  });
+
+  it("loadJsonConfig ignores non-string[] protect.paths", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { paths: "not-an-array" },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.paths).toBeUndefined();
+  });
+
+  it("loadJsonConfig ignores non-string[] protect.allow", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { allow: [123, 456] },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.allow).toBeUndefined();
+  });
+
+  it("loadJsonConfig ignores non-object protect", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: "invalid",
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect).toBeUndefined();
   });
 });

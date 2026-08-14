@@ -246,6 +246,39 @@ export interface SessionMeta {
   lastVerifyResult?: VerifyResultSnapshot;
 }
 
+// ─── Protect Configuration ───────────────────────────────────────────────────
+
+/**
+ * File protection configuration for the pipeline plugin.
+ * Controls which files are protected from modification and which can be exempted.
+ *
+ * Three-layer protection model:
+ * 1. Hardcoded paths (`.pi/`, `AGENTS.md`, `.git/`) — always protected, cannot be exempted
+ * 2. Dynamic gitignore protection — parsed from project `.gitignore` files
+ * 3. Allow list — exempts specific paths from gitignore protection (edit only, git add/commit still blocked)
+ */
+export interface ProtectConfig {
+  /**
+   * Whether to parse `.gitignore` files for dynamic protection (default: true).
+   * When enabled, files matching gitignore patterns are protected from modification.
+   */
+  gitignore?: boolean;
+
+  /**
+   * Additional hardcoded protected paths (merged with built-in `.pi/`, `AGENTS.md`, `.git/`).
+   * These paths cannot be exempted via the `allow` list.
+   */
+  paths?: string[];
+
+  /**
+   * Paths exempted from gitignore dynamic protection (edit permission only).
+   * Directories are normalized with trailing `/` for boundary matching.
+   * Note: `allow` does NOT exempt from git add/commit operations, and does NOT
+   * affect hardcoded protection (`.pi/`, `AGENTS.md`, `.git/`).
+   */
+  allow?: string[];
+}
+
 // ─── Pipeline Configuration ──────────────────────────────────────────────────
 
 /**
@@ -274,7 +307,7 @@ export interface PipelineConfig {
   /**
    * TUI output configuration.
    * When pipelineStage is true, pipeline stage transitions are displayed via notify + setStatus.
-   * Default: false (all TUI output silenced).
+   * Default: true (stage transitions displayed in TUI).
    */
   output?: { pipelineStage?: boolean };
 
@@ -284,6 +317,13 @@ export interface PipelineConfig {
    * from skill files alongside hardcoded marker extraction. Default: false.
    */
   llmExtract?: boolean;
+
+  /**
+   * File protection configuration.
+   * Controls gitignore-based protection, hardcoded paths, and allow-list exemptions.
+   * Default: { gitignore: true, paths: [], allow: [] }
+   */
+  protect?: ProtectConfig;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -355,11 +395,14 @@ export interface PipelineJsonConfig {
   /** Maximum pipeline cycles (e.g. fix→develop) before termination (default 3) */
   maxLoopCycles?: number;
 
-  /** TUI output configuration (default: { pipelineStage: false }) */
+  /** TUI output configuration (default: { pipelineStage: true }) */
   output?: { pipelineStage?: boolean };
 
   /** Enable LLM-based delivery item extraction during verify generation (default false) */
   llmExtract?: boolean;
+
+  /** File protection configuration (default: { gitignore: true, paths: [], allow: [] }) */
+  protect?: ProtectConfig;
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────

@@ -25,6 +25,7 @@ export function makeTestConfig(overrides?: Partial<PipelineConfig>): PipelineCon
     auditDir: ".pi/audit",
     domainDir: ".pi/domains",
     output: { pipelineStage: true },
+    protect: { gitignore: true, paths: [], allow: [] },
     ...overrides,
   } as PipelineConfig;
 }
