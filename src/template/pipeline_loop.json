@@ -1,0 +1,35 @@
+{
+  "protect": {
+    "gitignore": true,
+    "allow": []
+  },
+  "stages": {
+    "clarify": {
+      "skillPath": "design/SKILL.md",
+      "nextStage": "plan",
+      "verify": { "require": true, "mode": "tool" }
+    },
+    "plan": {
+      "skillPath": "plan/SKILL.md",
+      "nextStage": "develop",
+      "verify": { "require": true, "mode": "tool" }
+    },
+    "develop": {
+      "skillPath": "develop/SKILL.md",
+      "nextStage": "review",
+      "verify": { "require": true, "mode": "tool" }
+    },
+    "review": {
+      "skillPath": "review/SKILL.md",
+      "nextStage": "completed",
+      "verify": { "require": true, "mode": "tool" }
+    },
+    "fix": {
+      "skillPath": "fix/SKILL.md",
+      "nextStage": "review",
+      "verify": { "require": true, "mode": "tool" }
+    },
+    "awaiting_human": { "nextStage": null },
+    "completed": { "nextStage": null }
+  }
+}
