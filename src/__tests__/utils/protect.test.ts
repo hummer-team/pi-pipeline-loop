@@ -1,0 +1,203 @@
+import { describe, it, expect } from "bun:test";
+import {
+  resolveProtectConfig,
+  normalizeAllow,
+  isPathAllowed,
+  isHardcodedProtected,
+  isPathProtectedForModify,
+  isPathProtectedForGit,
+  toProjectRelative,
+  type ProtectState,
+} from "../../utils/protect";
+import { makeTestConfig } from "../helpers";
+
+describe("resolveProtectConfig", () => {
+  it("uses defaults when protect is undefined", () => {
+    const config = makeTestConfig();
+    delete (config as any).protect;
+    const state = resolveProtectConfig(config, null);
+    expect(state.hardcoded).toContain(".pi/");
+    expect(state.hardcoded).toContain("AGENTS.md");
+    expect(state.hardcoded).toContain(".git/");
+    expect(state.allow).toEqual([]);
+    expect(state.gitignore).toBeNull();
+  });
+
+  it("merges user paths with hardcoded", () => {
+    const config = makeTestConfig({
+      protect: { paths: ["dist/", "build/"] },
+    });
+    const state = resolveProtectConfig(config, null);
+    expect(state.hardcoded).toContain(".pi/");
+    expect(state.hardcoded).toContain("dist/");
+    expect(state.hardcoded).toContain("build/");
+  });
+
+  it("normalizes allow entries", () => {
+    const config = makeTestConfig({
+      protect: { allow: ["docs", "src/template/", "README.md"] },
+    });
+    const state = resolveProtectConfig(config, null);
+    expect(state.allow).toContain("docs/");
+    expect(state.allow).toContain("src/template/");
+    expect(state.allow).toContain("README.md");
+  });
+});
+
+describe("normalizeAllow", () => {
+  it("adds trailing / to directory entries", () => {
+    expect(normalizeAllow(["docs"])).toEqual(["docs/"]);
+    expect(normalizeAllow(["src/template"])).toEqual(["src/template/"]);
+  });
+
+  it("keeps trailing / if already present", () => {
+    expect(normalizeAllow(["docs/"])).toEqual(["docs/"]);
+  });
+
+  it("keeps file entries as-is", () => {
+    expect(normalizeAllow(["README.md"])).toEqual(["README.md"]);
+    expect(normalizeAllow(["package.json"])).toEqual(["package.json"]);
+  });
+});
+
+describe("isPathAllowed", () => {
+  it("matches directory prefix exactly", () => {
+    const allow = ["docs/", "src/template/"];
+    expect(isPathAllowed("docs/file.md", allow)).toBe(true);
+    expect(isPathAllowed("docs/sub/file.md", allow)).toBe(true);
+    expect(isPathAllowed("src/template/index.md", allow)).toBe(true);
+  });
+
+  it("does not match similar prefix (boundary check)", () => {
+    const allow = ["src/template/"];
+    expect(isPathAllowed("src/template-old/file.md", allow)).toBe(false);
+    expect(isPathAllowed("src/templates/file.md", allow)).toBe(false);
+  });
+
+  it("matches file entries exactly", () => {
+    const allow = ["README.md"];
+    expect(isPathAllowed("README.md", allow)).toBe(true);
+    expect(isPathAllowed("docs/README.md", allow)).toBe(false);
+  });
+
+  it("does not match unmatched paths", () => {
+    const allow = ["docs/"];
+    expect(isPathAllowed("src/index.ts", allow)).toBe(false);
+  });
+});
+
+describe("isHardcodedProtected", () => {
+  it("matches .pi/ directory", () => {
+    const hardcoded = [".pi/", "AGENTS.md", ".git/"];
+    expect(isHardcodedProtected(".pi/agents/clarify.md", hardcoded)).toBe(true);
+    expect(isHardcodedProtected(".pi", hardcoded)).toBe(true);
+  });
+
+  it("matches AGENTS.md file", () => {
+    const hardcoded = [".pi/", "AGENTS.md", ".git/"];
+    expect(isHardcodedProtected("AGENTS.md", hardcoded)).toBe(true);
+    expect(isHardcodedProtected("src/AGENTS.md", hardcoded)).toBe(false);
+  });
+
+  it("matches .git/ directory", () => {
+    const hardcoded = [".pi/", "AGENTS.md", ".git/"];
+    expect(isHardcodedProtected(".git/config", hardcoded)).toBe(true);
+    expect(isHardcodedProtected(".git", hardcoded)).toBe(true);
+  });
+
+  it("matches user-configured paths", () => {
+    const hardcoded = [".pi/", "dist/", "build/"];
+    expect(isHardcodedProtected("dist/bundle.js", hardcoded)).toBe(true);
+    expect(isHardcodedProtected("build/output.exe", hardcoded)).toBe(true);
+  });
+});
+
+describe("isPathProtectedForModify", () => {
+  it("blocks hardcoded paths (allow cannot exempt)", () => {
+    const state: ProtectState = {
+      hardcoded: [".pi/", "AGENTS.md"],
+      allow: [".pi/", "AGENTS.md"], // Try to exempt
+      gitignore: null,
+    };
+    expect(isPathProtectedForModify(".pi/test.md", state)).toBe(true);
+    expect(isPathProtectedForModify("AGENTS.md", state)).toBe(true);
+  });
+
+  it("allows paths in allow list (exempts from gitignore)", () => {
+    const state: ProtectState = {
+      hardcoded: [".pi/"],
+      allow: ["docs/"],
+      gitignore: null, // No gitignore
+    };
+    expect(isPathProtectedForModify("docs/file.md", state)).toBe(false);
+  });
+
+  it("blocks paths not in allow list when gitignore matches", () => {
+    const mockGitignore = {
+      matcher: { ignores: (p: string) => p.startsWith("logs/") },
+      patterns: ["logs/"],
+    };
+    const state: ProtectState = {
+      hardcoded: [".pi/"],
+      allow: ["docs/"], // Only docs is allowed
+      gitignore: mockGitignore as any,
+    };
+    expect(isPathProtectedForModify("logs/app.log", state)).toBe(true);
+    expect(isPathProtectedForModify("docs/file.md", state)).toBe(false);
+  });
+});
+
+describe("isPathProtectedForGit", () => {
+  it("blocks hardcoded paths", () => {
+    const state: ProtectState = {
+      hardcoded: [".pi/", "AGENTS.md"],
+      allow: [],
+      gitignore: null,
+    };
+    expect(isPathProtectedForGit(".pi/test.md", state)).toBe(true);
+    expect(isPathProtectedForGit("AGENTS.md", state)).toBe(true);
+  });
+
+  it("blocks gitignore-matched paths even if in allow list", () => {
+    const mockGitignore = {
+      matcher: { ignores: (p: string) => p.startsWith("docs/") },
+      patterns: ["docs/"],
+    };
+    const state: ProtectState = {
+      hardcoded: [".pi/"],
+      allow: ["docs/"], // Allow edit but not git
+      gitignore: mockGitignore as any,
+    };
+    expect(isPathProtectedForGit("docs/file.md", state)).toBe(true);
+  });
+
+  it("allows non-protected paths", () => {
+    const mockGitignore = {
+      matcher: { ignores: (p: string) => p.startsWith("logs/") },
+      patterns: ["logs/"],
+    };
+    const state: ProtectState = {
+      hardcoded: [".pi/"],
+      allow: [],
+      gitignore: mockGitignore as any,
+    };
+    expect(isPathProtectedForGit("src/index.ts", state)).toBe(false);
+  });
+});
+
+describe("toProjectRelative", () => {
+  it("converts absolute path to relative", () => {
+    const result = toProjectRelative("/project", "/project/src/index.ts");
+    expect(result).toBe("src/index.ts");
+  });
+
+  it("returns null for paths outside project", () => {
+    const result = toProjectRelative("/project", "/other/file.ts");
+    expect(result).toBeNull();
+  });
+
+  it("handles path normalization", () => {
+    const result = toProjectRelative("/project", "/project/src/../src/index.ts");
+    expect(result).toBe("src/index.ts");
+  });
+});
