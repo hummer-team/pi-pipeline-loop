@@ -616,7 +616,7 @@ describe("prompt-config", () => {
       expect(Object.keys(parsed).length).toBe(16);
     });
 
-    it("clarify template contains all 6 non-loop placeholders (no requirement_doc)", () => {
+    it("clarify template contains all 7 non-loop placeholders (no requirement_doc)", () => {
       if (!fsSync.existsSync(TEMPLATE_PATH)) return;
       const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
       const parsed = yamlParse(content) as Record<string, string>;
@@ -625,6 +625,7 @@ describe("prompt-config", () => {
       expect(clarify).not.toContain("{{requirement_doc}}");
       expect(clarify).toContain("{{context_reference}}");
       expect(clarify).toContain("{{domain_skill}}");
+      expect(clarify).toContain("{{stage_skill}}");
       expect(clarify).toContain("{{pipeline_status}}");
       expect(clarify).toContain("{{verify_failures}}");
       expect(clarify).toContain("{{verify_tool_guidance}}");
@@ -633,7 +634,7 @@ describe("prompt-config", () => {
       expect(clarify).not.toContain("{{loop_status}}");
     });
 
-    it("develop template contains loop_status but not stage_write_scope", () => {
+    it("develop template contains loop_status and stage_skill but not stage_write_scope", () => {
       if (!fsSync.existsSync(TEMPLATE_PATH)) return;
       const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
       const parsed = yamlParse(content) as Record<string, string>;
@@ -641,8 +642,34 @@ describe("prompt-config", () => {
       const develop = parsed["develop"];
       expect(develop).toContain("{{loop_status}}");
       expect(develop).toContain("{{pipeline_status}}");
+      expect(develop).toContain("{{stage_skill}}");
       expect(develop).not.toContain("{{stage_write_scope}}");
       expect(develop).not.toContain("{{requirement_doc}}");
+    });
+
+    it("all 5 stage keys contain {{stage_skill}} placeholder", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) return;
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, string>;
+
+      for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+        expect(parsed[stage]).toContain("{{stage_skill}}");
+      }
+    });
+
+    it("{{stage_skill}} appears after {{domain_skill}} in all stage templates", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) return;
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, string>;
+
+      for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+        const template = parsed[stage];
+        const domainIdx = template.indexOf("{{domain_skill}}");
+        const stageSkillIdx = template.indexOf("{{stage_skill}}");
+        expect(domainIdx).toBeGreaterThan(-1);
+        expect(stageSkillIdx).toBeGreaterThan(-1);
+        expect(stageSkillIdx).toBeGreaterThan(domainIdx);
+      }
     });
 
     it("verify_extract template matches DEFAULT_VERIFY_EXTRACT_PROMPT content", () => {
