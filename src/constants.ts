@@ -12,35 +12,53 @@ export const CONFIG_DIR_NAME = ".pi";
 /** Paths that agents in loop stages (develop/fix) must not modify */
 export const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"] as const;
 
+/**
+ * Sentinel value for allowedWritePaths meaning "all paths allowed".
+ * When present in allowedWritePaths, stage write whitelist is fully open
+ * and global protection chain applies unchanged.
+ */
+export const ALLOWED_WRITE_ALL = "**";
+
+/**
+ * Default write whitelist for read-only stages (clarify/plan/review).
+ * These stages may only write to documentation directories.
+ */
+export const DEFAULT_READONLY_WRITE_PATHS = ["docs/", "doc/", "documentation/"];
+
 /** Default path templates for stage resources (use {stage} placeholder) */
 export const DEFAULT_AGENT_FILE = ".pi/agents/{stage}/{stage}.md";
 export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
 
-/** Default tool permissions by stage type */
+/** Default tool permissions and write scope by stage type */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   string,
-  { tools: string[]; bash: string[] }
+  { tools: string[]; bash: string[]; allowedWritePaths: string[] }
 > = {
   clarify: {
-    tools: ["read", "bash", "stage_advance"],
-    bash: ["ls", "cat", "find", "git log"],
+    tools: ["read", "bash", "write", "edit", "stage_advance"],
+    bash: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
+    allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   plan: {
-    tools: ["read", "bash", "stage_advance"],
-    bash: ["ls", "cat", "find", "git log"],
+    tools: ["read", "bash", "write", "edit", "stage_advance"],
+    bash: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
+    allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   develop: {
     tools: ["read", "bash", "write", "edit", "stage_advance"],
     bash: ["npm test", "npm run", "git", "tsc", "bun test"],
+    allowedWritePaths: [ALLOWED_WRITE_ALL],
   },
   review: {
-    tools: ["read", "bash", "stage_advance"],
-    bash: ["ls", "cat", "find", "git log"],
+    tools: ["read", "bash", "write", "edit", "stage_advance"],
+    bash: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
+    allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   fix: {
     tools: ["read", "bash", "write", "edit", "stage_advance"],
     bash: ["npm test", "npm run", "git", "tsc", "bun test"],
+    allowedWritePaths: [ALLOWED_WRITE_ALL],
   },
 };
 

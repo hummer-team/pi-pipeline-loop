@@ -93,12 +93,15 @@ describe("resolvePipelineConfig", () => {
   it("uses clarify/plan defaults for read-only stages", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };
     const result = resolvePipelineConfig(json);
-    expect(result.stages.clarify.allowedTools).toEqual(["read", "bash", "stage_advance"]);
+    expect(result.stages.clarify.allowedTools).toEqual(["read", "bash", "write", "edit", "stage_advance"]);
     expect(result.stages.clarify.allowedBashPrefixes).toEqual([
       "ls",
       "cat",
       "find",
       "git log",
+      "git status",
+      "git diff",
+      "git show",
     ]);
     expect(result.stages.clarify.requireDomain).toBe(false);
   });

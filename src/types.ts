@@ -102,6 +102,20 @@ export interface StageConfig {
   allowedBashPrefixes?: string[];
 
   /**
+   * Stage-level write whitelist (directory prefix matching).
+   * - `"**"` = all paths allowed (full write access, global protect still applies)
+   * - `[]` = no writes allowed (completely forbidden)
+   * - `undefined` = fall back to stage-type default
+   * - `["docs/", "src/"]` = only these directory prefixes allowed
+   *
+   * When whitelist is active (not containing "**"), stage whitelist takes priority:
+   * - Paths matching whitelist are allowed (exempt from gitignore write protection)
+   * - Hardcoded protected paths (.pi/, AGENTS.md, .git/) CANNOT be exempted
+   * - git add/commit remains subject to global git content-level protection
+   */
+  allowedWritePaths?: string[];
+
+  /**
    * The next stage to transition to after this stage completes.
    * `null` indicates this is the terminal stage (pipeline ends).
    */
@@ -400,6 +414,9 @@ export interface StageJsonConfig {
 
   /** Allowed bash command prefixes (default depends on stage type) */
   allowedBashPrefixes?: string[];
+
+  /** Stage-level write whitelist (default depends on stage type) */
+  allowedWritePaths?: string[];
 
   /** Next stage to transition to; null = terminal */
   nextStage?: PipelineStage | null;
