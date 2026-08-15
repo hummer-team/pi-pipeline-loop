@@ -18,6 +18,7 @@ import {
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
   STAGE_TYPE_TOOL_DEFAULTS,
+  ALLOWED_WRITE_ALL,
   resolveStagePath,
 } from "../constants";
 
@@ -203,6 +204,30 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
   return result;
 }
 
+/**
+ * Parses and validates allowedWritePaths from JSON stage config.
+ * Must be string[] (each entry is a path prefix or "**").
+ * Invalid types are logged as warnings and ignored (returns undefined).
+ */
+function parseAllowedWritePaths(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid allowedWritePaths — expected string[], got ${typeof raw}, ignoring`,
+    );
+    return undefined;
+  }
+  for (const entry of raw) {
+    if (typeof entry !== "string") {
+      console.warn(
+        `[pi-pipeline] Invalid allowedWritePaths entry "${String(entry)}" — expected string, ignoring entire array`,
+      );
+      return undefined;
+    }
+  }
+  return raw as string[];
+}
+
 export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig {
   const projectRoot = json.projectRoot || process.cwd();
   const stages: Record<PipelineStage, StageConfig> = {} as Record<
@@ -224,6 +249,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
         skillPath: resolveStagePath(DEFAULT_SKILL_PATH, stageName),
         allowedTools: [],
         allowedBashPrefixes: [],
+        allowedWritePaths: [],
         nextStage: null,
         requireDomain: false,
       };
@@ -244,6 +270,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       allowedTools: jsonStage.allowedTools || defaults.tools,
       allowedBashPrefixes:
         jsonStage.allowedBashPrefixes || defaults.bash,
+      allowedWritePaths:
+        parseAllowedWritePaths(jsonStage.allowedWritePaths) ?? defaults.allowedWritePaths,
       nextStage:
         jsonStage.nextStage !== undefined ? jsonStage.nextStage : null,
       requireDomain: jsonStage.requireDomain ?? false,

@@ -564,3 +564,97 @@ describe("decisionShortcutKey config", () => {
     expect(result.decisionShortcutKey).toBe("ctrl+d");
   });
 });
+
+describe("stage allowedWritePaths config", () => {
+  it("resolvePipelineConfig uses stage-type default for clarify (docs multi-candidate)", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.allowedWritePaths).toEqual([
+      "docs/",
+      "doc/",
+      "documentation/",
+    ]);
+  });
+
+  it("resolvePipelineConfig uses stage-type default for develop (full access)", () => {
+    const json: PipelineJsonConfig = { stages: { develop: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.develop.allowedWritePaths).toEqual(["**"]);
+  });
+
+  it("resolvePipelineConfig uses stage-type default for fix (full access)", () => {
+    const json: PipelineJsonConfig = { stages: { fix: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.fix.allowedWritePaths).toEqual(["**"]);
+  });
+
+  it("resolvePipelineConfig uses stage-type default for review (docs multi-candidate)", () => {
+    const json: PipelineJsonConfig = { stages: { review: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.review.allowedWritePaths).toEqual([
+      "docs/",
+      "doc/",
+      "documentation/",
+    ]);
+  });
+
+  it("resolvePipelineConfig explicit config overrides default", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: { allowedWritePaths: ["src/"] } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.allowedWritePaths).toEqual(["src/"]);
+  });
+
+  it("resolvePipelineConfig disabled stage gets empty allowedWritePaths", () => {
+    const json: PipelineJsonConfig = {
+      stages: { plan: { require: false } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.plan.allowedWritePaths).toEqual([]);
+  });
+
+  it("loadJsonConfig parses allowedWritePaths from JSON", async () => {
+    await writeJson({
+      stages: { clarify: { allowedWritePaths: ["custom/"] } },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.stages.clarify!.allowedWritePaths).toEqual(["custom/"]);
+  });
+
+  it("resolvePipelineConfig warns and ignores non-array allowedWritePaths", async () => {
+    await writeJson({
+      stages: { clarify: { allowedWritePaths: "not-an-array" } },
+    });
+    const loaded = loadJsonConfig(jsonPath);
+    const result = resolvePipelineConfig(loaded);
+    // Invalid → falls back to stage-type default
+    expect(result.stages.clarify.allowedWritePaths).toEqual([
+      "docs/",
+      "doc/",
+      "documentation/",
+    ]);
+  });
+
+  it("resolvePipelineConfig warns and ignores allowedWritePaths with non-string entries", async () => {
+    await writeJson({
+      stages: { clarify: { allowedWritePaths: [123, 456] } },
+    });
+    const loaded = loadJsonConfig(jsonPath);
+    const result = resolvePipelineConfig(loaded);
+    // Invalid entries → falls back to stage-type default
+    expect(result.stages.clarify.allowedWritePaths).toEqual([
+      "docs/",
+      "doc/",
+      "documentation/",
+    ]);
+  });
+
+  it("resolvePipelineConfig accepts '**' as valid allowedWritePaths entry", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: { allowedWritePaths: ["**"] } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.allowedWritePaths).toEqual(["**"]);
+  });
+});
