@@ -5,9 +5,10 @@
  * ~100 lines of duplicated advance/failure recording logic (DRY).
  */
 
-import type { SessionMeta, PipelineStage, VerifyFailureItem } from "../types";
+import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
+import { freezeAndPrompt } from "./flow-state";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -184,6 +185,7 @@ export async function applyVerifyFail(
   verifyResult: VerifyAdvanceResult,
   method: "tool" | "rule",
   ui?: PipelineUI,
+  config?: PipelineConfig,
 ): Promise<VerifyFailReturn> {
   const now = Date.now();
   const verifyFailures: VerifyFailureItem[] = [];
@@ -211,9 +213,10 @@ export async function applyVerifyFail(
     });
   }
 
+  const updatedVerifyAttempts = (meta.verifyAttempts || 0) + 1;
   ctx.session.updateMeta({
     ...meta,
-    verifyAttempts: (meta.verifyAttempts || 0) + 1,
+    verifyAttempts: updatedVerifyAttempts,
     verifyFailures,
   });
 
@@ -231,6 +234,20 @@ export async function applyVerifyFail(
 
   // TUI failure output (gated by output.pipelineStage)
   ui?.fail(ctx, stageName, "verify failed");
+
+  // Circuit breaker: if verifyAttempts reaches maxVerifyAttempts, freeze pipeline
+  if (config) {
+    const maxAttempts = config.maxVerifyAttempts ?? config.maxLoops ?? 3;
+    if (updatedVerifyAttempts >= maxAttempts) {
+      // Build a minimal ui adapter for freezeAndPrompt from ctx.ui if available
+      const flowUI = ctx.ui ? {
+        notify: (msg: string) => { ctx.ui!.notify(msg); },
+      } : undefined;
+      await freezeAndPrompt(ctx, meta, "verify_attempt_overflow", config, {
+        ui: flowUI,
+      });
+    }
+  }
 
   return {
     success: false,

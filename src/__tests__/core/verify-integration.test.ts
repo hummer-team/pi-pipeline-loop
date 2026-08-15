@@ -189,10 +189,10 @@ describe("verify-integration", () => {
     const hook = createLoopBreaker(config);
     await hook.handler(ctx as any);
 
-    // Should terminate due to loop overflow
+    // Should freeze due to loop overflow
     const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-    expect(lastUpdate.terminated).toBe(true);
-    expect(lastUpdate.terminateReason).toContain("loop_overflow");
+    expect(lastUpdate.flowState).toBe("blocked");
+    expect(lastUpdate.blockedReason).toContain("loop_overflow");
   });
 
   // Scenario F: backward compatibility — old format verify.md (keywords only) still works
@@ -359,8 +359,8 @@ describe("verify-integration", () => {
 
     const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
     expect(lastUpdate.loopCount).toBe(3);
-    expect(lastUpdate.terminated).toBe(true);
-    expect(lastUpdate.terminateReason).toBe("verify_failure_loop_overflow");
+    expect(lastUpdate.flowState).toBe("blocked");
+    expect(lastUpdate.blockedReason).toBe("verify_failure_loop_overflow");
   });
 
   // ── Phase 2: Template default config → 6 stages all generated ────────────

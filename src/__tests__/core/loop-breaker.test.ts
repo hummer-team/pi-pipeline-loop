@@ -42,14 +42,15 @@ describe("createLoopBreaker", () => {
       await hook.handler(ctx as any);
 
       const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-      expect(lastUpdate.terminated).toBe(true);
-      expect(lastUpdate.terminateReason).toBe("loop_overflow");
+      expect(lastUpdate.flowState).toBe("blocked");
+      expect(lastUpdate.blockedReason).toBe("loop_overflow");
       expect(lastUpdate.loopCount).toBe(2);
 
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-      const line = logContent.trim().split("\n")[0];
-      expect(line).toContain("loop_break_fatal");
-      expect(line).toContain("[WARN]");
+      const lines = logContent.trim().split("\n");
+      // Should have both loop_break_fatal and pipeline_blocked audit entries
+      expect(lines.some(l => l.includes("loop_break_fatal"))).toBe(true);
+      expect(lines.some(l => l.includes("pipeline_blocked"))).toBe(true);
     });
 
     it("does not break on bash test pass", async () => {
@@ -381,8 +382,8 @@ describe("createLoopBreaker", () => {
       await hook.handler(ctx as any);
 
       const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-      expect(lastUpdate.terminated).toBe(true);
-      expect(lastUpdate.terminateReason).toBe("verify_failure_loop_overflow");
+      expect(lastUpdate.flowState).toBe("blocked");
+      expect(lastUpdate.blockedReason).toBe("verify_failure_loop_overflow");
       expect(lastUpdate.loopCount).toBe(2);
     });
   });
@@ -403,7 +404,7 @@ describe("createLoopBreaker", () => {
       await hook.handler(ctx as any);
 
       const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-      expect(lastUpdate.terminated).toBe(true);
+      expect(lastUpdate.flowState).toBe("blocked");
 
       // TUI fail output: "develop ⚠ pipeline frozen"
       expect(ctx.notifications).toContain("develop ⚠ pipeline frozen");
@@ -425,7 +426,7 @@ describe("createLoopBreaker", () => {
       await hook.handler(ctx as any);
 
       const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-      expect(lastUpdate.terminated).toBe(true);
+      expect(lastUpdate.flowState).toBe("blocked");
 
       // No TUI output when switch is off
       expect(ctx.notifications).toEqual([]);

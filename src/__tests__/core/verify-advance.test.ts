@@ -387,4 +387,50 @@ describe("output.pipelineStage: false (silent)", () => {
     expect(ctx.notifications).toEqual([]);
     expect(ctx.statusCalls).toEqual([]);
   });
+
+  it("applyVerifyFail freezes pipeline when verifyAttempts reaches maxVerifyAttempts", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 2 });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyAttempts: 1, // will become 2 after this call
+    });
+    const ctx = createCtx(meta);
+    const sharedResult = {
+      structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "missing" }] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(
+      ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI, config,
+    );
+
+    // verifyAttempts should be 2 now (1 + 1)
+    expect(meta.verifyAttempts).toBe(2);
+    // Pipeline should be frozen
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_attempt_overflow");
+  });
+
+  it("applyVerifyFail does NOT freeze when verifyAttempts below maxVerifyAttempts", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 5 });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyAttempts: 1, // will become 2 (below 5)
+    });
+    const ctx = createCtx(meta);
+    const sharedResult = {
+      structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "missing" }] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(
+      ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI, config,
+    );
+
+    expect(meta.verifyAttempts).toBe(2);
+    // Pipeline should NOT be frozen
+    expect(meta.flowState).toBeUndefined();
+  });
 });

@@ -11,6 +11,7 @@ import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { getFileHash } from "../utils/hash";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
+import { freezeAndPrompt } from "./flow-state";
 
 /**
  * Ensures a directory exists, creating it recursively if needed.
@@ -87,15 +88,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           ctx.session.updateMeta({ ...meta, loopCount: newLoopCount });
 
           if (newLoopCount >= meta.maxLoops) {
-            // Circuit break: terminate pipeline
-            ctx.session.updateMeta({
-              ...meta,
-              loopCount: newLoopCount,
-              terminated: true,
-              terminateReason: "loop_overflow",
-            });
-
-            // TUI failure output (gated by output.pipelineStage)
+            // Circuit break: freeze pipeline and prompt for user decision
             ui.fail(ctx, meta.currentStage, "pipeline frozen");
 
             await writeAuditLog("loop_break_fatal", {
@@ -103,6 +96,8 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
               stage: meta.currentStage,
               loopCount: String(newLoopCount),
             }, "warn");
+
+            await freezeAndPrompt(ctx, meta, "loop_overflow", config);
           }
         }
       }
@@ -136,14 +131,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           ctx.session.updateMeta({ ...meta, loopCount: newLoopCount });
 
           if (newLoopCount >= meta.maxLoops) {
-            ctx.session.updateMeta({
-              ...meta,
-              loopCount: newLoopCount,
-              terminated: true,
-              terminateReason: "verify_failure_loop_overflow",
-            });
-
-            // TUI failure output (gated by output.pipelineStage)
+            // Circuit break: freeze pipeline and prompt for user decision
             ui.fail(ctx, meta.currentStage, "pipeline frozen");
 
             await writeAuditLog("loop_break_fatal", {
@@ -152,6 +140,8 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
               loopCount: String(newLoopCount),
               reason: "verify_failure_loop_overflow",
             }, "warn");
+
+            await freezeAndPrompt(ctx, meta, "verify_failure_loop_overflow", config);
           }
         }
       }

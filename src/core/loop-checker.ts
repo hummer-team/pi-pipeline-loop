@@ -7,6 +7,7 @@
 
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { createPipelineUI } from "./pipeline-ui";
+import { freezeAndPrompt } from "./flow-state";
 
 /**
  * Creates the `loop_check` tool.
@@ -84,6 +85,10 @@ export function createLoopChecker(config: PipelineConfig): Tool {
 
       if (newLoopCount >= maxLoops) {
         ui.fail(ctx, currentStage, "max loops reached");
+
+        // Freeze pipeline and prompt for user decision
+        await freezeAndPrompt(ctx, meta, "loop_halt_overflow", config);
+
         return {
           action: "halt",
           message:

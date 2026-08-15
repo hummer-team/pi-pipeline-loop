@@ -353,6 +353,7 @@ export async function freezeAndPrompt(
 
   const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
   const menu = buildDecisionMenu({ ...meta, flowState: "blocked", blockedReason: reason });
+  const tuiEnabled = config.output?.pipelineStage !== false;
 
   if (!menu) {
     // aborted → do not prompt
@@ -373,9 +374,11 @@ export async function freezeAndPrompt(
           stage: meta.currentStage,
         });
 
-        ui.notify?.(
-          `Pipeline frozen. Press ${shortcutKey} to open the decision menu.`,
-        );
+        if (tuiEnabled) {
+          ui.notify?.(
+            `Pipeline frozen. Press ${shortcutKey} to open the decision menu.`,
+          );
+        }
         return;
       }
 
@@ -394,9 +397,11 @@ export async function freezeAndPrompt(
       }, "error");
     }
   } else {
-    // No UI available — notify via available channel
-    ui?.notify?.(
-      `Pipeline frozen: ${reason}. Press ${shortcutKey} to open the decision menu.`,
-    );
+    // No UI available — notify via available channel (gated by pipelineStage)
+    if (tuiEnabled) {
+      ui?.notify?.(
+        `Pipeline frozen: ${reason}. Press ${shortcutKey} to open the decision menu.`,
+      );
+    }
   }
 }

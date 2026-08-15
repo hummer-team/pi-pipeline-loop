@@ -75,6 +75,9 @@ describe("createLoopChecker", () => {
 
     expect((result as any).action).toBe("halt");
     expect(meta.loopCount).toBe(2);
+    // Phase 2: halt now freezes the pipeline
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("loop_halt_overflow");
   });
 
   it("works in fix stage too", async () => {

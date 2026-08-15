@@ -25,6 +25,9 @@ describe("loop cycle detection (pipeline_handoff)", () => {
 
     expect(result.error).toContain("Max loop cycles");
     expect(result.error).toContain("2");
+    // Phase 2: maxLoopCycles freeze → flowState=blocked
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("max_loop_cycles");
   });
 
   it("allows handoff within maxLoopCycles", async () => {

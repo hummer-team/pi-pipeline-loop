@@ -8,6 +8,7 @@
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
+import { freezeAndPrompt } from "../core/flow-state";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -80,11 +81,14 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
         const cycleCount = (meta.loopCycleCount || 0) + 1;
         if (cycleCount >= maxCycles) {
+          // Freeze pipeline and prompt for user decision
+          await freezeAndPrompt(ctx, meta, "max_loop_cycles", config);
+
           return {
             error:
               `Max loop cycles (${maxCycles}) reached. ` +
               `Pipeline cannot cycle back to "${nextStage}". ` +
-              `Pipeline terminated. Start a new run with /pipeline_start.`,
+              `Pipeline frozen. Use the decision menu to continue.`,
           };
         }
         ctx.session.updateMeta({
