@@ -6,6 +6,7 @@
       "name": "@earendil-works/pi-pipeline",
       "dependencies": {
         "ignore": "^7.0.6",
+        "yaml": "^2.7.0",
       },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "^0.80.10",
