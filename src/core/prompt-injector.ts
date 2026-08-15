@@ -20,7 +20,7 @@ import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { isFrozen } from "./flow-state";
 import { getStagePrompt, renderStageTemplate } from "./prompt-config";
 
@@ -374,11 +374,23 @@ export function createPromptInjector(config: PipelineConfig): Hook {
             missing: rendered.missing.join(","),
           }, "warn");
           pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
+          // E4: write prompt snapshot for fallback path (source=fallback)
+          await safeWritePromptSnapshot("prompt_snapshot", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            source: "fallback",
+          }, pluginPrompt);
         } else {
           pluginPrompt = rendered.prompt;
+          // E4: write prompt snapshot for successful yml rendering (source=yml)
+          await safeWritePromptSnapshot("prompt_snapshot", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            source: "yml",
+          }, pluginPrompt);
         }
       } else {
-        // Default path: no yml template → use 8-part assembly
+        // Default path: no yml template → use 8-part assembly (no snapshot, E4 ❌)
         pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
       }
 
@@ -428,7 +440,7 @@ async function buildDefaultPrompt(
 
 /**
  * Builds the dynamic placeholder values map for template rendering.
- * Maps each of the 7 known placeholder keys to its computed value.
+ * Maps each of the 8 known placeholder keys to its computed value.
  * Null values trigger paragraph-level removal in renderStageTemplate.
  *
  * @param config - Pipeline configuration
@@ -446,7 +458,8 @@ async function buildDynamicValues(
   return {
     context_reference: buildContextReference(config, meta),
     domain_skill: await buildDomainSkill(stageConfig, meta),
-    // Stage Skill (Part 3) is only used in default path, not in template rendering
+    // Part 3: Stage Skill — now also available as {{stage_skill}} placeholder in yml templates
+    stage_skill: await buildStageSkill(config, stageConfig, meta),
     loop_status: await buildLoopStatus(config, meta),
     pipeline_status: buildPipelineStatus(config, meta),
     verify_failures: buildVerifyFailurePrompt(meta),

@@ -666,6 +666,221 @@ describe("createPromptInjector", () => {
 
       await rm(TMP, { recursive: true, force: true });
     });
+
+    it("yml template renders {{stage_skill}} placeholder with skill file content", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-stageskill-" + Date.now());
+      const skillDir = join(TMP, ".pi", "skills", "clarify");
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(join(skillDir, "SKILL.md"), "Stage skill rule: produce clarification doc");
+
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{stage_skill}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        skillPath: "clarify/SKILL.md",
+      } as any;
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES");
+      expect(result.systemPrompt).toContain("Stage skill rule: produce clarification doc");
+      expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("yml template removes {{stage_skill}} paragraph when skill file is missing", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-stageskill-missing-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{stage_skill}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        skillPath: "nonexistent/SKILL.md",
+      } as any;
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // stage_skill is null → paragraph removed
+      expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
+      expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+      // Other paragraphs remain
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
+  describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
+    async function writePromptYml(projectRoot: string, content: string): Promise<void> {
+      const refsDir = join(projectRoot, ".pi", "references");
+      await mkdir(refsDir, { recursive: true });
+      await writeFile(join(refsDir, "pipeline-stage-prompt.yml"), content, "utf-8");
+    }
+
+    it("writes prompt snapshot to audit.log on successful yml rendering (source=yml)", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-yml-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      const logContent = await readFile(logFile, "utf-8");
+
+      // Snapshot metadata line
+      expect(logContent).toContain("prompt_snapshot");
+      expect(logContent).toContain("source=yml");
+      expect(logContent).toContain("stage=clarify");
+      expect(logContent).toContain("pipelineId=pipe-test-001");
+
+      // E7 protocol markers
+      expect(logContent).toContain("=== PROMPT START ===");
+      expect(logContent).toContain("=== PROMPT END ===");
+
+      // E5: snapshot contains plugin prompt content (not pi base)
+      expect(logContent).toContain("Pipeline Status");
+      expect(logContent).toContain("STAGE WRITE SCOPE");
+
+      // E5: snapshot should NOT contain pi base prompt
+      // (the base prompt is only added via ctx.getSystemPrompt, not in pluginPrompt)
+      // Verify that the snapshot block contains the plugin prompt but no arbitrary base text
+      const basePrompt = "This is the pi base system prompt that should NOT appear in snapshot";
+      const ctxWithBase = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => basePrompt,
+      };
+      const hook2 = createPromptInjector(config);
+      await hook2.handler(ctxWithBase as any);
+      const logContent2 = await readFile(logFile, "utf-8");
+      // The pi base prompt should NOT appear in the snapshot (E5)
+      // Check that the snapshot block (between START and END) does not contain the base
+      const startIdx = logContent2.lastIndexOf("=== PROMPT START ===");
+      const endIdx = logContent2.lastIndexOf("=== PROMPT END ===");
+      const snapshotBlock = logContent2.substring(startIdx, endIdx);
+      expect(snapshotBlock).not.toContain(basePrompt);
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("writes prompt snapshot on missing_critical fallback (source=fallback)", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-fallback-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      // Template missing {{pipeline_status}} → triggers missing_critical fallback
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{context_reference}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should fall back to default prompt
+      expect(result.systemPrompt).toContain("Pipeline Status");
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      const logContent = await readFile(logFile, "utf-8");
+
+      // Missing placeholder warning should still be present
+      expect(logContent).toContain("prompt_injector_missing_placeholder");
+      expect(logContent).toContain("[WARN]");
+
+      // Snapshot with source=fallback
+      expect(logContent).toContain("source=fallback");
+      expect(logContent).toContain("=== PROMPT START ===");
+      expect(logContent).toContain("=== PROMPT END ===");
+      // Fallback prompt should contain default 8-part content
+      expect(logContent).toContain("Pipeline Status");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("does NOT write prompt snapshot on default path (no yml template)", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-default-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      // No yml template → default path
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      await hook.handler(ctx as any);
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      // If the audit log file doesn't exist at all, that means no events were written — pass
+      const { existsSync } = await import("node:fs");
+      if (!existsSync(logFile)) {
+        // No audit file created — confirms no snapshot was written
+        await rm(TMP, { recursive: true, force: true });
+        return;
+      }
+      const logContent = await readFile(logFile, "utf-8");
+
+      // No prompt_snapshot event should be written
+      expect(logContent).not.toContain("prompt_snapshot");
+      expect(logContent).not.toContain("=== PROMPT START ===");
+      expect(logContent).not.toContain("=== PROMPT END ===");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
   });
 
   describe("append injection (D3)", () => {
