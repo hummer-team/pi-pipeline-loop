@@ -551,13 +551,21 @@ describe("prompt-config", () => {
       expect(typeof parsed).toBe("object");
       expect(parsed).not.toBeNull();
 
-      // All 5 stage keys + verify_extract should exist
-      const expectedKeys = ["clarify", "plan", "develop", "review", "fix", "verify_extract"];
+      // All 16 keys: 5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 1 global verify_extract
+      const expectedKeys = [
+        "clarify", "plan", "develop", "review", "fix",
+        "verify_clarify", "verify_plan", "verify_develop", "verify_review", "verify_fix",
+        "verify_extract_clarify", "verify_extract_plan", "verify_extract_develop",
+        "verify_extract_review", "verify_extract_fix",
+        "verify_extract",
+      ];
       for (const key of expectedKeys) {
         expect(parsed[key]).toBeDefined();
         expect(typeof parsed[key]).toBe("string");
         expect((parsed[key] as string).trim().length).toBeGreaterThan(0);
       }
+      // Ensure total key count matches plan (16 keys)
+      expect(Object.keys(parsed).length).toBe(16);
     });
 
     it("clarify template contains all 6 non-loop placeholders (no requirement_doc)", () => {

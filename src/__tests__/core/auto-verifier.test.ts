@@ -13,6 +13,7 @@ import {
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { resetPromptConfigCache } from "../../core/prompt-config";
+import { DEFAULT_VERIFY_PROMPT } from "../../constants";
 
 let TMP: string;
 
@@ -740,5 +741,30 @@ describe("runVerification — yml verify_{stage} modelPrompt priority (D5)", () 
     // Rules still from frontmatter — keyword check fails
     expect(result.rulePassed).toBe(false);
     expect(result.ruleMissing).toContain("unique_keyword_xyz");
+  });
+
+  it("falls back to DEFAULT_VERIFY_PROMPT when yml is missing and verify.md body is empty", async () => {
+    // verify.md with only frontmatter, no body
+    const verifyDir = path.join(TMP, ".pi", "references", "clarify_spec");
+    await fs.mkdir(verifyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(verifyDir, "verify.md"),
+      "---\nrules:\n  keywords:\n    - some_keyword\n  mode: and\n---\n",
+      "utf-8",
+    );
+
+    // No yml file at all — getVerifyPrompt returns null
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      verify: { require: true, verifyFile: ".pi/references/clarify_spec/verify.md" },
+    } as any;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+
+    const result = await runVerification(config, meta, []);
+
+    // Fallback chain: yml missing (null) → body empty → DEFAULT_VERIFY_PROMPT
+    expect(result.modelPrompt).toBe(DEFAULT_VERIFY_PROMPT);
   });
 });
