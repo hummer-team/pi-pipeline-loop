@@ -97,6 +97,36 @@ describe("createPipelineStartCommand", () => {
     expect(result.error).toContain("already running");
   });
 
+  it("allows restart when pipeline is aborted", async () => {
+    await fs.writeFile(docPath, "content", "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      flowState: "aborted",
+      requirementDoc: "old-req.md",
+    });
+    const ctx = createMockCtx(meta);
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("restarted");
+  });
+
+  it("rejects when pipeline is blocked with shortcut key hint", async () => {
+    await fs.writeFile(docPath, "content", "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "alt+f" });
+    const meta = makeTestMeta({ flowState: "blocked" });
+    const ctx = createMockCtx(meta);
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("alt+f");
+    expect(result.error).toContain("decision menu");
+  });
+
   it("handles empty file content", async () => {
     await fs.writeFile(docPath, "", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP });

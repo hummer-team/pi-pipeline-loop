@@ -8,6 +8,8 @@ import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./t
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
+import { buildDecisionMenu, executeDecision } from "./core/flow-state";
+import { safeWriteAuditLog } from "./utils/auditLog";
 
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
@@ -205,6 +207,66 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             if (r.error) ctx.ui.notify(String(r.error), "error");
             else if (r.message) ctx.ui.notify(String(r.message));
             else if (r.content) ctx.ui.notify(String(r.content));
+          }
+        },
+      });
+    }
+
+    // ── Shortcut registration: pipeline decision menu ──
+    const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+    if (typeof pi.registerShortcut === "function") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pi.registerShortcut as any)(shortcutKey, {
+        description: "Pipeline decision menu",
+        handler: async (ctx: ExtensionContext) => {
+          const rctx = buildRuntimeCtx(pi, ctx);
+          const meta = rctx.session.getMeta();
+          if (!meta) return;
+
+          const menu = buildDecisionMenu(meta);
+          if (!menu) {
+            ctx.ui.notify("Pipeline aborted. Use /pipeline-start to begin a new run.");
+            return;
+          }
+
+          await safeWriteAuditLog("pipeline_shortcut_opened", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+          });
+
+          if (typeof ctx.ui?.select === "function") {
+            try {
+              const selection = await ctx.ui.select(
+                "Pipeline decision menu:",
+                menu,
+              );
+              if (selection === undefined) {
+                await safeWriteAuditLog("pipeline_decision_cancelled", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                });
+                return;
+              }
+
+              // Map label back to decision key
+              const LABEL_MAP: Record<string, string> = {
+                "继续尝试": "resume",
+                "跳过": "skip",
+                "回退上一阶段": "rollback",
+                "终止并重开": "restart",
+                "终止并退出": "abort",
+              };
+              const decision = LABEL_MAP[selection];
+              if (decision) {
+                await executeDecision(rctx, meta, decision as any, config);
+              }
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              await safeWriteAuditLog("pipeline_shortcut_error", {
+                pipelineId: meta.pipelineId,
+                error: errMsg,
+              }, "error");
+            }
           }
         },
       });

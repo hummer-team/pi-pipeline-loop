@@ -12,6 +12,7 @@ import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
+import { isFrozen } from "./flow-state";
 
 /**
  * Attempts to load a DomainConfig from a domain.md file.
@@ -97,6 +98,7 @@ export function createSessionStarter(config: PipelineConfig): Hook {
           loopCount: 0,
           currentStepIndex: 0,
           maxLoops: config.maxLoops || 3,
+          flowState: "running",
         };
 
         ctx.session.updateMeta(sessionMeta);
@@ -112,8 +114,11 @@ export function createSessionStarter(config: PipelineConfig): Hook {
 
         ui.stageEntry(ctx, "clarify");
       } else {
-        // ── Resumed session: no model management needed (Q4-A) ──────────
-        // NOTE: model management removed — model is managed by user via /model command.
+        // ── Resumed session: notify if frozen ─────────────────────────
+        if (isFrozen(meta)) {
+          const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+          ui.notify(ctx, `Pipeline blocked. Press ${shortcutKey} to open the decision menu.`);
+        }
       }
     },
   };

@@ -133,5 +133,27 @@ describe("createSessionStarter", () => {
 
       expect(ctx.updates.length).toBe(0);
     });
+
+    it("notifies with shortcut key when resuming a frozen pipeline", async () => {
+      const notifications: string[] = [];
+      const config = makeTestConfig({ decisionShortcutKey: "ctrl+shift+d" });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "existing-pipe-1",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = {
+        ...createCtx(meta),
+        ui: { notify: (msg: string) => { notifications.push(msg); } },
+      };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("blocked");
+      expect(notifications[0]).toContain("ctrl+shift+d");
+    });
   });
 });

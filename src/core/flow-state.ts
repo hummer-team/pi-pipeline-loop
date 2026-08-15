@@ -29,7 +29,8 @@ export interface FlowStateCtx {
   };
   ui?: {
     select?: (message: string, options: string[]) => Promise<string | undefined>;
-    notify?: (msg: string, level?: string) => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    notify?: (msg: string, ...args: any[]) => void;
   };
 }
 

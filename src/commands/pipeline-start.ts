@@ -8,6 +8,7 @@ import path from "node:path";
 import type { PipelineConfig, PipelineStage, Command, SessionMeta } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { getFlowState } from "../core/flow-state";
 
 /**
  * Checks for missing verify.md files across all stages that require verification.
@@ -51,11 +52,40 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       const meta = ctx?.session?.getMeta?.();
 
       if (meta?.currentStage && meta.pipelineId) {
+        const flowState = getFlowState(meta);
+
+        // Aborted pipeline → allow restart
+        if (flowState === "aborted") {
+          const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const newMeta: SessionMeta = {
+            currentStage: "clarify",
+            stageStartTime: Date.now(),
+            pipelineId,
+            domain: meta.domain ?? { id: "general", version: "latest", skillPath: "" },
+            summaries: {},
+            loopCount: 0,
+            currentStepIndex: 0,
+            maxLoops: config.maxLoops || 3,
+            maxLoopCycles: config.maxLoopCycles ?? 3,
+            flowState: "running",
+            requirementDoc: meta.requirementDoc,
+          };
+          ctx?.session?.updateMeta?.(newMeta);
+          return {
+            success: true,
+            message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
+            pipelineId,
+            currentStage: "clarify",
+          };
+        }
+
+        // Running or blocked → reject with shortcut hint
+        const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
         return {
           success: false,
           error:
-            `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}". ` +
-            `End the current session before starting a new pipeline.`,
+            `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}" (${flowState}). ` +
+            `Press ${shortcutKey} to open the decision menu to handle it.`,
         };
       }
 
