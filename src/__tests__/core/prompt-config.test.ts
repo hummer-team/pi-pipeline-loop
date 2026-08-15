@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
+import { parse as yamlParse } from "yaml";
 import {
   loadPromptConfig,
   getStagePrompt,
@@ -392,6 +394,74 @@ describe("prompt-config", () => {
       if (result.status === "ok") {
         expect(result.prompt).toContain("{{context_reference}}");
       }
+    });
+  });
+
+  // ─── Template file structure validation ──────────────────────────────────────
+
+  describe("prompt-injector.yml template file", () => {
+    const TEMPLATE_PATH = path.join(
+      __dirname, "..", "..", "template", "references", "prompt-injector.yml",
+    );
+
+    it("can be parsed as valid YAML with expected structure", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) {
+        // Template file not yet created (pre-Phase 1) — skip
+        return;
+      }
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, unknown>;
+
+      expect(typeof parsed).toBe("object");
+      expect(parsed).not.toBeNull();
+
+      // All 5 stage keys + verify_extract should exist
+      const expectedKeys = ["clarify", "plan", "develop", "review", "fix", "verify_extract"];
+      for (const key of expectedKeys) {
+        expect(parsed[key]).toBeDefined();
+        expect(typeof parsed[key]).toBe("string");
+        expect((parsed[key] as string).trim().length).toBeGreaterThan(0);
+      }
+    });
+
+    it("clarify template contains all 7 non-loop placeholders", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) return;
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, string>;
+
+      const clarify = parsed["clarify"];
+      expect(clarify).toContain("{{requirement_doc}}");
+      expect(clarify).toContain("{{context_reference}}");
+      expect(clarify).toContain("{{domain_skill}}");
+      expect(clarify).toContain("{{pipeline_status}}");
+      expect(clarify).toContain("{{verify_failures}}");
+      expect(clarify).toContain("{{verify_tool_guidance}}");
+      expect(clarify).toContain("{{stage_write_scope}}");
+      // clarify should NOT contain loop_status
+      expect(clarify).not.toContain("{{loop_status}}");
+    });
+
+    it("develop template contains loop_status but not stage_write_scope", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) return;
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, string>;
+
+      const develop = parsed["develop"];
+      expect(develop).toContain("{{loop_status}}");
+      expect(develop).toContain("{{pipeline_status}}");
+      expect(develop).not.toContain("{{stage_write_scope}}");
+      expect(develop).not.toContain("{{requirement_doc}}");
+    });
+
+    it("verify_extract template matches DEFAULT_VERIFY_EXTRACT_PROMPT content", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) return;
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, string>;
+
+      const verifyExtract = parsed["verify_extract"].trim();
+      // The template content should contain the same key phrases as the default
+      expect(verifyExtract).toContain("delivery item extractor");
+      expect(verifyExtract).toContain("JSON array");
     });
   });
 });
