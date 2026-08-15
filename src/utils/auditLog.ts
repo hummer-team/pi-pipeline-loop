@@ -179,13 +179,15 @@ export async function writePromptSnapshot(
     }
   }
 
-  // Build the full snapshot block
+  // Build the full snapshot block with a real blank line after END
+  // to separate from the next audit event (E7 protocol)
   const snapshotBlock = [
     metaLine,
     PROMPT_SNAPSHOT_START,
     prompt,
     PROMPT_SNAPSHOT_END,
-    "", // trailing blank line for separation
+    "", // produces \n after END
+    "", // produces second \n → real blank line separator
   ].join("\n");
 
   const logPath = path.join(auditDirPath, getDateAuditFileName());

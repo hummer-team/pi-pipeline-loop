@@ -381,6 +381,36 @@ describe("writePromptSnapshot", () => {
 
     await rm(root, { recursive: true, force: true });
   });
+
+  it("inserts a blank line between snapshot block and next audit event (E7 protocol)", async () => {
+    const root = makeTmpRoot("snapshot-blank-sep");
+    await initAuditLog(makeConfig(root));
+
+    // Write a snapshot followed immediately by a regular audit event
+    await writePromptSnapshot(
+      "prompt_snapshot",
+      { stage: "clarify", pipelineId: "pipe-sep", source: "yml" },
+      "Prompt text",
+    );
+    await writeAuditLog("next_event", { pipelineId: "pipe-sep" });
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+
+    // After "=== PROMPT END ===" there must be a blank line before the next event
+    const endMarkerIdx = content.indexOf("=== PROMPT END ===");
+    const nextEventIdx = content.indexOf("next_event");
+    expect(endMarkerIdx).toBeGreaterThan(-1);
+    expect(nextEventIdx).toBeGreaterThan(-1);
+
+    // Extract the text between END marker and next event
+    const between = content.slice(endMarkerIdx + "=== PROMPT END ===".length, nextEventIdx);
+    // Should contain at least two newlines: one ending the END line, one blank line
+    // i.e. "\n\n" (END\n + blank\n before next event line)
+    expect(between).toMatch(/\n\n/);
+
+    await rm(root, { recursive: true, force: true });
+  });
 });
 
 describe("safeWritePromptSnapshot", () => {
