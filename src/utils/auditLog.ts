@@ -2,8 +2,19 @@
  * @module auditLog
  * Centralized audit log writer.
  * Provides initAuditLog (path resolution + directory creation),
- * getDateAuditFileName (date-rotated log filename), and
- * writeAuditLog (formatted text-line appender).
+ * getDateAuditFileName (date-rotated log filename),
+ * writeAuditLog (formatted text-line appender), and
+ * writePromptSnapshot / safeWritePromptSnapshot (multiline prompt snapshot writer).
+ *
+ * Multiline prompt snapshot protocol (E7):
+ *   1. Metadata single-line event: `{date} {time} - [INFO] prompt_snapshot | stage=xxx | pipelineId=xxx | source=yml|fallback`
+ *   2. `=== PROMPT START ===`
+ *   3. Multiline raw prompt content (preserved as-is)
+ *   4. `=== PROMPT END ===`
+ *   5. Trailing blank line to separate from next event
+ *
+ * All snapshot lines are appended to `{auditDir}/YYYYMMDD_audit.log` alongside
+ * regular single-line audit events.
  */
 
 import fs from "node:fs/promises";
@@ -113,6 +124,91 @@ export async function safeWriteAuditLog(
 ): Promise<void> {
   try {
     await writeAuditLog(stage, message, level);
+  } catch {
+    // Audit failure must never alter business control flow
+  }
+}
+
+// ─── Prompt snapshot markers (E7 protocol) ────────────────────────────────────
+
+const PROMPT_SNAPSHOT_START = "=== PROMPT START ===";
+const PROMPT_SNAPSHOT_END = "=== PROMPT END ===";
+
+/**
+ * Writes a multiline prompt snapshot to today's audit log file.
+ *
+ * Snapshot format:
+ *   Line 1:  `{date} {time} - [INFO] prompt_snapshot | stage=xxx | pipelineId=xxx | source=...`
+ *   Line 2:  `=== PROMPT START ===`
+ *   Lines:   (multiline prompt content, preserved as-is)
+ *   Line N:  `=== PROMPT END ===`
+ *   Line N+1: (blank line separator)
+ *
+ * If `auditDirPath` has not been initialized (initAuditLog not called),
+ * the function silently returns without writing or throwing.
+ *
+ * @param stage   - Fixed string "prompt_snapshot" identifying the event type
+ * @param message - Key-value metadata (must include stage, pipelineId, source)
+ * @param prompt  - The rendered plugin prompt content (may be multiline)
+ */
+export async function writePromptSnapshot(
+  stage: string,
+  message: Record<string, string>,
+  prompt: string,
+): Promise<void> {
+  // Guard: if audit directory has not been initialized, silently skip
+  if (!auditDirPath) return;
+
+  const now = new Date();
+  const datePart = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
+  const timePart = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join(":");
+
+  // Build metadata single-line event (same format as writeAuditLog)
+  let metaLine = `${datePart} ${timePart} - [INFO] ${stage}`;
+  if (message && Object.keys(message).length > 0) {
+    for (const [k, v] of Object.entries(message)) {
+      metaLine += ` | ${k}=${v}`;
+    }
+  }
+
+  // Build the full snapshot block
+  const snapshotBlock = [
+    metaLine,
+    PROMPT_SNAPSHOT_START,
+    prompt,
+    PROMPT_SNAPSHOT_END,
+    "", // trailing blank line for separation
+  ].join("\n");
+
+  const logPath = path.join(auditDirPath, getDateAuditFileName());
+  await fs.appendFile(logPath, snapshotBlock);
+}
+
+/**
+ * Safe wrapper around writePromptSnapshot that never throws.
+ *
+ * Used in hot paths where audit failure must not alter business control flow.
+ * Any error is silently swallowed.
+ *
+ * @param stage   - Fixed string "prompt_snapshot" identifying the event type
+ * @param message - Key-value metadata (must include stage, pipelineId, source)
+ * @param prompt  - The rendered plugin prompt content (may be multiline)
+ */
+export async function safeWritePromptSnapshot(
+  stage: string,
+  message: Record<string, string>,
+  prompt: string,
+): Promise<void> {
+  try {
+    await writePromptSnapshot(stage, message, prompt);
   } catch {
     // Audit failure must never alter business control flow
   }

@@ -7,6 +7,8 @@ import {
   writeAuditLog,
   safeWriteAuditLog,
   getDateAuditFileName,
+  writePromptSnapshot,
+  safeWritePromptSnapshot,
   __resetAuditDirPath,
 } from "../../utils/auditLog";
 import type { PipelineConfig } from "../../types";
@@ -271,5 +273,141 @@ describe("safeWriteAuditLog", () => {
   it("silently handles errors without throwing", async () => {
     // Even with arbitrary state, safeWriteAuditLog should never throw
     await expect(safeWriteAuditLog("test", {}, "error")).resolves.toBeUndefined();
+  });
+});
+
+describe("writePromptSnapshot", () => {
+  it("writes metadata line, START/END markers, and multiline prompt content", async () => {
+    const root = makeTmpRoot("snapshot-basic");
+    await initAuditLog(makeConfig(root));
+
+    const multilinePrompt = "Line 1: Pipeline Status\nLine 2: Stage=clarify\nLine 3: Domain=test";
+    await writePromptSnapshot(
+      "prompt_snapshot",
+      { stage: "clarify", pipelineId: "pipe-001", source: "yml" },
+      multilinePrompt,
+    );
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+
+    // Metadata line should contain the event type and key=value pairs
+    expect(content).toContain("[INFO] prompt_snapshot");
+    expect(content).toContain("stage=clarify");
+    expect(content).toContain("pipelineId=pipe-001");
+    expect(content).toContain("source=yml");
+
+    // START and END markers must be present
+    expect(content).toContain("=== PROMPT START ===");
+    expect(content).toContain("=== PROMPT END ===");
+
+    // Multiline prompt content must be preserved as-is
+    expect(content).toContain("Line 1: Pipeline Status");
+    expect(content).toContain("Line 2: Stage=clarify");
+    expect(content).toContain("Line 3: Domain=test");
+
+    // Markers should be in correct order
+    const metaIdx = content.indexOf("[INFO] prompt_snapshot");
+    const startIdx = content.indexOf("=== PROMPT START ===");
+    const promptIdx = content.indexOf("Line 1: Pipeline Status");
+    const endIdx = content.indexOf("=== PROMPT END ===");
+    expect(metaIdx).toBeLessThan(startIdx);
+    expect(startIdx).toBeLessThan(promptIdx);
+    expect(promptIdx).toBeLessThan(endIdx);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("preserves prompt content with special characters and blank lines", async () => {
+    const root = makeTmpRoot("snapshot-special");
+    await initAuditLog(makeConfig(root));
+
+    const promptWithSpecialChars = "# Header\n\nSome content\n---\nMore content\n\n# Footer";
+    await writePromptSnapshot(
+      "prompt_snapshot",
+      { stage: "develop", pipelineId: "pipe-002", source: "fallback" },
+      promptWithSpecialChars,
+    );
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+
+    // Special characters and blank lines should be preserved
+    expect(content).toContain("# Header");
+    expect(content).toContain("---");
+    expect(content).toContain("More content");
+    expect(content).toContain("# Footer");
+    expect(content).toContain("source=fallback");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not throw or write when auditDirPath is uninitialized", async () => {
+    __resetAuditDirPath();
+
+    // Should silently return without throwing
+    await expect(
+      writePromptSnapshot("prompt_snapshot", { stage: "clarify" }, "some prompt"),
+    ).resolves.toBeUndefined();
+  });
+
+  it("appends correctly alongside regular writeAuditLog entries", async () => {
+    const root = makeTmpRoot("snapshot-mixed");
+    await initAuditLog(makeConfig(root));
+
+    // Write a regular audit line first
+    await writeAuditLog("agent_settled", { pipelineId: "pipe-003" });
+    // Then write a prompt snapshot
+    await writePromptSnapshot(
+      "prompt_snapshot",
+      { stage: "plan", pipelineId: "pipe-003", source: "yml" },
+      "Plan prompt content",
+    );
+    // Then another regular audit line
+    await writeAuditLog("session_end", { pipelineId: "pipe-003" });
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+
+    // Regular audit line should be present
+    expect(content).toContain("[INFO] agent_settled");
+    // Snapshot block should be present
+    expect(content).toContain("[INFO] prompt_snapshot");
+    expect(content).toContain("=== PROMPT START ===");
+    expect(content).toContain("Plan prompt content");
+    expect(content).toContain("=== PROMPT END ===");
+    // Second regular line should be present
+    expect(content).toContain("[INFO] session_end");
+
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("safeWritePromptSnapshot", () => {
+  it("writes snapshot like writePromptSnapshot but never throws", async () => {
+    const root = makeTmpRoot("safe-snapshot");
+    await initAuditLog(makeConfig(root));
+
+    await safeWritePromptSnapshot(
+      "prompt_snapshot",
+      { stage: "review", pipelineId: "pipe-004", source: "yml" },
+      "Review prompt content",
+    );
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("=== PROMPT START ===");
+    expect(content).toContain("Review prompt content");
+    expect(content).toContain("=== PROMPT END ===");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("silently handles errors without throwing", async () => {
+    // Even with uninitialized state, safeWritePromptSnapshot should never throw
+    __resetAuditDirPath();
+    await expect(
+      safeWritePromptSnapshot("prompt_snapshot", { stage: "test" }, "prompt"),
+    ).resolves.toBeUndefined();
   });
 });
