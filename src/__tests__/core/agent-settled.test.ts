@@ -111,6 +111,63 @@ describe("createAgentSettled", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 
+  // ── Phase 3: frozen short-circuit ────────────────────────────────────────────
+
+  it("skips verification when pipeline is frozen (flowState=blocked)", async () => {
+    const stageTmp = join(tmpdir(), "pi-agent-settled-frozen-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create verify.md that would FAIL
+    const vrDir = join(stageTmp, "references", "develop_spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"nonexistent.md\"\n---\nBody\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "develop" ? { require: true, verifyFile: "references/develop_spec/verify.md" } : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should NOT run verification — no metadata updates beyond the initial
+    // (no verifyFailures written, no stage advance)
+    const verifyUpdates = ctx.metadataUpdates.filter(u => u.verifyFailures);
+    expect(verifyUpdates.length).toBe(0);
+
+    // Should write agent_settled_skipped_frozen audit
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("agent_settled_skipped_frozen");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
   // ── Phase 3: verify.mode tests ──────────────────────────────────────────────
 
   it("mode 'tool': skips verification — does NOT run runVerification", async () => {

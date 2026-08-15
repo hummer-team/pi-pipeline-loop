@@ -12,6 +12,7 @@ import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import { PROTECTED_PATHS } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
+import { isFrozen } from "./flow-state";
 
 /**
  * Builds Part 1: Context Reference.
@@ -182,11 +183,13 @@ async function buildLoopStatus(
 /**
  * Builds Part 5: Pipeline Status.
  * Shows pipeline ID, current stage, domain info, and summary validation status.
+ * When pipeline is frozen, includes freeze reason and shortcut key hint.
  *
+ * @param config - Pipeline configuration (for shortcut key)
  * @param meta - Current session metadata
  * @returns Prompt section string
  */
-function buildPipelineStatus(meta: SessionMeta): string {
+function buildPipelineStatus(config: PipelineConfig, meta: SessionMeta): string {
   const prevStage = meta.previousStage;
   const prevSummary = prevStage ? meta.summaries[prevStage] : undefined;
   const pendingValidation =
@@ -194,13 +197,24 @@ function buildPipelineStatus(meta: SessionMeta): string {
       ? "YES (Validate before proceed)"
       : "NO";
 
-  return (
-    `# Pipeline Status\n` +
-    `- Pipeline ID: ${meta.pipelineId}\n` +
-    `- Current Stage: ${meta.currentStage}\n` +
-    `- Domain: ${meta.domain.id}@${meta.domain.version}\n` +
-    `- Pending Summary Validation: ${pendingValidation}`
-  );
+  const parts = [
+    `# Pipeline Status`,
+    `- Pipeline ID: ${meta.pipelineId}`,
+    `- Current Stage: ${meta.currentStage}`,
+    `- Domain: ${meta.domain.id}@${meta.domain.version}`,
+    `- Pending Summary Validation: ${pendingValidation}`,
+  ];
+
+  // Inject frozen state hint to prevent agent from spinning on blocked tools
+  if (isFrozen(meta)) {
+    const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+    const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
+    parts.push(
+      `- Pipeline Status: FROZEN (blocked: ${reason}) — 等待用户通过 TUI 决策菜单处理（快捷键 ${shortcutKey}）`,
+    );
+  }
+
+  return parts.join("\n");
 }
 
 /**
@@ -272,7 +286,7 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const part2 = await buildDomainSkill(stageConfig, meta);
       const part3 = await buildStageSkill(config, stageConfig, meta);
       const part4 = await buildLoopStatus(config, meta);
-      const part5 = buildPipelineStatus(meta);
+      const part5 = buildPipelineStatus(config, meta);
       const part6 = buildVerifyFailurePrompt(meta);
       const part7 = buildVerifyToolGuidance(stageConfig);
 

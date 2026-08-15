@@ -92,6 +92,46 @@ describe("createToolGuard", () => {
       expect((result as any).block).toBe(true);
       expect((result as any).reason).toContain("frozen");
     });
+
+    it("blocks all tools when flowState is blocked", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ flowState: "blocked", blockedReason: "loop_overflow" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "read", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("frozen");
+      expect((result as any).reason).toContain("ctrl+d");
+    });
+
+    it("blocks all tools when flowState is aborted", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "read", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("aborted");
+    });
+
+    it("blocks with custom shortcut key in reason message", async () => {
+      const config = makeTestConfig({ decisionShortcutKey: "alt+f" });
+      const meta = makeTestMeta({ flowState: "blocked" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "read", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("alt+f");
+    });
   });
 
   describe("file write protection", () => {

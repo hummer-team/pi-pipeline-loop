@@ -12,6 +12,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages } from "./session-state";
+import { isFrozen } from "./flow-state";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -45,6 +46,15 @@ export function createAgentSettled(
       });
 
       ui.notify(ctx, `Agent settled in "${meta.currentStage}" stage`);
+
+      // 1b. Frozen short-circuit: skip verification when pipeline is frozen
+      if (isFrozen(meta)) {
+        await writeAuditLog("agent_settled_skipped_frozen", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+        });
+        return;
+      }
 
       // 2. Auto-verification
       const stageConfig = config.stages[meta.currentStage];
@@ -86,7 +96,7 @@ export function createAgentSettled(
           ui,
         });
       } else {
-        await applyVerifyFail(ctx, meta, meta.currentStage, sharedResult, "rule", ui);
+        await applyVerifyFail(ctx, meta, meta.currentStage, sharedResult, "rule", ui, config);
       }
     },
   };

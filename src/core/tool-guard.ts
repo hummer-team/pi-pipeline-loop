@@ -35,6 +35,7 @@ import {
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
+import { isFrozen, getFlowState } from "./flow-state";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
@@ -153,18 +154,21 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         }
       }
 
-      // 3. Termination / freeze state check
-      if (meta.terminated) {
+      // 3. Freeze state check (unified via isFrozen)
+      if (isFrozen(meta)) {
+        const fs = getFlowState(meta);
+        let reason: string;
+        if (fs === "aborted") {
+          reason = "Pipeline aborted. Start a new pipeline with /pipeline_start";
+        } else if (meta.currentStage === "awaiting_human") {
+          reason = "Pipeline frozen. Contact the user to resume the pipeline";
+        } else {
+          const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+          reason = `Pipeline frozen. Press ${shortcutKey} to open the decision menu`;
+        }
         return {
           block: true,
-          reason: `Pipeline terminated: ${meta.terminateReason || "unknown"}`,
-        };
-      }
-      if (meta.currentStage === "awaiting_human") {
-        return {
-          block: true,
-          reason:
-            "Pipeline frozen. Contact the user to resume the pipeline",
+          reason,
         };
       }
 
