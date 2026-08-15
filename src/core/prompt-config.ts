@@ -212,10 +212,11 @@ export function renderStageTemplate(
   }
 
   // Step 2: Split template into paragraphs by `---` separator lines
-  const segments = template.split(/^---$/gm);
+  // Allow trailing whitespace on separator lines for robustness
+  const segments = template.split(/^---\s*$/m);
 
-  // Step 3: Process each segment — remove if null/empty placeholder, else replace
-  const renderedSegments: string[] = [];
+  // Step 3: Separate segments into kept and removed (null/empty placeholder)
+  const keptSegments: string[] = [];
   for (const segment of segments) {
     let skipSegment = false;
 
@@ -230,9 +231,27 @@ export function renderStageTemplate(
       }
     }
 
-    if (skipSegment) continue;
+    if (!skipSegment) {
+      keptSegments.push(segment);
+    }
+  }
 
-    // Replace known placeholders with their values
+  // Step 3b: Re-check critical placeholders after paragraph removal
+  // A critical placeholder may have been in a removed paragraph, silently lost
+  const keptText = keptSegments.join("\n");
+  const missingAfterRemoval: string[] = [];
+  for (const cp of criticalPlaceholders) {
+    if (!keptText.includes(cp)) {
+      missingAfterRemoval.push(cp);
+    }
+  }
+  if (missingAfterRemoval.length > 0) {
+    return { status: "missing_critical", missing: missingAfterRemoval };
+  }
+
+  // Step 4: Replace known placeholders with their values in kept segments
+  const renderedSegments: string[] = [];
+  for (const segment of keptSegments) {
     let rendered = segment;
     for (const key of KNOWN_PLACEHOLDER_KEYS) {
       const placeholder = `{{${key}}}`;

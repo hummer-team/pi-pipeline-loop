@@ -22,4 +22,7 @@ AGENTS_bak
 .opencode
 .pi
 .pi/session*
-/src/template/
+/src/template/*
+!/src/template/references/
+/src/template/references/*
+!/src/template/references/prompt-injector.yml

@@ -395,6 +395,55 @@ describe("prompt-config", () => {
         expect(result.prompt).toContain("{{context_reference}}");
       }
     });
+
+    it("splits on separator lines with trailing whitespace (robustness)", () => {
+      // Fix #1: /^---\s*$/m must tolerate trailing spaces/tabs on --- lines
+      const template = "{{pipeline_status}}\n---  \n{{context_reference}}\n---\t\n{{stage_write_scope}}";
+      const values: Record<string, string | null> = {
+        pipeline_status: "# Pipeline",
+        context_reference: "# Context",
+        stage_write_scope: "# Scope",
+      };
+      const result = renderStageTemplate(template, "clarify", values);
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.prompt).toContain("# Pipeline");
+        expect(result.prompt).toContain("# Context");
+        expect(result.prompt).toContain("# Scope");
+      }
+    });
+
+    it("returns missing_critical when critical placeholder is in a removed paragraph", () => {
+      // Fix #3: {{pipeline_status}} co-locates with {{domain_skill}} (null),
+      // paragraph gets removed, critical placeholder silently lost
+      const template = "{{pipeline_status}} and {{domain_skill}}\n---\n{{context_reference}}\n---\n{{stage_write_scope}}";
+      const values: Record<string, string | null> = {
+        pipeline_status: "# Pipeline",
+        domain_skill: null, // triggers paragraph removal
+        context_reference: "# Context",
+        stage_write_scope: "# Scope",
+      };
+      const result = renderStageTemplate(template, "clarify", values);
+      expect(result.status).toBe("missing_critical");
+      if (result.status === "missing_critical") {
+        expect(result.missing).toContain("{{pipeline_status}}");
+      }
+    });
+
+    it("returns missing_critical when loop_status paragraph is removed", () => {
+      // Fix #3 for loop stages: {{loop_status}} removed with null co-tenant
+      const template = "{{loop_status}} and {{domain_skill}}\n---\n{{pipeline_status}}";
+      const values: Record<string, string | null> = {
+        loop_status: "# Loop",
+        domain_skill: null, // triggers paragraph removal
+        pipeline_status: "# Pipeline",
+      };
+      const result = renderStageTemplate(template, "develop", values);
+      expect(result.status).toBe("missing_critical");
+      if (result.status === "missing_critical") {
+        expect(result.missing).toContain("{{loop_status}}");
+      }
+    });
   });
 
   // ─── Template file structure validation ──────────────────────────────────────
