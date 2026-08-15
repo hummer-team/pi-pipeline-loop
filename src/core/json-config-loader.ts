@@ -18,7 +18,6 @@ import {
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
   STAGE_TYPE_TOOL_DEFAULTS,
-  ALLOWED_WRITE_ALL,
   resolveStagePath,
 } from "../constants";
 

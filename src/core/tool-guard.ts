@@ -225,6 +225,17 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
+            } else {
+              // Path outside project root: block in whitelist mode (cannot satisfy whitelist)
+              const isWhitelistMode =
+                stageConfig.allowedWritePaths !== undefined &&
+                !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
+              if (isWhitelistMode) {
+                const reason = `FORBIDDEN: Target '${absTarget}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
+              // Full mode: out-of-project paths bypass global chain (legacy behavior)
             }
           }
         }
@@ -289,6 +300,17 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               }
             }
           }
+        } else {
+          // Path outside project root: block in whitelist mode (cannot satisfy whitelist)
+          const isWhitelistMode =
+            stageConfig.allowedWritePaths !== undefined &&
+            !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
+          if (isWhitelistMode) {
+            const reason = `FORBIDDEN: Target '${absPath}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
+            ui.notify(ctx, reason);
+            return { block: true, reason };
+          }
+          // Full mode: out-of-project paths bypass global chain (legacy behavior)
         }
 
         // Record oldHash for diff archiving in loop-breaker

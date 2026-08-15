@@ -963,5 +963,104 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("'git add' would stage protected path");
       await rm(TMP, { recursive: true, force: true });
     });
+
+    it("write: absolute path outside project root in whitelist mode → blocked", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-outside-abs-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      // Absolute path clearly outside project root
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/outside-x.md" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("outside project root");
+      expect((result as any).reason).toContain("develop");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("write: relative path escaping project root in whitelist mode → blocked", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-outside-rel-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      // Relative path that escapes project root via ../
+      ctx.toolCall = { name: "write", arguments: { file_path: "../../outside/x.md" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("outside project root");
+      expect((result as any).reason).toContain("develop");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("write: path outside project root in full mode (['**']) → allowed (legacy)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-outside-full-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["**"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      // Absolute path outside project root, but full mode should not block
+      ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/outside-legacy.md" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Full mode: out-of-project paths bypass stage whitelist (legacy behavior)
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("bash: redirect to path outside project root in whitelist mode → blocked", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-bash-outside-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedBashPrefixes: ["echo"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      // Absolute path outside project root via bash redirect
+      ctx.toolCall = { name: "bash", arguments: { command: "echo hi > /tmp/outside-x.md" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("outside project root");
+      expect((result as any).reason).toContain("develop");
+      await rm(TMP, { recursive: true, force: true });
+    });
   });
 });
