@@ -531,6 +531,54 @@ describe("prompt-config", () => {
         expect(result.missing).toContain("{{loop_status}}");
       }
     });
+
+    it("replaces {{stage_skill}} placeholder with its value", () => {
+      const template = "{{pipeline_status}}\n---\n{{stage_skill}}\n---\n{{stage_write_scope}}";
+      const values: Record<string, string | null> = {
+        pipeline_status: "# Pipeline",
+        stage_skill: "# STAGE-SPECIFIC RULES\nSkill content here",
+        stage_write_scope: "# Write Scope",
+      };
+      const result = renderStageTemplate(template, "clarify", values);
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.prompt).toContain("# STAGE-SPECIFIC RULES");
+        expect(result.prompt).toContain("Skill content here");
+        expect(result.prompt).not.toContain("{{stage_skill}}");
+      }
+    });
+
+    it("removes paragraph when {{stage_skill}} value is null", () => {
+      const template = "{{pipeline_status}}\n---\n{{stage_skill}}\n---\n{{stage_write_scope}}";
+      const values: Record<string, string | null> = {
+        pipeline_status: "# Pipeline",
+        stage_skill: null, // triggers paragraph removal
+        stage_write_scope: "# Write Scope",
+      };
+      const result = renderStageTemplate(template, "clarify", values);
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.prompt).toContain("# Pipeline");
+        expect(result.prompt).toContain("# Write Scope");
+        // stage_skill paragraph should be removed entirely
+        expect(result.prompt).not.toContain("{{stage_skill}}");
+        expect(result.prompt).not.toContain("STAGE-SPECIFIC RULES");
+      }
+    });
+
+    it("preserves unknown placeholders as-is (stage_skill not in values → undefined)", () => {
+      const template = "{{pipeline_status}}\n---\n{{stage_skill}}\n---\n{{stage_write_scope}}";
+      // stage_skill is not provided in values → undefined → not null, not empty → placeholder preserved
+      const values: Record<string, string | null> = {
+        pipeline_status: "# Pipeline",
+        stage_write_scope: "# Scope",
+      };
+      const result = renderStageTemplate(template, "clarify", values);
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.prompt).toContain("{{stage_skill}}");
+      }
+    });
   });
 
   // ─── Template file structure validation ──────────────────────────────────────

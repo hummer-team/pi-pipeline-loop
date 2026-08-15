@@ -62,6 +62,7 @@ const PROMPT_CONFIG_FILE = "pipeline-stage-prompt.yml";
 const KNOWN_PLACEHOLDER_KEYS = [
   "context_reference",
   "domain_skill",
+  "stage_skill",
   "loop_status",
   "pipeline_status",
   "verify_failures",
@@ -246,7 +247,7 @@ export const CRITICAL_PLACEHOLDERS = (stage: string): string[] => {
  * 2. Paragraph-level removal: template is split on `---` separators. If a
  *    paragraph contains a placeholder whose value is null or "", the entire
  *    paragraph is discarded.
- * 3. Placeholder replacement: known placeholders (7 total) are replaced with
+ * 3. Placeholder replacement: known placeholders (8 total) are replaced with
  *    their values. Unknown placeholders ({{xxx}}) are preserved as-is.
  * 4. Segments are joined with `\n\n---\n\n`, empty segments filtered, result trimmed.
  *
