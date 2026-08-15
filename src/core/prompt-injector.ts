@@ -1,9 +1,17 @@
 /**
  * @module prompt-injector
  * Factory for the `before_agent_start` hook.
- * Composes a 5-part system prompt injected before each agent invocation,
+ * Composes an 8-part system prompt appended after the pi base system prompt,
  * providing context references, domain skills, stage skills, loop status,
- * and pipeline status.
+ * pipeline status, verification failures, verify tool guidance, and write scope.
+ *
+ * Injection method (D3): Plugin prompt is appended after `ctx.getSystemPrompt()`
+ * (pi base + prior plugin modifications), separated by `\n\n---\n\n`.
+ * When ctx.getSystemPrompt is unavailable, returns plugin prompt directly.
+ *
+ * Requirement document (D1/D2): Full-text injection removed. When in clarify stage
+ * and meta.requirementDoc exists, the document path is included in context_reference
+ * (REQUIRED CONTEXT FILES) for the agent to read via the read tool.
  */
 
 import fs from "node:fs/promises";
@@ -18,16 +26,27 @@ import { getStagePrompt, renderStageTemplate } from "./prompt-config";
 
 /**
  * Builds Part 1: Context Reference.
- * Includes the previous stage's validated summary and any context files
- * associated with the current stage in session metadata.
+ * Includes the previous stage's validated summary, any context files
+ * associated with the current stage, and (for clarify stage) the requirement
+ * document path for the agent to read via the read tool (D2).
  *
+ * @param config - Pipeline configuration (for projectRoot)
  * @param meta - Current session metadata
  * @returns Prompt section string, or null if no context files to reference
  */
-function buildContextReference(meta: SessionMeta): string | null {
+function buildContextReference(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): string | null {
   const prevStage = meta.previousStage;
   const prevSummary = prevStage ? meta.summaries[prevStage] : undefined;
   const filesToRead: string[] = [];
+
+  // Clarify stage: include requirement document path at the top (D2)
+  if (meta.currentStage === "clarify" && meta.requirementDoc) {
+    const reqDocPath = path.join(config.projectRoot, meta.requirementDoc);
+    filesToRead.push(reqDocPath);
+  }
 
   // Include previous stage's validated summary
   if (prevSummary && prevSummary.status === "valid") {
@@ -321,10 +340,15 @@ function buildStageWriteScope(
 /**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
  *
+ * Injection method (D3): Appends plugin prompt after pi base system prompt.
+ * Uses ctx.getSystemPrompt() to get the current system prompt (pi base + prior
+ * plugin modifications), then appends the plugin prompt separated by `\n\n---\n\n`.
+ * When ctx.getSystemPrompt is unavailable, returns plugin prompt directly.
+ *
  * Dual-path rendering:
  * 1. If a yml stage template exists and contains all critical placeholders →
  *    render placeholders with dynamic values (paragraph-level null removal).
- * 2. Otherwise → fall back to the default 9-part prompt assembly.
+ * 2. Otherwise → fall back to the default 8-part prompt assembly.
  *
  * @param config - The pipeline configuration
  * @returns A Hook object for the "before_agent_start" event
@@ -336,6 +360,9 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
 
+      // Build the plugin prompt (yml template or default 8-part)
+      let pluginPrompt: string;
+
       // Try yml template path
       const template = await getStagePrompt(config.projectRoot, meta.currentStage);
       if (template !== null) {
@@ -346,19 +373,27 @@ export function createPromptInjector(config: PipelineConfig): Hook {
             stage: meta.currentStage,
             missing: rendered.missing.join(","),
           }, "warn");
-          return { systemPrompt: await buildDefaultPrompt(config, meta, stageConfig) };
+          pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
+        } else {
+          pluginPrompt = rendered.prompt;
         }
-        return { systemPrompt: rendered.prompt };
+      } else {
+        // Default path: no yml template → use 8-part assembly
+        pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
       }
 
-      // Default path: no yml template → use 9-part assembly
-      return { systemPrompt: await buildDefaultPrompt(config, meta, stageConfig) };
+      // Append plugin prompt after pi base system prompt (D3)
+      const base = ctx.getSystemPrompt?.() ?? "";
+      if (base) {
+        return { systemPrompt: base + "\n\n---\n\n" + pluginPrompt };
+      }
+      return { systemPrompt: pluginPrompt };
     },
   };
 }
 
 /**
- * Builds the default 9-part prompt by calling each part builder and joining
+ * Builds the default 8-part prompt by calling each part builder and joining
  * non-null results with `\n\n---\n\n`. Used as the fallback when no yml
  * template is available or when critical placeholders are missing.
  *
@@ -372,8 +407,7 @@ async function buildDefaultPrompt(
   meta: SessionMeta,
   stageConfig: StageConfig,
 ): Promise<string> {
-  const part0 = await buildRequirementDoc(config, meta);
-  const part1 = buildContextReference(meta);
+  const part1 = buildContextReference(config, meta);
   const part2 = await buildDomainSkill(stageConfig, meta);
   const part3 = await buildStageSkill(config, stageConfig, meta);
   const part4 = await buildLoopStatus(config, meta);
@@ -385,7 +419,7 @@ async function buildDefaultPrompt(
     ? buildStageWriteScope(stageConfig, true)
     : null;
 
-  const promptParts = [part0, part1, part2, part3, part4, part5, part6, part7, part8].filter(
+  const promptParts = [part1, part2, part3, part4, part5, part6, part7, part8].filter(
     (p): p is string => p !== null,
   );
 
@@ -394,7 +428,7 @@ async function buildDefaultPrompt(
 
 /**
  * Builds the dynamic placeholder values map for template rendering.
- * Maps each of the 8 known placeholder keys to its computed value.
+ * Maps each of the 7 known placeholder keys to its computed value.
  * Null values trigger paragraph-level removal in renderStageTemplate.
  *
  * @param config - Pipeline configuration
@@ -410,8 +444,7 @@ async function buildDynamicValues(
   const isLoopStage = meta.currentStage === "develop" || meta.currentStage === "fix";
 
   return {
-    requirement_doc: await buildRequirementDoc(config, meta),
-    context_reference: buildContextReference(meta),
+    context_reference: buildContextReference(config, meta),
     domain_skill: await buildDomainSkill(stageConfig, meta),
     // Stage Skill (Part 3) is only used in default path, not in template rendering
     loop_status: await buildLoopStatus(config, meta),
@@ -423,27 +456,4 @@ async function buildDynamicValues(
   };
 }
 
-/**
- * Builds Part 0: Requirement Document.
- * Loads the user's requirement document when running in clarify stage.
- *
- * @param config - Pipeline configuration
- * @param meta - Current session metadata
- * @returns Prompt section string, or null if no requirement doc
- */
-async function buildRequirementDoc(
-  config: PipelineConfig,
-  meta: SessionMeta,
-): Promise<string | null> {
-  if (!meta.requirementDoc || meta.currentStage !== "clarify") {
-    return null;
-  }
 
-  const docPath = path.join(config.projectRoot, meta.requirementDoc);
-  try {
-    const content = await fs.readFile(docPath, "utf-8");
-    return `# USER REQUIREMENT DOCUMENT\n\n${content}`;
-  } catch {
-    return null;
-  }
-}

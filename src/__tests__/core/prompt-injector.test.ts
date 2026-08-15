@@ -667,4 +667,115 @@ describe("createPromptInjector", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  describe("append injection (D3)", () => {
+    it("appends plugin prompt after pi base when ctx.getSystemPrompt is available", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const basePrompt = "You are an expert coding assistant. Follow AGENTS.md rules.";
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => basePrompt,
+      };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should contain the pi base prompt
+      expect(result.systemPrompt).toContain(basePrompt);
+      // Should contain the plugin prompt parts
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      // Should contain the separator
+      expect(result.systemPrompt).toContain("\n\n---\n\n");
+      // Base should come before plugin content
+      const baseIndex = result.systemPrompt.indexOf(basePrompt);
+      const pipelineIndex = result.systemPrompt.indexOf("Pipeline Status");
+      expect(baseIndex).toBeLessThan(pipelineIndex);
+    });
+
+    it("returns only plugin prompt when ctx.getSystemPrompt is not available", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      // No getSystemPrompt on ctx
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should still contain plugin prompt parts
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      // Prompt should not start with a base prefix + separator
+      // It should start directly with plugin content (no "base\n\n---\n\n" prefix)
+      expect(result.systemPrompt.startsWith("You are")).toBe(false);
+    });
+
+    it("returns only plugin prompt when ctx.getSystemPrompt returns empty string", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("Pipeline Status");
+    });
+  });
+
+  describe("requirement doc path in context_reference (D1/D2)", () => {
+    it("clarify stage with requirementDoc includes path in REQUIRED CONTEXT FILES", async () => {
+      const config = makeTestConfig({ projectRoot: "/my/project" });
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        requirementDoc: "docs/requirement.md",
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should contain the requirement doc path in context files
+      expect(result.systemPrompt).toContain("REQUIRED CONTEXT FILES");
+      expect(result.systemPrompt).toContain("/my/project/docs/requirement.md");
+      expect(result.systemPrompt).toContain("MUST READ FIRST");
+      // Should NOT contain full-text requirement document
+      expect(result.systemPrompt).not.toContain("# USER REQUIREMENT DOCUMENT");
+    });
+
+    it("non-clarify stage does not include requirementDoc path even if set", async () => {
+      const config = makeTestConfig({ projectRoot: "/my/project" });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        requirementDoc: "docs/requirement.md",
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should NOT contain the requirement doc path for non-clarify stages
+      expect(result.systemPrompt).not.toContain("/my/project/docs/requirement.md");
+    });
+
+    it("clarify stage without requirementDoc does not add extra context file", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        previousStage: undefined,
+        summaries: {},
+        // No requirementDoc set
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Without previous summary or requirementDoc, context_reference should be null
+      expect(result.systemPrompt).not.toContain("REQUIRED CONTEXT FILES");
+    });
+  });
 });
