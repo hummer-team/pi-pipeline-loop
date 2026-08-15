@@ -164,7 +164,7 @@ describe("createSessionStarter", () => {
       const refsDir = join(TMP, ".pi", "references");
       await mkdir(refsDir, { recursive: true });
       await writeFile(
-        join(refsDir, "prompt-injector.yml"),
+        join(refsDir, "pipeline-stage-prompt.yml"),
         "clarify: test template\n",
         "utf-8",
       );

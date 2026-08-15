@@ -467,11 +467,11 @@ describe("createPromptInjector", () => {
   });
 
   describe("yml template rendering path", () => {
-    /** Helper: write a prompt-injector.yml to the project's .pi/references/ */
+    /** Helper: write a pipeline-stage-prompt.yml to the project's .pi/references/ */
     async function writePromptYml(projectRoot: string, content: string): Promise<void> {
       const refsDir = join(projectRoot, ".pi", "references");
       await mkdir(refsDir, { recursive: true });
-      await writeFile(join(refsDir, "prompt-injector.yml"), content, "utf-8");
+      await writeFile(join(refsDir, "pipeline-stage-prompt.yml"), content, "utf-8");
     }
 
     it("uses yml template when available — renders placeholders with dynamic values", async () => {

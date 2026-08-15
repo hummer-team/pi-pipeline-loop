@@ -7,6 +7,7 @@ import { parse as yamlParse } from "yaml";
 import {
   loadPromptConfig,
   getStagePrompt,
+  getVerifyPrompt,
   getVerifyExtractPrompt,
   resetPromptConfigCache,
   CRITICAL_PLACEHOLDERS,
@@ -27,11 +28,11 @@ afterEach(async () => {
   await fs.rm(TMP, { recursive: true, force: true });
 });
 
-/** Helper: write a prompt-injector.yml file in the expected location */
+/** Helper: write a pipeline-stage-prompt.yml file in the expected location */
 async function writeYml(content: string): Promise<void> {
   const refsDir = path.join(TMP, ".pi", "references");
   await fs.mkdir(refsDir, { recursive: true });
-  await fs.writeFile(path.join(refsDir, "prompt-injector.yml"), content, "utf-8");
+  await fs.writeFile(path.join(refsDir, "pipeline-stage-prompt.yml"), content, "utf-8");
 }
 
 describe("prompt-config", () => {
@@ -56,7 +57,7 @@ describe("prompt-config", () => {
       await fs.mkdir(refsDir, { recursive: true });
       // Use invalid YAML that causes a parse error (duplicate keys with different types)
       await fs.writeFile(
-        path.join(refsDir, "prompt-injector.yml"),
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
         "key: &anchor\n  nested: true\nkey: *anchor\nbroken: [unterminated",
         "utf-8",
       );
@@ -103,7 +104,7 @@ describe("prompt-config", () => {
       const TMP2 = path.join(tmpdir(), "pi-prompt-cfg2-" + Date.now());
       await fs.mkdir(path.join(TMP2, ".pi", "references"), { recursive: true });
       await fs.writeFile(
-        path.join(TMP2, ".pi", "references", "prompt-injector.yml"),
+        path.join(TMP2, ".pi", "references", "pipeline-stage-prompt.yml"),
         "clarify: root2\n",
         "utf-8",
       );
@@ -172,6 +173,92 @@ describe("prompt-config", () => {
     it("returns DEFAULT when yml file does not exist", async () => {
       const result = await getVerifyExtractPrompt(TMP);
       expect(result).toBe(DEFAULT_VERIFY_EXTRACT_PROMPT);
+    });
+
+    // ── Per-stage fallback chain tests ──
+
+    it("returns per-stage value when verify_extract_{stage} has content", async () => {
+      await writeYml("verify_extract_clarify: Per-stage clarify extract\nverify_extract: Global extract\n");
+      const result = await getVerifyExtractPrompt(TMP, "clarify");
+      expect(result).toBe("Per-stage clarify extract");
+    });
+
+    it("falls back to global verify_extract when per-stage is missing", async () => {
+      await writeYml("verify_extract: Global extract\n");
+      const result = await getVerifyExtractPrompt(TMP, "develop");
+      expect(result).toBe("Global extract");
+    });
+
+    it("falls back to global verify_extract when per-stage is empty", async () => {
+      await writeYml('verify_extract_develop: ""\nverify_extract: Global extract\n');
+      const result = await getVerifyExtractPrompt(TMP, "develop");
+      expect(result).toBe("Global extract");
+    });
+
+    it("falls back to DEFAULT when both per-stage and global are missing", async () => {
+      await writeYml("clarify: hello\n");
+      const result = await getVerifyExtractPrompt(TMP, "fix");
+      expect(result).toBe(DEFAULT_VERIFY_EXTRACT_PROMPT);
+    });
+
+    it("falls back to DEFAULT when both per-stage and global are empty", async () => {
+      await writeYml('verify_extract_clarify: "   "\nverify_extract: ""\n');
+      const result = await getVerifyExtractPrompt(TMP, "clarify");
+      expect(result).toBe(DEFAULT_VERIFY_EXTRACT_PROMPT);
+    });
+
+    it("without stage parameter uses global verify_extract directly", async () => {
+      await writeYml("verify_extract: Global only\nverify_extract_clarify: Per-stage should be ignored\n");
+      const result = await getVerifyExtractPrompt(TMP);
+      expect(result).toBe("Global only");
+    });
+  });
+
+  // ─── getVerifyPrompt ──────────────────────────────────────────────────────────
+
+  describe("getVerifyPrompt", () => {
+    it("returns per-stage verify prompt when key exists with content", async () => {
+      await writeYml("verify_clarify: Custom verify prompt for clarify\n");
+      const result = await getVerifyPrompt(TMP, "clarify");
+      expect(result).toBe("Custom verify prompt for clarify");
+    });
+
+    it("returns null when verify_{stage} key is missing", async () => {
+      await writeYml("clarify: hello\n");
+      const result = await getVerifyPrompt(TMP, "develop");
+      expect(result).toBeNull();
+    });
+
+    it("returns null when verify_{stage} value is empty string", async () => {
+      await writeYml('verify_develop: ""\n');
+      const result = await getVerifyPrompt(TMP, "develop");
+      expect(result).toBeNull();
+    });
+
+    it("returns null when verify_{stage} value is whitespace only", async () => {
+      await writeYml('verify_review: "   "\n');
+      const result = await getVerifyPrompt(TMP, "review");
+      expect(result).toBeNull();
+    });
+
+    it("returns null when yml file does not exist", async () => {
+      const result = await getVerifyPrompt(TMP, "clarify");
+      expect(result).toBeNull();
+    });
+
+    it("returns correct value for each stage key", async () => {
+      await writeYml(
+        "verify_clarify: Clarify verify\n" +
+        "verify_plan: Plan verify\n" +
+        "verify_develop: Develop verify\n" +
+        "verify_review: Review verify\n" +
+        "verify_fix: Fix verify\n"
+      );
+      expect(await getVerifyPrompt(TMP, "clarify")).toBe("Clarify verify");
+      expect(await getVerifyPrompt(TMP, "plan")).toBe("Plan verify");
+      expect(await getVerifyPrompt(TMP, "develop")).toBe("Develop verify");
+      expect(await getVerifyPrompt(TMP, "review")).toBe("Review verify");
+      expect(await getVerifyPrompt(TMP, "fix")).toBe("Fix verify");
     });
   });
 
@@ -448,9 +535,9 @@ describe("prompt-config", () => {
 
   // ─── Template file structure validation ──────────────────────────────────────
 
-  describe("prompt-injector.yml template file", () => {
+  describe("pipeline-stage-prompt.yml template file", () => {
     const TEMPLATE_PATH = path.join(
-      __dirname, "..", "..", "template", "references", "prompt-injector.yml",
+      __dirname, "..", "..", "template", "references", "pipeline-stage-prompt.yml",
     );
 
     it("can be parsed as valid YAML with expected structure", () => {
@@ -473,13 +560,13 @@ describe("prompt-config", () => {
       }
     });
 
-    it("clarify template contains all 7 non-loop placeholders", () => {
+    it("clarify template contains all 6 non-loop placeholders (no requirement_doc)", () => {
       if (!fsSync.existsSync(TEMPLATE_PATH)) return;
       const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
       const parsed = yamlParse(content) as Record<string, string>;
 
       const clarify = parsed["clarify"];
-      expect(clarify).toContain("{{requirement_doc}}");
+      expect(clarify).not.toContain("{{requirement_doc}}");
       expect(clarify).toContain("{{context_reference}}");
       expect(clarify).toContain("{{domain_skill}}");
       expect(clarify).toContain("{{pipeline_status}}");

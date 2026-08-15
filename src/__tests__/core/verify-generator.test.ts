@@ -598,7 +598,7 @@ describe("verify-generator", () => {
       const refsDir = path.join(TMP, ".pi", "references");
       await fs.mkdir(refsDir, { recursive: true });
       await fs.writeFile(
-        path.join(refsDir, "prompt-injector.yml"),
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
         'verify_extract: "Custom prompt"\n',
         "utf-8",
       );
@@ -616,7 +616,7 @@ describe("verify-generator", () => {
       const refsDir = path.join(TMP, ".pi", "references");
       await fs.mkdir(refsDir, { recursive: true });
       await fs.writeFile(
-        path.join(refsDir, "prompt-injector.yml"),
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
         'verify_extract: ""\n',
         "utf-8",
       );

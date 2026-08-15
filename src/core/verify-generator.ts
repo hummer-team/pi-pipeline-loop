@@ -47,7 +47,7 @@ export type VerifyGenerateResult = {
 /**
  * Resolves the extraction prompt for LLM-based delivery item extraction.
  * Delegates to the prompt-config module which reads from
- * `.pi/references/prompt-injector.yml` (verify_extract key).
+ * `.pi/references/pipeline-stage-prompt.yml` (verify_extract key or verify_extract_{stage}).
  * Falls back to DEFAULT_VERIFY_EXTRACT_PROMPT when the yml value is empty or missing.
  *
  * @param projectRoot - Absolute path to the project root
