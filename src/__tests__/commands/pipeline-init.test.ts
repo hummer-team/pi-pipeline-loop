@@ -1126,6 +1126,47 @@ describe("createPipelineInitCommand", () => {
       expect(texts.filter(t => t?.includes("⠋"))).toEqual([]);
     });
   });
+
+  describe("Phase 4 — docs/ directory creation", () => {
+    it("dir branch creates docs/ directory when it does not exist", async () => {
+      const config = makeInitConfig();
+      const docsDir = path.join(TMP, "docs");
+      expect(fsSync.existsSync(docsDir)).toBe(false);
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" });
+
+      expect(result.success).toBe(true);
+      expect(fsSync.existsSync(docsDir)).toBe(true);
+      expect(result.content).toContain("docs/: created");
+    });
+
+    it("dir branch does not fail when docs/ already exists", async () => {
+      const config = makeInitConfig();
+      const docsDir = path.join(TMP, "docs");
+      await fs.mkdir(docsDir, { recursive: true });
+      // Put a file in docs/ to verify it's not overwritten
+      await fs.writeFile(path.join(docsDir, "existing.md"), "preserve me", "utf-8");
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" });
+
+      expect(result.success).toBe(true);
+      expect(fsSync.existsSync(docsDir)).toBe(true);
+      expect(result.content).toContain("docs/: already exists");
+      // Existing file preserved
+      const content = await fs.readFile(path.join(docsDir, "existing.md"), "utf-8");
+      expect(content).toBe("preserve me");
+    });
+
+    it("summary reflects docs/ creation", async () => {
+      const config = makeInitConfig();
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" });
+
+      expect(result.summary).toContain("docs/");
+    });
+  });
 });
 
 // Need to import PipelineConfig type for the Phase 0 tests

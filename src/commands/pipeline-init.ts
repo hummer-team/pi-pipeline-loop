@@ -244,10 +244,21 @@ async function copyTemplateFiles(
       }
     }
 
+    // Ensure docs/ directory exists for stage write whitelist (Phase 4)
+    // Default write scope for clarify/plan/review is docs/; creating it avoids
+    // first-write friction. Already-exists case is silently ignored (recursive: true).
+    const docsDir = path.join(config.projectRoot, "docs");
+    let docsCreated = false;
+    if (!fs.existsSync(docsDir)) {
+      await fsp.mkdir(docsDir, { recursive: true });
+      docsCreated = true;
+    }
+
     await safeWriteAuditLog("pipeline-init_done", {
       files: String(copiedCount),
       skipped: String(skippedCount),
       target: targetDir,
+      docsDir: docsCreated ? "created" : "exists",
     });
 
     // Build content string for bridge display
@@ -256,6 +267,7 @@ async function copyTemplateFiles(
       `- copied: ${copiedCount}`,
       `- skipped: ${skippedCount}`,
       `- target: ${CONFIG_DIR_NAME}/`,
+      `- docs/: ${docsCreated ? "created" : "already exists"}`,
     ];
     if (copiedFiles.length > 0) {
       lines.push("Copied files:");
@@ -272,7 +284,7 @@ async function copyTemplateFiles(
 
     return {
       success: true,
-      summary: `Copied ${copiedCount} file(s) to ${CONFIG_DIR_NAME}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}`,
+      summary: `Copied ${copiedCount} file(s) to ${CONFIG_DIR_NAME}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}; docs/ ${docsCreated ? "created" : "ensured"}`,
       content: lines.join("\n"),
     };
   } catch (err) {
