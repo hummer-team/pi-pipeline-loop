@@ -10,7 +10,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
-import { PROTECTED_PATHS } from "../constants";
+import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { isFrozen } from "./flow-state";
 
@@ -176,7 +176,8 @@ async function buildLoopStatus(
     `- Loop Attempts: ${meta.loopCount + 1} / ${meta.maxLoops}\n` +
     `- Constraint: You MUST run tests after changes. If tests fail, this counts as an attempt.\n` +
     `- Limit: After ${meta.maxLoops} failed attempts, the pipeline will freeze.\n` +
-    `- ${scopeParts.join("\n- ")}`
+    `- ${scopeParts.join("\n- ")}\n` +
+    `- Write Scope: ${buildWriteScopeLine(config.stages[meta.currentStage])}`
   );
 }
 
@@ -261,6 +262,61 @@ function buildVerifyToolGuidance(stageConfig: StageConfig): string | null {
 }
 
 /**
+ * Checks if a stage's bash prefix config implies git read-only mode.
+ * Returns true when none of the git write sub-commands (add/commit/push)
+ * appear as allowed bash prefixes.
+ *
+ * Read-only git commands (log, status, diff, show) are safe — they don't
+ * mutate git state. Only add/commit/push are considered write operations.
+ */
+function isGitReadOnly(allowedBashPrefixes: string[] | undefined): boolean {
+  if (!allowedBashPrefixes) return true;
+  const gitWriteSubcommands = ["git add", "git commit", "git push"];
+  return !allowedBashPrefixes.some(
+    (p) => p === "git" || gitWriteSubcommands.some((gw) => p === gw || p.startsWith(gw + " ")),
+  );
+}
+
+/**
+ * Builds the write scope line for a stage.
+ * - Whitelist mode: "docs/, doc/, documentation/"
+ * - Full mode: "all (global protect applies)"
+ */
+function buildWriteScopeLine(stageConfig: StageConfig): string {
+  const awp = stageConfig.allowedWritePaths;
+  if (awp === undefined || awp.includes(ALLOWED_WRITE_ALL)) {
+    return "all (global protect applies)";
+  }
+  if (awp.length === 0) {
+    return "none (write forbidden)";
+  }
+  return awp.join(", ");
+}
+
+/**
+ * Builds the Stage Write Scope section for all stages.
+ * Injected as a lightweight standalone section for non-loop stages,
+ * and appended to Loop Status for develop/fix.
+ *
+ * @param stageConfig - Current stage configuration
+ * @param includeGitHint - Whether to append git read-only hint
+ * @returns Prompt section string
+ */
+function buildStageWriteScope(
+  stageConfig: StageConfig,
+  includeGitHint: boolean
+): string {
+  const lines = [
+    `# STAGE WRITE SCOPE`,
+    `- Write Scope: ${buildWriteScopeLine(stageConfig)}`,
+  ];
+  if (includeGitHint && isGitReadOnly(stageConfig.allowedBashPrefixes)) {
+    lines.push(`- Git: read-only (add/commit/push forbidden)`);
+  }
+  return lines.join("\n");
+}
+
+/**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
  *
  * The prompt is assembled from up to 6 parts joined by horizontal rule separators:
@@ -289,8 +345,12 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const part5 = buildPipelineStatus(config, meta);
       const part6 = buildVerifyFailurePrompt(meta);
       const part7 = buildVerifyToolGuidance(stageConfig);
+      // Part 8: Stage Write Scope (standalone for non-loop stages; loop stages get it in Part 4)
+      const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
+        ? buildStageWriteScope(stageConfig, true)
+        : null;
 
-      const promptParts = [part0, part1, part2, part3, part4, part5, part6, part7].filter(
+      const promptParts = [part0, part1, part2, part3, part4, part5, part6, part7, part8].filter(
         (p): p is string => p !== null,
       );
 

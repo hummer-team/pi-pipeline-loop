@@ -319,4 +319,142 @@ describe("createPromptInjector", () => {
       expect(result.systemPrompt).not.toContain("FROZEN");
     });
   });
+
+  describe("stage write scope injection", () => {
+    it("clarify stage: prompt contains STAGE WRITE SCOPE with docs whitelist", async () => {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedWritePaths: ["docs/", "doc/", "documentation/"],
+        allowedBashPrefixes: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
+      } as any;
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt).toContain("Write Scope: docs/, doc/, documentation/");
+      expect(result.systemPrompt).toContain("Git: read-only (add/commit/push forbidden)");
+    });
+
+    it("plan stage: prompt contains STAGE WRITE SCOPE with git read-only hint", async () => {
+      const config = makeTestConfig();
+      config.stages["plan"] = {
+        ...config.stages["plan"],
+        allowedWritePaths: ["docs/"],
+        allowedBashPrefixes: ["ls", "cat"],
+      } as any;
+      const meta = makeTestMeta({ currentStage: "plan" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt).toContain("Write Scope: docs/");
+      expect(result.systemPrompt).toContain("Git: read-only");
+    });
+
+    it("review stage: prompt contains STAGE WRITE SCOPE", async () => {
+      const config = makeTestConfig();
+      config.stages["review"] = {
+        ...config.stages["review"],
+        allowedWritePaths: ["docs/"],
+        allowedBashPrefixes: ["ls", "git log"],
+      } as any;
+      const meta = makeTestMeta({ currentStage: "review" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt).toContain("Write Scope: docs/");
+    });
+
+    it("develop stage: loop status includes Write Scope line (no standalone section)", async () => {
+      const TMP = join(tmpdir(), "pi-prompt-dev-ws-" + Date.now());
+      const skillDir = join(TMP, ".pi", "skills", "test-skill");
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(join(skillDir, "SKILL.md"), "# Skill");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        skillPath: "test-skill/SKILL.md",
+        allowedWritePaths: ["**"],
+      } as any;
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // develop/fix: write scope is in LOOP ENGINEERING STATUS
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
+      // No standalone STAGE WRITE SCOPE section for loop stages
+      expect(result.systemPrompt).not.toContain("# STAGE WRITE SCOPE");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("fix stage: loop status includes Write Scope line", async () => {
+      const TMP = join(tmpdir(), "pi-prompt-fix-ws-" + Date.now());
+      const skillDir = join(TMP, ".pi", "skills", "test-skill");
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(join(skillDir, "SKILL.md"), "# Skill");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["fix"] = {
+        ...config.stages["fix"],
+        skillPath: "test-skill/SKILL.md",
+        allowedWritePaths: ["**"],
+      } as any;
+      const meta = makeTestMeta({ currentStage: "fix" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("stage with empty allowedWritePaths shows 'none (write forbidden)'", async () => {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedWritePaths: [],
+      } as any;
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("Write Scope: none (write forbidden)");
+    });
+
+    it("stage with full access shows 'all (global protect applies)'", async () => {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedWritePaths: ["**"],
+        allowedBashPrefixes: ["git"], // has git → no read-only hint
+      } as any;
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
+      expect(result.systemPrompt).not.toContain("Git: read-only");
+    });
+  });
 });
