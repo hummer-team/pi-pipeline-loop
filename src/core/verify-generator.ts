@@ -50,11 +50,15 @@ export type VerifyGenerateResult = {
  * `.pi/references/pipeline-stage-prompt.yml` (verify_extract key or verify_extract_{stage}).
  * Falls back to DEFAULT_VERIFY_EXTRACT_PROMPT when the yml value is empty or missing.
  *
+ * Fallback chain when stage is provided:
+ *   verify_extract_{stage} → global verify_extract → DEFAULT_VERIFY_EXTRACT_PROMPT
+ *
  * @param projectRoot - Absolute path to the project root
+ * @param stage - Optional pipeline stage name for per-stage lookup
  * @returns The extraction prompt string (custom from yml or default)
  */
-export async function resolveExtractPrompt(projectRoot: string): Promise<string> {
-  return getVerifyExtractPrompt(projectRoot);
+export async function resolveExtractPrompt(projectRoot: string, stage?: string): Promise<string> {
+  return getVerifyExtractPrompt(projectRoot, stage);
 }
 
 /**
@@ -423,7 +427,7 @@ export async function generateVerifyFiles(
       onLLMStageStart?.(s);
       const llmStart = Date.now();
       try {
-        const extractPrompt = await resolveExtractPrompt(config.projectRoot);
+        const extractPrompt = await resolveExtractPrompt(config.projectRoot, s);
         llmItems = await extractLLMItems(skillBody, callLLM!, extractPrompt, (e) => {
           safeWriteAuditLog("verify_llm_extract_error", {
             stage: s,

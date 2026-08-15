@@ -14,6 +14,7 @@ import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { getVerifyPrompt } from "./prompt-config";
 
 /**
  * Parsed verification rules from a verify.md frontmatter.
@@ -536,6 +537,11 @@ export async function runVerification(
 
   const { rules, prompt } = await parseVerifyFile(verifyPath);
 
+  // Override modelPrompt from yml verify_{stage} when available (D5)
+  // Fallback chain: yml verify_{stage} → verify.md body prompt → DEFAULT (via parseVerifyFile)
+  const ymlPrompt = await getVerifyPrompt(config.projectRoot, meta.currentStage);
+  const effectivePrompt = ymlPrompt ?? prompt;
+
   // Build audit log closure: injects pipelineId into every error-level audit entry
   const logError: AuditLogFn = options?.logError ??
     ((stage, msg) => safeWriteAuditLog(stage, { pipelineId: meta.pipelineId, ...msg }, "error"));
@@ -551,7 +557,7 @@ export async function runVerification(
       rulePassed: false,
       ruleMissing: [],
       needsModelVerify: true,
-      modelPrompt: prompt,
+      modelPrompt: effectivePrompt,
       verifyResult,
     };
   }
@@ -605,7 +611,7 @@ export async function runVerification(
     rulePassed: false,
     ruleMissing,
     needsModelVerify: true,
-    modelPrompt: prompt,
+    modelPrompt: effectivePrompt,
     structuredResult,
     verifyResult,
   };

@@ -624,5 +624,44 @@ describe("verify-generator", () => {
       const prompt = await resolveExtractPrompt(TMP);
       expect(prompt).toContain("delivery item extractor");
     });
+
+    it("uses per-stage verify_extract_{stage} when it exists", async () => {
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
+        'verify_extract_clarify: "Per-stage clarify prompt"\nverify_extract: "Global prompt"\n',
+        "utf-8",
+      );
+
+      const prompt = await resolveExtractPrompt(TMP, "clarify");
+      expect(prompt).toBe("Per-stage clarify prompt");
+    });
+
+    it("falls back to global verify_extract when per-stage is missing", async () => {
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
+        'verify_extract: "Global prompt"\n',
+        "utf-8",
+      );
+
+      const prompt = await resolveExtractPrompt(TMP, "develop");
+      expect(prompt).toBe("Global prompt");
+    });
+
+    it("falls back to DEFAULT when both per-stage and global are missing", async () => {
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
+        'clarify: "some template"\n',
+        "utf-8",
+      );
+
+      const prompt = await resolveExtractPrompt(TMP, "fix");
+      expect(prompt).toContain("delivery item extractor");
+    });
   });
 });
