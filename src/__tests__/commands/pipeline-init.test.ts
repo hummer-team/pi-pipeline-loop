@@ -1168,14 +1168,14 @@ describe("createPipelineInitCommand", () => {
     });
   });
 
-  describe("Phase 4 — prompt-injector.yml template copy", () => {
-    it("dir branch copies prompt-injector.yml to .pi/references/", async () => {
+  describe("Phase 4 — pipeline-stage-prompt.yml template copy", () => {
+    it("dir branch copies pipeline-stage-prompt.yml to .pi/references/", async () => {
       const config = makeInitConfig();
       const cmd = createPipelineInitCommand(config);
       const result: any = await cmd.execute({ sub: "0" });
 
       expect(result.success).toBe(true);
-      const targetPath = path.join(TMP, ".pi", "references", "prompt-injector.yml");
+      const targetPath = path.join(TMP, ".pi", "references", "pipeline-stage-prompt.yml");
       expect(fsSync.existsSync(targetPath)).toBe(true);
 
       // Verify the copied content is valid YAML with expected keys
@@ -1184,14 +1184,14 @@ describe("createPipelineInitCommand", () => {
       expect(content).toContain("verify_extract:");
     });
 
-    it("skip strategy preserves existing prompt-injector.yml (user modifications)", async () => {
+    it("skip strategy preserves existing pipeline-stage-prompt.yml (user modifications)", async () => {
       const config = makeInitConfig();
 
-      // Pre-create .pi/references/prompt-injector.yml with custom content
+      // Pre-create .pi/references/pipeline-stage-prompt.yml with custom content
       const refsDir = path.join(TMP, ".pi", "references");
       await fs.mkdir(refsDir, { recursive: true });
       await fs.writeFile(
-        path.join(refsDir, "prompt-injector.yml"),
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
         "# User-modified content\nclarify: custom\n",
         "utf-8",
       );
@@ -1211,7 +1211,7 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       // User-modified content should be preserved (not overwritten)
-      const content = await fs.readFile(path.join(refsDir, "prompt-injector.yml"), "utf-8");
+      const content = await fs.readFile(path.join(refsDir, "pipeline-stage-prompt.yml"), "utf-8");
       expect(content).toContain("# User-modified content");
       expect(content).toContain("clarify: custom");
     });
