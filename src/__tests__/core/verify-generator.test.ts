@@ -15,6 +15,7 @@ import {
 } from "../../core/verify-generator";
 import { makeTestConfig } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+import { resetPromptConfigCache } from "../../core/prompt-config";
 
 let TMP: string;
 
@@ -589,24 +590,36 @@ describe("verify-generator", () => {
   });
 
   describe("resolveExtractPrompt", () => {
-    it("uses custom verify_prompt.md when it exists", async () => {
+    beforeEach(() => {
+      resetPromptConfigCache();
+    });
+
+    it("uses custom verify_extract from yml when it exists", async () => {
       const refsDir = path.join(TMP, ".pi", "references");
       await fs.mkdir(refsDir, { recursive: true });
-      await fs.writeFile(path.join(refsDir, "verify_prompt.md"), "Custom prompt", "utf-8");
+      await fs.writeFile(
+        path.join(refsDir, "prompt-injector.yml"),
+        'verify_extract: "Custom prompt"\n',
+        "utf-8",
+      );
 
       const prompt = await resolveExtractPrompt(TMP);
       expect(prompt).toBe("Custom prompt");
     });
 
-    it("falls back to default when verify_prompt.md does not exist", async () => {
+    it("falls back to default when yml does not exist", async () => {
       const prompt = await resolveExtractPrompt(TMP);
       expect(prompt).toContain("delivery item extractor");
     });
 
-    it("falls back to default when verify_prompt.md is empty", async () => {
+    it("falls back to default when yml verify_extract is empty", async () => {
       const refsDir = path.join(TMP, ".pi", "references");
       await fs.mkdir(refsDir, { recursive: true });
-      await fs.writeFile(path.join(refsDir, "verify_prompt.md"), "   \n  ", "utf-8");
+      await fs.writeFile(
+        path.join(refsDir, "prompt-injector.yml"),
+        'verify_extract: ""\n',
+        "utf-8",
+      );
 
       const prompt = await resolveExtractPrompt(TMP);
       expect(prompt).toContain("delivery item extractor");

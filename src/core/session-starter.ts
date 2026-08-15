@@ -13,6 +13,7 @@ import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen } from "./flow-state";
+import { loadPromptConfig } from "./prompt-config";
 
 /**
  * Attempts to load a DomainConfig from a domain.md file.
@@ -79,6 +80,9 @@ export function createSessionStarter(config: PipelineConfig): Hook {
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const projectRoot = config.projectRoot;
       const meta = ctx.session.getMeta() as SessionMeta;
+
+      // Preload prompt-config cache (failure silently returns {} — never blocks session start)
+      await loadPromptConfig(projectRoot);
 
       if (!meta?.currentStage) {
         // ── New pipeline: initialize metadata ──────────────────────────

@@ -5,6 +5,7 @@ import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { resetPromptConfigCache, loadPromptConfig } from "../../core/prompt-config";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -154,6 +155,53 @@ describe("createSessionStarter", () => {
       expect(notifications.length).toBe(1);
       expect(notifications[0]).toContain("blocked");
       expect(notifications[0]).toContain("ctrl+shift+d");
+    });
+  });
+
+  describe("prompt-config cache warmup", () => {
+    it("session_start preloads prompt-config cache", async () => {
+      const TMP = join(tmpdir(), "pi-ss-warmup-" + Date.now());
+      const refsDir = join(TMP, ".pi", "references");
+      await mkdir(refsDir, { recursive: true });
+      await writeFile(
+        join(refsDir, "prompt-injector.yml"),
+        "clarify: test template\n",
+        "utf-8",
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // Reset cache to ensure it's empty before session_start
+      resetPromptConfigCache();
+
+      const ctx = createCtx({});
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // After session_start, the cache should be loaded
+      // Verify by loading config again — should return cached value
+      const promptConfig = await loadPromptConfig(TMP);
+      expect(promptConfig.clarify).toBe("test template");
+    });
+
+    it("session_start does not fail when yml file is missing", async () => {
+      const TMP = join(tmpdir(), "pi-ss-no-yml-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      resetPromptConfigCache();
+
+      const ctx = createCtx({});
+      const hook = createSessionStarter(config);
+
+      // Should not throw even when yml doesn't exist
+      await expect(hook.handler(ctx as any)).resolves.toBeUndefined();
+
+      // Cache should be loaded with empty config
+      const promptConfig = await loadPromptConfig(TMP);
+      expect(promptConfig).toEqual({});
     });
   });
 });

@@ -8,8 +8,9 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage } from "../types";
-import { DEFAULT_VERIFY_FILE, resolveStagePath, DEFAULT_VERIFY_EXTRACT_PROMPT, CONFIG_DIR_NAME } from "../constants";
+import { DEFAULT_VERIFY_FILE, resolveStagePath, CONFIG_DIR_NAME } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { getVerifyExtractPrompt } from "./prompt-config";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,24 +46,15 @@ export type VerifyGenerateResult = {
 
 /**
  * Resolves the extraction prompt for LLM-based delivery item extraction.
- * If `.pi/references/verify_prompt.md` exists in the project, its content is
- * used as the custom extraction prompt; otherwise the built-in default is returned.
+ * Delegates to the prompt-config module which reads from
+ * `.pi/references/prompt-injector.yml` (verify_extract key).
+ * Falls back to DEFAULT_VERIFY_EXTRACT_PROMPT when the yml value is empty or missing.
  *
  * @param projectRoot - Absolute path to the project root
- * @returns The extraction prompt string (custom or default)
+ * @returns The extraction prompt string (custom from yml or default)
  */
 export async function resolveExtractPrompt(projectRoot: string): Promise<string> {
-  const customPromptPath = path.join(projectRoot, CONFIG_DIR_NAME, "references", "verify_prompt.md");
-  try {
-    const content = await fs.readFile(customPromptPath, "utf-8");
-    // If file exists but is empty, fall back to default
-    if (content.trim().length === 0) {
-      return DEFAULT_VERIFY_EXTRACT_PROMPT;
-    }
-    return content;
-  } catch {
-    return DEFAULT_VERIFY_EXTRACT_PROMPT;
-  }
+  return getVerifyExtractPrompt(projectRoot);
 }
 
 /**
