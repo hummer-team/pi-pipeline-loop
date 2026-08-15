@@ -6,7 +6,7 @@
 
 import * as path from "node:path";
 import type { PipelineConfig, ProtectConfig } from "../types";
-import { PROTECTED_PATHS } from "../constants";
+import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { type GitignoreInfo, isGitignored } from "./gitignore";
 
 /**
@@ -90,6 +90,31 @@ export function isPathAllowed(relPath: string, allow: string[]): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Checks if a path is within the stage-level write whitelist.
+ *
+ * @param relPath - Path relative to project root
+ * @param allowedWritePaths - Stage write whitelist (undefined = full access fallback)
+ * @returns True if the path is allowed by the stage write whitelist
+ */
+export function isPathAllowedWrite(
+  relPath: string,
+  allowedWritePaths: string[] | undefined
+): boolean {
+  // Undefined = no stage restriction configured → full access (backward compatible)
+  if (allowedWritePaths === undefined) return true;
+
+  // "**" = all paths allowed (full access sentinel)
+  if (allowedWritePaths.includes(ALLOWED_WRITE_ALL)) return true;
+
+  // Empty array = no writes allowed at all
+  if (allowedWritePaths.length === 0) return false;
+
+  // Normalize and use directory prefix matching (multi-candidate: any match = allowed)
+  const normalized = normalizeAllow(allowedWritePaths);
+  return isPathAllowed(relPath, normalized);
 }
 
 /**

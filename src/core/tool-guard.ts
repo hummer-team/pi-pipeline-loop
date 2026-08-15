@@ -27,11 +27,13 @@ import {
   resolveProtectConfig,
   isHardcodedProtected,
   isPathAllowed,
+  isPathAllowedWrite,
   isPathProtectedForModify,
   isPathProtectedForGit,
   toProjectRelative,
   type ProtectState,
 } from "../utils/protect";
+import { ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
@@ -45,6 +47,70 @@ export interface ToolGuardDeps {
 /** Regex patterns for git command detection */
 const GIT_ADD_PATTERN = /^\s*git\s+add\b/;
 const GIT_COMMIT_PATTERN = /^\s*git\s+commit\b/;
+
+/**
+ * Result of the stage-level write whitelist check.
+ * - "block": Path is denied by stage whitelist or hardcoded protection.
+ * - "allow-whitelist": Path is allowed by stage whitelist (skip global chain).
+ * - "continue": No stage-level decision (full mode / undefined) — caller should apply global chain.
+ */
+type StageWriteCheckResult =
+  | { status: "block"; reason: string }
+  | { status: "allow-whitelist" }
+  | { status: "continue" };
+
+/**
+ * Checks if a write target is allowed by the stage write whitelist + hardcoded protection.
+ *
+ * Whitelist mode (allowedWritePaths does NOT contain "**"):
+ *   1. Path must hit stage whitelist → otherwise block
+ *   2. Path must NOT hit hardcoded protection → block (cannot be exempted)
+ *   3. Otherwise → allow-whitelist (gitignore write protection is exempted by whitelist)
+ *
+ * Full mode (allowedWritePaths contains "**" or is undefined):
+ *   Returns "continue" — caller applies global protection chain.
+ *
+ * @param relPath - Path relative to project root
+ * @param allowedWritePaths - Stage write whitelist from StageConfig
+ * @param stageName - Current pipeline stage (for error messages)
+ * @param state - Protection state (for hardcoded check)
+ * @returns StageWriteCheckResult indicating the decision
+ */
+function checkStageWriteBlock(
+  relPath: string,
+  allowedWritePaths: string[] | undefined,
+  stageName: string,
+  state: ProtectState
+): StageWriteCheckResult {
+  // Determine if stage whitelist is active (whitelist mode)
+  const isWhitelistMode =
+    allowedWritePaths !== undefined &&
+    !allowedWritePaths.includes(ALLOWED_WRITE_ALL);
+
+  if (!isWhitelistMode) {
+    // Full mode: no stage-level restriction, fall through to global chain
+    return { status: "continue" };
+  }
+
+  // Whitelist mode: path must be in the stage write whitelist
+  if (!isPathAllowedWrite(relPath, allowedWritePaths)) {
+    return {
+      status: "block",
+      reason: `FORBIDDEN: '${relPath}' not in allowed write paths for '${stageName}' stage.`,
+    };
+  }
+
+  // Whitelist hit: hardcoded protection cannot be exempted (even by whitelist)
+  if (isHardcodedProtected(relPath, state.hardcoded)) {
+    return {
+      status: "block",
+      reason: `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`,
+    };
+  }
+
+  // Whitelist hit + not hardcoded → allowed (gitignore/allow exemptions are bypassed)
+  return { status: "allow-whitelist" };
+}
 
 /**
  * Creates the `tool_call` hook that intercepts and validates tool calls.
@@ -145,10 +211,20 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               ? t.target
               : path.join(config.projectRoot, t.target);
             const relPath = toProjectRelative(config.projectRoot, absTarget);
-            if (relPath && isPathProtectedForModify(relPath, state)) {
-              const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
-              ui.notify(ctx, reason);
-              return { block: true, reason };
+            if (relPath) {
+              // Stage-level write whitelist check (Phase 1)
+              const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
+              if (stageCheck.status === "block") {
+                ui.notify(ctx, stageCheck.reason);
+                return { block: true, reason: stageCheck.reason };
+              }
+              // "allow-whitelist" → skip global chain, path is stage-authorized
+              // "continue" → fall through to global protection chain
+              if (stageCheck.status !== "allow-whitelist" && isPathProtectedForModify(relPath, state)) {
+                const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
             }
           }
         }
@@ -184,22 +260,33 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         if (relPath) {
           const state = await getProtectState();
 
-          // Check hardcoded protection (allow cannot exempt)
-          if (isHardcodedProtected(relPath, state.hardcoded)) {
-            const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
-            ui.notify(ctx, reason);
-            return { block: true, reason };
+          // Stage-level write whitelist check (Phase 1)
+          const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
+          if (stageCheck.status === "block") {
+            ui.notify(ctx, stageCheck.reason);
+            return { block: true, reason: stageCheck.reason };
           }
 
-          // Check allow exemption (only for gitignore protection)
-          if (isPathAllowed(relPath, state.allow)) {
-            // Allowed - proceed with hash recording
-          } else if (state.gitignore) {
-            // Check gitignore protection
-            if (isGitignored(state.gitignore, relPath)) {
-              const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+          // "allow-whitelist" → skip global chain, path is stage-authorized
+          if (stageCheck.status !== "allow-whitelist") {
+            // Global protection chain (hardcoded + allow + gitignore)
+            // Check hardcoded protection (allow cannot exempt)
+            if (isHardcodedProtected(relPath, state.hardcoded)) {
+              const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
               ui.notify(ctx, reason);
               return { block: true, reason };
+            }
+
+            // Check allow exemption (only for gitignore protection)
+            if (isPathAllowed(relPath, state.allow)) {
+              // Allowed - proceed with hash recording
+            } else if (state.gitignore) {
+              // Check gitignore protection
+              if (isGitignored(state.gitignore, relPath)) {
+                const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
             }
           }
         }

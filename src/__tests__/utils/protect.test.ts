@@ -3,12 +3,14 @@ import {
   resolveProtectConfig,
   normalizeAllow,
   isPathAllowed,
+  isPathAllowedWrite,
   isHardcodedProtected,
   isPathProtectedForModify,
   isPathProtectedForGit,
   toProjectRelative,
   type ProtectState,
 } from "../../utils/protect";
+import { ALLOWED_WRITE_ALL } from "../../constants";
 import { makeTestConfig } from "../helpers";
 
 describe("resolveProtectConfig", () => {
@@ -94,6 +96,47 @@ describe("isPathAllowed", () => {
   it("does not match unmatched paths", () => {
     const allow = ["docs/"];
     expect(isPathAllowed("src/index.ts", allow)).toBe(false);
+  });
+});
+
+describe("isPathAllowedWrite", () => {
+  it("returns true when allowedWritePaths contains '**'", () => {
+    expect(isPathAllowedWrite("src/index.ts", [ALLOWED_WRITE_ALL])).toBe(true);
+    expect(isPathAllowedWrite("docs/file.md", [ALLOWED_WRITE_ALL])).toBe(true);
+    expect(isPathAllowedWrite(".pi/config.json", [ALLOWED_WRITE_ALL])).toBe(true);
+  });
+
+  it("returns false when allowedWritePaths is empty array", () => {
+    expect(isPathAllowedWrite("docs/file.md", [])).toBe(false);
+    expect(isPathAllowedWrite("src/index.ts", [])).toBe(false);
+  });
+
+  it("returns true when allowedWritePaths is undefined (backward compatible)", () => {
+    expect(isPathAllowedWrite("any/path.ts", undefined)).toBe(true);
+  });
+
+  it("matches directory prefix for multi-candidate whitelist", () => {
+    const paths = ["docs/", "doc/", "documentation/"];
+    expect(isPathAllowedWrite("docs/file.md", paths)).toBe(true);
+    expect(isPathAllowedWrite("docs/sub/file.md", paths)).toBe(true);
+    expect(isPathAllowedWrite("doc/readme.md", paths)).toBe(true);
+    expect(isPathAllowedWrite("documentation/guide.md", paths)).toBe(true);
+  });
+
+  it("does not match paths outside whitelist", () => {
+    const paths = ["docs/", "doc/", "documentation/"];
+    expect(isPathAllowedWrite("src/index.ts", paths)).toBe(false);
+    expect(isPathAllowedWrite("lib/utils.ts", paths)).toBe(false);
+  });
+
+  it("does not match similar prefix (boundary check)", () => {
+    const paths = ["docs/"];
+    expect(isPathAllowedWrite("docs-old/file.md", paths)).toBe(false);
+    expect(isPathAllowedWrite("docsx/file.md", paths)).toBe(false);
+  });
+
+  it("normalizes entries without trailing slash", () => {
+    expect(isPathAllowedWrite("docs/file.md", ["docs"])).toBe(true);
   });
 });
 

@@ -717,4 +717,251 @@ describe("createToolGuard", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  describe("stage write whitelist (allowedWritePaths)", () => {
+    it("write: whitelist hit on docs/ → allowed", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-hit-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+      await writeFile(join(TMP, "docs", "plan.md"), "");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      // clarify stage with whitelist restricted to docs/
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "docs", "plan.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("write: whitelist miss on src/ → blocked", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-miss-" + Date.now());
+      await mkdir(join(TMP, "src"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "src", "app.ts") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("not in allowed write paths");
+      expect((result as any).reason).toContain("develop");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("write: allowedWritePaths=['**'] → full access (global protect applies)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-all-" + Date.now());
+      await mkdir(join(TMP, "src"), { recursive: true });
+      await writeFile(join(TMP, "src", "app.ts"), "");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["**"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "src", "app.ts") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("write: allowedWritePaths=[] → completely forbidden", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-empty-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: [],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "docs", "plan.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("not in allowed write paths");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("write: hardcoded path blocked even if whitelist hits", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-hardcoded-" + Date.now());
+      await mkdir(join(TMP, ".pi"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      // Whitelist includes ".pi/" — but hardcoded should still block
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: [".pi/", "docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, ".pi", "config.json") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("hardcoded protected");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("bash: redirect to whitelisted docs/ → allowed", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-bash-hit-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedBashPrefixes: ["echo", "cat"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "echo hi > docs/x.md" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("bash: redirect to non-whitelisted src/ → blocked", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-bash-miss-" + Date.now());
+      await mkdir(join(TMP, "src"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedBashPrefixes: ["echo", "cat"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "echo hi > src/x.ts" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("not in allowed write paths");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("bash: rm on whitelisted docs/ → allowed (rm is modification)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-bash-rm-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+      await writeFile(join(TMP, "docs", "old.md"), "content");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedBashPrefixes: ["rm"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm docs/old.md" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("exemption: docs/ in gitignore but in stage whitelist → write allowed", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-gitignore-exempt-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "docs\n");
+      await writeFile(join(TMP, "docs", "file.md"), "");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "docs", "file.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Whitelist exempts from gitignore write protection
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("git add still blocked by global git protection even if path in whitelist", async () => {
+      const TMP = join(tmpdir(), "pi-tg-wl-git-add-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "docs\n");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedBashPrefixes: ["git"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git add docs/file.md" } };
+
+      // git add dry-run shows docs/file.md would be staged
+      const mockExecFn: ExecFn = async (cmd, args, cwd) => {
+        if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "add 'docs/file.md'\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      // git add channel uses global git protection (allow does NOT exempt)
+      // docs/ is gitignored → git add is blocked
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("'git add' would stage protected path");
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
 });
