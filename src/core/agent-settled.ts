@@ -53,6 +53,8 @@ export function createAgentSettled(
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
         });
+        const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+        ui.notify(ctx, `Pipeline frozen. Press ${shortcutKey} to open the decision menu.`);
         return;
       }
 

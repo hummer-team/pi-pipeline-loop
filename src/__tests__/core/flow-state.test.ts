@@ -198,8 +198,8 @@ describe("executeDecision", () => {
     const lastUpdate = ctx.updates[ctx.updates.length - 1];
     expect(lastUpdate.currentStage).toBe("review"); // develop → review
     expect(lastUpdate.flowState).toBe("running");
-    // Summary should be marked invalid (skipped)
-    expect(lastUpdate.summaries?.develop?.status).toBe("invalid");
+    // Summary should be marked "skipped" per plan Phase 1 task 1
+    expect(lastUpdate.summaries?.develop?.status).toBe("skipped");
   });
 
   it("rollback: rejects when pipeline is not frozen", async () => {

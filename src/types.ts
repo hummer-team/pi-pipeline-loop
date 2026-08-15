@@ -127,8 +127,8 @@ export interface SummaryMeta {
   /** Content hash of the summary (for change detection) */
   hash: string;
 
-  /** Validation status */
-  status: "pending" | "valid" | "invalid";
+  /** Validation status. "skipped" indicates the stage was skipped by user decision. */
+  status: "pending" | "valid" | "invalid" | "skipped";
 }
 
 // ─── Domain Configuration ────────────────────────────────────────────────────

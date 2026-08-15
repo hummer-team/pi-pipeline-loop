@@ -239,10 +239,17 @@ export async function applyVerifyFail(
   if (config) {
     const maxAttempts = config.maxVerifyAttempts ?? config.maxLoops ?? 3;
     if (updatedVerifyAttempts >= maxAttempts) {
-      // Build a minimal ui adapter for freezeAndPrompt from ctx.ui if available
-      const flowUI = ctx.ui ? {
+      // Build a ui adapter for freezeAndPrompt from ctx.ui if available.
+      // Include both notify and select so the decision dialog works properly
+      // (avoid shadowing ctx.ui.select with a notify-only adapter).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawSelect = (ctx.ui as any)?.select;
+      const flowUI: { notify: (msg: string) => void; select?: (msg: string, opts: string[]) => Promise<string | undefined> } = {
         notify: (msg: string) => { ctx.ui!.notify(msg); },
-      } : undefined;
+      };
+      if (typeof rawSelect === "function") {
+        flowUI.select = rawSelect;
+      }
       await freezeAndPrompt(ctx, meta, "verify_attempt_overflow", config, {
         ui: flowUI,
       });

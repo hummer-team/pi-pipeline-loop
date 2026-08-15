@@ -113,6 +113,39 @@ describe("createPipelineStartCommand", () => {
     expect(result.message).toContain("restarted");
   });
 
+  // Regression: aborted restart resets verifyAttempts/verifyFailures/terminated (Medium #9)
+  it("aborted restart resets verifyAttempts, verifyFailures, terminated, terminateReason", async () => {
+    await fs.writeFile(docPath, "content", "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      flowState: "aborted",
+      terminated: true,
+      terminateReason: "user_abort",
+      verifyAttempts: 5,
+      verifyFailures: [{ ruleType: "test", detail: "fail", timestamp: 0 }],
+      blockedReason: "verify_attempt_overflow",
+    });
+    let updatedMeta: any = null;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+    expect(result.success).toBe(true);
+    expect(updatedMeta).not.toBeNull();
+    expect(updatedMeta.flowState).toBe("running");
+    expect(updatedMeta.verifyAttempts).toBe(0);
+    expect(updatedMeta.verifyFailures).toEqual([]);
+    expect(updatedMeta.terminated).toBeUndefined();
+    expect(updatedMeta.terminateReason).toBeUndefined();
+    expect(updatedMeta.blockedReason).toBeUndefined();
+  });
+
   it("rejects when pipeline is blocked with shortcut key hint", async () => {
     await fs.writeFile(docPath, "content", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "alt+f" });

@@ -141,8 +141,9 @@ function parseDecisionShortcutKey(raw: unknown): string {
     }
     return DEFAULT_KEY;
   }
-  // KeyId format: optional modifier prefix (ctrl|shift|alt|super) followed by +key segments
-  const KEY_ID_REGEX = /^(ctrl|shift|alt|super)?(\+[a-z0-9])*$/;
+  // KeyId format: zero or more modifier prefixes (ctrl|shift|alt|super)+ followed by a final key
+  // Supports multi-modifier combos like "ctrl+shift+d", "alt+enter"
+  const KEY_ID_REGEX = /^((ctrl|shift|alt|super)\+)*[a-z0-9]$/;
   if (!KEY_ID_REGEX.test(raw)) {
     console.warn(
       `[pi-pipeline] Invalid decisionShortcutKey "${raw}" — does not match KeyId format, falling back to '${DEFAULT_KEY}'`,

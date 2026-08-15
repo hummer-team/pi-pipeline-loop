@@ -131,7 +131,7 @@ export function createPipelineVerify(
         })) as unknown as Record<string, unknown>;
       }
 
-      return (await applyVerifyFail(sessionCtx, meta, stageName, sharedResult, "tool", ui)) as unknown as Record<string, unknown>;
+      return (await applyVerifyFail(sessionCtx, meta, stageName, sharedResult, "tool", ui, config)) as unknown as Record<string, unknown>;
     },
   };
 }

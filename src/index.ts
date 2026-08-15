@@ -8,7 +8,8 @@ import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./t
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
-import { buildDecisionMenu, executeDecision } from "./core/flow-state";
+import { buildDecisionMenu, executeDecision, labelToDecision } from "./core/flow-state";
+import type { PipelineDecision } from "./core/flow-state";
 import { safeWriteAuditLog } from "./utils/auditLog";
 
 // Session lifecycle and prompt injection
@@ -248,17 +249,14 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
                 return;
               }
 
-              // Map label back to decision key
-              const LABEL_MAP: Record<string, string> = {
-                "继续尝试": "resume",
-                "跳过": "skip",
-                "回退上一阶段": "rollback",
-                "终止并重开": "restart",
-                "终止并退出": "abort",
-              };
-              const decision = LABEL_MAP[selection];
+              // Map label back to decision key using shared helper
+              const decision: PipelineDecision | undefined = labelToDecision(selection);
               if (decision) {
-                await executeDecision(rctx, meta, decision as any, config);
+                // Re-read meta after UI delay to get fresh state
+                const freshMeta = rctx.session.getMeta();
+                if (freshMeta) {
+                  await executeDecision(rctx, freshMeta, decision, config);
+                }
               }
             } catch (err) {
               const errMsg = err instanceof Error ? err.message : String(err);

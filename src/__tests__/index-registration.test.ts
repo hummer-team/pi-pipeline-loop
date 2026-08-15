@@ -20,6 +20,7 @@ function makeMockPi() {
   const registeredEvents: Array<{ event: string; handler: Function }> = [];
   const registeredTools: Array<Record<string, unknown>> = [];
   const registeredCommands: Array<{ name: string; options: Record<string, unknown> }> = [];
+  const registeredShortcuts: Array<{ key: string; options: Record<string, unknown> }> = [];
 
   return {
     pi: {
@@ -32,12 +33,16 @@ function makeMockPi() {
       registerCommand: (name: string, options: Record<string, unknown>) => {
         registeredCommands.push({ name, options });
       },
+      registerShortcut: (key: string, options: Record<string, unknown>) => {
+        registeredShortcuts.push({ key, options });
+      },
       appendEntry: () => {},
       exec: undefined,
     } as any,
     registeredEvents,
     registeredTools,
     registeredCommands,
+    registeredShortcuts,
   };
 }
 
@@ -325,5 +330,49 @@ describe("hook bridge", () => {
     const result = await sessionStartHook!.handler(event, extCtx);
     // session_starter returns undefined (no return value needed for session_start)
     expect(result === undefined || typeof result === "object").toBe(true);
+  });
+});
+
+// ─── registerShortcut: pipeline decision menu ──────────────────────────────
+
+describe("registerShortcut bridge", () => {
+  it("registers shortcut with default key 'ctrl+d' when decisionShortcutKey is not set", async () => {
+    const { pi, registeredShortcuts } = makeMockPi();
+    const config = makeTestConfig(); // no decisionShortcutKey set
+    const factory = createPipeline(config);
+    await factory(pi);
+
+    expect(registeredShortcuts.length).toBe(1);
+    expect(registeredShortcuts[0].key).toBe("ctrl+d");
+    expect(typeof registeredShortcuts[0].options.description).toBe("string");
+    expect(typeof registeredShortcuts[0].options.handler).toBe("function");
+  });
+
+  it("registers shortcut with custom key from config.decisionShortcutKey", async () => {
+    const { pi, registeredShortcuts } = makeMockPi();
+    const config = makeTestConfig({ decisionShortcutKey: "ctrl+shift+d" });
+    const factory = createPipeline(config);
+    await factory(pi);
+
+    expect(registeredShortcuts.length).toBe(1);
+    expect(registeredShortcuts[0].key).toBe("ctrl+shift+d");
+  });
+
+  it("registers shortcut with alt+f custom key", async () => {
+    const { pi, registeredShortcuts } = makeMockPi();
+    const config = makeTestConfig({ decisionShortcutKey: "alt+f" });
+    const factory = createPipeline(config);
+    await factory(pi);
+
+    expect(registeredShortcuts.length).toBe(1);
+    expect(registeredShortcuts[0].key).toBe("alt+f");
+  });
+
+  it("shortcut handler has correct description", async () => {
+    const { pi, registeredShortcuts } = makeMockPi();
+    const factory = createPipeline(makeTestConfig());
+    await factory(pi);
+
+    expect(registeredShortcuts[0].options.description).toBe("Pipeline decision menu");
   });
 });

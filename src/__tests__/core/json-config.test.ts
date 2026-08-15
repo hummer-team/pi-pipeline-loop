@@ -523,4 +523,41 @@ describe("decisionShortcutKey config", () => {
     const result = resolvePipelineConfig(json);
     expect(result.decisionShortcutKey).toBe("ctrl+d");
   });
+
+  // Regression: multi-modifier combos (Medium #4)
+  it("resolvePipelineConfig accepts multi-modifier combo 'ctrl+shift+d'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "ctrl+shift+d",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+shift+d");
+  });
+
+  it("resolvePipelineConfig accepts multi-modifier combo 'alt+shift+x'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "alt+shift+x",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("alt+shift+x");
+  });
+
+  it("resolvePipelineConfig accepts 'ctrl+shift+alt+d' (triple modifier)", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "ctrl+shift+alt+d",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+shift+alt+d");
+  });
+
+  it("resolvePipelineConfig rejects 'ctrl+' (modifier without key)", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "ctrl+",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+d");
+  });
 });

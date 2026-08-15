@@ -165,6 +165,36 @@ describe("createAgentSettled", () => {
     const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("agent_settled_skipped_frozen");
 
+    // Should notify user about frozen state and shortcut key (Medium #7)
+    expect(ctx.notifications.some(n => n.includes("frozen") || n.includes("decision menu"))).toBe(true);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Regression: frozen short-circuit uses custom shortcut key in notify
+  it("frozen short-circuit notify renders custom shortcut key", async () => {
+    const stageTmp = join(tmpdir(), "pi-agent-settled-frozen-notify-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      decisionShortcutKey: "alt+f",
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should render the custom shortcut key in the notification
+    expect(ctx.notifications.some(n => n.includes("alt+f"))).toBe(true);
+
     await rm(stageTmp, { recursive: true, force: true });
   });
 

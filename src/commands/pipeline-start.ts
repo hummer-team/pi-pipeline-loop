@@ -68,6 +68,11 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             maxLoops: config.maxLoops || 3,
             maxLoopCycles: config.maxLoopCycles ?? 3,
             flowState: "running",
+            blockedReason: undefined,
+            terminated: undefined,
+            terminateReason: undefined,
+            verifyAttempts: 0,
+            verifyFailures: [],
             requirementDoc: meta.requirementDoc,
           };
           ctx?.session?.updateMeta?.(newMeta);

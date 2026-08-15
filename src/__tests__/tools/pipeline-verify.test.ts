@@ -228,4 +228,52 @@ describe("createPipelineVerify", () => {
     // stageConfig.verify.verifyFile must remain undefined — NOT polluted
     expect(config.stages.develop.verify!.verifyFile).toBeUndefined();
   });
+
+  // ── Regression: tool mode maxVerifyAttempts freeze (High #1) ──
+
+  it("tool mode: freezes pipeline when verifyAttempts reaches maxVerifyAttempts", async () => {
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      maxVerifyAttempts: 2,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: `${s}/SKILL.md`,
+              allowedTools: ["read", "bash"],
+              allowedBashPrefixes: ["ls", "bun"],
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify:
+                s === "develop"
+                  ? { require: true, verifyFile: "references/develop_spec/verify.md", mode: "tool" as const }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    // verify.md that will FAIL
+    const verifyDir = join(TMP, "references", "develop_spec");
+    await mkdir(verifyDir, { recursive: true });
+    await writeFile(
+      join(verifyDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"nonexistent-tool-mode.md\"\n---\nBody\n",
+    );
+
+    const meta = makeTestMeta({ currentStage: "develop", verifyAttempts: 1 });
+    const ctx = createCtx(meta);
+
+    const tool = createPipelineVerify(config);
+    const result = await tool.execute({}, ctx as any) as Record<string, unknown>;
+
+    // Should have failed verification
+    expect(result.success).toBe(false);
+    // Pipeline should be frozen (verifyAttempts overflow)
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_attempt_overflow");
+  });
 });

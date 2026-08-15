@@ -112,7 +112,7 @@ export function buildDecisionMenu(meta: SessionMeta): string[] | null {
 }
 
 /** Reverse lookup: label → decision key. */
-function labelToDecision(label: string): PipelineDecision | undefined {
+export function labelToDecision(label: string): PipelineDecision | undefined {
   for (const [key, val] of Object.entries(DECISION_LABELS)) {
     if (val === label) return key as PipelineDecision;
   }
@@ -182,7 +182,7 @@ export async function executeDecision(
         ? {
             summaries: {
               ...meta.summaries,
-              [prevStage]: { ...meta.summaries[prevStage], status: "invalid" as const },
+              [prevStage]: { ...meta.summaries[prevStage], status: "skipped" as const },
             },
           }
         : {};
@@ -337,13 +337,18 @@ export async function freezeAndPrompt(
 ): Promise<void> {
   const ui = opts?.ui ?? ctx.ui;
 
-  // Idempotent freeze: only transition running → blocked
-  if (getFlowState(meta) === "running") {
-    ctx.session.updateMeta({
-      flowState: "blocked",
-      blockedReason: reason,
-    });
+  // Idempotent: only transition running → blocked, and only perform
+  // audit + menu prompt on the transition moment (not on repeated calls).
+  const currentState = getFlowState(meta);
+  if (currentState !== "running") {
+    // Already frozen/aborted — do not re-freeze, re-audit, or re-prompt.
+    return;
   }
+
+  ctx.session.updateMeta({
+    flowState: "blocked",
+    blockedReason: reason,
+  });
 
   // Audit: pipeline blocked (warn level)
   await safeWriteAuditLog("pipeline_blocked", {
