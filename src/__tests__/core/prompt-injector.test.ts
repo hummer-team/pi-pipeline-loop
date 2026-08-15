@@ -1,14 +1,22 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
+import { resetPromptConfigCache } from "../../core/prompt-config";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 
 describe("createPromptInjector", () => {
   beforeEach(() => {
     resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
   });
 
   it("creates a hook with event 'before_agent_start'", () => {
@@ -455,6 +463,208 @@ describe("createPromptInjector", () => {
 
       expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
       expect(result.systemPrompt).not.toContain("Git: read-only");
+    });
+  });
+
+  describe("yml template rendering path", () => {
+    /** Helper: write a prompt-injector.yml to the project's .pi/references/ */
+    async function writePromptYml(projectRoot: string, content: string): Promise<void> {
+      const refsDir = join(projectRoot, ".pi", "references");
+      await mkdir(refsDir, { recursive: true });
+      await writeFile(join(refsDir, "prompt-injector.yml"), content, "utf-8");
+    }
+
+    it("uses yml template when available — renders placeholders with dynamic values", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      // Write a yml template for develop stage
+      await writePromptYml(TMP, [
+        "develop: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{loop_status}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Pipeline status should be rendered
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("pipe-test-001");
+      // Loop status should be rendered
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      // The output should contain the --- separator between the two paragraphs
+      expect(result.systemPrompt).toContain("---");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("removes null paragraphs — context_reference absent when no previous summary", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-null-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      // Template with context_reference paragraph
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{context_reference}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      // No previous summary → context_reference returns null → paragraph removed
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        previousStage: undefined,
+        summaries: {},
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Pipeline status and write scope should be present
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      // context_reference paragraph should be removed (not present)
+      expect(result.systemPrompt).not.toContain("REQUIRED CONTEXT FILES");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("falls back to default when critical placeholder is missing from template", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-missing-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(auditDir, { recursive: true });
+
+      // Template missing {{pipeline_status}} (critical for all stages)
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{context_reference}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should fall back to default prompt (contains Pipeline Status from default builder)
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+
+      // Audit log should contain the missing placeholder event
+      const logFile = join(auditDir, getDateAuditFileName());
+      const logContent = await readFile(logFile, "utf-8");
+      expect(logContent).toContain("prompt_injector_missing_placeholder");
+      expect(logContent).toContain("{{pipeline_status}}");
+      expect(logContent).toContain("[WARN]");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("falls back to default when yml has no entry for current stage", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-nostage-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      // yml has only clarify, not develop
+      await writePromptYml(TMP, "clarify: |\n  {{pipeline_status}}\n  ---\n  {{stage_write_scope}}\n");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should use default path (develop gets loop status + pipeline status)
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt).toContain("Pipeline Status");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("loop stage template — loop_status paragraph present with dynamic content", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-loop-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      await writePromptYml(TMP, [
+        "develop: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{loop_status}}",
+        "  ---",
+        "  {{verify_failures}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        verifyFailures: [
+          { ruleType: "requiredFiles", detail: "Missing file", timestamp: Date.now() },
+        ],
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt).toContain("PREVIOUS VERIFICATION FAILURES");
+      expect(result.systemPrompt).toContain("[requiredFiles] Missing file");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("non-loop stage — verify_failures paragraph removed when no failures", async () => {
+      const TMP = join(tmpdir(), "pi-pi-yml-nofail-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{verify_failures}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify", verifyFailures: [] });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      // verify_failures is null (empty array) → paragraph removed
+      expect(result.systemPrompt).not.toContain("PREVIOUS VERIFICATION FAILURES");
+
+      await rm(TMP, { recursive: true, force: true });
     });
   });
 });

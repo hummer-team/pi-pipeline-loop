@@ -12,7 +12,9 @@ import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
+import { safeWriteAuditLog } from "../utils/auditLog";
 import { isFrozen } from "./flow-state";
+import { getStagePrompt, renderStageTemplate } from "./prompt-config";
 
 /**
  * Builds Part 1: Context Reference.
@@ -319,13 +321,10 @@ function buildStageWriteScope(
 /**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
  *
- * The prompt is assembled from up to 6 parts joined by horizontal rule separators:
- * 0. Requirement Document — user's requirement doc (if loaded via /pipeline_start)
- * 1. Context Reference — previous stage summary + context files
- * 2. Domain Skill — domain rules from ~/.pi/domains/ (if required)
- * 3. Stage Skill — stage-specific rules from project .pi/skills/
- * 4. Loop Status — iteration count and constraints (develop/fix only)
- * 5. Pipeline Status — ID, stage, domain, validation status
+ * Dual-path rendering:
+ * 1. If a yml stage template exists and contains all critical placeholders →
+ *    render placeholders with dynamic values (paragraph-level null removal).
+ * 2. Otherwise → fall back to the default 9-part prompt assembly.
  *
  * @param config - The pipeline configuration
  * @returns A Hook object for the "before_agent_start" event
@@ -337,25 +336,90 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
 
-      const part0 = await buildRequirementDoc(config, meta);
-      const part1 = buildContextReference(meta);
-      const part2 = await buildDomainSkill(stageConfig, meta);
-      const part3 = await buildStageSkill(config, stageConfig, meta);
-      const part4 = await buildLoopStatus(config, meta);
-      const part5 = buildPipelineStatus(config, meta);
-      const part6 = buildVerifyFailurePrompt(meta);
-      const part7 = buildVerifyToolGuidance(stageConfig);
-      // Part 8: Stage Write Scope (standalone for non-loop stages; loop stages get it in Part 4)
-      const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
-        ? buildStageWriteScope(stageConfig, true)
-        : null;
+      // Try yml template path
+      const template = await getStagePrompt(config.projectRoot, meta.currentStage);
+      if (template !== null) {
+        const values = await buildDynamicValues(config, meta, stageConfig);
+        const rendered = renderStageTemplate(template, meta.currentStage, values);
+        if (rendered.status === "missing_critical") {
+          await safeWriteAuditLog("prompt_injector_missing_placeholder", {
+            stage: meta.currentStage,
+            missing: rendered.missing.join(","),
+          }, "warn");
+          return { systemPrompt: await buildDefaultPrompt(config, meta, stageConfig) };
+        }
+        return { systemPrompt: rendered.prompt };
+      }
 
-      const promptParts = [part0, part1, part2, part3, part4, part5, part6, part7, part8].filter(
-        (p): p is string => p !== null,
-      );
-
-      return { systemPrompt: promptParts.join("\n\n---\n\n") };
+      // Default path: no yml template → use 9-part assembly
+      return { systemPrompt: await buildDefaultPrompt(config, meta, stageConfig) };
     },
+  };
+}
+
+/**
+ * Builds the default 9-part prompt by calling each part builder and joining
+ * non-null results with `\n\n---\n\n`. Used as the fallback when no yml
+ * template is available or when critical placeholders are missing.
+ *
+ * @param config - Pipeline configuration
+ * @param meta - Current session metadata
+ * @param stageConfig - Current stage configuration
+ * @returns Assembled prompt string
+ */
+async function buildDefaultPrompt(
+  config: PipelineConfig,
+  meta: SessionMeta,
+  stageConfig: StageConfig,
+): Promise<string> {
+  const part0 = await buildRequirementDoc(config, meta);
+  const part1 = buildContextReference(meta);
+  const part2 = await buildDomainSkill(stageConfig, meta);
+  const part3 = await buildStageSkill(config, stageConfig, meta);
+  const part4 = await buildLoopStatus(config, meta);
+  const part5 = buildPipelineStatus(config, meta);
+  const part6 = buildVerifyFailurePrompt(meta);
+  const part7 = buildVerifyToolGuidance(stageConfig);
+  // Part 8: Stage Write Scope (standalone for non-loop stages; loop stages get it in Part 4)
+  const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
+    ? buildStageWriteScope(stageConfig, true)
+    : null;
+
+  const promptParts = [part0, part1, part2, part3, part4, part5, part6, part7, part8].filter(
+    (p): p is string => p !== null,
+  );
+
+  return promptParts.join("\n\n---\n\n");
+}
+
+/**
+ * Builds the dynamic placeholder values map for template rendering.
+ * Maps each of the 8 known placeholder keys to its computed value.
+ * Null values trigger paragraph-level removal in renderStageTemplate.
+ *
+ * @param config - Pipeline configuration
+ * @param meta - Current session metadata
+ * @param stageConfig - Current stage configuration
+ * @returns Record mapping placeholder keys (without {{}}) to their values
+ */
+async function buildDynamicValues(
+  config: PipelineConfig,
+  meta: SessionMeta,
+  stageConfig: StageConfig,
+): Promise<Record<string, string | null>> {
+  const isLoopStage = meta.currentStage === "develop" || meta.currentStage === "fix";
+
+  return {
+    requirement_doc: await buildRequirementDoc(config, meta),
+    context_reference: buildContextReference(meta),
+    domain_skill: await buildDomainSkill(stageConfig, meta),
+    // Stage Skill (Part 3) is only used in default path, not in template rendering
+    loop_status: await buildLoopStatus(config, meta),
+    pipeline_status: buildPipelineStatus(config, meta),
+    verify_failures: buildVerifyFailurePrompt(meta),
+    verify_tool_guidance: buildVerifyToolGuidance(stageConfig),
+    // Write scope: null for loop stages (embedded in loop_status), built for non-loop
+    stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true),
   };
 }
 
