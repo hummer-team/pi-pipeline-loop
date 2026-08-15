@@ -278,4 +278,5 @@ export type {
   VerifyFailureItem,
   VerifyResultSnapshot,
   ExecFn,
+  FlowState,
 } from "./types";

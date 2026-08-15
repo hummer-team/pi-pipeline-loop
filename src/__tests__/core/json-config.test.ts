@@ -426,3 +426,101 @@ describe("protect config", () => {
     expect(result.protect).toBeUndefined();
   });
 });
+
+describe("maxVerifyAttempts config", () => {
+  it("loadJsonConfig parses maxVerifyAttempts from JSON", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      maxVerifyAttempts: 5,
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.maxVerifyAttempts).toBe(5);
+  });
+
+  it("loadJsonConfig ignores non-number maxVerifyAttempts", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      maxVerifyAttempts: "five",
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.maxVerifyAttempts).toBeUndefined();
+  });
+
+  it("resolvePipelineConfig defaults maxVerifyAttempts to 3", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.maxVerifyAttempts).toBe(3);
+  });
+
+  it("resolvePipelineConfig defaults maxVerifyAttempts to maxLoops when maxLoops is set", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      maxLoops: 5,
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.maxVerifyAttempts).toBe(5);
+  });
+
+  it("resolvePipelineConfig prefers maxVerifyAttempts over maxLoops", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      maxLoops: 5,
+      maxVerifyAttempts: 10,
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.maxVerifyAttempts).toBe(10);
+  });
+});
+
+describe("decisionShortcutKey config", () => {
+  it("loadJsonConfig parses valid decisionShortcutKey from JSON", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      decisionShortcutKey: "ctrl+shift+d",
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.decisionShortcutKey).toBe("ctrl+shift+d");
+  });
+
+  it("loadJsonConfig ignores non-string decisionShortcutKey", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      decisionShortcutKey: 42,
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.decisionShortcutKey).toBeUndefined();
+  });
+
+  it("resolvePipelineConfig defaults decisionShortcutKey to 'ctrl+d'", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+d");
+  });
+
+  it("resolvePipelineConfig accepts valid decisionShortcutKey", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "alt+x",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("alt+x");
+  });
+
+  it("resolvePipelineConfig falls back to 'ctrl+d' for invalid decisionShortcutKey", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "INVALID_KEY!!!",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+d");
+  });
+
+  it("resolvePipelineConfig falls back to 'ctrl+d' for empty string", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+d");
+  });
+});

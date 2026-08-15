@@ -84,6 +84,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           currentStepIndex: 0,
           maxLoops: config.maxLoops || 3,
           maxLoopCycles: config.maxLoopCycles ?? 3,
+          flowState: "running",
         };
 
         ctx?.session?.updateMeta?.(newMeta);
@@ -134,6 +135,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         currentStepIndex: 0,
         maxLoops: config.maxLoops || 3,
         maxLoopCycles: config.maxLoopCycles ?? 3,
+        flowState: "running",
         requirementDoc: file,
       };
 

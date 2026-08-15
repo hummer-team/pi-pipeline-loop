@@ -175,6 +175,16 @@ export interface VerifyResultSnapshot {
   overallPassed: boolean;
 }
 
+// ─── Flow State ──────────────────────────────────────────────────────────────
+
+/**
+ * Unified flow state for the pipeline lifecycle.
+ * - "running": Pipeline is actively progressing through stages.
+ * - "blocked": Pipeline is frozen due to a blocking condition; requires user decision.
+ * - "aborted": Pipeline has been terminated by user action (terminal state).
+ */
+export type FlowState = "running" | "blocked" | "aborted";
+
 // ─── Session Metadata ────────────────────────────────────────────────────────
 
 /**
@@ -221,11 +231,26 @@ export interface SessionMeta {
   /** Ordered list of stages visited (for cycle detection) */
   stageVisitOrder?: PipelineStage[];
 
-  /** Whether the pipeline has been terminated by the loop breaker */
+  /**
+   * @deprecated Use flowState instead. Kept for backward-compatible reading only.
+   * Whether the pipeline has been terminated by the loop breaker.
+   */
   terminated?: boolean;
 
-  /** Human-readable reason for termination */
+  /**
+   * @deprecated Use blockedReason instead. Kept for backward-compatible reading only.
+   * Human-readable reason for termination.
+   */
   terminateReason?: string;
+
+  /**
+   * Unified flow state for the pipeline lifecycle.
+   * When absent, the pipeline is considered "running" (default).
+   */
+  flowState?: FlowState;
+
+  /** Human-readable reason when the pipeline is in "blocked" flow state. */
+  blockedReason?: string;
 
   /** Session-level temporary bash prefix overrides (user-approved) */
   tempAllowedBash?: string[];
@@ -303,6 +328,20 @@ export interface PipelineConfig {
 
   /** Maximum number of full pipeline cycles (e.g. fix→develop loops); defaults to 3 */
   maxLoopCycles?: number;
+
+  /**
+   * Maximum number of verification attempts before the pipeline freezes (blocked).
+   * When not set, defaults to `maxLoops` (or 3 if maxLoops is also unset).
+   * Acts as a circuit-breaker for repeated verify failures within a single stage.
+   */
+  maxVerifyAttempts?: number;
+
+  /**
+   * KeyId for the TUI shortcut that opens the pipeline decision menu.
+   * Defaults to "ctrl+d". Must match KeyId format: /^(ctrl|shift|alt|super)?(\+[a-z0-9])*$/
+   * Invalid values fall back to "ctrl+d" with a console warning.
+   */
+  decisionShortcutKey?: string;
 
   /**
    * TUI output configuration.
@@ -394,6 +433,18 @@ export interface PipelineJsonConfig {
 
   /** Maximum pipeline cycles (e.g. fix→develop) before termination (default 3) */
   maxLoopCycles?: number;
+
+  /**
+   * Maximum verification attempts before freezing (default: maxLoops or 3).
+   * Circuit-breaker for repeated verify failures within a single stage.
+   */
+  maxVerifyAttempts?: number;
+
+  /**
+   * TUI shortcut KeyId to open the pipeline decision menu (default "ctrl+d").
+   * Must match KeyId format; invalid values fall back to "ctrl+d".
+   */
+  decisionShortcutKey?: string;
 
   /** TUI output configuration (default: { pipelineStage: true }) */
   output?: { pipelineStage?: boolean };

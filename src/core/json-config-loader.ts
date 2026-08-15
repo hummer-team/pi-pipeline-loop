@@ -78,6 +78,10 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     maxLoops: typeof json.maxLoops === "number" ? json.maxLoops : undefined,
     maxLoopCycles:
       typeof json.maxLoopCycles === "number" ? json.maxLoopCycles : undefined,
+    maxVerifyAttempts:
+      typeof json.maxVerifyAttempts === "number" ? json.maxVerifyAttempts : undefined,
+    decisionShortcutKey:
+      typeof json.decisionShortcutKey === "string" ? json.decisionShortcutKey : undefined,
     output: parseOutputConfig(json.output),
     llmExtract: typeof json.llmExtract === "boolean" ? json.llmExtract : undefined,
     protect: parseProtectConfig(json.protect),
@@ -120,6 +124,32 @@ function parseOutputConfig(raw: unknown): { pipelineStage?: boolean } | undefine
     return undefined;
   }
   return { pipelineStage: typeof pipelineStage === "boolean" ? pipelineStage : undefined };
+}
+
+/**
+ * Parses and validates a decisionShortcutKey value from JSON config.
+ * Must be a string matching KeyId format: modifier combinations of ctrl/shift/alt/super
+ * followed by optional +key segments. Invalid values warn and fall back to "ctrl+d".
+ */
+function parseDecisionShortcutKey(raw: unknown): string {
+  const DEFAULT_KEY = "ctrl+d";
+  if (typeof raw !== "string" || raw.length === 0) {
+    if (raw !== undefined) {
+      console.warn(
+        `[pi-pipeline] Invalid decisionShortcutKey "${String(raw)}" — expected non-empty string, falling back to '${DEFAULT_KEY}'`,
+      );
+    }
+    return DEFAULT_KEY;
+  }
+  // KeyId format: optional modifier prefix (ctrl|shift|alt|super) followed by +key segments
+  const KEY_ID_REGEX = /^(ctrl|shift|alt|super)?(\+[a-z0-9])*$/;
+  if (!KEY_ID_REGEX.test(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid decisionShortcutKey "${raw}" — does not match KeyId format, falling back to '${DEFAULT_KEY}'`,
+    );
+    return DEFAULT_KEY;
+  }
+  return raw;
 }
 
 /**
@@ -287,6 +317,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     domainDir: json.domainDir || ".pi/domains",
     maxLoops: json.maxLoops ?? 3,
     maxLoopCycles: json.maxLoopCycles ?? 3,
+    maxVerifyAttempts: json.maxVerifyAttempts ?? json.maxLoops ?? 3,
+    decisionShortcutKey: parseDecisionShortcutKey(json.decisionShortcutKey),
     output: { pipelineStage: json.output?.pipelineStage ?? true },
     llmExtract: json.llmExtract ?? false,
     protect: {
