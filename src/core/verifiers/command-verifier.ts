@@ -44,6 +44,8 @@ export interface SelfVerifySkipOptions {
   toolCallRecords?: Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }>;
   /** Stage start time (ms) for file-change invalidation */
   stageStartTime?: number;
+  /** Current stage name for audit logging (avoids hardcoding "verify") */
+  stageName?: string;
 }
 
 /**
@@ -96,6 +98,7 @@ export async function verifyRequiredCommands(
   const failures: string[] = [];
   const toolCallRecords = selfVerifyOpts?.toolCallRecords ?? [];
   const stageStartTime = selfVerifyOpts?.stageStartTime ?? 0;
+  const stageName = selfVerifyOpts?.stageName ?? "verify";
 
   for (const rule of rules) {
     // Fail-fast: reject shell operators in cmd (not supported by split-based execution)
@@ -113,7 +116,7 @@ export async function verifyRequiredCommands(
     if (selfVerified) {
       // Audit the skip — model_self_verified (no re-execution)
       await safeWriteAuditLog("model_self_verified", {
-        stage: "verify",
+        stage: stageName,
         cmd: rule.cmd,
         method: "self_verified",
       });
@@ -188,10 +191,16 @@ function trySelfVerifySkip(
   const ruleTokens = tokenize(normalizeCmdForMatch(ruleCmd));
   if (ruleTokens.length === 0) return false;
 
+  // Filter to records within the current stage boundary (ts >= stageStartTime).
+  // When stageStartTime is 0 (not set), no filtering is applied (backward compat).
+  const stageRecords = stageStartTime > 0
+    ? records.filter(r => r.ts >= stageStartTime)
+    : records;
+
   // Find the latest matching bash call (reverse order for most-recent-first)
   let matchTs = -1;
-  for (let i = records.length - 1; i >= 0; i--) {
-    const rec = records[i];
+  for (let i = stageRecords.length - 1; i >= 0; i--) {
+    const rec = stageRecords[i];
     if (rec.name !== "bash" || !rec.command) continue;
     if (rec.exitCode !== undefined && rec.exitCode !== 0) continue;
     // If exitCode is undefined but no error, treat as success (conservative: require explicit 0)
@@ -216,7 +225,7 @@ function trySelfVerifySkip(
   if (matchTs < 0) return false;
 
   // File-change invalidation: if any write/edit occurred after the match, invalidate
-  for (const rec of records) {
+  for (const rec of stageRecords) {
     if (rec.ts <= matchTs) continue;
     if (rec.name === "write" || rec.name === "edit") {
       if (rec.success !== false) {

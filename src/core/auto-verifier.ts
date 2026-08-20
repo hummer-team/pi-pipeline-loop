@@ -417,6 +417,7 @@ export async function executeStructuredRules(
   toolCallRecords?: Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }>,
   selfVerifySkip?: boolean,
   stageStartTime?: number,
+  stageName?: string,
 ): Promise<StructuredVerifyResult> {
   const failures: VerifyFailure[] = [];
 
@@ -432,7 +433,7 @@ export async function executeStructuredRules(
     projectRoot,
     execFn,
     logError,
-    selfVerifySkip === true ? { toolCallRecords, stageStartTime } : undefined,
+    selfVerifySkip === true ? { toolCallRecords, stageStartTime, stageName } : undefined,
   );
   if (!cmdResult.passed) {
     failures.push({ ruleType: "requiredCommands", detail: cmdResult.detail });
@@ -597,6 +598,7 @@ export async function runVerification(
       options?.toolCallRecords,
       verifyConfig.selfVerifySkip === true,
       meta.stageStartTime,
+      meta.currentStage,
     );
   } else {
     // Legacy path: keyword-only rules

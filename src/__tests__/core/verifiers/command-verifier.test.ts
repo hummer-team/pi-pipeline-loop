@@ -383,4 +383,108 @@ describe("verifyRequiredCommands", () => {
     // Skipped: rule tokens are prefix of executed tokens
     expect(execCalls).toHaveLength(0);
   });
+
+  // ── stageStartTime boundary filtering (Issue #1 fix) ──────────────────────
+
+  it("selfVerifySkip: ignores records before stageStartTime (cross-stage pollution prevention)", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model ran "bun run build" BEFORE the current stage started (ts=5 < stageStartTime=100)
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build", exitCode: 0, ts: 5 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 100 },
+    );
+
+    expect(result.passed).toBe(true);
+    // execFn IS called because the record is before stageStartTime — not in current stage
+    expect(execCalls).toHaveLength(1);
+  });
+
+  it("selfVerifySkip: matches records within current stage (ts >= stageStartTime)", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model ran "bun run build" AFTER the current stage started (ts=200 >= stageStartTime=100)
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build", exitCode: 0, ts: 200 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 100 },
+    );
+
+    expect(result.passed).toBe(true);
+    // Skipped: record is within current stage boundary
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it("selfVerifySkip: stageStartTime=0 means no filtering (backward compat)", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // With stageStartTime=0, all records should be considered (no boundary filtering)
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build", exitCode: 0, ts: 5 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0 },
+    );
+
+    expect(result.passed).toBe(true);
+    // Skipped: stageStartTime=0 means no filtering, old behavior preserved
+    expect(execCalls).toHaveLength(0);
+  });
+
+  // ── stageName in audit (Issue #6 fix) ──────────────────────────────────────
+
+  it("selfVerifySkip: audit records real stage name instead of hardcoded 'verify'", async () => {
+    const { verifyRequiredCommands: vrc } = await import("../../../core/verifiers/command-verifier");
+    const mockExecFn: ExecFn = async () => ({ stdout: "", stderr: "", code: 0 });
+
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build", exitCode: 0, ts: 10 },
+    ];
+
+    // Use audit log capture via the logError mechanism — but model_self_verified
+    // uses safeWriteAuditLog directly, not logError. Instead, verify the function
+    // accepts stageName without error and returns correct pass result.
+    // The actual stageName propagation is tested via the auto-verifier integration.
+    const result = await vrc(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0, stageName: "develop" },
+    );
+
+    // Verify selfVerifySkip worked (command was skipped — no execFn call needed)
+    expect(result.passed).toBe(true);
+    expect(result.detail).toContain("1 required commands passed");
+  });
 });

@@ -185,7 +185,12 @@ export function extractToolCallRecords(ctx: ExtensionContext): ToolCallRecord[] 
         for (const block of msg.content as Array<{ type?: string; id?: string; name?: string; input?: unknown }>) {
           if (block?.type === "tool_use" && block.id && block.name) {
             const input = (block.input ?? {}) as Record<string, unknown>;
-            const ts = i; // Use entry index as monotonic timestamp proxy
+            // Use real timestamp from entry metadata if available;
+            // fall back to Date.now() for consistent unit with stageStartTime.
+            const entryAny = entry as unknown as { timestamp?: unknown; createdAt?: unknown };
+            const ts = typeof entryAny.timestamp === "number"
+              ? entryAny.timestamp
+              : (typeof entryAny.createdAt === "number" ? entryAny.createdAt : Date.now());
             let command: string | undefined;
             if (block.name === "bash") {
               command = typeof input.command === "string" ? input.command : undefined;
@@ -214,10 +219,9 @@ export function extractToolCallRecords(ctx: ExtensionContext): ToolCallRecord[] 
             if (exitMatch) {
               pending.record.exitCode = parseInt(exitMatch[1], 10);
             }
-            // If no exit code found but result has no error markers, assume success (exitCode=0)
-            if (pending.record.exitCode === undefined && !text.toLowerCase().includes("error")) {
-              pending.record.exitCode = 0;
-            }
+            // When exitCode cannot be parsed, leave it undefined.
+            // command-verifier's trySelfVerifySkip conservatively skips records with
+            // undefined exitCode (does NOT treat as success), preventing false positives.
           } else if (pending.record.name === "write" || pending.record.name === "edit") {
             // Write/edit success: no error in result content
             const text = typeof content === "string" ? content :

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { createSessionState, extractAssistantMessages, PIPELINE_META_CUSTOM_TYPE } from "../../core/session-state";
+import { createSessionState, extractAssistantMessages, extractToolCallRecords, PIPELINE_META_CUSTOM_TYPE } from "../../core/session-state";
 import type { SessionMeta } from "../../types";
 import { makeTestMeta, makeTestConfig, makeMockSessionManager } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -213,5 +213,164 @@ describe("Phase 1 — catch block audit logging", () => {
     expect(logContent).toContain("session_state_error");
     expect(logContent).toContain("extractAssistantMessages");
     expect(logContent).toContain("Branch read failure");
+  });
+});
+
+describe("extractToolCallRecords", () => {
+  it("returns empty array when no entries", () => {
+    const ctx = { sessionManager: makeMockSessionManager([]) } as any;
+    expect(extractToolCallRecords(ctx)).toEqual([]);
+  });
+
+  it("uses real timestamp from entry.timestamp when available", () => {
+    const entries = [
+      {
+        type: "message",
+        timestamp: 1700000000000,
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "call_1", name: "bash", input: { command: "bun run build" } },
+          ],
+        },
+      },
+      {
+        type: "message",
+        timestamp: 1700000000100,
+        message: {
+          role: "user",
+          toolCallId: "call_1",
+          content: "Exit code: 0",
+        },
+      },
+    ];
+    const ctx = { sessionManager: makeMockSessionManager(entries) } as any;
+    const records = extractToolCallRecords(ctx);
+
+    expect(records).toHaveLength(1);
+    expect(records[0].ts).toBe(1700000000000);
+    expect(records[0].name).toBe("bash");
+    expect(records[0].command).toBe("bun run build");
+    expect(records[0].exitCode).toBe(0);
+  });
+
+  it("falls back to Date.now() when entry has no timestamp", () => {
+    const before = Date.now();
+    const entries = [
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "call_1", name: "bash", input: { command: "ls" } },
+          ],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "user",
+          toolCallId: "call_1",
+          content: "exit code 0",
+        },
+      },
+    ];
+    const ctx = { sessionManager: makeMockSessionManager(entries) } as any;
+    const records = extractToolCallRecords(ctx);
+    const after = Date.now();
+
+    expect(records).toHaveLength(1);
+    // Timestamp should be a real Unix timestamp (ms), not an index
+    expect(records[0].ts).toBeGreaterThanOrEqual(before);
+    expect(records[0].ts).toBeLessThanOrEqual(after);
+  });
+
+  it("leaves exitCode undefined when not parseable from result (no heuristic 0)", () => {
+    const entries = [
+      {
+        type: "message",
+        timestamp: 1700000000000,
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "call_1", name: "bash", input: { command: "some-command" } },
+          ],
+        },
+      },
+      {
+        type: "message",
+        timestamp: 1700000000100,
+        message: {
+          role: "user",
+          toolCallId: "call_1",
+          content: "some output without exit code info",
+        },
+      },
+    ];
+    const ctx = { sessionManager: makeMockSessionManager(entries) } as any;
+    const records = extractToolCallRecords(ctx);
+
+    expect(records).toHaveLength(1);
+    // exitCode should remain undefined — no heuristic assumption of 0
+    expect(records[0].exitCode).toBeUndefined();
+  });
+
+  it("leaves exitCode undefined even when result has no 'error' keyword", () => {
+    const entries = [
+      {
+        type: "message",
+        timestamp: 1700000000000,
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "call_1", name: "bash", input: { command: "bun run build" } },
+          ],
+        },
+      },
+      {
+        type: "message",
+        timestamp: 1700000000100,
+        message: {
+          role: "user",
+          toolCallId: "call_1",
+          content: "Build completed successfully",
+        },
+      },
+    ];
+    const ctx = { sessionManager: makeMockSessionManager(entries) } as any;
+    const records = extractToolCallRecords(ctx);
+
+    expect(records).toHaveLength(1);
+    // Even without "error" in output, exitCode must not be heuristically set to 0
+    expect(records[0].exitCode).toBeUndefined();
+  });
+
+  it("correctly parses exit code when present in result text", () => {
+    const entries = [
+      {
+        type: "message",
+        timestamp: 1700000000000,
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "call_1", name: "bash", input: { command: "bun run build" } },
+          ],
+        },
+      },
+      {
+        type: "message",
+        timestamp: 1700000000100,
+        message: {
+          role: "user",
+          toolCallId: "call_1",
+          content: "build ok\n(exit code: 0)",
+        },
+      },
+    ];
+    const ctx = { sessionManager: makeMockSessionManager(entries) } as any;
+    const records = extractToolCallRecords(ctx);
+
+    expect(records).toHaveLength(1);
+    expect(records[0].exitCode).toBe(0);
   });
 });

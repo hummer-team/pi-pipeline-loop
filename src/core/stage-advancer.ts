@@ -13,7 +13,7 @@
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from "../types";
 import { createPipelineUI } from "./pipeline-ui";
 import { runVerification } from "./auto-verifier";
-import { extractAssistantMessages } from "./session-state";
+import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
 
 /**
@@ -106,7 +106,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // (d) Verification gate: run when stage requires it
       if (stageConfig.verify?.require) {
         const messages = extractAssistantMessages(ctx._ctx);
-        const vr = await runVerification(config, meta, messages, { execFn: deps?.execFn });
+        // Extract tool call records for selfVerifySkip (same as agent-settled hook path)
+        const toolCallRecords = extractToolCallRecords(ctx._ctx);
+        const vr = await runVerification(config, meta, messages, { execFn: deps?.execFn, toolCallRecords });
 
         const verifyPassed = vr.rulePassed || vr.verifyResult?.overallPassed;
         if (!verifyPassed) {

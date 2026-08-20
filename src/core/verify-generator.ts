@@ -525,10 +525,11 @@ export async function generateVerifyFiles(
       const skillBody = await readSkillBody(resolvedSkillPath, config.projectRoot);
 
       let expectedItems: DeliveryItem[] = [];
+      let hardcodedItems: DeliveryItem[] = [];
+      let llmItems: DeliveryItem[] = [];
+      let llmStatusLocal: "ok" | "fail" | "off" = "off";
       if (skillBody) {
-        const hardcodedItems = extractHardcodedItems(skillBody);
-        let llmItems: DeliveryItem[] = [];
-        let llmStatusLocal: "ok" | "fail" | "off" = "off";
+        hardcodedItems = extractHardcodedItems(skillBody);
 
         if (llmEnabled) {
           onLLMStageStart?.(s);
@@ -620,9 +621,9 @@ export async function generateVerifyFiles(
           stage: s,
           status: "merged",
           filePath: verifyPath,
-          hardcodedCount: expectedItems.filter(i => i.type !== "command" || !expectedItems.some(e => e === i)).length,
-          llmCount: 0,
-          llmStatus: "off",
+          hardcodedCount: hardcodedItems.length,
+          llmCount: llmItems.length,
+          llmStatus: llmStatusLocal,
           addedItems: addedDescs,
         });
         continue;

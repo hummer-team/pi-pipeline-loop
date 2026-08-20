@@ -549,6 +549,29 @@ describe("verify-generator", () => {
       expect(content).toContain("output.md");
     });
 
+    it("merge branch reports correct hardcodedCount, llmCount, and llmStatus", async () => {
+      // Two hardcoded items: one file, one command
+      const skillContent = [
+        "- **Must** create docs/design/commit.md",
+        "- **Must** bun run build",
+      ].join("\n");
+      const config = await setupConfigWithSkill("develop", skillContent);
+
+      // Pre-create the verify.md file with empty rules to trigger merge branch
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(path.join(verifyDir, "verify.md"), "---\nrules:\n---\nExisting content\n", "utf-8");
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("merged");
+      // hardcodedCount should reflect actual hardcoded extraction count (2 items)
+      expect(results[0].hardcodedCount).toBe(2);
+      // LLM not enabled → llmCount=0, llmStatus="off"
+      expect(results[0].llmCount).toBe(0);
+      expect(results[0].llmStatus).toBe("off");
+    });
+
     it("skips existing verify.md when all expected rules are already present", async () => {
       const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
 
