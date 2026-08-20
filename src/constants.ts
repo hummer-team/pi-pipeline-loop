@@ -47,7 +47,7 @@ export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   },
   develop: {
     tools: ["read", "bash", "write", "edit", "stage_advance"],
-    bash: ["npm test", "npm run", "git", "tsc", "bun test"],
+    bash: ["npm test", "npm run", "git", "tsc", "bun test", "bun run", "mvn", "mvnw", "./mvnw", "gradle", "gradlew", "./gradlew", "java"],
     allowedWritePaths: [ALLOWED_WRITE_ALL],
   },
   review: {
@@ -57,7 +57,7 @@ export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   },
   fix: {
     tools: ["read", "bash", "write", "edit", "stage_advance"],
-    bash: ["npm test", "npm run", "git", "tsc", "bun test"],
+    bash: ["npm test", "npm run", "git", "tsc", "bun test", "bun run", "mvn", "mvnw", "./mvnw", "gradle", "gradlew", "./gradlew", "java"],
     allowedWritePaths: [ALLOWED_WRITE_ALL],
   },
 };

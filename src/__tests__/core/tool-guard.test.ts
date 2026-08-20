@@ -77,6 +77,69 @@ describe("createToolGuard", () => {
 
       expect((result as any).block).toBe(true);
     });
+
+    it("allows commands matching stage verify.md requiredCommands (fallback)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-vr-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      try {
+        // Create verify.md with requiredCommands for develop stage
+        const verifyDir = join(TMP, ".pi", "references", "develop_spec");
+        await mkdir(verifyDir, { recursive: true });
+        await writeFile(
+          join(verifyDir, "verify.md"),
+          "---\nrules:\n  requiredCommands:\n    - cmd: \"./mvnw clean test\"\n      expectExit: 0\n---\nVerify\n",
+          "utf-8",
+        );
+
+        const config = makeTestConfig({ projectRoot: TMP });
+        config.stages["develop"] = {
+          ...config.stages["develop"],
+          allowedBashPrefixes: ["ls"], // ./mvnw NOT in explicit list
+        } as any;
+        const meta = makeTestMeta({ currentStage: "develop" });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: "./mvnw clean test" } };
+
+        const hook = createToolGuard(config);
+        const result = await hook.handler(ctx as any);
+
+        // Should NOT be blocked (matches verify.md requiredCommand)
+        expect(result).toBeUndefined();
+      } finally {
+        await rm(TMP, { recursive: true, force: true });
+      }
+    });
+
+    it("still blocks commands not matching verify.md requiredCommands either", async () => {
+      const TMP = join(tmpdir(), "pi-tg-vr2-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      try {
+        const verifyDir = join(TMP, ".pi", "references", "develop_spec");
+        await mkdir(verifyDir, { recursive: true });
+        await writeFile(
+          join(verifyDir, "verify.md"),
+          "---\nrules:\n  requiredCommands:\n    - cmd: \"./mvnw clean test\"\n      expectExit: 0\n---\nVerify\n",
+          "utf-8",
+        );
+
+        const config = makeTestConfig({ projectRoot: TMP });
+        config.stages["develop"] = {
+          ...config.stages["develop"],
+          allowedBashPrefixes: ["ls"],
+        } as any;
+        const meta = makeTestMeta({ currentStage: "develop" });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: "./gradlew build" } };
+
+        const hook = createToolGuard(config);
+        const result = await hook.handler(ctx as any);
+
+        // Should be blocked (not in allowedBashPrefixes and not in verify.md)
+        expect((result as any).block).toBe(true);
+      } finally {
+        await rm(TMP, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("freeze state check", () => {

@@ -115,6 +115,20 @@ describe("resolvePipelineConfig", () => {
     expect(result.stages.develop.allowedBashPrefixes).toContain("bun test");
   });
 
+  it("develop/fix bash defaults include JVM ecosystem commands", () => {
+    const json: PipelineJsonConfig = { stages: { develop: {}, fix: {} } };
+    const result = resolvePipelineConfig(json);
+    for (const stage of [result.stages.develop, result.stages.fix]) {
+      expect(stage.allowedBashPrefixes).toContain("mvn");
+      expect(stage.allowedBashPrefixes).toContain("mvnw");
+      expect(stage.allowedBashPrefixes).toContain("./mvnw");
+      expect(stage.allowedBashPrefixes).toContain("gradle");
+      expect(stage.allowedBashPrefixes).toContain("gradlew");
+      expect(stage.allowedBashPrefixes).toContain("./gradlew");
+      expect(stage.allowedBashPrefixes).toContain("java");
+    }
+  });
+
   it("preserves user-specified values over defaults", () => {
     const json: PipelineJsonConfig = {
       stages: {

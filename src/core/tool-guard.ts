@@ -38,6 +38,7 @@ import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gi
 import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
+import { getStageRequiredCommandPrefixes } from "./verify-rules-cache";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
@@ -175,15 +176,33 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           ...(stageConfig.allowedBashPrefixes || []),
           ...(meta.tempAllowedBash || []),
         ];
-        if (
-          !mergedPrefixes.some((p: string) => command.startsWith(p))
-        ) {
-          return {
-            block: true,
-            reason: `Bash command "${command}" not in allowedBashPrefixes.`,
-            suggestAsk: true,
-            blockedCommand: command,
-          };
+        const prefixAllowed = mergedPrefixes.some((p: string) => command.startsWith(p));
+
+        if (!prefixAllowed) {
+          // ── Fallback: check against stage verify.md requiredCommands ──
+          // If the command matches a verify.md expected command prefix, allow it.
+          // This ensures the model can actually execute the commands it is being
+          // verified against, without requiring manual allowlist maintenance.
+          let verifyRuleAllowed = false;
+          try {
+            const verifyPrefixes = await getStageRequiredCommandPrefixes(config, meta.currentStage);
+            const normalizedCmd = command.toLowerCase().replace(/^\.\//, "").replace(/\s+/g, " ").trim();
+            verifyRuleAllowed = verifyPrefixes.some(p => normalizedCmd.startsWith(p));
+          } catch {
+            // Best-effort: if cache/parse fails, don't block
+          }
+
+          if (verifyRuleAllowed) {
+            // Allow: command matches stage verify.md requiredCommands
+            // (no audit — this is a silent pass-through to avoid log noise)
+          } else {
+            return {
+              block: true,
+              reason: `Bash command "${command}" not in allowedBashPrefixes.`,
+              suggestAsk: true,
+              blockedCommand: command,
+            };
+          }
         }
 
         // 2b. Git command protection check
