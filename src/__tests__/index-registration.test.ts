@@ -80,8 +80,8 @@ describe("registerCommand bridge", () => {
     const factory = createPipeline(makeTestConfig());
     await factory(pi);
 
-    // Three commands: pipeline-status, pipeline-start, pipeline-init
-    expect(registeredCommands.length).toBe(3);
+    // Four commands: pipeline-status, pipeline-start, pipeline-init, pipeline-quit
+    expect(registeredCommands.length).toBe(4);
 
     for (const reg of registeredCommands) {
       // Object-style: name as first arg, options object as second
