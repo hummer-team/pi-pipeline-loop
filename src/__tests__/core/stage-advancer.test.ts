@@ -295,5 +295,29 @@ Verify plan document exists.`,
       expect(tool.name).toBe("stage_advance");
       expect(typeof tool.execute).toBe("function");
     });
+
+    it("tool mode: verify failure at maxVerifyAttempts triggers circuit breaker (flowState → blocked)", async () => {
+      const config = makeTestConfig();
+      config.maxVerifyAttempts = 2;
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        nextStage: "plan",
+        verify: { require: true, mode: "tool" },
+      };
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        verifyAttempts: 1, // One previous attempt
+      });
+
+      const ctx = createCtx(meta);
+      // Add ui mock for freezeAndPrompt notification
+      (ctx as any).ui = { notify: () => {}, select: async () => undefined };
+      const tool = createStageAdvancer(config);
+      const result = await tool.execute({}, ctx as any);
+
+      // Should fail and freeze the pipeline (circuit breaker)
+      expect((result as any).success).toBe(false);
+      expect(meta.flowState).toBe("blocked");
+    });
   });
 });

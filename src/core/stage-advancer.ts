@@ -116,7 +116,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             ruleMissing: vr.ruleMissing,
             verifyResult: vr.verifyResult,
           };
-          const failResult = await applyVerifyFail(ctx, meta, currentStage, sharedResult, "tool", ui);
+          const failResult = await applyVerifyFail(ctx, meta, currentStage, sharedResult, "tool", ui, config);
           return {
             success: false,
             message: failResult.message,
