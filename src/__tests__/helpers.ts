@@ -50,14 +50,19 @@ export type MockCtx = {
     getMeta: () => SessionMeta;
     updateMeta: (patch: Partial<SessionMeta>) => SessionMeta;
   };
-  ui: { notify: (msg: string) => void; setStatus: (key: string, text: string) => void };
+  ui: {
+    notify: (msg: string) => void;
+    setStatus: (key: string, text: string) => void;
+    /** Optional TUI select — injectable for ask-protect tests */
+    select?: (message: string, options: string[]) => Promise<string | undefined>;
+  };
   toolCall: { name: string; arguments: Record<string, unknown> };
   result: { success?: boolean; exitCode?: number; error?: string } | undefined;
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
   _ctx: { sessionManager: { getBranch(): any[]; getEntries(): any[] } };
 };
 
-export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string }[] } {
+export function createMockCtx(meta: SessionMeta, opts?: { selectReturn?: string | undefined }): MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string }[] } {
   const metadataUpdates: SessionMeta[] = [];
   const notifications: string[] = [];
   const statusCalls: { key: string; text: string }[] = [];
@@ -79,6 +84,9 @@ export function createMockCtx(meta: SessionMeta): MockCtx & { metadataUpdates: S
       setStatus: (key: string, text: string) => {
         statusCalls.push({ key, text });
       },
+      select: opts?.selectReturn !== undefined
+        ? async (_message: string, _options: string[]) => opts.selectReturn
+        : async (_message: string, _options: string[]) => undefined,
     },
     toolCall: { name: "read", arguments: {} },
     result: undefined,

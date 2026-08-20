@@ -39,6 +39,7 @@ import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
 import { getStageRequiredCommandPrefixes } from "./verify-rules-cache";
+import { safeWriteAuditLog } from "../utils/auditLog";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
@@ -111,6 +112,81 @@ function checkStageWriteBlock(
 
   // Whitelist hit + not hardcoded → allowed (gitignore/allow exemptions are bypassed)
   return { status: "allow-whitelist" };
+}
+
+/**
+ * TUI 3-choice dialog for protected-path edit decisions (protect.ask=true).
+ *
+ * Options:
+ * - "Follow plugin default rules (default)" → block
+ * - "Allow this edit only" → allow (one-shot)
+ * - "Allow edits for this session" → allow + add to sessionAllowedWritePaths
+ *
+ * Esc / undefined / no UI → treated as default (block).
+ * Every outcome (including Esc) is audit-logged.
+ *
+ * @returns "allow" to continue the write, "block" to reject it
+ */
+async function askProtectDecision(
+  ctx: any,
+  meta: SessionMeta,
+  relPath: string,
+): Promise<"allow" | "block"> {
+  const options = [
+    "Follow plugin default rules (default)",
+    "Allow this edit only",
+    "Allow edits for this session",
+  ];
+
+  let selection: string | undefined;
+  try {
+    if (typeof ctx?.ui?.select === "function") {
+      selection = await ctx.ui.select("Protected file edit:", options);
+    }
+  } catch {
+    selection = undefined;
+  }
+
+  // Encode file path for audit (| → %7C, = → %3D)
+  const encodedFile = relPath.replace(/\|/g, "%7C").replace(/=/g, "%3D");
+
+  let action: string;
+  let decision: "allow" | "block";
+
+  if (selection === undefined) {
+    // Esc or no UI → treat as canceled (default = block)
+    action = "canceled";
+    decision = "block";
+  } else if (selection === options[0]) {
+    action = "follow_default";
+    decision = "block";
+  } else if (selection === options[1]) {
+    action = "allow_once";
+    decision = "allow";
+  } else if (selection === options[2]) {
+    action = "allow_session";
+    decision = "allow";
+    // Add to sessionAllowedWritePaths (precise relative path)
+    const existing = meta.sessionAllowedWritePaths || [];
+    if (!existing.includes(relPath)) {
+      ctx.session.updateMeta({
+        sessionAllowedWritePaths: [...existing, relPath],
+      });
+    }
+  } else {
+    // Unknown selection → treat as canceled (default = block)
+    action = "canceled";
+    decision = "block";
+  }
+
+  await safeWriteAuditLog("pipeline_protect_ask", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    action,
+    file: encodedFile,
+  });
+
+  return decision;
 }
 
 /**
@@ -239,10 +315,28 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               }
               // "allow-whitelist" → skip global chain, path is stage-authorized
               // "continue" → fall through to global protection chain
-              if (stageCheck.status !== "allow-whitelist" && isPathProtectedForModify(relPath, state)) {
-                const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
-                ui.notify(ctx, reason);
-                return { block: true, reason };
+              if (stageCheck.status !== "allow-whitelist") {
+                // Session-level file allowance (overrides protection, including hardcoded)
+                const sessionPaths = meta.sessionAllowedWritePaths || [];
+                if (sessionPaths.includes(relPath)) {
+                  // Session-exempted — skip protection chain
+                  continue;
+                }
+                if (isPathProtectedForModify(relPath, state)) {
+                  if (config.protect?.ask === true) {
+                    const decision = await askProtectDecision(ctx, meta, relPath);
+                    if (decision === "block") {
+                      const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+                      ui.notify(ctx, reason);
+                      return { block: true, reason };
+                    }
+                    // "allow" → continue loop to next target
+                    continue;
+                  }
+                  const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+                  ui.notify(ctx, reason);
+                  return { block: true, reason };
+                }
               }
             } else {
               // Path outside project root: block in whitelist mode (cannot satisfy whitelist)
@@ -299,23 +393,47 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
           // "allow-whitelist" → skip global chain, path is stage-authorized
           if (stageCheck.status !== "allow-whitelist") {
-            // Global protection chain (hardcoded + allow + gitignore)
-            // Check hardcoded protection (allow cannot exempt)
-            if (isHardcodedProtected(relPath, state.hardcoded)) {
-              const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
-              ui.notify(ctx, reason);
-              return { block: true, reason };
-            }
-
-            // Check allow exemption (only for gitignore protection)
-            if (isPathAllowed(relPath, state.allow)) {
-              // Allowed - proceed with hash recording
-            } else if (state.gitignore) {
-              // Check gitignore protection
-              if (isGitignored(state.gitignore, relPath)) {
-                const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
-                ui.notify(ctx, reason);
-                return { block: true, reason };
+            // Session-level file allowance (overrides protection, including hardcoded)
+            const sessionPaths = meta.sessionAllowedWritePaths || [];
+            if (!sessionPaths.includes(relPath)) {
+              // Global protection chain (hardcoded + allow + gitignore)
+              // Check hardcoded protection (allow cannot exempt)
+              if (isHardcodedProtected(relPath, state.hardcoded)) {
+                if (config.protect?.ask === true) {
+                  const decision = await askProtectDecision(ctx, meta, relPath);
+                  if (decision === "block") {
+                    const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                    ui.notify(ctx, reason);
+                    return { block: true, reason };
+                  }
+                  // "allow" → proceed with hash recording
+                } else {
+                  const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                  ui.notify(ctx, reason);
+                  return { block: true, reason };
+                }
+              } else {
+                // Check allow exemption (only for gitignore protection)
+                if (isPathAllowed(relPath, state.allow)) {
+                  // Allowed - proceed with hash recording
+                } else if (state.gitignore) {
+                  // Check gitignore protection
+                  if (isGitignored(state.gitignore, relPath)) {
+                    if (config.protect?.ask === true) {
+                      const decision = await askProtectDecision(ctx, meta, relPath);
+                      if (decision === "block") {
+                        const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+                        ui.notify(ctx, reason);
+                        return { block: true, reason };
+                      }
+                      // "allow" → proceed with hash recording
+                    } else {
+                      const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+                      ui.notify(ctx, reason);
+                      return { block: true, reason };
+                    }
+                  }
+                }
               }
             }
           }
