@@ -403,6 +403,9 @@ export function ruleVerify(
  * @param assistantMessages - Aggregated assistant messages for keyword checking
  * @param execFn - Injected shell execution function
  * @param logError - Optional audit log callback for recording errors
+ * @param toolCallRecords - Tool call records for selfVerifySkip matching
+ * @param selfVerifySkip - Whether selfVerifySkip is enabled for this stage
+ * @param stageStartTime - Stage start time for file-change invalidation
  * @returns StructuredVerifyResult with per-rule-type pass/fail and failure details
  */
 export async function executeStructuredRules(
@@ -411,6 +414,9 @@ export async function executeStructuredRules(
   assistantMessages: string[],
   execFn?: ExecFn,
   logError?: AuditLogFn,
+  toolCallRecords?: Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }>,
+  selfVerifySkip?: boolean,
+  stageStartTime?: number,
 ): Promise<StructuredVerifyResult> {
   const failures: VerifyFailure[] = [];
 
@@ -421,7 +427,13 @@ export async function executeStructuredRules(
   }
 
   // 2. Required commands check
-  const cmdResult = await verifyRequiredCommands(rules.requiredCommands, projectRoot, execFn, logError);
+  const cmdResult = await verifyRequiredCommands(
+    rules.requiredCommands,
+    projectRoot,
+    execFn,
+    logError,
+    selfVerifySkip === true ? { toolCallRecords, stageStartTime } : undefined,
+  );
   if (!cmdResult.passed) {
     failures.push({ ruleType: "requiredCommands", detail: cmdResult.detail });
   }
@@ -462,6 +474,8 @@ export interface RunVerificationOptions {
   verifyFile?: string;
   /** Optional audit log callback override (defaults to auto-constructed closure from meta.pipelineId) */
   logError?: AuditLogFn;
+  /** Tool call records for selfVerifySkip (extracted from session by agent-settled) */
+  toolCallRecords?: Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }>;
 }
 
 /**
@@ -574,7 +588,16 @@ export async function runVerification(
 
   if (hasStructuredRules) {
     // Use the structured rule engine
-    structuredResult = await executeStructuredRules(resolvedRules, config.projectRoot, assistantMessages, options?.execFn, logError);
+    structuredResult = await executeStructuredRules(
+      resolvedRules,
+      config.projectRoot,
+      assistantMessages,
+      options?.execFn,
+      logError,
+      options?.toolCallRecords,
+      verifyConfig.selfVerifySkip === true,
+      meta.stageStartTime,
+    );
   } else {
     // Legacy path: keyword-only rules
     const ruleResult = ruleVerify(resolvedRules, assistantMessages);

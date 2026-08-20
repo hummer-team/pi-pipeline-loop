@@ -130,3 +130,110 @@ export function extractAssistantMessages(ctx: ExtensionContext): string[] {
     return [];
   }
 }
+
+/**
+ * A single tool call record extracted from the session branch.
+ * Used by selfVerifySkip to determine whether the model has already
+ * successfully executed a given command during the current stage.
+ */
+export interface ToolCallRecord {
+  /** Tool name (e.g. "bash", "write", "edit") */
+  name: string;
+  /** For bash: the full command string. For write/edit: the file path. */
+  command?: string;
+  /** For bash: the exit code (0 = success). Undefined if result not yet received. */
+  exitCode?: number;
+  /** For write/edit: whether the operation succeeded */
+  success?: boolean;
+  /** Unix timestamp (ms) when the call was recorded */
+  ts: number;
+}
+
+/**
+ * Extracts all tool call records from the current session branch.
+ * Scans for tool_call + tool_result pairs, pairing them to capture
+ * the execution outcome (exit code, success flag).
+ *
+ * @param ctx - Extension context with session manager
+ * @returns Chronologically ordered array of tool call records
+ */
+export function extractToolCallRecords(ctx: ExtensionContext): ToolCallRecord[] {
+  try {
+    const entries = ctx.sessionManager.getBranch();
+    const records: ToolCallRecord[] = [];
+
+    // Index pending tool_call entries by their callId for result pairing
+    const pendingCalls = new Map<string, { index: number; record: ToolCallRecord }>();
+
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (entry.type !== "message") continue;
+
+      const msgEntry = entry as {
+        type: "message";
+        message: {
+          role: string;
+          content?: unknown;
+          toolCallId?: string;
+          toolName?: string;
+        };
+      };
+      const msg = msgEntry.message;
+
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        // Look for tool_use content blocks
+        for (const block of msg.content as Array<{ type?: string; id?: string; name?: string; input?: unknown }>) {
+          if (block?.type === "tool_use" && block.id && block.name) {
+            const input = (block.input ?? {}) as Record<string, unknown>;
+            const ts = i; // Use entry index as monotonic timestamp proxy
+            let command: string | undefined;
+            if (block.name === "bash") {
+              command = typeof input.command === "string" ? input.command : undefined;
+            } else if (block.name === "write" || block.name === "edit") {
+              command = typeof input.filePath === "string" ? input.filePath : (typeof input.file_path === "string" ? input.file_path : undefined);
+            }
+            const record: ToolCallRecord = {
+              name: block.name,
+              command,
+              ts,
+            };
+            pendingCalls.set(block.id, { index: i, record });
+          }
+        }
+      } else if (msg.role === "user" && msg.toolCallId) {
+        // Tool result — pair with pending call
+        const pending = pendingCalls.get(msg.toolCallId);
+        if (pending) {
+          const content = msg.content;
+          // Detect exit code from tool result content
+          if (pending.record.name === "bash") {
+            // bash tool results typically contain exit code info
+            const text = typeof content === "string" ? content :
+              (Array.isArray(content) ? content.map(p => typeof p === "object" && p && "text" in p ? (p as { text?: string }).text : "").join("") : "");
+            const exitMatch = text.match(/exit code[:\s]+(-?\d+)/i) || text.match(/exitCode[:\s]+(-?\d+)/i);
+            if (exitMatch) {
+              pending.record.exitCode = parseInt(exitMatch[1], 10);
+            }
+            // If no exit code found but result has no error markers, assume success (exitCode=0)
+            if (pending.record.exitCode === undefined && !text.toLowerCase().includes("error")) {
+              pending.record.exitCode = 0;
+            }
+          } else if (pending.record.name === "write" || pending.record.name === "edit") {
+            // Write/edit success: no error in result content
+            const text = typeof content === "string" ? content :
+              (Array.isArray(content) ? content.map(p => typeof p === "object" && p && "text" in p ? (p as { text?: string }).text : "").join("") : "");
+            pending.record.success = !text.toLowerCase().includes("error") && !text.toLowerCase().includes("failed");
+          }
+          records.push(pending.record);
+          pendingCalls.delete(msg.toolCallId);
+        }
+      }
+    }
+
+    return records.sort((a, b) => a.ts - b.ts);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    safeWriteAuditLog("session_state_error", { operation: "extractToolCallRecords", error: errMsg }, "error");
+    return [];
+  }
+}

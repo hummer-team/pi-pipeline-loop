@@ -11,7 +11,7 @@ import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
-import { extractAssistantMessages } from "./session-state";
+import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { isFrozen } from "./flow-state";
 
 /**
@@ -76,11 +76,13 @@ export function createAgentSettled(
 
       // Extract assistant messages from session branch for verification
       const assistantMessages = extractAssistantMessages(ctx._ctx);
+      // Extract tool call records for selfVerifySkip (model self-verified commands)
+      const toolCallRecords = extractToolCallRecords(ctx._ctx);
       const vr = await runVerification(
         config,
         meta,
         assistantMessages,
-        verifyOptions,
+        { ...verifyOptions, toolCallRecords },
       );
 
       // Build the shared result shape consumed by applyVerifyPass/applyVerifyFail

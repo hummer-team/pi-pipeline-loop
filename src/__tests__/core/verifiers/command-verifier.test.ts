@@ -230,4 +230,157 @@ describe("verifyRequiredCommands", () => {
 
     expect(result.passed).toBe(true);
   });
+
+  // ── selfVerifySkip tests ──────────────────────────────────────────────────
+
+  it("selfVerifySkip: skips command when model already executed it successfully", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model previously ran "bun run build" successfully
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build", exitCode: 0, ts: 10 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0 },
+    );
+
+    expect(result.passed).toBe(true);
+    // execFn should NOT have been called (command was self-verified)
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it("selfVerifySkip: prefix match — model ran 'mvn clean test' satisfies 'mvn test' rule? NO — rule must be prefix of executed", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model ran "mvn test" but rule requires "mvn clean test" — rule is longer → NOT prefix match
+    const toolCallRecords = [
+      { name: "bash", command: "mvn test", exitCode: 0, ts: 10 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "mvn clean test", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0 },
+    );
+
+    // Not a prefix match → execFn IS called
+    expect(result.passed).toBe(true); // execFn succeeds
+    expect(execCalls).toHaveLength(1);
+  });
+
+  it("selfVerifySkip: model ran './mvnw clean test' satisfies 'mvnw clean test' rule (normalization)", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model ran "./mvnw clean test" (with ./ prefix) — after normalization matches "mvnw clean test"
+    const toolCallRecords = [
+      { name: "bash", command: "./mvnw clean test", exitCode: 0, ts: 10 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "mvnw clean test", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0 },
+    );
+
+    expect(result.passed).toBe(true);
+    // Should be skipped due to prefix match after normalization
+    expect(execCalls).toHaveLength(0);
+  });
+
+  it("selfVerifySkip: invalidated by write/edit after matching tool call", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model ran bun run build, but then wrote a file (file change invalidation)
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build", exitCode: 0, ts: 10 },
+      { name: "write", command: "src/main.ts", success: true, ts: 20 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0 },
+    );
+
+    expect(result.passed).toBe(true);
+    // execFn IS called because write/edit invalidated the self-verify
+    expect(execCalls).toHaveLength(1);
+  });
+
+  it("selfVerifySkip: not matched when model command failed (exitCode !== 0)", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model ran the command but it failed
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build", exitCode: 1, ts: 10 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0 },
+    );
+
+    expect(result.passed).toBe(true);
+    // execFn IS called because model's execution failed
+    expect(execCalls).toHaveLength(1);
+  });
+
+  it("selfVerifySkip: model ran extra args — 'bun run build --watch' satisfies 'bun run build' rule", async () => {
+    const execCalls: string[] = [];
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      execCalls.push(`${cmd} ${args.join(" ")}`.trim());
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    // Model ran "bun run build --watch" — rule is "bun run build" — rule tokens are prefix
+    const toolCallRecords = [
+      { name: "bash", command: "bun run build --watch", exitCode: 0, ts: 10 },
+    ];
+
+    const result = await verifyRequiredCommands(
+      [{ cmd: "bun run build", expectExit: 0 }],
+      process.cwd(),
+      mockExecFn,
+      undefined,
+      { toolCallRecords, stageStartTime: 0 },
+    );
+
+    expect(result.passed).toBe(true);
+    // Skipped: rule tokens are prefix of executed tokens
+    expect(execCalls).toHaveLength(0);
+  });
 });
