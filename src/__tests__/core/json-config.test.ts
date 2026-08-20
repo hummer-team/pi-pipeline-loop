@@ -398,13 +398,14 @@ describe("protect config", () => {
     expect(result.protect!.allow).toEqual(["docs/", "src/template/"]);
   });
 
-  it("resolvePipelineConfig defaults protect to { gitignore: true, paths: [], allow: [] }", () => {
+  it("resolvePipelineConfig defaults protect to { gitignore: true, paths: [], allow: [], ask: false }", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };
     const result = resolvePipelineConfig(json);
     expect(result.protect).toBeDefined();
     expect(result.protect!.gitignore).toBe(true);
     expect(result.protect!.paths).toEqual([]);
     expect(result.protect!.allow).toEqual([]);
+    expect(result.protect!.ask).toBe(false);
   });
 
   it("resolvePipelineConfig preserves user-specified protect values", () => {
@@ -431,6 +432,7 @@ describe("protect config", () => {
     expect(result.protect!.gitignore).toBe(true); // default
     expect(result.protect!.paths).toEqual(["dist/"]);
     expect(result.protect!.allow).toEqual([]); // default
+    expect(result.protect!.ask).toBe(false); // default
   });
 
   it("loadJsonConfig ignores non-boolean protect.gitignore", async () => {
@@ -467,6 +469,39 @@ describe("protect config", () => {
     });
     const result = loadJsonConfig(jsonPath);
     expect(result.protect).toBeUndefined();
+  });
+
+  it("loadJsonConfig parses protect.ask: true", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { ask: true },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.ask).toBe(true);
+  });
+
+  it("loadJsonConfig ignores non-boolean protect.ask", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { ask: "yes" },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.ask).toBeUndefined();
+  });
+
+  it("resolvePipelineConfig defaults protect.ask to false", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.protect!.ask).toBe(false);
+  });
+
+  it("resolvePipelineConfig preserves protect.ask: true", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      protect: { ask: true },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.protect!.ask).toBe(true);
   });
 });
 

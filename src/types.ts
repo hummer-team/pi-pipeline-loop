@@ -292,6 +292,14 @@ export interface SessionMeta {
 
   /** The most recent unified verification result (structured + LLM) */
   lastVerifyResult?: VerifyResultSnapshot;
+
+  /**
+   * Session-level file write allowance list (precise relative paths).
+   * When a protected file is edited with the user choosing "Allow edits for this session",
+   * the path is added here and subsequent edits to the same path bypass protection.
+   * Cleared on pipeline quit/reset.
+   */
+  sessionAllowedWritePaths?: string[];
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
@@ -325,6 +333,13 @@ export interface ProtectConfig {
    * affect hardcoded protection (`.pi/`, `AGENTS.md`, `.git/`).
    */
   allow?: string[];
+
+  /**
+   * Whether to prompt the user via TUI when a protected path is edited (default: false).
+   * When true, write/edit/bash operations hitting hardcoded or gitignore protection
+   * trigger a 3-choice dialog: follow plugin default / allow this edit / allow for session.
+   */
+  ask?: boolean;
 }
 
 // ─── Pipeline Configuration ──────────────────────────────────────────────────

@@ -200,6 +200,17 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
     }
   }
 
+  // Parse ask (boolean)
+  if (obj.ask !== undefined) {
+    if (typeof obj.ask === "boolean") {
+      result.ask = obj.ask;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.ask "${String(obj.ask)}" — expected boolean, ignoring`,
+      );
+    }
+  }
+
   return result;
 }
 
@@ -354,6 +365,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       gitignore: json.protect?.gitignore ?? true,
       paths: json.protect?.paths ?? [],
       allow: json.protect?.allow ?? [],
+      ask: json.protect?.ask ?? false,
     },
   };
 }
