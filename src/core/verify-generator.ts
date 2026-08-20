@@ -186,27 +186,35 @@ export function extractHardcodedItems(skillBody: string): DeliveryItem[] {
 
 /**
  * Classifies a delivery item description into a type.
+ *
+ * Classification priority: command > file > git > keyword.
+ * Command patterns are checked first to avoid JVM/Node commands with path-like
+ * tokens (e.g. `./mvnw clean test`, `./gradlew build`) being mis-classified as files.
  */
 export function classifyDeliveryItem(description: string): DeliveryItem {
-  const lower = description.toLowerCase();
+  const trimmed = description.replace(/["`]/g, "").trim();
+  const lower = trimmed.toLowerCase();
 
-  // File path patterns (contains extension or path separators)
-  if (/\.\w{1,5}$/.test(description) || description.includes("/") || description.includes("\\")) {
-    return { type: "file", target: description.replace(/["`]/g, "").trim() };
+  // Command patterns first — covers Node/Bun, JVM (Maven/Gradle), Rust, Python, and common shell tools.
+  // Also matches executable script wrappers like `./mvnw`, `./gradlew`, `./<script>`.
+  const COMMAND_PREFIX =
+    /^(?:\.\/)?(?:bunx?|npm|npx|node|yarn|pnpm|git|cargo|make|python3?|mvn|mvnw|gradle|gradlew|java|echo|mkdir|cat|ls|sh|bash)(?:\s|$)|^\.\/(?:mvnw|gradlew|[a-zA-Z0-9_-]+)$/i;
+  if (COMMAND_PREFIX.test(trimmed)) {
+    return { type: "command", target: trimmed };
   }
 
-  // Command patterns (starts with common command prefixes)
-  if (/^(bun |npm |node |git |cargo |make |python |echo |mkdir |cat |ls )/i.test(description)) {
-    return { type: "command", target: description.replace(/["`]/g, "").trim() };
+  // File path patterns (contains extension or path separators)
+  if (/\.\w{1,5}$/.test(trimmed) || trimmed.includes("/") || trimmed.includes("\\")) {
+    return { type: "file", target: trimmed };
   }
 
   // Git state patterns
   if (lower.includes("commit") || lower.includes("branch") || lower.includes("git")) {
-    return { type: "git", target: description };
+    return { type: "git", target: trimmed };
   }
 
   // Default: keyword
-  return { type: "keyword", target: description };
+  return { type: "keyword", target: trimmed };
 }
 
 /**
@@ -454,12 +462,12 @@ export async function generateVerifyFiles(
     // Step 3: Merge and deduplicate
     const allItems = mergeDeliveryItems(hardcodedItems, llmItems);
 
-    // Drop command-type items for develop/fix (project tech stack is irrelevant)
-    const filteredItems = (s === "develop" || s === "fix")
-      ? allItems.filter(i => i.type !== "command")
-      : allItems;
+    // NOTE: previous defensive drop of command-type items for develop/fix has been
+    // removed. Project tech stack detection (see detectTechStack in tech-stack.ts)
+    // now ensures LLM extraction emits the correct build/test commands for the
+    // project, so dropping commands was counter-productive (root cause ③ of #129).
 
-    if (filteredItems.length === 0) {
+    if (allItems.length === 0) {
       await safeWriteAuditLog("verify_md_generate", {
         stage: s,
         status: "skipped",
@@ -483,7 +491,7 @@ export async function generateVerifyFiles(
     }
 
     // Step 4: Generate verify.md
-    const verifyContent = generateVerifyMdContent(filteredItems, s);
+    const verifyContent = generateVerifyMdContent(allItems, s);
 
     try {
       await fs.mkdir(path.dirname(absVerifyPath), { recursive: true });

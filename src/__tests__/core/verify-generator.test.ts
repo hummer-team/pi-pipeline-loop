@@ -197,6 +197,34 @@ describe("verify-generator", () => {
       const item = classifyDeliveryItem("pass all tests");
       expect(item.type).toBe("keyword");
     });
+
+    it("classifies JVM Maven commands as command (not file)", () => {
+      expect(classifyDeliveryItem("./mvnw clean test").type).toBe("command");
+      expect(classifyDeliveryItem("mvn compile").type).toBe("command");
+      expect(classifyDeliveryItem("mvn test -pl module").type).toBe("command");
+    });
+
+    it("classifies JVM Gradle commands as command", () => {
+      expect(classifyDeliveryItem("./gradlew build").type).toBe("command");
+      expect(classifyDeliveryItem("gradle test").type).toBe("command");
+      expect(classifyDeliveryItem("gradlew clean").type).toBe("command");
+    });
+
+    it("classifies wrapper script itself as command", () => {
+      expect(classifyDeliveryItem("./mvnw").type).toBe("command");
+      expect(classifyDeliveryItem("./gradlew").type).toBe("command");
+    });
+
+    it("command priority beats file pattern for path-like commands", () => {
+      // `./mvnw clean test` contains `/` but should NOT be classified as file
+      const item = classifyDeliveryItem("./mvnw clean test");
+      expect(item.type).toBe("command");
+    });
+
+    it("still classifies pure file paths as file", () => {
+      expect(classifyDeliveryItem("docs/design/commit.md").type).toBe("file");
+      expect(classifyDeliveryItem("src/main/App.java").type).toBe("file");
+    });
   });
 
   describe("mergeDeliveryItems", () => {
@@ -504,7 +532,8 @@ describe("verify-generator", () => {
       const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
       const content = await fs.readFile(verifyPath, "utf-8");
       expect(content).toContain("docs/design/commit.md");
-      expect(content).not.toContain("bun run build");
+      // develop stage now preserves command items (tech stack detection ensures correctness)
+      expect(content).toContain("bun run build");
     });
 
     it("drops command items for fix stage", async () => {
@@ -521,7 +550,8 @@ describe("verify-generator", () => {
       const verifyPath = path.join(TMP, ".pi", "references", "fix_spec", "verify.md");
       const content = await fs.readFile(verifyPath, "utf-8");
       expect(content).toContain("docs/design/commit.md");
-      expect(content).not.toContain("npm test");
+      // fix stage now preserves command items (tech stack detection ensures correctness)
+      expect(content).toContain("npm test");
     });
 
     it("keeps command items for non-develop/fix stages", async () => {
