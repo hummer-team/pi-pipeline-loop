@@ -282,6 +282,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
               jsonStage.verify.verifyFile ||
               resolveStagePath(DEFAULT_VERIFY_FILE, stageName),
             mode: parseVerifyMode(jsonStage.verify.mode),
+            selfVerifySkip: jsonStage.verify.selfVerifySkip ?? false,
           }
         : undefined,
     };

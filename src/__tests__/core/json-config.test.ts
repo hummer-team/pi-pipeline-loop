@@ -204,6 +204,32 @@ describe("resolvePipelineConfig", () => {
     expect(result.stages.clarify.verify!.mode).toBe("hook");
   });
 
+  it("verify.selfVerifySkip defaults to false", () => {
+    const json: PipelineJsonConfig = {
+      stages: { develop: { verify: {} } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.develop.verify!.selfVerifySkip).toBe(false);
+  });
+
+  it("verify.selfVerifySkip is parsed from JSON", async () => {
+    await writeJson({
+      stages: { develop: { verify: { selfVerifySkip: true } } },
+    });
+    const loaded = loadJsonConfig(jsonPath);
+    expect(loaded.stages.develop!.verify!.selfVerifySkip).toBe(true);
+    const result = resolvePipelineConfig(loaded);
+    expect(result.stages.develop.verify!.selfVerifySkip).toBe(true);
+  });
+
+  it("verify.selfVerifySkip false is preserved when explicitly set", () => {
+    const json: PipelineJsonConfig = {
+      stages: { develop: { verify: { selfVerifySkip: false } } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.develop.verify!.selfVerifySkip).toBe(false);
+  });
+
   it("Case A: require:false reconnects to next active stage", () => {
     const json: PipelineJsonConfig = {
       stages: {

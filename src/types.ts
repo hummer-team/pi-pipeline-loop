@@ -82,6 +82,15 @@ export interface VerifyConfig {
    * - "tool": agent calls pipeline_verify tool explicitly; agent_settled skips verification
    */
   mode?: "hook" | "tool";
+
+  /**
+   * Skip re-execution of requiredCommands when the model has already successfully
+   * executed the same command via tool calls during the current stage.
+   * Matching is based on tool call records (not textual claims), and invalidated
+   * by write/edit operations after the matching call. Audit only when skipped.
+   * Default: false.
+   */
+  selfVerifySkip?: boolean;
 }
 
 /**
@@ -393,6 +402,12 @@ export interface VerifyJsonConfig {
 
   /** Verification trigger mode: "hook" (default) or "tool" */
   mode?: "hook" | "tool";
+
+  /**
+   * Skip re-execution of requiredCommands when the model already successfully
+   * executed the same command via tool calls in the current stage. Default: false.
+   */
+  selfVerifySkip?: boolean;
 }
 
 /**
