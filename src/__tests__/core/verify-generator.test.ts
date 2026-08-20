@@ -531,22 +531,62 @@ describe("verify-generator", () => {
       expect(generated.length).toBeGreaterThanOrEqual(2);
     });
 
-    it("skips generation when verify.md already exists (template authoritative)", async () => {
+    it("merges missing rules into existing verify.md when rules are empty", async () => {
       const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
 
-      // Pre-create the verify.md file
+      // Pre-create the verify.md file with empty rules
       const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
       await fs.mkdir(verifyDir, { recursive: true });
-      await fs.writeFile(path.join(verifyDir, "verify.md"), "---\nrules: {}\n---\nExisting template content\n", "utf-8");
+      await fs.writeFile(path.join(verifyDir, "verify.md"), "---\nrules:\n---\nExisting template content\n", "utf-8");
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("merged");
+
+      // Existing body should be preserved, but output.md rule is added
+      const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(content).toContain("Existing template content");
+      expect(content).toContain("output.md");
+    });
+
+    it("skips existing verify.md when all expected rules are already present", async () => {
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+
+      // Pre-create verify.md that already contains the expected rule
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n---\nExisting content\n",
+        "utf-8",
+      );
 
       const results = await generateVerifyFiles(config, { stage: "develop" });
       expect(results).toHaveLength(1);
       expect(results[0].status).toBe("skipped");
       expect(results[0].reason).toBe("exists");
+    });
 
-      // Existing content should NOT be overwritten
+    it("protects existing verify.md with user-authored custom rules (fileContentPattern)", async () => {
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+
+      // Pre-create verify.md with custom fileContentPattern rule (user-authored)
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n  fileContentPattern:\n    - path: \"output.md\"\n      pattern: \"^phase:\"\n---\nContent\n",
+        "utf-8",
+      );
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("skipped");
+      expect(results[0].reason).toBe("exists_custom");
+
+      // Custom rules preserved — file content unchanged
       const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
-      expect(content).toContain("Existing template content");
+      expect(content).toContain("fileContentPattern");
     });
 
     it("drops command items for develop stage", async () => {

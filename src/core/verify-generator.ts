@@ -12,6 +12,7 @@ import { DEFAULT_VERIFY_FILE, resolveStagePath, CONFIG_DIR_NAME } from "../const
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getVerifyExtractPrompt } from "./prompt-config";
 import { detectTechStack } from "./tech-stack";
+import { parseFrontmatter, type VerifyRules } from "./auto-verifier";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,13 +35,15 @@ export type VerifyGenerateResult = {
   filePath?: string;
   error?: string;
   /** Discriminated skip reason — present only when status === "skipped" */
-  reason?: "skill_not_found" | "no_items" | "exists";
+  reason?: "skill_not_found" | "no_items" | "exists" | "exists_custom";
   /** Number of items extracted via hardcoded marker matching */
   hardcodedCount?: number;
   /** Number of items extracted via LLM */
   llmCount?: number;
   /** LLM extraction status: "ok" = success, "fail" = error/degraded, "off" = not enabled */
   llmStatus?: "ok" | "fail" | "off";
+  /** For merged results: list of command/file targets that were added */
+  addedItems?: string[];
 };
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
@@ -286,6 +289,127 @@ export function mergeDeliveryItems(hardcoded: DeliveryItem[], llm: DeliveryItem[
 }
 
 /**
+ * Parses a verify.md content string and returns its structured rules.
+ * Reuses `parseFrontmatter` from auto-verifier for consistent YAML parsing.
+ *
+ * @param content - The full verify.md content (including frontmatter delimiters)
+ * @returns Parsed rules, or null if no parseable frontmatter
+ */
+export async function parseVerifyRulesFromContent(content: string): Promise<VerifyRules | null> {
+  const parts = content.split(/^---\s*$/m);
+  if (parts.length < 2) return null;
+  const frontmatter = parts[1].trim();
+  if (!frontmatter) return null;
+  return parseFrontmatter(frontmatter);
+}
+
+/**
+ * Normalizes a command string for comparison (lowercase, collapse whitespace, strip leading ./).
+ */
+function normalizeCmd(cmd: string): string {
+  return cmd.toLowerCase().replace(/^\.\//, "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Computes the diff between expected delivery items and existing verify.md rules.
+ *
+ * - expectedItems → expected rules (file → requiredFiles, command → requiredCommands,
+ *   git → requiredGit, keyword → keywords)
+ * - For each expected command/file: if not present in existing rules → mark for addition
+ * - If existing rules contain extras (e.g., fileContentPattern, custom expected params)
+ *   not in the expected set → hasCustom=true (protect user-authored rules, skip merge)
+ *
+ * @param existing - Parsed rules from the existing verify.md (null treated as empty)
+ * @param expectedItems - Newly extracted delivery items from skill/LLM
+ * @returns merged items to add + hasCustom flag; or { merged: [], hasCustom: false } if nothing to add
+ */
+export function diffAndMergeRules(
+  existing: VerifyRules | null,
+  expectedItems: DeliveryItem[],
+): { merged: DeliveryItem[]; hasCustom: boolean } {
+  if (!existing) {
+    // No existing rules — everything is "to add"
+    return { merged: expectedItems, hasCustom: false };
+  }
+
+  const existingFiles = new Set((existing.requiredFiles ?? []).map(f => f.trim()));
+  const existingCmds = new Set(
+    (existing.requiredCommands ?? []).map(c => normalizeCmd(c.cmd)),
+  );
+  const existingKeywords = new Set((existing.keywords ?? []).map(k => k.trim()));
+  const hasGit = !!existing.requiredGit && Object.keys(existing.requiredGit).length > 0;
+
+  // Detect user-authored extras that the expected set cannot reproduce.
+  // fileContentPattern, custom requiredCommand fields (expectOutput), etc.
+  const hasCustom =
+    (existing.fileContentPattern !== undefined && existing.fileContentPattern.length > 0) ||
+    (existing.requiredCommands ?? []).some(c => c.expectOutput !== undefined) ||
+    // keywords with mode="and" when expected set has no keyword rules
+    (existing.mode === "and" && expectedItems.filter(i => i.type === "keyword").length === 0);
+
+  if (hasCustom) {
+    return { merged: [], hasCustom: true };
+  }
+
+  const toAdd: DeliveryItem[] = [];
+  for (const item of expectedItems) {
+    if (item.type === "file" && !existingFiles.has(item.target.trim())) {
+      toAdd.push(item);
+    } else if (item.type === "command" && !existingCmds.has(normalizeCmd(item.target))) {
+      toAdd.push(item);
+    } else if (item.type === "keyword" && !existingKeywords.has(item.target.trim())) {
+      toAdd.push(item);
+    } else if (item.type === "git" && !hasGit) {
+      toAdd.push(item);
+    }
+    // else: already present in existing rules — no need to add
+  }
+
+  return { merged: toAdd, hasCustom: false };
+}
+
+/**
+ * Builds a merged verify.md content from existing rules + additional delivery items.
+ * The body is preserved from the existing content (or uses default if absent).
+ */
+function buildMergedVerifyContent(
+  existingRules: VerifyRules,
+  existingBody: string,
+  additionalItems: DeliveryItem[],
+  stage: string,
+): string {
+  // Build the merged item set: existing rules + additional items
+  const mergedFiles = [
+    ...(existingRules.requiredFiles ?? []),
+    ...additionalItems.filter(i => i.type === "file").map(i => i.target),
+  ];
+  const mergedCommands = [
+    ...(existingRules.requiredCommands ?? []),
+    ...additionalItems.filter(i => i.type === "command").map(i => ({ cmd: i.target, expectExit: 0 })),
+  ];
+  const mergedKeywords = [
+    ...(existingRules.keywords ?? []),
+    ...additionalItems.filter(i => i.type === "keyword").map(i => i.target),
+  ];
+  const hasGit =
+    (existingRules.requiredGit && Object.keys(existingRules.requiredGit).length > 0) ||
+    additionalItems.some(i => i.type === "git");
+
+  const allItems: DeliveryItem[] = [
+    ...mergedFiles.map(f => ({ type: "file" as const, target: f })),
+    ...mergedCommands.map(c => ({ type: "command" as const, target: c.cmd })),
+    ...mergedKeywords.map(k => ({ type: "keyword" as const, target: k })),
+    ...(hasGit ? [{ type: "git" as const, target: "git" }] : []),
+  ];
+
+  const yamlPart = generateVerifyMdContent(allItems, stage);
+  // Extract the YAML body portion (strip the leading ---\n and trailing ---\n)
+  const yamlInner = yamlPart.replace(/^---\n/, "").replace(/\n---\n[\s\S]*$/, "");
+  const body = existingBody || `Verify the delivery items for ${stage} stage. Check that all required files exist, commands succeed, and delivery criteria are met.`;
+  return `---\n${yamlInner}---\n${body}\n`;
+}
+
+/**
  * Generates verify.md content from delivery items.
  *
  * **Generation path**: verify.md is NOT LLM-generated. It uses a deterministic
@@ -378,24 +502,144 @@ export async function generateVerifyFiles(
     const verifyPath = resolveStagePath(DEFAULT_VERIFY_FILE, s);
     const absVerifyPath = path.join(config.projectRoot, verifyPath);
 
-    // Skip if verify.md already exists (template is authoritative)
+    // ── Exists branch: rule-level diff-merge instead of blanket skip ──
+    // When verify.md already exists, parse its rules and compare with the
+    // expected items. Missing command/file rules are merged in; user-authored
+    // custom rules (fileContentPattern, expectOutput, etc.) are protected.
     if (fsSync.existsSync(absVerifyPath)) {
-      await safeWriteAuditLog("verify_md_generate", {
-        stage: s,
-        status: "skipped",
-        filePath: verifyPath,
-        reason: "exists",
-      });
-      results.push({
-        stage: s,
-        status: "skipped",
-        filePath: verifyPath,
-        reason: "exists",
-        hardcodedCount: 0,
-        llmCount: 0,
-        llmStatus: "off",
-      });
-      continue;
+      let existingContent: string;
+      try {
+        existingContent = await fs.readFile(absVerifyPath, "utf-8");
+      } catch {
+        existingContent = "";
+      }
+      const existingRules = await parseVerifyRulesFromContent(existingContent);
+
+      // Extract body from existing content (between last --- and EOF)
+      const bodyParts = existingContent.split(/^---\s*$/m);
+      const existingBody = bodyParts.length >= 3 ? bodyParts.slice(2).join("---").trim() : "";
+
+      // Build expected items via hardcoded + (optionally) LLM extraction
+      // skillPath in config is relative to .pi/skills/ (consistent with prompt-injector)
+      const resolvedSkillPath = path.join(CONFIG_DIR_NAME, "skills", stageConfig.skillPath || `${s}/SKILL.md`);
+      const skillBody = await readSkillBody(resolvedSkillPath, config.projectRoot);
+
+      let expectedItems: DeliveryItem[] = [];
+      if (skillBody) {
+        const hardcodedItems = extractHardcodedItems(skillBody);
+        let llmItems: DeliveryItem[] = [];
+        let llmStatusLocal: "ok" | "fail" | "off" = "off";
+
+        if (llmEnabled) {
+          onLLMStageStart?.(s);
+          try {
+            let extractPrompt = await resolveExtractPrompt(config.projectRoot, s);
+            try {
+              const ts = await detectTechStack(config.projectRoot);
+              if (ts) {
+                extractPrompt +=
+                  `\n\nProject tech stack: ${ts.toolchain}\n` +
+                  `Recommended build/test commands: ${ts.hints}\n` +
+                  `Extract commands based on this project, not generic examples.`;
+              }
+            } catch { /* best-effort */ }
+            llmItems = await extractLLMItems(skillBody, callLLM!, extractPrompt, (e) => {
+              safeWriteAuditLog("verify_llm_extract_error", {
+                stage: s,
+                error: "invalid JSON from LLM: " + String(e),
+              }, "warn");
+            });
+            llmStatusLocal = "ok";
+          } catch {
+            llmStatusLocal = "fail";
+          }
+        }
+        expectedItems = mergeDeliveryItems(hardcodedItems, llmItems);
+      }
+
+      const { merged: toAdd, hasCustom } = diffAndMergeRules(existingRules, expectedItems);
+
+      if (hasCustom) {
+        await safeWriteAuditLog("verify_md_generate", {
+          stage: s,
+          status: "skipped",
+          filePath: verifyPath,
+          reason: "exists_custom",
+          detail: "user-authored custom rules protected",
+        });
+        results.push({
+          stage: s,
+          status: "skipped",
+          filePath: verifyPath,
+          reason: "exists_custom",
+          hardcodedCount: 0,
+          llmCount: 0,
+          llmStatus: "off",
+        });
+        continue;
+      }
+
+      if (toAdd.length === 0) {
+        // Nothing to merge — existing rules already cover all expected items
+        await safeWriteAuditLog("verify_md_generate", {
+          stage: s,
+          status: "skipped",
+          filePath: verifyPath,
+          reason: "exists",
+        });
+        results.push({
+          stage: s,
+          status: "skipped",
+          filePath: verifyPath,
+          reason: "exists",
+          hardcodedCount: 0,
+          llmCount: 0,
+          llmStatus: "off",
+        });
+        continue;
+      }
+
+      // Merge: write new content combining existing rules + additional items
+      try {
+        const mergedContent = buildMergedVerifyContent(
+          existingRules ?? { keywords: [], mode: "or" },
+          existingBody,
+          toAdd,
+          s,
+        );
+        await fs.writeFile(absVerifyPath, mergedContent, "utf-8");
+        const addedDescs = toAdd.map(i => i.target);
+        await safeWriteAuditLog("verify_md_generate", {
+          stage: s,
+          status: "merged",
+          filePath: verifyPath,
+          addedCommands: addedDescs.filter((_, idx) => toAdd[idx].type === "command").join(","),
+          addedFiles: addedDescs.filter((_, idx) => toAdd[idx].type === "file").join(","),
+        });
+        results.push({
+          stage: s,
+          status: "merged",
+          filePath: verifyPath,
+          hardcodedCount: expectedItems.filter(i => i.type !== "command" || !expectedItems.some(e => e === i)).length,
+          llmCount: 0,
+          llmStatus: "off",
+          addedItems: addedDescs,
+        });
+        continue;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await safeWriteAuditLog("verify_md_generate_error", { stage: s, file: verifyPath, error: errMsg }, "error");
+        results.push({
+          stage: s,
+          status: "error",
+          filePath: verifyPath,
+          error: errMsg,
+          hardcodedCount: 0,
+          llmCount: 0,
+          llmStatus: "off",
+        });
+        continue;
+      }
     }
 
     // skillPath in config is relative to .pi/skills/ (consistent with prompt-injector)

@@ -452,6 +452,7 @@ async function executeVerifyBranch(
   }
 
   const generated = results.filter(r => r.status === "generated");
+  const merged = results.filter(r => r.status === "merged");
   const skipped = results.filter(r => r.status === "skipped");
   const errored = results.filter(r => r.status === "error");
 
@@ -459,6 +460,7 @@ async function executeVerifyBranch(
   const lines: string[] = [
     "# pipeline-init — verify.md generation",
     `- generated: ${generated.length}`,
+    `- merged: ${merged.length}`,
     `- skipped: ${skipped.length}`,
     `- errors: ${errored.length}`,
     `- llmExtract: ${llmEnabled ? "on" : "off"}`,
@@ -470,6 +472,15 @@ async function executeVerifyBranch(
       lines.push(`  - ${r.stage} (${detail})`);
     }
   }
+  if (merged.length > 0) {
+    lines.push("Merged (rules added to existing verify.md):");
+    for (const r of merged) {
+      const addedDesc = r.addedItems && r.addedItems.length > 0
+        ? `+${r.addedItems.length}: ${r.addedItems.join(", ")}`
+        : "merged";
+      lines.push(`  - ${r.stage} (${addedDesc})`);
+    }
+  }
   if (skipped.length > 0) {
     lines.push("Skipped:");
     for (const r of skipped) {
@@ -477,6 +488,8 @@ async function executeVerifyBranch(
         lines.push(`  - ${r.stage} (skipped: skill_not_found)`);
       } else if (r.reason === "no_items") {
         lines.push(`  - ${r.stage} (skipped: no_items)`);
+      } else if (r.reason === "exists_custom") {
+        lines.push(`  - ${r.stage} (skipped: user-authored custom rules protected)`);
       } else {
         lines.push(`  - ${r.stage} (${r.error ?? "unknown reason"})`);
       }
@@ -515,7 +528,7 @@ async function executeVerifyBranch(
 
   return {
     success: true,
-    summary: `Generated ${generated.length} verify.md file(s), skipped ${skipped.length}, errors ${errored.length}`,
+    summary: `Generated ${generated.length} verify.md file(s), merged ${merged.length}, skipped ${skipped.length}, errors ${errored.length}`,
     content: lines.join("\n"),
     results,
   };
