@@ -110,6 +110,11 @@ Respond ONLY with JSON. No explanation outside the JSON object.`;
 /**
  * System prompt for the LLM extraction stage in pipeline-init 1 / verify-generator shared module —
  * instructs the LLM to extract delivery items from skill file content.
+ *
+ * The example uses a placeholder <build command from project> instead of a
+ * tech-stack-specific command to avoid biasing the LLM toward any particular
+ * ecosystem. The actual project tech stack context is injected by
+ * verify-generator before the prompt is sent (see detectTechStack in tech-stack.ts).
  */
 export const DEFAULT_VERIFY_EXTRACT_PROMPT = `You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
 
@@ -117,14 +122,15 @@ Look for items marked with **必须**, **Must**, **Required**, **MUST** or simil
 
 For each deliverable, classify it as one of:
 - "file": a file that must be created/modified
-- "command": a command that must succeed
+- "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
 - "git": a git state that must be true
 - "keyword": a keyword that must appear in the output
 
 Respond with JSON array:
 [
   {"type": "file", "target": "docs/design/commit.md"},
-  {"type": "command", "target": "bun run build"},
+  {"type": "command", "target": "<build command from project>"},
+  {"type": "command", "target": "<test command from project>"},
   {"type": "keyword", "target": "答"}
 ]
 

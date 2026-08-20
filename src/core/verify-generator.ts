@@ -11,6 +11,7 @@ import type { PipelineConfig, PipelineStage } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath, CONFIG_DIR_NAME } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getVerifyExtractPrompt } from "./prompt-config";
+import { detectTechStack } from "./tech-stack";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -435,7 +436,20 @@ export async function generateVerifyFiles(
       onLLMStageStart?.(s);
       const llmStart = Date.now();
       try {
-        const extractPrompt = await resolveExtractPrompt(config.projectRoot, s);
+        let extractPrompt = await resolveExtractPrompt(config.projectRoot, s);
+        // Inject project tech stack context so LLM emits project-appropriate commands
+        // (e.g. "./mvnw clean test" for Maven projects instead of "bun run build")
+        try {
+          const ts = await detectTechStack(config.projectRoot);
+          if (ts) {
+            extractPrompt +=
+              `\n\nProject tech stack: ${ts.toolchain}\n` +
+              `Recommended build/test commands: ${ts.hints}\n` +
+              `Extract commands based on this project, not generic examples.`;
+          }
+        } catch {
+          // Tech stack detection is best-effort; ignore errors
+        }
         llmItems = await extractLLMItems(skillBody, callLLM!, extractPrompt, (e) => {
           safeWriteAuditLog("verify_llm_extract_error", {
             stage: s,

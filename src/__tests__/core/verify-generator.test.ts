@@ -391,6 +391,37 @@ describe("verify-generator", () => {
       expect(content).toContain("llm-output.md");
     });
 
+    it("generateVerifyFiles: LLM extract prompt includes tech stack context when pom.xml present", async () => {
+      let capturedPrompt = "";
+      const callLLM = async (prompt: string): Promise<string> => {
+        capturedPrompt = prompt;
+        return JSON.stringify([{ type: "command", target: "./mvnw clean test" }]);
+      };
+      // Write pom.xml to project root so detectTechStack returns maven
+      await fs.writeFile(path.join(TMP, "pom.xml"), "<project/>", "utf-8");
+      const config = await setupConfigWithSkill("develop", "- **Must** ./mvnw clean test\n");
+      (config as any).llmExtract = true;
+      await generateVerifyFiles(config, { stage: "develop", callLLM });
+
+      expect(capturedPrompt).toContain("Project tech stack: maven");
+      expect(capturedPrompt).toContain("./mvnw");
+      expect(capturedPrompt).toContain("Extract commands based on this project");
+    });
+
+    it("generateVerifyFiles: LLM extract prompt has no tech stack section when no stack detected", async () => {
+      let capturedPrompt = "";
+      const callLLM = async (prompt: string): Promise<string> => {
+        capturedPrompt = prompt;
+        return "[]";
+      };
+      // No tech stack files in TMP
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+      (config as any).llmExtract = true;
+      await generateVerifyFiles(config, { stage: "develop", callLLM });
+
+      expect(capturedPrompt).not.toContain("Project tech stack:");
+    });
+
     it("generateVerifyFiles: callLLM throws → fallback to hardcoded + audit error", async () => {
       const callLLM = async (): Promise<string> => {
         throw new Error("LLM timeout");
