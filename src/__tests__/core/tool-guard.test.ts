@@ -168,7 +168,7 @@ describe("createToolGuard", () => {
 
       expect((result as any).block).toBe(true);
       expect((result as any).reason).toContain("frozen");
-      expect((result as any).reason).toContain("ctrl+d");
+      expect((result as any).reason).toContain("ctrl+enter");
     });
 
     it("blocks all tools when flowState is aborted", async () => {

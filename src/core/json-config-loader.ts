@@ -17,6 +17,7 @@ import {
   DEFAULT_AGENT_FILE,
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
+  DEFAULT_DECISION_SHORTCUT,
   STAGE_TYPE_TOOL_DEFAULTS,
   resolveStagePath,
 } from "../constants";
@@ -129,10 +130,11 @@ function parseOutputConfig(raw: unknown): { pipelineStage?: boolean } | undefine
 /**
  * Parses and validates a decisionShortcutKey value from JSON config.
  * Must be a string matching KeyId format: modifier combinations of ctrl/shift/alt/super
- * followed by optional +key segments. Invalid values warn and fall back to "ctrl+d".
+ * followed by a final key (single alphanumeric or SpecialKey whitelist entry).
+ * Invalid values warn and fall back to DEFAULT_DECISION_SHORTCUT.
  */
 function parseDecisionShortcutKey(raw: unknown): string {
-  const DEFAULT_KEY = "ctrl+d";
+  const DEFAULT_KEY = DEFAULT_DECISION_SHORTCUT;
   if (typeof raw !== "string" || raw.length === 0) {
     if (raw !== undefined) {
       console.warn(
@@ -141,9 +143,15 @@ function parseDecisionShortcutKey(raw: unknown): string {
     }
     return DEFAULT_KEY;
   }
-  // KeyId format: zero or more modifier prefixes (ctrl|shift|alt|super)+ followed by a final key
-  // Supports multi-modifier combos like "ctrl+shift+d", "alt+enter"
-  const KEY_ID_REGEX = /^((ctrl|shift|alt|super)\+)*[a-z0-9]$/;
+  // KeyId format: zero or more modifier prefixes (ctrl|shift|alt|super)+
+  // followed by a final key segment that is either:
+  //   - a single lowercase letter or digit [a-z0-9]
+  //   - a SpecialKey whitelist entry (enter, escape, tab, space, etc.)
+  // Supports multi-modifier combos like "ctrl+shift+d", "ctrl+enter", "alt+f1"
+  const SPECIAL_KEYS = "enter|escape|tab|space|backspace|delete|home|end|pageUp|pageDown|up|down|left|right";
+  const KEY_ID_REGEX = new RegExp(
+    `^((ctrl|shift|alt|super)\\+)*(${SPECIAL_KEYS}|f[1-9]|f1[0-2]|[a-z0-9])$`,
+  );
   if (!KEY_ID_REGEX.test(raw)) {
     console.warn(
       `[pi-pipeline] Invalid decisionShortcutKey "${raw}" — does not match KeyId format, falling back to '${DEFAULT_KEY}'`,

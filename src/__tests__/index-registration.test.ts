@@ -336,14 +336,14 @@ describe("hook bridge", () => {
 // ─── registerShortcut: pipeline decision menu ──────────────────────────────
 
 describe("registerShortcut bridge", () => {
-  it("registers shortcut with default key 'ctrl+d' when decisionShortcutKey is not set", async () => {
+  it("registers shortcut with default key 'ctrl+enter' when decisionShortcutKey is not set", async () => {
     const { pi, registeredShortcuts } = makeMockPi();
     const config = makeTestConfig(); // no decisionShortcutKey set
     const factory = createPipeline(config);
     await factory(pi);
 
     expect(registeredShortcuts.length).toBe(1);
-    expect(registeredShortcuts[0].key).toBe("ctrl+d");
+    expect(registeredShortcuts[0].key).toBe("ctrl+enter");
     expect(typeof registeredShortcuts[0].options.description).toBe("string");
     expect(typeof registeredShortcuts[0].options.handler).toBe("function");
   });

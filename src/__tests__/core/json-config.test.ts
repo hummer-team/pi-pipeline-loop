@@ -569,10 +569,10 @@ describe("decisionShortcutKey config", () => {
     expect(result.decisionShortcutKey).toBeUndefined();
   });
 
-  it("resolvePipelineConfig defaults decisionShortcutKey to 'ctrl+d'", () => {
+  it("resolvePipelineConfig defaults decisionShortcutKey to 'ctrl+enter'", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };
     const result = resolvePipelineConfig(json);
-    expect(result.decisionShortcutKey).toBe("ctrl+d");
+    expect(result.decisionShortcutKey).toBe("ctrl+enter");
   });
 
   it("resolvePipelineConfig accepts valid decisionShortcutKey", () => {
@@ -584,22 +584,31 @@ describe("decisionShortcutKey config", () => {
     expect(result.decisionShortcutKey).toBe("alt+x");
   });
 
-  it("resolvePipelineConfig falls back to 'ctrl+d' for invalid decisionShortcutKey", () => {
+  it("resolvePipelineConfig accepts 'ctrl+enter' (new default, multi-char SpecialKey)", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "ctrl+enter",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+enter");
+  });
+
+  it("resolvePipelineConfig falls back to 'ctrl+enter' for invalid decisionShortcutKey", () => {
     const json: PipelineJsonConfig = {
       stages: { clarify: {} },
       decisionShortcutKey: "INVALID_KEY!!!",
     };
     const result = resolvePipelineConfig(json);
-    expect(result.decisionShortcutKey).toBe("ctrl+d");
+    expect(result.decisionShortcutKey).toBe("ctrl+enter");
   });
 
-  it("resolvePipelineConfig falls back to 'ctrl+d' for empty string", () => {
+  it("resolvePipelineConfig falls back to 'ctrl+enter' for empty string", () => {
     const json: PipelineJsonConfig = {
       stages: { clarify: {} },
       decisionShortcutKey: "",
     };
     const result = resolvePipelineConfig(json);
-    expect(result.decisionShortcutKey).toBe("ctrl+d");
+    expect(result.decisionShortcutKey).toBe("ctrl+enter");
   });
 
   // Regression: multi-modifier combos (Medium #4)
@@ -636,7 +645,43 @@ describe("decisionShortcutKey config", () => {
       decisionShortcutKey: "ctrl+",
     };
     const result = resolvePipelineConfig(json);
-    expect(result.decisionShortcutKey).toBe("ctrl+d");
+    expect(result.decisionShortcutKey).toBe("ctrl+enter");
+  });
+
+  it("resolvePipelineConfig rejects 'ctrl+foo' (arbitrary multi-char not in SpecialKey whitelist)", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "ctrl+foo",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+enter");
+  });
+
+  it("resolvePipelineConfig accepts SpecialKey 'alt+tab'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "alt+tab",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("alt+tab");
+  });
+
+  it("resolvePipelineConfig accepts function key 'ctrl+f1'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "ctrl+f1",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("ctrl+f1");
+  });
+
+  it("resolvePipelineConfig accepts function key 'shift+f12'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      decisionShortcutKey: "shift+f12",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.decisionShortcutKey).toBe("shift+f12");
   });
 });
 

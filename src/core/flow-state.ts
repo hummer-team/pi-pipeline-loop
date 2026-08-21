@@ -15,6 +15,7 @@
 
 import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { DEFAULT_DECISION_SHORTCUT } from "../constants";
 
 // ─── Context Interface ──────────────────────────────────────────────────────
 
@@ -386,7 +387,7 @@ export async function freezeAndPrompt(
     reason,
   }, "warn");
 
-  const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+  const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
   const menu = buildDecisionMenu({ ...meta, flowState: "blocked", blockedReason: reason });
   const tuiEnabled = config.output?.pipelineStage !== false;
 

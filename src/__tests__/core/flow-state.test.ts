@@ -332,7 +332,7 @@ describe("freezeAndPrompt", () => {
 
     expect(meta.flowState).toBe("blocked");
     expect(notifications.length).toBe(1);
-    expect(notifications[0]).toContain("ctrl+d");
+    expect(notifications[0]).toContain("ctrl+enter");
   });
 
   it("without UI: keeps blocked, no crash", async () => {
@@ -348,7 +348,7 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("blocked");
     expect(notifications.length).toBe(1);
     expect(notifications[0]).toContain("max_loop_cycles");
-    expect(notifications[0]).toContain("ctrl+d");
+    expect(notifications[0]).toContain("ctrl+enter");
   });
 
   it("without any UI: no crash, stays blocked", async () => {

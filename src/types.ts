@@ -376,8 +376,10 @@ export interface PipelineConfig {
 
   /**
    * KeyId for the TUI shortcut that opens the pipeline decision menu.
-   * Defaults to "ctrl+d". Must match KeyId format: /^(ctrl|shift|alt|super)?(\+[a-z0-9])*$/
-   * Invalid values fall back to "ctrl+d" with a console warning.
+   * Defaults to "ctrl+enter". Must match KeyId format: modifiers (ctrl|shift|alt|super)+
+   * followed by a single alphanumeric key or SpecialKey (enter|escape|tab|space|backspace|
+   * delete|home|end|pageUp|pageDown|up|down|left|right|f1-f12).
+   * Invalid values fall back to "ctrl+enter" with a console warning.
    */
   decisionShortcutKey?: string;
 
@@ -488,8 +490,8 @@ export interface PipelineJsonConfig {
   maxVerifyAttempts?: number;
 
   /**
-   * TUI shortcut KeyId to open the pipeline decision menu (default "ctrl+d").
-   * Must match KeyId format; invalid values fall back to "ctrl+d".
+   * TUI shortcut KeyId to open the pipeline decision menu (default "ctrl+enter").
+   * Must match KeyId format; invalid values fall back to "ctrl+enter".
    */
   decisionShortcutKey?: string;
 

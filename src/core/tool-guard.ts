@@ -33,7 +33,7 @@ import {
   toProjectRelative,
   type ProtectState,
 } from "../utils/protect";
-import { ALLOWED_WRITE_ALL } from "../constants";
+import { ALLOWED_WRITE_ALL, DEFAULT_DECISION_SHORTCUT } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
@@ -382,7 +382,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         } else if (meta.currentStage === "awaiting_human") {
           reason = "Pipeline frozen. Contact the user to resume the pipeline";
         } else {
-          const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+          const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
           reason = `Pipeline frozen. Press ${shortcutKey} to open the decision menu`;
         }
         return {

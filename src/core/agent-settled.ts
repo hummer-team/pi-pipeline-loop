@@ -13,6 +13,7 @@ import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { isFrozen } from "./flow-state";
+import { DEFAULT_DECISION_SHORTCUT } from "../constants";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -53,7 +54,7 @@ export function createAgentSettled(
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
         });
-        const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+        const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
         ui.notify(ctx, `Pipeline frozen. Press ${shortcutKey} to open the decision menu.`);
         return;
       }

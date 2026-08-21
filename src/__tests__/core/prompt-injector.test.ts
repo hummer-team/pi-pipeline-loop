@@ -301,7 +301,7 @@ describe("createPromptInjector", () => {
 
       expect(result.systemPrompt).toContain("FROZEN");
       expect(result.systemPrompt).toContain("loop_overflow");
-      expect(result.systemPrompt).toContain("ctrl+d");
+      expect(result.systemPrompt).toContain("ctrl+enter");
     });
 
     it("injects FROZEN hint with custom shortcut key", async () => {

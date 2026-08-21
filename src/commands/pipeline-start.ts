@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, Command, SessionMeta } from "../types";
-import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
+import { DEFAULT_VERIFY_FILE, DEFAULT_DECISION_SHORTCUT, resolveStagePath } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getFlowState } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
@@ -100,7 +100,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         }
 
         // Running or blocked → reject with shortcut hint
-        const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+        const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
         return {
           success: false,
           error:

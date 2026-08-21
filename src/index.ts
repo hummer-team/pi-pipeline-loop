@@ -6,6 +6,7 @@
 
 import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_DECISION_SHORTCUT } from "./constants";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { buildDecisionMenu, executeDecision, labelToDecision } from "./core/flow-state";
@@ -218,7 +219,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     }
 
     // ── Shortcut registration: pipeline decision menu ──
-    const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+    const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
     if (typeof pi.registerShortcut === "function") {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (pi.registerShortcut as any)(shortcutKey, {

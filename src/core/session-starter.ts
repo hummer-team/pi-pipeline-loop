@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog } from "../utils/auditLog";
+import { DEFAULT_DECISION_SHORTCUT } from "../constants";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState, markPipelineAborted } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
@@ -135,12 +136,12 @@ export function createSessionStarter(config: PipelineConfig): Hook {
           const freshMeta = ctx.session.getMeta() ?? meta;
 
           if (isFrozen(freshMeta)) {
-            const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+            const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
             ui.notify(ctx, `Pipeline blocked. Press ${shortcutKey} to open the decision menu.`);
           }
         } else if (isFrozen(meta)) {
           // ── Resumed session: notify if frozen ─────────────────────
-          const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+          const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
           ui.notify(ctx, `Pipeline blocked. Press ${shortcutKey} to open the decision menu.`);
         }
       }
