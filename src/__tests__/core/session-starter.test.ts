@@ -158,6 +158,99 @@ describe("createSessionStarter", () => {
     });
   });
 
+  describe("stale startup recovery", () => {
+    const TMP_STALE = join(tmpdir(), "pi-ss-stale-" + Date.now());
+
+    it("resets running flowState to aborted on reason='startup' and writes pipeline_stale_reset audit", async () => {
+      await mkdir(TMP_STALE, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP_STALE });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-stale-1",
+        flowState: "running",
+      });
+      const ctx = {
+        ...createCtx(meta),
+        event: { reason: "startup" },
+      };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("aborted");
+      expect(meta.terminateReason).toBe("stale_startup");
+
+      // Verify pipeline_stale_reset audit
+      const logPath = join(TMP_STALE, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("pipeline_stale_reset");
+      expect(content).toContain("pipelineId=pipe-stale-1");
+    });
+
+    it("does NOT reset when flowState is already 'aborted' on reason='startup'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP_STALE });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-stale-2",
+        flowState: "aborted",
+      });
+      const ctx = {
+        ...createCtx(meta),
+        event: { reason: "startup" },
+      };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // Should remain aborted, no updateMeta call
+      expect(meta.flowState).toBe("aborted");
+      expect(ctx.updates.length).toBe(0);
+    });
+
+    it("does NOT reset when reason is 'resume' even if flowState is 'running'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP_STALE });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-stale-3",
+        flowState: "running",
+      });
+      const ctx = {
+        ...createCtx(meta),
+        event: { reason: "resume" },
+      };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("running");
+      expect(ctx.updates.length).toBe(0);
+    });
+
+    it("resets when meta has no explicit flowState (default 'running') on reason='startup'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP_STALE });
+      // Meta without flowState — getFlowState returns "running" by default
+      const meta: Record<string, unknown> = { ...makeTestMeta({
+        currentStage: "plan",
+        pipelineId: "pipe-stale-4",
+      }) };
+      // Explicitly delete flowState to simulate old-format meta
+      delete meta.flowState;
+
+      const ctx = {
+        ...createCtx(meta as any),
+        event: { reason: "startup" },
+      };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("aborted");
+      expect(meta.terminateReason).toBe("stale_startup");
+    });
+  });
+
   describe("prompt-config cache warmup", () => {
     it("session_start preloads prompt-config cache", async () => {
       const TMP = join(tmpdir(), "pi-ss-warmup-" + Date.now());

@@ -12,7 +12,7 @@ import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
-import { isFrozen } from "./flow-state";
+import { isFrozen, getFlowState, markPipelineAborted } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
 
 /**
@@ -118,8 +118,28 @@ export function createSessionStarter(config: PipelineConfig): Hook {
 
         ui.stageEntry(ctx, "clarify");
       } else {
-        // ── Resumed session: notify if frozen ─────────────────────────
-        if (isFrozen(meta)) {
+        // ── Resumed session: stale startup recovery ───────────────────
+        // On process startup (reason="startup"), if flowState is not already "aborted",
+        // reset to aborted — covers SIGKILL / crash / terminal force-kill paths where
+        // session_shutdown never fires.
+        const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
+        if (reason === "startup" && getFlowState(meta) !== "aborted") {
+          await markPipelineAborted(ctx, "stale_startup");
+
+          await writeAuditLog("pipeline_stale_reset", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+          });
+
+          // After reset, meta is now aborted — re-read for frozen check below
+          const freshMeta = ctx.session.getMeta() ?? meta;
+
+          if (isFrozen(freshMeta)) {
+            const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
+            ui.notify(ctx, `Pipeline blocked. Press ${shortcutKey} to open the decision menu.`);
+          }
+        } else if (isFrozen(meta)) {
+          // ── Resumed session: notify if frozen ─────────────────────
           const shortcutKey = config.decisionShortcutKey ?? "ctrl+d";
           ui.notify(ctx, `Pipeline blocked. Press ${shortcutKey} to open the decision menu.`);
         }

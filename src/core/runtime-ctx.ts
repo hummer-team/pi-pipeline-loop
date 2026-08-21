@@ -30,6 +30,13 @@ export interface RuntimeCtx {
   /** Tool result information (populated for tool_result events) */
   result?: { success: boolean; exitCode?: number };
 
+  /**
+   * Raw event object passed by the pi SDK registration bridge.
+   * Contains event-specific fields such as `reason` (for session_start / session_shutdown).
+   * Stored as-is for downstream hooks that need access to event metadata.
+   */
+  event?: Record<string, unknown>;
+
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
   _ctx: ExtensionContext;
 }
@@ -54,6 +61,8 @@ export function buildRuntimeCtx(
   const rctx: RuntimeCtx = { session, ui, _ctx: ctx };
 
   if (event && typeof event === "object") {
+    // Store raw event for downstream hooks (e.g., session_shutdown reads reason)
+    rctx.event = event;
     const eventType = event.type;
 
     if (eventType === "tool_call" || eventType === "tool_result") {

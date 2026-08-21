@@ -306,6 +306,35 @@ export async function executeDecision(
   }
 }
 
+// ─── markPipelineAborted ────────────────────────────────────────────────────
+
+/**
+ * Resets the pipeline flowState to "aborted" and writes an audit log.
+ *
+ * Shared by session_shutdown (on quit/new) and session_start (stale startup recovery)
+ * to ensure flowState never remains "running" after the process exits or restarts.
+ *
+ * Convention: only mutates flowState and terminateReason; preserves pipelineId,
+ * currentStage, summaries, domain, requirementDoc for audit and restart hint.
+ *
+ * @param ctx - FlowStateCtx with session access
+ * @param reason - Machine-readable abort reason (e.g. "session_quit", "stale_startup")
+ */
+export async function markPipelineAborted(ctx: FlowStateCtx, reason: string): Promise<void> {
+  const meta = ctx.session.getMeta();
+
+  ctx.session.updateMeta({
+    flowState: "aborted",
+    terminateReason: reason,
+  });
+
+  await safeWriteAuditLog("pipeline_session_aborted", {
+    pipelineId: meta?.pipelineId ?? "unknown",
+    currentStage: meta?.currentStage ?? "unknown",
+    reason,
+  });
+}
+
 // ─── freezeAndPrompt ────────────────────────────────────────────────────────
 
 /**

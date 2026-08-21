@@ -80,4 +80,116 @@ describe("createSessionShutdown", () => {
     expect(lastLine).toContain(" - [INFO] session_shutdown");
     expect(lastLine).toContain("finalStage=fix");
   });
+
+  describe("flowState reset on shutdown", () => {
+    it("resets flowState to aborted when reason is 'quit'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+        pipelineId: "pipe-quit-test",
+      });
+      const ctx = {
+        ...createMockCtx(meta),
+        event: { reason: "quit" },
+      };
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("aborted");
+      expect(meta.terminateReason).toBe("session_quit");
+
+      // Verify audit log
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("pipeline_session_aborted");
+      expect(content).toContain("reason=session_quit");
+    });
+
+    it("resets flowState to aborted when reason is 'new'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "running",
+        pipelineId: "pipe-new-test",
+      });
+      const ctx = {
+        ...createMockCtx(meta),
+        event: { reason: "new" },
+      };
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("aborted");
+      expect(meta.terminateReason).toBe("session_quit");
+    });
+
+    it("does NOT reset flowState when reason is 'resume'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+      });
+      const ctx = {
+        ...createMockCtx(meta),
+        event: { reason: "resume" },
+      };
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("running");
+    });
+
+    it("does NOT reset flowState when reason is 'fork'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+      });
+      const ctx = {
+        ...createMockCtx(meta),
+        event: { reason: "fork" },
+      };
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("running");
+    });
+
+    it("does NOT reset flowState when reason is 'reload'", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+      });
+      const ctx = {
+        ...createMockCtx(meta),
+        event: { reason: "reload" },
+      };
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("running");
+    });
+
+    it("does NOT reset flowState when reason is missing (backward compat)", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+      });
+      const ctx = createMockCtx(meta);
+      // No event field — backward compatible
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("running");
+    });
+  });
 });
