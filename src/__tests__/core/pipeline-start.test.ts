@@ -299,4 +299,71 @@ describe("createPipelineStartCommand", () => {
     // Clean up audit state
     __resetAuditDirPath();
   });
+
+  // ─── Phase 0: TUI status bar sync on pipeline-start ──────────────────────────
+  describe("TUI status bar sync (Phase 0)", () => {
+    it("with-file branch → writes 'Pipeline → clarify' to status bar, no notify", async () => {
+      await fs.writeFile(docPath, "# Req\nDo X", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const ctx = createMockCtx(meta);
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      // Status bar must contain the pipeline stage
+      expect(ctx.statusCalls).toEqual(
+        expect.arrayContaining([{ key: "pipeline-stage", text: "Pipeline → clarify" }])
+      );
+      // setStage uses setStatus only (no notify); ensure notifications don't echo the bar text
+      expect(ctx.notifications.some(n => n === "Pipeline → clarify")).toBe(false);
+    });
+
+    it("no-file branch → writes 'Pipeline → clarify' to status bar, no notify", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const ctx = createMockCtx(meta);
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(ctx.statusCalls).toEqual(
+        expect.arrayContaining([{ key: "pipeline-stage", text: "Pipeline → clarify" }])
+      );
+      expect(ctx.notifications.some(n => n === "Pipeline → clarify")).toBe(false);
+    });
+
+    it("aborted restart branch → writes 'Pipeline → clarify' to status bar", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("restarted");
+      expect(ctx.statusCalls).toEqual(
+        expect.arrayContaining([{ key: "pipeline-stage", text: "Pipeline → clarify" }])
+      );
+    });
+
+    it("already-running branch → does NOT write status bar (stage unchanged)", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("already running");
+      // Status bar must remain untouched
+      expect(ctx.statusCalls).toEqual([]);
+    });
+  });
 });

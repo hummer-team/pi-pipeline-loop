@@ -9,6 +9,19 @@ import type { PipelineConfig, PipelineStage, Command, SessionMeta } from "../typ
 import { DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getFlowState } from "../core/flow-state";
+import { createPipelineUI } from "../core/pipeline-ui";
+
+/**
+ * Writes the persistent TUI status bar showing current pipeline stage.
+ * Safely no-ops when ctx/ui is unavailable or output.pipelineStage is off.
+ *
+ * @param ui - PipelineUI instance
+ * @param ctx - Extension context (uses session.getMeta for dynamic stage)
+ */
+function syncStageStatusBar(ui: ReturnType<typeof createPipelineUI>, ctx?: any): void {
+  const stage = ctx?.session?.getMeta?.()?.currentStage ?? "clarify";
+  ui.setStage(ctx, `Pipeline → ${stage}`);
+}
 
 /**
  * Checks for missing verify.md files across all stages that require verification.
@@ -48,6 +61,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       "injects it into the clarify stage. Without a file, initializes the state machine only.",
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
       const file = (args.file as string) || "";
+      const ui = createPipelineUI(config);
 
       const meta = ctx?.session?.getMeta?.();
 
@@ -76,6 +90,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             requirementDoc: meta.requirementDoc,
           };
           ctx?.session?.updateMeta?.(newMeta);
+          syncStageStatusBar(ui, ctx);
           return {
             success: true,
             message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
@@ -123,6 +138,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         };
 
         ctx?.session?.updateMeta?.(newMeta);
+        syncStageStatusBar(ui, ctx);
 
         return {
           success: true,
@@ -175,6 +191,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       };
 
       ctx?.session?.updateMeta?.(newMeta);
+      syncStageStatusBar(ui, ctx);
 
       return {
         success: true,
