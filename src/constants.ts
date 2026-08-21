@@ -21,7 +21,7 @@ export const ALLOWED_WRITE_ALL = "**";
 
 /**
  * Default TUI shortcut KeyId for opening the pipeline decision menu.
- * Changed from "ctrl+d" to "ctrl+enter" to avoid conflict with pi agent
+ * Changed from the legacy default (ctrl+d) to "ctrl+enter" to avoid conflict with pi agent
  * built-in bindings (app.exit, app.session.delete, app.tree.filter.default).
  */
 export const DEFAULT_DECISION_SHORTCUT = "ctrl+enter";

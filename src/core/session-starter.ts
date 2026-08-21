@@ -132,13 +132,9 @@ export function createSessionStarter(config: PipelineConfig): Hook {
             stage: meta.currentStage,
           });
 
-          // After reset, meta is now aborted — re-read for frozen check below
-          const freshMeta = ctx.session.getMeta() ?? meta;
-
-          if (isFrozen(freshMeta)) {
-            const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
-            ui.notify(ctx, `Pipeline blocked. Press ${shortcutKey} to open the decision menu.`);
-          }
+          // After reset, flowState is "aborted" — isFrozen("aborted") === true but
+          // the correct user action is /pipeline-start, NOT the decision shortcut.
+          // Skip isFrozen/notify to avoid misleading "Pipeline blocked" message.
         } else if (isFrozen(meta)) {
           // ── Resumed session: notify if frozen ─────────────────────
           const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
