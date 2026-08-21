@@ -304,6 +304,9 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           // 2c. Bash file modification protection check
           const state = await getProtectState();
           const targets = extractBashFileTargets(command);
+          // Session-level file allowance: pre-evaluated outside loop so each
+          // target can bypass whitelist + global chain in O(1).
+          const sessionPaths = meta.sessionAllowedWritePaths || [];
           for (const t of targets) {
             // Resolve target path relative to projectRoot
             const absTarget = path.isAbsolute(t.target)
@@ -311,21 +314,33 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               : path.join(config.projectRoot, t.target);
             const relPath = toProjectRelative(config.projectRoot, absTarget);
             if (relPath) {
-              // Stage-level write whitelist check (Phase 1)
+              // Session allowance early bypass (overrides whitelist + protection)
+              if (sessionPaths.includes(relPath)) {
+                continue;
+              }
+
+              // Stage-level write whitelist check
               const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
+
               if (stageCheck.status === "block") {
+                // Phase 2: if protect.ask=true AND path is protected, surface ask dialog.
+                if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
+                  const decision = await askProtectDecision(ctx, meta, relPath);
+                  if (decision === "block") {
+                    ui.notify(ctx, stageCheck.reason);
+                    return { block: true, reason: stageCheck.reason };
+                  }
+                  // "allow" → continue loop to next target (current target allowed)
+                  continue;
+                }
+                // ask=false or non-protected path: original whitelist block
                 ui.notify(ctx, stageCheck.reason);
                 return { block: true, reason: stageCheck.reason };
               }
+
               // "allow-whitelist" → skip global chain, path is stage-authorized
               // "continue" → fall through to global protection chain
               if (stageCheck.status !== "allow-whitelist") {
-                // Session-level file allowance (overrides protection, including hardcoded)
-                const sessionPaths = meta.sessionAllowedWritePaths || [];
-                if (sessionPaths.includes(relPath)) {
-                  // Session-exempted — skip protection chain
-                  continue;
-                }
                 if (isPathProtectedForModify(relPath, state)) {
                   if (config.protect?.ask === true) {
                     const decision = await askProtectDecision(ctx, meta, relPath);
