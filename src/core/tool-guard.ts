@@ -141,9 +141,13 @@ async function askProtectDecision(
   let selection: string | undefined;
   try {
     if (typeof ctx?.ui?.select === "function") {
-      selection = await ctx.ui.select("Protected file edit:", options);
+      selection = await ctx.ui.select(`Protected file edit: ${relPath}`, options);
     }
-  } catch {
+  } catch (err) {
+    // Log diagnostic info on select failure, then fall through to canceled/block (fail-safe).
+    // Style consistent with checkGitAdd / checkGitCommit catch blocks.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[tool-guard] askProtectDecision select error: relPath="${relPath}", error=${errMsg}`);
     selection = undefined;
   }
 

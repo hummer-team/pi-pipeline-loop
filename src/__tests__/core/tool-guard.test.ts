@@ -1405,6 +1405,82 @@ describe("createToolGuard", () => {
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
 
+    it("ask=true select throws → logged via console.error + fail-safe block + audit action=canceled", async () => {
+      const TMP = join(tmpdir(), "pi-tg-ask-select-err-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "docs\n");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { gitignore: true, ask: true },
+      });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      // Override select to throw
+      ctx.ui.select = async (_message: string, _options: string[]) => {
+        throw new Error("TUI unavailable");
+      };
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "docs", "file.md") } };
+
+      // Spy on console.error
+      const origError = console.error;
+      const captured: string[] = [];
+      console.error = (...args: unknown[]) => {
+        captured.push(args.map(String).join(" "));
+      };
+
+      try {
+        const hook = createToolGuard(config);
+        const result = await hook.handler(ctx as any);
+
+        // Fail-safe: select error → block (same as canceled)
+        expect((result as any).block).toBe(true);
+
+        // console.error should have been called with diagnostic info
+        expect(captured.some(msg => msg.includes("askProtectDecision") && msg.includes("docs/file.md"))).toBe(true);
+
+        // Audit still written with action=canceled
+        const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+        expect(logContent).toContain("action=canceled");
+      } finally {
+        console.error = origError;
+      }
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
+    it("ask=true select message includes the protected file path", async () => {
+      const TMP = join(tmpdir(), "pi-tg-ask-msg-path-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "docs\n");
+      await writeFile(join(TMP, "docs", "secret.md"), "");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { gitignore: true, ask: true },
+      });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta, { selectReturn: "Allow this edit only" });
+
+      // Override select to capture the message passed by askProtectDecision
+      let capturedMessage = "";
+      ctx.ui.select = async (message: string, _options: string[]) => {
+        capturedMessage = message;
+        return "Allow this edit only";
+      };
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "docs", "secret.md") } };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      // Verify the TUI dialog includes the protected file's relative path
+      expect(capturedMessage).toContain("docs/secret.md");
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
     it("git add/commit NOT exempted by session allowance", async () => {
       const TMP = join(tmpdir(), "pi-tg-ask-git-no-exempt-" + Date.now());
       await mkdir(join(TMP, "docs"), { recursive: true });
