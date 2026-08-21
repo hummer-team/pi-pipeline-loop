@@ -1513,4 +1513,236 @@ describe("createToolGuard", () => {
       // Note: intentionally NOT deleting TMP to avoid breaking module-level auditDirPath
     });
   });
+
+  // ─── Phase 1: write/edit ask override on stage whitelist block ───────────────
+  describe("write/edit ask override on stage whitelist block (Phase 1)", () => {
+    const ASK_OPTIONS = [
+      "Follow plugin default rules (default)",
+      "Allow this edit only",
+      "Allow edits for this session",
+    ];
+
+    it("whitelist block + hardcoded protected path (AGENTS.md) + ask=true + allow_once → pass + audit allow_once", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p1-wl-ask-hardcoded-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, "AGENTS.md"), "");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: true },
+      });
+      // clarify: whitelist = docs/ only (does NOT include AGENTS.md)
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = createMockCtx(meta, { selectReturn: ASK_OPTIONS[1] });
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "AGENTS.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("pipeline_protect_ask");
+      expect(logContent).toContain("action=allow_once");
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
+    it("whitelist block + hardcoded protected path (AGENTS.md) + ask=true + Esc → block with whitelist reason", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p1-wl-ask-hardcoded-esc-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, "AGENTS.md"), "");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: true },
+      });
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = createMockCtx(meta, { selectReturn: undefined });
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "AGENTS.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("not in allowed write paths");
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("action=canceled");
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
+    it("whitelist block + non-protected path (src/app.ts) + ask=true → block, select not triggered", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p1-wl-nonprotected-" + Date.now());
+      await mkdir(join(TMP, "src"), { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: true },
+      });
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      let selectCalls = 0;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => { selectCalls++; return ASK_OPTIONS[1]; };
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "src", "app.ts") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("not in allowed write paths");
+      // Non-protected path → no ask popup
+      expect(selectCalls).toBe(0);
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
+    it("session allowance early bypass: sessionAllowedWritePaths contains .pi/config.json → pass without select", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p1-session-bypass-" + Date.now());
+      await mkdir(join(TMP, ".pi"), { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: true },
+      });
+      // clarify whitelist does NOT include .pi/
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        sessionAllowedWritePaths: [".pi/config.json"],
+      });
+      let selectCalls = 0;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => { selectCalls++; return undefined; };
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, ".pi", "config.json") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Session bypass → no whitelist check, no ask
+      expect(result).toBeUndefined();
+      expect(selectCalls).toBe(0);
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
+    it("whitelist block + gitignore protected path + ask=true + allow → pass", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p1-wl-gitignore-ask-" + Date.now());
+      await mkdir(join(TMP, "docs"), { recursive: true });
+      await writeFile(join(TMP, ".gitignore"), "docs\n");
+      await writeFile(join(TMP, "docs", "file.md"), "");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { gitignore: true, ask: true },
+      });
+      // clarify whitelist does NOT include docs/
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["src/"],
+      } as any;
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = createMockCtx(meta, { selectReturn: ASK_OPTIONS[1] });
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "docs", "file.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // whitelist block + gitignore protected + ask=true + allow_once → pass
+      expect(result).toBeUndefined();
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("action=allow_once");
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
+    it("regression: ask=false + whitelist block + protected path → direct block, no popup", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p1-ask-false-wl-block-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, "AGENTS.md"), "");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: false },
+      });
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["docs/"],
+      } as any;
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      let selectCalls = 0;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => { selectCalls++; return ASK_OPTIONS[1]; };
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "AGENTS.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("not in allowed write paths");
+      expect(selectCalls).toBe(0);
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+
+    it("regression: full mode (**) + hardcoded protected + ask=true → existing global chain ask", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p1-full-mode-hardcoded-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, "AGENTS.md"), "");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: true },
+      });
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
+        allowedWritePaths: ["**"],
+      } as any;
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = createMockCtx(meta, { selectReturn: ASK_OPTIONS[1] });
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "AGENTS.md") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Full mode: hardcoded path hits global chain ask (not whitelist ask)
+      expect(result).toBeUndefined();
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("action=allow_once");
+      // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
+    });
+  });
 });

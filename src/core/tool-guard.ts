@@ -388,20 +388,33 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         if (relPath) {
           const state = await getProtectState();
 
-          // Stage-level write whitelist check (Phase 1)
-          const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
-          if (stageCheck.status === "block") {
-            ui.notify(ctx, stageCheck.reason);
-            return { block: true, reason: stageCheck.reason };
-          }
+          // Session-level file allowance: bypasses whitelist + global chain entirely.
+          // Pre-evaluated once so downstream branches can skip redundant checks.
+          const sessionPaths = meta.sessionAllowedWritePaths || [];
+          const sessionAllowed = sessionPaths.includes(relPath);
 
-          // "allow-whitelist" → skip global chain, path is stage-authorized
-          if (stageCheck.status !== "allow-whitelist") {
-            // Session-level file allowance (overrides protection, including hardcoded)
-            const sessionPaths = meta.sessionAllowedWritePaths || [];
-            if (!sessionPaths.includes(relPath)) {
-              // Global protection chain (hardcoded + allow + gitignore)
-              // Check hardcoded protection (allow cannot exempt)
+          if (!sessionAllowed) {
+            // Stage-level write whitelist check
+            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
+
+            if (stageCheck.status === "block") {
+              // Phase 1: if protect.ask=true AND path is protected, surface ask dialog.
+              // This lets users override a stage-whitelist rejection for protected paths.
+              if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
+                const decision = await askProtectDecision(ctx, meta, relPath);
+                if (decision === "block") {
+                  ui.notify(ctx, stageCheck.reason);
+                  return { block: true, reason: stageCheck.reason };
+                }
+                // "allow" → fall through to hash recording
+              } else {
+                // ask=false or non-protected path: keep original whitelist block behavior
+                ui.notify(ctx, stageCheck.reason);
+                return { block: true, reason: stageCheck.reason };
+              }
+            } else if (stageCheck.status !== "allow-whitelist") {
+              // "continue" → global protection chain (hardcoded + allow + gitignore)
+              // Hardcoded protection (allow cannot exempt)
               if (isHardcodedProtected(relPath, state.hardcoded)) {
                 if (config.protect?.ask === true) {
                   const decision = await askProtectDecision(ctx, meta, relPath);
@@ -417,7 +430,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   return { block: true, reason };
                 }
               } else {
-                // Check allow exemption (only for gitignore protection)
+                // Allow exemption check (only for gitignore protection)
                 if (isPathAllowed(relPath, state.allow)) {
                   // Allowed - proceed with hash recording
                 } else if (state.gitignore) {
@@ -440,6 +453,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 }
               }
             }
+            // "allow-whitelist" → fall through to hash recording (gitignore exemption implicit)
           }
         } else {
           // Path outside project root: block in whitelist mode (cannot satisfy whitelist)
