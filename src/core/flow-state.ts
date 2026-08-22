@@ -198,6 +198,7 @@ export async function executeDecision(
         currentStepIndex: 0,
         verifyAttempts: 0,
         verifyFailures: [],
+        verifyConfigError: undefined,
         ...summariesPatch,
       });
 
@@ -239,6 +240,7 @@ export async function executeDecision(
         currentStepIndex: 0,
         verifyAttempts: 0,
         verifyFailures: [],
+        verifyConfigError: undefined,
         ...summariesPatch,
       });
 
@@ -270,6 +272,7 @@ export async function executeDecision(
         currentStepIndex: 0,
         verifyAttempts: 0,
         verifyFailures: [],
+        verifyConfigError: undefined,
         // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
 

@@ -290,6 +290,15 @@ export interface SessionMeta {
   /** Verification failures for the current stage (populated on failed verification) */
   verifyFailures?: VerifyFailureItem[];
 
+  /**
+   * Persistent flag set when a verification config-class error is detected
+   * (EISDIR, empty path, directory, unresolved requirementDoc placeholder).
+   * Survives resume decisions so that the skipVerify escape hatch in stage_advance
+   * remains reachable after freeze → resume flow.
+   * Cleared on stage transitions (skip/rollback/restart/advance).
+   */
+  verifyConfigError?: boolean;
+
   /** The most recent unified verification result (structured + LLM) */
   lastVerifyResult?: VerifyResultSnapshot;
 

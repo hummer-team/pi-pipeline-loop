@@ -272,6 +272,65 @@ describe("executeDecision", () => {
     expect(result.success).toBe(false);
     expect(result.message).toContain("Unknown decision");
   });
+
+  // ── verifyConfigError lifecycle ────────────────────────────────────────────
+
+  it("resume: preserves verifyConfigError flag (escape hatch stays reachable)", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      blockedReason: "verify_config_error",
+      verifyConfigError: true,
+      verifyFailures: [{ ruleType: "fileContentPattern", detail: "EISDIR", timestamp: 0 }],
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "resume", config);
+
+    // verifyFailures cleared, but verifyConfigError preserved
+    expect(meta.verifyFailures).toEqual([]);
+    expect(meta.verifyConfigError).toBe(true);
+    expect(meta.flowState).toBe("running");
+  });
+
+  it("skip: clears verifyConfigError flag (stage transition)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "verify_config_error",
+      verifyConfigError: true,
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "skip", config);
+
+    expect(meta.verifyConfigError).toBeUndefined();
+  });
+
+  it("rollback: clears verifyConfigError flag (stage transition)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      previousStage: "plan",
+      flowState: "blocked",
+      verifyConfigError: true,
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "rollback", config);
+
+    expect(meta.verifyConfigError).toBeUndefined();
+  });
+
+  it("restart: clears verifyConfigError flag (new pipeline)", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      verifyConfigError: true,
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "restart", config);
+
+    expect(meta.verifyConfigError).toBeUndefined();
+  });
 });
 
 // ─── freezeAndPrompt ─────────────────────────────────────────────────────────

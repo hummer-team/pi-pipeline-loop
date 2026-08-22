@@ -331,6 +331,7 @@ Verify plan document exists.`,
       };
       const meta = makeTestMeta({
         currentStage: "clarify",
+        verifyConfigError: true,
         verifyFailures: [
           {
             ruleType: "fileContentPattern",
@@ -411,6 +412,55 @@ Verify plan document exists.`,
       const params = tool.parameters as Record<string, any>;
       expect(params.properties?.skipVerify).toBeDefined();
       expect(params.properties.skipVerify.type).toBe("boolean");
+    });
+
+    it("skipVerify=true works after resume (verifyConfigError persists through resume)", async () => {
+      // Simulates the full lifecycle: config error → freeze → resume → skipVerify
+      // Before the fix, resume cleared verifyFailures making isConfigError([]) return false
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        nextStage: "plan",
+        verify: { require: true, mode: "tool" },
+      };
+      // After resume: verifyFailures cleared but verifyConfigError persists
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        flowState: "running",
+        verifyFailures: [],       // cleared by resume
+        verifyConfigError: true,  // persisted through resume
+      });
+
+      const ctx = createCtx(meta);
+      const tool = createStageAdvancer(config);
+      const result = await tool.execute({ skipVerify: true }, ctx as any);
+
+      // Should succeed — verifyConfigError marker allows escape
+      expect((result as any).success).toBe(true);
+      expect(meta.currentStage).toBe("plan");
+      // verifyConfigError should be cleared after successful advance
+      expect(meta.verifyConfigError).toBeUndefined();
+    });
+
+    it("skipVerify=true rejected when verifyConfigError is false/undefined (no config error)", async () => {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        nextStage: "plan",
+        verify: { require: true, mode: "tool" },
+      };
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        verifyFailures: [],
+        verifyConfigError: undefined,
+      });
+
+      const ctx = createCtx(meta);
+      const tool = createStageAdvancer(config);
+      const result = await tool.execute({ skipVerify: true }, ctx as any);
+
+      expect((result as any).success).toBe(false);
+      expect((result as any).message).toContain("skipVerify 仅允许");
     });
   });
 });

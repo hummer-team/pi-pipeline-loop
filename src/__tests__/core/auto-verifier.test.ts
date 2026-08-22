@@ -875,6 +875,88 @@ describe("parseFrontmatter — Phase 0 robustness fixes", () => {
     expect(rules!.keywords).toEqual(["valid_kw"]);
     expect(rules!.requiredFiles).toEqual(["real.md"]);
   });
+
+  // ── Fix 2: section switch flush ──────────────────────────────────────────
+
+  it("flushes pending cmdItem when requiredCommands is followed by keywords (4-space style)", async () => {
+    // Generator output pattern: requiredCommands → keywords
+    // Before fix: last cmdItem silently dropped when keywords: section starts
+    const yaml = [
+      "rules:",
+      "    requiredCommands:",
+      '        - cmd: "bun run build"',
+      "          expectExit: 0",
+      '        - cmd: "echo ok"',
+      '          expectOutput: "ok"',
+      "    keywords:",
+      '        - "done"',
+      "    mode: and",
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    // Both commands must be present (previously only 1 was kept)
+    expect(rules!.requiredCommands).toHaveLength(2);
+    expect(rules!.requiredCommands![0].cmd).toBe("bun run build");
+    expect(rules!.requiredCommands![0].expectExit).toBe(0);
+    expect(rules!.requiredCommands![1].cmd).toBe("echo ok");
+    expect(rules!.requiredCommands![1].expectOutput).toBe("ok");
+    expect(rules!.keywords).toEqual(["done"]);
+    expect(rules!.mode).toBe("and");
+  });
+
+  it("flushes pending cmdItem when requiredCommands is followed by keywords (2-space style)", async () => {
+    const yaml = [
+      "rules:",
+      "  requiredCommands:",
+      '    - cmd: "npm test"',
+      "      expectExit: 0",
+      '    - cmd: "bun run build"',
+      "      expectExit: 0",
+      "  keywords:",
+      '    - "pass"',
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    expect(rules!.requiredCommands).toHaveLength(2);
+    expect(rules!.requiredCommands![0].cmd).toBe("npm test");
+    expect(rules!.requiredCommands![1].cmd).toBe("bun run build");
+    expect(rules!.keywords).toEqual(["pass"]);
+  });
+
+  it("flushes pending fcItem when fileContentPattern is followed by requiredFiles", async () => {
+    const yaml = [
+      "rules:",
+      "  fileContentPattern:",
+      '    - path: "docs/req.md"',
+      '      pattern: "confirmed"',
+      "  requiredFiles:",
+      '    - "output.md"',
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    expect(rules!.fileContentPattern).toHaveLength(1);
+    expect(rules!.fileContentPattern![0].path).toBe("docs/req.md");
+    expect(rules!.fileContentPattern![0].pattern).toBe("confirmed");
+    expect(rules!.requiredFiles).toEqual(["output.md"]);
+  });
+
+  it("flushes pending fcItem when fileContentPattern is followed by requiredCommands", async () => {
+    const yaml = [
+      "rules:",
+      "  fileContentPattern:",
+      '    - path: "src/index.ts"',
+      '      pattern: "export"',
+      "  requiredCommands:",
+      '    - cmd: "bun run build"',
+      "      expectExit: 0",
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    expect(rules!.fileContentPattern).toHaveLength(1);
+    expect(rules!.fileContentPattern![0].path).toBe("src/index.ts");
+    expect(rules!.requiredCommands).toHaveLength(1);
+    expect(rules!.requiredCommands![0].cmd).toBe("bun run build");
+  });
 });
 
 // ─── Phase 2: unresolved {requirementDoc} placeholder detection ──────────────

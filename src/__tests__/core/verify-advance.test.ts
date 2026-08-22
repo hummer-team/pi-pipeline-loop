@@ -509,6 +509,37 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     expect(result.message).toContain("验证配置错误");
   });
 
+  it("config error (requiredFiles + requirementDoc unset) → freezeAndPrompt called (Phase 2 fix)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: {
+        failures: [
+          { ruleType: "requiredFiles", detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径" },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    const result = await applyVerifyFail(
+      ctx as any,
+      meta,
+      "clarify",
+      sharedResult,
+      "tool",
+      ctx.pipelineUI,
+      config,
+    );
+
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_config_error");
+    expect(meta.verifyConfigError).toBe(true);
+    expect(result.message).toContain("验证配置错误");
+  });
+
   it("content failure (pattern not found) → normal path, NO freeze, verifyAttempts incremented", async () => {
     const config = makeTestConfig({ maxVerifyAttempts: 5 });
     const meta = makeTestMeta({
@@ -572,9 +603,21 @@ describe("isConfigError helper", () => {
     ])).toBe(false);
   });
 
-  it("returns false for non-fileContentPattern rule types", () => {
+  it("detects EISDIR config error for requiredFiles ruleType (Phase 2 fix)", () => {
     expect(isConfigError([
       { ruleType: "requiredFiles", detail: "EISDIR somewhere" },
+    ])).toBe(true);
+  });
+
+  it("detects requirementDoc unset for requiredFiles ruleType", () => {
+    expect(isConfigError([
+      { ruleType: "requiredFiles", detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径" },
+    ])).toBe(true);
+  });
+
+  it("returns false for non-config rule types (e.g. requiredCommands)", () => {
+    expect(isConfigError([
+      { ruleType: "requiredCommands", detail: "EISDIR somewhere" },
     ])).toBe(false);
   });
 

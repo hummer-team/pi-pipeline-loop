@@ -247,7 +247,28 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
         continue;
       }
 
-      // Detect section starts by key prefix (P2: indent-aware, no absolute indent check)
+      // Detect section starts by key prefix (P2 fix: indent-aware, no absolute indent check)
+      // Flush any pending cmdItem/fcItem before switching section to prevent
+      // silent data loss when a section key immediately follows the last item
+      // (e.g., requiredCommands → keywords in generator output).
+      if (
+        trimmed.startsWith("keywords:") ||
+        trimmed.startsWith("mode:") ||
+        trimmed.startsWith("requiredFiles:") ||
+        trimmed.startsWith("requiredCommands:") ||
+        trimmed.startsWith("requiredGit:") ||
+        trimmed.startsWith("fileContentPattern:")
+      ) {
+        if (currentSection === "cmdItem" && currentCmd) {
+          requiredCommands.push({ ...currentCmd });
+          currentCmd = null;
+        }
+        if (currentSection === "fcItem" && currentFc) {
+          fileContentPattern.push({ ...currentFc });
+          currentFc = null;
+        }
+      }
+
       if (trimmed.startsWith("keywords:")) {
         currentSection = "keywords";
         sectionIndent = indent;

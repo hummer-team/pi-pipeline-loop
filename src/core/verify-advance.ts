@@ -84,7 +84,10 @@ interface VerifyFailReturn {
 export function isConfigError(failures: { ruleType: string; detail: string }[]): boolean {
   return failures.some(
     (f) =>
-      f.ruleType === "fileContentPattern" &&
+      // Config-error patterns can come from either fileContentPattern or requiredFiles
+      // (auto-verifier produces requiredFiles ruleType when {requirementDoc} placeholder
+      // is unresolved in a requiredFiles path — same config-class root cause)
+      (f.ruleType === "fileContentPattern" || f.ruleType === "requiredFiles") &&
       /EISDIR|is a directory|指向目录|path 为空|requirementDoc 未设置/.test(f.detail),
   );
 }
@@ -235,6 +238,7 @@ export async function applyVerifyFail(
     ctx.session.updateMeta({
       ...meta,
       verifyFailures,
+      verifyConfigError: true,
     });
 
     await writeAuditLog("verify_config_error", {

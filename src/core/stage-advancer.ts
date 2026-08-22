@@ -14,7 +14,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from ".
 import { createPipelineUI } from "./pipeline-ui";
 import { runVerification } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
-import { applyVerifyFail, isConfigError } from "./verify-advance";
+import { applyVerifyFail } from "./verify-advance";
 
 /**
  * Dependencies injected into the stage advancer for verification execution.
@@ -140,11 +140,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // Verification passed — continue to advance
       } else if (stageConfig.verify?.require && argSkipVerify) {
         // skipVerify=true: abuse guard — only allowed when config-class error present
-        const existingFailures = (meta.verifyFailures ?? []).map(f => ({
-          ruleType: f.ruleType,
-          detail: f.detail,
-        }));
-        if (!isConfigError(existingFailures)) {
+        // Use persistent verifyConfigError marker (survives resume) instead of
+        // checking verifyFailures which are cleared by resume decision.
+        if (!meta.verifyConfigError) {
           return {
             success: false,
             message: "skipVerify 仅允许在验证配置错误（EISDIR/空路径/目录/requirementDoc 未设置）时使用",
@@ -162,6 +160,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         loopCount: 0,
         currentStepIndex: 0,
         verifyFailures: [],
+        verifyConfigError: undefined,
       });
 
       if (resolvedTarget === null || resolvedTarget === "completed") {
