@@ -199,3 +199,54 @@ describe("verifyFileContentPattern with glob", () => {
     expect(result.detail).toContain("no files matched");
   });
 });
+
+// ─── Phase 1: empty path / directory path defense ─────────────────────────────
+
+describe("verifyFileContentPattern — Phase 1 empty/directory path defense", () => {
+  it("returns clear error for empty path rule without throwing", async () => {
+    const result = await verifyFileContentPattern(
+      [{ path: "", pattern: "anything" }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("path 为空");
+    expect(result.detail).toContain("配置错误");
+  });
+
+  it("returns clear error when path resolves to project root (empty string after placeholder)", async () => {
+    // Simulates what would happen with path.join(root, "") → root directory
+    // With Phase 1 guard, empty path is caught before path.join
+    const result = await verifyFileContentPattern(
+      [{ path: "", pattern: "anything" }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("path 为空");
+  });
+
+  it("returns 'directory' error when path points to a real directory", async () => {
+    // Create a real directory
+    await fs.mkdir(path.join(TMP, "docs"), { recursive: true });
+
+    const result = await verifyFileContentPattern(
+      [{ path: "docs", pattern: "anything" }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("指向目录而非文件");
+  });
+
+  it("EISDIR error message is friendly when readFile encounters a directory", async () => {
+    // The Phase 1 stat check should catch this before readFile,
+    // but if it somehow gets to catch, the EISDIR message should be friendly
+    await fs.mkdir(path.join(TMP, "subdir"), { recursive: true });
+
+    const result = await verifyFileContentPattern(
+      [{ path: "subdir", pattern: "test" }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+    // Should get the directory detection message (from stat check)
+    expect(result.detail).toContain("指向目录");
+  });
+});

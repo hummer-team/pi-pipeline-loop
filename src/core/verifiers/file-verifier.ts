@@ -176,11 +176,29 @@ export async function verifyFileContentPattern(
       }
     } else {
       // Exact path
+      // Phase 1 (L1): pre-validate path to prevent EISDIR from path.join(root, "")
+      if (rule.path.trim() === "") {
+        failures.push(`fileContentPattern path 为空（配置错误）`);
+        continue;
+      }
+
       const absolutePath = path.isAbsolute(rule.path)
         ? rule.path
         : path.join(projectRoot, rule.path);
 
       try {
+        // Phase 1 (L1): check if path points to a directory
+        let stat: import("node:fs").Stats;
+        try {
+          stat = await fs.stat(absolutePath);
+        } catch {
+          // stat failed — fall through to readFile which will produce its own error
+        }
+        if (stat! && stat!.isDirectory()) {
+          failures.push(`${rule.path}: path 指向目录而非文件（配置错误）`);
+          continue;
+        }
+
         const content = await fs.readFile(absolutePath, "utf-8");
         const regex = new RegExp(rule.pattern, "m");
         if (!regex.test(content)) {
@@ -188,7 +206,12 @@ export async function verifyFileContentPattern(
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        failures.push(`${rule.path}: file read error (${errMsg})`);
+        // Phase 1 (L1): EISDIR friendly message
+        const isDir = (err as NodeJS.ErrnoException).code === "EISDIR";
+        const detail = isDir
+          ? `${rule.path}: path 指向目录（EISDIR）（配置错误）`
+          : `${rule.path}: file read error (${errMsg})`;
+        failures.push(detail);
         await logError?.("verify_error", { ruleType: "fileContentPattern", path: rule.path, error: errMsg });
       }
     }
