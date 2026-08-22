@@ -187,6 +187,23 @@ export interface VerifyFailureItem {
 }
 
 /**
+ * A single violation item stored in SessionMeta.
+ * Records tool-call interceptions for feedback injection and overflow detection.
+ */
+export interface ViolationItem {
+  /** The type of violation that was blocked */
+  type: "tool_not_allowed" | "bash_prefix" | "write_protected" | "git_protected";
+  /** The tool name that was blocked (if applicable) */
+  tool?: string;
+  /** English correction detail (e.g., "Tool \"write\" not allowed in \"clarify\" stage.") */
+  detail: string;
+  /** Optional suggestion (allowed tools/prefixes, protected paths) */
+  suggestion?: string;
+  /** Unix timestamp (ms) when the violation was recorded */
+  timestamp: number;
+}
+
+/**
  * A self-contained snapshot of the unified verification result.
  * Mirrors the full VerifyResult type from auto-verifier without importing it,
  * avoiding circular dependencies between types.ts and auto-verifier.ts.
@@ -309,6 +326,14 @@ export interface SessionMeta {
    * Cleared on pipeline quit/reset.
    */
   sessionAllowedWritePaths?: string[];
+
+  /**
+   * Tool-call violation history for the current stage.
+   * Records all interception events (tool_not_allowed, bash_prefix, write_protected, git_protected).
+   * Used for prompt feedback injection and overflow circuit-breaker detection.
+   * Cleared on stage transitions (advance/skip/rollback/restart/resume).
+   */
+  violations?: ViolationItem[];
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

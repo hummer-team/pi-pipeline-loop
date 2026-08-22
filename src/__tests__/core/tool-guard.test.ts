@@ -694,7 +694,7 @@ describe("createToolGuard", () => {
   });
 
   describe("R4Q2 no side effects", () => {
-    it("protection block does not update meta or freeze pipeline", async () => {
+    it("protection block does not freeze pipeline or increment loop count (violations recording allowed)", async () => {
       const TMP = join(tmpdir(), "pi-tg-no-sideffect-" + Date.now());
       await mkdir(join(TMP, ".pi"), { recursive: true });
 
@@ -710,14 +710,19 @@ describe("createToolGuard", () => {
       const result = await hook.handler(ctx as any);
 
       expect((result as any).block).toBe(true);
-      // No metadata updates
-      expect(ctx.metadataUpdates.length).toBe(0);
+      // Violations recording IS a metadata update (R4Q2 relaxed: pure recording allowed)
+      expect(ctx.metadataUpdates.length).toBeGreaterThanOrEqual(1);
       // Loop count unchanged
       expect(meta.loopCount).toBe(initialLoopCount);
       // Stage unchanged
       expect(meta.currentStage).toBe(initialStage);
       // Not terminated
       expect(meta.terminated).toBeUndefined();
+      // Violation was recorded
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.violations).toBeDefined();
+      expect(lastUpdate.violations!.length).toBe(1);
+      expect(lastUpdate.violations![0].type).toBe("write_protected");
 
       await rm(TMP, { recursive: true, force: true });
     });

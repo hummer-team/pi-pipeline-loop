@@ -27,6 +27,12 @@ export const ALLOWED_WRITE_ALL = "**";
 export const DEFAULT_DECISION_SHORTCUT = "ctrl+enter";
 
 /**
+ * Default maximum number of violations before the violation overflow breaker fires.
+ * When violations.length >= this value, freezeAndPrompt("violation_overflow") is triggered.
+ */
+export const DEFAULT_MAX_VIOLATIONS = 3;
+
+/**
  * Default write whitelist for read-only stages (clarify/plan/review).
  * These stages may only write to documentation directories.
  */

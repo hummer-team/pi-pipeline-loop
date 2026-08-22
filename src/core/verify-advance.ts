@@ -139,6 +139,7 @@ export async function applyVerifyPass(
       loopCount: 0,
       currentStepIndex: 0,
       verifyFailures: [],
+      violations: [],
     });
 
     await writeAuditLog("auto_verify_pass", {

@@ -154,6 +154,7 @@ export async function executeDecision(
         loopCount: 0,
         verifyAttempts: 0,
         verifyFailures: [],
+        violations: [],
         ...(meta.currentStage === "awaiting_human"
           ? { currentStage: meta.previousStage ?? "clarify", previousStage: undefined }
           : {}),
@@ -199,6 +200,7 @@ export async function executeDecision(
         verifyAttempts: 0,
         verifyFailures: [],
         verifyConfigError: undefined,
+        violations: [],
         ...summariesPatch,
       });
 
@@ -241,6 +243,7 @@ export async function executeDecision(
         verifyAttempts: 0,
         verifyFailures: [],
         verifyConfigError: undefined,
+        violations: [],
         ...summariesPatch,
       });
 
@@ -273,6 +276,7 @@ export async function executeDecision(
         verifyAttempts: 0,
         verifyFailures: [],
         verifyConfigError: undefined,
+        violations: [],
         // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
 

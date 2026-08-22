@@ -161,6 +161,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         currentStepIndex: 0,
         verifyFailures: [],
         verifyConfigError: undefined,
+        violations: [],
       });
 
       if (resolvedTarget === null || resolvedTarget === "completed") {

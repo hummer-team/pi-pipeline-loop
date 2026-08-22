@@ -262,6 +262,32 @@ function buildVerifyFailurePrompt(meta: SessionMeta): string | null {
 }
 
 /**
+ * Builds violation history prompt section.
+ * Lists blocked tool-call violations with correction detail.
+ * Only included when violations are present in SessionMeta.
+ *
+ * @param meta - Current session metadata
+ * @returns Prompt section string, or null if no violations
+ */
+function buildViolationPrompt(meta: SessionMeta): string | null {
+  const violations = meta.violations;
+  if (!violations || violations.length === 0) {
+    return null;
+  }
+
+  const lines = violations.map(v => {
+    const tag = v.tool ? `[${v.type}] Tool "${v.tool}"` : `[${v.type}]`;
+    const correction = v.suggestion ? `${v.detail} ${v.suggestion}` : v.detail;
+    return `- ${tag}: ${correction}`;
+  });
+  return (
+    `# PREVIOUS VIOLATIONS (MUST FIX)\n` +
+    `The following tool usage violations were blocked. Correct your approach:\n\n` +
+    lines.join("\n")
+  );
+}
+
+/**
  * Builds Part 7: Verify Tool Guidance.
  * When verify.mode is "tool", injects guidance for the agent to call stage_advance
  * (primary) or pipeline_verify (fallback for re-verification).
@@ -425,13 +451,14 @@ async function buildDefaultPrompt(
   const part4 = await buildLoopStatus(config, meta);
   const part5 = buildPipelineStatus(config, meta);
   const part6 = buildVerifyFailurePrompt(meta);
+  const part6b = buildViolationPrompt(meta);
   const part7 = buildVerifyToolGuidance(stageConfig);
   // Part 8: Stage Write Scope (standalone for non-loop stages; loop stages get it in Part 4)
   const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
     ? buildStageWriteScope(stageConfig, true)
     : null;
 
-  const promptParts = [part1, part2, part3, part4, part5, part6, part7, part8].filter(
+  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8].filter(
     (p): p is string => p !== null,
   );
 
@@ -463,6 +490,7 @@ async function buildDynamicValues(
     loop_status: await buildLoopStatus(config, meta),
     pipeline_status: buildPipelineStatus(config, meta),
     verify_failures: buildVerifyFailurePrompt(meta),
+    violations: buildViolationPrompt(meta),
     verify_tool_guidance: buildVerifyToolGuidance(stageConfig),
     // Write scope: null for loop stages (embedded in loop_status), built for non-loop
     stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true),

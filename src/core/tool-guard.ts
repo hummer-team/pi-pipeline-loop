@@ -21,7 +21,7 @@
  */
 
 import path from "node:path";
-import type { PipelineConfig, Hook, SessionMeta, ExecFn } from "../types";
+import type { PipelineConfig, Hook, SessionMeta, ExecFn, ViolationItem } from "../types";
 import { getFileHash } from "../utils/hash";
 import {
   resolveProtectConfig,
@@ -40,6 +40,7 @@ import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
 import { getStageRequiredCommandPrefixes } from "./verify-rules-cache";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
@@ -241,8 +242,23 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       const stageConfig = config.stages[meta.currentStage];
       const { name: toolName, arguments: args } = ctx.toolCall;
 
+      // Helper: record a violation and check the breaker (pure recording, no block side effects)
+      async function trackViolation(item: Omit<ViolationItem, "timestamp">): Promise<void> {
+        const full: ViolationItem = { ...item, timestamp: Date.now() };
+        await recordViolation(ctx, meta, full);
+        // Re-read meta after updateMeta to get latest violations count
+        const updatedMeta = ctx.session.getMeta() as SessionMeta;
+        await checkViolationBreaker(ctx, updatedMeta, config);
+      }
+
       // 1. Tool permission check
       if (!(stageConfig.allowedTools || []).includes(toolName)) {
+        await trackViolation({
+          type: "tool_not_allowed",
+          tool: toolName,
+          detail: `Tool "${toolName}" not allowed in "${meta.currentStage}" stage.`,
+          suggestion: `Allowed: [${(stageConfig.allowedTools || []).join(", ")}].`,
+        });
         return {
           block: true,
           reason: `Tool "${toolName}" not allowed in "${meta.currentStage}" stage`,
@@ -276,6 +292,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             // Allow: command matches stage verify.md requiredCommands
             // (no audit — this is a silent pass-through to avoid log noise)
           } else {
+            await trackViolation({
+              type: "bash_prefix",
+              tool: "bash",
+              detail: `Bash command "${command}" not in allowedBashPrefixes.`,
+              suggestion: `Allowed: [${(stageConfig.allowedBashPrefixes || []).join(", ")}].`,
+            });
             return {
               block: true,
               reason: `Bash command "${command}" not in allowedBashPrefixes.`,
@@ -290,6 +312,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const gitState = await getProtectStateForGit();
           const blockResult = await checkGitAdd(command, gitState, config.projectRoot, execFn);
           if (blockResult) {
+            await trackViolation({
+              type: "git_protected",
+              tool: "bash",
+              detail: blockResult.reason,
+              suggestion: `git add cannot stage protected paths (.pi/, AGENTS.md, .git/, gitignore).`,
+            });
             ui.notify(ctx, blockResult.reason);
             return blockResult;
           }
@@ -297,6 +325,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const gitState = await getProtectStateForGit();
           const blockResult = await checkGitCommit(command, gitState, config.projectRoot, execFn);
           if (blockResult) {
+            await trackViolation({
+              type: "git_protected",
+              tool: "bash",
+              detail: blockResult.reason,
+              suggestion: `git commit cannot include protected paths (.pi/, AGENTS.md, .git/, gitignore).`,
+            });
             ui.notify(ctx, blockResult.reason);
             return blockResult;
           }
@@ -327,6 +361,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
                   const decision = await askProtectDecision(ctx, meta, relPath);
                   if (decision === "block") {
+                    await trackViolation({
+                      type: "write_protected",
+                      tool: "bash",
+                      detail: stageCheck.reason,
+                      suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                    });
                     ui.notify(ctx, stageCheck.reason);
                     return { block: true, reason: stageCheck.reason };
                   }
@@ -334,6 +374,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   continue;
                 }
                 // ask=false or non-protected path: original whitelist block
+                await trackViolation({
+                  type: "write_protected",
+                  tool: "bash",
+                  detail: stageCheck.reason,
+                  suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                });
                 ui.notify(ctx, stageCheck.reason);
                 return { block: true, reason: stageCheck.reason };
               }
@@ -346,6 +392,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     const decision = await askProtectDecision(ctx, meta, relPath);
                     if (decision === "block") {
                       const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+                      await trackViolation({
+                        type: "write_protected",
+                        tool: "bash",
+                        detail: reason,
+                        suggestion: `Protected paths: .pi/, AGENTS.md, .git/ + gitignore patterns.`,
+                      });
                       ui.notify(ctx, reason);
                       return { block: true, reason };
                     }
@@ -353,6 +405,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     continue;
                   }
                   const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+                  await trackViolation({
+                    type: "write_protected",
+                    tool: "bash",
+                    detail: reason,
+                    suggestion: `Protected paths: .pi/, AGENTS.md, .git/ + gitignore patterns.`,
+                  });
                   ui.notify(ctx, reason);
                   return { block: true, reason };
                 }
@@ -364,6 +422,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
               if (isWhitelistMode) {
                 const reason = `FORBIDDEN: Target '${absTarget}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
+                await trackViolation({
+                  type: "write_protected",
+                  tool: "bash",
+                  detail: reason,
+                  suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                });
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
@@ -418,12 +482,24 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
                 const decision = await askProtectDecision(ctx, meta, relPath);
                 if (decision === "block") {
+                  await trackViolation({
+                    type: "write_protected",
+                    tool: toolName,
+                    detail: stageCheck.reason,
+                    suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                  });
                   ui.notify(ctx, stageCheck.reason);
                   return { block: true, reason: stageCheck.reason };
                 }
                 // "allow" → fall through to hash recording
               } else {
                 // ask=false or non-protected path: keep original whitelist block behavior
+                await trackViolation({
+                  type: "write_protected",
+                  tool: toolName,
+                  detail: stageCheck.reason,
+                  suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                });
                 ui.notify(ctx, stageCheck.reason);
                 return { block: true, reason: stageCheck.reason };
               }
@@ -435,12 +511,24 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   const decision = await askProtectDecision(ctx, meta, relPath);
                   if (decision === "block") {
                     const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                    await trackViolation({
+                      type: "write_protected",
+                      tool: toolName,
+                      detail: reason,
+                      suggestion: `Hardcoded protected: .pi/, AGENTS.md, .git/.`,
+                    });
                     ui.notify(ctx, reason);
                     return { block: true, reason };
                   }
                   // "allow" → proceed with hash recording
                 } else {
                   const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                  await trackViolation({
+                    type: "write_protected",
+                    tool: toolName,
+                    detail: reason,
+                    suggestion: `Hardcoded protected: .pi/, AGENTS.md, .git/.`,
+                  });
                   ui.notify(ctx, reason);
                   return { block: true, reason };
                 }
@@ -455,12 +543,24 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                       const decision = await askProtectDecision(ctx, meta, relPath);
                       if (decision === "block") {
                         const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+                        await trackViolation({
+                          type: "write_protected",
+                          tool: toolName,
+                          detail: reason,
+                          suggestion: `Gitignore protected. Use protect.allow to exempt specific paths.`,
+                        });
                         ui.notify(ctx, reason);
                         return { block: true, reason };
                       }
                       // "allow" → proceed with hash recording
                     } else {
                       const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+                      await trackViolation({
+                        type: "write_protected",
+                        tool: toolName,
+                        detail: reason,
+                        suggestion: `Gitignore protected. Use protect.allow to exempt specific paths.`,
+                      });
                       ui.notify(ctx, reason);
                       return { block: true, reason };
                     }
@@ -477,6 +577,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
           if (isWhitelistMode) {
             const reason = `FORBIDDEN: Target '${absPath}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
+            await trackViolation({
+              type: "write_protected",
+              tool: toolName,
+              detail: reason,
+              suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+            });
             ui.notify(ctx, reason);
             return { block: true, reason };
           }
