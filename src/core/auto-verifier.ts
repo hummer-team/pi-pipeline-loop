@@ -155,7 +155,66 @@ export async function parseVerifyFile(
 }
 
 /**
- * Parses YAML-like frontmatter content into VerifyRules.
+ * Strips surrounding YAML quotes and unescapes double-quoted content.
+ * - Double-quoted: unescapes YAML escape sequences (\\, \", \n, \t, \r, \/, \b, \f, \uXXXX)
+ * - Single-quoted: unescapes YAML single-quote doubling ('' → ')
+ * - Unquoted: returned as-is
+ */
+function stripYamlQuotes(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return unescapeYamlString(trimmed.slice(1, -1));
+  }
+  if (trimmed.length >= 2 && trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).replace(/''/g, "'");
+  }
+  return trimmed;
+}
+
+/**
+ * Unescapes a YAML double-quoted string scalar (content between the outer quotes).
+ * Handles: \\\\ → \\, \\" → ", \\n → newline, \\t → tab, \\r → CR,
+ * \\/ → /, \\b → backspace, \\f → form-feed, \\uXXXX → unicode char.
+ * Unknown escape sequences preserve both characters per YAML spec.
+ */
+function unescapeYamlString(s: string): string {
+  let result = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "\\" && i + 1 < s.length) {
+      const next = s[i + 1];
+      switch (next) {
+        case "\\": result += "\\"; i += 2; break;
+        case "\"": result += "\""; i += 2; break;
+        case "n": result += "\n"; i += 2; break;
+        case "t": result += "\t"; i += 2; break;
+        case "r": result += "\r"; i += 2; break;
+        case "/": result += "/"; i += 2; break;
+        case "b": result += "\b"; i += 2; break;
+        case "f": result += "\f"; i += 2; break;
+        case "u": {
+          if (i + 5 < s.length) {
+            const hex = s.substring(i + 2, i + 6);
+            if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+              result += String.fromCharCode(parseInt(hex, 16));
+              i += 6;
+              break;
+            }
+          }
+          result += s[i]; i++; break;
+        }
+        default:
+          result += s[i]; i++; break;
+      }
+    } else {
+      result += s[i]; i++;
+    }
+  }
+  return result;
+}
+
+/**
+ * Parses YAML like frontmatter content into VerifyRules.
  * Uses a simple key-value parser — no full YAML library dependency.
  * Supports: keywords, mode, requiredFiles, requiredCommands, requiredGit, fileContentPattern.
  */
@@ -169,9 +228,10 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
     const fileContentPattern: FileContentRule[] = [];
     let requiredGit: RequiredGitRules | undefined;
 
-    // Section tracking state
+    // Section tracking state (indent-aware: P2 fix)
     type Section = "none" | "keywords" | "requiredFiles" | "requiredCommands" | "requiredGit" | "fileContentPattern" | "cmdItem" | "fcItem";
     let currentSection: Section = "none";
+    let sectionIndent = 0;
     let currentCmd: RequiredCommand | null = null;
     let currentFc: FileContentRule | null = null;
 
@@ -187,32 +247,38 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
         continue;
       }
 
-      // Detect section starts (2-space indent under rules:)
-      if (indent <= 2 && trimmed.startsWith("keywords:")) {
+      // Detect section starts by key prefix (P2: indent-aware, no absolute indent check)
+      if (trimmed.startsWith("keywords:")) {
         currentSection = "keywords";
+        sectionIndent = indent;
         continue;
       }
-      if (indent <= 2 && trimmed.startsWith("mode:")) {
-        const value = trimmed.split(":")[1]?.trim().replace(/["']/g, "");
-        if (value === "and" || value === "or") mode = value;
+      if (trimmed.startsWith("mode:")) {
+        const value = trimmed.split(":")[1]?.trim();
+        const modeVal = stripYamlQuotes(value);
+        if (modeVal === "and" || modeVal === "or") mode = modeVal;
         currentSection = "none";
         continue;
       }
-      if (indent <= 2 && trimmed.startsWith("requiredFiles:")) {
+      if (trimmed.startsWith("requiredFiles:")) {
         currentSection = "requiredFiles";
+        sectionIndent = indent;
         continue;
       }
-      if (indent <= 2 && trimmed.startsWith("requiredCommands:")) {
+      if (trimmed.startsWith("requiredCommands:")) {
         currentSection = "requiredCommands";
+        sectionIndent = indent;
         continue;
       }
-      if (indent <= 2 && trimmed.startsWith("requiredGit:")) {
+      if (trimmed.startsWith("requiredGit:")) {
         currentSection = "requiredGit";
+        sectionIndent = indent;
         requiredGit = {};
         continue;
       }
-      if (indent <= 2 && trimmed.startsWith("fileContentPattern:")) {
+      if (trimmed.startsWith("fileContentPattern:")) {
         currentSection = "fileContentPattern";
+        sectionIndent = indent;
         continue;
       }
 
@@ -230,15 +296,16 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
 
         if (currentSection === "keywords" || currentSection === "cmdItem") {
           if (currentSection === "keywords") {
-            const kw = trimmed.slice(2).trim().replace(/["']/g, "");
+            const kw = stripYamlQuotes(trimmed.slice(2));
             if (kw) keywords.push(kw);
+            continue; // P1 fix: prevent trailing reset from clearing currentSection
           } else {
             // We were in cmdItem and got flushed above — switch to requiredCommands
             currentSection = "requiredCommands";
           }
         }
         if (currentSection === "requiredFiles") {
-          const fp = trimmed.slice(2).trim().replace(/["']/g, "");
+          const fp = stripYamlQuotes(trimmed.slice(2));
           if (fp) requiredFiles.push(fp);
           continue;
         }
@@ -248,9 +315,9 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
           currentSection = "cmdItem";
           const afterDash = trimmed.slice(2).trim();
           if (afterDash.startsWith("cmd:")) {
-            currentCmd.cmd = afterDash.slice(4).trim().replace(/^["']|["']$/g, "");
+            currentCmd.cmd = stripYamlQuotes(afterDash.slice(4));
           } else if (afterDash) {
-            currentCmd.cmd = afterDash.replace(/^["']|["']$/g, "");
+            currentCmd.cmd = stripYamlQuotes(afterDash);
           }
           continue;
         }
@@ -264,7 +331,7 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
           currentSection = "fcItem";
           const afterDash = trimmed.slice(2).trim();
           if (afterDash.startsWith("path:")) {
-            currentFc.path = afterDash.slice(5).trim().replace(/^["']|["']$/g, "");
+            currentFc.path = stripYamlQuotes(afterDash.slice(5));
           }
           continue;
         }
@@ -273,13 +340,13 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
       // Properties within a command item (4+ indent)
       if (currentSection === "cmdItem" && currentCmd) {
         if (trimmed.startsWith("cmd:")) {
-          currentCmd.cmd = trimmed.slice(4).trim().replace(/^["']|["']$/g, "");
+          currentCmd.cmd = stripYamlQuotes(trimmed.slice(4));
         } else if (trimmed.startsWith("expectExit:")) {
           const val = trimmed.split(":")[1]?.trim();
           const num = parseInt(val, 10);
           if (!isNaN(num)) currentCmd.expectExit = num;
         } else if (trimmed.startsWith("expectOutput:")) {
-          currentCmd.expectOutput = trimmed.slice(13).trim().replace(/^["']|["']$/g, "");
+          currentCmd.expectOutput = stripYamlQuotes(trimmed.slice(13));
         } else if (indent <= 2) {
           // New top-level section — save and exit
           requiredCommands.push({ ...currentCmd });
@@ -292,9 +359,9 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
       // Properties within a fileContentPattern item (4+ indent)
       if (currentSection === "fcItem" && currentFc) {
         if (trimmed.startsWith("path:")) {
-          currentFc.path = trimmed.slice(5).trim().replace(/^["']|["']$/g, "");
+          currentFc.path = stripYamlQuotes(trimmed.slice(5));
         } else if (trimmed.startsWith("pattern:")) {
-          currentFc.pattern = trimmed.slice(8).trim().replace(/^["']|["']$/g, "");
+          currentFc.pattern = stripYamlQuotes(trimmed.slice(8));
         } else if (indent <= 2) {
           fileContentPattern.push({ ...currentFc });
           currentFc = null;
@@ -306,9 +373,9 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
       // Properties within requiredGit (2+ indent)
       if (currentSection === "requiredGit" && requiredGit) {
         if (trimmed.startsWith("lastCommitWithin:")) {
-          requiredGit.lastCommitWithin = trimmed.slice(18).trim().replace(/^["']|["']$/g, "");
+          requiredGit.lastCommitWithin = stripYamlQuotes(trimmed.slice(18));
         } else if (trimmed.startsWith("branch:")) {
-          requiredGit.branch = trimmed.slice(7).trim().replace(/^["']|["']$/g, "");
+          requiredGit.branch = stripYamlQuotes(trimmed.slice(7));
         } else if (trimmed.startsWith("cleanWorkingTree:")) {
           const val = trimmed.split(":")[1]?.trim().toLowerCase();
           requiredGit.cleanWorkingTree = val === "true";
@@ -318,8 +385,8 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
         continue;
       }
 
-      // Non-matching line at low indent resets section
-      if (indent <= 2) {
+      // Non-matching line at low indent resets section (P2: relative to sectionIndent)
+      if (indent <= sectionIndent) {
         // Flush pending items
         if (currentSection === "cmdItem" && currentCmd) {
           requiredCommands.push({ ...currentCmd });
@@ -341,25 +408,51 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
       fileContentPattern.push({ ...currentFc });
     }
 
+    // Empty-item validation: discard entries with blank path/pattern/keyword
+    const emptyItems: string[] = [];
+    const filteredKeywords = keywords.filter(kw => {
+      const valid = kw.trim() !== "";
+      if (!valid) emptyItems.push(`keywords: "${kw}"`);
+      return valid;
+    });
+    const filteredRequiredFiles = requiredFiles.filter(fp => {
+      const valid = fp.trim() !== "";
+      if (!valid) emptyItems.push(`requiredFiles: "${fp}"`);
+      return valid;
+    });
+    const filteredFileContentPattern = fileContentPattern.filter(rule => {
+      const pathValid = rule.path.trim() !== "";
+      const patternValid = rule.pattern.trim() !== "";
+      if (!pathValid) emptyItems.push(`fileContentPattern missing path`);
+      if (!patternValid) emptyItems.push(`fileContentPattern missing pattern (path="${rule.path}")`);
+      return pathValid && patternValid;
+    });
+    if (emptyItems.length > 0) {
+      await safeWriteAuditLog("verify_frontmatter_parse_error", {
+        error: "Empty entries discarded",
+        emptyItems: emptyItems.join("; "),
+      });
+    }
+
     // Determine if any rules exist at all
     const hasAnyRules =
-      keywords.length > 0 ||
-      requiredFiles.length > 0 ||
+      filteredKeywords.length > 0 ||
+      filteredRequiredFiles.length > 0 ||
       requiredCommands.length > 0 ||
       !!requiredGit ||
-      fileContentPattern.length > 0;
+      filteredFileContentPattern.length > 0;
 
     if (!hasAnyRules) {
       return null;
     }
 
     return {
-      keywords,
+      keywords: filteredKeywords,
       mode,
-      ...(requiredFiles.length > 0 ? { requiredFiles } : {}),
+      ...(filteredRequiredFiles.length > 0 ? { requiredFiles: filteredRequiredFiles } : {}),
       ...(requiredCommands.length > 0 ? { requiredCommands } : {}),
       ...(requiredGit ? { requiredGit } : {}),
-      ...(fileContentPattern.length > 0 ? { fileContentPattern } : {}),
+      ...(filteredFileContentPattern.length > 0 ? { fileContentPattern: filteredFileContentPattern } : {}),
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -483,13 +576,19 @@ export interface RunVerificationOptions {
  * Replaces `{requirementDoc}` placeholders in rule paths with the actual
  * requirement document path from session metadata.
  *
+ * When `meta.requirementDoc` is unset (undefined or empty string), placeholders
+ * are preserved as-is (not replaced with empty string). This prevents downstream
+ * EISDIR errors from `path.join(projectRoot, "")` resolving to the project root.
+ *
  * @param rules - Parsed verification rules
  * @param meta - Session metadata (may contain requirementDoc)
  * @returns A new VerifyRules object with placeholders resolved
  */
 export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): VerifyRules {
-  const reqDoc = meta.requirementDoc ?? "";
-  const replace = (s: string): string => s.replace(/\{requirementDoc\}/g, reqDoc);
+  const reqDoc = meta.requirementDoc;
+  // When requirementDoc is unset, preserve the placeholder as-is (L2-A fix)
+  const replace = (s: string): string =>
+    reqDoc ? s.replace(/\{requirementDoc\}/g, reqDoc) : s;
 
   const resolved: VerifyRules = { ...rules };
 
@@ -579,6 +678,30 @@ export async function runVerification(
 
   // Resolve {requirementDoc} placeholders in rule paths using session metadata
   const resolvedRules = resolvePlaceholders(rules, meta);
+
+  // Detect unresolved {requirementDoc} placeholders (L2-A: explicit failure instead of EISDIR)
+  const unresolvedPlaceholder = /\{requirementDoc\}/;
+  const unresolvedRuleType =
+    (resolvedRules.requiredFiles?.some(p => unresolvedPlaceholder.test(p)) ? "requiredFiles" : null) ??
+    (resolvedRules.fileContentPattern?.some(r => unresolvedPlaceholder.test(r.path)) ? "fileContentPattern" : null);
+  if (unresolvedRuleType) {
+    const structuredResult: StructuredVerifyResult = {
+      passed: false,
+      failures: [{
+        ruleType: unresolvedRuleType,
+        detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径",
+      }],
+    };
+    const verifyResult: VerifyResult = { structured: structuredResult, overallPassed: false };
+    return {
+      rulePassed: false,
+      ruleMissing: [],
+      needsModelVerify: true,
+      modelPrompt: effectivePrompt,
+      structuredResult,
+      verifyResult,
+    };
+  }
 
   // Check if any structured (non-keyword) rules are defined
   const hasStructuredRules =

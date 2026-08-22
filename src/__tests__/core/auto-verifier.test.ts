@@ -522,7 +522,7 @@ describe("resolvePlaceholders", () => {
     expect(resolved.requiredFiles).toEqual(["docs/design/fixed.md"]);
   });
 
-  it("replaces with empty string when requirementDoc is undefined", () => {
+  it("preserves {requirementDoc} placeholder when requirementDoc is undefined (L2-A)", () => {
     const rules = {
       keywords: [],
       mode: "or" as const,
@@ -530,7 +530,7 @@ describe("resolvePlaceholders", () => {
     };
     const meta = makeTestMeta();
     const resolved = resolvePlaceholders(rules, meta);
-    expect(resolved.requiredFiles).toEqual([""]);
+    expect(resolved.requiredFiles).toEqual(["{requirementDoc}"]);
   });
 });
 
@@ -766,5 +766,220 @@ describe("runVerification — yml verify_{stage} modelPrompt priority (D5)", () 
 
     // Fallback chain: yml missing (null) → body empty → DEFAULT_VERIFY_PROMPT
     expect(result.modelPrompt).toBe(DEFAULT_VERIFY_PROMPT);
+  });
+});
+
+// ─── Phase 0: parseFrontmatter robustness fixes ──────────────────────────────
+
+describe("parseFrontmatter — Phase 0 robustness fixes", () => {
+  afterEach(() => {
+    __resetAuditDirPath();
+  });
+
+  it("P1: flat-style keywords all preserved (continue fix)", async () => {
+    // Flat style: section keys at indent 0, list items at indent 2
+    // Bug: second keyword caused indent<=2 reset to wipe currentSection
+    const yaml = [
+      "rules:",
+      "keywords:",
+      '  - "kw_alpha"',
+      '  - "kw_beta"',
+      '  - "kw_gamma"',
+      '  - "kw_delta"',
+      "mode: and",
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    expect(rules!.keywords).toEqual(["kw_alpha", "kw_beta", "kw_gamma", "kw_delta"]);
+    expect(rules!.mode).toBe("and");
+  });
+
+  it("P2: 4-space nested style keywords/mode parsed correctly (not swallowed by requiredFiles)", async () => {
+    // 4-space nested style: section keys at indent 4 under rules:
+    const yaml = [
+      "rules:",
+      "    keywords:",
+      '        - "deep_kw_1"',
+      '        - "deep_kw_2"',
+      "    mode: and",
+      "    requiredFiles:",
+      '        - "only/file.md"',
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    expect(rules!.keywords).toEqual(["deep_kw_1", "deep_kw_2"]);
+    expect(rules!.mode).toBe("and");
+    expect(rules!.requiredFiles).toEqual(["only/file.md"]);
+  });
+
+  it("P3: YAML double-quote escape unescaping produces correct regex", async () => {
+    // Pattern with escaped backslash-question: should unescape to \?
+    const yaml = [
+      "rules:",
+      "  fileContentPattern:",
+      '    - path: "docs/req.md"',
+      '      pattern: "full-und\\\\? 理解确认：是"',
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    expect(rules!.fileContentPattern).toHaveLength(1);
+    // The unescaped pattern should contain literal \? (regex for literal ?)
+    expect(rules!.fileContentPattern![0].pattern).toBe("full-und\\? 理解确认：是");
+    // And it should match the intended string
+    const regex = new RegExp(rules!.fileContentPattern![0].pattern);
+    expect(regex.test("full-und? 理解确认：是")).toBe(true);
+  });
+
+  it("discards fileContentPattern entries with missing path and writes audit", async () => {
+    const auditDir = path.join(TMP, ".pi", "audit");
+    await fs.mkdir(auditDir, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+    await initAuditLog(config);
+
+    const yaml = [
+      "rules:",
+      "  fileContentPattern:",
+      '    - path: ""',
+      '      pattern: "something"',
+      '    - path: "real.md"',
+      '      pattern: "ok"',
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    // Only the valid entry should remain
+    expect(rules!.fileContentPattern).toHaveLength(1);
+    expect(rules!.fileContentPattern![0].path).toBe("real.md");
+
+    // Verify audit log contains the empty-item warning
+    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logContent = await fs.readFile(logFile, "utf-8");
+    expect(logContent).toContain("verify_frontmatter_parse_error");
+    expect(logContent).toContain("Empty entries discarded");
+    expect(logContent).toContain("fileContentPattern missing path");
+
+    __resetAuditDirPath();
+  });
+
+  it("discards empty keywords and requiredFiles entries", async () => {
+    const yaml = [
+      "rules:",
+      "  keywords:",
+      '    - "valid_kw"',
+      '    - ""',
+      "  requiredFiles:",
+      '    - "real.md"',
+      '    - "  "',
+    ].join("\n");
+    const rules = await parseFrontmatter(yaml);
+    expect(rules).not.toBeNull();
+    expect(rules!.keywords).toEqual(["valid_kw"]);
+    expect(rules!.requiredFiles).toEqual(["real.md"]);
+  });
+});
+
+// ─── Phase 2: unresolved {requirementDoc} placeholder detection ──────────────
+
+describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)", () => {
+  it("returns explicit failure when requirementDoc is unset", async () => {
+    const vrPath = path.join(TMP, "references", "clarify_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  fileContentPattern:\n" +
+        '    - path: "{requirementDoc}"\n' +
+        '      pattern: "confirmed"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "clarify"
+                  ? { require: true, verifyFile: "references/clarify_spec/verify.md" }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    // meta WITHOUT requirementDoc
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const result = await runVerification(config, meta, []);
+
+    expect(result.rulePassed).toBe(false);
+    expect(result.structuredResult).toBeDefined();
+    expect(result.structuredResult!.passed).toBe(false);
+    // Failure detail should mention requirementDoc unset, NOT EISDIR
+    const detail = result.structuredResult!.failures[0].detail;
+    expect(detail).toContain("requirementDoc 未设置");
+    expect(detail).not.toContain("EISDIR");
+  });
+
+  it("resolves placeholder normally when requirementDoc IS set (existing behavior preserved)", async () => {
+    // Create the requirement doc file
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    const reqDocPath = path.join(TMP, "docs", "design", "req.md");
+    await fs.writeFile(reqDocPath, "confirmed: yes\n");
+
+    const vrPath = path.join(TMP, "references", "clarify_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  fileContentPattern:\n" +
+        '    - path: "{requirementDoc}"\n' +
+        '      pattern: "confirmed"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              allowedTools: ["read"],
+              allowedBashPrefixes: ["ls"],
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "clarify"
+                  ? { require: true, verifyFile: "references/clarify_spec/verify.md" }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: "docs/design/req.md",
+    });
+    const result = await runVerification(config, meta, []);
+    expect(result.rulePassed).toBe(true);
+    expect(result.structuredResult?.passed).toBe(true);
   });
 });
