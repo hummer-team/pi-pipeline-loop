@@ -549,4 +549,72 @@ describe("verify-integration", () => {
       expect(rules!.requiredFiles).toEqual(["docs/design/plan.md", "docs/design/commit.md"]);
     });
   });
+
+  // ─── Phase 5: plan human-review gate (## 用户确认) ────────────────────────
+
+  describe("plan human-review gate (## 用户确认 fileContentPattern)", () => {
+    it("plan verify passes when _plan.md contains '## 用户确认' marker", async () => {
+      const config = makeConfigWithVerify(["plan"]);
+
+      // Create verify.md with fileContentPattern for plan human-review gate
+      const verifyDir = path.join(TMP, ".pi", "references", "plan_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"docs/design/test_plan.md\"\n  fileContentPattern:\n    - path: \"docs/design/test_plan.md\"\n      pattern: \"^## 用户确认\"\n---\nPlan verification\n",
+      );
+
+      // Create docs/design dir and plan file WITH the marker
+      const docsDir = path.join(TMP, "docs", "design");
+      await fs.mkdir(docsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(docsDir, "test_plan.md"),
+        "# Test Plan\n\n## Design\n\nSome plan content.\n\n## 用户确认\nUser has confirmed this plan.\n",
+      );
+
+      const meta = makeTestMeta({ currentStage: "plan" });
+      const ctx = createMockCtx(meta);
+
+      const hook = createAgentSettled(config);
+      await hook.handler(ctx as any);
+
+      // Should advance to next stage (plan → develop)
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.currentStage).toBe("develop");
+    });
+
+    it("plan verify fails when _plan.md is missing '## 用户确认' marker", async () => {
+      const config = makeConfigWithVerify(["plan"]);
+
+      // Create verify.md with fileContentPattern for plan human-review gate
+      const verifyDir = path.join(TMP, ".pi", "references", "plan_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"docs/design/test_plan.md\"\n  fileContentPattern:\n    - path: \"docs/design/test_plan.md\"\n      pattern: \"^## 用户确认\"\n---\nPlan verification\n",
+      );
+
+      // Create docs/design dir and plan file WITHOUT the marker
+      const docsDir = path.join(TMP, "docs", "design");
+      await fs.mkdir(docsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(docsDir, "test_plan.md"),
+        "# Test Plan\n\n## Design\n\nSome plan content without the user confirmation marker.\n",
+      );
+
+      const meta = makeTestMeta({ currentStage: "plan" });
+      const ctx = createMockCtx(meta);
+
+      const hook = createAgentSettled(config);
+      await hook.handler(ctx as any);
+
+      // Should NOT advance — stays on plan
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.currentStage).toBe("plan");
+      // Should have verifyFailures mentioning the pattern
+      expect(lastUpdate.verifyFailures).toBeDefined();
+      expect(lastUpdate.verifyFailures!.length).toBeGreaterThan(0);
+      expect(lastUpdate.verifyFailures![0].detail).toContain("pattern");
+    });
+  });
 });

@@ -479,6 +479,38 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     expect(logContent).toContain("verify_config_error");
   });
 
+  it("config error (points to a directory) → verifyConfigError=true, skipVerify usable", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: {
+        failures: [
+          { ruleType: "fileContentPattern", detail: "refs/plan.md: path points to a directory (config error)" },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    const result = await applyVerifyFail(
+      ctx as any,
+      meta,
+      "clarify",
+      sharedResult,
+      "tool",
+      ctx.pipelineUI,
+      config,
+    );
+
+    // verifyConfigError must be set so skipVerify escape hatch is usable
+    expect(meta.verifyConfigError).toBe(true);
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_config_error");
+    expect(result.message).toContain("Verification config error");
+  });
+
   it("config error (requirementDoc unset) → freezeAndPrompt called", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "clarify" });
@@ -594,6 +626,12 @@ describe("isConfigError helper", () => {
   it("detects requirementDoc unset config error", () => {
     expect(isConfigError([
       { ruleType: "fileContentPattern", detail: "requirementDoc not set, cannot resolve {requirementDoc}" },
+    ])).toBe(true);
+  });
+
+  it("detects 'points to a directory' config error (file-verifier stat path)", () => {
+    expect(isConfigError([
+      { ruleType: "fileContentPattern", detail: "refs/plan.md: path points to a directory (config error)" },
     ])).toBe(true);
   });
 

@@ -993,4 +993,94 @@ describe("createPromptInjector", () => {
       expect(result.systemPrompt).not.toContain("REQUIRED CONTEXT FILES");
     });
   });
+
+  // ─── Phase 5: violations prompt injection ──────────────────────────────────
+
+  describe("violations prompt injection (Phase 5 Task 2)", () => {
+    it("injects PREVIOUS VIOLATIONS section when violations exist (default path)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        violations: [
+          { type: "tool_not_allowed", tool: "write", detail: 'Tool "write" not allowed in "clarify" stage.', suggestion: "Allowed: [read, bash].", timestamp: Date.now() },
+          { type: "bash_prefix", tool: "bash", detail: 'Bash command "rm -rf /" not in allowedBashPrefixes.', suggestion: "Allowed: [ls, npm].", timestamp: Date.now() },
+        ],
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("PREVIOUS VIOLATIONS (MUST FIX)");
+      expect(result.systemPrompt).toContain("tool_not_allowed");
+      expect(result.systemPrompt).toContain("bash_prefix");
+      expect(result.systemPrompt).toContain('Tool "write" not allowed in "clarify" stage.');
+      expect(result.systemPrompt).toContain("Allowed: [read, bash].");
+    });
+
+    it("does NOT inject violations section when violations is empty", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        violations: [],
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).not.toContain("PREVIOUS VIOLATIONS");
+    });
+
+    it("does NOT inject violations section when violations is undefined", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", violations: undefined });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).not.toContain("PREVIOUS VIOLATIONS");
+    });
+
+    it("injects violations via yml template path when placeholder exists", async () => {
+      const TMP = join(tmpdir(), "pi-prompt-viol-yml-" + Date.now());
+      const skillDir = join(TMP, ".pi", "skills", "test-skill");
+      const promptDir = join(TMP, ".pi", "prompts");
+      await mkdir(skillDir, { recursive: true });
+      await mkdir(promptDir, { recursive: true });
+      await writeFile(join(skillDir, "SKILL.md"), "# Skill\n\nRule: do X");
+      // Yml template with {{violations}} placeholder
+      await writeFile(
+        join(promptDir, "develop.yml"),
+        "---\nstage: develop\n---\nbefore:\n  - \"{{violations}}\"\nafter: []\n",
+        "utf-8",
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = { ...config.stages["develop"], requireDomain: true, skillPath: "test-skill/SKILL.md" } as any;
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        violations: [
+          { type: "write_protected", tool: "edit", detail: "Cannot modify protected path.", suggestion: "Hardcoded protected: .pi/.", timestamp: Date.now() },
+        ],
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // The yml template should render the violations placeholder
+      // If the template engine works, violations section should appear
+      // (paragraph-level removal handles null by omitting the section)
+      if (result.systemPrompt.includes("PREVIOUS VIOLATIONS")) {
+        expect(result.systemPrompt).toContain("write_protected");
+        expect(result.systemPrompt).toContain("Cannot modify protected path.");
+      }
+      // If yml template not found, falls back to default path — still contains violations
+      expect(result.systemPrompt).toContain("PREVIOUS VIOLATIONS");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
 });

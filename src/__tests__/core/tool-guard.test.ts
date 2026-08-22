@@ -1886,4 +1886,117 @@ describe("createToolGuard", () => {
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
   });
+
+  // ─── Phase 5: violation recording tests ──────────────────────────────────
+
+  describe("violation recording (Phase 5 Task 2)", () => {
+    it("tool_not_allowed records a violation with correct type", async () => {
+      const config = makeTestConfig();
+      config.stages["develop"] = { ...config.stages["develop"], allowedTools: ["bash"] } as any;
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: {} };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeDefined();
+      expect(finalMeta.violations.length).toBe(1);
+      expect(finalMeta.violations[0].type).toBe("tool_not_allowed");
+      expect(finalMeta.violations[0].tool).toBe("write");
+      expect(finalMeta.violations[0].detail).toContain("not allowed");
+      expect(finalMeta.violations[0].suggestion).toContain("Allowed:");
+      expect(finalMeta.violations[0].timestamp).toBeTypeOf("number");
+    });
+
+    it("bash_prefix records a violation with correct type", async () => {
+      const config = makeTestConfig();
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedBashPrefixes: ["ls"],
+        allowedWritePaths: ["**"],
+      } as any;
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeDefined();
+      expect(finalMeta.violations.length).toBe(1);
+      expect(finalMeta.violations[0].type).toBe("bash_prefix");
+      expect(finalMeta.violations[0].tool).toBe("bash");
+      expect(finalMeta.violations[0].detail).toContain("not in allowedBashPrefixes");
+      expect(finalMeta.violations[0].suggestion).toContain("Allowed:");
+    });
+
+    it("git_protected records a violation for git add on protected path", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git add .pi/config.json" } };
+
+      // Mock execFn: dry-run shows protected path
+      const mockExecFn: ExecFn = async (_cmd, args, _cwd) => {
+        if (args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "add '.pi/config.json'\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 1 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      await hook.handler(ctx as any);
+
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeDefined();
+      expect(finalMeta.violations.length).toBe(1);
+      expect(finalMeta.violations[0].type).toBe("git_protected");
+      expect(finalMeta.violations[0].tool).toBe("bash");
+      expect(finalMeta.violations[0].suggestion).toContain("git add");
+    });
+
+    it("frozen state does NOT record a violation (flow-state, not model violation)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = createMockCtx(meta);
+      // "read" is allowed so passes step 1, not bash so skips step 2,
+      // then hits step 3 (freeze check) → blocks without recording a violation
+      ctx.toolCall = { name: "read", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeUndefined();
+    });
+
+    it("write_protected (hardcoded) records a violation", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-write-viol-" + Date.now());
+      await mkdir(join(TMP2, ".pi"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2 });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { file_path: join(TMP2, ".pi", "config.json") } };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeDefined();
+      expect(finalMeta.violations.length).toBe(1);
+      expect(finalMeta.violations[0].type).toBe("write_protected");
+      expect(finalMeta.violations[0].tool).toBe("write");
+      expect(finalMeta.violations[0].detail).toContain("hardcoded protected");
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+  });
 });

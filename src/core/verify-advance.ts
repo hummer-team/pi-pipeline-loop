@@ -88,7 +88,7 @@ export function isConfigError(failures: { ruleType: string; detail: string }[]):
       // (auto-verifier produces requiredFiles ruleType when {requirementDoc} placeholder
       // is unresolved in a requiredFiles path — same config-class root cause)
       (f.ruleType === "fileContentPattern" || f.ruleType === "requiredFiles") &&
-      /EISDIR|is a directory|path is empty|requirementDoc not set/.test(f.detail),
+      /EISDIR|is a directory|points to a directory|path is empty|requirementDoc not set/.test(f.detail),
   );
 }
 
