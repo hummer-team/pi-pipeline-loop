@@ -8,7 +8,7 @@ import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-lo
 import { createAgentSettled } from "../../core/agent-settled";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { createLoopBreaker } from "../../core/loop-breaker";
-import { runVerification } from "../../core/auto-verifier";
+import { runVerification, parseFrontmatter } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
 
@@ -399,5 +399,154 @@ describe("verify-integration", () => {
     for (const r of generated) {
       expect(r.hardcodedCount).toBeGreaterThan(0);
     }
+  });
+
+  // ── Phase 4: E2E real-world clarify/plan verify.md regression ──────────────
+
+  describe("Phase 4: real-world verify.md E2E regression", () => {
+    it("clarify mode: requirementDoc set + YAML-escaped pattern → verify passes (P3 round-trip)", async () => {
+      // Create requirement doc with the exact expected content
+      await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+      const reqDocPath = path.join(TMP, "docs", "design", "133_req.md");
+      await fs.writeFile(reqDocPath, "## 模型确认\nfull-und? 理解确认：是\n");
+
+      // Real-world verify.md: {requirementDoc} placeholder + YAML double-quoted pattern with escape
+      const vrPath = path.join(TMP, "references", "clarify_spec", "verify.md");
+      await fs.mkdir(path.dirname(vrPath), { recursive: true });
+      await fs.writeFile(
+        vrPath,
+        "---\n" +
+          "rules:\n" +
+          "  fileContentPattern:\n" +
+          '    - path: "{requirementDoc}"\n' +
+          '      pattern: "full-und\\\\? 理解确认：是"\n' +
+          "---\n" +
+          "Verify model confirmation\n",
+        "utf-8",
+      );
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentFile: "a.md",
+                skillPath: "s.md",
+                allowedTools: ["read"],
+                allowedBashPrefixes: ["ls"],
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+                verify:
+                  s === "clarify"
+                    ? { require: true, verifyFile: "references/clarify_spec/verify.md" }
+                    : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        requirementDoc: "docs/design/133_req.md",
+      });
+
+      const result = await runVerification(config, meta, []);
+      // Should pass: placeholder resolved → file read → YAML escape unescaped → regex matches
+      expect(result.rulePassed).toBe(true);
+      expect(result.structuredResult?.passed).toBe(true);
+    });
+
+    it("clarify mode: requirementDoc unset → explicit failure, no EISDIR", async () => {
+      const vrPath = path.join(TMP, "references", "clarify_spec", "verify.md");
+      await fs.mkdir(path.dirname(vrPath), { recursive: true });
+      await fs.writeFile(
+        vrPath,
+        "---\n" +
+          "rules:\n" +
+          "  fileContentPattern:\n" +
+          '    - path: "{requirementDoc}"\n' +
+          '      pattern: "full-und\\\\? 理解确认：是"\n' +
+          "---\n" +
+          "Verify model confirmation\n",
+        "utf-8",
+      );
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentFile: "a.md",
+                skillPath: "s.md",
+                allowedTools: ["read"],
+                allowedBashPrefixes: ["ls"],
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+                verify:
+                  s === "clarify"
+                    ? { require: true, verifyFile: "references/clarify_spec/verify.md" }
+                    : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+
+      // meta WITHOUT requirementDoc
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const result = await runVerification(config, meta, []);
+
+      expect(result.rulePassed).toBe(false);
+      expect(result.structuredResult?.passed).toBe(false);
+      const detail = result.structuredResult?.failures[0]?.detail ?? "";
+      expect(detail).toContain("requirementDoc 未设置");
+      expect(detail).not.toContain("EISDIR");
+    });
+
+    it("plan mode (user flat style): keywords + mode correctly parsed, requiredFiles not swallowed (P1/P2)", async () => {
+      const yaml = [
+        "rules:",
+        "keywords:",
+        '  - "方案推荐"',
+        '  - "答"',
+        '  - "分析完成"',
+        '  - "理解确认"',
+        "mode: and",
+        "requiredFiles:",
+        '  - "docs/design/plan.md"',
+      ].join("\n");
+
+      const rules = await parseFrontmatter(yaml);
+      expect(rules).not.toBeNull();
+      // All 4 keywords preserved (P1 fix)
+      expect(rules!.keywords).toEqual(["方案推荐", "答", "分析完成", "理解确认"]);
+      expect(rules!.mode).toBe("and");
+      // requiredFiles NOT swallowed by keywords (P2 fix)
+      expect(rules!.requiredFiles).toEqual(["docs/design/plan.md"]);
+    });
+
+    it("plan mode (4-space nested style): keywords/mode/requiredFiles parsed correctly (P2)", async () => {
+      const yaml = [
+        "rules:",
+        "    keywords:",
+        '        - "方案设计"',
+        '        - "技术选型"',
+        "    mode: and",
+        "    requiredFiles:",
+        '        - "docs/design/plan.md"',
+        '        - "docs/design/commit.md"',
+      ].join("\n");
+
+      const rules = await parseFrontmatter(yaml);
+      expect(rules).not.toBeNull();
+      expect(rules!.keywords).toEqual(["方案设计", "技术选型"]);
+      expect(rules!.mode).toBe("and");
+      expect(rules!.requiredFiles).toEqual(["docs/design/plan.md", "docs/design/commit.md"]);
+    });
   });
 });
