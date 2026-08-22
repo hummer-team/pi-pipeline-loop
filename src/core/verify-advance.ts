@@ -74,6 +74,22 @@ interface VerifyFailReturn {
 }
 
 /**
+ * Detects whether a set of verification failures are caused by configuration
+ * errors (EISDIR / empty path / directory path / unresolved requirementDoc).
+ * Exported for reuse by stage-advancer skipVerify abuse guard.
+ *
+ * @param failures - Array of { ruleType, detail } failure items
+ * @returns true if any failure matches a known config-error pattern
+ */
+export function isConfigError(failures: { ruleType: string; detail: string }[]): boolean {
+  return failures.some(
+    (f) =>
+      f.ruleType === "fileContentPattern" &&
+      /EISDIR|is a directory|指向目录|path 为空|requirementDoc 未设置/.test(f.detail),
+  );
+}
+
+/**
  * Handles successful verification: advances to next stage (or handles terminal stage).
  *
  * Shared between agent_settled hook (method="rule", handleTerminal=false, returnResult=false)
@@ -211,6 +227,48 @@ export async function applyVerifyFail(
       detail: `Missing keywords: ${verifyResult.ruleMissing.join(", ")}`,
       timestamp: now,
     });
+  }
+
+  // Phase 3 (L3): config-error detection — freeze immediately without
+  // incrementing verifyAttempts, giving the user the decision menu.
+  if (config && isConfigError(verifyFailures)) {
+    ctx.session.updateMeta({
+      ...meta,
+      verifyFailures,
+    });
+
+    await writeAuditLog("verify_config_error", {
+      pipelineId: meta.pipelineId,
+      stage: stageName,
+      method,
+      failureCount: String(verifyFailures.length),
+      failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
+      details: verifyFailures.map((f) => f.detail).join("; "),
+    }, "error");
+
+    // Build flowUI adapter for freezeAndPrompt (reuse existing rawSelect logic)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawSelect = (ctx.ui as any)?.select;
+    const flowUI: { notify: (msg: string) => void; select?: (msg: string, opts: string[]) => Promise<string | undefined> } = {
+      notify: (msg: string) => { ui?.notify(ctx, msg); },
+    };
+    if (typeof rawSelect === "function") {
+      flowUI.select = rawSelect;
+    }
+    await freezeAndPrompt(ctx as Parameters<typeof freezeAndPrompt>[0], meta, "verify_config_error", config, {
+      ui: flowUI,
+    });
+
+    const failureSummary = verifyFailures
+      .map((f) => `[${f.ruleType}] ${f.detail}`)
+      .join("; ");
+
+    return {
+      success: false,
+      passed: false,
+      message: `验证配置错误，已冻结，请通过决策菜单处理: ${failureSummary}`,
+      failures: verifyFailures,
+    };
   }
 
   const updatedVerifyAttempts = (meta.verifyAttempts || 0) + 1;

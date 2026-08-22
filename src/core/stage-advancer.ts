@@ -14,7 +14,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from ".
 import { createPipelineUI } from "./pipeline-ui";
 import { runVerification } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
-import { applyVerifyFail } from "./verify-advance";
+import { applyVerifyFail, isConfigError } from "./verify-advance";
 
 /**
  * Dependencies injected into the stage advancer for verification execution.
@@ -50,6 +50,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       "advances only when verification passes. " +
       "Optionally accepts a `nextStage` parameter to override the default transition target " +
       "(e.g. review → fix instead of review → completed). " +
+      "Supports `skipVerify: true` as an escape hatch for verification configuration errors " +
+      "(EISDIR/empty path/directory/unresolved placeholder) — will be rejected when no " +
+      "config-class error is present. " +
       "Call this when the current stage's work is complete and validated.",
     parameters: {
       type: "object",
@@ -60,6 +63,14 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             "Override the default next stage target. Must be a valid stage name " +
             "defined in the pipeline config and different from the current stage. " +
             "When omitted, uses the stage's configured nextStage.",
+        },
+        skipVerify: {
+          type: "boolean",
+          description:
+            "Skip the verification gate and advance directly. " +
+            "Only allowed when the current verification failure is a config-class error " +
+            "(EISDIR, empty path, directory path, or unresolved requirementDoc placeholder). " +
+            "Will be rejected if no config-class error is detected.",
         },
       },
       required: [],
@@ -103,8 +114,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         };
       }
 
-      // (d) Verification gate: run when stage requires it
-      if (stageConfig.verify?.require) {
+      // (d) Verification gate: run when stage requires it (unless skipVerify is valid)
+      const argSkipVerify = args.skipVerify === true;
+      if (stageConfig.verify?.require && !argSkipVerify) {
         const messages = extractAssistantMessages(ctx._ctx);
         // Extract tool call records for selfVerifySkip (same as agent-settled hook path)
         const toolCallRecords = extractToolCallRecords(ctx._ctx);
@@ -126,6 +138,19 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           };
         }
         // Verification passed — continue to advance
+      } else if (stageConfig.verify?.require && argSkipVerify) {
+        // skipVerify=true: abuse guard — only allowed when config-class error present
+        const existingFailures = (meta.verifyFailures ?? []).map(f => ({
+          ruleType: f.ruleType,
+          detail: f.detail,
+        }));
+        if (!isConfigError(existingFailures)) {
+          return {
+            success: false,
+            message: "skipVerify 仅允许在验证配置错误（EISDIR/空路径/目录/requirementDoc 未设置）时使用",
+          };
+        }
+        // Config error confirmed — skip verification and proceed to advance
       }
 
       // (e) Advance to target stage

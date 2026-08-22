@@ -319,5 +319,98 @@ Verify plan document exists.`,
       expect((result as any).success).toBe(false);
       expect(meta.flowState).toBe("blocked");
     });
+
+    // ─── Phase 3: skipVerify escape hatch ──────────────────────────────────
+
+    it("skipVerify=true skips verification gate when config-class error exists", async () => {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        nextStage: "plan",
+        verify: { require: true, mode: "tool" },
+      };
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        verifyFailures: [
+          {
+            ruleType: "fileContentPattern",
+            detail: "fileContentPattern path 为空（配置错误）",
+            timestamp: Date.now(),
+          },
+        ],
+      });
+
+      const ctx = createCtx(meta);
+      const tool = createStageAdvancer(config);
+      const result = await tool.execute({ skipVerify: true }, ctx as any);
+
+      // Should advance directly (skip verification)
+      expect((result as any).success).toBe(true);
+      expect(meta.currentStage).toBe("plan");
+    });
+
+    it("skipVerify=true is REJECTED when no config-class error exists", async () => {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        nextStage: "plan",
+        verify: { require: true, mode: "tool" },
+      };
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        verifyFailures: [
+          {
+            ruleType: "fileContentPattern",
+            detail: 'doc.md: pattern "xyz" not found', // content failure, NOT config error
+            timestamp: Date.now(),
+          },
+        ],
+      });
+
+      const ctx = createCtx(meta);
+      const tool = createStageAdvancer(config);
+      const result = await tool.execute({ skipVerify: true }, ctx as any);
+
+      // Should be rejected
+      expect((result as any).success).toBe(false);
+      expect((result as any).message).toContain("skipVerify 仅允许");
+      // Should NOT advance
+      expect(meta.currentStage).toBe("clarify");
+    });
+
+    it("skipVerify=false (default) behaves normally with verification gate", async () => {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        nextStage: "plan",
+        verify: { require: true, mode: "tool" },
+      };
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        verifyFailures: [
+          {
+            ruleType: "fileContentPattern",
+            detail: "fileContentPattern path 为空（配置错误）",
+            timestamp: Date.now(),
+          },
+        ],
+      });
+
+      const ctx = createCtx(meta);
+      const tool = createStageAdvancer(config);
+      // skipVerify not set — normal verification gate applies
+      const result = await tool.execute({}, ctx as any);
+
+      // Should run verification (which fails since no verify.md exists)
+      expect((result as any).success).toBe(false);
+      expect(meta.currentStage).toBe("clarify"); // NOT advanced
+    });
+
+    it("skipVerify parameter is declared in tool schema", () => {
+      const tool = createStageAdvancer(makeTestConfig());
+      const params = tool.parameters as Record<string, any>;
+      expect(params.properties?.skipVerify).toBeDefined();
+      expect(params.properties.skipVerify.type).toBe("boolean");
+    });
   });
 });

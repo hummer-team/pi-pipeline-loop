@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "bun:test";
-import { applyVerifyPass, applyVerifyFail } from "../../core/verify-advance";
+import { applyVerifyPass, applyVerifyFail, isConfigError } from "../../core/verify-advance";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -432,5 +432,153 @@ describe("output.pipelineStage: false (silent)", () => {
     expect(meta.verifyAttempts).toBe(2);
     // Pipeline should NOT be frozen
     expect(meta.flowState).toBeUndefined();
+  });
+});
+
+// ─── Phase 3: config-error freeze + isConfigError ────────────────────────────
+
+describe("Phase 3: config-error freeze in applyVerifyFail", () => {
+  it("config error (EISDIR) → freezeAndPrompt called, verifyAttempts NOT incremented, audit written", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 5 });
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      verifyAttempts: 1,
+    });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: {
+        failures: [
+          { ruleType: "fileContentPattern", detail: "path 指向目录（EISDIR）（配置错误）" },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    const result = await applyVerifyFail(
+      ctx as any,
+      meta,
+      "clarify",
+      sharedResult,
+      "tool",
+      ctx.pipelineUI,
+      config,
+    );
+
+    // verifyAttempts should NOT be incremented (config error path)
+    expect(meta.verifyAttempts).toBe(1);
+    // Pipeline should be frozen
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_config_error");
+    // Return message should mention config error
+    expect(result.message).toContain("验证配置错误");
+    // Audit should contain verify_config_error
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("verify_config_error");
+  });
+
+  it("config error (requirementDoc unset) → freezeAndPrompt called", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: {
+        failures: [
+          { ruleType: "fileContentPattern", detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径" },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    const result = await applyVerifyFail(
+      ctx as any,
+      meta,
+      "clarify",
+      sharedResult,
+      "tool",
+      ctx.pipelineUI,
+      config,
+    );
+
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_config_error");
+    expect(result.message).toContain("验证配置错误");
+  });
+
+  it("content failure (pattern not found) → normal path, NO freeze, verifyAttempts incremented", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 5 });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyAttempts: 0,
+    });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: {
+        failures: [
+          { ruleType: "fileContentPattern", detail: 'doc.md: pattern "missing" not found' },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    const result = await applyVerifyFail(
+      ctx as any,
+      meta,
+      "develop",
+      sharedResult,
+      "tool",
+      ctx.pipelineUI,
+      config,
+    );
+
+    // verifyAttempts SHOULD be incremented (normal failure path)
+    expect(meta.verifyAttempts).toBe(1);
+    // Pipeline should NOT be frozen (below maxAttempts)
+    expect(meta.flowState).toBeUndefined();
+    // Return message should be normal failure, NOT config error
+    expect(result.message).toContain("Verification failed");
+    expect(result.message).not.toContain("验证配置错误");
+  });
+});
+
+describe("isConfigError helper", () => {
+  it("detects EISDIR config error", () => {
+    expect(isConfigError([
+      { ruleType: "fileContentPattern", detail: "path 指向目录（EISDIR）（配置错误）" },
+    ])).toBe(true);
+  });
+
+  it("detects empty path config error", () => {
+    expect(isConfigError([
+      { ruleType: "fileContentPattern", detail: "fileContentPattern path 为空（配置错误）" },
+    ])).toBe(true);
+  });
+
+  it("detects requirementDoc unset config error", () => {
+    expect(isConfigError([
+      { ruleType: "fileContentPattern", detail: "requirementDoc 未设置，无法解析 {requirementDoc}" },
+    ])).toBe(true);
+  });
+
+  it("returns false for content failure (pattern not found)", () => {
+    expect(isConfigError([
+      { ruleType: "fileContentPattern", detail: 'doc.md: pattern "xyz" not found' },
+    ])).toBe(false);
+  });
+
+  it("returns false for non-fileContentPattern rule types", () => {
+    expect(isConfigError([
+      { ruleType: "requiredFiles", detail: "EISDIR somewhere" },
+    ])).toBe(false);
+  });
+
+  it("returns false for empty failures array", () => {
+    expect(isConfigError([])).toBe(false);
   });
 });
