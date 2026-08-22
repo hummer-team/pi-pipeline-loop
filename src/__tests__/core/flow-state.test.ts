@@ -98,11 +98,11 @@ describe("buildDecisionMenu", () => {
     const meta = makeTestMeta({ flowState: "blocked" });
     const menu = buildDecisionMenu(meta);
     expect(menu).toEqual([
-      "继续尝试",
-      "跳过",
-      "回退上一阶段",
-      "终止并重开",
-      "终止并退出",
+      "Resume",
+      "Skip",
+      "Rollback",
+      "Restart & New",
+      "Abort & Exit",
     ]);
   });
 
@@ -110,13 +110,13 @@ describe("buildDecisionMenu", () => {
     const meta = makeTestMeta({ currentStage: "awaiting_human" });
     const menu = buildDecisionMenu(meta);
     expect(menu).toHaveLength(5);
-    expect(menu).toContain("继续尝试");
+    expect(menu).toContain("Resume");
   });
 
   it("returns 2 items for running state", () => {
     const meta = makeTestMeta({ flowState: "running" });
     const menu = buildDecisionMenu(meta);
-    expect(menu).toEqual(["终止并重开", "终止并退出"]);
+    expect(menu).toEqual(["Restart & New", "Abort & Exit"]);
   });
 
   it("returns null for aborted state", () => {
@@ -365,7 +365,7 @@ describe("freezeAndPrompt", () => {
     const ctx = makeCtx(meta, {
       select: async (_msg: string, _opts: string[]) => {
         selectCalled = true;
-        return "终止并退出"; // abort
+        return "Abort & Exit"; // abort
       },
       notify: (_msg: string) => {},
     });
@@ -446,7 +446,7 @@ describe("freezeAndPrompt", () => {
 
     await freezeAndPrompt(ctx, meta, "reason", config, {
       ui: {
-        select: async () => { optsUiSelectCalled.push(true); return "终止并退出"; },
+        select: async () => { optsUiSelectCalled.push(true); return "Abort & Exit"; },
         notify: () => {},
       },
     });

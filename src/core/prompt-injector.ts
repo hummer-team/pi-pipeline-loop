@@ -232,7 +232,7 @@ function buildPipelineStatus(config: PipelineConfig, meta: SessionMeta): string 
     const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
     const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
     parts.push(
-      `- Pipeline Status: FROZEN (blocked: ${reason}) — 等待用户通过 TUI 决策菜单处理（快捷键 ${shortcutKey}）`,
+      `- Pipeline Status: FROZEN (blocked: ${reason}) — Use the TUI decision menu to proceed (shortcut: ${shortcutKey})`,
     );
   }
 
@@ -302,9 +302,9 @@ function buildVerifyToolGuidance(stageConfig: StageConfig): string | null {
 
   return (
     `# VERIFICATION MODE: TOOL\n` +
-    `本阶段验证模式为 TOOL：完成本阶段工作后调用 \`stage_advance\` 宣告完成` +
-    `（其内部执行验证门，通过后自动进入下一阶段）；` +
-    `验证失败可调用 \`pipeline_verify\` 重新验证。`
+    `This stage uses TOOL verification mode: after completing your work, call \`stage_advance\` to declare done` +
+    ` (it runs the verification gate internally and auto-advances on pass);` +
+    ` on failure, call \`pipeline_verify\` to re-verify.`
   );
 }
 

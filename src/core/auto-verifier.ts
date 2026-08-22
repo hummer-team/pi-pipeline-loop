@@ -484,7 +484,7 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
 
 /**
  * Runs rule-based verification against the aggregated assistant messages.
- * Q5 方案 C: aggregates ALL assistant messages from the current stage,
+ * Q5 Option C: aggregates ALL assistant messages from the current stage,
  * then checks against keyword rules (AND or OR mode).
  */
 export function ruleVerify(
@@ -710,7 +710,7 @@ export async function runVerification(
       passed: false,
       failures: [{
         ruleType: unresolvedRuleType,
-        detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径",
+        detail: `requirementDoc not set, cannot resolve {requirementDoc} verify rule path`,
       }],
     };
     const verifyResult: VerifyResult = { structured: structuredResult, overallPassed: false };

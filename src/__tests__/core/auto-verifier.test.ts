@@ -1009,7 +1009,7 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
     expect(result.structuredResult!.passed).toBe(false);
     // Failure detail should mention requirementDoc unset, NOT EISDIR
     const detail = result.structuredResult!.failures[0].detail;
-    expect(detail).toContain("requirementDoc 未设置");
+    expect(detail).toContain("requirementDoc not set");
     expect(detail).not.toContain("EISDIR");
   });
 

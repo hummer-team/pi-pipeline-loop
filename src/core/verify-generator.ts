@@ -120,9 +120,9 @@ export async function readSkillBody(
  * and extracts the delivery item description following the marker.
  *
  * Two match types (Phase 1 — Plan D):
- * - **独立标记** (explicit): `**必须**` / `**Must**` etc. — text after marker is extracted,
+ * - **Independent marker** (explicit): `**必须**` / `**Must**` etc. — text after marker is extracted,
  *   all item types kept (including keyword). Author explicitly declared delivery intent.
- * - **短语粗体** (phrase-bold): `**必须完成**` / `**Must run build**` etc. — bold phrase
+ * - **Phrase-bold**: `**必须完成**` / `**Must run build**` etc. — bold phrase
  *   itself is extracted, only file/command/git types kept; keyword items discarded to
  *   prevent procedural sentences from being mis-matched.
  *

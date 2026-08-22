@@ -178,7 +178,7 @@ export async function verifyFileContentPattern(
       // Exact path
       // Phase 1 (L1): pre-validate path to prevent EISDIR from path.join(root, "")
       if (rule.path.trim() === "") {
-        failures.push(`fileContentPattern path 为空（配置错误）`);
+        failures.push(`fileContentPattern path is empty (config error)`);
         continue;
       }
 
@@ -195,7 +195,7 @@ export async function verifyFileContentPattern(
           // stat failed — fall through to readFile which will produce its own error
         }
         if (stat! && stat!.isDirectory()) {
-          failures.push(`${rule.path}: path 指向目录而非文件（配置错误）`);
+          failures.push(`${rule.path}: path points to a directory (config error)`);
           continue;
         }
 
@@ -209,7 +209,7 @@ export async function verifyFileContentPattern(
         // Phase 1 (L1): EISDIR friendly message
         const isDir = (err as NodeJS.ErrnoException).code === "EISDIR";
         const detail = isDir
-          ? `${rule.path}: path 指向目录（EISDIR）（配置错误）`
+          ? `${rule.path}: path is a directory (EISDIR) (config error)`
           : `${rule.path}: file read error (${errMsg})`;
         failures.push(detail);
         await logError?.("verify_error", { ruleType: "fileContentPattern", path: rule.path, error: errMsg });

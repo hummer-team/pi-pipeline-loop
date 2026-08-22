@@ -145,7 +145,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         if (!meta.verifyConfigError) {
           return {
             success: false,
-            message: "skipVerify 仅允许在验证配置错误（EISDIR/空路径/目录/requirementDoc 未设置）时使用",
+            message: "skipVerify is only allowed when a verification config-class error is detected (EISDIR/empty path/directory/unresolved requirementDoc placeholder)",
           };
         }
         // Config error confirmed — skip verification and proceed to advance

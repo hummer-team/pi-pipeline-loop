@@ -206,7 +206,7 @@ describe("createPipelineInitCommand", () => {
 
       const ctx = {
         ui: {
-          select: async (): Promise<string> => "4. 取消",
+          select: async (): Promise<string> => "4. Cancel",
         },
       };
 
@@ -292,7 +292,7 @@ describe("createPipelineInitCommand", () => {
 
       const ctx = {
         ui: {
-          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+          select: async (): Promise<string> => "3. Re-run verify generation",
         },
       };
 
@@ -407,7 +407,7 @@ describe("createPipelineInitCommand", () => {
 
       const ctx = {
         ui: {
-          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+          select: async (): Promise<string> => "3. Re-run verify generation",
         },
       };
 
@@ -512,7 +512,7 @@ describe("createPipelineInitCommand", () => {
 
       const ctx = {
         ui: {
-          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+          select: async (): Promise<string> => "3. Re-run verify generation",
         },
       };
 
@@ -619,7 +619,7 @@ describe("createPipelineInitCommand", () => {
 
       const ctx = {
         ui: {
-          select: async (): Promise<string> => "3. 重新执行 verify 生成",
+          select: async (): Promise<string> => "3. Re-run verify generation",
         },
       };
 

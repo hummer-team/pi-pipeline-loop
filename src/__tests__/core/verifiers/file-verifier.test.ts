@@ -209,8 +209,8 @@ describe("verifyFileContentPattern — Phase 1 empty/directory path defense", ()
       TMP,
     );
     expect(result.passed).toBe(false);
-    expect(result.detail).toContain("path 为空");
-    expect(result.detail).toContain("配置错误");
+    expect(result.detail).toContain("path is empty");
+    expect(result.detail).toContain("config error");
   });
 
   it("returns clear error when path resolves to project root (empty string after placeholder)", async () => {
@@ -221,7 +221,7 @@ describe("verifyFileContentPattern — Phase 1 empty/directory path defense", ()
       TMP,
     );
     expect(result.passed).toBe(false);
-    expect(result.detail).toContain("path 为空");
+    expect(result.detail).toContain("path is empty");
   });
 
   it("returns 'directory' error when path points to a real directory", async () => {
@@ -233,7 +233,7 @@ describe("verifyFileContentPattern — Phase 1 empty/directory path defense", ()
       TMP,
     );
     expect(result.passed).toBe(false);
-    expect(result.detail).toContain("指向目录而非文件");
+    expect(result.detail).toContain("path points to a directory");
   });
 
   it("EISDIR error message is friendly when readFile encounters a directory", async () => {
@@ -247,6 +247,6 @@ describe("verifyFileContentPattern — Phase 1 empty/directory path defense", ()
     );
     expect(result.passed).toBe(false);
     // Should get the directory detection message (from stat check)
-    expect(result.detail).toContain("指向目录");
+    expect(result.detail).toContain("path points to a directory");
   });
 });

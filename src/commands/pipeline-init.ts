@@ -103,7 +103,7 @@ export function createPipelineInitCommand(
 
         return { success: true, summary: "pipeline-init completed", content: "# pipeline-init — nothing to do" };
       } finally {
-        // Restore session-level status (方案 A): use meta.currentStage if available, fallback to "clarify"
+        // Restore session-level status (Option A): use meta.currentStage if available, fallback to "clarify"
         const stage = ctx?.session?.getMeta?.()?.currentStage ?? "clarify";
         ui.setStage(ctx, `Pipeline → ${stage}`);
       }
@@ -142,25 +142,25 @@ async function executeDirBranch(
       const choice: string | undefined = await ctx.ui.select(
         "pipeline-init has been run before. Please select:",
         [
-          "1. 强制覆盖所有文件",
-          "2. 跳过已存在文件",
-          "3. 重新执行 verify 生成",
-          "4. 取消",
+          "1. Force overwrite all files",
+          "2. Skip existing files",
+          "3. Re-run verify generation",
+          "4. Cancel",
         ],
       );
 
       // undefined = Escape / cancel
-      if (!choice || choice === "4. 取消" || choice === "4") {
+      if (!choice || choice === "4. Cancel" || choice === "4") {
         return { success: true, summary: "Cancelled by user", content: "# pipeline-init — cancelled by user" };
       }
 
-      if (choice === "1. 强制覆盖所有文件" || choice === "1") {
+      if (choice === "1. Force overwrite all files" || choice === "1") {
         return copyTemplateFiles(templateFiles, targetDir, "overwrite", config);
       }
-      if (choice === "2. 跳过已存在文件" || choice === "2") {
+      if (choice === "2. Skip existing files" || choice === "2") {
         return copyTemplateFiles(templateFiles, targetDir, "skip", config);
       }
-      if (choice === "3. 重新执行 verify 生成" || choice === "3") {
+      if (choice === "3. Re-run verify generation" || choice === "3") {
         // Flag outer execute() to run verify branch (regenerate verify.md from skill Must markers)
         return { success: true, verifyAfter: true };
       }

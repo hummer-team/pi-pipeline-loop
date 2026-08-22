@@ -40,13 +40,13 @@ export interface FlowStateCtx {
 /** User decision identifiers for the pipeline decision menu. */
 export type PipelineDecision = "resume" | "skip" | "rollback" | "restart" | "abort";
 
-/** Decision menu labels (Chinese, matching TUI display). */
+/** Decision menu labels (English, matching TUI display). */
 const DECISION_LABELS: Record<PipelineDecision, string> = {
-  resume: "继续尝试",
-  skip: "跳过",
-  rollback: "回退上一阶段",
-  restart: "终止并重开",
-  abort: "终止并退出",
+  resume: "Resume",
+  skip: "Skip",
+  rollback: "Rollback",
+  restart: "Restart & New",
+  abort: "Abort & Exit",
 };
 
 // ─── getFlowState ───────────────────────────────────────────────────────────

@@ -88,7 +88,7 @@ export function isConfigError(failures: { ruleType: string; detail: string }[]):
       // (auto-verifier produces requiredFiles ruleType when {requirementDoc} placeholder
       // is unresolved in a requiredFiles path — same config-class root cause)
       (f.ruleType === "fileContentPattern" || f.ruleType === "requiredFiles") &&
-      /EISDIR|is a directory|指向目录|path 为空|requirementDoc 未设置/.test(f.detail),
+      /EISDIR|is a directory|path is empty|requirementDoc not set/.test(f.detail),
   );
 }
 
@@ -271,7 +271,7 @@ export async function applyVerifyFail(
     return {
       success: false,
       passed: false,
-      message: `验证配置错误，已冻结，请通过决策菜单处理: ${failureSummary}`,
+      message: `Verification config error — frozen. Use the decision menu to proceed: ${failureSummary}`,
       failures: verifyFailures,
     };
   }

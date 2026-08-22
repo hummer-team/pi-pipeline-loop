@@ -504,7 +504,7 @@ describe("verify-integration", () => {
       expect(result.rulePassed).toBe(false);
       expect(result.structuredResult?.passed).toBe(false);
       const detail = result.structuredResult?.failures[0]?.detail ?? "";
-      expect(detail).toContain("requirementDoc 未设置");
+      expect(detail).toContain("requirementDoc not set");
       expect(detail).not.toContain("EISDIR");
     });
 

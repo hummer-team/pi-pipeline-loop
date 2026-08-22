@@ -335,7 +335,7 @@ Verify plan document exists.`,
         verifyFailures: [
           {
             ruleType: "fileContentPattern",
-            detail: "fileContentPattern path 为空（配置错误）",
+            detail: "fileContentPattern path is empty (config error)",
             timestamp: Date.now(),
           },
         ],
@@ -374,7 +374,7 @@ Verify plan document exists.`,
 
       // Should be rejected
       expect((result as any).success).toBe(false);
-      expect((result as any).message).toContain("skipVerify 仅允许");
+      expect((result as any).message).toContain("skipVerify is only allowed");
       // Should NOT advance
       expect(meta.currentStage).toBe("clarify");
     });
@@ -391,7 +391,7 @@ Verify plan document exists.`,
         verifyFailures: [
           {
             ruleType: "fileContentPattern",
-            detail: "fileContentPattern path 为空（配置错误）",
+            detail: "fileContentPattern path is empty (config error)",
             timestamp: Date.now(),
           },
         ],
@@ -460,7 +460,7 @@ Verify plan document exists.`,
       const result = await tool.execute({ skipVerify: true }, ctx as any);
 
       expect((result as any).success).toBe(false);
-      expect((result as any).message).toContain("skipVerify 仅允许");
+      expect((result as any).message).toContain("skipVerify is only allowed");
     });
   });
 });

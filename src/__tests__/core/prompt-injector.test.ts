@@ -199,7 +199,7 @@ describe("createPromptInjector", () => {
     const result = await hook.handler(ctx as any);
 
     expect(result.systemPrompt).toContain("VERIFICATION MODE: TOOL");
-    expect(result.systemPrompt).toContain("本阶段验证模式为 TOOL");
+    expect(result.systemPrompt).toContain("VERIFICATION MODE: TOOL");
     expect(result.systemPrompt).toContain("stage_advance");
   });
 

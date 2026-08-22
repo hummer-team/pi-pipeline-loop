@@ -143,7 +143,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         return {
           success: true,
           message: `Pipeline "${pipelineId}" initialized at stage "clarify". ` +
-            `下一步请输入 @feat-design-plan-agent <需求文档路径> 1 开始需求澄清`,
+            `Next: run @feat-design-plan-agent <requirement-doc-path> 1 to start requirement clarification`,
           pipelineId,
           currentStage: "clarify",
         };
@@ -195,8 +195,8 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
       return {
         success: true,
-        message: `Pipeline "${pipelineId}" started with document: ${file}. ` +
-          `下一步请输入 @feat-design-plan-agent ${file} 1 开始需求澄清`,
+          message: `Pipeline "${pipelineId}" started with document: ${file}. ` +
+            `Next: run @feat-design-plan-agent ${file} 1 to start requirement clarification`,
         pipelineId,
         currentStage: "clarify",
         requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),

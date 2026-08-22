@@ -449,7 +449,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     const sharedResult = {
       structuredResult: {
         failures: [
-          { ruleType: "fileContentPattern", detail: "path 指向目录（EISDIR）（配置错误）" },
+          { ruleType: "fileContentPattern", detail: "path is a directory (EISDIR) (config error)" },
         ],
       },
       ruleMissing: [],
@@ -472,7 +472,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     expect(meta.flowState).toBe("blocked");
     expect(meta.blockedReason).toBe("verify_config_error");
     // Return message should mention config error
-    expect(result.message).toContain("验证配置错误");
+    expect(result.message).toContain("Verification config error");
     // Audit should contain verify_config_error
     const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
     const logContent = await readFile(logPath, "utf-8");
@@ -487,7 +487,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     const sharedResult = {
       structuredResult: {
         failures: [
-          { ruleType: "fileContentPattern", detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径" },
+          { ruleType: "fileContentPattern", detail: "requirementDoc not set, cannot resolve {requirementDoc} verify rule path" },
         ],
       },
       ruleMissing: [],
@@ -506,7 +506,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
 
     expect(meta.flowState).toBe("blocked");
     expect(meta.blockedReason).toBe("verify_config_error");
-    expect(result.message).toContain("验证配置错误");
+    expect(result.message).toContain("Verification config error");
   });
 
   it("config error (requiredFiles + requirementDoc unset) → freezeAndPrompt called (Phase 2 fix)", async () => {
@@ -517,7 +517,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     const sharedResult = {
       structuredResult: {
         failures: [
-          { ruleType: "requiredFiles", detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径" },
+          { ruleType: "requiredFiles", detail: "requirementDoc not set, cannot resolve {requirementDoc} verify rule path" },
         ],
       },
       ruleMissing: [],
@@ -537,7 +537,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     expect(meta.flowState).toBe("blocked");
     expect(meta.blockedReason).toBe("verify_config_error");
     expect(meta.verifyConfigError).toBe(true);
-    expect(result.message).toContain("验证配置错误");
+    expect(result.message).toContain("Verification config error");
   });
 
   it("content failure (pattern not found) → normal path, NO freeze, verifyAttempts incremented", async () => {
@@ -574,26 +574,26 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     expect(meta.flowState).toBeUndefined();
     // Return message should be normal failure, NOT config error
     expect(result.message).toContain("Verification failed");
-    expect(result.message).not.toContain("验证配置错误");
+    expect(result.message).not.toContain("Verification config error");
   });
 });
 
 describe("isConfigError helper", () => {
   it("detects EISDIR config error", () => {
     expect(isConfigError([
-      { ruleType: "fileContentPattern", detail: "path 指向目录（EISDIR）（配置错误）" },
+      { ruleType: "fileContentPattern", detail: "path is a directory (EISDIR) (config error)" },
     ])).toBe(true);
   });
 
   it("detects empty path config error", () => {
     expect(isConfigError([
-      { ruleType: "fileContentPattern", detail: "fileContentPattern path 为空（配置错误）" },
+      { ruleType: "fileContentPattern", detail: "fileContentPattern path is empty (config error)" },
     ])).toBe(true);
   });
 
   it("detects requirementDoc unset config error", () => {
     expect(isConfigError([
-      { ruleType: "fileContentPattern", detail: "requirementDoc 未设置，无法解析 {requirementDoc}" },
+      { ruleType: "fileContentPattern", detail: "requirementDoc not set, cannot resolve {requirementDoc}" },
     ])).toBe(true);
   });
 
@@ -611,7 +611,7 @@ describe("isConfigError helper", () => {
 
   it("detects requirementDoc unset for requiredFiles ruleType", () => {
     expect(isConfigError([
-      { ruleType: "requiredFiles", detail: "requirementDoc 未设置，无法解析 {requirementDoc} 验证规则路径" },
+      { ruleType: "requiredFiles", detail: "requirementDoc not set, cannot resolve {requirementDoc} verify rule path" },
     ])).toBe(true);
   });
 
