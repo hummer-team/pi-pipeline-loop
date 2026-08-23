@@ -484,6 +484,66 @@ describe("createPipelineInitCommand", () => {
     });
   });
 
+  describe("Phase 4 — Bug 4-B: pipeline-init warns when verify.md contains {requirementDoc} placeholder", () => {
+    it("report includes placeholder warning when verify.md references {requirementDoc}", async () => {
+      const config = makeInitConfig();
+
+      // Pre-create skill + verify.md containing the placeholder
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "- **Must** develop-result.md\n",
+        "utf-8",
+      );
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Existing verify.md with placeholder in a requiredFiles path
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"{requirementDoc}\"\n---\nBody\n",
+        "utf-8",
+      );
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("warn:");
+      expect(result.content).toContain("{requirementDoc}");
+      expect(result.content).toContain("/pipeline_start");
+    });
+
+    it("report does NOT include placeholder warning when verify.md has no placeholder", async () => {
+      const config = makeInitConfig();
+
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "- **Must** develop-result.md\n",
+        "utf-8",
+      );
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Well-formed verify.md without placeholder
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"develop-result.md\"\n---\nBody\n",
+        "utf-8",
+      );
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).not.toContain("warn:");
+      expect(result.content).not.toContain("{requirementDoc}");
+    });
+  });
+
   describe("Phase 2 — PipelineUI status bar lifecycle (command-level removed)", () => {
     function makeUICtx() {
       const notifications: string[] = [];

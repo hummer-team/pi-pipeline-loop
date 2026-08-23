@@ -44,6 +44,12 @@ export type VerifyGenerateResult = {
   llmStatus?: "ok" | "fail" | "off";
   /** For merged results: list of command/file targets that were added */
   addedItems?: string[];
+  /**
+   * Phase 4 (Bug 4-B): true when the stage's verify.md references
+   * `{requirementDoc}` placeholder that can only be resolved at pipeline_start.
+   * Used by pipeline-init report to surface a remediation warning.
+   */
+  hasRequirementDocPlaceholder?: boolean;
 };
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
@@ -501,6 +507,15 @@ export function generateVerifyMdContent(items: DeliveryItem[], stage: string): s
 }
 
 /**
+ * Detects whether the given verify.md content contains unresolved
+ * `{requirementDoc}` placeholders. Used by pipeline-init report to surface
+ * a remediation warning (Phase 4, Bug 4-B).
+ */
+function hasRequirementDocPlaceholder(content: string): boolean {
+  return /\{requirementDoc\}/.test(content);
+}
+
+/**
  * Top-level function that encapsulates the full verify generation flow.
  * Iterates over target stages, reads skill files, extracts delivery items,
  * and generates verify.md files.
@@ -634,6 +649,7 @@ export async function generateVerifyFiles(
           hardcodedCount: 0,
           llmCount: 0,
           llmStatus: "off",
+          hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(existingContent),
         });
         continue;
       }
@@ -654,6 +670,7 @@ export async function generateVerifyFiles(
           hardcodedCount: 0,
           llmCount: 0,
           llmStatus: "off",
+          hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(existingContent),
         });
         continue;
       }
@@ -731,6 +748,8 @@ export async function generateVerifyFiles(
           llmCount: llmItems.length,
           llmStatus: llmStatusLocal,
           addedItems: addedDescs,
+          // Check merged content for unresolved placeholder (existing rules may carry it)
+          hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(existingContent),
         });
         continue;
       } catch (err) {
@@ -879,6 +898,7 @@ export async function generateVerifyFiles(
         hardcodedCount: hardcodedItems.length,
         llmCount: llmItems.length,
         llmStatus,
+        hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(verifyContent),
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);

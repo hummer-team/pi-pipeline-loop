@@ -1011,6 +1011,9 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
     const detail = result.structuredResult!.failures[0].detail;
     expect(detail).toContain("requirementDoc not set");
     expect(detail).not.toContain("EISDIR");
+    // Phase 4 (Bug 4-A): remediation hint must include /pipeline_start guidance
+    expect(detail).toContain("/pipeline_start");
+    expect(detail).toContain("<doc_file>");
   });
 
   it("resolves placeholder normally when requirementDoc IS set (existing behavior preserved)", async () => {

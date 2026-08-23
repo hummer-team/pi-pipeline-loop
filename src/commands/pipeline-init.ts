@@ -542,6 +542,14 @@ async function executeVerifyBranch(
     lines.push("- llm: unavailable (no model configured)");
   }
 
+  // Phase 4 (Bug 4-B): warn if any stage's verify.md references {requirementDoc}
+  // placeholder — requires /pipeline_start <doc_file> to resolve.
+  const placeholderStages = results.filter(r => r.hasRequirementDocPlaceholder === true);
+  if (placeholderStages.length > 0) {
+    const stageNames = placeholderStages.map(r => r.stage).join(", ");
+    lines.push(`- warn: verify.md references {requirementDoc} in stage(s) [${stageNames}] — start pipeline with /pipeline_start <doc_file> to resolve`);
+  }
+
   // Summary audit — unified for sub="1" and sub="" paths
   await safeWriteAuditLog("pipeline-init_verify", {
     generated: String(generated.length),
