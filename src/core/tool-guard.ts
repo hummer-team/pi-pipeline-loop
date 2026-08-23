@@ -1,17 +1,19 @@
 /**
  * @module tool-guard
  * Factory for the `tool_call` hook.
- * Enforces tool permissions, bash command prefix restrictions,
- * file write protection (hardcoded + gitignore), and pipeline freeze state.
+ * Enforces destructive command interception, file write protection
+ * (hardcoded + gitignore + stage whitelist), and pipeline freeze state.
  *
  * Protection layers:
- * 1. Hardcoded paths (.pi/, AGENTS.md, .git/) - always protected
- * 2. Dynamic gitignore protection - parsed from .gitignore files
- * 3. Allow list - exempts from gitignore for edit only (not git add/commit)
+ * 1. Destructive command blacklist — sudo, rm -rf /, mkfs, etc. (with user confirmation dialog)
+ * 2. Hardcoded paths (.pi/, AGENTS.md, .git/) - always protected
+ * 3. Dynamic gitignore protection - parsed from .gitignore files
+ * 4. Allow list - exempts from gitignore for edit only (not git add/commit)
+ * 5. Stage write whitelist — restricts writable paths per stage
  *
  * Interception channels:
- * - write/edit: hardcoded + allow + gitignore
- * - bash file modification (redirect, rm, mv, cp, touch, tee): same as write/edit
+ * - bash: destructive command check → git protection → file modification protection
+ * - write/edit: hardcoded + allow + gitignore + stage whitelist
  * - git add: hardcoded + gitignore (allow does NOT exempt)
  * - git commit: hardcoded + gitignore (allow does NOT exempt)
  *

@@ -95,7 +95,7 @@ export interface VerifyConfig {
 
 /**
  * Per-stage configuration that maps a pipeline stage to its agent, skill,
- * tool restrictions, and transition rules.
+ * write scope restrictions, and transition rules.
  */
 export interface StageConfig {
   /** Path to the agent definition file (relative to projectRoot) */
