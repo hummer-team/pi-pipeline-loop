@@ -12,10 +12,20 @@ import { extractBashFileTargets } from "./bash-parse";
  * Each pattern matches a category of dangerous operations.
  */
 export const DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
-  // rm -rf on root or home directory
+  // rm -rf on root or home directory (basic patterns)
   /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|(-[a-zA-Z]*f[a-zA-Z]*r))\s+(\/\s*$|\/\s|~|\$HOME)/,
   /\brm\s+-rf\s+\/\b/,
   /\brm\s+-rf\s+~/,
+  // rm -rf with root glob: rm -rf /*, rm -rf /.*
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[^\s]*\s+(--\s+)?\/\*/,
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[^\s]*\s+(--\s+)?\/\.\*/,
+  // rm -rf with -- separator targeting root: rm -rf -- /
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[^\s]*\s+--\s+\/(\s|$)/,
+  // rm -rf with GNU --no-preserve-root: rm -rf --no-preserve-root /
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[^\s]*\s+--no-preserve-root\s+\/(\s|$)/,
+  // rm with variable expansion targeting root: rm -rf ${HOME}, rm -rf $HOME
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[^\s]*\s+.*\$\{HOME\}/,
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[^\s]*\s+.*\$\{[a-zA-Z_][a-zA-Z0-9_]*\}.*\/(\*|$)/,
   // sudo (privilege escalation)
   /\bsudo\b/,
   // Disk formatting
@@ -25,9 +35,13 @@ export const DESTRUCTIVE_COMMAND_PATTERNS: RegExp[] = [
   /\bshutdown\b/,
   /\breboot\b/,
   /\binit\s+[0-6]\b/,
-  // Dangerous permission changes on system directories
+  // Dangerous permission changes on system directories (including glob patterns)
   /\bchmod\s+-R\s+.*\s+(\/|\/\.|\.git|\/etc|\/usr|\/var|\/bin|\/sbin|\/lib|\/boot|\/proc|\/sys|\/dev)(\s|$)/,
+  /\bchmod\s+-R\s+.*\s+\/\*/,
+  /\bchmod\s+-R\s+.*\s+\/\.\*/,
   /\bchown\s+-R\s+.*\s+(\/|\/\.|\.git|\/etc|\/usr|\/var|\/bin|\/sbin|\/lib|\/boot|\/proc|\/sys|\/dev)(\s|$)/,
+  /\bchown\s+-R\s+.*\s+\/\*/,
+  /\bchown\s+-R\s+.*\s+\/\.\*/,
   // Writing directly to devices
   />\s*\/dev\/sd/,
   />\s*\/dev\/hd/,
@@ -46,22 +60,30 @@ const DESTRUCTIVE_FILE_COMMANDS = new Set(["rm", "mv", "chmod", "chown"]);
  * by file-modifying commands.
  */
 const SYSTEM_PATH_PATTERNS: RegExp[] = [
-  /^\/etc\//,
-  /^\/usr\//,
-  /^\/var\//,
-  /^\/bin\//,
-  /^\/sbin\//,
-  /^\/lib\//,
-  /^\/boot\//,
-  /^\/proc\//,
-  /^\/sys\//,
-  /^\/dev\//,
+  /^\/etc(\/|$|\*)/,
+  /^\/usr(\/|$|\*)/,
+  /^\/var(\/|$|\*)/,
+  /^\/bin(\/|$|\*)/,
+  /^\/sbin(\/|$|\*)/,
+  /^\/lib(\/|$|\*)/,
+  /^\/boot(\/|$|\*)/,
+  /^\/proc(\/|$|\*)/,
+  /^\/sys(\/|$|\*)/,
+  /^\/dev(\/|$|\*)/,
+  /^\/tmp(\/|$|\*)/,
+  /^\/home(\/|$|\*)/,
+  /^\/root(\/|$|\*)/,
 ];
 
 /**
  * Checks if a path looks like a system-level path (outside typical project scope).
  */
-function isSystemPath(targetPath: string): boolean {
+export function isSystemPath(targetPath: string): boolean {
+  // Root directory itself or root glob patterns (/, /*, /.*)
+  if (targetPath === "/" || targetPath === "/*" || targetPath === "/.*") {
+    return true;
+  }
+  
   // Absolute paths starting with system directories
   if (path.isAbsolute(targetPath)) {
     return SYSTEM_PATH_PATTERNS.some(p => p.test(targetPath));

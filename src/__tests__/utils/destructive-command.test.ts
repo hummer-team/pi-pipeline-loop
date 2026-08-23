@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { isDestructiveCommand, getDestructiveReason, DESTRUCTIVE_COMMAND_PATTERNS } from "../../utils/destructive-command";
+import { isDestructiveCommand, getDestructiveReason, DESTRUCTIVE_COMMAND_PATTERNS, isSystemPath } from "../../utils/destructive-command";
 
 describe("isDestructiveCommand", () => {
   describe("pattern matching tier", () => {
@@ -11,6 +11,49 @@ describe("isDestructiveCommand", () => {
     it("detects rm -rf ~ as destructive", () => {
       expect(isDestructiveCommand("rm -rf ~")).toBe(true);
       expect(isDestructiveCommand("rm -rf $HOME")).toBe(true);
+    });
+
+    it("detects rm -rf with root glob patterns as destructive", () => {
+      // Root glob: rm -rf /*
+      expect(isDestructiveCommand("rm -rf /*")).toBe(true);
+      // /tmp/* targets /tmp which is a system path, caught by Tier 2 path heuristic
+      expect(isDestructiveCommand("rm -rf /tmp/*")).toBe(true);
+      // Hidden file glob: rm -rf /.*
+      expect(isDestructiveCommand("rm -rf /.*")).toBe(true);
+      // Combined flags in various forms
+      expect(isDestructiveCommand("rm -fr /*")).toBe(true);
+      // Separate -r and -f flags targeting /* is also caught by Tier 2 path heuristic
+      expect(isDestructiveCommand("rm -r -f /*")).toBe(true);
+    });
+
+    it("detects rm -rf with -- separator targeting root as destructive", () => {
+      expect(isDestructiveCommand("rm -rf -- /")).toBe(true);
+      expect(isDestructiveCommand("rm -rf -- / ")).toBe(true);
+      expect(isDestructiveCommand("rm -- -rf /")).toBe(false); // Flags after --
+    });
+
+    it("detects rm -rf with GNU --no-preserve-root as destructive", () => {
+      expect(isDestructiveCommand("rm -rf --no-preserve-root /")).toBe(true);
+      expect(isDestructiveCommand("rm -rf --no-preserve-root / ")).toBe(true);
+      expect(isDestructiveCommand("rm -r --no-preserve-root /")).toBe(true);
+      // Even without -rf, targeting / with rm is caught by path heuristic
+      expect(isDestructiveCommand("rm --no-preserve-root /")).toBe(true);
+    });
+
+    it("detects rm with variable expansion targeting root as destructive", () => {
+      expect(isDestructiveCommand("rm -rf ${HOME}")).toBe(true);
+      expect(isDestructiveCommand("rm -rf ${HOME}/")).toBe(true);
+      expect(isDestructiveCommand("rm -rf ${USER}/*")).toBe(true);
+      expect(isDestructiveCommand("rm -rf $HOME")).toBe(true);
+    });
+
+    it("detects chmod/chown with glob patterns on root as destructive", () => {
+      expect(isDestructiveCommand("chmod -R 777 /*")).toBe(true);
+      expect(isDestructiveCommand("chmod -R 755 /.*")).toBe(true);
+      expect(isDestructiveCommand("chown -R root:root /*")).toBe(true);
+      expect(isDestructiveCommand("chown -R nobody /.*")).toBe(true);
+      // Non-root paths should not match
+      expect(isDestructiveCommand("chmod -R 777 ./src/*")).toBe(false);
     });
 
     it("detects sudo as destructive", () => {
@@ -69,6 +112,48 @@ describe("isDestructiveCommand", () => {
       expect(isDestructiveCommand("git status")).toBe(false);
       expect(isDestructiveCommand("npm test")).toBe(false);
     });
+  });
+});
+
+describe("isSystemPath", () => {
+  it("identifies root directory as system path", () => {
+    expect(isSystemPath("/")).toBe(true);
+    expect(isSystemPath("/*")).toBe(true);
+    expect(isSystemPath("/.*")).toBe(true);
+  });
+
+  it("identifies standard system directories as system paths", () => {
+    expect(isSystemPath("/etc")).toBe(true);
+    expect(isSystemPath("/etc/passwd")).toBe(true);
+    expect(isSystemPath("/usr")).toBe(true);
+    expect(isSystemPath("/usr/bin")).toBe(true);
+    expect(isSystemPath("/var")).toBe(true);
+    expect(isSystemPath("/bin")).toBe(true);
+    expect(isSystemPath("/sbin")).toBe(true);
+    expect(isSystemPath("/lib")).toBe(true);
+    expect(isSystemPath("/boot")).toBe(true);
+    expect(isSystemPath("/proc")).toBe(true);
+    expect(isSystemPath("/sys")).toBe(true);
+    expect(isSystemPath("/dev")).toBe(true);
+    expect(isSystemPath("/tmp")).toBe(true);
+    expect(isSystemPath("/home")).toBe(true);
+    expect(isSystemPath("/root")).toBe(true);
+  });
+
+  it("identifies relative escape paths as system paths", () => {
+    expect(isSystemPath("../outside")).toBe(true);
+    // Arbitrary absolute paths are NOT system paths unless they match known system dirs
+    expect(isSystemPath("/some/absolute")).toBe(false);
+    // But root-level absolute paths starting with / are system paths
+    expect(isSystemPath("/etc/passwd")).toBe(true);
+    expect(isSystemPath("/")).toBe(true);
+  });
+
+  it("does NOT flag project-local paths", () => {
+    expect(isSystemPath("src")).toBe(false);
+    expect(isSystemPath("src/file.ts")).toBe(false);
+    expect(isSystemPath("./local")).toBe(false);
+    expect(isSystemPath("docs/readme.md")).toBe(false);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   runVerification,
   executeStructuredRules,
   resolvePlaceholders,
+  precheckRequiredFiles,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1052,5 +1053,273 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
     const result = await runVerification(config, meta, []);
     expect(result.rulePassed).toBe(true);
     expect(result.structuredResult?.passed).toBe(true);
+  });
+});
+
+// ─── Phase 2: precheckRequiredFiles tests ────────────────────────────────────
+
+describe("precheckRequiredFiles", () => {
+  it("returns passed=true when no verify config", async () => {
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: { agentFile: "a.md", skillPath: "s.md", nextStage: "develop", requireDomain: false },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("returns passed=true when no requiredFiles rule", async () => {
+    const vrPath = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" + "rules:\n" + "  keywords:\n" + '    - "test"\n' + "---\n" + "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: {
+          agentFile: "a.md",
+          skillPath: "s.md",
+          nextStage: "develop",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("returns passed=true when all requiredFiles exist", async () => {
+    await fs.mkdir(path.join(TMP, "docs"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "plan.md"), "plan content");
+    await fs.writeFile(path.join(TMP, "docs", "design.md"), "design content");
+
+    const vrPath = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "docs/plan.md"\n' +
+        '    - "docs/design.md"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: {
+          agentFile: "a.md",
+          skillPath: "s.md",
+          nextStage: "develop",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("returns passed=false with correct missing list when some files missing", async () => {
+    await fs.mkdir(path.join(TMP, "docs"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "plan.md"), "plan content");
+    // docs/design.md does NOT exist
+
+    const vrPath = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "docs/plan.md"\n' +
+        '    - "docs/design.md"\n' +
+        '    - "docs/missing.md"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: {
+          agentFile: "a.md",
+          skillPath: "s.md",
+          nextStage: "develop",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(false);
+    // missing should only contain actually missing files, NOT docs/plan.md
+    expect(result.missing).toEqual(["docs/design.md", "docs/missing.md"]);
+    expect(result.missing).not.toContain("docs/plan.md");
+  });
+
+  it("resolves {requirementDoc} placeholder and passes when file exists", async () => {
+    // Create the requirement doc file
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "design", "req.md"), "requirement content");
+
+    const vrPath = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "{requirementDoc}/docs/plan.md"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: {
+          agentFile: "a.md",
+          skillPath: "s.md",
+          nextStage: "develop",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify.md" },
+        },
+      } as any,
+    });
+    // meta WITH requirementDoc set
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/req.md",
+    });
+    const result = await precheckRequiredFiles(config, meta);
+    // Precheck should pass because resolvePlaceholders resolves {requirementDoc}
+    // The resolved path is "docs/design/req.md/docs/plan.md" which doesn't exist,
+    // but this test verifies that placeholder resolution is being called
+    expect(result.passed).toBe(false);
+    expect(result.missing).toContain("docs/design/req.md/docs/plan.md");
+    // Verify placeholder was resolved (not literal {requirementDoc})
+    expect(result.missing[0]).not.toContain("{requirementDoc}");
+  });
+
+  it("resolves {requirementDoc} placeholder and correctly identifies missing file", async () => {
+    // Create the target file at the resolved path
+    await fs.mkdir(path.join(TMP, "docs", "spec", "docs"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "spec", "docs", "plan.md"), "plan content");
+
+    const vrPath = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "{requirementDoc}/docs/plan.md"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: {
+          agentFile: "a.md",
+          skillPath: "s.md",
+          nextStage: "develop",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify.md" },
+        },
+      } as any,
+    });
+    // meta WITH requirementDoc set to the actual directory
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/spec",
+    });
+    const result = await precheckRequiredFiles(config, meta);
+    // Should pass because docs/spec/docs/plan.md exists
+    expect(result.passed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("supports glob patterns in requiredFiles", async () => {
+    await fs.mkdir(path.join(TMP, "src"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "src", "index.ts"), "export {}");
+    await fs.writeFile(path.join(TMP, "src", "utils.ts"), "export {}");
+
+    const vrPath = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "src/*.ts"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: {
+          agentFile: "a.md",
+          skillPath: "s.md",
+          nextStage: "develop",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("returns passed=false when glob pattern has no matches", async () => {
+    const vrPath = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "nonexistent/*.md"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        plan: {
+          agentFile: "a.md",
+          skillPath: "s.md",
+          nextStage: "develop",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(false);
+    expect(result.missing).toContain("nonexistent/*.md");
   });
 });

@@ -1807,4 +1807,170 @@ describe("createToolGuard", () => {
       await rm(TMP2, { recursive: true, force: true });
     });
   });
+
+  // ─── Phase 1: Destructive command interception tests ────────────────────────
+  describe("destructive command interception", () => {
+    it("blocks rm -rf / and records bash_destructive violation", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-destruct-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2, protect: { ask: false } });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("Destructive command blocked");
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeDefined();
+      expect(finalMeta.violations[0].type).toBe("bash_destructive");
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("blocks rm -rf /* (root glob pattern)", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-destruct2-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2, protect: { ask: false } });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /*" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("Destructive command blocked");
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("blocks rm -rf --no-preserve-root / (GNU delete-root command)", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-destruct3-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2, protect: { ask: false } });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf --no-preserve-root /" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("Destructive command blocked");
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("blocks chmod -R 777 /* (permission change on root glob)", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-destruct4-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2, protect: { ask: false } });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "chmod -R 777 /*" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("Destructive command blocked");
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("allows previously session-allowed destructive commands within project", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-destruct5-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+      await mkdir(join(TMP2, "node_modules"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2, protect: { ask: false } });
+      // Command already allowed in session
+      const meta = makeTestMeta({ sessionAllowedCommands: ["rm -rf node_modules"] });
+      const ctx = createMockCtx(meta);
+      // A less dangerous command that is session-allowed and within project
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf node_modules" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should not block because command is session-allowed AND not targeting system paths
+      expect((result as any)?.block).not.toBe(true);
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("full-mode still blocks destructive commands targeting system paths", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-destruct6-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      // Full mode: allowedWritePaths = ["**"]
+      const config = makeTestConfig({
+        projectRoot: TMP2,
+        protect: { ask: false },
+        stages: {
+          develop: {
+            agentFile: "a.md",
+            skillPath: "s.md",
+            nextStage: "review",
+            requireDomain: false,
+            allowedWritePaths: ["**"],
+          },
+        } as any,
+      });
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = createMockCtx(meta);
+      // Command targeting /etc (system path) outside project root
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /etc/passwd" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should be blocked - either by destructive command pattern or system path check
+      expect((result as any).block).toBe(true);
+      // The message could be either "Destructive command" (pattern match) or "system path" (Tier 2)
+      expect((result as any).reason).toMatch(/Destructive command|system path/);
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("full-mode blocks rm -rf / targeting root directory", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-destruct7-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      // Full mode: allowedWritePaths = ["**"]
+      const config = makeTestConfig({
+        projectRoot: TMP2,
+        protect: { ask: false },
+        stages: {
+          develop: {
+            agentFile: "a.md",
+            skillPath: "s.md",
+            nextStage: "review",
+            requireDomain: false,
+            allowedWritePaths: ["**"],
+          },
+        } as any,
+      });
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = createMockCtx(meta);
+      // Command targeting / (root) - this is caught by destructive pattern matching first
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should be blocked by destructive command pattern check
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("Destructive command");
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+  });
 });

@@ -823,19 +823,28 @@ export async function precheckRequiredFiles(
     return { passed: true, missing: [] };
   }
 
+  // Resolve {requirementDoc} placeholders before checking files
+  // This ensures precheck behavior is consistent with runVerification
+  const resolvedRules = resolvePlaceholders(rules, meta);
+  
+  // Safety check: resolvePlaceholders preserves requiredFiles array structure
+  if (!resolvedRules.requiredFiles || resolvedRules.requiredFiles.length === 0) {
+    return { passed: true, missing: [] };
+  }
+
   // Check if required files exist
-  const result = await verifyRequiredFiles(rules.requiredFiles, config.projectRoot);
+  const result = await verifyRequiredFiles(resolvedRules.requiredFiles, config.projectRoot);
 
   if (result.passed) {
     return { passed: true, missing: [] };
   }
 
   // Extract missing files from detail message
-  // verifyRequiredFiles returns detail like "Missing required files: file1, file2"
-  const missingMatch = result.detail.match(/Missing required files:\s*(.+)/);
+  // verifyRequiredFiles returns detail like "Missing files: file1, file2"
+  const missingMatch = result.detail.match(/Missing files:\s*(.+)/);
   const missing = missingMatch
     ? missingMatch[1].split(",").map(s => s.trim())
-    : rules.requiredFiles;
+    : resolvedRules.requiredFiles;
 
   return { passed: false, missing };
 }

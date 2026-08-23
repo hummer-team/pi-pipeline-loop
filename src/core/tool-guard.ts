@@ -42,7 +42,7 @@ import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
-import { isDestructiveCommand, getDestructiveReason } from "../utils/destructive-command";
+import { isDestructiveCommand, getDestructiveReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
@@ -346,6 +346,21 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: "bash",
                   detail: reason,
                   suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                });
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
+              // Full mode: safety net for destructive commands targeting system paths
+              // Even in full mode, destructive file operations targeting system-level paths
+              // (/, /etc, /usr, etc.) must be blocked to prevent system damage.
+              const baseCmd = command.trim().split(/\s+/)[0];
+              if (["rm", "mv", "chmod", "chown"].includes(baseCmd) && isSystemPath(absTarget)) {
+                const reason = `FORBIDDEN: Destructive command '${baseCmd}' targets system path '${absTarget}' outside project root.`;
+                await trackViolation({
+                  type: "bash_destructive",
+                  tool: "bash",
+                  detail: reason,
+                  suggestion: `Avoid destructive operations targeting system paths.`,
                 });
                 ui.notify(ctx, reason);
                 return { block: true, reason };
