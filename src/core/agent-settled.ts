@@ -115,6 +115,37 @@ export function createAgentSettled(
           returnResult: false,
           ui,
         });
+
+        // 138: Wake next stage — trigger model to begin work in the new stage
+        // Only for hook-mode stages with a non-terminal next stage (clarify/develop/fix).
+        // Tool-mode stages (plan) and terminal stages (completed/null) are excluded here
+        // and handled by their own paths (stage_advance tool or no-op).
+        const pi = (ctx as { pi?: { sendUserMessage?: (msg: string) => void } }).pi;
+        const nextStage = stageConfig.nextStage;
+        if (
+          pi
+          && typeof pi.sendUserMessage === "function"
+          && nextStage
+          && nextStage !== "completed"
+        ) {
+          pi.sendUserMessage(
+            `Pipeline advanced from ${meta.currentStage} to ${nextStage}. Begin the ${nextStage} stage work now.`,
+          );
+          await writeAuditLog("auto_advance_wake", {
+            pipelineId: meta.pipelineId,
+            fromStage: meta.currentStage,
+            toStage: nextStage,
+            method: "rule",
+          });
+        } else if (pi === undefined) {
+          // Defensive: pi not forwarded — log skip for debug diagnostics
+          await writeAuditLog("auto_advance_wake_skipped", {
+            pipelineId: meta.pipelineId,
+            fromStage: meta.currentStage,
+            toStage: nextStage ? String(nextStage) : "none",
+            reason: "pi not forwarded via RuntimeCtx",
+          });
+        }
       } else {
         await applyVerifyFail(ctx, meta, meta.currentStage, sharedResult, "rule", ui, config);
       }
