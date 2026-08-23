@@ -304,6 +304,36 @@ export async function parseVerifyRulesFromContent(content: string): Promise<Veri
 }
 
 /**
+ * Repairs a malformed verify.md frontmatter where the closing `---` delimiter
+ * is glued to the last YAML line (e.g. `  mode: and---` instead of `  mode: and\n---`).
+ *
+ * Detection criteria:
+ * - Splitting by `/^---\s*$/m` yields fewer than 3 parts (no standalone closing delimiter), AND
+ * - The content contains a top-level `rules:` key (i.e., looks like YAML frontmatter).
+ *
+ * The repair inserts a newline before the inline `---` so the closing delimiter
+ * stands on its own line. **No rule text is modified.**
+ *
+ * @param content - The raw verify.md content
+ * @returns `{ repaired: true, content }` if repaired, or `{ repaired: false, content }` if unchanged
+ */
+export function repairVerifyFrontmatter(content: string): { repaired: boolean; content: string } {
+  const parts = content.split(/^---\s*$/m);
+  // Well-formed: at least 3 parts — before first `---`, between `---`s, after closing `---`.
+  if (parts.length >= 3) return { repaired: false, content };
+
+  // Must look like YAML frontmatter (contains `rules:`) to be a candidate for repair.
+  if (!/^rules:/m.test(content)) return { repaired: false, content };
+
+  // Repair: find a line where `---` is appended to YAML content (not on its own line)
+  // and move it to its own line. The pattern requires at least one non-space character
+  // before `---` on the line, so a standalone `---` line won't match.
+  const repaired = content.replace(/^([ \t]*\S[^\n]*?)---([ \t]*)$/m, "$1\n---$2");
+  if (repaired === content) return { repaired: false, content };
+  return { repaired: true, content: repaired };
+}
+
+/**
  * Normalizes a command string for comparison (lowercase, collapse whitespace, strip leading ./).
  */
 function normalizeCmd(cmd: string): string {
@@ -516,6 +546,25 @@ export async function generateVerifyFiles(
       } catch {
         existingContent = "";
       }
+
+      // Phase 1 (Bug 3-C): auto-repair malformed frontmatter (e.g. `mode: and---`)
+      // from prior generator bug. Repaired content is written back + audit-logged,
+      // then parsed as normal. Rule text is never modified by the repair.
+      const repairResult = repairVerifyFrontmatter(existingContent);
+      if (repairResult.repaired) {
+        existingContent = repairResult.content;
+        try {
+          await fs.writeFile(absVerifyPath, existingContent, "utf-8");
+        } catch {
+          // best-effort: if write fails, continue with in-memory repaired content
+        }
+        await safeWriteAuditLog("verify_md_repair", {
+          stage: s,
+          filePath: verifyPath,
+          detail: "auto-repaired malformed frontmatter closing delimiter",
+        });
+      }
+
       const existingRules = await parseVerifyRulesFromContent(existingContent);
 
       // Extract body from existing content (between last --- and EOF)

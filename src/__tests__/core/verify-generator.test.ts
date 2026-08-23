@@ -13,6 +13,7 @@ import {
   mergeDeliveryItems,
   generateVerifyMdContent,
   parseVerifyRulesFromContent,
+  repairVerifyFrontmatter,
 } from "../../core/verify-generator";
 import { parseFrontmatter } from "../../core/auto-verifier";
 import { makeTestConfig } from "../helpers";
@@ -242,6 +243,76 @@ describe("verify-generator", () => {
       const llm = [{ type: "file" as const, target: "b.md" }];
       const merged = mergeDeliveryItems(hardcoded, llm);
       expect(merged).toHaveLength(2);
+    });
+  });
+
+  describe("repairVerifyFrontmatter", () => {
+    it("repairs `mode: and---` glued closing delimiter to standalone line", () => {
+      const malformed = "---\nrules:\n  requiredFiles:\n    - \"foo.md\"\n  mode: and---\nbody text\n";
+      const { repaired, content } = repairVerifyFrontmatter(malformed);
+      expect(repaired).toBe(true);
+      expect(content).toContain("mode: and\n---\n");
+      expect(content).not.toMatch(/mode: and---/);
+      // Rule text preserved
+      expect(content).toContain("requiredFiles:");
+      expect(content).toContain("- \"foo.md\"");
+      // Body preserved after closing delimiter
+      expect(content).toContain("body text");
+    });
+
+    it("returns repaired=false for well-formed content (already has standalone ---)", () => {
+      const wellFormed = "---\nrules:\n  requiredFiles:\n    - \"foo.md\"\n  mode: and\n---\nbody text\n";
+      const { repaired, content } = repairVerifyFrontmatter(wellFormed);
+      expect(repaired).toBe(false);
+      expect(content).toBe(wellFormed);
+    });
+
+    it("returns repaired=false when content has no `rules:` key (not frontmatter)", () => {
+      const nonYaml = "# Just a markdown file\nNo YAML here\n";
+      const { repaired, content } = repairVerifyFrontmatter(nonYaml);
+      expect(repaired).toBe(false);
+      expect(content).toBe(nonYaml);
+    });
+
+    it("recovers body text swallowed into frontmatter (no standalone ---)", async () => {
+      // Simulates the Phase 0 bug where body was absorbed into the frontmatter block
+      const malformed = "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n  mode: and---\nVerify the delivery items.\n";
+      const { repaired, content } = repairVerifyFrontmatter(malformed);
+      expect(repaired).toBe(true);
+
+      // Round-trip: parseVerifyRulesFromContent now recovers rules correctly
+      const rules = await parseVerifyRulesFromContent(content);
+      expect(rules).not.toBeNull();
+      expect(rules!.mode).toBe("and");
+      expect(rules!.requiredFiles).toEqual(["output.md"]);
+    });
+
+    it("integration: generateVerifyFiles auto-repairs malformed file in exists branch and audits verify_md_repair", async () => {
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Pre-create a malformed verify.md (missing closing ---)
+      const malformed = "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n  mode: and---\nExisting body\n";
+      await fs.writeFile(path.join(verifyDir, "verify.md"), malformed, "utf-8");
+
+      // Reset audit log capture so audit is written under TMP
+      __resetAuditDirPath();
+      await initAuditLog(config);
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      // After repair, the rules already contain the expected items, so it's skipped as "exists"
+      expect(["skipped", "merged"]).toContain(results[0].status);
+
+      // The file on disk is now repaired
+      const repairedContent = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(repairedContent).not.toMatch(/mode: and---/);
+      expect(repairedContent).toMatch(/mode: and\n---/);
+
+      // Audit log contains verify_md_repair entry
+      const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditContent = await fs.readFile(auditPath, "utf-8");
+      expect(auditContent).toContain("verify_md_repair");
     });
   });
 
