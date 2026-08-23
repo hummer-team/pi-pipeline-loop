@@ -140,6 +140,78 @@ describe("registerCommand bridge", () => {
     // The content should contain pipeline status information
     expect(notifyCalls[0]).toContain("Pipeline Status");
   });
+
+  // ─── 136_E2E_Bug regression: parsed args reach cmd.execute ───────────────
+  // The bridge invokes parseCommandArgs(cmd.name, args) and passes the parsed
+  // Record into cmd.execute(). These tests assert that the doc_file argument
+  // supplied to `/pipeline-start <doc_file>` reaches the handler as `{ file }`
+  // — not as `{ raw }` via the default branch (which was the 136 bug).
+  it("pipeline-start bridge: doc_file string argument is parsed into { file } and reaches cmd.execute", async () => {
+    const { pi, registeredCommands } = makeMockPi();
+    const factory = createPipeline(makeTestConfig());
+    await factory(pi);
+
+    const startCmd = registeredCommands.find((c) => c.name === "pipeline-start");
+    expect(startCmd).toBeDefined();
+
+    const handler = startCmd!.options.handler as Function;
+    const notifyCalls: string[] = [];
+    // meta intentionally empty → fresh-start path with non-empty file fails at
+    // fs.read (file not found), but the important thing is the error must be
+    // "File not found", NOT the "/pipeline_start" hint (which fires only when
+    // file is empty — i.e. when the bug reappears).
+    const extCtx = makeMockExtCtx({
+      // No meta → fresh-start path (meta undefined).
+      sessionManager: {
+        getEntries: () => [],
+        getBranch: () => [],
+      },
+      ui: {
+        notify: (msg: string) => { notifyCalls.push(msg); },
+        setStatus: () => {},
+      },
+    });
+
+    // Simulate user typing: /pipeline-start docs/design/76_E2E_Feat.md
+    await handler("docs/design/76_E2E_Feat.md", extCtx);
+
+    // The bridge must have parsed "docs/design/76_E2E_Feat.md" into { file: "..." }.
+    // If the bug regresses, { file } is empty → pipeline-start returns the
+    // "/pipeline_start <doc_file>" hint instead of "File not found".
+    expect(notifyCalls.length).toBeGreaterThan(0);
+    const notified = notifyCalls.join(" | ");
+    expect(notified).toContain("File not found");
+    expect(notified).not.toContain("/pipeline_start");
+    expect(notified).not.toContain("/pipeline-start <doc_file>");
+  });
+
+  it("pipeline-init bridge: subcommand string argument is parsed into { sub }", async () => {
+    const { pi, registeredCommands } = makeMockPi();
+    const factory = createPipeline(makeTestConfig());
+    await factory(pi);
+
+    const initCmd = registeredCommands.find((c) => c.name === "pipeline-init");
+    expect(initCmd).toBeDefined();
+
+    const handler = initCmd!.options.handler as Function;
+    const notifyCalls: string[] = [];
+    const extCtx = makeMockExtCtx({
+      ui: {
+        notify: (msg: string) => { notifyCalls.push(msg); },
+        setStatus: () => {},
+      },
+    });
+
+    // "1" → pipeline-init subcommand; should parse to { sub: "1" }.
+    await handler("1", extCtx);
+
+    // pipeline-init with sub="1" attempts to generate files. Whether or not
+    // the underlying generation succeeds is irrelevant here; the assertion
+    // is that the bridge parsed { sub: "1" } (not { raw: "1" }). We verify
+    // by checking that the handler produced output (i.e. it ran the init
+    // path, not a default/unknown-command path).
+    expect(notifyCalls.length).toBeGreaterThan(0);
+  });
 });
 
 // ─── registerTool: single-object with label ─────────────────────────────────
