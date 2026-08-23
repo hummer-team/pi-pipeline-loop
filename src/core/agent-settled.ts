@@ -109,7 +109,10 @@ export function createAgentSettled(
       if (vr.rulePassed) {
         // Clear advancedThisTurn flag on successful verification (prevent residual state)
         const clearedMeta = { ...meta, advancedThisTurn: undefined };
-        await applyVerifyPass(ctx, clearedMeta, meta.currentStage, stageConfig.nextStage, sharedResult, {
+        // Capture stage names BEFORE applyVerifyPass mutates meta.currentStage
+        const fromStage = meta.currentStage;
+        const toStage = stageConfig.nextStage;
+        await applyVerifyPass(ctx, clearedMeta, fromStage, toStage, sharedResult, {
           method: "rule",
           handleTerminal: false,
           returnResult: false,
@@ -121,28 +124,27 @@ export function createAgentSettled(
         // Tool-mode stages (plan) and terminal stages (completed/null) are excluded here
         // and handled by their own paths (stage_advance tool or no-op).
         const pi = (ctx as { pi?: { sendUserMessage?: (msg: string) => void } }).pi;
-        const nextStage = stageConfig.nextStage;
         if (
           pi
           && typeof pi.sendUserMessage === "function"
-          && nextStage
-          && nextStage !== "completed"
+          && toStage
+          && toStage !== "completed"
         ) {
           pi.sendUserMessage(
-            `Pipeline advanced from ${meta.currentStage} to ${nextStage}. Begin the ${nextStage} stage work now.`,
+            `Pipeline advanced from ${fromStage} to ${toStage}. Begin the ${toStage} stage work now.`,
           );
           await writeAuditLog("auto_advance_wake", {
             pipelineId: meta.pipelineId,
-            fromStage: meta.currentStage,
-            toStage: nextStage,
+            fromStage,
+            toStage,
             method: "rule",
           });
         } else if (pi === undefined) {
           // Defensive: pi not forwarded — log skip for debug diagnostics
           await writeAuditLog("auto_advance_wake_skipped", {
             pipelineId: meta.pipelineId,
-            fromStage: meta.currentStage,
-            toStage: nextStage ? String(nextStage) : "none",
+            fromStage,
+            toStage: toStage ? String(toStage) : "none",
             reason: "pi not forwarded via RuntimeCtx",
           });
         }

@@ -58,14 +58,26 @@ export type MockCtx = {
   result: { success?: boolean; exitCode?: number; error?: string } | undefined;
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
   _ctx: { sessionManager: { getBranch(): any[]; getEntries(): any[] } };
+  /**
+   * 138: Optional pi SDK mock for wake-up tests.
+   * When provided, sendUserMessage will be tracked for assertion.
+   */
+  pi?: { sendUserMessage: (msg: string) => void };
 };
 
-export function createMockCtx(meta: SessionMeta, opts?: { selectReturn?: string | undefined }): MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string }[] } {
+export function createMockCtx(
+  meta: SessionMeta,
+  opts?: {
+    selectReturn?: string | undefined;
+    /** 138: Optional pi mock with sendUserMessage spy for wake-up tests */
+    pi?: { sendUserMessage: (msg: string) => void };
+  },
+) {
   const metadataUpdates: SessionMeta[] = [];
   const notifications: string[] = [];
   const statusCalls: { key: string; text: string }[] = [];
 
-  return {
+  const mock: MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string }[] } = {
     session: {
       getMeta: () => meta,
       updateMeta: (patch: Partial<SessionMeta>) => {
@@ -93,6 +105,13 @@ export function createMockCtx(meta: SessionMeta, opts?: { selectReturn?: string 
     notifications,
     statusCalls,
   };
+
+  // 138: Forward pi mock if provided
+  if (opts?.pi) {
+    mock.pi = opts.pi;
+  }
+
+  return mock;
 }
 
 /**

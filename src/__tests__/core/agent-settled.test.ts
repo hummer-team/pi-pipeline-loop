@@ -291,4 +291,295 @@ describe("createAgentSettled", () => {
 
     await rm(stageTmp, { recursive: true, force: true });
   });
+
+  // ── Phase 2: Wake-up tests (138) ──────────────────────────────────────────
+
+  /** Helper: create a stageTmp with a verify.md that PASSES (required file exists) */
+  async function makePassingVerifyTmp(prefix: string): Promise<string> {
+    const stageTmp = join(tmpdir(), prefix + "-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+    const vrDir = join(stageTmp, "references", "spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nBody\n",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+    return stageTmp;
+  }
+
+  /** Helper: create a stageTmp with a verify.md that FAILS (required file missing) */
+  async function makeFailingVerifyTmp(prefix: string): Promise<string> {
+    const stageTmp = join(tmpdir(), prefix + "-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+    const vrDir = join(stageTmp, "references", "spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"nonexistent.md\"\n---\nBody\n",
+    );
+    return stageTmp;
+  }
+
+  /** Helper: create a config where `stage` has hook-mode verify.require=true */
+  function makeHookVerifyConfig(stageTmp: string, stage: string) {
+    return makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === stage
+                ? { require: true, verifyFile: "references/spec/verify.md", mode: "hook" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+  }
+
+  // Case 1: clarify verify pass → advance to plan → sendUserMessage called
+  it("138 wake: clarify→plan advance triggers sendUserMessage with stage names", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-1");
+
+    const config = makeHookVerifyConfig(stageTmp, "clarify");
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should advance to plan
+    const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(lastMeta.currentStage).toBe("plan");
+
+    // sendUserMessage should be called exactly once with clarify and plan
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0]).toContain("clarify");
+    expect(sentMessages[0]).toContain("plan");
+
+    // Audit log should contain auto_advance_wake
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("auto_advance_wake");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 2: verify fails → sendUserMessage NOT called
+  it("138 wake: verification failure does NOT trigger sendUserMessage", async () => {
+    const stageTmp = await makeFailingVerifyTmp("pi-settled-wake-2");
+
+    const config = makeHookVerifyConfig(stageTmp, "develop");
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should NOT advance
+    expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 3: verify.mode="tool" → sendUserMessage NOT called
+  it("138 wake: tool-mode verify does NOT trigger sendUserMessage", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-3");
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "plan"
+                ? { require: true, verifyFile: "references/spec/verify.md", mode: "tool" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Tool mode skips verification entirely — no wake
+    expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 4: advancedThisTurn=true (C2) → sendUserMessage NOT called
+  it("138 wake: C2 advancedThisTurn=true does NOT trigger sendUserMessage", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-4");
+
+    const config = makeHookVerifyConfig(stageTmp, "develop");
+    const meta = makeTestMeta({ currentStage: "develop", advancedThisTurn: true });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // C2 guard returns early — no wake
+    expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 5: frozen (flowState=blocked) → sendUserMessage NOT called
+  it("138 wake: frozen pipeline does NOT trigger sendUserMessage", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-5");
+
+    const config = makeHookVerifyConfig(stageTmp, "develop");
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Frozen guard returns early — no wake
+    expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 6: terminal stage (nextStage=null) → sendUserMessage NOT called
+  it("138 wake: terminal stage (nextStage=null) does NOT trigger sendUserMessage", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-6");
+
+    // Use 'completed' as current stage with nextStage=null
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "awaiting_human"
+                ? { require: true, verifyFile: "references/spec/verify.md", mode: "hook" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "awaiting_human" });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // awaiting_human → completed (nextStage=completed) — should NOT wake
+    expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 7: ctx.pi is undefined → no error, no sendUserMessage
+  it("138 wake: missing pi does NOT throw and does NOT call sendUserMessage", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-7");
+
+    const config = makeHookVerifyConfig(stageTmp, "clarify");
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    // No pi mock provided — ctx.pi will be undefined
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await expect(hook.handler(ctx as any)).resolves.toBeUndefined();
+
+    // Should still advance (wake just skipped silently)
+    const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(lastMeta.currentStage).toBe("plan");
+
+    // Audit log should contain auto_advance_wake_skipped
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("auto_advance_wake_skipped");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 8: nextStage="completed" → sendUserMessage NOT called
+  it("138 wake: nextStage='completed' does NOT trigger sendUserMessage", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-8");
+
+    // fix → awaiting_human (not completed), but we want to test the completed boundary.
+    // Use awaiting_human where nextStage=completed.
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentFile: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "awaiting_human"
+                ? { require: true, verifyFile: "references/spec/verify.md", mode: "hook" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "awaiting_human" });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // awaiting_human → completed (nextStage === "completed") — should NOT wake
+    expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
 });
