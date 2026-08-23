@@ -61,7 +61,56 @@ describe("createPipelineStartCommand", () => {
     expect(result.error).toContain("File not found");
   });
 
-  it("no file → initializes state machine and returns guidance", async () => {
+  // Phase 5 (Bug 5): aborted restart with empty requirementDoc is rejected
+  it("aborted restart + empty requirementDoc + no file → returns /pipeline_start hint", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      flowState: "aborted",
+      // requirementDoc intentionally omitted (undefined)
+    });
+    let updatedMeta: any = null;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("/pipeline_start");
+    expect(result.error).toContain("<doc_file>");
+    expect(updatedMeta).toBeNull();
+  });
+
+  // Phase 5 (Bug 5): aborted restart with non-empty requirementDoc preserves it
+  it("aborted restart + requirementDoc preserved + no file → restart succeeds", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      flowState: "aborted",
+      requirementDoc: "docs/design/req.md",
+    });
+    let updatedMeta: any = null;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("restarted");
+    expect(updatedMeta).not.toBeNull();
+    expect(updatedMeta.requirementDoc).toBe("docs/design/req.md");
+  });
+
+  // Phase 5 (Bug 5): fresh start without doc_file is rejected
+  it("no file → returns error with /pipeline_start <doc_file> hint (no state machine initialized)", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     let updatedMeta: any = null;
@@ -75,13 +124,11 @@ describe("createPipelineStartCommand", () => {
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "" }, ctx);
 
-    expect(result.success).toBe(true);
-    expect(result.pipelineId).toMatch(/^pipe-/);
-    expect(result.currentStage).toBe("clarify");
-    expect(result.message).toContain("@feat-design-plan-agent");
-    expect(updatedMeta).not.toBeNull();
-    expect(updatedMeta.currentStage).toBe("clarify");
-    expect(updatedMeta.requirementDoc).toBeUndefined();
+    // Phase 5: no file → rejection, meta NOT initialized
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("/pipeline_start");
+    expect(result.error).toContain("<doc_file>");
+    expect(updatedMeta).toBeNull();
   });
 
   it("returns error when pipeline already running", async () => {
@@ -320,7 +367,8 @@ describe("createPipelineStartCommand", () => {
       expect(ctx.notifications.some(n => n === "Pipeline → clarify")).toBe(false);
     });
 
-    it("no-file branch → writes 'Pipeline → clarify' to status bar, no notify", async () => {
+    // Phase 5 (Bug 5): no-file fresh start is rejected — status bar NOT written
+    it("no-file fresh start → rejected with /pipeline_start hint, status bar unchanged", async () => {
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
       const ctx = createMockCtx(meta);
@@ -328,11 +376,11 @@ describe("createPipelineStartCommand", () => {
       const cmd = createPipelineStartCommand(config);
       const result: any = await cmd.execute({ file: "" }, ctx as any);
 
-      expect(result.success).toBe(true);
-      expect(ctx.statusCalls).toEqual(
-        expect.arrayContaining([{ key: "pipeline-stage", text: "Pipeline → clarify" }])
-      );
-      expect(ctx.notifications.some(n => n === "Pipeline → clarify")).toBe(false);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("/pipeline_start");
+      expect(result.error).toContain("<doc_file>");
+      // Status bar must remain untouched (no pipeline init)
+      expect(ctx.statusCalls).toEqual([]);
     });
 
     it("aborted restart branch → writes 'Pipeline → clarify' to status bar", async () => {

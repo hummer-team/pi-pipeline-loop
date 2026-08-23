@@ -65,11 +65,72 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
       const meta = ctx?.session?.getMeta?.();
 
+      // Phase 5 (Bug 5): fresh start without doc_file is rejected — doc_file is required.
+      // (Previous "no file → init state machine only" branch removed.)
+      if (!file) {
+        if (meta?.currentStage && meta.pipelineId) {
+          const flowState = getFlowState(meta);
+
+          // Aborted restart with empty requirementDoc → prompt user to provide doc_file
+          if (flowState === "aborted") {
+            if (!meta.requirementDoc) {
+              return {
+                success: false,
+                error: "run /pipeline_start <doc_file> start pipeline loop",
+              };
+            }
+            const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const newMeta: SessionMeta = {
+              currentStage: "clarify",
+              stageStartTime: Date.now(),
+              pipelineId,
+              domain: meta.domain ?? { id: "general", version: "latest", skillPath: "" },
+              summaries: {},
+              loopCount: 0,
+              currentStepIndex: 0,
+              maxLoops: config.maxLoops || 3,
+              maxLoopCycles: config.maxLoopCycles ?? 3,
+              flowState: "running",
+              blockedReason: undefined,
+              terminated: undefined,
+              terminateReason: undefined,
+              verifyAttempts: 0,
+              verifyFailures: [],
+              requirementDoc: meta.requirementDoc,
+            };
+            ctx?.session?.updateMeta?.(newMeta);
+            syncStageStatusBar(ui, ctx);
+            return {
+              success: true,
+              message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
+              pipelineId,
+              currentStage: "clarify",
+            };
+          }
+
+          // Running or blocked → reject with shortcut hint
+          const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
+          return {
+            success: false,
+            error:
+              `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}" (${flowState}). ` +
+              `Press ${shortcutKey} to open the decision menu to handle it.`,
+          };
+        }
+
+        // Fresh start without doc_file → reject, do NOT initialize state machine
+        return {
+          success: false,
+          error: "run /pipeline_start <doc_file> start pipeline loop",
+        };
+      }
+
+      // File provided — fresh start path (aborted restart preserves existing requirementDoc)
       if (meta?.currentStage && meta.pipelineId) {
         const flowState = getFlowState(meta);
 
-        // Aborted pipeline → allow restart
         if (flowState === "aborted") {
+          // Aborted restart: preserve existing requirementDoc per plan (do not override)
           const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           const newMeta: SessionMeta = {
             currentStage: "clarify",
@@ -106,46 +167,6 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           error:
             `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}" (${flowState}). ` +
             `Press ${shortcutKey} to open the decision menu to handle it.`,
-        };
-      }
-
-      // No file provided — initialize state machine only
-      if (!file) {
-        // Check for missing verify.md files
-        const missingStages = checkVerifyFiles(config);
-        if (missingStages.length > 0) {
-          return {
-            success: false,
-            error: `verify.md missing for stages: [${missingStages.join(", ")}]`,
-            missingStages,
-            suggestion: "Run /pipeline-init 1 to generate verify.md files",
-          };
-        }
-
-        const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-        const newMeta: SessionMeta = {
-          currentStage: "clarify",
-          stageStartTime: Date.now(),
-          pipelineId,
-          domain: { id: "general", version: "latest", skillPath: "" },
-          summaries: {},
-          loopCount: 0,
-          currentStepIndex: 0,
-          maxLoops: config.maxLoops || 3,
-          maxLoopCycles: config.maxLoopCycles ?? 3,
-          flowState: "running",
-        };
-
-        ctx?.session?.updateMeta?.(newMeta);
-        syncStageStatusBar(ui, ctx);
-
-        return {
-          success: true,
-          message: `Pipeline "${pipelineId}" initialized at stage "clarify". ` +
-            `Next: run @feat-design-plan-agent <requirement-doc-path> 1 to start requirement clarification`,
-          pipelineId,
-          currentStage: "clarify",
         };
       }
 
