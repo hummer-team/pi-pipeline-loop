@@ -62,7 +62,7 @@ describe("createPipelineStartCommand", () => {
   });
 
   // Phase 5 (Bug 5): aborted restart with empty requirementDoc is rejected
-  it("aborted restart + empty requirementDoc + no file → returns /pipeline_start hint", async () => {
+  it("aborted restart + empty requirementDoc + no file → returns /pipeline-start hint", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({
       flowState: "aborted",
@@ -80,8 +80,8 @@ describe("createPipelineStartCommand", () => {
     const result: any = await cmd.execute({ file: "" }, ctx as any);
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("/pipeline_start");
-    expect(result.error).toContain("<doc_file>");
+    expect(result.error).toContain("/pipeline-start");
+    expect(result.error).toContain("run /pipeline-start <doc_file>");
     expect(updatedMeta).toBeNull();
   });
 
@@ -193,7 +193,7 @@ describe("createPipelineStartCommand", () => {
   });
 
   // Phase 5 (Bug 5): fresh start without doc_file is rejected
-  it("no file → returns error with /pipeline_start <doc_file> hint (no state machine initialized)", async () => {
+  it("no file → returns error with /pipeline-start <doc_file> hint (no state machine initialized)", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
     let updatedMeta: any = null;
@@ -209,8 +209,8 @@ describe("createPipelineStartCommand", () => {
 
     // Phase 5: no file → rejection, meta NOT initialized
     expect(result.success).toBe(false);
-    expect(result.error).toContain("/pipeline_start");
-    expect(result.error).toContain("<doc_file>");
+    expect(result.error).toContain("/pipeline-start");
+    expect(result.error).toContain("run /pipeline-start <doc_file>");
     expect(updatedMeta).toBeNull();
   });
 
@@ -451,7 +451,7 @@ describe("createPipelineStartCommand", () => {
     });
 
     // Phase 5 (Bug 5): no-file fresh start is rejected — status bar NOT written
-    it("no-file fresh start → rejected with /pipeline_start hint, status bar unchanged", async () => {
+    it("no-file fresh start → rejected with /pipeline-start hint, status bar unchanged", async () => {
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
       const ctx = createMockCtx(meta);
@@ -460,8 +460,8 @@ describe("createPipelineStartCommand", () => {
       const result: any = await cmd.execute({ file: "" }, ctx as any);
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain("/pipeline_start");
-      expect(result.error).toContain("<doc_file>");
+      expect(result.error).toContain("/pipeline-start");
+      expect(result.error).toContain("run /pipeline-start <doc_file>");
       // Status bar must remain untouched (no pipeline init)
       expect(ctx.statusCalls).toEqual([]);
     });

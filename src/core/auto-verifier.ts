@@ -710,8 +710,8 @@ export async function runVerification(
       passed: false,
       failures: [{
         ruleType: unresolvedRuleType,
-        // Phase 4 (Bug 4-A): append remediation hint — run /pipeline_start with doc_file
-        detail: `requirementDoc not set, cannot resolve {requirementDoc} verify rule path. Run /pipeline_start <doc_file> to set requirementDoc`,
+        // Phase 4 (Bug 4-A): append remediation hint — run /pipeline-start with doc_file
+        detail: `requirementDoc not set, cannot resolve {requirementDoc} verify rule path. Run /pipeline-start <doc_file> to set requirementDoc`,
       }],
     };
     const verifyResult: VerifyResult = { structured: structuredResult, overallPassed: false };

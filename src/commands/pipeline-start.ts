@@ -113,7 +113,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             if (!meta.requirementDoc) {
               return {
                 success: false,
-                error: "run /pipeline_start <doc_file> start pipeline loop",
+                error: "run /pipeline-start <doc_file> start pipeline loop",
               };
             }
             const { pipelineId, newMeta } = buildRestartMeta(meta, config, meta.requirementDoc);
@@ -140,7 +140,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         // Fresh start without doc_file → reject, do NOT initialize state machine
         return {
           success: false,
-          error: "run /pipeline_start <doc_file> start pipeline loop",
+          error: "run /pipeline-start <doc_file> start pipeline loop",
         };
       }
 
