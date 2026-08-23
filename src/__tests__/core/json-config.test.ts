@@ -758,3 +758,35 @@ describe("stage allowedWritePaths config", () => {
     expect(result.stages.clarify.allowedWritePaths).toEqual(["**"]);
   });
 });
+
+describe("Phase 3 (139): agent filename alignment", () => {
+  it("stage-specific agent file defaults match frontmatter name", () => {
+    const json: PipelineJsonConfig = {
+      stages: {
+        clarify: { nextStage: "plan" },
+        plan: { nextStage: "develop" },
+        develop: { nextStage: "review" },
+        review: { nextStage: "fix" },
+        fix: { nextStage: "completed" },
+      },
+    };
+    const result = resolvePipelineConfig(json);
+
+    // Agent files should use stage-specific names aligned with frontmatter
+    expect(result.stages.clarify.agentFile).toContain("feat-design-plan-agent.md");
+    expect(result.stages.develop.agentFile).toContain("develop-agent.md");
+    expect(result.stages.review.agentFile).toContain("code-review-agent.md");
+    expect(result.stages.fix.agentFile).toContain("code-review-withfix-agent.md");
+  });
+
+  it("fix.nextStage = completed eliminates develop→fix→develop loop", () => {
+    const json: PipelineJsonConfig = {
+      stages: {
+        fix: { nextStage: "completed" },
+        completed: { nextStage: null },
+      },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.fix.nextStage).toBe("completed");
+  });
+});

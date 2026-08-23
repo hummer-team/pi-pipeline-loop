@@ -162,7 +162,7 @@ describe("createPipelineInitCommand", () => {
       // Pre-create a .pi file that matches a template file to trigger existingCount > 0
       const piDir = path.join(TMP, ".pi");
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"), "existing", "utf-8");
 
       const cmd = createPipelineInitCommand(config);
       // No ctx.ui provided — should default to skip strategy
@@ -179,7 +179,7 @@ describe("createPipelineInitCommand", () => {
       // Pre-create files to trigger multi-execution detection
       const piDir = path.join(TMP, ".pi");
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"), "existing", "utf-8");
 
       const ctx = {
         ui: {
@@ -200,7 +200,7 @@ describe("createPipelineInitCommand", () => {
 
       const piDir = path.join(TMP, ".pi");
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"), "existing", "utf-8");
 
       const ctx = {
         ui: {
@@ -235,7 +235,7 @@ describe("createPipelineInitCommand", () => {
       // Pre-create a .pi file that matches a template file to trigger existingCount > 0
       const piDir = path.join(TMP, ".pi");
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"), "existing", "utf-8");
 
       const cmd = createPipelineInitCommand(config);
       // No UI → defaults to skip strategy
@@ -243,7 +243,7 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(result.content).toContain("Skipped files:");
-      expect(result.content).toContain(".pi/agents/clarify/clarify.md");
+      expect(result.content).toContain(".pi/agents/clarify/feat-design-plan-agent.md");
     });
 
     it("cancel branch returns content with 'cancelled'", async () => {
@@ -252,7 +252,7 @@ describe("createPipelineInitCommand", () => {
       // Pre-create files to trigger multi-execution detection
       const piDir = path.join(TMP, ".pi");
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
-      await fs.writeFile(path.join(piDir, "agents", "clarify", "clarify.md"), "existing", "utf-8");
+      await fs.writeFile(path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"), "existing", "utf-8");
 
       const ctx = {
         ui: {
@@ -283,7 +283,7 @@ describe("createPipelineInitCommand", () => {
       );
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "agents", "clarify", "clarify.md"),
+        path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"),
         "existing agent",
         "utf-8",
       );
@@ -316,7 +316,7 @@ describe("createPipelineInitCommand", () => {
       );
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "agents", "clarify", "clarify.md"),
+        path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"),
         "existing agent",
         "utf-8",
       );
@@ -398,7 +398,7 @@ describe("createPipelineInitCommand", () => {
       );
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "agents", "clarify", "clarify.md"),
+        path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"),
         "existing agent",
         "utf-8",
       );
@@ -645,7 +645,7 @@ describe("createPipelineInitCommand", () => {
       // Pre-create a file that matches a template file to trigger multi-execution detection (existingCount > 0)
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "agents", "clarify", "clarify.md"),
+        path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"),
         "existing agent",
         "utf-8",
       );
@@ -763,7 +763,7 @@ describe("createPipelineInitCommand", () => {
       );
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "agents", "clarify", "clarify.md"),
+        path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"),
         "existing agent",
         "utf-8",
       );
@@ -1351,7 +1351,7 @@ describe("createPipelineInitCommand", () => {
       const piDir = path.join(TMP, ".pi");
       await fs.mkdir(path.join(piDir, "agents", "clarify"), { recursive: true });
       await fs.writeFile(
-        path.join(piDir, "agents", "clarify", "clarify.md"),
+        path.join(piDir, "agents", "clarify", "feat-design-plan-agent.md"),
         "existing agent",
         "utf-8",
       );
