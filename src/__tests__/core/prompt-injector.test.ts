@@ -1082,4 +1082,76 @@ describe("createPromptInjector", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  // ─── Phase 4 (139): {{stage_executor}} placeholder ───────────────────────────
+  describe("Phase 4: stage_executor injection", () => {
+    it("injects stage_executor section for develop stage", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p4-dev-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // Write a yml template with {{stage_executor}} placeholder
+      const refDir = join(TMP, ".pi", "references");
+      await mkdir(refDir, { recursive: true });
+      const ymlContent = [
+        "develop: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{loop_status}}",
+        "  ---",
+        "  {{stage_executor}}",
+      ].join("\n");
+      await writeFile(join(refDir, "pipeline-stage-prompt.yml"), ymlContent);
+
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base prompt",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      // Should contain the stage executor scheduling section
+      expect(result.systemPrompt).toContain("阶段执行者调度");
+      expect(result.systemPrompt).toContain("develop-agent");
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("injects completed summary when in completed stage", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p4-completed-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "completed",
+        previousStage: "fix",
+        pipelineId: "pipe-completed-test",
+        summaries: {
+          plan: { path: "/tmp/plan.md", hash: "abc", status: "valid" },
+        },
+      });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base prompt",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      // Should contain completed summary section
+      expect(result.systemPrompt).toContain("管线完成摘要");
+      expect(result.systemPrompt).toContain("pipe-completed-test");
+      expect(result.systemPrompt).toContain("最终 stage");
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
 });

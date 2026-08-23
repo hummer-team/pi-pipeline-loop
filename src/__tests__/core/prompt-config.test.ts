@@ -298,12 +298,12 @@ describe("prompt-config", () => {
       expect(critical).toContain("{{stage_write_scope}}");
     });
 
-    it("returns exactly 2 critical placeholders per stage", () => {
-      expect(CRITICAL_PLACEHOLDERS("clarify")).toHaveLength(2);
-      expect(CRITICAL_PLACEHOLDERS("develop")).toHaveLength(2);
-      expect(CRITICAL_PLACEHOLDERS("fix")).toHaveLength(2);
-      expect(CRITICAL_PLACEHOLDERS("plan")).toHaveLength(2);
-      expect(CRITICAL_PLACEHOLDERS("review")).toHaveLength(2);
+    it("returns correct number of critical placeholders per stage (Phase 4: +stage_executor for execution stages)", () => {
+      expect(CRITICAL_PLACEHOLDERS("clarify")).toHaveLength(2); // pipeline_status + stage_write_scope
+      expect(CRITICAL_PLACEHOLDERS("plan")).toHaveLength(3);    // pipeline_status + stage_write_scope + stage_executor
+      expect(CRITICAL_PLACEHOLDERS("develop")).toHaveLength(3); // pipeline_status + loop_status + stage_executor
+      expect(CRITICAL_PLACEHOLDERS("review")).toHaveLength(3);  // pipeline_status + stage_write_scope + stage_executor
+      expect(CRITICAL_PLACEHOLDERS("fix")).toHaveLength(3);     // pipeline_status + loop_status + stage_executor
     });
   });
 
@@ -414,11 +414,12 @@ describe("prompt-config", () => {
       }
     });
 
-    it("does not require {{stage_write_scope}} for develop stage", () => {
-      const template = "{{pipeline_status}}\n---\n{{loop_status}}";
+    it("does not require {{stage_write_scope}} for develop stage (Phase 4: but requires {{stage_executor}})", () => {
+      const template = "{{pipeline_status}}\n---\n{{loop_status}}\n---\n{{stage_executor}}";
       const values: Record<string, string | null> = {
         pipeline_status: "# Pipeline",
         loop_status: "# Loop",
+        stage_executor: "# Executor",
       };
       const result = renderStageTemplate(template, "develop", values);
       expect(result.status).toBe("ok");
@@ -519,11 +520,13 @@ describe("prompt-config", () => {
 
     it("returns missing_critical when loop_status paragraph is removed", () => {
       // Fix #3 for loop stages: {{loop_status}} removed with null co-tenant
-      const template = "{{loop_status}} and {{domain_skill}}\n---\n{{pipeline_status}}";
+      // Phase 4: {{stage_executor}} also required for develop stage
+      const template = "{{loop_status}} and {{domain_skill}}\n---\n{{pipeline_status}}\n---\n{{stage_executor}}";
       const values: Record<string, string | null> = {
         loop_status: "# Loop",
         domain_skill: null, // triggers paragraph removal
         pipeline_status: "# Pipeline",
+        stage_executor: "# Executor",
       };
       const result = renderStageTemplate(template, "develop", values);
       expect(result.status).toBe("missing_critical");

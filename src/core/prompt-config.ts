@@ -68,6 +68,7 @@ const KNOWN_PLACEHOLDER_KEYS = [
   "verify_failures",
   "verify_tool_guidance",
   "stage_write_scope",
+  "stage_executor", // Phase 4 (139): stage executor scheduling
 ];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
@@ -217,10 +218,11 @@ export function resetPromptConfigCache(): void {
 /**
  * Returns the list of critical placeholder keys (with {{}} wrapping) for a stage.
  *
- * Adaptive rules (D7):
+ * Adaptive rules (D7 + Phase 4/139):
  * - All stages: `{{pipeline_status}}`
  * - Loop stages (develop/fix): + `{{loop_status}}`
  * - Other stages (clarify/plan/review): + `{{stage_write_scope}}`
+ * - Execution stages (plan/develop/review/fix): + `{{stage_executor}}`
  *
  * @param stage - Pipeline stage name
  * @returns Array of critical placeholder strings including {{}} delimiters
@@ -231,6 +233,10 @@ export const CRITICAL_PLACEHOLDERS = (stage: string): string[] => {
     critical.push("{{loop_status}}");
   } else {
     critical.push("{{stage_write_scope}}");
+  }
+  // Phase 4 (139): stage_executor is critical for execution stages
+  if (stage === "plan" || stage === "develop" || stage === "review" || stage === "fix") {
+    critical.push("{{stage_executor}}");
   }
   return critical;
 };

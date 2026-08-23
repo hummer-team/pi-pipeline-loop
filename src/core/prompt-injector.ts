@@ -363,6 +363,38 @@ function buildStageWriteScope(
 }
 
 /**
+ * Builds the completed stage summary prompt.
+ * Phase 4 (139): Injected when the pipeline reaches completed stage,
+ * summarizing pipelineId, final stage, artifact files, and loop cycles.
+ *
+ * @param _config - Pipeline configuration (for projectRoot)
+ * @param meta - Current session metadata
+ * @returns Summary text for the completed stage prompt
+ */
+function buildCompletedSummary(
+  _config: PipelineConfig,
+  meta: SessionMeta,
+): string {
+  const lines: string[] = [];
+  lines.push("## 管线完成摘要");
+  lines.push("");
+  lines.push(`- **pipelineId**: ${meta.pipelineId}`);
+  lines.push(`- **最终 stage**: ${meta.previousStage ?? "completed"}`);
+  lines.push(`- **质量环轮次**: ${meta.loopCycleCount ?? 0}`);
+
+  // List artifact files from summaries
+  const artifactFiles = Object.entries(meta.summaries)
+    .filter(([, s]) => s.status === "valid")
+    .map(([stage, s]) => `- **${stage}**: ${s.path}`);
+  if (artifactFiles.length > 0) {
+    lines.push("- **产物文件**:");
+    lines.push(...artifactFiles);
+  }
+
+  return lines.join("\n");
+}
+
+/**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
  *
  * Injection method (D3): Appends plugin prompt after pi base system prompt.
@@ -421,10 +453,21 @@ export function createPromptInjector(config: PipelineConfig): Hook {
 
       // Append plugin prompt after pi base system prompt (D3)
       const base = ctx.getSystemPrompt?.() ?? "";
-      if (base) {
-        return { systemPrompt: base + "\n\n---\n\n" + pluginPrompt };
+
+      // Phase 4 (139): completed stage summary injection
+      let completedSummary = "";
+      if (meta.currentStage === "completed") {
+        completedSummary = buildCompletedSummary(config, meta);
       }
-      return { systemPrompt: pluginPrompt };
+
+      const pluginPromptFull = completedSummary
+        ? pluginPrompt + "\n\n---\n\n" + completedSummary
+        : pluginPrompt;
+
+      if (base) {
+        return { systemPrompt: base + "\n\n---\n\n" + pluginPromptFull };
+      }
+      return { systemPrompt: pluginPromptFull };
     },
   };
 }
@@ -493,7 +536,64 @@ async function buildDynamicValues(
     verify_tool_guidance: buildVerifyToolGuidance(stageConfig),
     // Write scope: null for loop stages (embedded in loop_status), built for non-loop
     stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true, meta.currentStage),
+    // Phase 4 (139): Stage executor scheduling segment
+    stage_executor: buildStageExecutor(config, stageConfig, meta),
   };
+}
+
+// ─── Stage executor mapping (Phase 4 / 139) ─────────────────────────────────
+
+/** Stage → subagent_type mapping for {{stage_executor}} injection */
+const STAGE_EXECUTOR_MAP: Record<string, { subagent_type: string; mode: string }> = {
+  plan: { subagent_type: "feat-design-plan-agent", mode: "lightweight-advance" },
+  develop: { subagent_type: "develop-agent", mode: "task-invocation" },
+  review: { subagent_type: "code-review-agent", mode: "task-invocation" },
+  fix: { subagent_type: "code-review-withfix-agent", mode: "task-invocation" },
+};
+
+/**
+ * Builds the stage executor scheduling segment for {{stage_executor}} placeholder.
+ * Returns the per-stage executor configuration text, or null for stages that
+ * don't have executor injection (clarify, completed, awaiting_human).
+ *
+ * The yml template provides the raw text via `stage_executor_{stage}` key.
+ * This function fills {subagent_type} and {context_arg} placeholders.
+ *
+ * @param _config - Pipeline configuration (reserved for future use)
+ * @param _stageConfig - Current stage configuration
+ * @param meta - Current session metadata
+ * @returns Rendered executor segment string, or null if not applicable
+ */
+function buildStageExecutor(
+  _config: PipelineConfig,
+  _stageConfig: StageConfig,
+  meta: SessionMeta,
+): string | null {
+  const executor = STAGE_EXECUTOR_MAP[meta.currentStage];
+  if (!executor) {
+    return null;
+  }
+
+  // Build the scheduling instruction segment
+  const lines: string[] = [];
+  lines.push("## 阶段执行者调度");
+  lines.push("");
+
+  if (executor.mode === "task-invocation") {
+    lines.push(`本阶段由子 agent 执行：\`${executor.subagent_type}\``);
+    lines.push("");
+    lines.push(`**调度方式**: 主线程通过 task 工具唤起 \`${executor.subagent_type}\``);
+    lines.push(`**返回协议**: 子 agent 完成后返回 \`nextStage: <stage>\` 建议，由主线程调用 stage_advance 推进`);
+    lines.push(`**上下文传递**: context_arg 由主线程据文档产物填写（如 \`_plan.md\`、\`_commit.md\` 等）`);
+  } else {
+    // lightweight-advance: plan stage — receive @feat-design-plan-agent return then advance
+    lines.push(`本阶段由 \`${executor.subagent_type}\` 执行（轻量推进模式）`);
+    lines.push("");
+    lines.push(`**调度方式**: 用户在聊天中 @\`${executor.subagent_type}\`，本阶段接收其返回后推进`);
+    lines.push(`**返回协议**: 收到 \`nextStage: develop\` 后由主线程调用 stage_advance`);
+  }
+
+  return lines.join("\n");
 }
 
 
