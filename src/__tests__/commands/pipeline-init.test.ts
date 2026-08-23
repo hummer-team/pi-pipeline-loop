@@ -424,6 +424,66 @@ describe("createPipelineInitCommand", () => {
     });
   });
 
+  describe("Phase 2 — Bug 1: exists-skip display shows 'rules already present'", () => {
+    it("reason='exists' shows 'rules already present' in skipped section (not 'unknown reason')", async () => {
+      const config = makeInitConfig();
+
+      // Pre-create skill + verify.md with the exact expected rules → triggers status=skipped, reason=exists
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "- **Must** develop-result.md\n",
+        "utf-8",
+      );
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Well-formed verify.md with matching rules → skipped with reason=exists
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"develop-result.md\"\n---\nExisting body\n",
+        "utf-8",
+      );
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("rules already present");
+      expect(result.content).not.toContain("unknown reason");
+    });
+
+    it("reason='exists_custom' keeps 'user-authored custom rules protected' text (no regression)", async () => {
+      const config = makeInitConfig();
+
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "- **Must** develop-result.md\n",
+        "utf-8",
+      );
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Verify.md with custom fileContentPattern rule → triggers exists_custom skip
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"develop-result.md\"\n  fileContentPattern:\n    - path: \"develop-result.md\"\n      pattern: \"^phase:\"\n---\nCustom content\n",
+        "utf-8",
+      );
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("user-authored custom rules protected");
+      // Must NOT be confused with the generic exists display
+      expect(result.content).not.toContain("rules already present");
+    });
+  });
+
   describe("Phase 2 — PipelineUI status bar lifecycle (command-level removed)", () => {
     function makeUICtx() {
       const notifications: string[] = [];

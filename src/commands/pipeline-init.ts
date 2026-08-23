@@ -490,6 +490,10 @@ async function executeVerifyBranch(
         lines.push(`  - ${r.stage} (skipped: no_items)`);
       } else if (r.reason === "exists_custom") {
         lines.push(`  - ${r.stage} (skipped: user-authored custom rules protected)`);
+      } else if (r.reason === "exists") {
+        // Phase 2 (Bug 1): explicit display for "rules already present" skip —
+        // avoids falling through to the "unknown reason" branch.
+        lines.push(`  - ${r.stage} (skipped: rules already present)`);
       } else {
         lines.push(`  - ${r.stage} (${r.error ?? "unknown reason"})`);
       }
