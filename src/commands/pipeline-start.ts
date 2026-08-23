@@ -1,6 +1,6 @@
 /**
  * @module pipeline-start
- * /pipeline_start <doc_file.md> — initializes a pipeline run from a requirement document.
+ * /pipeline-start <doc_file.md> — initializes a pipeline run from a requirement document.
  */
 
 import fs from "node:fs";

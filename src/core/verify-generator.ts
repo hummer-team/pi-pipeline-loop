@@ -46,7 +46,7 @@ export type VerifyGenerateResult = {
   addedItems?: string[];
   /**
    * Phase 4 (Bug 4-B): true when the stage's verify.md references
-   * `{requirementDoc}` placeholder that can only be resolved at pipeline_start.
+   * `{requirementDoc}` placeholder that can only be resolved at pipeline-start.
    * Used by pipeline-init report to surface a remediation warning.
    */
   hasRequirementDocPlaceholder?: boolean;

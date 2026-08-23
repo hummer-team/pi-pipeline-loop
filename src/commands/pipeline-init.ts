@@ -543,11 +543,11 @@ async function executeVerifyBranch(
   }
 
   // Phase 4 (Bug 4-B): warn if any stage's verify.md references {requirementDoc}
-  // placeholder — requires /pipeline_start <doc_file> to resolve.
+  // placeholder — requires /pipeline-start <doc_file> to resolve.
   const placeholderStages = results.filter(r => r.hasRequirementDocPlaceholder === true);
   if (placeholderStages.length > 0) {
     const stageNames = placeholderStages.map(r => r.stage).join(", ");
-    lines.push(`- warn: verify.md references {requirementDoc} in stage(s) [${stageNames}] — start pipeline with /pipeline_start <doc_file> to resolve`);
+    lines.push(`- warn: verify.md references {requirementDoc} in stage(s) [${stageNames}] — start pipeline with /pipeline-start <doc_file> to resolve`);
   }
 
   // Summary audit — unified for sub="1" and sub="" paths

@@ -295,7 +295,7 @@ export interface SessionMeta {
   /** Session-level temporary bash prefix overrides (user-approved) */
   tempAllowedBash?: string[];
 
-  /** Path to the requirement document loaded by /pipeline_start */
+  /** Path to the requirement document loaded by /pipeline-start */
   requirementDoc?: string;
 
   /** Read-only record of the currently selected model (populated via model_select event) */

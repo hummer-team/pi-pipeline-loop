@@ -367,7 +367,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         const fs = getFlowState(meta);
         let reason: string;
         if (fs === "aborted") {
-          reason = "Pipeline aborted. Start a new pipeline with /pipeline_start";
+          reason = "Pipeline aborted. Start a new pipeline with /pipeline-start";
         } else if (meta.currentStage === "awaiting_human") {
           reason = "Pipeline frozen. Contact the user to resume the pipeline";
         } else {

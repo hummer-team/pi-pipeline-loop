@@ -12,6 +12,7 @@ import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { buildDecisionMenu, executeDecision, labelToDecision } from "./core/flow-state";
 import type { PipelineDecision } from "./core/flow-state";
 import { safeWriteAuditLog } from "./utils/auditLog";
+import { parseCommandArgs } from "./utils/command-args";
 
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
@@ -45,9 +46,6 @@ import { createSessionShutdown } from "./core/session-shutdown";
 
 // JSON config loader
 import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader";
-
-// Command argument parser (extracted pure function, see src/utils/command-args.ts)
-import { parseCommandArgs } from "./utils/command-args";
 
 // ─── Factory Function ────────────────────────────────────────────────────────
 

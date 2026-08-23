@@ -512,7 +512,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.success).toBe(true);
       expect(result.content).toContain("warn:");
       expect(result.content).toContain("{requirementDoc}");
-      expect(result.content).toContain("/pipeline_start");
+      expect(result.content).toContain("/pipeline-start");
     });
 
     it("report does NOT include placeholder warning when verify.md has no placeholder", async () => {

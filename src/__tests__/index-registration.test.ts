@@ -158,7 +158,7 @@ describe("registerCommand bridge", () => {
     const notifyCalls: string[] = [];
     // meta intentionally empty → fresh-start path with non-empty file fails at
     // fs.read (file not found), but the important thing is the error must be
-    // "File not found", NOT the "/pipeline_start" hint (which fires only when
+    // "File not found", NOT the "/pipeline-start" hint (which fires only when
     // file is empty — i.e. when the bug reappears).
     const extCtx = makeMockExtCtx({
       // No meta → fresh-start path (meta undefined).
@@ -177,7 +177,7 @@ describe("registerCommand bridge", () => {
 
     // The bridge must have parsed "docs/design/76_E2E_Feat.md" into { file: "..." }.
     // If the bug regresses, { file } is empty → pipeline-start returns the
-    // "/pipeline_start <doc_file>" hint instead of "File not found".
+    // "/pipeline-start <doc_file>" hint instead of "File not found".
     expect(notifyCalls.length).toBeGreaterThan(0);
     const notified = notifyCalls.join(" | ");
     expect(notified).toContain("File not found");
@@ -205,12 +205,14 @@ describe("registerCommand bridge", () => {
     // "1" → pipeline-init subcommand; should parse to { sub: "1" }.
     await handler("1", extCtx);
 
-    // pipeline-init with sub="1" attempts to generate files. Whether or not
-    // the underlying generation succeeds is irrelevant here; the assertion
-    // is that the bridge parsed { sub: "1" } (not { raw: "1" }). We verify
-    // by checking that the handler produced output (i.e. it ran the init
-    // path, not a default/unknown-command path).
+    // Strong assertion: sub="1" must route to the verify-only branch.
+    // If the bridge regresses (e.g. parseCommandArgs returns { raw: "1" }
+    // instead of { sub: "1" }), sub defaults to "" which triggers BOTH
+    // dir and verify branches — content would contain ".pi/ directory setup".
     expect(notifyCalls.length).toBeGreaterThan(0);
+    const notified = notifyCalls.join("\n");
+    expect(notified).not.toContain(".pi/ directory setup");
+    expect(notified).toContain("verify.md generation");
   });
 });
 
