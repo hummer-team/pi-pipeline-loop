@@ -46,26 +46,8 @@ import { createSessionShutdown } from "./core/session-shutdown";
 // JSON config loader
 import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader";
 
-// ─── Command argument parser ────────────────────────────────────────────────
-
-/**
- * Parse command-line string args into the Record<string, unknown> shape
- * expected by internal Command.execute() implementations.
- */
-function parseCommandArgs(commandName: string, args: string): Record<string, unknown> {
-  switch (commandName) {
-    case "pipeline-init":
-      return { sub: args.trim() };
-    case "pipeline_start":
-      return { file: args.trim() };
-    case "pipeline_status":
-      return {};
-    case "pipeline-quit":
-      return {};
-    default:
-      return { raw: args };
-  }
-}
+// Command argument parser (extracted pure function, see src/utils/command-args.ts)
+import { parseCommandArgs } from "./utils/command-args";
 
 // ─── Factory Function ────────────────────────────────────────────────────────
 
