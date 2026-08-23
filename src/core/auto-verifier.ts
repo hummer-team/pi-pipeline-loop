@@ -786,3 +786,56 @@ export async function runVerification(
     verifyResult,
   };
 }
+
+/**
+ * P1: Pre-check required files before running full verification.
+ * Returns early if requiredFiles are not yet produced, avoiding
+ * false-negative verification failures and freeze triggers.
+ *
+ * @param config - Pipeline configuration
+ * @param meta - Current session metadata
+ * @returns Object with passed flag and missing file list
+ */
+export async function precheckRequiredFiles(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<{ passed: boolean; missing: string[] }> {
+  const stageConfig = config.stages[meta.currentStage];
+  const verifyConfig = stageConfig.verify;
+
+  // No verify config or verify not required → precheck passes
+  if (!verifyConfig || !verifyConfig.require) {
+    return { passed: true, missing: [] };
+  }
+
+  const verifyFile = verifyConfig.verifyFile;
+  const verifyPath = verifyFile
+    ? (path.isAbsolute(verifyFile)
+      ? verifyFile
+      : path.join(config.projectRoot, verifyFile))
+    : path.join(config.projectRoot, resolveStagePath(DEFAULT_VERIFY_FILE, meta.currentStage));
+
+  // Parse verify.md to extract requiredFiles rules
+  const { rules } = await parseVerifyFile(verifyPath);
+
+  // No rules or no requiredFiles → precheck passes
+  if (!rules || !rules.requiredFiles || rules.requiredFiles.length === 0) {
+    return { passed: true, missing: [] };
+  }
+
+  // Check if required files exist
+  const result = await verifyRequiredFiles(rules.requiredFiles, config.projectRoot);
+
+  if (result.passed) {
+    return { passed: true, missing: [] };
+  }
+
+  // Extract missing files from detail message
+  // verifyRequiredFiles returns detail like "Missing required files: file1, file2"
+  const missingMatch = result.detail.match(/Missing required files:\s*(.+)/);
+  const missing = missingMatch
+    ? missingMatch[1].split(",").map(s => s.trim())
+    : rules.requiredFiles;
+
+  return { passed: false, missing };
+}

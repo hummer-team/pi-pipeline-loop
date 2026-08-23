@@ -6,7 +6,7 @@
  */
 
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from "../types";
-import { runVerification } from "../core/auto-verifier";
+import { runVerification, precheckRequiredFiles } from "../core/auto-verifier";
 import type { RunVerificationOptions } from "../core/auto-verifier";
 import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
 import { createPipelineUI } from "../core/pipeline-ui";
@@ -108,6 +108,19 @@ export function createPipelineVerify(
       // Extract assistant messages from session branch for verification
       const assistantMessages = extractAssistantMessages(sessionCtx._ctx as any);
 
+      // P1: Pre-check required files before running full verification
+      const precheck = await precheckRequiredFiles(config, { ...meta, currentStage: stageName });
+      if (!precheck.passed) {
+        // Required files not yet produced — return guidance without failure/freeze
+        return {
+          success: false,
+          passed: false,
+          message: `Required deliverables not yet produced. Please create: ${precheck.missing.join(", ")}`,
+          precheck: true,
+          missing: precheck.missing,
+        };
+      }
+
       const vr = await runVerification(
         config,
         { ...meta, currentStage: stageName },
@@ -122,7 +135,8 @@ export function createPipelineVerify(
         verifyResult: vr.verifyResult ?? null,
       };
 
-      if (vr.verifyResult?.overallPassed || vr.rulePassed) {
+      // S1: Verification passes only on structured rules (rulePassed)
+      if (vr.rulePassed) {
         return (await applyVerifyPass(sessionCtx, meta, stageName, stageConfig.nextStage, sharedResult, {
           method: "tool",
           handleTerminal: true,

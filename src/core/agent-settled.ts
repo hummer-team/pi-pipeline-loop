@@ -59,6 +59,19 @@ export function createAgentSettled(
         return;
       }
 
+      // C2: Idempotent guard — skip verification if stage_advance already ran this turn
+      // This prevents duplicate verification noise after manual advance via tool.
+      if (meta.advancedThisTurn === true) {
+        await writeAuditLog("hook_skip_after_manual_advance", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          reason: "advancedThisTurn=true, stage_advance already verified this turn",
+        });
+        // Clear the flag to prevent residual state
+        ctx.session.updateMeta({ advancedThisTurn: undefined });
+        return;
+      }
+
       // 2. Auto-verification
       const stageConfig = config.stages[meta.currentStage];
       if (!stageConfig.verify?.require) {
@@ -94,7 +107,9 @@ export function createAgentSettled(
       };
 
       if (vr.rulePassed) {
-        await applyVerifyPass(ctx, meta, meta.currentStage, stageConfig.nextStage, sharedResult, {
+        // Clear advancedThisTurn flag on successful verification (prevent residual state)
+        const clearedMeta = { ...meta, advancedThisTurn: undefined };
+        await applyVerifyPass(ctx, clearedMeta, meta.currentStage, stageConfig.nextStage, sharedResult, {
           method: "rule",
           handleTerminal: false,
           returnResult: false,

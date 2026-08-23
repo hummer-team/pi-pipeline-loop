@@ -12,7 +12,7 @@
 
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from "../types";
 import { createPipelineUI } from "./pipeline-ui";
-import { runVerification } from "./auto-verifier";
+import { runVerification, precheckRequiredFiles } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
 
@@ -117,12 +117,25 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // (d) Verification gate: run when stage requires it (unless skipVerify is valid)
       const argSkipVerify = args.skipVerify === true;
       if (stageConfig.verify?.require && !argSkipVerify) {
+        // P1: Pre-check required files before running full verification
+        const precheck = await precheckRequiredFiles(config, meta);
+        if (!precheck.passed) {
+          // Required files not yet produced — return guidance without failure/freeze
+          return {
+            success: false,
+            message: `Required deliverables not yet produced. Please create: ${precheck.missing.join(", ")}`,
+            precheck: true,
+            missing: precheck.missing,
+          };
+        }
+
         const messages = extractAssistantMessages(ctx._ctx);
         // Extract tool call records for selfVerifySkip (same as agent-settled hook path)
         const toolCallRecords = extractToolCallRecords(ctx._ctx);
         const vr = await runVerification(config, meta, messages, { execFn: deps?.execFn, toolCallRecords });
 
-        const verifyPassed = vr.rulePassed || vr.verifyResult?.overallPassed;
+        // S1: Verification passes only on structured rules (rulePassed)
+        const verifyPassed = vr.rulePassed;
         if (!verifyPassed) {
           // Build shared result shape for applyVerifyFail
           const sharedResult = {
@@ -152,6 +165,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
 
       // (e) Advance to target stage
+      // C2: Set advancedThisTurn flag to prevent agent_settled from triggering redundant verification
       ctx.session.updateMeta({
         ...meta,
         previousStage: currentStage,
@@ -162,6 +176,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
+        advancedThisTurn: true,
       });
 
       if (resolvedTarget === null || resolvedTarget === "completed") {

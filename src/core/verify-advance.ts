@@ -140,6 +140,7 @@ export async function applyVerifyPass(
       currentStepIndex: 0,
       verifyFailures: [],
       violations: [],
+      advancedThisTurn: undefined, // Clear C2 flag on stage transition
     });
 
     await writeAuditLog("auto_verify_pass", {

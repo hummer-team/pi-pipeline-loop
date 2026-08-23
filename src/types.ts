@@ -289,6 +289,13 @@ export interface SessionMeta {
   /** Session-level allowed commands (user-approved for destructive command bypass) */
   sessionAllowedCommands?: string[];
 
+  /**
+   * C2 flag: set true when stage_advance successfully advances within the current turn.
+   * Consumed by agent_settled to skip redundant verification (idempotent guard).
+   * Cleared after agent_settled processes it, or on stage transitions.
+   */
+  advancedThisTurn?: boolean;
+
   /** Path to the requirement document loaded by /pipeline-start */
   requirementDoc?: string;
 

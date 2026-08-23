@@ -107,12 +107,12 @@ describe("createPipelineVerify", () => {
   it("Scenario B: rules fail → verifyFailures written to meta, no advance", async () => {
     const config = makeConfigWithVerify("tool");
 
-    // Create verify.md with requiredFiles that DON'T exist
+    // Create verify.md with requiredCommands that will FAIL (exit code mismatch)
     const verifyDir = join(TMP, "references", "develop_spec");
     await mkdir(verifyDir, { recursive: true });
     await writeFile(
       join(verifyDir, "verify.md"),
-      "---\nrules:\n  requiredFiles:\n    - \"nonexistent-file.md\"\n---\nBody\n",
+      "---\nrules:\n  requiredCommands:\n    - cmd: \"exit 1\"\n      expectExit: 0\n---\nBody\n",
     );
 
     const meta = makeTestMeta({ currentStage: "develop" });
@@ -250,12 +250,12 @@ describe("createPipelineVerify", () => {
       ) as any,
     });
 
-    // verify.md that will FAIL
+    // verify.md that will FAIL (requiredCommands with exit code mismatch)
     const verifyDir = join(TMP, "references", "develop_spec");
     await mkdir(verifyDir, { recursive: true });
     await writeFile(
       join(verifyDir, "verify.md"),
-      "---\nrules:\n  requiredFiles:\n    - \"nonexistent-tool-mode.md\"\n---\nBody\n",
+      "---\nrules:\n  requiredCommands:\n    - cmd: \"exit 1\"\n      expectExit: 0\n---\nBody\n",
     );
 
     const meta = makeTestMeta({ currentStage: "develop", verifyAttempts: 1 });
