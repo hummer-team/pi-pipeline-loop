@@ -15,6 +15,7 @@ import { createPipelineUI } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
+import { safeWriteStageAudit } from "../utils/auditLog";
 
 /**
  * Dependencies injected into the stage advancer for verification execution.
@@ -85,6 +86,10 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       // (a) Intercept completed stage
       if (currentStage === "completed") {
+        await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+          fromStage: "completed",
+          reason: "already_completed",
+        }, "warn");
         return {
           success: false,
           message: "Pipeline is already completed",
@@ -100,6 +105,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       // (c) Target legality validation
       if (resolvedTarget !== null && !(resolvedTarget in config.stages)) {
+        await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+          fromStage: currentStage,
+          reason: "invalid_next_stage",
+          target: String(resolvedTarget),
+        }, "warn");
         return {
           success: false,
           message: `Invalid nextStage "${resolvedTarget}": not defined in pipeline config`,
@@ -107,6 +117,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         };
       }
       if (resolvedTarget !== null && resolvedTarget === currentStage) {
+        await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+          fromStage: currentStage,
+          reason: "same_stage",
+          target: String(resolvedTarget),
+        }, "warn");
         return {
           success: false,
           message: `Invalid nextStage "${resolvedTarget}": cannot advance to the same stage`,
@@ -137,6 +152,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // S1: Verification passes only on structured rules (rulePassed)
         const verifyPassed = vr.rulePassed;
         if (!verifyPassed) {
+          // Audit verify-gate failure
+          await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+            fromStage: currentStage,
+            reason: "verify_failed",
+          }, "warn");
           // Build shared result shape for applyVerifyFail
           const sharedResult = {
             structuredResult: vr.verifyResult?.structured,
@@ -156,6 +176,10 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // Use persistent verifyConfigError marker (survives resume) instead of
         // checking verifyFailures which are cleared by resume decision.
         if (!meta.verifyConfigError) {
+          await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+            fromStage: currentStage,
+            reason: "skipVerify_rejected",
+          }, "warn");
           return {
             success: false,
             message: "skipVerify is only allowed when a verification config-class error is detected (EISDIR/empty path/directory/unresolved requirementDoc placeholder)",
@@ -181,6 +205,12 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       if (resolvedTarget === null || resolvedTarget === "completed") {
         ui.clearStage(ctx);
+        // Write pipeline_completed terminal audit event
+        await safeWriteStageAudit(config, "pipeline_completed", meta, {
+          finalStage: currentStage,
+          loopCycleCount: String(meta.loopCycleCount ?? 0),
+          stageVisitOrder: (meta.stageVisitOrder ?? []).join(","),
+        });
         return {
           success: true,
           message: resolvedTarget === null
@@ -189,6 +219,13 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           currentStage: "completed",
         };
       }
+
+      // Success audit for non-terminal advance
+      await safeWriteStageAudit(config, "stage_advance", meta, {
+        fromStage: currentStage,
+        toStage: resolvedTarget,
+        override: argNextStage ? "yes" : "no",
+      });
 
       ui.transition(ctx, currentStage, resolvedTarget);
 

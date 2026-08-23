@@ -6,6 +6,7 @@
 
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { buildStageSequence } from "../utils/stage-sequence";
+import { safeWriteStageAudit } from "../utils/auditLog";
 
 /**
  * Creates the `pipeline_state` tool.
@@ -40,7 +41,7 @@ export function createPipelineState(config: PipelineConfig): Tool {
 
       const stageSequence = buildStageSequence(config, meta.currentStage);
 
-      return {
+      const result = {
         pipelineId: meta.pipelineId,
         stage: {
           current: currentStage,
@@ -60,6 +61,13 @@ export function createPipelineState(config: PipelineConfig): Tool {
         summaries: meta.summaries,
         stageStartTime: new Date(meta.stageStartTime).toISOString(),
       };
+
+      // Audit pipeline_state query with full snapshot
+      await safeWriteStageAudit(config, "pipeline_state", meta, {
+        snapshot: JSON.stringify(result),
+      });
+
+      return result;
     },
   };
 }

@@ -8,6 +8,7 @@
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { createPipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
+import { safeWriteStageAudit } from "../utils/auditLog";
 
 /**
  * Creates the `loop_check` tool.
@@ -66,6 +67,12 @@ export function createLoopChecker(config: PipelineConfig): Tool {
       const summary = (args.summary as string) ?? "";
 
       if (result === "pass") {
+        await safeWriteStageAudit(config, "loop_check", meta, {
+          action: "advance",
+          loopCount: String(meta.loopCount),
+          maxLoops: String(meta.maxLoops),
+          summary: (summary as string).slice(0, 200),
+        });
         return {
           action: "advance",
           message: "Tests passed — ready to advance to next stage",
@@ -89,6 +96,13 @@ export function createLoopChecker(config: PipelineConfig): Tool {
         // Freeze pipeline and prompt for user decision
         await freezeAndPrompt(ctx, meta, "loop_halt_overflow", config);
 
+        await safeWriteStageAudit(config, "loop_check", meta, {
+          action: "halt",
+          loopCount: String(newLoopCount),
+          maxLoops: String(maxLoops),
+          summary: (summary as string).slice(0, 200),
+        }, "warn");
+
         return {
           action: "halt",
           message:
@@ -98,6 +112,13 @@ export function createLoopChecker(config: PipelineConfig): Tool {
           maxLoops,
         };
       }
+
+      await safeWriteStageAudit(config, "loop_check", meta, {
+        action: "retry",
+        loopCount: String(newLoopCount),
+        maxLoops: String(maxLoops),
+        summary: (summary as string).slice(0, 200),
+      });
 
       return {
         action: "retry",

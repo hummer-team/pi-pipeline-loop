@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, Command, SessionMeta } from "../types";
 import { DEFAULT_VERIFY_FILE, DEFAULT_DECISION_SHORTCUT, resolveStagePath } from "../constants";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, safeWriteStageAudit } from "../utils/auditLog";
 import { getFlowState } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
 
@@ -119,6 +119,11 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             const { pipelineId, newMeta } = buildRestartMeta(meta, config, meta.requirementDoc);
             ctx?.session?.updateMeta?.(newMeta);
             syncStageStatusBar(ui, ctx);
+            await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+              command: "/pipeline-start",
+              file: "(none)",
+              previousStage: meta?.currentStage ?? "none",
+            });
             return {
               success: true,
               message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
@@ -154,6 +159,11 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           const { pipelineId, newMeta } = buildRestartMeta(meta, config, meta.requirementDoc || file);
           ctx?.session?.updateMeta?.(newMeta);
           syncStageStatusBar(ui, ctx);
+          await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+            command: `/pipeline-start ${file}`,
+            file,
+            previousStage: meta?.currentStage ?? "none",
+          });
           return {
             success: true,
             message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
@@ -215,6 +225,13 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
       ctx?.session?.updateMeta?.(newMeta);
       syncStageStatusBar(ui, ctx);
+
+      // Audit successful fresh start
+      await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+        command: `/pipeline-start ${file}`,
+        file,
+        previousStage: "none",
+      });
 
       return {
         success: true,
