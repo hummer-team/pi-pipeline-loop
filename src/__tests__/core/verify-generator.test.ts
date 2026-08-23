@@ -829,6 +829,30 @@ describe("verify-generator", () => {
       __resetAuditDirPath();
     });
 
+    it("merge branch reports hasRequirementDocPlaceholder=true when toAdd introduces {requirementDoc}", async () => {
+      // Skill contains {requirementDoc} placeholder as a Must file item
+      const config = await setupConfigWithSkill("develop", "- **Must** {requirementDoc}\n");
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Pre-create verify.md with empty rules (no placeholder) — forces merge path
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n---\nExisting body\n",
+        "utf-8",
+      );
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("merged");
+      // The merged content now contains {requirementDoc} from toAdd, must be flagged
+      expect(results[0].hasRequirementDocPlaceholder).toBe(true);
+
+      // Also verify the on-disk merged file actually contains the placeholder
+      const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(content).toContain("{requirementDoc}");
+    });
+
     it("onMergeAsk callback is invoked before merge write and 'allow' proceeds with merge", async () => {
       const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
 

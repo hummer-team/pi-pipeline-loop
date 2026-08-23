@@ -53,6 +53,43 @@ function checkVerifyFiles(config: PipelineConfig): PipelineStage[] {
   return missingStages;
 }
 
+/**
+ * Builds the reset SessionMeta for an aborted pipeline restart.
+ *
+ * Shared by the no-file and with-file aborted-restart branches to eliminate
+ * duplication and ensure consistent field initialization.
+ *
+ * @param meta - Current (aborted) session metadata
+ * @param config - Pipeline configuration (for maxLoops / maxLoopCycles)
+ * @param requirementDoc - The requirement doc path to set (may come from meta or new file)
+ */
+function buildRestartMeta(
+  meta: SessionMeta,
+  config: PipelineConfig,
+  requirementDoc: string | undefined,
+): { pipelineId: string; newMeta: SessionMeta } {
+  const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const newMeta: SessionMeta = {
+    currentStage: "clarify",
+    stageStartTime: Date.now(),
+    pipelineId,
+    domain: meta.domain ?? { id: "general", version: "latest", skillPath: "" },
+    summaries: {},
+    loopCount: 0,
+    currentStepIndex: 0,
+    maxLoops: config.maxLoops || 3,
+    maxLoopCycles: config.maxLoopCycles ?? 3,
+    flowState: "running",
+    blockedReason: undefined,
+    terminated: undefined,
+    terminateReason: undefined,
+    verifyAttempts: 0,
+    verifyFailures: [],
+    requirementDoc,
+  };
+  return { pipelineId, newMeta };
+}
+
 export function createPipelineStartCommand(config: PipelineConfig): Command {
   return {
     name: "pipeline-start",
@@ -79,25 +116,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
                 error: "run /pipeline_start <doc_file> start pipeline loop",
               };
             }
-            const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            const newMeta: SessionMeta = {
-              currentStage: "clarify",
-              stageStartTime: Date.now(),
-              pipelineId,
-              domain: meta.domain ?? { id: "general", version: "latest", skillPath: "" },
-              summaries: {},
-              loopCount: 0,
-              currentStepIndex: 0,
-              maxLoops: config.maxLoops || 3,
-              maxLoopCycles: config.maxLoopCycles ?? 3,
-              flowState: "running",
-              blockedReason: undefined,
-              terminated: undefined,
-              terminateReason: undefined,
-              verifyAttempts: 0,
-              verifyFailures: [],
-              requirementDoc: meta.requirementDoc,
-            };
+            const { pipelineId, newMeta } = buildRestartMeta(meta, config, meta.requirementDoc);
             ctx?.session?.updateMeta?.(newMeta);
             syncStageStatusBar(ui, ctx);
             return {
@@ -130,26 +149,9 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         const flowState = getFlowState(meta);
 
         if (flowState === "aborted") {
-          // Aborted restart: preserve existing requirementDoc per plan (do not override)
-          const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const newMeta: SessionMeta = {
-            currentStage: "clarify",
-            stageStartTime: Date.now(),
-            pipelineId,
-            domain: meta.domain ?? { id: "general", version: "latest", skillPath: "" },
-            summaries: {},
-            loopCount: 0,
-            currentStepIndex: 0,
-            maxLoops: config.maxLoops || 3,
-            maxLoopCycles: config.maxLoopCycles ?? 3,
-            flowState: "running",
-            blockedReason: undefined,
-            terminated: undefined,
-            terminateReason: undefined,
-            verifyAttempts: 0,
-            verifyFailures: [],
-            requirementDoc: meta.requirementDoc,
-          };
+          // Aborted restart: preserve existing requirementDoc, or use newly provided file
+          // when old meta has no requirementDoc (consistent with no-file branch semantics)
+          const { pipelineId, newMeta } = buildRestartMeta(meta, config, meta.requirementDoc || file);
           ctx?.session?.updateMeta?.(newMeta);
           syncStageStatusBar(ui, ctx);
           return {

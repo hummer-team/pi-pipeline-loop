@@ -446,7 +446,7 @@ async function executeVerifyBranch(
   const onMergeAsk = config.protect?.ask === true
     ? async (stage: string, verifyPath: string): Promise<"allow" | "block"> => {
         const meta = ctx?.session?.getMeta?.();
-        if (!meta) return "allow"; // no session meta → cannot ask → allow (fail-open)
+        if (!meta) return "block"; // no session meta → cannot ask → block (fail-safe, consistent with askProtectDecision Esc/no-UI)
         // verifyPath is already a relative path like `.pi/references/{stage}_spec/verify.md`
         const relPath = verifyPath.startsWith(config.projectRoot)
           ? verifyPath.slice(config.projectRoot.length + 1)

@@ -748,8 +748,9 @@ export async function generateVerifyFiles(
           llmCount: llmItems.length,
           llmStatus: llmStatusLocal,
           addedItems: addedDescs,
-          // Check merged content for unresolved placeholder (existing rules may carry it)
-          hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(existingContent),
+          // Check merged content for unresolved placeholder — must inspect mergedContent
+          // (not just existingContent) because toAdd items may introduce {requirementDoc}
+          hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(mergedContent),
         });
         continue;
       } catch (err) {

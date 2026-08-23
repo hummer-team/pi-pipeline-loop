@@ -109,6 +109,89 @@ describe("createPipelineStartCommand", () => {
     expect(updatedMeta.requirementDoc).toBe("docs/design/req.md");
   });
 
+  // Medium fix #3: aborted restart + empty requirementDoc + new file → uses new file
+  it("aborted restart + empty requirementDoc + file provided → adopts new file (no silent discard)", async () => {
+    await fs.writeFile(docPath, "new content", "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      flowState: "aborted",
+      // requirementDoc intentionally omitted (undefined)
+    });
+    let updatedMeta: any = null;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => { updatedMeta = m; },
+      },
+    };
+
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("restarted");
+    expect(updatedMeta).not.toBeNull();
+    // The new file must be adopted (not silently discarded)
+    expect(updatedMeta.requirementDoc).toBe("req.md");
+  });
+
+  // Medium fix #4: buildRestartMeta DRY — both restart paths produce identical structure
+  it("aborted restart (both paths) produces consistent SessionMeta structure", async () => {
+    await fs.writeFile(docPath, "content", "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP, maxLoops: 5, maxLoopCycles: 7 });
+
+    // Path 1: no-file restart (requirementDoc from meta)
+    const meta1 = makeTestMeta({
+      flowState: "aborted",
+      requirementDoc: "existing.md",
+    });
+    let updatedMeta1: any = null;
+    const ctx1 = {
+      session: {
+        getMeta: () => meta1,
+        updateMeta: (m: any) => { updatedMeta1 = m; },
+      },
+    };
+    const cmd1 = createPipelineStartCommand(config);
+    const r1: any = await cmd1.execute({ file: "" }, ctx1 as any);
+
+    // Path 2: with-file restart (requirementDoc from file, overrides empty meta)
+    const meta2 = makeTestMeta({
+      flowState: "aborted",
+      // no requirementDoc
+    });
+    let updatedMeta2: any = null;
+    const ctx2 = {
+      session: {
+        getMeta: () => meta2,
+        updateMeta: (m: any) => { updatedMeta2 = m; },
+      },
+    };
+    const cmd2 = createPipelineStartCommand(config);
+    const r2: any = await cmd2.execute({ file: "req.md" }, ctx2 as any);
+
+    expect(r1.success).toBe(true);
+    expect(r2.success).toBe(true);
+
+    // Both paths must produce the same structural fields (except pipelineId, stageStartTime, requirementDoc)
+    for (const m of [updatedMeta1, updatedMeta2]) {
+      expect(m.currentStage).toBe("clarify");
+      expect(m.flowState).toBe("running");
+      expect(m.loopCount).toBe(0);
+      expect(m.currentStepIndex).toBe(0);
+      expect(m.verifyAttempts).toBe(0);
+      expect(m.verifyFailures).toEqual([]);
+      expect(m.blockedReason).toBeUndefined();
+      expect(m.terminated).toBeUndefined();
+      expect(m.terminateReason).toBeUndefined();
+      expect(m.maxLoops).toBe(5);
+      expect(m.maxLoopCycles).toBe(7);
+      expect(m.pipelineId).toMatch(/^pipe-/);
+    }
+    expect(updatedMeta1.requirementDoc).toBe("existing.md");
+    expect(updatedMeta2.requirementDoc).toBe("req.md");
+  });
+
   // Phase 5 (Bug 5): fresh start without doc_file is rejected
   it("no file → returns error with /pipeline_start <doc_file> hint (no state machine initialized)", async () => {
     const config = makeTestConfig({ projectRoot: TMP });

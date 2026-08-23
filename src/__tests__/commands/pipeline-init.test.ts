@@ -542,6 +542,39 @@ describe("createPipelineInitCommand", () => {
       expect(result.content).not.toContain("warn:");
       expect(result.content).not.toContain("{requirementDoc}");
     });
+
+    it("protect.ask=true + no session meta → merge is blocked (fail-safe, consistent with askProtectDecision)", async () => {
+      const config = makeInitConfig();
+      // Enable protect.ask to activate the onMergeAsk callback
+      (config as any).protect = { ask: true, gitignore: true, paths: [], allow: [] };
+
+      // Pre-create skill + existing verify.md (triggers merge path)
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "- **Must** develop-result.md\n",
+        "utf-8",
+      );
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      const originalContent = "---\nrules:\n---\nExisting body\n";
+      await fs.writeFile(path.join(verifyDir, "verify.md"), originalContent, "utf-8");
+
+      const cmd = createPipelineInitCommand(config);
+      // ctx has no session at all → getMeta() returns undefined → onMergeAsk must return "block"
+      const result: any = await cmd.execute({ sub: "1" }, {});
+
+      expect(result.success).toBe(true);
+      // develop stage should be skipped (blocked), NOT merged — count must be 0
+      expect(result.content).toContain("merged: 0");
+      // The develop stage detail line must show user_declined, not merged
+      expect(result.content).toContain("develop (skipped: user declined overwrite)");
+      // File on disk must remain unchanged (merge was blocked)
+      const afterContent = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(afterContent).toBe(originalContent);
+    });
   });
 
   describe("Phase 2 — PipelineUI status bar lifecycle (command-level removed)", () => {
