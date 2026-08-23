@@ -46,8 +46,7 @@ describe("createPipeline", () => {
     expect(registeredTools).toContain("generate_stage_summary");
     expect(registeredTools).toContain("validate_summary");
     expect(registeredTools).toContain("pipeline_handoff");
-    expect(registeredTools).toContain("request_bash_permission");
-    expect(registeredTools.length).toBe(7);
+    expect(registeredTools.length).toBe(6);
 
     expect(registeredCommands).toContain("pipeline-status");
     expect(registeredCommands).toContain("pipeline-start");
@@ -146,7 +145,7 @@ describe("default export", () => {
     expect(registeredEvents).toContain("before_agent_start");
     expect(registeredEvents).toContain("model_select");
 
-    expect(registeredTools.length).toBe(7);
+    expect(registeredTools.length).toBe(6);
     expect(registeredTools).toContain("stage_advance");
     expect(registeredTools).toContain("pipeline_handoff");
 

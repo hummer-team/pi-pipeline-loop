@@ -35,8 +35,6 @@ function makeConfigWithVerify(stages: string[] = ["develop"]) {
           {
             agentFile: "a.md",
             skillPath: `${s}/SKILL.md`,
-            allowedTools: ["read", "bash", "write", "edit"],
-            allowedBashPrefixes: ["ls", "bun", "git", "echo"],
             nextStage: a[i + 1] ?? null,
             requireDomain: false,
             verify: stages.includes(s) ? { require: true } : undefined,
@@ -434,8 +432,6 @@ describe("verify-integration", () => {
               {
                 agentFile: "a.md",
                 skillPath: "s.md",
-                allowedTools: ["read"],
-                allowedBashPrefixes: ["ls"],
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
                 verify:
@@ -483,8 +479,6 @@ describe("verify-integration", () => {
               {
                 agentFile: "a.md",
                 skillPath: "s.md",
-                allowedTools: ["read"],
-                allowedBashPrefixes: ["ls"],
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
                 verify:

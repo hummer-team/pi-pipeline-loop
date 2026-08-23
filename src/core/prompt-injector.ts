@@ -309,19 +309,13 @@ function buildVerifyToolGuidance(stageConfig: StageConfig): string | null {
 }
 
 /**
- * Checks if a stage's bash prefix config implies git read-only mode.
- * Returns true when none of the git write sub-commands (add/commit/push)
- * appear as allowed bash prefixes.
- *
- * Read-only git commands (log, status, diff, show) are safe — they don't
- * mutate git state. Only add/commit/push are considered write operations.
+ * Determines if git is read-only for a stage.
+ * TEMPORARY: In Phase 1, this will be refactored to use stage name directly.
+ * For now, returns false (git write allowed) to compile after allowlist removal.
  */
-function isGitReadOnly(allowedBashPrefixes: string[] | undefined): boolean {
-  if (!allowedBashPrefixes) return true;
-  const gitWriteSubcommands = ["git add", "git commit", "git push"];
-  return !allowedBashPrefixes.some(
-    (p) => p === "git" || gitWriteSubcommands.some((gw) => p === gw || p.startsWith(gw + " ")),
-  );
+function isGitReadOnly(_stageName: string): boolean {
+  // Phase 1 will implement stage-based logic: develop/fix can git write, others read-only
+  return false;
 }
 
 /**
@@ -347,17 +341,19 @@ function buildWriteScopeLine(stageConfig: StageConfig): string {
  *
  * @param stageConfig - Current stage configuration
  * @param includeGitHint - Whether to append git read-only hint
+ * @param stageName - Current stage name for git read-only check
  * @returns Prompt section string
  */
 function buildStageWriteScope(
   stageConfig: StageConfig,
-  includeGitHint: boolean
+  includeGitHint: boolean,
+  stageName: string
 ): string {
   const lines = [
     `# STAGE WRITE SCOPE`,
     `- Write Scope: ${buildWriteScopeLine(stageConfig)}`,
   ];
-  if (includeGitHint && isGitReadOnly(stageConfig.allowedBashPrefixes)) {
+  if (includeGitHint && isGitReadOnly(stageName)) {
     lines.push(`- Git: read-only (add/commit/push forbidden)`);
   }
   return lines.join("\n");
@@ -455,7 +451,7 @@ async function buildDefaultPrompt(
   const part7 = buildVerifyToolGuidance(stageConfig);
   // Part 8: Stage Write Scope (standalone for non-loop stages; loop stages get it in Part 4)
   const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
-    ? buildStageWriteScope(stageConfig, true)
+    ? buildStageWriteScope(stageConfig, true, meta.currentStage)
     : null;
 
   const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8].filter(
@@ -493,7 +489,7 @@ async function buildDynamicValues(
     violations: buildViolationPrompt(meta),
     verify_tool_guidance: buildVerifyToolGuidance(stageConfig),
     // Write scope: null for loop stages (embedded in loop_status), built for non-loop
-    stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true),
+    stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true, meta.currentStage),
   };
 }
 

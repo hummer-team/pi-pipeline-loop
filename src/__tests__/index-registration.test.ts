@@ -224,8 +224,8 @@ describe("registerTool bridge", () => {
     const factory = createPipeline(makeTestConfig());
     await factory(pi);
 
-    // 7 standard tools (pipeline_verify is not registered because no stage has mode:"tool")
-    expect(registeredTools.length).toBe(7);
+    // 6 standard tools (pipeline_verify is not registered because no stage has mode:"tool")
+    expect(registeredTools.length).toBe(6);
 
     for (const tool of registeredTools) {
       // All required fields present
@@ -338,33 +338,12 @@ describe("hook bridge", () => {
     const result = await toolCallHook!.handler(event, extCtx);
 
     // tool-guard returns undefined when all checks pass (tool is allowed)
-    // "bash" with "ls" prefix is in allowedBashPrefixes, so it passes
+    // Bash prefix check removed in Phase 0 — commands are no longer checked against prefix allowlist
     expect(result).toBeUndefined();
   });
 
-  it("tool_call hook bridge blocks disallowed tools via RuntimeCtx", async () => {
-    const { pi, registeredEvents } = makeMockPi();
-    const factory = createPipeline(makeTestConfig());
-    await factory(pi);
-
-    const toolCallHook = registeredEvents.find((e) => e.event === "tool_call");
-    expect(toolCallHook).toBeDefined();
-
-    const extCtx = makeMockExtCtx();
-    const event = {
-      type: "tool_call",
-      toolName: "disallowed_tool",
-      input: {},
-    };
-
-    // tool-guard should block this tool since it's not in allowedTools
-    const result = await toolCallHook!.handler(event, extCtx);
-
-    expect(result).toBeDefined();
-    expect(result.block).toBe(true);
-    expect(result.reason).toContain("disallowed_tool");
-    expect(result.reason).toContain("not allowed");
-  });
+  // Tool allowlist check removed in Phase 0 (D0) — tools are no longer restricted
+  // The following test has been removed as the functionality no longer exists.
 
   it("tool_result hook bridge passes RuntimeCtx with result to internal handler", async () => {
     const { pi, registeredEvents } = makeMockPi();

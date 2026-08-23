@@ -321,8 +321,6 @@ describe("createPipelineStartCommand", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
@@ -370,8 +368,6 @@ describe("createPipelineStartCommand", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify: s === "develop" ? { require: true } : undefined,

@@ -31,7 +31,6 @@ import { createPipelineState } from "./core/pipeline-state";
 import { createGenerateSummary } from "./tools/generate-summary";
 import { createValidateSummary } from "./tools/validate-summary";
 import { createPipelineHandoff } from "./tools/pipeline-handoff";
-import { createRequestBashPermission } from "./tools/request-bash-permission";
 import { createPipelineVerify } from "./tools/pipeline-verify";
 
 // Commands
@@ -131,7 +130,6 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createGenerateSummary(config),
       createValidateSummary(config),
       createPipelineHandoff(config),
-      createRequestBashPermission(),
     ];
     for (const t of tools) {
       // TSDoc: parameters cast — internal JSON Schema passed to TypeBox TSchema slot.

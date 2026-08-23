@@ -37,7 +37,7 @@ export function createPipelineQuitCommand(config: PipelineConfig): Command {
         flowState: "aborted",
         terminateReason: "user_quit",
         blockedReason: undefined,
-        tempAllowedBash: [],
+        sessionAllowedCommands: [],
         verifyAttempts: 0,
         verifyFailures: [],
         sessionAllowedWritePaths: [],

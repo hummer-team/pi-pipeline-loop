@@ -45,8 +45,6 @@ function makeConfigWithVerify(mode?: "hook" | "tool") {
           {
             agentFile: "a.md",
             skillPath: `${s}/SKILL.md`,
-            allowedTools: ["read", "bash"],
-            allowedBashPrefixes: ["ls", "bun"],
             nextStage: (a[i + 1] ?? null) as PipelineStage | null,
             requireDomain: false,
             verify:
@@ -197,8 +195,6 @@ describe("createPipelineVerify", () => {
             {
               agentFile: "a.md",
               skillPath: `${s}/SKILL.md`,
-              allowedTools: ["read", "bash"],
-              allowedBashPrefixes: ["ls", "bun"],
               nextStage: (a[i + 1] ?? null) as PipelineStage | null,
               requireDomain: false,
               // develop stage: verify.require=true, but NO verifyFile set
@@ -242,8 +238,6 @@ describe("createPipelineVerify", () => {
             {
               agentFile: "a.md",
               skillPath: `${s}/SKILL.md`,
-              allowedTools: ["read", "bash"],
-              allowedBashPrefixes: ["ls", "bun"],
               nextStage: (a[i + 1] ?? null) as PipelineStage | null,
               requireDomain: false,
               verify:

@@ -93,15 +93,11 @@ describe("resolvePipelineConfig", () => {
   it("uses clarify/plan defaults for read-only stages", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };
     const result = resolvePipelineConfig(json);
-    expect(result.stages.clarify.allowedTools).toEqual(["read", "bash", "write", "edit", "stage_advance"]);
-    expect(result.stages.clarify.allowedBashPrefixes).toEqual([
-      "ls",
-      "cat",
-      "find",
-      "git log",
-      "git status",
-      "git diff",
-      "git show",
+    // Read-only stages: allowedWritePaths defaults to doc directories
+    expect(result.stages.clarify.allowedWritePaths).toEqual([
+      "docs/",
+      "doc/",
+      "documentation/",
     ]);
     expect(result.stages.clarify.requireDomain).toBe(false);
   });
@@ -109,24 +105,8 @@ describe("resolvePipelineConfig", () => {
   it("uses develop/fix defaults for read-write stages", () => {
     const json: PipelineJsonConfig = { stages: { develop: {} } };
     const result = resolvePipelineConfig(json);
-    expect(result.stages.develop.allowedTools).toContain("write");
-    expect(result.stages.develop.allowedTools).toContain("edit");
-    expect(result.stages.develop.allowedBashPrefixes).toContain("npm test");
-    expect(result.stages.develop.allowedBashPrefixes).toContain("bun test");
-  });
-
-  it("develop/fix bash defaults include JVM ecosystem commands", () => {
-    const json: PipelineJsonConfig = { stages: { develop: {}, fix: {} } };
-    const result = resolvePipelineConfig(json);
-    for (const stage of [result.stages.develop, result.stages.fix]) {
-      expect(stage.allowedBashPrefixes).toContain("mvn");
-      expect(stage.allowedBashPrefixes).toContain("mvnw");
-      expect(stage.allowedBashPrefixes).toContain("./mvnw");
-      expect(stage.allowedBashPrefixes).toContain("gradle");
-      expect(stage.allowedBashPrefixes).toContain("gradlew");
-      expect(stage.allowedBashPrefixes).toContain("./gradlew");
-      expect(stage.allowedBashPrefixes).toContain("java");
-    }
+    // Read-write stages: allowedWritePaths defaults to full access
+    expect(result.stages.develop.allowedWritePaths).toEqual(["**"]);
   });
 
   it("preserves user-specified values over defaults", () => {
@@ -134,14 +114,14 @@ describe("resolvePipelineConfig", () => {
       stages: {
         clarify: {
           agentFile: "custom/agent.md",
-          allowedTools: ["read"],
+          allowedWritePaths: ["custom/"],
           nextStage: "plan",
         },
       },
     };
     const result = resolvePipelineConfig(json);
     expect(result.stages.clarify.agentFile).toBe("custom/agent.md");
-    expect(result.stages.clarify.allowedTools).toEqual(["read"]);
+    expect(result.stages.clarify.allowedWritePaths).toEqual(["custom/"]);
   });
 
   it("handles require: false by creating empty config for that stage", () => {
@@ -149,7 +129,7 @@ describe("resolvePipelineConfig", () => {
       stages: { plan: { require: false } },
     };
     const result = resolvePipelineConfig(json);
-    expect(result.stages.plan.allowedTools).toEqual([]);
+    expect(result.stages.plan.allowedWritePaths).toEqual([]);
     expect(result.stages.plan.requireDomain).toBe(false);
   });
 

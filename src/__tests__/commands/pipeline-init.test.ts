@@ -64,8 +64,6 @@ function makeInitConfig() {
           {
             agentFile: `.pi/agents/${s}/${s}.md`,
             skillPath: `${s}/SKILL.md`,
-            allowedTools: ["read"],
-            allowedBashPrefixes: ["ls"],
             nextStage: a[i + 1] ?? null,
             requireDomain: false,
           },

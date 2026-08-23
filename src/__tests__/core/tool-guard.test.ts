@@ -18,130 +18,9 @@ describe("createToolGuard", () => {
     expect(hook.event).toBe("tool_call");
   });
 
-  describe("tool permission check", () => {
-    it("blocks disallowed tools", async () => {
-      const config = makeTestConfig();
-      config.stages["develop"] = { ...config.stages["develop"], allowedTools: ["bash"] } as any;
-      const meta = makeTestMeta();
-      const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "write", arguments: {} };
-
-      const hook = createToolGuard(config);
-      const result = await hook.handler(ctx as any);
-
-      expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("not allowed");
-    });
-
-    it("allows tools in the allowed list", async () => {
-      const config = makeTestConfig();
-      const meta = makeTestMeta();
-      const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "read", arguments: {} };
-
-      const hook = createToolGuard(config);
-      const result = await hook.handler(ctx as any);
-
-      expect(result).toBeUndefined();
-    });
-  });
-
-  describe("bash command prefix check", () => {
-    it("allows commands matching allowed prefix", async () => {
-      const config = makeTestConfig();
-      config.stages["develop"] = {
-        ...config.stages["develop"],
-        allowedBashPrefixes: ["ls", "npm test"],
-      } as any;
-      const meta = makeTestMeta();
-      const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "bash", arguments: { command: "ls -la" } };
-
-      const hook = createToolGuard(config);
-      const result = await hook.handler(ctx as any);
-
-      expect(result).toBeUndefined();
-    });
-
-    it("blocks commands not matching any prefix", async () => {
-      const config = makeTestConfig();
-      config.stages["develop"] = {
-        ...config.stages["develop"],
-        allowedBashPrefixes: ["ls"],
-      } as any;
-      const meta = makeTestMeta();
-      const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
-
-      const hook = createToolGuard(config);
-      const result = await hook.handler(ctx as any);
-
-      expect((result as any).block).toBe(true);
-    });
-
-    it("allows commands matching stage verify.md requiredCommands (fallback)", async () => {
-      const TMP = join(tmpdir(), "pi-tg-vr-" + Date.now());
-      await mkdir(TMP, { recursive: true });
-      try {
-        // Create verify.md with requiredCommands for develop stage
-        const verifyDir = join(TMP, ".pi", "references", "develop_spec");
-        await mkdir(verifyDir, { recursive: true });
-        await writeFile(
-          join(verifyDir, "verify.md"),
-          "---\nrules:\n  requiredCommands:\n    - cmd: \"./mvnw clean test\"\n      expectExit: 0\n---\nVerify\n",
-          "utf-8",
-        );
-
-        const config = makeTestConfig({ projectRoot: TMP });
-        config.stages["develop"] = {
-          ...config.stages["develop"],
-          allowedBashPrefixes: ["ls"], // ./mvnw NOT in explicit list
-        } as any;
-        const meta = makeTestMeta({ currentStage: "develop" });
-        const ctx = createMockCtx(meta);
-        ctx.toolCall = { name: "bash", arguments: { command: "./mvnw clean test" } };
-
-        const hook = createToolGuard(config);
-        const result = await hook.handler(ctx as any);
-
-        // Should NOT be blocked (matches verify.md requiredCommand)
-        expect(result).toBeUndefined();
-      } finally {
-        await rm(TMP, { recursive: true, force: true });
-      }
-    });
-
-    it("still blocks commands not matching verify.md requiredCommands either", async () => {
-      const TMP = join(tmpdir(), "pi-tg-vr2-" + Date.now());
-      await mkdir(TMP, { recursive: true });
-      try {
-        const verifyDir = join(TMP, ".pi", "references", "develop_spec");
-        await mkdir(verifyDir, { recursive: true });
-        await writeFile(
-          join(verifyDir, "verify.md"),
-          "---\nrules:\n  requiredCommands:\n    - cmd: \"./mvnw clean test\"\n      expectExit: 0\n---\nVerify\n",
-          "utf-8",
-        );
-
-        const config = makeTestConfig({ projectRoot: TMP });
-        config.stages["develop"] = {
-          ...config.stages["develop"],
-          allowedBashPrefixes: ["ls"],
-        } as any;
-        const meta = makeTestMeta({ currentStage: "develop" });
-        const ctx = createMockCtx(meta);
-        ctx.toolCall = { name: "bash", arguments: { command: "./gradlew build" } };
-
-        const hook = createToolGuard(config);
-        const result = await hook.handler(ctx as any);
-
-        // Should be blocked (not in allowedBashPrefixes and not in verify.md)
-        expect((result as any).block).toBe(true);
-      } finally {
-        await rm(TMP, { recursive: true, force: true });
-      }
-    });
-  });
+  // Tool permission check removed in Phase 0 (D0) — tools are no longer restricted
+  // Bash command prefix check removed in Phase 0 (D0) — commands no longer checked against prefix allowlist
+  // Tests for these features have been removed accordingly.
 
   describe("freeze state check", () => {
     it("blocks all tools when pipeline is awaiting_human", async () => {
@@ -321,7 +200,6 @@ describe("createToolGuard", () => {
       // Override develop stage to allow echo command
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["echo", "rm", "git"],
       } as any;
 
       const meta = makeTestMeta();
@@ -367,7 +245,6 @@ describe("createToolGuard", () => {
       // Override develop stage to allow echo command
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["echo", "rm", "git"],
       } as any;
 
       const meta = makeTestMeta();
@@ -797,7 +674,6 @@ describe("createToolGuard", () => {
       // clarify stage with whitelist restricted to docs/
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -819,7 +695,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -844,7 +719,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["**"],
       } as any;
 
@@ -866,7 +740,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: [],
       } as any;
 
@@ -890,7 +763,6 @@ describe("createToolGuard", () => {
       // Whitelist includes ".pi/" — but hardcoded should still block
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: [".pi/", "docs/"],
       } as any;
 
@@ -913,7 +785,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["echo", "cat"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -935,7 +806,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["echo", "cat"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -959,7 +829,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["rm"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -983,7 +852,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -1007,7 +875,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["git"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -1040,7 +907,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -1065,7 +931,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -1090,7 +955,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["**"],
       } as any;
 
@@ -1114,7 +978,6 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["echo"],
         allowedWritePaths: ["docs/"],
       } as any;
 
@@ -1292,7 +1155,6 @@ describe("createToolGuard", () => {
       });
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["mv", "rm"],
       } as any;
       await initAuditLog(config);
 
@@ -1328,7 +1190,6 @@ describe("createToolGuard", () => {
       // clarify stage: whitelist = docs/ only (does not include src/)
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1539,7 +1400,6 @@ describe("createToolGuard", () => {
       // clarify: whitelist = docs/ only (does NOT include AGENTS.md)
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1570,7 +1430,6 @@ describe("createToolGuard", () => {
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1600,7 +1459,6 @@ describe("createToolGuard", () => {
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1632,7 +1490,6 @@ describe("createToolGuard", () => {
       // clarify whitelist does NOT include .pi/
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1668,7 +1525,6 @@ describe("createToolGuard", () => {
       // clarify whitelist does NOT include docs/
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["src/"],
       } as any;
       await initAuditLog(config);
@@ -1699,7 +1555,6 @@ describe("createToolGuard", () => {
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1730,7 +1585,6 @@ describe("createToolGuard", () => {
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedTools: ["read", "bash", "write", "edit", "stage_advance"],
         allowedWritePaths: ["**"],
       } as any;
       await initAuditLog(config);
@@ -1771,7 +1625,6 @@ describe("createToolGuard", () => {
       // clarify: whitelist = docs/ only (does NOT include AGENTS.md)
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedBashPrefixes: ["rm"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1800,7 +1653,6 @@ describe("createToolGuard", () => {
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedBashPrefixes: ["echo"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1831,7 +1683,6 @@ describe("createToolGuard", () => {
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
-        allowedBashPrefixes: ["rm"],
         allowedWritePaths: ["docs/"],
       } as any;
       await initAuditLog(config);
@@ -1866,7 +1717,6 @@ describe("createToolGuard", () => {
       // Full mode (no whitelist restriction)
       config.stages["develop"] = {
         ...config.stages["develop"],
-        allowedBashPrefixes: ["rm"],
         allowedWritePaths: ["**"],
       } as any;
       await initAuditLog(config);
@@ -1888,51 +1738,9 @@ describe("createToolGuard", () => {
   });
 
   // ─── Phase 5: violation recording tests ──────────────────────────────────
+  // Note: tool_not_allowed and bash_prefix violation types removed in Phase 0 (D0)
 
   describe("violation recording (Phase 5 Task 2)", () => {
-    it("tool_not_allowed records a violation with correct type", async () => {
-      const config = makeTestConfig();
-      config.stages["develop"] = { ...config.stages["develop"], allowedTools: ["bash"] } as any;
-      const meta = makeTestMeta();
-      const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "write", arguments: {} };
-
-      const hook = createToolGuard(config);
-      await hook.handler(ctx as any);
-
-      const finalMeta = ctx.session.getMeta() as any;
-      expect(finalMeta.violations).toBeDefined();
-      expect(finalMeta.violations.length).toBe(1);
-      expect(finalMeta.violations[0].type).toBe("tool_not_allowed");
-      expect(finalMeta.violations[0].tool).toBe("write");
-      expect(finalMeta.violations[0].detail).toContain("not allowed");
-      expect(finalMeta.violations[0].suggestion).toContain("Allowed:");
-      expect(finalMeta.violations[0].timestamp).toBeTypeOf("number");
-    });
-
-    it("bash_prefix records a violation with correct type", async () => {
-      const config = makeTestConfig();
-      config.stages["develop"] = {
-        ...config.stages["develop"],
-        allowedBashPrefixes: ["ls"],
-        allowedWritePaths: ["**"],
-      } as any;
-      const meta = makeTestMeta();
-      const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
-
-      const hook = createToolGuard(config);
-      await hook.handler(ctx as any);
-
-      const finalMeta = ctx.session.getMeta() as any;
-      expect(finalMeta.violations).toBeDefined();
-      expect(finalMeta.violations.length).toBe(1);
-      expect(finalMeta.violations[0].type).toBe("bash_prefix");
-      expect(finalMeta.violations[0].tool).toBe("bash");
-      expect(finalMeta.violations[0].detail).toContain("not in allowedBashPrefixes");
-      expect(finalMeta.violations[0].suggestion).toContain("Allowed:");
-    });
-
     it("git_protected records a violation for git add on protected path", async () => {
       const config = makeTestConfig();
       const meta = makeTestMeta();

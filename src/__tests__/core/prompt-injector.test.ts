@@ -329,12 +329,12 @@ describe("createPromptInjector", () => {
   });
 
   describe("stage write scope injection", () => {
+    // Note: Git read-only hint will be re-enabled in Phase 1 with stage-based logic
     it("clarify stage: prompt contains STAGE WRITE SCOPE with docs whitelist", async () => {
       const config = makeTestConfig();
       config.stages["clarify"] = {
         ...config.stages["clarify"],
         allowedWritePaths: ["docs/", "doc/", "documentation/"],
-        allowedBashPrefixes: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
       } as any;
       const meta = makeTestMeta({ currentStage: "clarify" });
       const ctx = { session: { getMeta: () => meta } };
@@ -344,15 +344,14 @@ describe("createPromptInjector", () => {
 
       expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
       expect(result.systemPrompt).toContain("Write Scope: docs/, doc/, documentation/");
-      expect(result.systemPrompt).toContain("Git: read-only (add/commit/push forbidden)");
+      // Git read-only hint removed in Phase 0 — will be re-added in Phase 1 with stage-based logic
     });
 
-    it("plan stage: prompt contains STAGE WRITE SCOPE with git read-only hint", async () => {
+    it("plan stage: prompt contains STAGE WRITE SCOPE", async () => {
       const config = makeTestConfig();
       config.stages["plan"] = {
         ...config.stages["plan"],
         allowedWritePaths: ["docs/"],
-        allowedBashPrefixes: ["ls", "cat"],
       } as any;
       const meta = makeTestMeta({ currentStage: "plan" });
       const ctx = { session: { getMeta: () => meta } };
@@ -362,7 +361,7 @@ describe("createPromptInjector", () => {
 
       expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
       expect(result.systemPrompt).toContain("Write Scope: docs/");
-      expect(result.systemPrompt).toContain("Git: read-only");
+      // Git read-only hint removed in Phase 0 — will be re-added in Phase 1 with stage-based logic
     });
 
     it("review stage: prompt contains STAGE WRITE SCOPE", async () => {
@@ -370,7 +369,6 @@ describe("createPromptInjector", () => {
       config.stages["review"] = {
         ...config.stages["review"],
         allowedWritePaths: ["docs/"],
-        allowedBashPrefixes: ["ls", "git log"],
       } as any;
       const meta = makeTestMeta({ currentStage: "review" });
       const ctx = { session: { getMeta: () => meta } };
@@ -453,7 +451,6 @@ describe("createPromptInjector", () => {
       config.stages["clarify"] = {
         ...config.stages["clarify"],
         allowedWritePaths: ["**"],
-        allowedBashPrefixes: ["git"], // has git → no read-only hint
       } as any;
       const meta = makeTestMeta({ currentStage: "clarify" });
       const ctx = { session: { getMeta: () => meta } };
@@ -997,13 +994,15 @@ describe("createPromptInjector", () => {
   // ─── Phase 5: violations prompt injection ──────────────────────────────────
 
   describe("violations prompt injection (Phase 5 Task 2)", () => {
+    // Note: tool_not_allowed and bash_prefix violation types removed in Phase 0 (D0)
+    // Using write_protected and git_protected for testing violation injection
     it("injects PREVIOUS VIOLATIONS section when violations exist (default path)", async () => {
       const config = makeTestConfig();
       const meta = makeTestMeta({
         currentStage: "develop",
         violations: [
-          { type: "tool_not_allowed", tool: "write", detail: 'Tool "write" not allowed in "clarify" stage.', suggestion: "Allowed: [read, bash].", timestamp: Date.now() },
-          { type: "bash_prefix", tool: "bash", detail: 'Bash command "rm -rf /" not in allowedBashPrefixes.', suggestion: "Allowed: [ls, npm].", timestamp: Date.now() },
+          { type: "write_protected", tool: "write", detail: 'Cannot modify protected path \'.pi/config.json\'.', suggestion: "Protected paths: .pi/, AGENTS.md, .git/.", timestamp: Date.now() },
+          { type: "git_protected", tool: "bash", detail: 'git add would stage protected path.', suggestion: "git add cannot stage protected paths.", timestamp: Date.now() },
         ],
       });
       const ctx = { session: { getMeta: () => meta } };
@@ -1012,10 +1011,9 @@ describe("createPromptInjector", () => {
       const result = await hook.handler(ctx as any);
 
       expect(result.systemPrompt).toContain("PREVIOUS VIOLATIONS (MUST FIX)");
-      expect(result.systemPrompt).toContain("tool_not_allowed");
-      expect(result.systemPrompt).toContain("bash_prefix");
-      expect(result.systemPrompt).toContain('Tool "write" not allowed in "clarify" stage.');
-      expect(result.systemPrompt).toContain("Allowed: [read, bash].");
+      expect(result.systemPrompt).toContain("write_protected");
+      expect(result.systemPrompt).toContain("git_protected");
+      expect(result.systemPrompt).toContain('Cannot modify protected path');
     });
 
     it("does NOT inject violations section when violations is empty", async () => {

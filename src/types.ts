@@ -104,12 +104,6 @@ export interface StageConfig {
   /** Path to the skill directory or file for this stage (relative to `.pi/skills/` directory, e.g. `"{stage}/SKILL.md"`) */
   skillPath: string;
 
-  /** List of tool names the agent is allowed to use in this stage */
-  allowedTools?: string[];
-
-  /** List of bash command prefixes permitted in this stage (e.g., ["npm test", "git"]) */
-  allowedBashPrefixes?: string[];
-
   /**
    * Stage-level write whitelist (directory prefix matching).
    * - `"**"` = all paths allowed (full write access, global protect still applies)
@@ -292,8 +286,8 @@ export interface SessionMeta {
   /** Human-readable reason when the pipeline is in "blocked" flow state. */
   blockedReason?: string;
 
-  /** Session-level temporary bash prefix overrides (user-approved) */
-  tempAllowedBash?: string[];
+  /** Session-level allowed commands (user-approved for destructive command bypass) */
+  sessionAllowedCommands?: string[];
 
   /** Path to the requirement document loaded by /pipeline-start */
   requirementDoc?: string;
@@ -474,12 +468,6 @@ export interface StageJsonConfig {
 
   /** Path to skill directory/file relative to `.pi/skills/` (default `{stage}/SKILL.md`) */
   skillPath?: string;
-
-  /** Allowed tool names (default depends on stage type) */
-  allowedTools?: string[];
-
-  /** Allowed bash command prefixes (default depends on stage type) */
-  allowedBashPrefixes?: string[];
 
   /** Stage-level write whitelist (default depends on stage type) */
   allowedWritePaths?: string[];

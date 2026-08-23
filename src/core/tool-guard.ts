@@ -38,7 +38,7 @@ import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gi
 import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
-import { getStageRequiredCommandPrefixes } from "./verify-rules-cache";
+// import { getStageRequiredCommandPrefixes } from "./verify-rules-cache"; // REMOVED in Phase 0
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 
@@ -176,61 +176,16 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         await checkViolationBreaker(ctx, updatedMeta, config);
       }
 
-      // 1. Tool permission check
-      if (!(stageConfig.allowedTools || []).includes(toolName)) {
-        await trackViolation({
-          type: "tool_not_allowed",
-          tool: toolName,
-          detail: `Tool "${toolName}" not allowed in "${meta.currentStage}" stage.`,
-          suggestion: `Allowed: [${(stageConfig.allowedTools || []).join(", ")}].`,
-        });
-        return {
-          block: true,
-          reason: `Tool "${toolName}" not allowed in "${meta.currentStage}" stage`,
-        };
-      }
+      // 1. Tool permission check — REMOVED in Phase 0 (D0)
+      // Tools are no longer restricted by allowlist; protection relies on
+      // write-path whitelist, git content check, and destructive command block.
 
-      // 2. Bash command prefix check
+      // 2. Bash command handling
       if (toolName === "bash") {
         const command = args.command as string;
-        const mergedPrefixes = [
-          ...(stageConfig.allowedBashPrefixes || []),
-          ...(meta.tempAllowedBash || []),
-        ];
-        const prefixAllowed = mergedPrefixes.some((p: string) => command.startsWith(p));
 
-        if (!prefixAllowed) {
-          // ── Fallback: check against stage verify.md requiredCommands ──
-          // If the command matches a verify.md expected command prefix, allow it.
-          // This ensures the model can actually execute the commands it is being
-          // verified against, without requiring manual allowlist maintenance.
-          let verifyRuleAllowed = false;
-          try {
-            const verifyPrefixes = await getStageRequiredCommandPrefixes(config, meta.currentStage);
-            const normalizedCmd = command.toLowerCase().replace(/^\.\//, "").replace(/\s+/g, " ").trim();
-            verifyRuleAllowed = verifyPrefixes.some(p => normalizedCmd.startsWith(p));
-          } catch {
-            // Best-effort: if cache/parse fails, don't block
-          }
-
-          if (verifyRuleAllowed) {
-            // Allow: command matches stage verify.md requiredCommands
-            // (no audit — this is a silent pass-through to avoid log noise)
-          } else {
-            await trackViolation({
-              type: "bash_prefix",
-              tool: "bash",
-              detail: `Bash command "${command}" not in allowedBashPrefixes.`,
-              suggestion: `Allowed: [${(stageConfig.allowedBashPrefixes || []).join(", ")}].`,
-            });
-            return {
-              block: true,
-              reason: `Bash command "${command}" not in allowedBashPrefixes.`,
-              suggestAsk: true,
-              blockedCommand: command,
-            };
-          }
-        }
+        // ── DESTRUCTIVE COMMAND CHECK (Phase 1 will add full logic) ──
+        // Placeholder: no-op for now, Phase 1 adds isDestructiveCommand() + ask dialog.
 
         // 2b. Git command protection check
         if (GIT_ADD_PATTERN.test(command)) {

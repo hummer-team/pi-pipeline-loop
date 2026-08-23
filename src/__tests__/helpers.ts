@@ -9,8 +9,6 @@ export function makeStageConfig(overrides?: Partial<Record<string, unknown>>) {
   return {
     agentFile: "./agents/test-agent.md",
     skillPath: "test-skill/SKILL.md",
-    allowedTools: ["read", "bash", "write", "edit", "generate_stage_summary", "validate_summary", "pipeline_handoff", "stage_advance", "loop_check", "pipeline_state"],
-    allowedBashPrefixes: ["ls", "npm", "bun", "git", "cat"],
     nextStage: "plan" as PipelineStage | null,
     requireDomain: false,
     ...overrides,

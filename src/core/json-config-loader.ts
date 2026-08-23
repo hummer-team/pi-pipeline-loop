@@ -265,8 +265,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       stages[stageName] = {
         agentFile: resolveStagePath(DEFAULT_AGENT_FILE, stageName),
         skillPath: resolveStagePath(DEFAULT_SKILL_PATH, stageName),
-        allowedTools: [],
-        allowedBashPrefixes: [],
         allowedWritePaths: [],
         nextStage: null,
         requireDomain: false,
@@ -285,9 +283,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       skillPath:
         jsonStage.skillPath ||
         resolveStagePath(DEFAULT_SKILL_PATH, stageName),
-      allowedTools: jsonStage.allowedTools || defaults.tools,
-      allowedBashPrefixes:
-        jsonStage.allowedBashPrefixes || defaults.bash,
       allowedWritePaths:
         parseAllowedWritePaths(jsonStage.allowedWritePaths) ?? defaults.allowedWritePaths,
       nextStage:

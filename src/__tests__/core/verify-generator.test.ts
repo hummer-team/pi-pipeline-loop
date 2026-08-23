@@ -49,8 +49,6 @@ async function setupConfigWithSkill(
           {
             agentFile: "a.md",
             skillPath: `${s}/SKILL.md`,
-            allowedTools: ["read"],
-            allowedBashPrefixes: ["ls"],
             nextStage: a[i + 1] ?? null,
             requireDomain: false,
           },
@@ -365,8 +363,6 @@ describe("verify-generator", () => {
               {
                 agentFile: "a.md",
                 skillPath: `${s}/SKILL.md`,
-                allowedTools: ["read"],
-                allowedBashPrefixes: ["ls"],
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
               },
@@ -589,8 +585,6 @@ describe("verify-generator", () => {
               {
                 agentFile: "a.md",
                 skillPath: `${s}/SKILL.md`,
-                allowedTools: ["read"],
-                allowedBashPrefixes: ["ls"],
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
               },
@@ -806,8 +800,6 @@ describe("verify-generator", () => {
               {
                 agentFile: "a.md",
                 skillPath: `${s}/SKILL.md`,
-                allowedTools: ["read"],
-                allowedBashPrefixes: ["ls"],
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
               },
@@ -946,8 +938,6 @@ describe("verify-generator", () => {
               {
                 agentFile: "a.md",
                 skillPath: `${s}/SKILL.md`,
-                allowedTools: ["read"],
-                allowedBashPrefixes: ["ls"],
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
               },

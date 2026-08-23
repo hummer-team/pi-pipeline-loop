@@ -76,7 +76,7 @@ describe("createPipelineQuitCommand", () => {
       currentStage: "develop",
       pipelineId: "pipe-quit-001",
       flowState: "running",
-      tempAllowedBash: ["rm -rf"],
+      sessionAllowedCommands: ["rm -rf"],
       verifyAttempts: 2,
       verifyFailures: [{ ruleType: "test", detail: "failed", timestamp: Date.now() }],
       sessionAllowedWritePaths: ["src/foo.ts"],
@@ -90,7 +90,7 @@ describe("createPipelineQuitCommand", () => {
     expect(meta.flowState).toBe("aborted");
     expect(meta.terminateReason).toBe("user_quit");
     // Temp state cleared
-    expect(meta.tempAllowedBash).toEqual([]);
+    expect(meta.sessionAllowedCommands).toEqual([]);
     expect(meta.verifyAttempts).toBe(0);
     expect(meta.verifyFailures).toEqual([]);
     expect(meta.sessionAllowedWritePaths).toEqual([]);

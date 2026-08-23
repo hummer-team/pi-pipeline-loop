@@ -43,34 +43,24 @@ export const DEFAULT_AGENT_FILE = ".pi/agents/{stage}/{stage}.md";
 export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
 
-/** Default tool permissions and write scope by stage type */
+/** Default write scope by stage type (tools and bash prefixes no longer restricted) */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   string,
-  { tools: string[]; bash: string[]; allowedWritePaths: string[] }
+  { allowedWritePaths: string[] }
 > = {
   clarify: {
-    tools: ["read", "bash", "write", "edit", "stage_advance"],
-    bash: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   plan: {
-    tools: ["read", "bash", "write", "edit", "stage_advance"],
-    bash: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   develop: {
-    tools: ["read", "bash", "write", "edit", "stage_advance"],
-    bash: ["npm test", "npm run", "git", "tsc", "bun test", "bun run", "mvn", "mvnw", "./mvnw", "gradle", "gradlew", "./gradlew", "java"],
     allowedWritePaths: [ALLOWED_WRITE_ALL],
   },
   review: {
-    tools: ["read", "bash", "write", "edit", "stage_advance"],
-    bash: ["ls", "cat", "find", "git log", "git status", "git diff", "git show"],
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   fix: {
-    tools: ["read", "bash", "write", "edit", "stage_advance"],
-    bash: ["npm test", "npm run", "git", "tsc", "bun test", "bun run", "mvn", "mvnw", "./mvnw", "gradle", "gradlew", "./gradlew", "java"],
     allowedWritePaths: [ALLOWED_WRITE_ALL],
   },
 };

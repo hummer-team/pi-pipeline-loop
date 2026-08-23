@@ -80,8 +80,6 @@ describe("createAgentSettled", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify: s === "develop" ? { require: true, verifyFile: "references/develop_spec/verify.md" } : undefined,
@@ -135,8 +133,6 @@ describe("createAgentSettled", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: (a[i + 1] ?? null) as PipelineStage | null,
               requireDomain: false,
               verify: s === "develop" ? { require: true, verifyFile: "references/develop_spec/verify.md" } : undefined,
@@ -222,8 +218,6 @@ describe("createAgentSettled", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: (a[i + 1] ?? null) as PipelineStage | null,
               requireDomain: false,
               verify: s === "develop"
@@ -274,8 +268,6 @@ describe("createAgentSettled", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: (a[i + 1] ?? null) as PipelineStage | null,
               requireDomain: false,
               verify: s === "develop"

@@ -151,8 +151,6 @@ describe("runVerification", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
@@ -369,8 +367,6 @@ describe("runVerification — structured rules", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
@@ -432,8 +428,6 @@ describe("runVerification — structured rules", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
@@ -564,8 +558,6 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
@@ -617,8 +609,6 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
@@ -986,8 +976,6 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
@@ -1045,8 +1033,6 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
             {
               agentFile: "a.md",
               skillPath: "s.md",
-              allowedTools: ["read"],
-              allowedBashPrefixes: ["ls"],
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
               verify:
