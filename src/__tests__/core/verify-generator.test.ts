@@ -12,7 +12,9 @@ import {
   classifyDeliveryItem,
   mergeDeliveryItems,
   generateVerifyMdContent,
+  parseVerifyRulesFromContent,
 } from "../../core/verify-generator";
+import { parseFrontmatter } from "../../core/auto-verifier";
 import { makeTestConfig } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { resetPromptConfigCache } from "../../core/prompt-config";
@@ -547,6 +549,50 @@ describe("verify-generator", () => {
       const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
       expect(content).toContain("Existing template content");
       expect(content).toContain("output.md");
+    });
+
+    it("merge output closes frontmatter delimiter on its own line (round-trip: mode=and preserved)", async () => {
+      // Triggers buildMergedVerifyContent path: existing verify.md + additional hardcoded items
+      // Include a plain keyword ("security") so that generateVerifyMdContent emits `mode: and`.
+      const config = await setupConfigWithSkill(
+        "develop",
+        "- **Must** output.md\n- **Must** security\n",
+      );
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Pre-existing file with empty rules → forces merge path
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n---\nExisting body text\n",
+        "utf-8",
+      );
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("merged");
+
+      const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+
+      // Phase 0 (Bug 3-A): closing `---` must be on its own line, never `mode: and---`
+      expect(content).not.toMatch(/mode: and---/);
+      expect(content).toMatch(/mode: and\n---/);
+
+      // Round-trip: parseFrontmatter must recover mode="and"
+      const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+      expect(frontmatterMatch).not.toBeNull();
+      const rules = await parseFrontmatter(frontmatterMatch![1]);
+      expect(rules).not.toBeNull();
+      expect(rules!.mode).toBe("and");
+
+      // Round-trip: parseVerifyRulesFromContent must recover requiredFiles + body not swallowed
+      const parsedRules = await parseVerifyRulesFromContent(content);
+      expect(parsedRules).not.toBeNull();
+      expect(parsedRules!.requiredFiles).toEqual(["output.md"]);
+      expect(parsedRules!.mode).toBe("and");
+
+      // Body must remain as markdown, not be absorbed into frontmatter
+      expect(content).toContain("Existing body text");
     });
 
     it("merge branch reports correct hardcodedCount, llmCount, and llmStatus", async () => {

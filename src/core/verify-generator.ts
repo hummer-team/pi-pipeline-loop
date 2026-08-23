@@ -406,7 +406,10 @@ function buildMergedVerifyContent(
   // Extract the YAML body portion (strip the leading ---\n and trailing ---\n)
   const yamlInner = yamlPart.replace(/^---\n/, "").replace(/\n---\n[\s\S]*$/, "");
   const body = existingBody || `Verify the delivery items for ${stage} stage. Check that all required files exist, commands succeed, and delivery criteria are met.`;
-  return `---\n${yamlInner}---\n${body}\n`;
+  // Ensure the closing frontmatter delimiter `---` starts on its own line.
+  // Without trimEnd()+prepending \n, yamlInner ending without \n (e.g. "mode: and")
+  // would produce "mode: and---" which silently downgrades `and` → `or` on parse.
+  return `---\n${yamlInner.trimEnd()}\n---\n${body}\n`;
 }
 
 /**
