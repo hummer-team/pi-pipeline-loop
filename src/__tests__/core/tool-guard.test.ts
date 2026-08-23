@@ -971,7 +971,7 @@ describe("createToolGuard", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("bash: redirect to path outside project root in whitelist mode → blocked", async () => {
+    it("bash: redirect to path outside project root in whitelist mode → allowed (Phase 2: redirect-class out-of-project bypass)", async () => {
       const TMP = join(tmpdir(), "pi-tg-wl-bash-outside-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -983,15 +983,83 @@ describe("createToolGuard", () => {
 
       const meta = makeTestMeta();
       const ctx = createMockCtx(meta);
-      // Absolute path outside project root via bash redirect
+      // Absolute path outside project root via bash redirect — Phase 2 allows this
       ctx.toolCall = { name: "bash", arguments: { command: "echo hi > /tmp/outside-x.md" } };
 
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
+      // Phase 2 (139): redirect-class out-of-project targets are allowed
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
+  // ─── Phase 2 (139): FORBIDDEN false-positive fix ──────────────────────────────
+  describe("Phase 2: fd redirect and /dev/* non-write-target handling", () => {
+    it("bash: 2>&1 does NOT produce any target (no block)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p2-fd-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedWritePaths: ["src/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "bun run test 2>&1" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // 2>&1 is fd redirect, no write target → should not block
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("bash: > /dev/null does NOT produce any target (no block)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p2-devnull-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedWritePaths: ["src/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "echo hi > /dev/null" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // /dev/null is a device path → no write target → should not block
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("bash: rm /etc/xxx still blocked (file-arg class, out-of-project)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-p2-rm-etc-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      config.stages["develop"] = {
+        ...config.stages["develop"],
+        allowedWritePaths: ["src/"],
+      } as any;
+
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm /etc/xxx" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // file-arg class rm targeting /etc/xxx → blocked by destructive check
       expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("outside project root");
-      expect((result as any).reason).toContain("develop");
       await rm(TMP, { recursive: true, force: true });
     });
   });

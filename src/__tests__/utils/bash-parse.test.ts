@@ -160,4 +160,48 @@ describe("extractBashFileTargets", () => {
       expect(targets).toEqual([{ kind: "file-arg", target: "src/file.txt" }]);
     });
   });
+
+  describe("Phase 2: fd redirect and /dev/* exclusion", () => {
+    it("does NOT produce target for 2>&1 fd redirect", () => {
+      const targets = extractBashFileTargets("echo hi 2>&1");
+      expect(targets).toEqual([]);
+    });
+
+    it("does NOT produce target for 1>&2 fd redirect", () => {
+      const targets = extractBashFileTargets("echo hi 1>&2");
+      expect(targets).toEqual([]);
+    });
+
+    it("does NOT produce target for >&2 fd redirect", () => {
+      const targets = extractBashFileTargets("echo hi >&2");
+      expect(targets).toEqual([]);
+    });
+
+    it("does NOT produce target for > /dev/null redirect", () => {
+      const targets = extractBashFileTargets("echo hi > /dev/null");
+      expect(targets).toEqual([]);
+    });
+
+    it("does NOT produce target for > /dev/stderr redirect", () => {
+      const targets = extractBashFileTargets("echo hi > /dev/stderr");
+      expect(targets).toEqual([]);
+    });
+
+    it("does NOT produce target for >/dev/null (attached) redirect", () => {
+      const targets = extractBashFileTargets("echo hi >/dev/null");
+      expect(targets).toEqual([]);
+    });
+
+    it("still produces target for > /dev/./null (relative bypass)", () => {
+      // /dev/./ is explicitly excluded from the /dev/* bypass to prevent bypass attacks
+      const targets = extractBashFileTargets("echo hi > /dev/./null");
+      expect(targets.length).toBe(1);
+      expect(targets[0].kind).toBe("redirect");
+    });
+
+    it("still produces target for regular file redirect mixed with fd redirect", () => {
+      const targets = extractBashFileTargets("echo hi > out.txt 2>&1");
+      expect(targets).toEqual([{ kind: "redirect", target: "out.txt" }]);
+    });
+  });
 });

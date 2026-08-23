@@ -335,10 +335,28 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 }
               }
             } else {
-              // Path outside project root: block in whitelist mode (cannot satisfy whitelist)
+              // Path outside project root
               const isWhitelistMode =
                 stageConfig.allowedWritePaths !== undefined &&
                 !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
+
+              // Phase 2 (139): redirect-class out-of-project targets are allowed
+              // (e.g., > /dev/null, > /tmp/something, 2>&1 already filtered by bash-parse).
+              // file-arg class targets (rm/mv/cp/touch/tee) remain protected.
+              if (t.kind === "redirect") {
+                // Still pass destructive command check (handled above via isDestructiveCommand
+                // and the isSystemPath safety net below for /dev/sd*, /dev/hd* etc.)
+                if (isWhitelistMode) {
+                  // In whitelist mode, redirect-class out-of-project is allowed
+                  // (whitelist cannot cover out-of-project paths, but redirect targets
+                  // like /dev/null, /tmp/* are harmless shell idioms)
+                  continue;
+                }
+                // Full mode: allow redirect-class out-of-project (legacy behavior)
+                continue;
+              }
+
+              // file-arg class: block in whitelist mode (cannot satisfy whitelist)
               if (isWhitelistMode) {
                 const reason = `FORBIDDEN: Target '${absTarget}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
                 await trackViolation({

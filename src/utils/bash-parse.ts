@@ -24,6 +24,23 @@ const FILE_ARG_COMMANDS = new Set(["rm", "mv", "cp", "touch", "tee"]);
 const REDIRECT_OPS = [">>", ">|", ">"];
 
 /**
+ * Pattern for fd-to-fd redirection (e.g., 2>&1, 1>&2, >&2).
+ * These are NOT file write targets — they just copy one fd to another.
+ */
+const FD_REDIRECT_PATTERN = /^\d*[<>]&\d+$/;
+
+/**
+ * Checks if a path is a /dev/* device path (not a real file write target).
+ * Excludes /dev/./ relative paths which could be used to bypass this check.
+ *
+ * @param p - The path to check (already stripped of quotes)
+ * @returns true if the path is a /dev/* device reference
+ */
+function isDevPath(p: string): boolean {
+  return p.startsWith("/dev/") && !p.startsWith("/dev/./");
+}
+
+/**
  * Strips surrounding quotes and handles escape sequences from a string.
  *
  * @param s - Potentially quoted string
@@ -64,6 +81,12 @@ export function extractBashFileTargets(command: string): BashTarget[] {
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
 
+    // Skip fd-to-fd redirections (e.g., 2>&1, 1>&2, >&2)
+    // These do NOT write to files and must not produce BashTarget entries.
+    if (FD_REDIRECT_PATTERN.test(token)) {
+      continue;
+    }
+
     // Check for redirection operators (possibly attached to token)
     // Skip tokens that are fully quoted (they are literal arguments, not redirects)
     if (!token.startsWith("'") && !token.startsWith('"')) {
@@ -74,10 +97,18 @@ export function extractBashFileTargets(command: string): BashTarget[] {
           const afterOp = token.slice(opIndex + op.length);
           if (afterOp) {
             // Target is attached: >file
-            targets.push({ kind: "redirect", target: stripQuotes(afterOp) });
+            const target = stripQuotes(afterOp);
+            // Skip /dev/* device paths — they are not real file write targets
+            if (!isDevPath(target)) {
+              targets.push({ kind: "redirect", target });
+            }
           } else if (i + 1 < tokens.length) {
             // Target is next token: > file
-            targets.push({ kind: "redirect", target: stripQuotes(tokens[i + 1]) });
+            const target = stripQuotes(tokens[i + 1]);
+            // Skip /dev/* device paths
+            if (!isDevPath(target)) {
+              targets.push({ kind: "redirect", target });
+            }
             i++; // Skip next token
           }
           break; // Only process first redirect operator in this token
