@@ -828,6 +828,133 @@ describe("verify-generator", () => {
 
       __resetAuditDirPath();
     });
+
+    it("onMergeAsk callback is invoked before merge write and 'allow' proceeds with merge", async () => {
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      // Pre-existing file with empty rules → forces merge path
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n---\nExisting body\n",
+        "utf-8",
+      );
+
+      let callbackInvoked = false;
+      let callbackStage = "";
+      let callbackPath = "";
+      const results = await generateVerifyFiles(config, {
+        stage: "develop",
+        onMergeAsk: async (stage, filePath) => {
+          callbackInvoked = true;
+          callbackStage = stage;
+          callbackPath = filePath;
+          return "allow";
+        },
+      });
+
+      expect(callbackInvoked).toBe(true);
+      expect(callbackStage).toBe("develop");
+      expect(callbackPath).toContain("verify.md");
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("merged");
+    });
+
+    it("onMergeAsk callback returning 'block' skips merge with reason=user_declined", async () => {
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      const originalContent = "---\nrules:\n---\nExisting body\n";
+      await fs.writeFile(path.join(verifyDir, "verify.md"), originalContent, "utf-8");
+
+      const results = await generateVerifyFiles(config, {
+        stage: "develop",
+        onMergeAsk: async () => "block",
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("skipped");
+      expect(results[0].reason).toBe("user_declined");
+      // File must remain unchanged
+      const afterContent = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(afterContent).toBe(originalContent);
+    });
+
+    it("onMergeAsk not provided → merge proceeds without asking (backward compatible)", async () => {
+      const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
+
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n---\nExisting body\n",
+        "utf-8",
+      );
+
+      // No onMergeAsk → merge proceeds directly
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results).toHaveLength(1);
+      expect(results[0].status).toBe("merged");
+    });
+
+    it("onMergeAsk 'block' on one stage does not affect other stages (continue)", async () => {
+      // Create skills for two stages
+      for (const stage of ["plan", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-out.md\n`,
+          "utf-8",
+        );
+      }
+
+      const config = await setupConfigWithSkill("develop", "- **Must** develop-out.md\n");
+      // Override config to include plan stage too
+      const multiConfig = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentFile: "a.md",
+                skillPath: `${s}/SKILL.md`,
+                allowedTools: ["read"],
+                allowedBashPrefixes: ["ls"],
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+
+      // Pre-create verify.md for both stages (forces merge path for both)
+      for (const stage of ["plan", "develop"]) {
+        const verifyDir = path.join(TMP, ".pi", "references", `${stage}_spec`);
+        await fs.mkdir(verifyDir, { recursive: true });
+        await fs.writeFile(
+          path.join(verifyDir, "verify.md"),
+          "---\nrules:\n---\nBody\n",
+          "utf-8",
+        );
+      }
+
+      // Block develop, allow plan
+      const results = await generateVerifyFiles(multiConfig, {
+        stage: undefined,
+        onMergeAsk: async (stage) => (stage === "develop" ? "block" : "allow"),
+      });
+
+      const planResult = results.find(r => r.stage === "plan");
+      const developResult = results.find(r => r.stage === "develop");
+      expect(planResult?.status).toBe("merged");
+      expect(developResult?.status).toBe("skipped");
+      expect(developResult?.reason).toBe("user_declined");
+    });
   });
 
   describe("resolveExtractPrompt", () => {

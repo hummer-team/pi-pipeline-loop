@@ -35,7 +35,7 @@ export type VerifyGenerateResult = {
   filePath?: string;
   error?: string;
   /** Discriminated skip reason — present only when status === "skipped" */
-  reason?: "skill_not_found" | "no_items" | "exists" | "exists_custom";
+  reason?: "skill_not_found" | "no_items" | "exists" | "exists_custom" | "user_declined";
   /** Number of items extracted via hardcoded marker matching */
   hardcodedCount?: number;
   /** Number of items extracted via LLM */
@@ -518,9 +518,15 @@ export async function generateVerifyFiles(
     callLLM?: (prompt: string) => Promise<string>;
     /** Called before each stage's LLM extraction starts (for TUI working indicator) */
     onLLMStageStart?: (stage: string) => void;
+    /**
+     * Phase 3 (Bug 2): called before overwriting an existing verify.md via the
+     * merge path. Returns "allow" to proceed or "block" to skip this stage.
+     * When omitted, merge writes proceed without asking (backward compatible).
+     */
+    onMergeAsk?: (stage: string, filePath: string) => Promise<"allow" | "block">;
   },
 ): Promise<VerifyGenerateResult[]> {
-  const { stage, callLLM, onLLMStageStart } = options ?? {};
+  const { stage, callLLM, onLLMStageStart, onMergeAsk } = options ?? {};
   const stages = resolveTargetStages(stage, config);
   const results: VerifyGenerateResult[] = [];
 
@@ -650,6 +656,54 @@ export async function generateVerifyFiles(
           llmStatus: "off",
         });
         continue;
+      }
+
+      // Phase 3 (Bug 2): before overwriting an existing verify.md via the merge
+      // path, consult onMergeAsk callback (if provided). A "block" decision skips
+      // this stage with reason="user_declined" without touching the file.
+      if (onMergeAsk) {
+        try {
+          const decision = await onMergeAsk(s, verifyPath);
+          if (decision === "block") {
+            await safeWriteAuditLog("verify_md_generate", {
+              stage: s,
+              status: "skipped",
+              filePath: verifyPath,
+              reason: "user_declined",
+              detail: "user declined overwrite",
+            });
+            results.push({
+              stage: s,
+              status: "skipped",
+              filePath: verifyPath,
+              reason: "user_declined",
+              error: "user declined overwrite",
+              hardcodedCount: 0,
+              llmCount: 0,
+              llmStatus: "off",
+            });
+            continue;
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          // Fail-safe: treat callback errors as "block" to prevent unwanted overwrite
+          await safeWriteAuditLog("verify_md_generate_error", {
+            stage: s,
+            file: verifyPath,
+            error: `onMergeAsk callback failed: ${errMsg}`,
+          }, "error");
+          results.push({
+            stage: s,
+            status: "skipped",
+            filePath: verifyPath,
+            reason: "user_declined",
+            error: `onMergeAsk error: ${errMsg}`,
+            hardcodedCount: 0,
+            llmCount: 0,
+            llmStatus: "off",
+          });
+          continue;
+        }
       }
 
       // Merge: write new content combining existing rules + additional items

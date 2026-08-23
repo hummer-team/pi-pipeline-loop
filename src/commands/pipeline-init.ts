@@ -18,6 +18,8 @@ import { CONFIG_DIR_NAME } from "../constants";
 import { generateVerifyFiles } from "../core/verify-generator";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { askProtectDecision } from "../utils/protect-ask";
+import { resolveStagePath, DEFAULT_VERIFY_FILE } from "../constants";
 
 /** Template directory — resolves to dist/template/ in production or src/template/ in dev */
 const TEMPLATE_DIR = path.resolve(__dirname, "..", "template");
@@ -439,6 +441,20 @@ async function executeVerifyBranch(
   const showWorking = config.output?.pipelineStage === true && llmEnabled;
   if (showWorking) ui.progressStart(ctx, "init");
 
+  // Phase 3 (Bug 2): when protect.ask=true, ask the user before overwriting an
+  // existing verify.md via the merge path. "allow" proceeds, "block" skips the stage.
+  const onMergeAsk = config.protect?.ask === true
+    ? async (stage: string, verifyPath: string): Promise<"allow" | "block"> => {
+        const meta = ctx?.session?.getMeta?.();
+        if (!meta) return "allow"; // no session meta → cannot ask → allow (fail-open)
+        // verifyPath is already a relative path like `.pi/references/{stage}_spec/verify.md`
+        const relPath = verifyPath.startsWith(config.projectRoot)
+          ? verifyPath.slice(config.projectRoot.length + 1)
+          : verifyPath;
+        return askProtectDecision(ctx, meta, relPath);
+      }
+    : undefined;
+
   let results: VerifyGenerateResult[];
   try {
     results = await generateVerifyFiles(config, {
@@ -446,6 +462,7 @@ async function executeVerifyBranch(
       onLLMStageStart: showWorking
         ? (stage: string) => { ui.progressUpdate(ctx, `(${stage})`); }
         : undefined,
+      onMergeAsk,
     });
   } finally {
     if (showWorking) ui.progressEnd(ctx);
@@ -494,6 +511,9 @@ async function executeVerifyBranch(
         // Phase 2 (Bug 1): explicit display for "rules already present" skip —
         // avoids falling through to the "unknown reason" branch.
         lines.push(`  - ${r.stage} (skipped: rules already present)`);
+      } else if (r.reason === "user_declined") {
+        // Phase 3 (Bug 2): user declined overwrite via protect.ask dialog
+        lines.push(`  - ${r.stage} (skipped: user declined overwrite)`);
       } else {
         lines.push(`  - ${r.stage} (${r.error ?? "unknown reason"})`);
       }
