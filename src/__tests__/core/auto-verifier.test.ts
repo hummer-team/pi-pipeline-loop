@@ -10,6 +10,7 @@ import {
   executeStructuredRules,
   resolvePlaceholders,
   precheckRequiredFiles,
+  parseVerifiedCommands,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1321,5 +1322,40 @@ describe("precheckRequiredFiles", () => {
     const result = await precheckRequiredFiles(config, meta);
     expect(result.passed).toBe(false);
     expect(result.missing).toContain("nonexistent/*.md");
+  });
+});
+
+describe("Phase 6 (139): VERIFIED_COMMANDS selfVerifySkip", () => {
+  it("parseVerifiedCommands extracts commands from VERIFIED_COMMANDS lines", () => {
+    const messages = [
+      "Some task result text",
+      "VERIFIED_COMMANDS: bun run build,bun run test",
+      "More text",
+    ];
+    const records = parseVerifiedCommands(messages);
+    expect(records).toHaveLength(2);
+    expect(records[0].command).toBe("bun run build");
+    expect(records[0].name).toBe("bash");
+    expect(records[0].success).toBe(true);
+    expect(records[1].command).toBe("bun run test");
+  });
+
+  it("parseVerifiedCommands returns empty when no VERIFIED_COMMANDS line", () => {
+    const messages = ["Some text", "No protocol here"];
+    const records = parseVerifiedCommands(messages);
+    expect(records).toHaveLength(0);
+  });
+
+  it("parseVerifiedCommands handles single command", () => {
+    const messages = ["VERIFIED_COMMANDS: ./mvnw clean test"];
+    const records = parseVerifiedCommands(messages);
+    expect(records).toHaveLength(1);
+    expect(records[0].command).toBe("./mvnw clean test");
+  });
+
+  it("parseVerifiedCommands ignores empty entries", () => {
+    const messages = ["VERIFIED_COMMANDS: bun run build,,bun run test,"];
+    const records = parseVerifiedCommands(messages);
+    expect(records).toHaveLength(2);
   });
 });

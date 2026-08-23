@@ -594,6 +594,46 @@ export interface RunVerificationOptions {
 }
 
 /**
+ * Pattern to match VERIFIED_COMMANDS protocol in task result text.
+ * Format: `VERIFIED_COMMANDS: cmd1,cmd2,cmd3`
+ * Each command token is trimmed and non-empty entries are kept.
+ */
+const VERIFIED_COMMANDS_PATTERN = /^VERIFIED_COMMANDS:\s*(.+)$/m;
+
+/**
+ * Parses VERIFIED_COMMANDS protocol lines from assistant messages.
+ * Phase 6 (139): Recognizes sub-agent self-verification commands
+ * reported via task result text.
+ *
+ * @param messages - Array of assistant message strings
+ * @returns Array of parsed command records (merged format with toolCallRecords)
+ */
+export function parseVerifiedCommands(
+  messages: string[],
+): Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }> {
+  const records: Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }> = [];
+  const now = Date.now();
+
+  for (const msg of messages) {
+    const match = msg.match(VERIFIED_COMMANDS_PATTERN);
+    if (match && match[1]) {
+      const cmds = match[1].split(",").map(c => c.trim()).filter(Boolean);
+      for (const cmd of cmds) {
+        records.push({
+          name: "bash",
+          command: cmd,
+          exitCode: 0,
+          success: true,
+          ts: now,
+        });
+      }
+    }
+  }
+
+  return records;
+}
+
+/**
  * Replaces `{requirementDoc}` placeholders in rule paths with the actual
  * requirement document path from session metadata.
  *
@@ -733,6 +773,13 @@ export async function runVerification(
     (resolvedRules.fileContentPattern && resolvedRules.fileContentPattern.length > 0);
 
   if (hasStructuredRules) {
+    // Phase 6 (139): merge VERIFIED_COMMANDS from task result text with toolCallRecords
+    const verifiedCmds = parseVerifiedCommands(assistantMessages);
+    const mergedRecords = [
+      ...(options?.toolCallRecords ?? []),
+      ...verifiedCmds,
+    ];
+
     // Use the structured rule engine
     structuredResult = await executeStructuredRules(
       resolvedRules,
@@ -740,7 +787,7 @@ export async function runVerification(
       assistantMessages,
       options?.execFn,
       logError,
-      options?.toolCallRecords,
+      mergedRecords.length > 0 ? mergedRecords : undefined,
       verifyConfig.selfVerifySkip === true,
       meta.stageStartTime,
       meta.currentStage,
