@@ -459,7 +459,8 @@ describe("createPromptInjector", () => {
       const result = await hook.handler(ctx as any);
 
       expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
-      expect(result.systemPrompt).not.toContain("Git: read-only");
+      // clarify is git read-only regardless of allowedWritePaths (phase 1 stage-based logic)
+      expect(result.systemPrompt).toContain("Git: read-only");
     });
   });
 

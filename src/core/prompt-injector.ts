@@ -310,12 +310,15 @@ function buildVerifyToolGuidance(stageConfig: StageConfig): string | null {
 
 /**
  * Determines if git is read-only for a stage.
- * TEMPORARY: In Phase 1, this will be refactored to use stage name directly.
- * For now, returns false (git write allowed) to compile after allowlist removal.
+ * Develop and fix stages can perform git write operations (add/commit/push).
+ * All other stages (clarify, plan, review, awaiting_human, completed) are git read-only.
+ *
+ * @param stageName - Current pipeline stage name
+ * @returns true if git operations are read-only for this stage
  */
-function isGitReadOnly(_stageName: string): boolean {
-  // Phase 1 will implement stage-based logic: develop/fix can git write, others read-only
-  return false;
+function isGitReadOnly(stageName: string): boolean {
+  // develop and fix stages can write to git; all others are read-only
+  return stageName !== "develop" && stageName !== "fix";
 }
 
 /**

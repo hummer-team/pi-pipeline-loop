@@ -186,7 +186,7 @@ export interface VerifyFailureItem {
  */
 export interface ViolationItem {
   /** The type of violation that was blocked */
-  type: "tool_not_allowed" | "bash_prefix" | "write_protected" | "git_protected";
+  type: "write_protected" | "git_protected" | "bash_destructive";
   /** The tool name that was blocked (if applicable) */
   tool?: string;
   /** English correction detail (e.g., "Tool \"write\" not allowed in \"clarify\" stage.") */

@@ -38,9 +38,10 @@ import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gi
 import { extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
-// import { getStageRequiredCommandPrefixes } from "./verify-rules-cache"; // REMOVED in Phase 0
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
+import { isDestructiveCommand, getDestructiveReason } from "../utils/destructive-command";
+import { askCommandDecision } from "../utils/protect-ask";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
@@ -184,8 +185,44 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       if (toolName === "bash") {
         const command = args.command as string;
 
-        // ── DESTRUCTIVE COMMAND CHECK (Phase 1 will add full logic) ──
-        // Placeholder: no-op for now, Phase 1 adds isDestructiveCommand() + ask dialog.
+        // ── DESTRUCTIVE COMMAND CHECK ──
+        // Check if command matches destructive patterns (rm -rf /, sudo, etc.)
+        // or targets system-level paths with destructive file commands.
+        // If destructive and not already allowed for session, prompt user.
+        if (isDestructiveCommand(command)) {
+          const sessionCommands = meta.sessionAllowedCommands || [];
+          if (!sessionCommands.includes(command)) {
+            // Command is destructive and not pre-allowed
+            if (config.protect?.ask === true) {
+              // Prompt user with 3-choice dialog
+              const decision = await askCommandDecision(ctx, meta, command);
+              if (decision === "block") {
+                const reason = `FORBIDDEN: Destructive command blocked — ${getDestructiveReason(command)}`;
+                await trackViolation({
+                  type: "bash_destructive",
+                  tool: "bash",
+                  detail: reason,
+                  suggestion: `Use protect.ask dialog to allow, or avoid dangerous commands.`,
+                });
+                ui.notify(ctx, reason);
+                return { block: true, reason, suggestAsk: true, blockedCommand: command };
+              }
+              // "allow" → fall through to file protection checks
+            } else {
+              // protect.ask=false: block destructive commands by default
+              const reason = `FORBIDDEN: Destructive command blocked — ${getDestructiveReason(command)}. Enable protect.ask for user confirmation.`;
+              await trackViolation({
+                type: "bash_destructive",
+                tool: "bash",
+                detail: reason,
+                suggestion: `Avoid dangerous commands or enable protect.ask in config.`,
+              });
+              ui.notify(ctx, reason);
+              return { block: true, reason, blockedCommand: command };
+            }
+          }
+          // Command is destructive but already allowed for session → continue
+        }
 
         // 2b. Git command protection check
         if (GIT_ADD_PATTERN.test(command)) {
