@@ -37,6 +37,13 @@ export interface RuntimeCtx {
    */
   event?: Record<string, unknown>;
 
+  /**
+   * 138: Reference to the pi SDK ExtensionAPI, forwarded from the bridge layer.
+   * Optional to keep test mocks lightweight — only consumed by agent_settled
+   * for the post-advance wake-up call (pi.sendUserMessage).
+   */
+  pi?: ExtensionAPI;
+
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
   _ctx: ExtensionContext;
 }
@@ -58,7 +65,8 @@ export function buildRuntimeCtx(
   const session = createSessionState(pi, ctx);
   const ui = ctx.ui;
 
-  const rctx: RuntimeCtx = { session, ui, _ctx: ctx };
+  // 138: Forward pi so that hooks (e.g., agent_settled) can call pi.sendUserMessage
+  const rctx: RuntimeCtx = { session, ui, _ctx: ctx, pi };
 
   if (event && typeof event === "object") {
     // Store raw event for downstream hooks (e.g., session_shutdown reads reason)
