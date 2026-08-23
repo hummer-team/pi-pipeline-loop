@@ -480,31 +480,13 @@ describe("createAgentSettled", () => {
   });
 
   // Case 6: terminal stage (nextStage=null) → sendUserMessage NOT called
+  // Uses currentStage="completed" where nextStage is genuinely null (not "completed").
   it("138 wake: terminal stage (nextStage=null) does NOT trigger sendUserMessage", async () => {
     const stageTmp = await makePassingVerifyTmp("pi-settled-wake-6");
 
-    // Use 'completed' as current stage with nextStage=null
-    const config = makeTestConfig({
-      projectRoot: stageTmp,
-      stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
-          (s, i, a) => [
-            s,
-            {
-              agentFile: "a.md",
-              skillPath: "s.md",
-              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
-              requireDomain: false,
-              verify: s === "awaiting_human"
-                ? { require: true, verifyFile: "references/spec/verify.md", mode: "hook" as const }
-                : undefined,
-            },
-          ],
-        ),
-      ) as any,
-    });
-
-    const meta = makeTestMeta({ currentStage: "awaiting_human" });
+    // Enable verify on "completed" stage — its nextStage is null (terminal boundary)
+    const config = makeHookVerifyConfig(stageTmp, "completed");
+    const meta = makeTestMeta({ currentStage: "completed" });
     const sentMessages: string[] = [];
     const ctx = createMockCtx(meta, {
       pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
@@ -513,8 +495,11 @@ describe("createAgentSettled", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    // awaiting_human → completed (nextStage=completed) — should NOT wake
+    // completed has nextStage=null — should NOT wake (real null boundary, not "completed" exclusion)
     expect(sentMessages.length).toBe(0);
+
+    // Stage should NOT advance (terminal stage, applyVerifyPass skips updateMeta when nextStage=null)
+    expect(ctx.metadataUpdates.length).toBe(0);
 
     await rm(stageTmp, { recursive: true, force: true });
   });
@@ -579,6 +564,38 @@ describe("createAgentSettled", () => {
 
     // awaiting_human → completed (nextStage === "completed") — should NOT wake
     expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // Case 9: sendUserMessage throws → hook does NOT reject, failure audit logged
+  it("138 wake: sendUserMessage exception is caught and logged as auto_advance_wake_failed", async () => {
+    const stageTmp = await makePassingVerifyTmp("pi-settled-wake-9");
+
+    const config = makeHookVerifyConfig(stageTmp, "clarify");
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createMockCtx(meta, {
+      pi: {
+        sendUserMessage: (_msg: string) => {
+          throw new Error("pi SDK internal failure");
+        },
+      },
+    });
+
+    const hook = createAgentSettled(config);
+
+    // Hook must NOT reject even when sendUserMessage throws
+    await expect(hook.handler(ctx as any)).resolves.toBeUndefined();
+
+    // Stage should still advance (advance happened before the wake call)
+    const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(lastMeta.currentStage).toBe("plan");
+
+    // Audit log should contain auto_advance_wake_failed (not auto_advance_wake)
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("auto_advance_wake_failed");
+    expect(logContent).toContain("pi SDK internal failure");
+    expect(logContent).not.toContain("auto_advance_wake\n");
 
     await rm(stageTmp, { recursive: true, force: true });
   });

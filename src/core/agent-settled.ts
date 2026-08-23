@@ -14,6 +14,7 @@ import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { isFrozen } from "./flow-state";
 import { DEFAULT_DECISION_SHORTCUT } from "../constants";
+import type { RuntimeCtx } from "./runtime-ctx";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -123,22 +124,34 @@ export function createAgentSettled(
         // Only for hook-mode stages with a non-terminal next stage (clarify/develop/fix).
         // Tool-mode stages (plan) and terminal stages (completed/null) are excluded here
         // and handled by their own paths (stage_advance tool or no-op).
-        const pi = (ctx as { pi?: { sendUserMessage?: (msg: string) => void } }).pi;
+        const pi = (ctx as RuntimeCtx).pi;
         if (
           pi
           && typeof pi.sendUserMessage === "function"
           && toStage
           && toStage !== "completed"
         ) {
-          pi.sendUserMessage(
-            `Pipeline advanced from ${fromStage} to ${toStage}. Begin the ${toStage} stage work now.`,
-          );
-          await writeAuditLog("auto_advance_wake", {
-            pipelineId: meta.pipelineId,
-            fromStage,
-            toStage,
-            method: "rule",
-          });
+          try {
+            pi.sendUserMessage(
+              `Pipeline advanced from ${fromStage} to ${toStage}. Begin the ${toStage} stage work now.`,
+            );
+            await writeAuditLog("auto_advance_wake", {
+              pipelineId: meta.pipelineId,
+              fromStage,
+              toStage,
+              method: "rule",
+            });
+          } catch (err) {
+            // Defensive: sendUserMessage threw — log failure but do not reject the hook.
+            // Stage has already been advanced; swallowing prevents audit loss + UX breakage.
+            await writeAuditLog("auto_advance_wake_failed", {
+              pipelineId: meta.pipelineId,
+              fromStage,
+              toStage,
+              method: "rule",
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
         } else if (pi === undefined) {
           // Defensive: pi not forwarded — log skip for debug diagnostics
           await writeAuditLog("auto_advance_wake_skipped", {
