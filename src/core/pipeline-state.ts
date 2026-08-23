@@ -5,6 +5,7 @@
  */
 
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
+import { buildStageSequence } from "../utils/stage-sequence";
 
 /**
  * Creates the `pipeline_state` tool.
@@ -37,16 +38,7 @@ export function createPipelineState(config: PipelineConfig): Tool {
       const stageConfig = config.stages[currentStage];
       const nextStage = stageConfig.nextStage;
 
-      const stageSequence: string[] = [];
-      let s = meta.currentStage;
-      const visited = new Set<string>();
-      for (let i = 0; i < 8 && s && !visited.has(s); i++) {
-        stageSequence.push(s);
-        visited.add(s);
-        const next = config.stages[s].nextStage;
-        if (next === null) break;
-        s = next;
-      }
+      const stageSequence = buildStageSequence(config, meta.currentStage);
 
       return {
         pipelineId: meta.pipelineId,

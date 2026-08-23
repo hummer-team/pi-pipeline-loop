@@ -6,12 +6,15 @@ import {
   initAuditLog,
   writeAuditLog,
   safeWriteAuditLog,
+  writeStageAudit,
+  safeWriteStageAudit,
   getDateAuditFileName,
   writePromptSnapshot,
   safeWritePromptSnapshot,
   __resetAuditDirPath,
 } from "../../utils/auditLog";
-import type { PipelineConfig } from "../../types";
+import type { PipelineConfig, SessionMeta } from "../../types";
+import { makeTestConfig, makeTestMeta } from "../helpers";
 
 function makeTmpRoot(label: string): string {
   return join(tmpdir(), `pi-auditlog-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -438,6 +441,139 @@ describe("safeWritePromptSnapshot", () => {
     __resetAuditDirPath();
     await expect(
       safeWritePromptSnapshot("prompt_snapshot", { stage: "test" }, "prompt"),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("writeStageAudit", () => {
+  it("writes audit line with auto-enriched pipelineId/stage/sequence/loop fields", async () => {
+    const root = makeTmpRoot("stage-audit-basic");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    await writeStageAudit(config, "stage_advance", meta, {
+      fromStage: "plan",
+      toStage: "develop",
+    });
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const line = content.trim();
+
+    // Standard fields
+    expect(line).toContain("[INFO] stage_advance");
+    expect(line).toContain("pipelineId=pipe-test-001");
+    expect(line).toContain("stage=develop");
+    expect(line).toContain("loopCount=0");
+    expect(line).toContain("maxLoops=3");
+
+    // Sequence field: forward chain from develop
+    expect(line).toContain("sequence=");
+    const seqMatch = line.match(/sequence=([^\s|]+)/);
+    expect(seqMatch).not.toBeNull();
+    const seqParts = seqMatch![1].split(",");
+    expect(seqParts[0]).toBe("develop");
+    expect(seqParts).toContain("completed");
+
+    // Extra fields
+    expect(line).toContain("fromStage=plan");
+    expect(line).toContain("toStage=develop");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("sequence includes completed for terminal chain", async () => {
+    const root = makeTmpRoot("stage-audit-seq");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    await writeStageAudit(config, "pipeline_start", meta);
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const line = content.trim();
+
+    const seqMatch = line.match(/sequence=([^\s|]+)/);
+    expect(seqMatch).not.toBeNull();
+    expect(seqMatch![1]).toContain("completed");
+  });
+
+  it("handles circular chain without infinite loop in sequence", async () => {
+    const root = makeTmpRoot("stage-audit-cycle");
+    const config = makeTestConfig({ projectRoot: root });
+    // Create a cycle: develop → review → develop
+    (config.stages.develop as any).nextStage = "review";
+    (config.stages.review as any).nextStage = "develop";
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    // Should NOT hang — visited-set guard terminates the loop
+    await writeStageAudit(config, "stage_advance", meta);
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    const line = content.trim();
+
+    expect(line).toContain("[INFO] stage_advance");
+    // Sequence should contain develop and review (cycle terminated)
+    expect(line).toContain("sequence=develop,review");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("silently skips when auditDirPath is uninitialized", async () => {
+    __resetAuditDirPath();
+    const config = makeTestConfig();
+    const meta = makeTestMeta();
+
+    // Should not throw
+    await expect(
+      writeStageAudit(config, "stage_advance", meta),
+    ).resolves.toBeUndefined();
+  });
+
+  it("respects custom log level (warn)", async () => {
+    const root = makeTmpRoot("stage-audit-warn");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta();
+    await writeStageAudit(config, "stage_advance_failed", meta, { reason: "invalid_next" }, "warn");
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("[WARN] stage_advance_failed");
+    expect(content).toContain("reason=invalid_next");
+
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("safeWriteStageAudit", () => {
+  it("writes audit line like writeStageAudit but never throws", async () => {
+    const root = makeTmpRoot("safe-stage-audit");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta();
+    await safeWriteStageAudit(config, "pipeline_state", meta, { snapshot: "{}" });
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("[INFO] pipeline_state");
+    expect(content).toContain("snapshot={}");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("silently handles errors without throwing", async () => {
+    __resetAuditDirPath();
+    const config = makeTestConfig();
+    const meta = makeTestMeta();
+    await expect(
+      safeWriteStageAudit(config, "test_event", meta),
     ).resolves.toBeUndefined();
   });
 });

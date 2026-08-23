@@ -19,7 +19,8 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AuditLogLevel, PipelineConfig } from "../types";
+import type { AuditLogLevel, PipelineConfig, SessionMeta } from "../types";
+import { buildStageSequence } from "./stage-sequence";
 
 /** Resolved absolute path to the audit log directory. */
 let auditDirPath = "";
@@ -124,6 +125,74 @@ export async function safeWriteAuditLog(
 ): Promise<void> {
   try {
     await writeAuditLog(stage, message, level);
+  } catch {
+    // Audit failure must never alter business control flow
+  }
+}
+
+// ─── Stage audit writer (unified pipeline progression events) ─────────────────
+
+/**
+ * Unified audit log writer for pipeline progression events.
+ *
+ * Automatically enriches every log entry with a consistent snapshot of
+ * pipeline state: `pipelineId`, `stage`, `sequence` (forward chain from
+ * current stage via `buildStageSequence`), `loopCount`, and `maxLoops`.
+ *
+ * All stage-advancing events (stage_advance, pipeline_start, pipeline_state,
+ * loop_check, pipeline_completed) MUST use this function instead of
+ * `writeAuditLog` directly, ensuring uniform audit trail format.
+ *
+ * @param config - Pipeline configuration (required for sequence computation)
+ * @param action - Event name (e.g. "stage_advance", "pipeline_completed")
+ * @param meta   - Current session metadata
+ * @param extra  - Optional additional key-value pairs to append
+ * @param level  - Log severity level (default "info")
+ */
+export async function writeStageAudit(
+  config: PipelineConfig,
+  action: string,
+  meta: SessionMeta,
+  extra?: Record<string, string>,
+  level: AuditLogLevel = "info",
+): Promise<void> {
+  // Guard: if audit directory has not been initialized, silently skip
+  if (!auditDirPath) return;
+
+  const sequence = buildStageSequence(config, meta.currentStage);
+
+  const message: Record<string, string> = {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    sequence: sequence.join(","),
+    loopCount: String(meta.loopCount),
+    maxLoops: String(meta.maxLoops),
+    ...extra,
+  };
+
+  await writeAuditLog(action, message, level);
+}
+
+/**
+ * Safe wrapper around writeStageAudit that never throws.
+ *
+ * Used in hot paths where audit failure must not alter business control flow.
+ *
+ * @param config - Pipeline configuration (required for sequence computation)
+ * @param action - Event name
+ * @param meta   - Current session metadata
+ * @param extra  - Optional additional key-value pairs
+ * @param level  - Log severity level (default "info")
+ */
+export async function safeWriteStageAudit(
+  config: PipelineConfig,
+  action: string,
+  meta: SessionMeta,
+  extra?: Record<string, string>,
+  level?: AuditLogLevel,
+): Promise<void> {
+  try {
+    await writeStageAudit(config, action, meta, extra, level);
   } catch {
     // Audit failure must never alter business control flow
   }
