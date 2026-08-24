@@ -437,6 +437,35 @@ describe("output.pipelineStage: false (silent)", () => {
     // Pipeline should NOT be frozen
     expect(meta.flowState).toBeUndefined();
   });
+
+  // Phase 3 (141): auto_verify_fail audit includes details field
+  it("auto_verify_fail audit includes details field with failure messages", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-details-test" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: {
+        failures: [
+          { ruleType: "fileContentPattern", detail: "pattern '## 用户确认' not found in docs/design/test_plan.md" },
+          { ruleType: "requiredFiles", detail: "missing: output.md" },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI);
+
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+
+    // Should contain auto_verify_fail event
+    expect(logContent).toContain("auto_verify_fail");
+    // Should include details field with failure details joined by "; "
+    expect(logContent).toContain("details=");
+    expect(logContent).toContain("pattern '## 用户确认' not found in docs/design/test_plan.md");
+    expect(logContent).toContain("missing: output.md");
+  });
 });
 
 // ─── Phase 3: config-error freeze + isConfigError ────────────────────────────
