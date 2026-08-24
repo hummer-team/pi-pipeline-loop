@@ -428,7 +428,7 @@ describe("createPipelineStartCommand", () => {
 
   // ─── Phase 0: TUI status bar sync on pipeline-start ──────────────────────────
   describe("TUI status bar sync (Phase 0)", () => {
-    it("with-file branch → writes 'Pipeline → clarify' to status bar, no notify", async () => {
+    it("with-file branch → writes unified format status bar, no notify", async () => {
       await fs.writeFile(docPath, "# Req\nDo X", "utf-8");
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
@@ -438,12 +438,14 @@ describe("createPipelineStartCommand", () => {
       const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
 
       expect(result.success).toBe(true);
-      // Status bar must contain the pipeline stage
-      expect(ctx.statusCalls).toEqual(
-        expect.arrayContaining([{ key: "pipeline-stage", text: "Pipeline → clarify" }])
-      );
+      // Status bar must use unified format: [ {pipelineId} • clarify -> plan ]
+      // pipelineId is dynamically generated, so match with regex
+      const grayOpen = "\x1b[90m";
+      const grayClose = "\x1b[0m";
+      const statusText = ctx.statusCalls.find(c => c.key === "pipeline-stage")?.text;
+      expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • clarify ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> plan${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
       // setStage uses setStatus only (no notify); ensure notifications don't echo the bar text
-      expect(ctx.notifications.some(n => n === "Pipeline → clarify")).toBe(false);
+      expect(ctx.notifications.some(n => n.includes("clarify"))).toBe(false);
     });
 
     // Phase 5 (Bug 5): no-file fresh start is rejected — status bar NOT written
@@ -462,7 +464,7 @@ describe("createPipelineStartCommand", () => {
       expect(ctx.statusCalls).toEqual([]);
     });
 
-    it("aborted restart branch → writes 'Pipeline → clarify' to status bar", async () => {
+    it("aborted restart branch → writes unified format status bar", async () => {
       await fs.writeFile(docPath, "content", "utf-8");
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta({ flowState: "aborted" });
@@ -473,9 +475,11 @@ describe("createPipelineStartCommand", () => {
 
       expect(result.success).toBe(true);
       expect(result.message).toContain("restarted");
-      expect(ctx.statusCalls).toEqual(
-        expect.arrayContaining([{ key: "pipeline-stage", text: "Pipeline → clarify" }])
-      );
+      // Status bar uses unified format with dynamic pipelineId
+      const grayOpen = "\x1b[90m";
+      const grayClose = "\x1b[0m";
+      const statusText = ctx.statusCalls.find(c => c.key === "pipeline-stage")?.text;
+      expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • clarify ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> plan${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
     });
 
     it("already-running branch → does NOT write status bar (stage unchanged)", async () => {

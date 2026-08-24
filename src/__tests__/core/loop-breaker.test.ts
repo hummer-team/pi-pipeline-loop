@@ -406,9 +406,9 @@ describe("createLoopBreaker", () => {
       const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
       expect(lastUpdate.flowState).toBe("blocked");
 
-      // TUI fail output: "develop ⚠ pipeline frozen"
-      expect(ctx.notifications).toContain("develop ⚠ pipeline frozen");
-      expect(ctx.statusCalls).toContainEqual({ key: "pipeline-stage", text: "develop ⚠ pipeline frozen" });
+      // TUI fail output: "[ {pipelineId} • {stage} ] ⚠ {reason}"
+      expect(ctx.notifications).toContain("[ pipe-test-001 • develop ] ⚠ pipeline frozen");
+      expect(ctx.statusCalls).toContainEqual({ key: "pipeline-stage", text: "[ pipe-test-001 • develop ] ⚠ pipeline frozen" });
     });
 
     it("freeze produces no TUI output when pipelineStage is false (default)", async () => {

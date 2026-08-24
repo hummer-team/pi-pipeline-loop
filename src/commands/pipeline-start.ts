@@ -20,7 +20,7 @@ import { createPipelineUI } from "../core/pipeline-ui";
  */
 function syncStageStatusBar(ui: ReturnType<typeof createPipelineUI>, ctx?: any): void {
   const stage = ctx?.session?.getMeta?.()?.currentStage ?? "clarify";
-  ui.setStage(ctx, `Pipeline → ${stage}`);
+  ui.setStage(ctx, stage);
 }
 
 /**

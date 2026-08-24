@@ -10,6 +10,16 @@ import type { PipelineConfig } from "../types";
 /** Status bar key for pipeline stage display */
 export const STAGE_STATUS_KEY = "pipeline-stage";
 
+/**
+ * When true, the next-stage arrow is rendered with ANSI gray (dim) styling.
+ * Set to false for pure-text fallback when the terminal does not support ANSI.
+ */
+export const NEXT_STAGE_GRAY = true;
+
+/** ANSI escape for dim/gray text */
+const ANSI_GRAY_OPEN = "\x1b[90m";
+const ANSI_GRAY_CLOSE = "\x1b[0m";
+
 /** Braille spinner frames for progress animation */
 export const PROGRESS_FRAMES: readonly string[] = [
   "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
@@ -53,12 +63,48 @@ export interface PipelineUI {
 }
 
 /**
- * Builds the progress status text: "Pipeline → {label} {frame} {message}"
+ * Builds the progress status text using unified format.
  */
 function buildProgressText(label: string, frame: string, message?: string): string {
   const parts = [`Pipeline → ${label}`, frame];
   if (message) parts.push(message);
   return parts.join(" ");
+}
+
+/**
+ * Reads the pipelineId from ctx session meta (safe — returns undefined if missing).
+ */
+function readPipelineId(ctx: any): string | undefined {
+  return ctx?.session?.getMeta?.()?.pipelineId;
+}
+
+/**
+ * Reads nextStage for a given stage from config.
+ */
+function readNextStage(config: PipelineConfig, stage: string): string | null | undefined {
+  const stageConfig = (config.stages as Record<string, { nextStage?: string | null }>)?.[stage];
+  return stageConfig?.nextStage;
+}
+
+/**
+ * Unified stage format:
+ * - With meta: "[ {pipelineId} • {stage} -> {nextStage} ]" (nextStage grayed when NEXT_STAGE_GRAY)
+ * - With meta but no nextStage: "[ {pipelineId} • {stage} ]"
+ * - Without meta: "Pipeline → {stage}"
+ */
+function formatStage(config: PipelineConfig, ctx: any, stage: string): string {
+  const pipelineId = readPipelineId(ctx);
+  if (!pipelineId) {
+    return `Pipeline → ${stage}`;
+  }
+  const nextStage = readNextStage(config, stage);
+  if (nextStage) {
+    const arrow = NEXT_STAGE_GRAY
+      ? `${ANSI_GRAY_OPEN}-> ${nextStage}${ANSI_GRAY_CLOSE}`
+      : `-> ${nextStage}`;
+    return `[ ${pipelineId} • ${stage} ${arrow} ]`;
+  }
+  return `[ ${pipelineId} • ${stage} ]`;
 }
 
 /**
@@ -84,9 +130,10 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
       ctx?.ui?.notify?.(message);
     },
 
-    setStage(ctx: any, label: string): void {
+    setStage(ctx: any, stage: string): void {
       if (!enabled) return;
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, label);
+      const msg = formatStage(config, ctx, stage);
+      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
     },
 
     clearStage(ctx: any): void {
@@ -96,21 +143,25 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
 
     stageEntry(ctx: any, stage: string): void {
       if (!enabled) return;
-      const msg = `Pipeline → ${stage}`;
+      const msg = formatStage(config, ctx, stage);
       ctx?.ui?.notify?.(msg);
       ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
     },
 
     transition(ctx: any, from: string, to: string): void {
       if (!enabled) return;
-      const msg = `${from} → ${to}`;
+      const msg = formatStage(config, ctx, to);
       ctx?.ui?.notify?.(msg);
       ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
     },
 
     fail(ctx: any, stage: string, reason: string): void {
       if (!enabled) return;
-      const msg = `${stage} ⚠ ${reason}`;
+      const pipelineId = readPipelineId(ctx);
+      const prefix = pipelineId
+        ? `[ ${pipelineId} • ${stage} ]`
+        : `Pipeline → ${stage}`;
+      const msg = `${prefix} ⚠ ${reason}`;
       ctx?.ui?.notify?.(msg);
       ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
     },

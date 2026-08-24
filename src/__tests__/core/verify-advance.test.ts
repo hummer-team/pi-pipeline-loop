@@ -75,8 +75,12 @@ describe("applyVerifyPass", () => {
     expect(lastUpdate.verifyFailures).toEqual([]);
 
     // Should have TUI transition output (gated by output.pipelineStage)
-    expect(ctx.notifications).toContain("develop → review");
-    expect(ctx.statusCalls).toContainEqual({ key: STAGE_STATUS_KEY, text: "develop → review" });
+    // transition(ctx, from, to) formats the "to" stage: [ {pipelineId} • {to} -> {nextStage} ]
+    // NEXT_STAGE_GRAY=true wraps the arrow in ANSI gray codes
+    const grayOpen = "\x1b[90m";
+    const grayClose = "\x1b[0m";
+    expect(ctx.notifications).toContain(`[ pipe-test-001 • review ${grayOpen}-> fix${grayClose} ]`);
+    expect(ctx.statusCalls).toContainEqual({ key: STAGE_STATUS_KEY, text: `[ pipe-test-001 • review ${grayOpen}-> fix${grayClose} ]` });
 
     // Should have audit log
     const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
@@ -258,8 +262,8 @@ describe("applyVerifyFail", () => {
     expect(logContent).toContain("method=tool");
 
     // Should have TUI failure output (gated by output.pipelineStage)
-    expect(ctx.notifications).toContain("develop ⚠ verify failed");
-    expect(ctx.statusCalls).toContainEqual({ key: STAGE_STATUS_KEY, text: "develop ⚠ verify failed" });
+    expect(ctx.notifications).toContain("[ pipe-test-001 • develop ] ⚠ verify failed");
+    expect(ctx.statusCalls).toContainEqual({ key: STAGE_STATUS_KEY, text: "[ pipe-test-001 • develop ] ⚠ verify failed" });
 
     // Should return structured result
     expect(result.success).toBe(false);
