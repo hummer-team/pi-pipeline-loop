@@ -3,11 +3,22 @@
  * Shared constants used across pipeline modules.
  */
 
+import type { PipelineStage } from "./types";
+
 /**
  * Configuration directory name — consistent with pi SDK CONFIG_DIR_NAME.
  * Used by pipeline-init to create the .pi/ directory structure.
  */
 export const CONFIG_DIR_NAME = ".pi";
+
+/**
+ * Stages eligible for pipeline resume on aborted restart.
+ * Excludes "awaiting_human" (frozen, requires decision menu) and
+ * "completed" (terminal, requires fresh start).
+ */
+export const RESUMABLE_STAGES: PipelineStage[] = [
+  "clarify", "plan", "develop", "review", "fix",
+];
 
 /** Paths that agents in loop stages (develop/fix) must not modify */
 export const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"] as const;
