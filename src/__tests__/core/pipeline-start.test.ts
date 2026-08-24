@@ -85,13 +85,14 @@ describe("createPipelineStartCommand", () => {
     expect(updatedMeta).toBeNull();
   });
 
-  // Phase 5 (Bug 5): aborted restart with non-empty requirementDoc preserves it
-  it("aborted restart + requirementDoc preserved + no file → restart succeeds", async () => {
+  // Phase 5 (Bug 5) → Phase 142: aborted restart with non-empty requirementDoc now resumes
+  it("aborted restart + requirementDoc preserved + no file → resume preserves stage position", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({
       flowState: "aborted",
       requirementDoc: "docs/design/req.md",
     });
+    const originalPipelineId = meta.pipelineId;
     let updatedMeta: any = null;
     const ctx = {
       session: {
@@ -104,9 +105,13 @@ describe("createPipelineStartCommand", () => {
     const result: any = await cmd.execute({ file: "" }, ctx as any);
 
     expect(result.success).toBe(true);
-    expect(result.message).toContain("restarted");
+    // Phase 142: resume semantics (not restart) — stage position preserved
+    expect(result.message).toContain("resumed");
     expect(updatedMeta).not.toBeNull();
-    expect(updatedMeta.requirementDoc).toBe("docs/design/req.md");
+    expect(updatedMeta.currentStage).toBe("develop"); // preserved from meta
+    expect(updatedMeta.pipelineId).toBe(originalPipelineId); // pipelineId preserved
+    expect(updatedMeta.requirementDoc).toBe("docs/design/req.md"); // requirementDoc preserved
+    expect(updatedMeta.flowState).toBe("running");
   });
 
   // Medium fix #3: aborted restart + empty requirementDoc + new file → uses new file
@@ -135,16 +140,17 @@ describe("createPipelineStartCommand", () => {
     expect(updatedMeta.requirementDoc).toBe("req.md");
   });
 
-  // Medium fix #4: buildRestartMeta DRY — both restart paths produce identical structure
-  it("aborted restart (both paths) produces consistent SessionMeta structure", async () => {
+  // Medium fix #4 → Phase 142: DRY — both restart paths split into resume (path1) and new (path2)
+  it("aborted restart (both paths): path1 resumes stage position, path2 opens new pipeline", async () => {
     await fs.writeFile(docPath, "content", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP, maxLoops: 5, maxLoopCycles: 7 });
 
-    // Path 1: no-file restart (requirementDoc from meta)
+    // Path 1: no-file restart (requirementDoc from meta) → resume (currentStage preserved)
     const meta1 = makeTestMeta({
       flowState: "aborted",
       requirementDoc: "existing.md",
     });
+    const originalPipelineId1 = meta1.pipelineId;
     let updatedMeta1: any = null;
     const ctx1 = {
       session: {
@@ -155,11 +161,12 @@ describe("createPipelineStartCommand", () => {
     const cmd1 = createPipelineStartCommand(config);
     const r1: any = await cmd1.execute({ file: "" }, ctx1 as any);
 
-    // Path 2: with-file restart (requirementDoc from file, overrides empty meta)
+    // Path 2: with-file restart (requirementDoc from file, overrides empty meta) → open new
     const meta2 = makeTestMeta({
       flowState: "aborted",
       // no requirementDoc
     });
+    const originalPipelineId2 = meta2.pipelineId;
     let updatedMeta2: any = null;
     const ctx2 = {
       session: {
@@ -173,10 +180,22 @@ describe("createPipelineStartCommand", () => {
     expect(r1.success).toBe(true);
     expect(r2.success).toBe(true);
 
-    // Both paths must produce the same structural fields (except pipelineId, stageStartTime, requirementDoc)
+    // Path 1: resume — stage position preserved, pipelineId preserved
+    expect(r1.message).toContain("resumed");
+    expect(updatedMeta1.currentStage).toBe("develop"); // preserved from meta
+    expect(updatedMeta1.pipelineId).toBe(originalPipelineId1); // preserved
+    expect(updatedMeta1.requirementDoc).toBe("existing.md");
+    expect(updatedMeta1.flowState).toBe("running");
+
+    // Path 2: open new — currentStage=clarify, new pipelineId
+    expect(r2.message).toContain("restarted");
+    expect(updatedMeta2.currentStage).toBe("clarify");
+    expect(updatedMeta2.pipelineId).not.toBe(originalPipelineId2); // new pipelineId
+    expect(updatedMeta2.requirementDoc).toBe("req.md");
+    expect(updatedMeta2.flowState).toBe("running");
+
+    // Shared structural fields for both paths
     for (const m of [updatedMeta1, updatedMeta2]) {
-      expect(m.currentStage).toBe("clarify");
-      expect(m.flowState).toBe("running");
       expect(m.loopCount).toBe(0);
       expect(m.currentStepIndex).toBe(0);
       expect(m.verifyAttempts).toBe(0);
@@ -188,8 +207,6 @@ describe("createPipelineStartCommand", () => {
       expect(m.maxLoopCycles).toBe(7);
       expect(m.pipelineId).toMatch(/^pipe-/);
     }
-    expect(updatedMeta1.requirementDoc).toBe("existing.md");
-    expect(updatedMeta2.requirementDoc).toBe("req.md");
   });
 
   // Phase 5 (Bug 5): fresh start without doc_file is rejected
@@ -636,6 +653,297 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
       expect(updatedMeta).not.toBeNull();
       expect(updatedMeta.currentStage).toBe("clarify");
+    });
+  });
+
+  // ─── Phase 142: Resume / New decision matrix ──────────────────────────────────
+  describe("resume/new decision matrix (Phase 142)", () => {
+    // Case 1: aborted + plan + file empty + requirementDoc → resume to plan
+    it("aborted + plan + no file + requirementDoc → resumes to plan", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        previousStage: "clarify",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      const originalPipelineId = meta.pipelineId;
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("resumed");
+      expect(result.currentStage).toBe("plan");
+      expect(updatedMeta).not.toBeNull();
+      expect(updatedMeta.currentStage).toBe("plan");
+      expect(updatedMeta.flowState).toBe("running");
+      expect(updatedMeta.pipelineId).toBe(originalPipelineId);
+      expect(updatedMeta.requirementDoc).toBe("docs/design/req.md");
+    });
+
+    // Case 2: aborted + plan + file===requirementDoc → resume to plan
+    it("aborted + plan + file === requirementDoc → resumes to plan", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        previousStage: "clarify",
+        flowState: "aborted",
+        requirementDoc: "req.md",
+      });
+      const originalPipelineId = meta.pipelineId;
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("resumed");
+      expect(result.currentStage).toBe("plan");
+      expect(updatedMeta.currentStage).toBe("plan");
+      expect(updatedMeta.pipelineId).toBe(originalPipelineId);
+    });
+
+    // Case 3: aborted + plan + file!==requirementDoc → open new clarify
+    it("aborted + plan + file !== requirementDoc → opens new pipeline at clarify", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "old-doc.md",
+      });
+      const originalPipelineId = meta.pipelineId;
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("restarted");
+      expect(result.currentStage).toBe("clarify");
+      expect(updatedMeta.currentStage).toBe("clarify");
+      expect(updatedMeta.pipelineId).not.toBe(originalPipelineId);
+      // When meta has existing requirementDoc, buildRestartMeta preserves it (meta.requirementDoc || file)
+      expect(updatedMeta.requirementDoc).toBe("old-doc.md");
+    });
+
+    // Case 4: aborted + completed → error, no updateMeta
+    it("aborted + completed → returns error, does NOT call updateMeta", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "completed",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("completed");
+      expect(updatedMeta).toBeNull();
+    });
+
+    // Case 5: aborted + awaiting_human → error with decision menu hint
+    it("aborted + awaiting_human → returns error with decision menu hint", async () => {
+      const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "ctrl+x" });
+      const meta = makeTestMeta({
+        currentStage: "awaiting_human",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("awaiting_human");
+      expect(result.error).toContain("decision menu");
+      expect(result.error).toContain("ctrl+x");
+      expect(updatedMeta).toBeNull();
+    });
+
+    // Case 6: aborted + no requirementDoc + file empty → error with /pipeline-start hint
+    it("aborted + no requirementDoc + no file → returns error with /pipeline-start hint", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "aborted",
+        // no requirementDoc
+      });
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("/pipeline-start");
+      expect(updatedMeta).toBeNull();
+    });
+
+    // Case 7: Field rebuild — resume to plan rebuilds stage chain fields, clears counters
+    it("resume rebuilds stage chain fields and clears transient state", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        previousStage: "clarify",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+        contextFiles: { clarify: ["/tmp/ctx1.md"] },
+        summaries: { clarify: { path: "/tmp/s.md", hash: "abc", status: "valid" } },
+        verifyAttempts: 5,
+        verifyFailures: [{ ruleType: "test", detail: "fail", timestamp: 0 }],
+        violations: [{ type: "write_protected", detail: "blocked", timestamp: 0 }],
+        loopCount: 3,
+        loopCycleCount: 2,
+        advancedThisTurn: true,
+        verifyConfigError: true,
+        blockedReason: "verify_overflow",
+        terminated: true,
+        terminateReason: "user_abort",
+      });
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(updatedMeta).not.toBeNull();
+
+      // Preserved fields
+      expect(updatedMeta.currentStage).toBe("plan");
+      expect(updatedMeta.requirementDoc).toBe("docs/design/req.md");
+      expect(updatedMeta.contextFiles).toEqual({ clarify: ["/tmp/ctx1.md"] });
+      expect(updatedMeta.summaries).toEqual({ clarify: { path: "/tmp/s.md", hash: "abc", status: "valid" } });
+
+      // Rebuilt fields
+      expect(updatedMeta.previousStage).toBe("clarify"); // clarify.nextStage === plan
+      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan"]);
+
+      // Cleared counters / transient state
+      expect(updatedMeta.verifyAttempts).toBe(0);
+      expect(updatedMeta.verifyFailures).toEqual([]);
+      expect(updatedMeta.violations).toEqual([]);
+      expect(updatedMeta.loopCount).toBe(0);
+      expect(updatedMeta.currentStepIndex).toBe(0);
+      expect(updatedMeta.advancedThisTurn).toBeUndefined();
+      expect(updatedMeta.loopCycleCount).toBeUndefined();
+      expect(updatedMeta.verifyConfigError).toBeUndefined();
+      expect(updatedMeta.blockedReason).toBeUndefined();
+      expect(updatedMeta.terminated).toBeUndefined();
+      expect(updatedMeta.terminateReason).toBeUndefined();
+      expect(updatedMeta.flowState).toBe("running");
+    });
+
+    // Case 8: Audit — resume produces pipeline_start (mode=resume) + pipeline_resumed events
+    it("resume writes pipeline_start (mode=resume) and pipeline_resumed audit events", async () => {
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+      expect(result.success).toBe(true);
+
+      // Read audit log
+      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logContent = await fs.readFile(logFile, "utf-8");
+
+      // pipeline_start event with mode=resume (audit format: pipe-separated key=value)
+      expect(logContent).toContain("pipeline_start");
+      expect(logContent).toContain("mode=resume");
+
+      // pipeline_resumed event with fromStage/toStage/requirementDoc
+      expect(logContent).toContain("pipeline_resumed");
+      expect(logContent).toContain("fromStage=plan");
+      expect(logContent).toContain("toStage=plan");
+      expect(logContent).toContain("docs/design/req.md");
+
+      // Clean up audit state
+      __resetAuditDirPath();
+    });
+
+    // Case 9: TUI — resume branch writes unified format status bar with resumed stage
+    it("resume branch → writes unified format status bar with resumed stage", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      const ctx = createMockCtx(meta);
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("resumed");
+
+      // Status bar must reflect resumed stage: plan -> develop
+      const grayOpen = "\x1b[90m";
+      const grayClose = "\x1b[0m";
+      const statusText = ctx.statusCalls.find(c => c.key === "pipeline-stage")?.text;
+      expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • plan ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> develop${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
     });
   });
 });
