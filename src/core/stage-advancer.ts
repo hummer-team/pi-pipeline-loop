@@ -14,7 +14,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from ".
 import { createPipelineUI } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
-import { applyVerifyFail } from "./verify-advance";
+import { applyVerifyFail, maybeHandlePlanHumanGate } from "./verify-advance";
 import { safeWriteStageAudit } from "../utils/auditLog";
 
 /**
@@ -141,6 +141,17 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             message: `Required deliverables not yet produced. Please create: ${precheck.missing.join(", ")}`,
             precheck: true,
             missing: precheck.missing,
+          };
+        }
+
+        // Plan human-gate pre-check: if triggered, handles confirm dialog and returns
+        // without entering normal verify flow (defensive coverage for tool path)
+        const gateResult = await maybeHandlePlanHumanGate(config, ctx, meta, ui);
+        if (gateResult === "handled") {
+          return {
+            success: true,
+            message: "Plan human-gate handled via dialog. Stage may have advanced.",
+            currentStage: (ctx.session.getMeta() as SessionMeta).currentStage,
           };
         }
 

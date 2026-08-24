@@ -8,8 +8,8 @@
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { runVerification, precheckCompletionMarker } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
-import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
-import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
+import { writeAuditLog } from "../utils/auditLog";
+import { applyVerifyFail, autoAdvanceAfterVerify, maybeHandlePlanHumanGate } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { isFrozen } from "./flow-state";
@@ -73,6 +73,14 @@ export function createAgentSettled(
         return;
       }
 
+      // Plan human-gate pre-check: if triggered, handles confirm dialog and returns
+      // without entering normal verify flow (no verifyAttempts increment, no ⚠ verify failed)
+      const ctxWithPi = { ...ctx, pi: (ctx as RuntimeCtx).pi };
+      const gateResult = await maybeHandlePlanHumanGate(config, ctxWithPi, meta, ui);
+      if (gateResult === "handled") {
+        return;
+      }
+
       // 2. Auto-verification
       const stageConfig = config.stages[meta.currentStage];
       if (!stageConfig.verify?.require) {
@@ -122,77 +130,12 @@ export function createAgentSettled(
       };
 
       if (vr.rulePassed) {
-        // Clear advancedThisTurn flag on successful verification (prevent residual state)
-        const clearedMeta = { ...meta, advancedThisTurn: undefined };
-        // Capture stage names BEFORE applyVerifyPass mutates meta.currentStage
+        // Capture stage names BEFORE advance mutates meta.currentStage
         const fromStage = meta.currentStage;
         const toStage = stageConfig.nextStage;
-        await applyVerifyPass(ctx, clearedMeta, fromStage, toStage, sharedResult, {
-          method: "rule",
-          handleTerminal: false,
-          returnResult: false,
-          ui,
-        });
 
-        // Phase 1 (139): Unified stage audit for hook auto-advance path.
-        // Ensures hook path writes the same stage_advance/pipeline_completed events
-        // as the tool path (stage-advancer), eliminating audit dual-track.
-        if (toStage && toStage !== "completed") {
-          await writeStageAudit(config, "stage_advance", clearedMeta, {
-            fromStage,
-            toStage,
-            method: "hook_auto_advance",
-          });
-        } else {
-          // Terminal stage: fix→completed or null nextStage
-          await writeStageAudit(config, "pipeline_completed", clearedMeta, {
-            fromStage,
-            finalStage: fromStage,
-            method: "hook_auto_advance",
-          });
-        }
-
-        // 138: Wake next stage — trigger model to begin work in the new stage
-        // Only for hook-mode stages with a non-terminal next stage (clarify/develop/fix).
-        // Tool-mode stages (plan) and terminal stages (completed/null) are excluded here
-        // and handled by their own paths (stage_advance tool or no-op).
-        const pi = (ctx as RuntimeCtx).pi;
-        if (
-          pi
-          && typeof pi.sendUserMessage === "function"
-          && toStage
-          && toStage !== "completed"
-        ) {
-          try {
-            pi.sendUserMessage(
-              `Pipeline advanced from ${fromStage} to ${toStage}. Begin the ${toStage} stage work now.`,
-            );
-            await writeAuditLog("auto_advance_wake", {
-              pipelineId: meta.pipelineId,
-              fromStage,
-              toStage,
-              method: "rule",
-            });
-          } catch (err) {
-            // Defensive: sendUserMessage threw — log failure but do not reject the hook.
-            // Stage has already been advanced; swallowing prevents audit loss + UX breakage.
-            await writeAuditLog("auto_advance_wake_failed", {
-              pipelineId: meta.pipelineId,
-              fromStage,
-              toStage,
-              method: "rule",
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        } else if (pi === undefined) {
-          // Defensive: pi not forwarded — log skip for debug diagnostics
-          await writeAuditLog("auto_advance_wake_skipped", {
-            pipelineId: meta.pipelineId,
-            fromStage,
-            toStage: toStage ? String(toStage) : "none",
-            reason: "pi not forwarded via RuntimeCtx",
-          });
-        }
+        // Reuse ctxWithPi (declared above for gate) for autoAdvanceAfterVerify wake message
+        await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui);
       } else {
         await applyVerifyFail(ctx, meta, meta.currentStage, sharedResult, "rule", ui, config);
       }

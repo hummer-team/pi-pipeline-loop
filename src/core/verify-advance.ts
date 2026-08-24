@@ -6,9 +6,12 @@
  */
 
 import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } from "../types";
-import { writeAuditLog } from "../utils/auditLog";
+import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
+import { resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
+import { parseVerifyFile } from "./auto-verifier";
+import { resolveStagePath, DEFAULT_VERIFY_FILE } from "../constants";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -19,7 +22,9 @@ interface VerifyAdvanceCtx {
     getMeta: () => SessionMeta | undefined;
     updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
   };
-  ui?: { notify: (msg: string) => void };
+  ui?: { notify: (msg: string) => void; select?: (message: string, options: string[]) => Promise<string | undefined> };
+  /** @internal pi SDK handle for sending wake messages (used by autoAdvanceAfterVerify) */
+  pi?: { sendUserMessage?: (msg: string) => void };
 }
 
 /**
@@ -290,6 +295,7 @@ export async function applyVerifyFail(
     method,
     failureCount: String(verifyFailures.length),
     failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
+    details: verifyFailures.map((f) => f.detail).join("; "),
   }, "warn");
 
   const failureSummary = verifyFailures
@@ -326,4 +332,249 @@ export async function applyVerifyFail(
     message: `Verification failed for "${stageName}": ${failureSummary}`,
     failures: verifyFailures,
   };
+}
+
+/**
+ * Shared post-verification advance logic: applyVerifyPass + stage audit + wake message.
+ * Extracted from agent-settled.ts (lines 124-195) so that both the hook path
+ * and the plan human-gate "approved" branch can reuse it (DRY).
+ *
+ * @param config - Pipeline configuration (for stage lookup)
+ * @param ctx - Session/PI context
+ * @param meta - Current session metadata (before advance)
+ * @param fromStage - Stage being verified
+ * @param toStage - Target stage to advance to
+ * @param verifyResult - Synthetic or real verification result
+ * @param pipelineUI - PipelineUI for TUI transitions
+ */
+export async function autoAdvanceAfterVerify(
+  config: PipelineConfig,
+  ctx: VerifyAdvanceCtx,
+  meta: SessionMeta,
+  fromStage: PipelineStage,
+  toStage: PipelineStage | null,
+  verifyResult: VerifyAdvanceResult,
+  pipelineUI: PipelineUI,
+): Promise<void> {
+  const clearedMeta = { ...meta, advancedThisTurn: undefined };
+
+  await applyVerifyPass(ctx, clearedMeta, fromStage, toStage, verifyResult, {
+    method: "rule",
+    handleTerminal: false,
+    returnResult: false,
+    ui: pipelineUI,
+  });
+
+  // Stage audit
+  if (toStage && toStage !== "completed") {
+    await writeStageAudit(config, "stage_advance", clearedMeta, {
+      fromStage,
+      toStage,
+      method: "hook_auto_advance",
+    });
+  } else {
+    await writeStageAudit(config, "pipeline_completed", clearedMeta, {
+      fromStage,
+      finalStage: fromStage,
+      method: "hook_auto_advance",
+    });
+  }
+
+  // Wake next stage via pi.sendUserMessage
+  const pi = ctx.pi;
+  if (
+    pi
+    && typeof pi.sendUserMessage === "function"
+    && toStage
+    && toStage !== "completed"
+  ) {
+    try {
+      pi.sendUserMessage(
+        `Pipeline advanced from ${fromStage} to ${toStage}. Begin the ${toStage} stage work now.`,
+      );
+      await writeAuditLog("auto_advance_wake", {
+        pipelineId: meta.pipelineId,
+        fromStage,
+        toStage,
+        method: "rule",
+      });
+    } catch (err) {
+      await writeAuditLog("auto_advance_wake_failed", {
+        pipelineId: meta.pipelineId,
+        fromStage,
+        toStage,
+        method: "rule",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else if (pi === undefined) {
+    await writeAuditLog("auto_advance_wake_skipped", {
+      pipelineId: meta.pipelineId,
+      fromStage,
+      toStage: toStage ? String(toStage) : "none",
+      reason: "pi not forwarded via RuntimeCtx",
+    });
+  }
+}
+
+/**
+ * Result of the plan human-gate pre-check.
+ * - "no-gate": conditions not met, caller should proceed with normal verify flow
+ * - "handled": gate was triggered and handled (approved/adjust/cancelled/pending)
+ */
+export type PlanGateResult = "no-gate" | "handled";
+
+/**
+ * Pre-checks whether the plan stage human-gate should be triggered.
+ *
+ * Conditions: currentStage === "plan" AND planDocPath resolvable AND
+ * planDocHasConfirmMarker === false. If any condition fails, returns "no-gate".
+ *
+ * When triggered, presents a TUI select dialog with 3 options:
+ * - "已确认（写入标记并推进）": appends ## 用户确认 marker, advances to develop
+ * - "有问题需调整（在 plan 补充调整意见）": stays in plan, no advance
+ * - "取消": stays in plan, no advance
+ *
+ * Each action has its own audit event. Does NOT increment verifyAttempts.
+ *
+ * @param config - Pipeline configuration
+ * @param ctx - Session/PI context
+ * @param meta - Current session metadata
+ * @param pipelineUI - PipelineUI for TUI dialogs
+ */
+export async function maybeHandlePlanHumanGate(
+  config: PipelineConfig,
+  ctx: VerifyAdvanceCtx,
+  meta: SessionMeta,
+  pipelineUI: PipelineUI,
+): Promise<PlanGateResult> {
+  // Precondition: must be in plan stage
+  if (meta.currentStage !== "plan") return "no-gate";
+
+  // Check if verify rules actually reference the plan doc glob pattern
+  // Only trigger the gate when the stage's verify.md uses the generic plan doc glob
+  const stageConfig = config.stages["plan"];
+  if (stageConfig.verify?.require) {
+    const verifyFile = stageConfig.verify.verifyFile;
+    const verifyPath = verifyFile
+      ? (verifyFile.startsWith("/")
+        ? verifyFile
+        : `${config.projectRoot}/${verifyFile}`)
+      : `${config.projectRoot}/${resolveStagePath(DEFAULT_VERIFY_FILE, "plan")}`;
+    const { rules } = await parseVerifyFile(verifyPath);
+    if (rules) {
+      const hasPlanDocGlob =
+        rules.requiredFiles?.some(p => p === "docs/design/*_plan.md") ||
+        rules.fileContentPattern?.some(r => r.path === "docs/design/*_plan.md");
+      if (!hasPlanDocGlob) return "no-gate";
+    } else {
+      return "no-gate";
+    }
+  } else {
+    return "no-gate";
+  }
+
+  // Resolve plan doc path
+  const planDocPath = await resolvePlanDocPath(config, meta);
+  if (!planDocPath) return "no-gate";
+
+  // Check if confirm marker already exists
+  const hasMarker = await planDocHasConfirmMarker(planDocPath);
+  if (hasMarker) return "no-gate"; // marker present → normal verify flow
+
+  // Gate triggered: show dialog
+  const rawSelect = ctx.ui?.select;
+  if (!rawSelect) {
+    // No UI available: silent pending
+    await writeAuditLog("plan_confirm_pending", {
+      pipelineId: meta.pipelineId,
+      stage: "plan",
+      planDoc: planDocPath,
+      reason: "no ui.select available",
+    });
+    pipelineUI.notify(ctx, "Plan document requires human confirmation. Awaiting UI interaction.");
+    return "handled";
+  }
+
+  const choice = await rawSelect(
+    "规划确认（以文档标记为准）：请选择操作",
+    ["已确认（写入标记并推进）", "有问题需调整（在 plan 补充调整意见）", "取消"],
+  );
+
+  // Handle Esc / undefined (user pressed Esc or dialog dismissed)
+  if (choice === undefined) {
+    await writeAuditLog("plan_confirm_cancelled", {
+      pipelineId: meta.pipelineId,
+      stage: "plan",
+      planDoc: planDocPath,
+      action: "esc_dismissed",
+    });
+    pipelineUI.notify(ctx, "规划确认已取消，请在 plan 文档中补充 ## 用户确认 后重新触发验证。");
+    return "handled";
+  }
+
+  if (choice.startsWith("已确认")) {
+    // Validate write path is in plan stage allowedWritePaths (docs/)
+    const stageConfig = config.stages["plan"];
+    const relPlanDoc = planDocPath.startsWith(config.projectRoot)
+      ? planDocPath.slice(config.projectRoot.length + 1)
+      : planDocPath;
+    const allowed = (stageConfig.allowedWritePaths ?? []).some(
+      (prefix) => prefix === "**" || relPlanDoc.startsWith(prefix),
+    );
+    if (!allowed) {
+      await writeAuditLog("plan_confirm_rejected", {
+        pipelineId: meta.pipelineId,
+        stage: "plan",
+        planDoc: planDocPath,
+        reason: "write path not in allowedWritePaths",
+      });
+      pipelineUI.notify(ctx, `Plan doc path "${relPlanDoc}" not in plan allowedWritePaths. Cannot write confirmation.`);
+      return "handled";
+    }
+
+    // Append confirmation marker to plan doc
+    const timestamp = new Date().toISOString();
+    const markerText = `\n## 用户确认：确认无误\n\n> 确认时间：${timestamp}\n`;
+    const fsDynamic = await import("node:fs/promises");
+    await fsDynamic.appendFile(planDocPath, markerText, "utf-8");
+
+    await writeAuditLog("plan_confirm_approved", {
+      pipelineId: meta.pipelineId,
+      stage: "plan",
+      planDoc: planDocPath,
+      timestamp,
+    });
+
+    // Advance to next stage (develop) using shared advance logic
+    const toStage = stageConfig.nextStage;
+    const syntheticResult: VerifyAdvanceResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+    await autoAdvanceAfterVerify(config, ctx, meta, "plan", toStage, syntheticResult, pipelineUI);
+
+    return "handled";
+  }
+
+  if (choice.startsWith("有问题")) {
+    await writeAuditLog("plan_confirm_adjust", {
+      pipelineId: meta.pipelineId,
+      stage: "plan",
+      planDoc: planDocPath,
+    });
+    pipelineUI.notify(ctx, "请在 plan 文档追加 ## 调整意见 并说明修改项");
+    return "handled";
+  }
+
+  // Cancel
+  await writeAuditLog("plan_confirm_cancelled", {
+    pipelineId: meta.pipelineId,
+    stage: "plan",
+    planDoc: planDocPath,
+    action: "user_cancelled",
+  });
+  pipelineUI.notify(ctx, "规划确认已取消，请在 plan 文档中补充 ## 用户确认 后重新触发验证。");
+  return "handled";
 }
