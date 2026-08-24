@@ -921,3 +921,37 @@ export async function precheckRequiredFiles(
 
   return { passed: false, missing };
 }
+
+/**
+ * Prechecks whether the interactive completion marker has been written
+ * to the requirement document. Returns true if the marker is found.
+ *
+ * Returns false (treated as "not yet complete") when:
+ * - requirementDoc is not set in session meta
+ * - The file cannot be read (missing, permission error, etc.)
+ * - The marker string is not found in the file content
+ *
+ * @param meta - Current session metadata
+ * @param marker - The completion marker text to search for
+ * @param projectRoot - Project root for resolving relative requirementDoc paths
+ */
+export async function precheckCompletionMarker(
+  meta: SessionMeta,
+  marker: string,
+  projectRoot: string,
+): Promise<boolean> {
+  if (!meta.requirementDoc) {
+    return false;
+  }
+
+  const docPath = path.isAbsolute(meta.requirementDoc)
+    ? meta.requirementDoc
+    : path.join(projectRoot, meta.requirementDoc);
+
+  try {
+    const content = await fs.readFile(docPath, "utf-8");
+    return content.includes(marker);
+  } catch {
+    return false;
+  }
+}

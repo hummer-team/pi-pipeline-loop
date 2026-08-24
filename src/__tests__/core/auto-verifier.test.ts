@@ -11,6 +11,7 @@ import {
   resolvePlaceholders,
   precheckRequiredFiles,
   parseVerifiedCommands,
+  precheckCompletionMarker,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1376,5 +1377,61 @@ describe("Phase 6 (139): VERIFIED_COMMANDS selfVerifySkip", () => {
     expect(records).toHaveLength(2);
     expect(records[0].selfReported).toBe(true);
     expect(records[1].selfReported).toBe(true);
+  });
+});
+
+// ─── Phase 3 (140): precheckCompletionMarker ──────────────────────────────────
+describe("Phase 3 (140): precheckCompletionMarker", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = path.join(tmpdir(), "pi-marker-" + Date.now());
+    await fs.mkdir(tmpDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns false when requirementDoc is not set", async () => {
+    const meta = makeTestMeta({ requirementDoc: undefined });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(false);
+  });
+
+  it("returns false when requirementDoc file does not exist", async () => {
+    const meta = makeTestMeta({ requirementDoc: "nonexistent.md" });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(false);
+  });
+
+  it("returns true when marker is found in requirementDoc", async () => {
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "# Requirements\nSome content\n## 模型确认\n- full-und? 理解确认：是\n",
+      "utf-8",
+    );
+    const meta = makeTestMeta({ requirementDoc: "req.md" });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(true);
+  });
+
+  it("returns false when marker is NOT found in requirementDoc", async () => {
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "# Requirements\nSome content without the marker\n",
+      "utf-8",
+    );
+    const meta = makeTestMeta({ requirementDoc: "req.md" });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(false);
+  });
+
+  it("handles absolute requirementDoc paths", async () => {
+    const absPath = path.join(tmpDir, "absolute-req.md");
+    await fs.writeFile(absPath, "content\n## 模型确认\n", "utf-8");
+    const meta = makeTestMeta({ requirementDoc: absPath });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(true);
   });
 });

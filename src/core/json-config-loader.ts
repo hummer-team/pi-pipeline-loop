@@ -294,6 +294,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
               resolveStagePath(DEFAULT_VERIFY_FILE, stageName),
             mode: parseVerifyMode(jsonStage.verify.mode),
             selfVerifySkip: jsonStage.verify.selfVerifySkip ?? false,
+            completionMarker: jsonStage.verify.completionMarker,
           }
         : undefined,
     };

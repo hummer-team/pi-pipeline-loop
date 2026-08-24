@@ -91,6 +91,14 @@ export interface VerifyConfig {
    * Default: false.
    */
   selfVerifySkip?: boolean;
+
+  /**
+   * Interactive completion marker text. When configured, agent_settled prechecks
+   * whether this marker has been written to the requirement document before running
+   * verification. If the marker is not found on disk, verification is skipped,
+   * the stage is NOT advanced, and verifyAttempts is NOT incremented (prevents freeze).
+   */
+  completionMarker?: string;
 }
 
 /**
@@ -460,6 +468,13 @@ export interface VerifyJsonConfig {
    * executed the same command via tool calls in the current stage. Default: false.
    */
   selfVerifySkip?: boolean;
+
+  /**
+   * Interactive completion marker text. When configured, agent_settled prechecks
+   * whether this marker exists in the requirement document before running verification.
+   * If not found, verification is skipped (no advance, no verifyAttempts increment).
+   */
+  completionMarker?: string;
 }
 
 /**

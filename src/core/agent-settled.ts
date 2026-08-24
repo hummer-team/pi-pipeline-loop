@@ -6,7 +6,7 @@
  */
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
-import { runVerification } from "./auto-verifier";
+import { runVerification, precheckCompletionMarker } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
@@ -85,6 +85,20 @@ export function createAgentSettled(
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
           reason: "verify.mode=tool, verification deferred to pipeline_verify tool",
+        });
+        return;
+      }
+
+      // CompletionMarker precheck: if configured, verify the marker has been
+      // written to the requirement doc before running verification.
+      // When marker is not found: skip verification, do NOT advance, do NOT
+      // increment verifyAttempts (prevents freeze loop on interactive stages).
+      const marker = stageConfig.verify.completionMarker;
+      if (marker && !await precheckCompletionMarker(meta, marker, config.projectRoot)) {
+        await writeAuditLog("verify_completion_marker_pending", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          marker,
         });
         return;
       }

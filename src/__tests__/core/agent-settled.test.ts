@@ -600,3 +600,169 @@ describe("createAgentSettled", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ─── Phase 3 (140): completionMarker precheck ─────────────────────────────────
+describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
+  const markerTmp = join(tmpdir(), "pi-marker-settled-" + Date.now());
+
+  it("completionMarker not on disk → skips verification, no verifyAttempts increment", async () => {
+    const stageTmp = join(markerTmp, "no-marker");
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Write requirement doc WITHOUT the marker
+    await writeFile(join(stageTmp, "req.md"), "# Requirements\nNo marker here\n", "utf-8");
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "clarify"
+                ? { require: true, verifyFile: "verify.md", completionMarker: "## 模型确认" }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: "req.md",
+      verifyAttempts: 0,
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // verifyAttempts must NOT be incremented (precheck skipped verification)
+    expect(meta.verifyAttempts).toBe(0);
+    // No stage advance occurred — metadataUpdates should be empty (no updateMeta calls)
+    expect(ctx.metadataUpdates.length).toBe(0);
+    expect(meta.currentStage).toBe("clarify");
+    // Audit should contain verify_completion_marker_pending
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_completion_marker_pending");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("completionMarker on disk → proceeds to normal verification", async () => {
+    const stageTmp = join(markerTmp, "with-marker");
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Write requirement doc WITH the marker
+    await writeFile(
+      join(stageTmp, "req.md"),
+      "# Requirements\n## 模型确认\n- full-und? 理解确认：是\n",
+      "utf-8",
+    );
+
+    // Create a verify.md that will pass (requiredFiles with existing file)
+    const vrDir = join(stageTmp, "references", "spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nVerify\n",
+      "utf-8",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "clarify"
+                ? { require: true, verifyFile: "references/spec/verify.md", completionMarker: "## 模型确认" }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: "req.md",
+      verifyAttempts: 0,
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Verification ran and passed → stage should advance to plan
+    const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(lastMeta.currentStage).toBe("plan");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("no completionMarker configured → behavior unchanged (backward compatible)", async () => {
+    const stageTmp = join(markerTmp, "no-config");
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create a verify.md that will pass
+    const vrDir = join(stageTmp, "references", "spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nVerify\n",
+      "utf-8",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              // No completionMarker configured
+              verify: s === "clarify"
+                ? { require: true, verifyFile: "references/spec/verify.md" }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Without completionMarker, verification runs normally → stage advances
+    const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(lastMeta.currentStage).toBe("plan");
+    // No completionMarker audit
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).not.toContain("verify_completion_marker_pending");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
