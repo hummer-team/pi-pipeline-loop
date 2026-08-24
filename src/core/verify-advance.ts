@@ -10,6 +10,7 @@ import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 import { resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
+import fs from "node:fs/promises";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -417,10 +418,103 @@ export async function autoAdvanceAfterVerify(
 
 /**
  * Result of the plan human-gate pre-check.
- * - "no-gate": conditions not met, caller should proceed with normal verify flow
- * - "handled": gate was triggered and handled (approved/adjust/cancelled/pending)
+ *
+ * - "no-gate": preconditions not met; caller should proceed with normal verify flow.
+ * - "handled": gate was triggered and handled by one of the action branches.
+ *
+ * `action` further disambiguates the handled outcome so callers (notably the
+ * stage_advance tool) can tell whether the pipeline actually advanced to the
+ * next stage or is waiting for human input:
+ *
+ * - "advanced"  — user approved; marker written, stage moved to develop.
+ * - "pending"   — no UI available; awaiting external confirmation.
+ * - "adjust"    — user requested adjustments; stage stays in plan.
+ * - "cancelled" — user dismissed or cancelled; stage stays in plan.
  */
-export type PlanGateResult = "no-gate" | "handled";
+export interface PlanGateResult {
+  result: "no-gate" | "handled";
+  action: "none" | "advanced" | "pending" | "adjust" | "cancelled";
+}
+
+/**
+ * Handles the "approved" branch of the plan human-gate dialog.
+ *
+ * 1. Validates the write path against the plan stage's `allowedWritePaths`.
+ * 2. Appends the `## 用户确认` confirmation marker to the plan document.
+ * 3. Writes `plan_confirm_approved` (or `plan_confirm_approved_failed`) audit event.
+ * 4. On success, advances the pipeline to the next stage via `autoAdvanceAfterVerify`.
+ *
+ * @returns "advanced" when marker write + advance succeeded;
+ *          "cancelled" when the write path is not allowed or the marker write failed.
+ */
+async function handlePlanGateApproved(
+  config: PipelineConfig,
+  ctx: VerifyAdvanceCtx,
+  meta: SessionMeta,
+  planDocPath: string,
+  pipelineUI: PipelineUI,
+): Promise<"advanced" | "cancelled"> {
+  const stageConfig = config.stages["plan"];
+  const relPlanDoc = planDocPath.startsWith(config.projectRoot)
+    ? planDocPath.slice(config.projectRoot.length + 1)
+    : planDocPath;
+
+  // Validate write path against plan stage's allowedWritePaths (docs/)
+  const allowed = (stageConfig.allowedWritePaths ?? []).some(
+    (prefix) => prefix === "**" || relPlanDoc.startsWith(prefix),
+  );
+  if (!allowed) {
+    await writeAuditLog("plan_confirm_rejected", {
+      pipelineId: meta.pipelineId,
+      stage: "plan",
+      planDoc: planDocPath,
+      reason: "write path not in allowedWritePaths",
+    });
+    pipelineUI.notify(
+      ctx,
+      `Plan doc path "${relPlanDoc}" not in plan allowedWritePaths. Cannot write confirmation.`,
+    );
+    return "cancelled";
+  }
+
+  // Append confirmation marker to plan doc
+  const timestamp = new Date().toISOString();
+  const markerText = `\n## 用户确认：确认无误\n\n> 确认时间：${timestamp}\n`;
+  try {
+    await fs.appendFile(planDocPath, markerText, "utf-8");
+  } catch (err) {
+    // EISDIR / permission / path-not-writable — do NOT advance
+    await writeAuditLog("plan_confirm_approved_failed", {
+      pipelineId: meta.pipelineId,
+      stage: "plan",
+      planDoc: planDocPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    pipelineUI.notify(
+      ctx,
+      `Failed to write confirmation marker to "${relPlanDoc}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return "cancelled";
+  }
+
+  await writeAuditLog("plan_confirm_approved", {
+    pipelineId: meta.pipelineId,
+    stage: "plan",
+    planDoc: planDocPath,
+    timestamp,
+  });
+
+  // Advance to next stage (develop) using shared advance logic
+  const toStage = stageConfig.nextStage;
+  const syntheticResult: VerifyAdvanceResult = {
+    structuredResult: { failures: [] },
+    ruleMissing: [],
+    verifyResult: null,
+  };
+  await autoAdvanceAfterVerify(config, ctx, meta, "plan", toStage, syntheticResult, pipelineUI);
+
+  return "advanced";
+}
 
 /**
  * Pre-checks whether the plan stage human-gate should be triggered.
@@ -447,25 +541,24 @@ export async function maybeHandlePlanHumanGate(
   pipelineUI: PipelineUI,
 ): Promise<PlanGateResult> {
   // Precondition 1: must be in plan stage
-  if (meta.currentStage !== "plan") return "no-gate";
+  if (meta.currentStage !== "plan") return { result: "no-gate", action: "none" };
 
-  // Resolve plan doc path (Precondition 2: must be resolvable)
+  // Precondition 2: plan doc path must be resolvable
   const planDocPath = await resolvePlanDocPath(config, meta);
-  if (!planDocPath) return "no-gate";
+  if (!planDocPath) return { result: "no-gate", action: "none" };
 
   // Precondition 2b: plan doc file must actually exist on disk.
   // When plan doc hasn't been generated yet, skip the gate — the normal
   // verify flow will catch missing requiredFiles instead.
   try {
-    const fsDynamic = await import("node:fs/promises");
-    await fsDynamic.access(planDocPath);
+    await fs.access(planDocPath);
   } catch {
-    return "no-gate";
+    return { result: "no-gate", action: "none" };
   }
 
   // Precondition 3: confirm marker must NOT already be present
   const hasMarker = await planDocHasConfirmMarker(planDocPath);
-  if (hasMarker) return "no-gate"; // marker present → normal verify flow
+  if (hasMarker) return { result: "no-gate", action: "none" };
 
   // Gate triggered: show dialog
   const rawSelect = ctx.ui?.select;
@@ -478,7 +571,7 @@ export async function maybeHandlePlanHumanGate(
       reason: "no ui.select available",
     });
     pipelineUI.notify(ctx, "Plan document requires human confirmation. Awaiting UI interaction.");
-    return "handled";
+    return { result: "handled", action: "pending" };
   }
 
   const choice = await rawSelect(
@@ -495,64 +588,13 @@ export async function maybeHandlePlanHumanGate(
       action: "esc_dismissed",
     });
     pipelineUI.notify(ctx, "规划确认已取消，请在 plan 文档中补充 ## 用户确认 后重新触发验证。");
-    return "handled";
+    return { result: "handled", action: "cancelled" };
   }
 
+  // Dispatch to action branch
   if (choice.startsWith("已确认")) {
-    // Validate write path is in plan stage allowedWritePaths (docs/)
-    const stageConfig = config.stages["plan"];
-    const relPlanDoc = planDocPath.startsWith(config.projectRoot)
-      ? planDocPath.slice(config.projectRoot.length + 1)
-      : planDocPath;
-    const allowed = (stageConfig.allowedWritePaths ?? []).some(
-      (prefix) => prefix === "**" || relPlanDoc.startsWith(prefix),
-    );
-    if (!allowed) {
-      await writeAuditLog("plan_confirm_rejected", {
-        pipelineId: meta.pipelineId,
-        stage: "plan",
-        planDoc: planDocPath,
-        reason: "write path not in allowedWritePaths",
-      });
-      pipelineUI.notify(ctx, `Plan doc path "${relPlanDoc}" not in plan allowedWritePaths. Cannot write confirmation.`);
-      return "handled";
-    }
-
-    // Append confirmation marker to plan doc
-    const timestamp = new Date().toISOString();
-    const markerText = `\n## 用户确认：确认无误\n\n> 确认时间：${timestamp}\n`;
-    const fsDynamic = await import("node:fs/promises");
-    try {
-      await fsDynamic.appendFile(planDocPath, markerText, "utf-8");
-    } catch (err) {
-      // EISDIR / permission / path-not-writable — do NOT advance
-      await writeAuditLog("plan_confirm_approved_failed", {
-        pipelineId: meta.pipelineId,
-        stage: "plan",
-        planDoc: planDocPath,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      pipelineUI.notify(ctx, `Failed to write confirmation marker to "${relPlanDoc}": ${err instanceof Error ? err.message : String(err)}`);
-      return "handled";
-    }
-
-    await writeAuditLog("plan_confirm_approved", {
-      pipelineId: meta.pipelineId,
-      stage: "plan",
-      planDoc: planDocPath,
-      timestamp,
-    });
-
-    // Advance to next stage (develop) using shared advance logic
-    const toStage = stageConfig.nextStage;
-    const syntheticResult: VerifyAdvanceResult = {
-      structuredResult: { failures: [] },
-      ruleMissing: [],
-      verifyResult: null,
-    };
-    await autoAdvanceAfterVerify(config, ctx, meta, "plan", toStage, syntheticResult, pipelineUI);
-
-    return "handled";
+    const approvedAction = await handlePlanGateApproved(config, ctx, meta, planDocPath, pipelineUI);
+    return { result: "handled", action: approvedAction };
   }
 
   if (choice.startsWith("有问题")) {
@@ -562,7 +604,7 @@ export async function maybeHandlePlanHumanGate(
       planDoc: planDocPath,
     });
     pipelineUI.notify(ctx, "请在 plan 文档追加 ## 调整意见 并说明修改项");
-    return "handled";
+    return { result: "handled", action: "adjust" };
   }
 
   // Cancel
@@ -573,5 +615,5 @@ export async function maybeHandlePlanHumanGate(
     action: "user_cancelled",
   });
   pipelineUI.notify(ctx, "规划确认已取消，请在 plan 文档中补充 ## 用户确认 后重新触发验证。");
-  return "handled";
+  return { result: "handled", action: "cancelled" };
 }

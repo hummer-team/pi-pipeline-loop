@@ -147,10 +147,21 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // Plan human-gate pre-check: if triggered, handles confirm dialog and returns
         // without entering normal verify flow (defensive coverage for tool path)
         const gateResult = await maybeHandlePlanHumanGate(config, ctx, meta, ui);
-        if (gateResult === "handled") {
+        if (gateResult.result === "handled") {
+          if (gateResult.action === "advanced") {
+            // User approved: stage has been advanced to develop inside the gate.
+            return {
+              success: true,
+              message: "Plan human-gate approved. Stage advanced to develop.",
+              currentStage: (ctx.session.getMeta() as SessionMeta).currentStage,
+            };
+          }
+          // Pending / adjust / cancelled / write-failed: stage did NOT advance.
+          // Return success:false to prevent caller from misreading the state as advanced.
           return {
-            success: true,
-            message: "Plan human-gate handled via dialog. Stage may have advanced.",
+            success: false,
+            pending: true,
+            message: "Plan stage awaiting human confirmation. Stage not advanced.",
             currentStage: (ctx.session.getMeta() as SessionMeta).currentStage,
           };
         }

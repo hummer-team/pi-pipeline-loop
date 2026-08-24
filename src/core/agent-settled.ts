@@ -77,7 +77,7 @@ export function createAgentSettled(
       // without entering normal verify flow (no verifyAttempts increment, no ⚠ verify failed)
       const ctxWithPi = { ...ctx, pi: (ctx as RuntimeCtx).pi };
       const gateResult = await maybeHandlePlanHumanGate(config, ctxWithPi, meta, ui);
-      if (gateResult === "handled") {
+      if (gateResult.result === "handled") {
         return;
       }
 

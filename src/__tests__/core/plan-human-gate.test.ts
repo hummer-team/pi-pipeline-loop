@@ -64,7 +64,8 @@ describe("maybeHandlePlanHumanGate", () => {
     const ctx = createMockCtx(meta);
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("no-gate");
+    expect(result.result).toBe("no-gate");
+    expect(result.action).toBe("none");
   });
 
   it("returns 'no-gate' when plan doc path cannot be resolved", async () => {
@@ -76,7 +77,8 @@ describe("maybeHandlePlanHumanGate", () => {
 
     // No plan doc exists, requirementDoc is undefined, glob won't match
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("no-gate");
+    expect(result.result).toBe("no-gate");
+    expect(result.action).toBe("none");
   });
 
   it("returns 'no-gate' when plan doc path is resolvable but file does not exist on disk", async () => {
@@ -90,7 +92,7 @@ describe("maybeHandlePlanHumanGate", () => {
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
     // File doesn't exist → gate skips, returns no-gate (normal verify flow handles it)
-    expect(result).toBe("no-gate");
+    expect(result.result).toBe("no-gate");
 
     // Stage should NOT have advanced
     const updatedMeta = ctx.session.getMeta();
@@ -109,7 +111,7 @@ describe("maybeHandlePlanHumanGate", () => {
     const ctx = createMockCtx(meta);
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("no-gate");
+    expect(result.result).toBe("no-gate");
   });
 
   it("triggers gate even when verify rules use concrete path (not glob)", async () => {
@@ -141,7 +143,8 @@ describe("maybeHandlePlanHumanGate", () => {
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
     // Gate triggers because preconditions are met (stage=plan, doc exists, no marker)
-    expect(result).toBe("handled");
+    expect(result.result).toBe("handled");
+    expect(result.action).toBe("cancelled");
 
     // Audit should contain plan_confirm_cancelled (Esc)
     const logPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
@@ -161,7 +164,8 @@ describe("maybeHandlePlanHumanGate", () => {
     const ctx = createMockCtx(meta, { selectReturn: "已确认（写入标记并推进）" });
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("handled");
+    expect(result.result).toBe("handled");
+    expect(result.action).toBe("advanced");
 
     // Marker should have been appended
     const content = await fs.readFile(planDocPath, "utf-8");
@@ -194,7 +198,8 @@ describe("maybeHandlePlanHumanGate", () => {
     const ctx = createMockCtx(meta, { selectReturn: "有问题需调整（在 plan 补充调整意见）" });
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("handled");
+    expect(result.result).toBe("handled");
+    expect(result.action).toBe("adjust");
 
     // No marker appended
     const content = await fs.readFile(planDocPath, "utf-8");
@@ -225,7 +230,8 @@ describe("maybeHandlePlanHumanGate", () => {
     const ctx = createMockCtx(meta, { selectReturn: "取消" });
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("handled");
+    expect(result.result).toBe("handled");
+    expect(result.action).toBe("cancelled");
 
     // Stage stays in plan
     const updatedMeta = ctx.session.getMeta();
@@ -252,7 +258,8 @@ describe("maybeHandlePlanHumanGate", () => {
     delete (ctx as any).ui.select;
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("handled");
+    expect(result.result).toBe("handled");
+    expect(result.action).toBe("pending");
 
     // Audit contains plan_confirm_pending
     const logPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
@@ -273,7 +280,8 @@ describe("maybeHandlePlanHumanGate", () => {
     const ctx = createMockCtx(meta, { selectReturn: "已确认（写入标记并推进）" });
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("handled");
+    expect(result.result).toBe("handled");
+    expect(result.action).toBe("cancelled");
 
     // Stage should NOT have advanced (appendFile failed)
     const updatedMeta = ctx.session.getMeta();
@@ -302,7 +310,8 @@ describe("maybeHandlePlanHumanGate", () => {
     const ctx = createMockCtx(meta, { selectReturn: undefined });
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("handled");
+    expect(result.result).toBe("handled");
+    expect(result.action).toBe("cancelled");
 
     const logPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
     const logContent = await fs.readFile(logPath, "utf-8");
@@ -393,8 +402,10 @@ describe("Phase 2 (141): plan human-gate integration", () => {
     const tool = createStageAdvancer(config);
     const result = await tool.execute({}, ctx as any);
 
-    // Tool should return success
+    // Tool should return success (stage actually advanced)
     expect((result as any).success).toBe(true);
+    expect((result as any).message).toContain("approved");
+    expect((result as any).currentStage).toBe("develop");
 
     // Stage should have advanced to develop (via autoAdvanceAfterVerify inside gate)
     const updatedMeta = ctx.session.getMeta();
@@ -404,5 +415,60 @@ describe("Phase 2 (141): plan human-gate integration", () => {
     const logPath = path.join(integTmp, ".pi", "audit", getDateAuditFileName());
     const logContent = await fs.readFile(logPath, "utf-8");
     expect(logContent).toContain("plan_confirm_approved");
+  });
+
+  it("stage-advancer: gate hit with no ui.select (pending) → tool returns success:false, pending:true", async () => {
+    const config = await makeIntegConfig(integTmp);
+    await initAuditLog(config);
+    await fs.mkdir(path.join(integTmp, "docs", "design"), { recursive: true });
+    const planDocPath = path.join(integTmp, "docs", "design", "req_plan.md");
+    await fs.writeFile(planDocPath, "# Plan\nNo confirmation yet\n");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/req.md" });
+    // Create ctx without ui.select to simulate headless / no-UI environment
+    const ctx = createMockCtx(meta);
+    delete (ctx as any).ui.select;
+
+    const tool = createStageAdvancer(config);
+    const result = await tool.execute({}, ctx as any);
+
+    // Tool should return success:false + pending:true (stage did NOT advance)
+    expect((result as any).success).toBe(false);
+    expect((result as any).pending).toBe(true);
+    expect((result as any).message).toContain("awaiting");
+    expect((result as any).currentStage).toBe("plan");
+
+    // Stage stays in plan
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.currentStage).toBe("plan");
+
+    // Audit should contain plan_confirm_pending
+    const logPath = path.join(integTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await fs.readFile(logPath, "utf-8");
+    expect(logContent).toContain("plan_confirm_pending");
+  });
+
+  it("stage-advancer: gate hit with 'cancelled' → tool returns success:false, pending:true", async () => {
+    const config = await makeIntegConfig(integTmp);
+    await initAuditLog(config);
+    await fs.mkdir(path.join(integTmp, "docs", "design"), { recursive: true });
+    const planDocPath = path.join(integTmp, "docs", "design", "req_plan.md");
+    await fs.writeFile(planDocPath, "# Plan\nNo confirmation yet\n");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/req.md" });
+    // User presses Esc (select returns undefined)
+    const ctx = createMockCtx(meta, { selectReturn: undefined });
+
+    const tool = createStageAdvancer(config);
+    const result = await tool.execute({}, ctx as any);
+
+    // Tool should return success:false + pending:true (stage did NOT advance)
+    expect((result as any).success).toBe(false);
+    expect((result as any).pending).toBe(true);
+    expect((result as any).currentStage).toBe("plan");
+
+    // Stage stays in plan
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.currentStage).toBe("plan");
   });
 });
