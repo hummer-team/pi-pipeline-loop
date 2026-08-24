@@ -601,18 +601,42 @@ export interface RunVerificationOptions {
 const VERIFIED_COMMANDS_PATTERN = /^VERIFIED_COMMANDS:\s*(.+)$/m;
 
 /**
+ * A verified command record parsed from VERIFIED_COMMANDS protocol.
+ * Extends the standard tool call record shape with a selfReported flag.
+ */
+export interface VerifiedCommandRecord {
+  name: string;
+  command?: string;
+  exitCode?: number;
+  success?: boolean;
+  /**
+   * Timestamp is set to 0 for self-reported commands so that the file-change
+   * invalidation rule in command-verifier (matchTs comparison) always works:
+   * any write/edit with ts > 0 will invalidate the self-reported match.
+   * Using Date.now() would make invalidation impossible (no record can be
+   * later than "now").
+   */
+  ts: number;
+  /** True when the command was self-reported via VERIFIED_COMMANDS protocol (not from actual tool call) */
+  selfReported: true;
+}
+
+/**
  * Parses VERIFIED_COMMANDS protocol lines from assistant messages.
  * Phase 6 (139): Recognizes sub-agent self-verification commands
  * reported via task result text.
  *
+ * Security: ts is set to 0 (not Date.now()) so that file-change invalidation
+ * in command-verifier (matchTs comparison) correctly invalidates self-reported
+ * commands when any subsequent write/edit occurs in the session.
+ *
  * @param messages - Array of assistant message strings
- * @returns Array of parsed command records (merged format with toolCallRecords)
+ * @returns Array of parsed command records with selfReported=true flag
  */
 export function parseVerifiedCommands(
   messages: string[],
-): Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }> {
-  const records: Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }> = [];
-  const now = Date.now();
+): VerifiedCommandRecord[] {
+  const records: VerifiedCommandRecord[] = [];
 
   for (const msg of messages) {
     const match = msg.match(VERIFIED_COMMANDS_PATTERN);
@@ -624,7 +648,9 @@ export function parseVerifiedCommands(
           command: cmd,
           exitCode: 0,
           success: true,
-          ts: now,
+          // ts=0 ensures file-change invalidation always triggers for self-reported commands
+          ts: 0,
+          selfReported: true,
         });
       }
     }

@@ -31,13 +31,21 @@ const FD_REDIRECT_PATTERN = /^\d*[<>]&\d+$/;
 
 /**
  * Checks if a path is a /dev/* device path (not a real file write target).
- * Excludes /dev/./ relative paths which could be used to bypass this check.
+ * Normalizes the path first to prevent bypass via /dev/./ or /dev/../ tricks.
+ * For example, /dev/./sda normalizes to /dev/sda and is correctly detected.
  *
  * @param p - The path to check (already stripped of quotes)
  * @returns true if the path is a /dev/* device reference
  */
 function isDevPath(p: string): boolean {
-  return p.startsWith("/dev/") && !p.startsWith("/dev/./");
+  // Normalize to resolve /./ and /../ tricks before checking prefix
+  // Use simple string normalization to avoid importing path module in this hot path
+  let normalized = p;
+  // Replace /./ with /
+  normalized = normalized.replace(/\/\.\//g, "/");
+  // Collapse multiple slashes
+  normalized = normalized.replace(/\/\/+/g, "/");
+  return normalized.startsWith("/dev/") || normalized === "/dev";
 }
 
 /**

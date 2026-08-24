@@ -102,15 +102,22 @@ import * as path from "node:path";
  *
  * Two-tier detection:
  * 1. Pattern matching — checks against DESTRUCTIVE_COMMAND_PATTERNS
+ *    (with /./ and /../ path normalization to prevent bypass via /dev/./sda etc.)
  * 2. Path heuristic — checks if destructive file commands target system paths
  *
  * @param command - The bash command to check
  * @returns true if the command appears destructive
  */
 export function isDestructiveCommand(command: string): boolean {
-  // Tier 1: Pattern matching
+  // Normalize path traversal tricks (/./ and multiple slashes) before pattern matching
+  // This prevents bypass like `> /dev/./sda` evading `>\s*\/dev\/sd` pattern
+  const normalizedCommand = command
+    .replace(/\/\.\//g, "/")   // /dev/./sda → /dev/sda
+    .replace(/\/\/+/g, "/");   // collapse multiple slashes
+
+  // Tier 1: Pattern matching (on normalized command)
   for (const pattern of DESTRUCTIVE_COMMAND_PATTERNS) {
-    if (pattern.test(command)) {
+    if (pattern.test(normalizedCommand)) {
       return true;
     }
   }

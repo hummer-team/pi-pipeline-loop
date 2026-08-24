@@ -1358,4 +1358,23 @@ describe("Phase 6 (139): VERIFIED_COMMANDS selfVerifySkip", () => {
     const records = parseVerifiedCommands(messages);
     expect(records).toHaveLength(2);
   });
+
+  // Security: ts=0 ensures file-change invalidation always triggers
+  it("parseVerifiedCommands sets ts=0 so file-change invalidation works", () => {
+    const messages = ["VERIFIED_COMMANDS: bun run build"];
+    const records = parseVerifiedCommands(messages);
+    expect(records).toHaveLength(1);
+    // ts must be 0, NOT Date.now() — so any write/edit record with ts > 0
+    // will invalidate the self-reported command match in command-verifier
+    expect(records[0].ts).toBe(0);
+  });
+
+  // Security: selfReported flag distinguishes from real tool call records
+  it("parseVerifiedCommands marks records as selfReported=true", () => {
+    const messages = ["VERIFIED_COMMANDS: bun run build,bun run test"];
+    const records = parseVerifiedCommands(messages);
+    expect(records).toHaveLength(2);
+    expect(records[0].selfReported).toBe(true);
+    expect(records[1].selfReported).toBe(true);
+  });
 });

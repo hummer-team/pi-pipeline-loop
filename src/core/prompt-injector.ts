@@ -22,7 +22,7 @@ import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, DEFAULT_DECISION_SHORTCUT } from ".
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { isFrozen } from "./flow-state";
-import { getStagePrompt, renderStageTemplate } from "./prompt-config";
+import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 
 /**
  * Builds Part 1: Context Reference.
@@ -536,8 +536,8 @@ async function buildDynamicValues(
     verify_tool_guidance: buildVerifyToolGuidance(stageConfig),
     // Write scope: null for loop stages (embedded in loop_status), built for non-loop
     stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true, meta.currentStage),
-    // Phase 4 (139): Stage executor scheduling segment
-    stage_executor: buildStageExecutor(config, stageConfig, meta),
+    // Phase 4 (139): Stage executor scheduling segment (reads from yml)
+    stage_executor: await buildStageExecutor(config, stageConfig, meta),
   };
 }
 
@@ -556,25 +556,38 @@ const STAGE_EXECUTOR_MAP: Record<string, { subagent_type: string; mode: string }
  * Returns the per-stage executor configuration text, or null for stages that
  * don't have executor injection (clarify, completed, awaiting_human).
  *
- * The yml template provides the raw text via `stage_executor_{stage}` key.
- * This function fills {subagent_type} and {context_arg} placeholders.
+ * Reads from yml `stage_executor_{stage}` key first; fills {subagent_type} and
+ * {context_arg} placeholders from the stage→agent mapping. Falls back to
+ * hardcoded default text when yml key is missing or empty.
  *
- * @param _config - Pipeline configuration (reserved for future use)
+ * @param config - Pipeline configuration (for projectRoot to load yml)
  * @param _stageConfig - Current stage configuration
  * @param meta - Current session metadata
  * @returns Rendered executor segment string, or null if not applicable
  */
-function buildStageExecutor(
-  _config: PipelineConfig,
+async function buildStageExecutor(
+  config: PipelineConfig,
   _stageConfig: StageConfig,
   meta: SessionMeta,
-): string | null {
+): Promise<string | null> {
   const executor = STAGE_EXECUTOR_MAP[meta.currentStage];
   if (!executor) {
     return null;
   }
 
-  // Build the scheduling instruction segment
+  // Try to load per-stage executor text from yml `stage_executor_{stage}` key
+  const ymlKey = `stage_executor_${meta.currentStage}`;
+  const promptConfig = await loadPromptConfig(config.projectRoot);
+  const ymlTemplate = promptConfig[ymlKey];
+
+  if (ymlTemplate && ymlTemplate.trim()) {
+    // Fill placeholders from yml template
+    return ymlTemplate
+      .replaceAll("{subagent_type}", executor.subagent_type)
+      .replaceAll("{context_arg}", `<document path filled by main thread, e.g. _plan.md>`);
+  }
+
+  // Fallback: hardcoded default text (when yml key is missing/empty)
   const lines: string[] = [];
   lines.push("## 阶段执行者调度");
   lines.push("");

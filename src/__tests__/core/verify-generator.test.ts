@@ -1046,4 +1046,41 @@ describe("verify-generator", () => {
       expect(prompt).toContain("delivery item extractor");
     });
   });
+
+  // Phase 5 (139) regression: template SKILL files must contain **必须** delivery markers
+  // so that verify-generator can extract them during /pipeline-init rebuild.
+  describe("Phase 5 (139): template SKILL **必须** markers regression", () => {
+    const templateSkillsDir = path.join(__dirname, "..", "..", "template", "skills");
+    const stageSkillFiles: Record<string, string> = {
+      plan: "plan/SKILL.md",
+      develop: "develop/SKILL.md",
+      review: "review/SKILL.md",
+      fix: "fix/SKILL.md",
+    };
+
+    for (const [stage, relPath] of Object.entries(stageSkillFiles)) {
+      it(`${stage}/SKILL.md contains **必须** delivery markers`, async () => {
+        const filePath = path.join(templateSkillsDir, relPath);
+        let content: string;
+        try {
+          content = await fs.readFile(filePath, "utf-8");
+        } catch {
+          // Template files may not exist in dist/test environments; skip gracefully
+          return;
+        }
+        expect(content).toContain("**必须**");
+      });
+    }
+
+    it("extractHardcodedItems finds **必须** items from template SKILL content", () => {
+      const sampleContent = [
+        "## Deliverables",
+        "- **必须** create a plan document",
+        "- **必须** run build successfully",
+        "- Optional: add examples",
+      ].join("\n");
+      const items = extractHardcodedItems(sampleContent);
+      expect(items.length).toBeGreaterThanOrEqual(2);
+    });
+  });
 });

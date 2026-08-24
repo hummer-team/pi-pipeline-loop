@@ -192,11 +192,17 @@ describe("extractBashFileTargets", () => {
       expect(targets).toEqual([]);
     });
 
-    it("still produces target for > /dev/./null (relative bypass)", () => {
-      // /dev/./ is explicitly excluded from the /dev/* bypass to prevent bypass attacks
+    it("does NOT produce target for > /dev/./null (normalization prevents bypass)", () => {
+      // Phase 2 (139) fix: /dev/./ is now normalized before checking, so /dev/./null
+      // is treated same as /dev/null (no target produced — device path recognized)
       const targets = extractBashFileTargets("echo hi > /dev/./null");
-      expect(targets.length).toBe(1);
-      expect(targets[0].kind).toBe("redirect");
+      expect(targets).toEqual([]);
+    });
+
+    it("does NOT produce target for > /dev/./sda (normalization prevents device bypass)", () => {
+      // /dev/./sda normalizes to /dev/sda → recognized as device path
+      const targets = extractBashFileTargets("echo hi > /dev/./sda");
+      expect(targets).toEqual([]);
     });
 
     it("still produces target for regular file redirect mixed with fd redirect", () => {

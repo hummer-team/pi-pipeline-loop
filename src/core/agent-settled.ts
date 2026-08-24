@@ -8,7 +8,7 @@
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { runVerification } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
-import { writeAuditLog } from "../utils/auditLog";
+import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import { applyVerifyPass, applyVerifyFail } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
@@ -119,6 +119,24 @@ export function createAgentSettled(
           returnResult: false,
           ui,
         });
+
+        // Phase 1 (139): Unified stage audit for hook auto-advance path.
+        // Ensures hook path writes the same stage_advance/pipeline_completed events
+        // as the tool path (stage-advancer), eliminating audit dual-track.
+        if (toStage && toStage !== "completed") {
+          await writeStageAudit(config, "stage_advance", clearedMeta, {
+            fromStage,
+            toStage,
+            method: "hook_auto_advance",
+          });
+        } else {
+          // Terminal stage: fix→completed or null nextStage
+          await writeStageAudit(config, "pipeline_completed", clearedMeta, {
+            fromStage,
+            finalStage: fromStage,
+            method: "hook_auto_advance",
+          });
+        }
 
         // 138: Wake next stage — trigger model to begin work in the new stage
         // Only for hook-mode stages with a non-terminal next stage (clarify/develop/fix).

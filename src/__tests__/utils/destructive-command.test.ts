@@ -83,6 +83,13 @@ describe("isDestructiveCommand", () => {
     it("detects writes to /dev/sd* as destructive", () => {
       expect(isDestructiveCommand("echo data > /dev/sda")).toBe(true);
     });
+
+    // Phase 2 (139) fix: /dev/./ bypass must be caught after normalization
+    it("detects writes to /dev/./sd* as destructive (normalization prevents bypass)", () => {
+      expect(isDestructiveCommand("echo data > /dev/./sda")).toBe(true);
+      expect(isDestructiveCommand("echo data > /dev/./sdb")).toBe(true);
+      expect(isDestructiveCommand("echo data > /dev/./hda")).toBe(true);
+    });
   });
 
   describe("path heuristic tier", () => {
