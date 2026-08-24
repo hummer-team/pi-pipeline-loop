@@ -322,9 +322,14 @@ export interface SessionMeta {
   /**
    * Persistent flag set when a verification config-class error is detected
    * (EISDIR, empty path, directory, unresolved requirementDoc placeholder).
-   * Survives resume decisions so that the skipVerify escape hatch in stage_advance
-   * remains reachable after freeze → resume flow.
-   * Cleared on stage transitions (skip/rollback/restart/advance).
+   *
+   * Lifecycle:
+   * - Cleared on pipeline-start resume (full-und R2Q3=A-1): verify is re-run
+   *   from scratch, so the skipVerify escape hatch is re-evaluated against
+   *   the new run's config rather than carried over from the aborted run.
+   * - Preserved on freeze → resume (decision-menu path, 141 semantics):
+   *   the skipVerify escape hatch remains reachable across freeze boundaries.
+   * - Cleared on stage transitions (skip/rollback/restart/advance).
    */
   verifyConfigError?: boolean;
 

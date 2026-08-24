@@ -748,6 +748,65 @@ describe("createPipelineStartCommand", () => {
       expect(updatedMeta.requirementDoc).toBe("old-doc.md");
     });
 
+    // Case 3b (Medium fix #1 — RC3 on "start new" branch): opening a new pipeline
+    // via /pipeline-start <different-file> must clear the old stage-chain residue
+    // (stageVisitOrder/contextFiles/previousStage/violations/advancedThisTurn/
+    // loopCycleCount/verifyConfigError) so the new clarify run starts fresh.
+    it("start-new branch (file !== requirementDoc) clears old stage-chain fields (RC3)", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        previousStage: "clarify",
+        flowState: "aborted",
+        requirementDoc: "old-doc.md",
+        stageVisitOrder: ["clarify", "plan"],
+        contextFiles: { plan: ["/tmp/old-context.md"] },
+        violations: [{ type: "write_protected", detail: "blocked", timestamp: 0 }],
+        loopCount: 2,
+        loopCycleCount: 1,
+        advancedThisTurn: true,
+        verifyConfigError: true,
+        verifyAttempts: 3,
+        verifyFailures: [{ ruleType: "test", detail: "fail", timestamp: 0 }],
+        blockedReason: "verify_overflow",
+        terminated: true,
+        terminateReason: "user_abort",
+      });
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(updatedMeta).not.toBeNull();
+      expect(updatedMeta.currentStage).toBe("clarify");
+
+      // RC3 — old stage-chain fields must be cleared (undefined, not stale values)
+      expect(updatedMeta.previousStage).toBeUndefined();
+      expect(updatedMeta.stageVisitOrder).toBeUndefined();
+      expect(updatedMeta.contextFiles).toBeUndefined();
+      expect(updatedMeta.violations).toEqual([]);
+      expect(updatedMeta.advancedThisTurn).toBeUndefined();
+      expect(updatedMeta.loopCycleCount).toBeUndefined();
+      expect(updatedMeta.verifyConfigError).toBeUndefined();
+
+      // Counter / transient fields must also be reset
+      expect(updatedMeta.loopCount).toBe(0);
+      expect(updatedMeta.currentStepIndex).toBe(0);
+      expect(updatedMeta.verifyAttempts).toBe(0);
+      expect(updatedMeta.verifyFailures).toEqual([]);
+      expect(updatedMeta.blockedReason).toBeUndefined();
+      expect(updatedMeta.terminated).toBeUndefined();
+      expect(updatedMeta.terminateReason).toBeUndefined();
+    });
+
     // Case 4: aborted + completed → error, no updateMeta
     it("aborted + completed → returns error, does NOT call updateMeta", async () => {
       const config = makeTestConfig({ projectRoot: TMP });

@@ -106,20 +106,37 @@ function buildRestartMeta(
     maxLoops: config.maxLoops || 3,
     maxLoopCycles: config.maxLoopCycles ?? 3,
     flowState: "running",
-    blockedReason: undefined,
-    terminated: undefined,
-    terminateReason: undefined,
     verifyAttempts: 0,
     verifyFailures: [],
     requirementDoc,
+
+    // RC3: explicitly clear stage-chain residue so the new clarify pipeline does not
+    // inherit old plan/develop chain state via updateMeta's spread merge semantics.
+    // Without these explicit clears, stale fields from the previous pipeline would
+    // persist and risk pipeline-handoff cycle-detection misfires / stale contextFiles.
+    previousStage: undefined,
+    stageVisitOrder: undefined,
+    contextFiles: undefined,
+    violations: [],
+    advancedThisTurn: undefined,
+    loopCycleCount: undefined,
+    verifyConfigError: undefined,
+    blockedReason: undefined,
+    terminated: undefined,
+    terminateReason: undefined,
   };
   return { pipelineId, newMeta };
 }
 
 /**
  * Resolves the previous stage for a given stage by scanning config.stages
- * for the entry whose nextStage matches. Falls back to meta.previousStage
- * when no such entry exists (defensive: guards against misconfigured chains).
+ * for the entry whose nextStage matches. Returns undefined when no such
+ * entry exists (defensive: guards against misconfigured chains).
+ *
+ * Note: this function intentionally does NOT fall back to meta.previousStage;
+ * when the config chain is incomplete the caller (buildResumeMeta) writes
+ * previousStage=undefined so that stale values from prior runs are cleared
+ * by updateMeta's spread merge.
  *
  * @param config - Pipeline configuration
  * @param stage - The target stage
