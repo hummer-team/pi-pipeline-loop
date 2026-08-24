@@ -267,6 +267,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
         allowedWritePaths: [],
         nextStage: null,
         requireDomain: false,
+        disabled: true,
       };
       continue;
     }

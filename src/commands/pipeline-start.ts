@@ -25,6 +25,7 @@ function syncStageStatusBar(ui: ReturnType<typeof createPipelineUI>, ctx?: any):
 
 /**
  * Checks that all 5 active stages have agentPath configured.
+ * Skips disabled stages (require: false in JSON config).
  * Returns array of stage names missing agentPath.
  */
 function checkAgentPaths(config: PipelineConfig): PipelineStage[] {
@@ -33,7 +34,10 @@ function checkAgentPaths(config: PipelineConfig): PipelineStage[] {
   ];
   const missing: PipelineStage[] = [];
   for (const stage of activeStages) {
-    if (!config.stages[stage]?.agentPath) {
+    const stageConfig = config.stages[stage];
+    // Skip disabled stages (aligned with checkVerifyFiles filter style)
+    if (stageConfig?.disabled) continue;
+    if (!stageConfig?.agentPath) {
       missing.push(stage);
     }
   }

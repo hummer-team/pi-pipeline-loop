@@ -598,5 +598,44 @@ describe("createPipelineStartCommand", () => {
       expect(result.error).toContain("develop");
       expect(updatedMeta).toBeNull();
     });
+
+    it("disabled stage (require: false) with missing agentPath → start proceeds normally", async () => {
+      await fs.writeFile(docPath, "# Req\nDo X", "utf-8");
+      // Simulate a disabled stage (like json-config-loader does for require: false)
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                // review is disabled: no agentPath, but disabled: true
+                agentPath: s === "review" ? undefined : "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+                disabled: s === "review" ? true : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+      // Should succeed because disabled stage is skipped in validation
+      expect(result.success).toBe(true);
+      expect(updatedMeta).not.toBeNull();
+      expect(updatedMeta.currentStage).toBe("clarify");
+    });
   });
 });

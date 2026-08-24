@@ -13,8 +13,17 @@ export const STAGE_STATUS_KEY = "pipeline-stage";
 /**
  * When true, the next-stage arrow is rendered with ANSI gray (dim) styling.
  * Set to false for pure-text fallback when the terminal does not support ANSI.
+ * Exported as `let` to allow test-time override for degradation branch coverage.
  */
-export const NEXT_STAGE_GRAY = true;
+export let NEXT_STAGE_GRAY = true;
+
+/**
+ * Sets the NEXT_STAGE_GRAY flag. Intended for test-time override only.
+ * @internal
+ */
+export function _setNextStageGray(value: boolean): void {
+  NEXT_STAGE_GRAY = value;
+}
 
 /** ANSI escape for dim/gray text */
 const ANSI_GRAY_OPEN = "\x1b[90m";
@@ -35,15 +44,15 @@ export const DEFAULT_PROGRESS_FRAME_MS = 120;
 export interface PipelineUI {
   /** Gated one-time notification (notify) */
   notify(ctx: any, message: string): void;
-  /** Set persistent status bar text (setStatus) */
-  setStage(ctx: any, label: string): void;
+  /** Set persistent status bar text (setStatus) with unified format */
+  setStage(ctx: any, stage: string): void;
   /** Clear persistent status bar (setStatus with undefined) */
   clearStage(ctx: any): void;
-  /** Stage entry: "Pipeline → {stage}" */
+  /** Stage entry: "[ {pipelineId} • {stage} -> {nextStage} ]" or fallback */
   stageEntry(ctx: any, stage: string): void;
-  /** Stage transition: "{from} → {to}" */
+  /** Stage transition: "[ {pipelineId} • {to} -> {nextStage} ]" or fallback */
   transition(ctx: any, from: string, to: string): void;
-  /** Stage failure: "{stage} ⚠ {reason}" */
+  /** Stage failure: "[ {pipelineId} • {stage} ] ⚠ {reason}" or fallback */
   fail(ctx: any, stage: string, reason: string): void;
   /**
    * Start a progress animation with frame cycling.

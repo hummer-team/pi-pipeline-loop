@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { createPipelineUI, STAGE_STATUS_KEY, PROGRESS_FRAMES, DEFAULT_PROGRESS_FRAME_MS } from "../../core/pipeline-ui";
+import { createPipelineUI, STAGE_STATUS_KEY, PROGRESS_FRAMES, DEFAULT_PROGRESS_FRAME_MS, _setNextStageGray, NEXT_STAGE_GRAY } from "../../core/pipeline-ui";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import type { PipelineConfig } from "../../types";
 
@@ -325,6 +325,30 @@ describe("createPipelineUI", () => {
       const expected = "[ pipe-test-001 • develop ] ⚠ verify failed";
       expect(ctx.statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: expected }]);
       expect(ctx.notifications).toEqual([expected]);
+    });
+
+    it("NEXT_STAGE_GRAY=false → pure text fallback without ANSI codes", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = createMockCtx(meta);
+
+      // Temporarily disable gray styling
+      _setNextStageGray(false);
+      try {
+        ui.stageEntry(ctx, "clarify");
+
+        // Output should contain "-> plan" without any ANSI escape codes
+        const expected = "[ pipe-test-001 • clarify -> plan ]";
+        expect(ctx.statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: expected }]);
+        expect(ctx.notifications).toEqual([expected]);
+        // Verify no ANSI gray codes present
+        expect(expected).not.toContain("\x1b[90m");
+        expect(expected).not.toContain("\x1b[0m");
+      } finally {
+        // Restore original value
+        _setNextStageGray(true);
+      }
     });
   });
 });

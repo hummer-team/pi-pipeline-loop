@@ -112,6 +112,9 @@ export interface StageConfig {
   /** Path to the skill directory or file for this stage (relative to `.pi/skills/` directory, e.g. `"{stage}/SKILL.md"`) */
   skillPath: string;
 
+  /** Whether this stage is disabled (set to true when require: false in JSON config) */
+  disabled?: boolean;
+
   /**
    * Stage-level write whitelist (directory prefix matching).
    * - `"**"` = all paths allowed (full write access, global protect still applies)

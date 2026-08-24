@@ -782,12 +782,24 @@ describe("Phase 0 (140): agentPath transparency", () => {
     expect(result.stages.fix.agentPath).toBeUndefined();
   });
 
-  it("disabled stage gets agentPath = undefined", () => {
+  it("disabled stage gets agentPath = undefined and disabled = true", () => {
     const json: PipelineJsonConfig = {
-      stages: { plan: { require: false } },
+      stages: {
+        clarify: { agentPath: "clarify.md" },
+        plan: { require: false },
+        develop: { agentPath: "develop.md" },
+      },
     };
     const result = resolvePipelineConfig(json);
+    // plan is explicitly disabled via require: false
     expect(result.stages.plan.agentPath).toBeUndefined();
+    expect(result.stages.plan.disabled).toBe(true);
+    // clarify and develop are enabled and should not have disabled field
+    expect(result.stages.clarify.disabled).toBeUndefined();
+    expect(result.stages.develop.disabled).toBeUndefined();
+    // review and fix are not in config → also disabled
+    expect(result.stages.review.disabled).toBe(true);
+    expect(result.stages.fix.disabled).toBe(true);
   });
 
   it("fix.nextStage = completed eliminates develop→fix→develop loop", () => {
