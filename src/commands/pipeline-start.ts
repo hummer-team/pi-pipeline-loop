@@ -24,6 +24,23 @@ function syncStageStatusBar(ui: ReturnType<typeof createPipelineUI>, ctx?: any):
 }
 
 /**
+ * Checks that all 5 active stages have agentPath configured.
+ * Returns array of stage names missing agentPath.
+ */
+function checkAgentPaths(config: PipelineConfig): PipelineStage[] {
+  const activeStages: PipelineStage[] = [
+    "clarify", "plan", "develop", "review", "fix",
+  ];
+  const missing: PipelineStage[] = [];
+  for (const stage of activeStages) {
+    if (!config.stages[stage]?.agentPath) {
+      missing.push(stage);
+    }
+  }
+  return missing;
+}
+
+/**
  * Checks for missing verify.md files across all stages that require verification.
  *
  * @param config - Pipeline configuration
@@ -101,6 +118,21 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       const ui = createPipelineUI(config);
 
       const meta = ctx?.session?.getMeta?.();
+
+      // Phase 1 (140): validate agentPath for all 5 active stages before any startup
+      const missingAgentPaths = checkAgentPaths(config);
+      if (missingAgentPaths.length > 0) {
+        await safeWriteAuditLog("pipeline_start_config_error", {
+          missingStages: missingAgentPaths.join(","),
+          error: "agentPath not configured for active stage(s)",
+        }, "warn");
+        return {
+          success: false,
+          error:
+            `pipeline_loop.json missing agentPath for stage(s): [${missingAgentPaths.join(", ")}]. ` +
+            `Add agentPath to each active stage config, e.g. ".pi/agents/develop-agent.md".`,
+        };
+      }
 
       // Phase 5 (Bug 5): fresh start without doc_file is rejected — doc_file is required.
       // (Previous "no file → init state machine only" branch removed.)

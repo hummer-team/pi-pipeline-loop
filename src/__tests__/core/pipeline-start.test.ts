@@ -493,4 +493,106 @@ describe("createPipelineStartCommand", () => {
       expect(ctx.statusCalls).toEqual([]);
     });
   });
+
+  // ─── Phase 1 (140): agentPath validation on pipeline-start ────────────────────
+  describe("agentPath validation (Phase 1)", () => {
+    it("missing agentPath for active stages → returns error and does not initialize meta", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                // plan and fix have no agentPath
+                agentPath: s === "plan" || s === "fix" ? undefined : "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("missing agentPath");
+      expect(result.error).toContain("plan");
+      expect(result.error).toContain("fix");
+      expect(result.error).toContain(".pi/agents/develop-agent.md");
+      // Meta must NOT be initialized
+      expect(updatedMeta).toBeNull();
+    });
+
+    it("all active stages have agentPath → start proceeds normally", async () => {
+      await fs.writeFile(docPath, "# Req\nDo X", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      // makeTestConfig sets agentPath for all stages via helpers.ts
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+      expect(result.success).toBe(true);
+      expect(updatedMeta).not.toBeNull();
+      expect(updatedMeta.currentStage).toBe("clarify");
+    });
+
+    it("missing agentPath also blocks aborted restart", async () => {
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: s === "develop" ? undefined : "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("missing agentPath");
+      expect(result.error).toContain("develop");
+      expect(updatedMeta).toBeNull();
+    });
+  });
 });
