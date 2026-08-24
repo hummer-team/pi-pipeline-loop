@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta, ExecFn, AuditLogFn } from "../types";
 import { DEFAULT_VERIFY_PROMPT, DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT, DEFAULT_VERIFY_FILE, resolveStagePath } from "../constants";
-import { verifyRequiredFiles, verifyFileContentPattern } from "./verifiers/file-verifier";
+import { verifyRequiredFiles, verifyFileContentPattern, globMatchFiles } from "./verifiers/file-verifier";
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
@@ -693,6 +693,125 @@ export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): Veri
 }
 
 /**
+ * Resolves the plan document path from session metadata's requirementDoc.
+ *
+ * Derivation: `{dirname}/{basename_without_.md}_plan.md`
+ * - Prevents `_plan` duplication: if already `xxx_plan.md`, returns as-is
+ * - Falls back to glob `docs/design/*_plan.md` (latest mtime) when derivation is unavailable
+ * - Returns null if no plan doc can be found
+ *
+ * @param config - Pipeline configuration (for projectRoot)
+ * @param meta - Session metadata (may contain requirementDoc)
+ */
+export async function resolvePlanDocPath(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<string | null> {
+  const reqDoc = meta.requirementDoc;
+
+  // Try derivation from requirementDoc
+  if (reqDoc && reqDoc.endsWith(".md")) {
+    const dir = path.dirname(reqDoc);
+    const base = path.basename(reqDoc, ".md");
+    // Prevent _plan duplication
+    const planBase = base.endsWith("_plan") ? base : `${base}_plan`;
+    const derived = path.join(dir, `${planBase}.md`);
+    return path.isAbsolute(derived) ? derived : path.join(config.projectRoot, derived);
+  }
+
+  // Fallback: glob docs/design/*_plan.md, return latest by mtime
+  try {
+    const matches = await globMatchFiles("docs/design/*_plan.md", config.projectRoot);
+    if (matches.length === 0) return null;
+
+    // Resolve to absolute paths and get mtime
+    let latestPath: string | null = null;
+    let latestMtime = 0;
+    for (const rel of matches) {
+      const abs = path.isAbsolute(rel) ? rel : path.join(config.projectRoot, rel);
+      try {
+        const stat = await fs.stat(abs);
+        if (stat.mtimeMs > latestMtime) {
+          latestMtime = stat.mtimeMs;
+          latestPath = abs;
+        }
+      } catch {
+        // skip unreadable files
+      }
+    }
+    return latestPath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Checks whether the plan document contains the `## 用户确认` confirmation marker.
+ * The pattern matches the header at the start of any line (multiline mode).
+ *
+ * @param planDocPath - Absolute path to the plan document
+ */
+export async function planDocHasConfirmMarker(planDocPath: string): Promise<boolean> {
+  try {
+    const content = await fs.readFile(planDocPath, "utf-8");
+    return /^## 用户确认/m.test(content);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Replaces glob patterns like `docs/design/*_plan.md` in rule paths with the
+ * concrete plan document path resolved from requirementDoc.
+ *
+ * Only applies when currentStage === "plan". If resolvePlanDocPath fails,
+ * the glob pattern is preserved as-is (fallback behavior).
+ *
+ * @param rules - Parsed verification rules (after resolvePlaceholders)
+ * @param config - Pipeline configuration
+ * @param meta - Session metadata
+ */
+async function applyConcreteStageDocPaths(
+  rules: VerifyRules,
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<VerifyRules> {
+  if (meta.currentStage !== "plan") return rules;
+
+  const planDocPath = await resolvePlanDocPath(config, meta);
+  if (!planDocPath) return rules;
+
+  // Compute relative path from projectRoot for rule comparison
+  const relPlanDoc = path.relative(config.projectRoot, planDocPath);
+
+  const result: VerifyRules = { ...rules };
+
+  // Replace glob in requiredFiles
+  if (result.requiredFiles) {
+    result.requiredFiles = result.requiredFiles.map((p) =>
+      isPlanDocGlob(p) ? relPlanDoc : p,
+    );
+  }
+
+  // Replace glob in fileContentPattern paths
+  if (result.fileContentPattern) {
+    result.fileContentPattern = result.fileContentPattern.map((rule) => ({
+      ...rule,
+      path: isPlanDocGlob(rule.path) ? relPlanDoc : rule.path,
+    }));
+  }
+
+  return result;
+}
+
+/**
+ * Checks whether a path pattern matches the plan doc glob `docs/design/*_plan.md`.
+ */
+function isPlanDocGlob(pattern: string): boolean {
+  return pattern === "docs/design/*_plan.md" || pattern === "docs\\design\\*_plan.md";
+}
+
+/**
  * Runs the full verification pipeline for a stage:
  * 1. Parse verify.md
  * 2. Run structured rule verification (if new rule types present) or legacy keyword verification
@@ -764,7 +883,10 @@ export async function runVerification(
   }
 
   // Resolve {requirementDoc} placeholders in rule paths using session metadata
-  const resolvedRules = resolvePlaceholders(rules, meta);
+  let resolvedRules = resolvePlaceholders(rules, meta);
+
+  // Replace plan doc glob with concrete path (only for plan stage)
+  resolvedRules = await applyConcreteStageDocPaths(resolvedRules, config, meta);
 
   // Detect unresolved {requirementDoc} placeholders (L2-A: explicit failure instead of EISDIR)
   const unresolvedPlaceholder = /\{requirementDoc\}/;
@@ -898,7 +1020,10 @@ export async function precheckRequiredFiles(
 
   // Resolve {requirementDoc} placeholders before checking files
   // This ensures precheck behavior is consistent with runVerification
-  const resolvedRules = resolvePlaceholders(rules, meta);
+  let resolvedRules = resolvePlaceholders(rules, meta);
+
+  // Replace plan doc glob with concrete path (only for plan stage)
+  resolvedRules = await applyConcreteStageDocPaths(resolvedRules, config, meta);
   
   // Safety check: resolvePlaceholders preserves requiredFiles array structure
   if (!resolvedRules.requiredFiles || resolvedRules.requiredFiles.length === 0) {

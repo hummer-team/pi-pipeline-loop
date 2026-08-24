@@ -12,6 +12,8 @@ import {
   precheckRequiredFiles,
   parseVerifiedCommands,
   precheckCompletionMarker,
+  resolvePlanDocPath,
+  planDocHasConfirmMarker,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1433,5 +1435,90 @@ describe("Phase 3 (140): precheckCompletionMarker", () => {
     const meta = makeTestMeta({ requirementDoc: absPath });
     const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
     expect(result).toBe(true);
+  });
+});
+
+// ─── Phase 1 (141): resolvePlanDocPath / planDocHasConfirmMarker ──────────────
+describe("Phase 1 (141): resolvePlanDocPath", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = path.join(tmpdir(), "pi-plandoc-" + Date.now());
+    await fs.mkdir(tmpDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("derives plan doc path from requirementDoc (77_Config.md → 77_Config_plan.md)", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ requirementDoc: "docs/design/77_Config.md" });
+    const result = await resolvePlanDocPath(config, meta);
+    expect(result).toBe(path.join(tmpDir, "docs/design/77_Config_plan.md"));
+  });
+
+  it("prevents _plan duplication (xxx_plan.md stays as-is)", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ requirementDoc: "docs/design/77_Config_plan.md" });
+    const result = await resolvePlanDocPath(config, meta);
+    expect(result).toBe(path.join(tmpDir, "docs/design/77_Config_plan.md"));
+  });
+
+  it("falls back to glob mtime when requirementDoc is empty", async () => {
+    await fs.mkdir(path.join(tmpDir, "docs", "design"), { recursive: true });
+    // Create two plan files with different mtimes
+    const older = path.join(tmpDir, "docs/design/older_plan.md");
+    const newer = path.join(tmpDir, "docs/design/newer_plan.md");
+    await fs.writeFile(older, "older content");
+    // Set older mtime to 1 second ago
+    const olderTime = new Date(Date.now() - 1000);
+    await fs.utimes(older, olderTime, olderTime);
+    await fs.writeFile(newer, "newer content");
+
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ requirementDoc: undefined });
+    const result = await resolvePlanDocPath(config, meta);
+    // Should return the newer file
+    expect(result).toBe(newer);
+  });
+
+  it("returns null when no plan doc glob matches and requirementDoc is empty", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ requirementDoc: undefined });
+    const result = await resolvePlanDocPath(config, meta);
+    expect(result).toBeNull();
+  });
+});
+
+describe("Phase 1 (141): planDocHasConfirmMarker", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = path.join(tmpdir(), "pi-marker-" + Date.now());
+    await fs.mkdir(tmpDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns true when ## 用户确认 marker exists", async () => {
+    const planPath = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planPath, "# Plan\n\n## 用户确认\nconfirmed\n");
+    const result = await planDocHasConfirmMarker(planPath);
+    expect(result).toBe(true);
+  });
+
+  it("returns false when marker is missing", async () => {
+    const planPath = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planPath, "# Plan\n\nNo confirmation yet\n");
+    const result = await planDocHasConfirmMarker(planPath);
+    expect(result).toBe(false);
+  });
+
+  it("returns false when file does not exist", async () => {
+    const result = await planDocHasConfirmMarker(path.join(tmpDir, "nonexistent.md"));
+    expect(result).toBe(false);
   });
 });
