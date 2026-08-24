@@ -10,8 +10,6 @@ import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 import { resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
-import { parseVerifyFile } from "./auto-verifier";
-import { resolveStagePath, DEFAULT_VERIFY_FILE } from "../constants";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -448,37 +446,24 @@ export async function maybeHandlePlanHumanGate(
   meta: SessionMeta,
   pipelineUI: PipelineUI,
 ): Promise<PlanGateResult> {
-  // Precondition: must be in plan stage
+  // Precondition 1: must be in plan stage
   if (meta.currentStage !== "plan") return "no-gate";
 
-  // Check if verify rules actually reference the plan doc glob pattern
-  // Only trigger the gate when the stage's verify.md uses the generic plan doc glob
-  const stageConfig = config.stages["plan"];
-  if (stageConfig.verify?.require) {
-    const verifyFile = stageConfig.verify.verifyFile;
-    const verifyPath = verifyFile
-      ? (verifyFile.startsWith("/")
-        ? verifyFile
-        : `${config.projectRoot}/${verifyFile}`)
-      : `${config.projectRoot}/${resolveStagePath(DEFAULT_VERIFY_FILE, "plan")}`;
-    const { rules } = await parseVerifyFile(verifyPath);
-    if (rules) {
-      const hasPlanDocGlob =
-        rules.requiredFiles?.some(p => p === "docs/design/*_plan.md") ||
-        rules.fileContentPattern?.some(r => r.path === "docs/design/*_plan.md");
-      if (!hasPlanDocGlob) return "no-gate";
-    } else {
-      return "no-gate";
-    }
-  } else {
-    return "no-gate";
-  }
-
-  // Resolve plan doc path
+  // Resolve plan doc path (Precondition 2: must be resolvable)
   const planDocPath = await resolvePlanDocPath(config, meta);
   if (!planDocPath) return "no-gate";
 
-  // Check if confirm marker already exists
+  // Precondition 2b: plan doc file must actually exist on disk.
+  // When plan doc hasn't been generated yet, skip the gate — the normal
+  // verify flow will catch missing requiredFiles instead.
+  try {
+    const fsDynamic = await import("node:fs/promises");
+    await fsDynamic.access(planDocPath);
+  } catch {
+    return "no-gate";
+  }
+
+  // Precondition 3: confirm marker must NOT already be present
   const hasMarker = await planDocHasConfirmMarker(planDocPath);
   if (hasMarker) return "no-gate"; // marker present → normal verify flow
 
@@ -537,7 +522,19 @@ export async function maybeHandlePlanHumanGate(
     const timestamp = new Date().toISOString();
     const markerText = `\n## 用户确认：确认无误\n\n> 确认时间：${timestamp}\n`;
     const fsDynamic = await import("node:fs/promises");
-    await fsDynamic.appendFile(planDocPath, markerText, "utf-8");
+    try {
+      await fsDynamic.appendFile(planDocPath, markerText, "utf-8");
+    } catch (err) {
+      // EISDIR / permission / path-not-writable — do NOT advance
+      await writeAuditLog("plan_confirm_approved_failed", {
+        pipelineId: meta.pipelineId,
+        stage: "plan",
+        planDoc: planDocPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      pipelineUI.notify(ctx, `Failed to write confirmation marker to "${relPlanDoc}": ${err instanceof Error ? err.message : String(err)}`);
+      return "handled";
+    }
 
     await writeAuditLog("plan_confirm_approved", {
       pipelineId: meta.pipelineId,

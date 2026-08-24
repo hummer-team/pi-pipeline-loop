@@ -14,6 +14,7 @@ import {
   precheckCompletionMarker,
   resolvePlanDocPath,
   planDocHasConfirmMarker,
+  applyConcreteStageDocPaths,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1520,5 +1521,86 @@ describe("Phase 1 (141): planDocHasConfirmMarker", () => {
   it("returns false when file does not exist", async () => {
     const result = await planDocHasConfirmMarker(path.join(tmpDir, "nonexistent.md"));
     expect(result).toBe(false);
+  });
+});
+
+// ─── Phase 1 (141): applyConcreteStageDocPaths ──────────────────────────────────
+describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = path.join(tmpdir(), "pi-concrete-" + Date.now());
+    await fs.mkdir(tmpDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("replaces docs/design/*_plan.md glob with concrete path in requiredFiles and fileContentPattern", async () => {
+    // Set up so resolvePlanDocPath can derive the path
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/*_plan.md", "src/index.ts"],
+      fileContentPattern: [
+        { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+        { path: "src/index.ts", pattern: "export" },
+      ],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+
+    // Glob should be replaced with concrete relative path
+    expect(result.requiredFiles).toEqual(["docs/design/77_Config_plan.md", "src/index.ts"]);
+    expect(result.fileContentPattern).toEqual([
+      { path: "docs/design/77_Config_plan.md", pattern: "^## 用户确认" },
+      { path: "src/index.ts", pattern: "export" },
+    ]);
+  });
+
+  it("preserves glob when resolvePlanDocPath derivation fails (no requirementDoc, no glob match)", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: undefined });
+    // No docs/design/*_plan.md files exist → glob fallback returns null → rules unchanged
+
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/*_plan.md"],
+      fileContentPattern: [
+        { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+      ],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+
+    // Glob should be preserved as-is (derivation failed)
+    expect(result.requiredFiles).toEqual(["docs/design/*_plan.md"]);
+    expect(result.fileContentPattern).toEqual([
+      { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+    ]);
+  });
+
+  it("returns original rules unchanged for non-plan stages", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "develop", requirementDoc: "docs/design/77_Config.md" });
+
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/*_plan.md"],
+      fileContentPattern: [
+        { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+      ],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+
+    // Non-plan stage: rules returned as-is (identity)
+    expect(result).toBe(rules);
   });
 });

@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { maybeHandlePlanHumanGate } from "../../core/verify-advance";
+import { createAgentSettled } from "../../core/agent-settled";
+import { createStageAdvancer } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { createPipelineUI } from "../../core/pipeline-ui";
@@ -22,8 +24,8 @@ afterEach(async () => {
 
 /**
  * Creates a config with plan stage verify rules that include the plan doc glob pattern.
- * This is required for the gate to trigger (gate only activates when verify rules
- * reference the generic plan doc glob `docs/design/*_plan.md`).
+ * The gate triggers based on preconditions (stage=plan, doc resolvable+exists, no marker)
+ * regardless of whether verify rules reference the plan doc glob.
  */
 async function makeConfigWithPlanGate(projectRoot: string): Promise<PipelineConfig> {
   // Create verify.md for plan stage with the plan doc glob pattern
@@ -77,6 +79,24 @@ describe("maybeHandlePlanHumanGate", () => {
     expect(result).toBe("no-gate");
   });
 
+  it("returns 'no-gate' when plan doc path is resolvable but file does not exist on disk", async () => {
+    const config = await makeConfigWithPlanGate(TMP);
+    await initAuditLog(config);
+    // requirementDoc points to docs/design/req.md → resolves to docs/design/req_plan.md
+    // but the file is NOT created on disk
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/req.md" });
+    const pipelineUI = createPipelineUI(config);
+    const ctx = createMockCtx(meta, { selectReturn: "已确认（写入标记并推进）" });
+
+    const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
+    // File doesn't exist → gate skips, returns no-gate (normal verify flow handles it)
+    expect(result).toBe("no-gate");
+
+    // Stage should NOT have advanced
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.currentStage).toBe("plan");
+  });
+
   it("returns 'no-gate' when plan doc already has confirm marker", async () => {
     const config = await makeConfigWithPlanGate(TMP);
     await initAuditLog(config);
@@ -92,8 +112,9 @@ describe("maybeHandlePlanHumanGate", () => {
     expect(result).toBe("no-gate");
   });
 
-  it("returns 'no-gate' when verify rules don't reference plan doc glob", async () => {
-    // Config with plan verify but no plan doc glob in rules
+  it("triggers gate even when verify rules use concrete path (not glob)", async () => {
+    // Config with plan verify using a concrete path instead of the generic glob
+    // Gate should still trigger based on marker absence, not rule content
     const verifyDir = path.join(TMP, ".pi", "references", "plan_spec");
     await fs.mkdir(verifyDir, { recursive: true });
     await fs.writeFile(
@@ -110,14 +131,22 @@ describe("maybeHandlePlanHumanGate", () => {
     };
     await initAuditLog(config);
     await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
-    await fs.writeFile(path.join(TMP, "docs", "design", "req_plan.md"), "# Plan\n");
+    const planDocPath = path.join(TMP, "docs", "design", "req_plan.md");
+    await fs.writeFile(planDocPath, "# Plan\nNo confirmation yet\n");
 
     const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/req.md" });
     const pipelineUI = createPipelineUI(config);
-    const ctx = createMockCtx(meta);
+    // selectReturn undefined simulates Esc
+    const ctx = createMockCtx(meta, { selectReturn: undefined });
 
     const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
-    expect(result).toBe("no-gate");
+    // Gate triggers because preconditions are met (stage=plan, doc exists, no marker)
+    expect(result).toBe("handled");
+
+    // Audit should contain plan_confirm_cancelled (Esc)
+    const logPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await fs.readFile(logPath, "utf-8");
+    expect(logContent).toContain("plan_confirm_cancelled");
   });
 
   it("'approved': appends marker, advances to develop, writes plan_confirm_approved audit", async () => {
@@ -231,6 +260,35 @@ describe("maybeHandlePlanHumanGate", () => {
     expect(logContent).toContain("plan_confirm_pending");
   });
 
+  it("'approved' with EISDIR: writes plan_confirm_approved_failed audit, does not advance", async () => {
+    const config = await makeConfigWithPlanGate(TMP);
+    await initAuditLog(config);
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    // Create req_plan.md as a DIRECTORY to trigger EISDIR on appendFile
+    const planDocDir = path.join(TMP, "docs", "design", "req_plan.md");
+    await fs.mkdir(planDocDir);
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/req.md" });
+    const pipelineUI = createPipelineUI(config);
+    const ctx = createMockCtx(meta, { selectReturn: "已确认（写入标记并推进）" });
+
+    const result = await maybeHandlePlanHumanGate(config, ctx as any, meta, pipelineUI);
+    expect(result).toBe("handled");
+
+    // Stage should NOT have advanced (appendFile failed)
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.currentStage).toBe("plan");
+
+    // Audit should contain plan_confirm_approved_failed
+    const logPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await fs.readFile(logPath, "utf-8");
+    expect(logContent).toContain("plan_confirm_approved_failed");
+    // Should NOT contain plan_confirm_approved as a standalone event (only _failed variant)
+    const lines = logContent.split("\n");
+    const approvedLines = lines.filter(l => l.includes("plan_confirm_approved") && !l.includes("plan_confirm_approved_failed"));
+    expect(approvedLines.length).toBe(0);
+  });
+
   it("Esc (select returns undefined): writes plan_confirm_cancelled audit", async () => {
     const config = await makeConfigWithPlanGate(TMP);
     await initAuditLog(config);
@@ -249,5 +307,102 @@ describe("maybeHandlePlanHumanGate", () => {
     const logPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
     const logContent = await fs.readFile(logPath, "utf-8");
     expect(logContent).toContain("plan_confirm_cancelled");
+  });
+});
+
+// ─── Phase 2 (141): dual-entry integration tests ──────────────────────────────────
+describe("Phase 2 (141): plan human-gate integration", () => {
+  let integTmp: string;
+
+  beforeEach(async () => {
+    integTmp = path.join(tmpdir(), "pi-gate-integ-" + Date.now());
+    await fs.mkdir(integTmp, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(integTmp, { recursive: true, force: true });
+    __resetAuditDirPath();
+  });
+
+  /** Helper: create a config with plan verify + plan doc on disk (no marker) */
+  async function makeIntegConfig(projectRoot: string): Promise<PipelineConfig> {
+    const verifyDir = path.join(projectRoot, ".pi", "references", "plan_spec");
+    await fs.mkdir(verifyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(verifyDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"docs/design/*_plan.md\"\n  fileContentPattern:\n    - path: \"docs/design/*_plan.md\"\n      pattern: \"^## 用户确认\"\n---\nPlan verification\n",
+      "utf-8",
+    );
+
+    const base = makeTestConfig({ projectRoot });
+    return {
+      ...base,
+      stages: {
+        ...base.stages,
+        plan: {
+          ...base.stages["plan"],
+          nextStage: "develop",
+          allowedWritePaths: ["docs/"],
+          verify: {
+            require: true,
+            verifyFile: ".pi/references/plan_spec/verify.md",
+          },
+        },
+      },
+    } as PipelineConfig;
+  }
+
+  it("agent-settled: gate hit with 'approved' → no auto_verify_fail, stage advances to develop", async () => {
+    const config = await makeIntegConfig(integTmp);
+    await initAuditLog(config);
+    await fs.mkdir(path.join(integTmp, "docs", "design"), { recursive: true });
+    const planDocPath = path.join(integTmp, "docs", "design", "req_plan.md");
+    await fs.writeFile(planDocPath, "# Plan\nNo confirmation yet\n");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/req.md" });
+    const ctx = createMockCtx(meta, { selectReturn: "已确认（写入标记并推进）" });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Stage should have advanced to develop
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.currentStage).toBe("develop");
+
+    // Audit should contain plan_confirm_approved, NOT auto_verify_fail
+    const logPath = path.join(integTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await fs.readFile(logPath, "utf-8");
+    expect(logContent).toContain("plan_confirm_approved");
+    expect(logContent).not.toContain("auto_verify_fail");
+
+    // Marker should have been appended
+    const content = await fs.readFile(planDocPath, "utf-8");
+    expect(content).toContain("## 用户确认：确认无误");
+  });
+
+  it("stage-advancer: gate hit with 'approved' → tool returns success:true, stage advances", async () => {
+    const config = await makeIntegConfig(integTmp);
+    await initAuditLog(config);
+    await fs.mkdir(path.join(integTmp, "docs", "design"), { recursive: true });
+    const planDocPath = path.join(integTmp, "docs", "design", "req_plan.md");
+    await fs.writeFile(planDocPath, "# Plan\nNo confirmation yet\n");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/req.md" });
+    const ctx = createMockCtx(meta, { selectReturn: "已确认（写入标记并推进）" });
+
+    const tool = createStageAdvancer(config);
+    const result = await tool.execute({}, ctx as any);
+
+    // Tool should return success
+    expect((result as any).success).toBe(true);
+
+    // Stage should have advanced to develop (via autoAdvanceAfterVerify inside gate)
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.currentStage).toBe("develop");
+
+    // Audit should contain plan_confirm_approved
+    const logPath = path.join(integTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await fs.readFile(logPath, "utf-8");
+    expect(logContent).toContain("plan_confirm_approved");
   });
 });

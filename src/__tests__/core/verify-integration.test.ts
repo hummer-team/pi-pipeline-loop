@@ -577,7 +577,7 @@ describe("verify-integration", () => {
       expect(lastUpdate.currentStage).toBe("develop");
     });
 
-    it("plan verify fails when _plan.md is missing '## 用户确认' marker", async () => {
+    it("plan verify: missing '## 用户确认' marker triggers human-gate (Esc → stays in plan)", async () => {
       const config = makeConfigWithVerify(["plan"]);
 
       // Create verify.md with fileContentPattern for plan human-review gate
@@ -602,13 +602,10 @@ describe("verify-integration", () => {
       const hook = createAgentSettled(config);
       await hook.handler(ctx as any);
 
-      // Should NOT advance — stays on plan
-      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-      expect(lastUpdate.currentStage).toBe("plan");
-      // Should have verifyFailures mentioning the pattern
-      expect(lastUpdate.verifyFailures).toBeDefined();
-      expect(lastUpdate.verifyFailures!.length).toBeGreaterThan(0);
-      expect(lastUpdate.verifyFailures![0].detail).toContain("pattern");
+      // Gate triggers (marker missing) → Esc (no selectReturn set) → stays in plan
+      expect(meta.currentStage).toBe("plan");
+      // No verifyFailures set (gate handled before normal verify flow)
+      expect(meta.verifyFailures).toBeUndefined();
     });
   });
 });

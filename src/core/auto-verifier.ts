@@ -771,7 +771,7 @@ export async function planDocHasConfirmMarker(planDocPath: string): Promise<bool
  * @param config - Pipeline configuration
  * @param meta - Session metadata
  */
-async function applyConcreteStageDocPaths(
+export async function applyConcreteStageDocPaths(
   rules: VerifyRules,
   config: PipelineConfig,
   meta: SessionMeta,
