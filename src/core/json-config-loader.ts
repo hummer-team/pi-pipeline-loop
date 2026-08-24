@@ -245,6 +245,51 @@ function parseAllowedWritePaths(raw: unknown): string[] | undefined {
   return raw as string[];
 }
 
+/**
+ * Walks the nextStage chain from `start` and returns the cycle path
+ * (e.g. ["review","fix","review"]) if any visited node is revisited,
+ * or null if the chain terminates without a cycle.
+ */
+function findCycle(
+  stages: Record<PipelineStage, StageConfig>,
+  start: PipelineStage,
+): PipelineStage[] | null {
+  const visited = new Map<PipelineStage, number>(); // stage → index in path
+  const path: PipelineStage[] = [];
+  let current: PipelineStage | null = start;
+  while (current !== null) {
+    const prevIdx = visited.get(current);
+    if (prevIdx !== undefined) {
+      // Return the cycle from first occurrence of `current` to end, plus `current`
+      return [...path.slice(prevIdx), current];
+    }
+    visited.set(current, path.length);
+    path.push(current);
+    const sc: StageConfig | undefined = stages[current];
+    current = sc?.nextStage ?? null;
+  }
+  return null;
+}
+
+/**
+ * Normalizes a cycle path for deduplication: rotate so the lexicographically
+ * smallest node comes first, then join with " → ". The trailing duplicate
+ * node (closing the loop) is kept for display but excluded from rotation.
+ */
+function normalizeCycleKey(cycle: PipelineStage[]): string {
+  // cycle looks like ["a","b","c","a"] — last element equals first
+  if (cycle.length < 2) return cycle.join(" → ");
+  const body = cycle.slice(0, -1); // without the closing duplicate
+  let minIdx = 0;
+  for (let i = 1; i < body.length; i++) {
+    if (body[i] < body[minIdx]) minIdx = i;
+  }
+  const rotated = [...body.slice(minIdx), ...body.slice(0, minIdx)];
+  // Append the first element to close the loop for display
+  rotated.push(rotated[0]);
+  return rotated.join(" → ");
+}
+
 export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig {
   const projectRoot = json.projectRoot || process.cwd();
   const stages: Record<PipelineStage, StageConfig> = {} as Record<
@@ -337,19 +382,21 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     }
   }
 
-  // Warn on circular references
-  for (const [stageName, sc] of Object.entries(stages)) {
-    if (sc!.nextStage) {
-      for (const [otherName, otherSc] of Object.entries(stages)) {
-        if (otherName !== stageName && otherSc!.nextStage === stageName) {
-          console.info(
-            `[pi-pipeline] Circular reference detected: ${stageName} → ${sc!.nextStage} → ${stageName}. ` +
-              `maxLoopCycles=${json.maxLoopCycles ?? 3} will limit cycles.`,
-          );
-          break;
-        }
-      }
-    }
+  // Warn on circular references (DFS along nextStage chain)
+  const seenCycleKeys = new Set<string>();
+  for (const stageName of Object.keys(stages)) {
+    const sc = stages[stageName as PipelineStage];
+    if (!sc!.nextStage) continue;
+    const cycle = findCycle(stages, stageName as PipelineStage);
+    if (!cycle) continue;
+    // Normalize cycle: rotate to lexicographically smallest node, then dedupe
+    const normalizedKey = normalizeCycleKey(cycle);
+    if (seenCycleKeys.has(normalizedKey)) continue;
+    seenCycleKeys.add(normalizedKey);
+    console.info(
+      `[pi-pipeline] Circular reference detected: ${normalizedKey}. ` +
+        `maxLoopCycles=${json.maxLoopCycles ?? 3} will limit cycles.`,
+    );
   }
 
   return {

@@ -812,4 +812,57 @@ describe("Phase 0 (140): agentPath transparency", () => {
     const result = resolvePipelineConfig(json);
     expect(result.stages.fix.nextStage).toBe("completed");
   });
+
+  it("Phase 0 (141): linear config produces no circular reference warning", () => {
+    const originalInfo = console.info;
+    const captured: string[] = [];
+    console.info = (...args: unknown[]) => {
+      if (typeof args[0] === "string") captured.push(args[0]);
+    };
+    try {
+      const json: PipelineJsonConfig = {
+        stages: {
+          clarify: { nextStage: "plan" },
+          plan: { nextStage: "develop" },
+          develop: { nextStage: "review" },
+          review: { nextStage: "fix" },
+          fix: { nextStage: "completed" },
+          completed: { nextStage: null },
+        },
+      };
+      resolvePipelineConfig(json);
+      const circularWarnings = captured.filter((msg) =>
+        msg.includes("Circular reference detected"),
+      );
+      expect(circularWarnings).toHaveLength(0);
+    } finally {
+      console.info = originalInfo;
+    }
+  });
+
+  it("Phase 0 (141): real cycle (review↔fix) produces exactly 1 warning with normalized path", () => {
+    const originalInfo = console.info;
+    const captured: string[] = [];
+    console.info = (...args: unknown[]) => {
+      if (typeof args[0] === "string") captured.push(args[0]);
+    };
+    try {
+      const json: PipelineJsonConfig = {
+        stages: {
+          develop: { nextStage: "review" },
+          review: { nextStage: "fix" },
+          fix: { nextStage: "review" }, // creates real cycle: review → fix → review
+        },
+      };
+      resolvePipelineConfig(json);
+      const circularWarnings = captured.filter((msg) =>
+        msg.includes("Circular reference detected"),
+      );
+      expect(circularWarnings).toHaveLength(1);
+      // Normalized cycle should start with lexicographically smallest node ("fix")
+      expect(circularWarnings[0]).toContain("fix → review → fix");
+    } finally {
+      console.info = originalInfo;
+    }
+  });
 });
