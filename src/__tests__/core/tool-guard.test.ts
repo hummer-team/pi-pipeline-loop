@@ -1984,7 +1984,7 @@ describe("createToolGuard", () => {
         protect: { ask: false },
         stages: {
           develop: {
-            agentFile: "a.md",
+            agentPath: "a.md",
             skillPath: "s.md",
             nextStage: "review",
             requireDomain: false,
@@ -2018,7 +2018,7 @@ describe("createToolGuard", () => {
         protect: { ask: false },
         stages: {
           develop: {
-            agentFile: "a.md",
+            agentPath: "a.md",
             skillPath: "s.md",
             nextStage: "review",
             requireDomain: false,

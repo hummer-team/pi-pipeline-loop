@@ -69,7 +69,7 @@ import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader
  * export default createPipeline({
  *   projectRoot: __dirname,
  *   stages: {
- *     clarify: { agentFile: "./agents/clarify.md", skillPath: "design-und/SKILL.md", ... },
+  *     clarify: { agentPath: ".pi/agents/clarify.md", skillPath: "design-und/SKILL.md", ... },
  *     // ... all 7 stages
  *   },
  * });

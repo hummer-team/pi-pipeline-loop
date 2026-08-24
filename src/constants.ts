@@ -39,21 +39,8 @@ export const DEFAULT_MAX_VIOLATIONS = 3;
 export const DEFAULT_READONLY_WRITE_PATHS = ["docs/", "doc/", "documentation/"];
 
 /** Default path templates for stage resources (use {stage} placeholder) */
-export const DEFAULT_AGENT_FILE = ".pi/agents/{stage}/{stage}.md";
 export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
-
-/**
- * Stage-specific agent file name overrides.
- * Phase 3 (139): Agent filenames aligned with frontmatter `name:` for easier discovery.
- * Falls back to DEFAULT_AGENT_FILE pattern for stages not listed here.
- */
-export const STAGE_AGENT_FILE_MAP: Record<string, string> = {
-  clarify: ".pi/agents/clarify/feat-design-plan-agent.md",
-  develop: ".pi/agents/develop/develop-agent.md",
-  review: ".pi/agents/review/code-review-agent.md",
-  fix: ".pi/agents/fix/code-review-withfix-agent.md",
-};
 
 /** Default write scope by stage type (tools and bash prefixes no longer restricted) */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<

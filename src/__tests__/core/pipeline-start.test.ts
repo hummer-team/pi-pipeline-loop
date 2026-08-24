@@ -319,7 +319,7 @@ describe("createPipelineStartCommand", () => {
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -366,7 +366,7 @@ describe("createPipelineStartCommand", () => {
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,

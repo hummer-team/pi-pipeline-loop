@@ -43,7 +43,7 @@ describe("buildStageSequence", () => {
     const config = {
       projectRoot: "/tmp/test",
       stages: {
-        clarify: { agentFile: "", skillPath: "", nextStage: "plan" as PipelineStage | null, requireDomain: false },
+        clarify: { agentPath: "", skillPath: "", nextStage: "plan" as PipelineStage | null, requireDomain: false },
       },
     } as PipelineConfig;
     // plan is not defined in stages — chain stops after plan (its config is missing)
@@ -57,7 +57,7 @@ describe("buildStageSequence", () => {
     for (let i = 0; i < 20; i++) {
       const name = `stage_${i}`;
       const next = i < 19 ? `stage_${i + 1}` : null;
-      stages[name] = { agentFile: "", skillPath: "", nextStage: next, requireDomain: false };
+      stages[name] = { agentPath: "", skillPath: "", nextStage: next, requireDomain: false };
     }
     const config = { projectRoot: "/tmp/test", stages } as unknown as PipelineConfig;
 

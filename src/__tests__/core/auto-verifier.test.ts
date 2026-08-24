@@ -151,7 +151,7 @@ describe("runVerification", () => {
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -367,7 +367,7 @@ describe("runVerification — structured rules", () => {
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -428,7 +428,7 @@ describe("runVerification — structured rules", () => {
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -558,7 +558,7 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -609,7 +609,7 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -976,7 +976,7 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -1033,7 +1033,7 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
           (s, i, a) => [
             s,
             {
-              agentFile: "a.md",
+              agentPath: "a.md",
               skillPath: "s.md",
               nextStage: a[i + 1] ?? null,
               requireDomain: false,
@@ -1064,7 +1064,7 @@ describe("precheckRequiredFiles", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: {
-        plan: { agentFile: "a.md", skillPath: "s.md", nextStage: "develop", requireDomain: false },
+        plan: { agentPath: "a.md", skillPath: "s.md", nextStage: "develop", requireDomain: false },
       } as any,
     });
     const meta = makeTestMeta({ currentStage: "plan" });
@@ -1085,7 +1085,7 @@ describe("precheckRequiredFiles", () => {
       projectRoot: TMP,
       stages: {
         plan: {
-          agentFile: "a.md",
+          agentPath: "a.md",
           skillPath: "s.md",
           nextStage: "develop",
           requireDomain: false,
@@ -1121,7 +1121,7 @@ describe("precheckRequiredFiles", () => {
       projectRoot: TMP,
       stages: {
         plan: {
-          agentFile: "a.md",
+          agentPath: "a.md",
           skillPath: "s.md",
           nextStage: "develop",
           requireDomain: false,
@@ -1158,7 +1158,7 @@ describe("precheckRequiredFiles", () => {
       projectRoot: TMP,
       stages: {
         plan: {
-          agentFile: "a.md",
+          agentPath: "a.md",
           skillPath: "s.md",
           nextStage: "develop",
           requireDomain: false,
@@ -1195,7 +1195,7 @@ describe("precheckRequiredFiles", () => {
       projectRoot: TMP,
       stages: {
         plan: {
-          agentFile: "a.md",
+          agentPath: "a.md",
           skillPath: "s.md",
           nextStage: "develop",
           requireDomain: false,
@@ -1239,7 +1239,7 @@ describe("precheckRequiredFiles", () => {
       projectRoot: TMP,
       stages: {
         plan: {
-          agentFile: "a.md",
+          agentPath: "a.md",
           skillPath: "s.md",
           nextStage: "develop",
           requireDomain: false,
@@ -1279,7 +1279,7 @@ describe("precheckRequiredFiles", () => {
       projectRoot: TMP,
       stages: {
         plan: {
-          agentFile: "a.md",
+          agentPath: "a.md",
           skillPath: "s.md",
           nextStage: "develop",
           requireDomain: false,
@@ -1310,7 +1310,7 @@ describe("precheckRequiredFiles", () => {
       projectRoot: TMP,
       stages: {
         plan: {
-          agentFile: "a.md",
+          agentPath: "a.md",
           skillPath: "s.md",
           nextStage: "develop",
           requireDomain: false,

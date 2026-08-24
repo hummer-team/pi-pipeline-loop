@@ -14,12 +14,10 @@ import type {
   StageJsonConfig,
 } from "../types";
 import {
-  DEFAULT_AGENT_FILE,
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
   DEFAULT_DECISION_SHORTCUT,
   STAGE_TYPE_TOOL_DEFAULTS,
-  STAGE_AGENT_FILE_MAP,
   resolveStagePath,
 } from "../constants";
 
@@ -264,7 +262,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
         `[pi-pipeline] Skipping disabled stage: ${stageName} (${reason})`,
       );
       stages[stageName] = {
-        agentFile: STAGE_AGENT_FILE_MAP[stageName] || resolveStagePath(DEFAULT_AGENT_FILE, stageName),
+        agentPath: undefined,
         skillPath: resolveStagePath(DEFAULT_SKILL_PATH, stageName),
         allowedWritePaths: [],
         nextStage: null,
@@ -278,10 +276,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       STAGE_TYPE_TOOL_DEFAULTS.clarify;
 
     stages[stageName] = {
-      agentFile:
-        jsonStage.agentFile ||
-        STAGE_AGENT_FILE_MAP[stageName] ||
-        resolveStagePath(DEFAULT_AGENT_FILE, stageName),
+      agentPath: jsonStage.agentPath,
       skillPath:
         jsonStage.skillPath ||
         resolveStagePath(DEFAULT_SKILL_PATH, stageName),

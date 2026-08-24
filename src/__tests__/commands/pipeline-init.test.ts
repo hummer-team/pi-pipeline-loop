@@ -62,7 +62,7 @@ function makeInitConfig() {
         (s, i, a) => [
           s,
           {
-            agentFile: `.pi/agents/${s}/${s}.md`,
+            agentPath: `.pi/agents/${s}/${s}.md`,
             skillPath: `${s}/SKILL.md`,
             nextStage: a[i + 1] ?? null,
             requireDomain: false,

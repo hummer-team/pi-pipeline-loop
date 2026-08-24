@@ -7,7 +7,7 @@ export const STAGE_LIST: PipelineStage[] = [
 
 export function makeStageConfig(overrides?: Partial<Record<string, unknown>>) {
   return {
-    agentFile: "./agents/test-agent.md",
+    agentPath: "./agents/test-agent.md",
     skillPath: "test-skill/SKILL.md",
     nextStage: "plan" as PipelineStage | null,
     requireDomain: false,

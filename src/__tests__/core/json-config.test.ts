@@ -78,7 +78,8 @@ describe("resolvePipelineConfig", () => {
     const result = resolvePipelineConfig(json);
     // plan is the next stage for clarify
     expect(result.stages.clarify.nextStage).toBe("plan");
-    expect(result.stages.clarify.agentFile).toContain("clarify");
+    // agentPath is transparent — no default fallback; undefined when not configured
+    expect(result.stages.clarify.agentPath).toBeUndefined();
     expect(result.stages.clarify.skillPath).toContain("clarify");
     // All 7 stages present
     expect(result.stages.clarify).toBeDefined();
@@ -113,14 +114,14 @@ describe("resolvePipelineConfig", () => {
     const json: PipelineJsonConfig = {
       stages: {
         clarify: {
-          agentFile: "custom/agent.md",
+          agentPath: "custom/agent.md",
           allowedWritePaths: ["custom/"],
           nextStage: "plan",
         },
       },
     };
     const result = resolvePipelineConfig(json);
-    expect(result.stages.clarify.agentFile).toBe("custom/agent.md");
+    expect(result.stages.clarify.agentPath).toBe("custom/agent.md");
     expect(result.stages.clarify.allowedWritePaths).toEqual(["custom/"]);
   });
 
@@ -759,12 +760,12 @@ describe("stage allowedWritePaths config", () => {
   });
 });
 
-describe("Phase 3 (139): agent filename alignment", () => {
-  it("stage-specific agent file defaults match frontmatter name", () => {
+describe("Phase 0 (140): agentPath transparency", () => {
+  it("agentPath is passed through from JSON config without default fallback", () => {
     const json: PipelineJsonConfig = {
       stages: {
-        clarify: { nextStage: "plan" },
-        plan: { nextStage: "develop" },
+        clarify: { agentPath: ".pi/agents/clarify.md", nextStage: "plan" },
+        plan: { agentPath: ".pi/agents/plan.md", nextStage: "develop" },
         develop: { nextStage: "review" },
         review: { nextStage: "fix" },
         fix: { nextStage: "completed" },
@@ -772,11 +773,21 @@ describe("Phase 3 (139): agent filename alignment", () => {
     };
     const result = resolvePipelineConfig(json);
 
-    // Agent files should use stage-specific names aligned with frontmatter
-    expect(result.stages.clarify.agentFile).toContain("feat-design-plan-agent.md");
-    expect(result.stages.develop.agentFile).toContain("develop-agent.md");
-    expect(result.stages.review.agentFile).toContain("code-review-agent.md");
-    expect(result.stages.fix.agentFile).toContain("code-review-withfix-agent.md");
+    // Configured agentPath values are passed through as-is
+    expect(result.stages.clarify.agentPath).toBe(".pi/agents/clarify.md");
+    expect(result.stages.plan.agentPath).toBe(".pi/agents/plan.md");
+    // Unconfigured agentPath is undefined (no default fallback)
+    expect(result.stages.develop.agentPath).toBeUndefined();
+    expect(result.stages.review.agentPath).toBeUndefined();
+    expect(result.stages.fix.agentPath).toBeUndefined();
+  });
+
+  it("disabled stage gets agentPath = undefined", () => {
+    const json: PipelineJsonConfig = {
+      stages: { plan: { require: false } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.plan.agentPath).toBeUndefined();
   });
 
   it("fix.nextStage = completed eliminates develop→fix→develop loop", () => {

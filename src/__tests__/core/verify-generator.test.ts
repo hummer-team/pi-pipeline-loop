@@ -47,7 +47,7 @@ async function setupConfigWithSkill(
         (s, i, a) => [
           s,
           {
-            agentFile: "a.md",
+            agentPath: "a.md",
             skillPath: `${s}/SKILL.md`,
             nextStage: a[i + 1] ?? null,
             requireDomain: false,
@@ -361,7 +361,7 @@ describe("verify-generator", () => {
             (s, i, a) => [
               s,
               {
-                agentFile: "a.md",
+                agentPath: "a.md",
                 skillPath: `${s}/SKILL.md`,
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
@@ -583,7 +583,7 @@ describe("verify-generator", () => {
             (s, i, a) => [
               s,
               {
-                agentFile: "a.md",
+                agentPath: "a.md",
                 skillPath: `${s}/SKILL.md`,
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
@@ -798,7 +798,7 @@ describe("verify-generator", () => {
             (s, i, a) => [
               s,
               {
-                agentFile: "a.md",
+                agentPath: "a.md",
                 skillPath: `${s}/SKILL.md`,
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
@@ -936,7 +936,7 @@ describe("verify-generator", () => {
             (s, i, a) => [
               s,
               {
-                agentFile: "a.md",
+                agentPath: "a.md",
                 skillPath: `${s}/SKILL.md`,
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,

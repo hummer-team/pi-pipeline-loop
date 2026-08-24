@@ -98,8 +98,8 @@ export interface VerifyConfig {
  * write scope restrictions, and transition rules.
  */
 export interface StageConfig {
-  /** Path to the agent definition file (relative to projectRoot) */
-  agentFile: string;
+  /** Path to the agent definition file, relative to projectRoot (optional — no default fallback) */
+  agentPath?: string;
 
   /** Path to the skill directory or file for this stage (relative to `.pi/skills/` directory, e.g. `"{stage}/SKILL.md"`) */
   skillPath: string;
@@ -470,8 +470,8 @@ export interface StageJsonConfig {
   /** Whether this stage is required; false removes it from the pipeline (default true) */
   require?: boolean;
 
-  /** Path to agent definition file (default .pi/agents/{stage}/{stage}.md) */
-  agentFile?: string;
+  /** Path to agent definition file, relative to projectRoot (no default — must be configured explicitly) */
+  agentPath?: string;
 
   /** Path to skill directory/file relative to `.pi/skills/` (default `{stage}/SKILL.md`) */
   skillPath?: string;
