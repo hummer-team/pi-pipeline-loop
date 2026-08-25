@@ -14,6 +14,7 @@ import {
   generateVerifyMdContent,
   parseVerifyRulesFromContent,
   repairVerifyFrontmatter,
+  loadPluginDeliverables,
 } from "../../core/verify-generator";
 import { parseFrontmatter } from "../../core/auto-verifier";
 import { makeTestConfig } from "../helpers";
@@ -1081,6 +1082,163 @@ describe("verify-generator", () => {
       ].join("\n");
       const items = extractHardcodedItems(sampleContent);
       expect(items.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  // ─── Phase 0 (146): loadPluginDeliverables + double-source merge ─────────────
+
+  describe("Phase 0 (146): loadPluginDeliverables + double-source merge", () => {
+    /** Helper: write yml + optional package.json (triggers bun tech stack) */
+    async function writePluginYmlAndStack(
+      ymlContent: string,
+      techStack: "bun" | "maven" | "none" = "bun",
+    ): Promise<void> {
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(path.join(refsDir, "pipeline-stage-prompt.yml"), ymlContent, "utf-8");
+      if (techStack === "bun") {
+        await fs.writeFile(path.join(TMP, "package.json"), "{}", "utf-8");
+        await fs.writeFile(path.join(TMP, "bun.lock"), "", "utf-8");
+      } else if (techStack === "maven") {
+        await fs.writeFile(path.join(TMP, "pom.xml"), "<project/>", "utf-8");
+      }
+    }
+
+    it("loadPluginDeliverables returns command+git+keyword items for develop with bun stack", async () => {
+      resetPromptConfigCache();
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  ## Plugin Default Deliverables (develop)",
+        "  - **MUST** run the project build command and confirm it passes (command determined by project tech stack)",
+        "  - **MUST** run the project unit test command and confirm it passes (command determined by project tech stack)",
+        "  - **MUST** commit changes",
+        "  - **MUST** include `pipeline: {pipelineId}` in the artifact file header",
+      ].join("\n");
+      await writePluginYmlAndStack(ymlContent, "bun");
+
+      const items = await loadPluginDeliverables(TMP, "develop");
+
+      // Should have: 2 command items (bun run build, bun test) + 1 git + 1 keyword
+      const commandItems = items.filter(i => i.type === "command");
+      const gitItems = items.filter(i => i.type === "git");
+      const keywordItems = items.filter(i => i.type === "keyword");
+
+      expect(commandItems.length).toBe(2);
+      expect(commandItems.map(i => i.target)).toContain("bun run build");
+      expect(commandItems.map(i => i.target)).toContain("bun test");
+      expect(gitItems.length).toBe(1);
+      expect(gitItems[0].target).toContain("commit");
+      expect(keywordItems.length).toBe(1);
+      expect(keywordItems[0].target).toContain("pipeline");
+    });
+
+    it("loadPluginDeliverables returns empty for stages without plugin key (clarify)", async () => {
+      resetPromptConfigCache();
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  - **MUST** run build",
+      ].join("\n");
+      await writePluginYmlAndStack(ymlContent);
+
+      const items = await loadPluginDeliverables(TMP, "clarify");
+      expect(items).toEqual([]);
+    });
+
+    it("loadPluginDeliverables falls back to keyword when tech stack detection fails", async () => {
+      resetPromptConfigCache();
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  - **MUST** run the project build command and confirm it passes (command determined by project tech stack)",
+      ].join("\n");
+      // No package.json/pom.xml → tech stack detection returns null
+      await writePluginYmlAndStack(ymlContent, "none");
+
+      const items = await loadPluginDeliverables(TMP, "develop");
+      // With no tech stack, the keyword item is preserved (graceful degradation)
+      expect(items.length).toBe(1);
+      expect(items[0].type).toBe("keyword");
+      expect(items[0].target).toContain("build command");
+    });
+
+    it("double-source merge: verify.md contains both business and plugin items with dedup", async () => {
+      resetPromptConfigCache();
+      // Write yml with plugin deliverables for develop
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  - **MUST** include `pipeline: {pipelineId}` in the artifact file header",
+      ].join("\n");
+      await writePluginYmlAndStack(ymlContent);
+
+      // Write skill with business deliverables
+      const skillContent = [
+        "---",
+        "title: develop",
+        "---",
+        "## 交付项",
+        "- **必须** 创建开发总结文档 docs/design/develop_summary.md",
+        "- **必须** 包含 `pipeline: {pipelineId}` 在产物头部",
+      ].join("\n");
+      const config = await setupConfigWithSkill("develop", skillContent);
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results.length).toBe(1);
+      expect(results[0].status).toBe("generated");
+      expect(results[0].pluginCount).toBeGreaterThan(0);
+
+      // Read the generated verify.md and confirm it contains both business file + plugin keyword
+      const verifyPath = path.join(TMP, ".pi", "references", "develop_spec", "verify.md");
+      const verifyContent = await fs.readFile(verifyPath, "utf-8");
+      // Business file item
+      expect(verifyContent).toContain("docs/design/develop_summary.md");
+      // Plugin keyword item (pipeline) - present due to merge
+      expect(verifyContent).toContain("keywords:");
+      expect(verifyContent).toContain("pipeline");
+    });
+
+    it("existing verify.md migration: diff-merge adds plugin rules to old verify", async () => {
+      resetPromptConfigCache();
+      // Write yml with plugin deliverable for develop
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  - **MUST** include `pipeline: {pipelineId}` in the artifact file header",
+      ].join("\n");
+      await writePluginYmlAndStack(ymlContent);
+
+      // Write skill with business items
+      const skillContent = [
+        "---",
+        "title: develop",
+        "---",
+        "## 交付项",
+        "- **必须** 创建开发总结 docs/design/dev.md",
+      ].join("\n");
+      const config = await setupConfigWithSkill("develop", skillContent);
+
+      // Pre-create an old verify.md (without plugin keyword rules)
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      const oldVerify = [
+        "---",
+        "rules:",
+        "  requiredFiles:",
+        '    - "docs/design/dev.md"',
+        "  mode: or",
+        "---",
+        "Old verify body",
+      ].join("\n");
+      await fs.writeFile(path.join(verifyDir, "verify.md"), oldVerify, "utf-8");
+
+      // Re-generate: should diff-merge plugin keyword rule into existing verify.md
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results.length).toBe(1);
+      expect(results[0].status).toBe("merged");
+      expect(results[0].pluginCount).toBeGreaterThan(0);
+
+      // Read merged content and confirm it has both old file rule + new plugin keyword
+      const mergedContent = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(mergedContent).toContain("docs/design/dev.md");
+      expect(mergedContent).toContain("pipeline");
+      expect(mergedContent).toContain("keywords:");
     });
   });
 });

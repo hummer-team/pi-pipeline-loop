@@ -10,7 +10,7 @@ import path from "node:path";
 import type { PipelineConfig, PipelineStage } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath, CONFIG_DIR_NAME } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
-import { getVerifyExtractPrompt } from "./prompt-config";
+import { getVerifyExtractPrompt, loadPromptConfig } from "./prompt-config";
 import { detectTechStack } from "./tech-stack";
 import { parseFrontmatter, type VerifyRules } from "./auto-verifier";
 
@@ -40,6 +40,8 @@ export type VerifyGenerateResult = {
   hardcodedCount?: number;
   /** Number of items extracted via LLM */
   llmCount?: number;
+  /** Number of plugin default deliverables merged in (Phase 0: 146) */
+  pluginCount?: number;
   /** LLM extraction status: "ok" = success, "fail" = error/degraded, "off" = not enabled */
   llmStatus?: "ok" | "fail" | "off";
   /** For merged results: list of command/file targets that were added */
@@ -69,6 +71,65 @@ export type VerifyGenerateResult = {
  */
 export async function resolveExtractPrompt(projectRoot: string, stage?: string): Promise<string> {
   return getVerifyExtractPrompt(projectRoot, stage);
+}
+
+/**
+ * Loads plugin default deliverables from the yml config for a given stage.
+ * Reads `stage_deliverable_{stage}` key, extracts **MUST** items via extractHardcodedItems,
+ * and resolves build/test command placeholders via detectTechStack.
+ *
+ * Resolution rules:
+ * - keyword items whose target matches `/(build command|unit test command)/i` are resolved:
+ *   - detectTechStack succeeds → replaced with {type:"command", target:cmd} for each hint
+ *   - detectTechStack returns null → original keyword items preserved (graceful degradation)
+ * - other items (e.g. "commit changes" → git, "pipeline: {pipelineId}" → keyword) use classifyDeliveryItem
+ *
+ * @param projectRoot - Absolute path to the project root
+ * @param stage - Pipeline stage name (e.g. "develop", "review", "fix")
+ * @returns Array of plugin default delivery items; empty array when key is missing/empty
+ */
+export async function loadPluginDeliverables(
+  projectRoot: string,
+  stage: string,
+): Promise<DeliveryItem[]> {
+  const config = await loadPromptConfig(projectRoot);
+  const key = `stage_deliverable_${stage}`;
+  const text = config[key];
+  if (!text || text.trim() === "") {
+    return [];
+  }
+
+  const rawItems = extractHardcodedItems(text);
+
+  // Check for build/test command placeholders
+  const buildTestItems = rawItems.filter(
+    i => i.type === "keyword" && /(build command|unit test command)/i.test(i.target),
+  );
+
+  if (buildTestItems.length === 0) {
+    return rawItems;
+  }
+
+  // Try to resolve commands via tech stack detection
+  const techStack = await detectTechStack(projectRoot);
+  if (!techStack) {
+    // Detection failed — keep original keyword items (graceful degradation)
+    return rawItems;
+  }
+
+  // Parse hints (e.g. "bun run build, bun test") by splitting on ", "
+  const hints = techStack.hints.split(", ").map(h => h.trim()).filter(Boolean);
+  const commandItems: DeliveryItem[] = hints.map(cmd => ({
+    type: "command" as const,
+    target: cmd,
+  }));
+
+  // Replace build/test keyword items with resolved command items; keep all other items
+  const nonBuildTestItems = rawItems.filter(
+    i => !(i.type === "keyword" && /(build command|unit test command)/i.test(i.target)),
+  );
+
+  return [...nonBuildTestItems, ...commandItems];
 }
 
 /**
@@ -600,6 +661,7 @@ export async function generateVerifyFiles(
       let expectedItems: DeliveryItem[] = [];
       let hardcodedItems: DeliveryItem[] = [];
       let llmItems: DeliveryItem[] = [];
+      let pluginItems: DeliveryItem[] = [];
       let llmStatusLocal: "ok" | "fail" | "off" = "off";
       if (skillBody) {
         hardcodedItems = extractHardcodedItems(skillBody);
@@ -628,7 +690,9 @@ export async function generateVerifyFiles(
             llmStatusLocal = "fail";
           }
         }
-        expectedItems = mergeDeliveryItems(hardcodedItems, llmItems);
+        // Phase 0 (146): merge plugin default deliverables from yml
+        pluginItems = await loadPluginDeliverables(config.projectRoot, s);
+        expectedItems = mergeDeliveryItems(mergeDeliveryItems(hardcodedItems, llmItems), pluginItems);
       }
 
       const { merged: toAdd, hasCustom } = diffAndMergeRules(existingRules, expectedItems);
@@ -640,6 +704,7 @@ export async function generateVerifyFiles(
           filePath: verifyPath,
           reason: "exists_custom",
           detail: "user-authored custom rules protected",
+          pluginCount: String(pluginItems.length),
         });
         results.push({
           stage: s,
@@ -648,6 +713,7 @@ export async function generateVerifyFiles(
           reason: "exists_custom",
           hardcodedCount: 0,
           llmCount: 0,
+          pluginCount: pluginItems.length,
           llmStatus: "off",
           hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(existingContent),
         });
@@ -661,6 +727,7 @@ export async function generateVerifyFiles(
           status: "skipped",
           filePath: verifyPath,
           reason: "exists",
+          pluginCount: String(pluginItems.length),
         });
         results.push({
           stage: s,
@@ -669,6 +736,7 @@ export async function generateVerifyFiles(
           reason: "exists",
           hardcodedCount: 0,
           llmCount: 0,
+          pluginCount: pluginItems.length,
           llmStatus: "off",
           hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(existingContent),
         });
@@ -739,6 +807,7 @@ export async function generateVerifyFiles(
           filePath: verifyPath,
           addedCommands: addedDescs.filter((_, idx) => toAdd[idx].type === "command").join(","),
           addedFiles: addedDescs.filter((_, idx) => toAdd[idx].type === "file").join(","),
+          pluginCount: String(pluginItems.length),
         });
         results.push({
           stage: s,
@@ -746,6 +815,7 @@ export async function generateVerifyFiles(
           filePath: verifyPath,
           hardcodedCount: hardcodedItems.length,
           llmCount: llmItems.length,
+          pluginCount: pluginItems.length,
           llmStatus: llmStatusLocal,
           addedItems: addedDescs,
           // Check merged content for unresolved placeholder — must inspect mergedContent
@@ -763,6 +833,7 @@ export async function generateVerifyFiles(
           error: errMsg,
           hardcodedCount: 0,
           llmCount: 0,
+          pluginCount: pluginItems.length,
           llmStatus: "off",
         });
         continue;
@@ -844,8 +915,9 @@ export async function generateVerifyFiles(
       }
     }
 
-    // Step 3: Merge and deduplicate
-    const allItems = mergeDeliveryItems(hardcodedItems, llmItems);
+    // Step 3: Merge and deduplicate (Phase 0 (146): include plugin default deliverables)
+    const pluginItems = await loadPluginDeliverables(config.projectRoot, s);
+    const allItems = mergeDeliveryItems(mergeDeliveryItems(hardcodedItems, llmItems), pluginItems);
 
     // NOTE: previous defensive drop of command-type items for develop/fix has been
     // removed. Project tech stack detection (see detectTechStack in tech-stack.ts)
@@ -859,6 +931,7 @@ export async function generateVerifyFiles(
         skillPath: resolvedSkillPath,
         hardcodedCount: String(hardcodedItems.length),
         llmCount: String(llmItems.length),
+        pluginCount: String(pluginItems.length),
         llmStatus,
         llmMs: String(llmMs),
         reason: "no_items",
@@ -870,6 +943,7 @@ export async function generateVerifyFiles(
         reason: "no_items",
         hardcodedCount: hardcodedItems.length,
         llmCount: llmItems.length,
+        pluginCount: pluginItems.length,
         llmStatus,
       });
       continue;
@@ -888,6 +962,7 @@ export async function generateVerifyFiles(
         skillPath: resolvedSkillPath,
         hardcodedCount: String(hardcodedItems.length),
         llmCount: String(llmItems.length),
+        pluginCount: String(pluginItems.length),
         llmStatus,
         llmMs: String(llmMs),
       });
@@ -898,6 +973,7 @@ export async function generateVerifyFiles(
         filePath: verifyPath,
         hardcodedCount: hardcodedItems.length,
         llmCount: llmItems.length,
+        pluginCount: pluginItems.length,
         llmStatus,
         hasRequirementDocPlaceholder: hasRequirementDocPlaceholder(verifyContent),
       });
@@ -910,6 +986,7 @@ export async function generateVerifyFiles(
         error: errMsg,
         hardcodedCount: hardcodedItems.length,
         llmCount: llmItems.length,
+        pluginCount: pluginItems.length,
         llmStatus,
       });
     }
