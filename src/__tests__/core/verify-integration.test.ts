@@ -9,7 +9,7 @@ import { createAgentSettled } from "../../core/agent-settled";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { createLoopBreaker } from "../../core/loop-breaker";
 import { runVerification, parseFrontmatter } from "../../core/auto-verifier";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, createMockRuntimeCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
 
 let TMP: string;
@@ -53,11 +53,7 @@ describe("verify-integration", () => {
     await fs.writeFile(reqPath, "# Requirements\nDo something", "utf-8");
 
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    const ctx = {
-      session: { getMeta: () => meta, updateMeta: (_p: any) => meta },
-      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
-      ui: { notify: () => {}, setStatus: () => {} },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const startCmd = createPipelineStartCommand(config);
     const result: any = await startCmd.execute({ file: "req.md" }, ctx);
