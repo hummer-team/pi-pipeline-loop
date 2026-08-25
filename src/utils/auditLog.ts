@@ -19,6 +19,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { computeStringHash } from "./hash";
 import type { AuditLogLevel, PipelineConfig, SessionMeta } from "../types";
 import { buildStageSequence } from "./stage-sequence";
 
@@ -241,12 +242,14 @@ export async function writePromptSnapshot(
   ].join(":");
 
   // Build metadata single-line event (same format as writeAuditLog)
+  // Append prompt_hash (SHA-256) for quick comparison / dedup
   let metaLine = `${datePart} ${timePart} - [INFO] ${stage}`;
   if (message && Object.keys(message).length > 0) {
     for (const [k, v] of Object.entries(message)) {
       metaLine += ` | ${k}=${v}`;
     }
   }
+  metaLine += ` | prompt_hash=${computeStringHash(prompt)}`;
 
   // Build the full snapshot block with a real blank line after END
   // to separate from the next audit event (E7 protocol)

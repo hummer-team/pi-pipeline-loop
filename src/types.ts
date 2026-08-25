@@ -483,6 +483,16 @@ export interface PipelineConfig {
    * Default: "auto" (zero-interaction, backward compatible).
    */
   startStageMode?: StartStageMode;
+
+  /**
+   * Audit configuration for prompt snapshots.
+   * Controls what is recorded in the prompt snapshot audit log.
+   * Default: { promptSnapshot: "full" }.
+   *   - "full": Record complete systemPrompt (base + pluginPromptFull).
+   *   - "plugin": Record only the plugin segment (backward compatible).
+   *   - "off": Do not write prompt snapshot (zero overhead).
+   */
+  audit?: { promptSnapshot?: "full" | "plugin" | "off" };
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────

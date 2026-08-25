@@ -423,8 +423,10 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
 
-      // Build the plugin prompt (yml template or default 8-part)
+      // Build the plugin prompt (yml template or default 10-part)
       let pluginPrompt: string;
+      // Track rendering path for snapshot source label
+      let snapshotSource: "yml" | "fallback" | "default" = "default";
 
       // Try yml template path
       const template = await getStagePrompt(config.projectRoot, meta.currentStage);
@@ -437,24 +439,15 @@ export function createPromptInjector(config: PipelineConfig): Hook {
             missing: rendered.missing.join(","),
           }, "warn");
           pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
-          // E4: write prompt snapshot for fallback path (source=fallback)
-          await safeWritePromptSnapshot("prompt_snapshot", {
-            stage: meta.currentStage,
-            pipelineId: meta.pipelineId,
-            source: "fallback",
-          }, pluginPrompt);
+          snapshotSource = "fallback";
         } else {
           pluginPrompt = rendered.prompt;
-          // E4: write prompt snapshot for successful yml rendering (source=yml)
-          await safeWritePromptSnapshot("prompt_snapshot", {
-            stage: meta.currentStage,
-            pipelineId: meta.pipelineId,
-            source: "yml",
-          }, pluginPrompt);
+          snapshotSource = "yml";
         }
       } else {
-        // Default path: no yml template → use 10-part assembly (no snapshot, E4 ❌)
+        // Default path: no yml template → use 10-part assembly
         pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
+        snapshotSource = "default";
       }
 
       // Append plugin prompt after pi base system prompt (D3)
@@ -470,10 +463,23 @@ export function createPromptInjector(config: PipelineConfig): Hook {
         ? pluginPrompt + "\n\n---\n\n" + completedSummary
         : pluginPrompt;
 
-      if (base) {
-        return { systemPrompt: base + "\n\n---\n\n" + pluginPromptFull };
+      const systemPrompt = base
+        ? base + "\n\n---\n\n" + pluginPromptFull
+        : pluginPromptFull;
+
+      // Phase 5 (146): unified prompt snapshot — record after full assembly
+      // Snapshot level controlled by config.audit.promptSnapshot (default "full")
+      const snapshotLevel = config.audit?.promptSnapshot ?? "full";
+      if (snapshotLevel !== "off") {
+        const snapshotContent = snapshotLevel === "full" ? systemPrompt : pluginPromptFull;
+        await safeWritePromptSnapshot("prompt_snapshot", {
+          stage: meta.currentStage,
+          pipelineId: meta.pipelineId,
+          source: snapshotSource,
+        }, snapshotContent);
       }
-      return { systemPrompt: pluginPromptFull };
+
+      return { systemPrompt };
     },
   };
 }

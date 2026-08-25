@@ -22,3 +22,14 @@ export async function getFileHash(filePath: string): Promise<string> {
     return "file-not-exists";
   }
 }
+
+/**
+ * Computes the SHA-256 hash of a string content.
+ * Used for prompt snapshot hashing (audit trail).
+ *
+ * @param content - String content to hash
+ * @returns Hex-encoded SHA-256 hash
+ */
+export function computeStringHash(content: string): string {
+  return crypto.createHash("sha256").update(content).digest("hex");
+}

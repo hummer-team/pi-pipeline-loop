@@ -789,10 +789,9 @@ describe("createPromptInjector", () => {
       expect(logContent).toContain("Pipeline Status");
       expect(logContent).toContain("STAGE WRITE SCOPE");
 
-      // E5: snapshot should NOT contain pi base prompt
-      // (the base prompt is only added via ctx.getSystemPrompt, not in pluginPrompt)
-      // Verify that the snapshot block contains the plugin prompt but no arbitrary base text
-      const basePrompt = "This is the pi base system prompt that should NOT appear in snapshot";
+      // Phase 5 (146): default snapshot level is "full" — includes pi base prompt
+      // (the base prompt is added via ctx.getSystemPrompt and included in snapshot)
+      const basePrompt = "This is the pi base system prompt that SHOULD appear in full snapshot";
       const ctxWithBase = {
         session: { getMeta: () => meta },
         getSystemPrompt: () => basePrompt,
@@ -800,12 +799,11 @@ describe("createPromptInjector", () => {
       const hook2 = createPromptInjector(config);
       await hook2.handler(ctxWithBase as any);
       const logContent2 = await readFile(logFile, "utf-8");
-      // The pi base prompt should NOT appear in the snapshot (E5)
-      // Check that the snapshot block (between START and END) does not contain the base
+      // The pi base prompt SHOULD appear in the full snapshot (Phase 5 default)
       const startIdx = logContent2.lastIndexOf("=== PROMPT START ===");
       const endIdx = logContent2.lastIndexOf("=== PROMPT END ===");
       const snapshotBlock = logContent2.substring(startIdx, endIdx);
-      expect(snapshotBlock).not.toContain(basePrompt);
+      expect(snapshotBlock).toContain(basePrompt);
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -853,7 +851,7 @@ describe("createPromptInjector", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("does NOT write prompt snapshot on default path (no yml template)", async () => {
+    it("writes prompt snapshot on default path (no yml template) with source=default (Phase 5)", async () => {
       const TMP = join(tmpdir(), "pi-pi-snapshot-default-" + Date.now());
       const auditDir = join(TMP, ".pi", "audit");
       await mkdir(TMP, { recursive: true });
@@ -869,19 +867,115 @@ describe("createPromptInjector", () => {
       await hook.handler(ctx as any);
 
       const logFile = join(auditDir, getDateAuditFileName());
-      // If the audit log file doesn't exist at all, that means no events were written — pass
       const { existsSync } = await import("node:fs");
       if (!existsSync(logFile)) {
-        // No audit file created — confirms no snapshot was written
+        throw new Error("Expected audit log file to exist on default path");
+      }
+      const logContent = await readFile(logFile, "utf-8");
+
+      // Phase 5: default path should write snapshot with source=default
+      expect(logContent).toContain("prompt_snapshot");
+      expect(logContent).toContain("source=default");
+      expect(logContent).toContain("=== PROMPT START ===");
+      expect(logContent).toContain("=== PROMPT END ===");
+      // Snapshot contains plugin prompt content
+      expect(logContent).toContain("Pipeline Status");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("promptSnapshot=off does NOT write any snapshot", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-off-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        auditDir: ".pi/audit",
+        audit: { promptSnapshot: "off" },
+      });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      await hook.handler(ctx as any);
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      const { existsSync } = await import("node:fs");
+      if (!existsSync(logFile)) {
+        // No audit file = no snapshot written — pass
         await rm(TMP, { recursive: true, force: true });
         return;
       }
       const logContent = await readFile(logFile, "utf-8");
-
-      // No prompt_snapshot event should be written
       expect(logContent).not.toContain("prompt_snapshot");
-      expect(logContent).not.toContain("=== PROMPT START ===");
-      expect(logContent).not.toContain("=== PROMPT END ===");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("promptSnapshot=plugin writes only plugin segment (no pi base)", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-plugin-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        auditDir: ".pi/audit",
+        audit: { promptSnapshot: "plugin" },
+      });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const basePrompt = "PI BASE SHOULD NOT APPEAR IN PLUGIN MODE";
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => basePrompt,
+      };
+
+      const hook = createPromptInjector(config);
+      await hook.handler(ctx as any);
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      const logContent = await readFile(logFile, "utf-8");
+
+      // Plugin mode should write snapshot
+      expect(logContent).toContain("prompt_snapshot");
+      expect(logContent).toContain("=== PROMPT START ===");
+      // But should NOT contain the pi base prompt
+      const startIdx = logContent.lastIndexOf("=== PROMPT START ===");
+      const endIdx = logContent.lastIndexOf("=== PROMPT END ===");
+      const snapshotBlock = logContent.substring(startIdx, endIdx);
+      expect(snapshotBlock).not.toContain(basePrompt);
+      // But SHOULD contain plugin content
+      expect(snapshotBlock).toContain("Pipeline Status");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("snapshot metadata contains prompt_hash", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-hash-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      await hook.handler(ctx as any);
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      const logContent = await readFile(logFile, "utf-8");
+
+      // Metadata line should contain prompt_hash
+      expect(logContent).toContain("prompt_hash=");
+      // Hash should be a 64-character hex string (SHA-256)
+      const hashMatch = logContent.match(/prompt_hash=([a-f0-9]{64})/);
+      expect(hashMatch).not.toBeNull();
 
       await rm(TMP, { recursive: true, force: true });
     });
