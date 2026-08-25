@@ -38,8 +38,11 @@ function createCtx(meta: any) {
     session: {
       getMeta: () => meta,
       updateMeta: (m: any) => {
-        updates.push(m);
-        Object.assign(meta, m);
+        // Merge with current meta to match real session-state behavior
+        const merged = { ...meta, ...m };
+        updates.push(merged);
+        Object.assign(meta, merged);
+        return merged;
       },
     },
     ui: {

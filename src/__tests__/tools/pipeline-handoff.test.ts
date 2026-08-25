@@ -1,10 +1,17 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { createPipelineHandoff } from "../../tools/pipeline-handoff";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import crypto from "node:crypto";
+
+/** Helper: write a file and return its SHA-256 hash */
+async function writeAndHash(filePath: string, content: string): Promise<string> {
+  await writeFile(filePath, content, "utf-8");
+  return crypto.createHash("sha256").update(content).digest("hex");
+}
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -12,8 +19,11 @@ function createCtx(meta: any) {
     session: {
       getMeta: () => meta,
       updateMeta: (m: any) => {
-        updates.push(m);
-        Object.assign(meta, m);
+        // Merge with current meta to match real session-state behavior
+        const merged = { ...meta, ...m };
+        updates.push(merged);
+        Object.assign(meta, merged);
+        return merged;
       },
       setModel: async (_model: string) => {},
     },
@@ -64,9 +74,11 @@ describe("createPipelineHandoff", () => {
 
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["plan"] = { ...config.stages["plan"], model: "claude" } as any;
+    const summaryPath = join(TMP, "design.md");
+    const hash = await writeAndHash(summaryPath, "# Clarify Summary\nValid content");
     const meta = makeTestMeta({
       currentStage: "clarify",
-      summaries: { clarify: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
+      summaries: { clarify: { path: summaryPath, hash, status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -75,6 +87,7 @@ describe("createPipelineHandoff", () => {
 
     expect(result.success).toBe(true);
     expect(result.message).toContain("Switched to");
+    await rm(TMP, { recursive: true, force: true });
   });
 
   it("updates metadata with stage transition and resets counters", async () => {
@@ -83,11 +96,13 @@ describe("createPipelineHandoff", () => {
 
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["plan"] = { ...config.stages["plan"], model: "claude" } as any;
+    const summaryPath = join(TMP, "design.md");
+    const hash = await writeAndHash(summaryPath, "# Clarify Summary\nMeta test");
     const meta = makeTestMeta({
       currentStage: "clarify",
       loopCount: 3,
       currentStepIndex: 5,
-      summaries: { clarify: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
+      summaries: { clarify: { path: summaryPath, hash, status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -99,6 +114,7 @@ describe("createPipelineHandoff", () => {
     expect(lastUpdate.previousStage).toBe("clarify");
     expect(lastUpdate.loopCount).toBe(0);
     expect(lastUpdate.currentStepIndex).toBe(0);
+    await rm(TMP, { recursive: true, force: true });
   });
 
   it("writes audit log for handoff", async () => {
@@ -107,10 +123,13 @@ describe("createPipelineHandoff", () => {
 
     const config = makeTestConfig({ projectRoot: TMP });
     await initAuditLog(config);
+    const summaryPath = join(TMP, "design.md");
+    const content = "# Clarify Summary\nAudit test content";
+    const hash = await writeAndHash(summaryPath, content);
     const meta = makeTestMeta({
       currentStage: "clarify",
       currentModel: { provider: "openai", modelId: "gpt-4o" },
-      summaries: { clarify: { path: join(TMP, "design.md"), hash: "xyz", status: "valid" as const } },
+      summaries: { clarify: { path: summaryPath, hash, status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -125,15 +144,20 @@ describe("createPipelineHandoff", () => {
     expect(line).toContain("from=clarify");
     expect(line).toContain("to=plan");
     expect(line).toContain("model=gpt-4o");
-    expect(line).toContain("summaryHash=xyz");
+    expect(line).toContain(`summaryHash=${hash}`);
     expect(line).toContain("note=All tests pass");
+    await rm(TMP, { recursive: true, force: true });
   });
 
   it("returns error for unknown next stage", async () => {
-    const config = makeTestConfig();
+    const TMP = join(tmpdir(), "pi-handoff-unknown-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    const summaryPath = join(TMP, "design.md");
+    const hash = await writeAndHash(summaryPath, "# Clarify Summary\nUnknown stage test");
     const meta = makeTestMeta({
       currentStage: "clarify",
-      summaries: { clarify: { path: "/tmp/design.md", hash: "xyz", status: "valid" as const } },
+      summaries: { clarify: { path: summaryPath, hash, status: "valid" as const } },
     });
     const ctx = createCtx(meta);
 
@@ -141,13 +165,12 @@ describe("createPipelineHandoff", () => {
     const result = (await tool.execute({ nextStage: "nonexistent" }, ctx as any)) as any;
 
     expect(result.error).toContain("Unknown stage");
+    await rm(TMP, { recursive: true, force: true });
   });
 });
 
 // ─── Phase 4 (143): Hash mismatch blocks handoff ─────────────────────────────
 
-import { writeFile, rm } from "node:fs/promises";
-import crypto from "node:crypto";
 import { __resetSharedStateDir } from "../../core/session-state";
 import { __resetAuditDirPath } from "../../utils/auditLog";
 

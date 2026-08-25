@@ -9,7 +9,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types"
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { freezeAndPrompt } from "../core/flow-state";
-import { findFirstMismatch } from "../utils/summary-hash";
+import { findFirstMismatch, checkStageSummaryHash } from "../utils/summary-hash";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -71,9 +71,11 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         };
       }
 
-      // Phase 4 (143): Hash integrity check — detect manual summary modifications
-      const mismatchedStage = findFirstMismatch(meta);
-      if (mismatchedStage) {
+      // Phase 4 (143): Hash integrity check — detect manual summary modifications.
+      // Check the current stage's summary (the one being passed as context for next stage).
+      const currentHashCheck = checkStageSummaryHash(meta, currentStage);
+      if (currentHashCheck && !currentHashCheck.match) {
+        const mismatchedStage = currentHashCheck.stage;
         return {
           success: false,
           error:
@@ -104,15 +106,14 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
               `Pipeline frozen. Use the decision menu to continue.`,
           };
         }
+        // Pass only the delta to avoid overwriting concurrent shared source writes
         ctx.session.updateMeta({
-          ...meta,
           loopCycleCount: cycleCount,
           stageVisitOrder: [...visitOrder, nextStage],
         });
       } else {
         const newVisitOrder = [...visitOrder, nextStage];
         ctx.session.updateMeta({
-          ...meta,
           loopCycleCount: 0,
           stageVisitOrder: newVisitOrder,
         });
@@ -122,9 +123,9 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       const updatedMeta = ctx.session.getMeta() as SessionMeta;
 
       // Update metadata: transition stage, reset counters, pass context
+      // Pass only the delta (not a full snapshot) to avoid overwriting concurrent writes.
       const contextFiles = updatedMeta.contextFiles || {};
       ctx.session.updateMeta({
-        ...updatedMeta,
         previousStage: currentStage,
         currentStage: nextStage,
         stageStartTime: Date.now(),

@@ -16,7 +16,7 @@ import { runVerification, precheckRequiredFiles } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { applyVerifyFail, maybeHandlePlanHumanGate } from "./verify-advance";
 import { safeWriteStageAudit } from "../utils/auditLog";
-import { findFirstMismatch } from "../utils/summary-hash";
+import { findFirstMismatch, checkStageSummaryHash } from "../utils/summary-hash";
 
 /**
  * Dependencies injected into the stage advancer for verification execution.
@@ -86,10 +86,12 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       const currentStage: PipelineStage = meta.currentStage;
 
       // Phase 4 (143): Hash integrity check — if current stage has a summary
-      // with a hash mismatch, block advance and prompt for re-entry
+      // with a hash mismatch, block advance and prompt for re-entry.
+      // Only check the current stage's summary (not all stages).
       if (meta.summaries[currentStage]) {
-        const mismatchedStage = findFirstMismatch(meta);
-        if (mismatchedStage) {
+        const currentCheck = checkStageSummaryHash(meta, currentStage);
+        if (currentCheck && !currentCheck.match) {
+          const mismatchedStage = currentCheck.stage;
           return {
             success: false,
             message:
@@ -230,8 +232,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       // (e) Advance to target stage
       // C2: Set advancedThisTurn flag to prevent agent_settled from triggering redundant verification
+      // Pass only the delta (not a full snapshot) to avoid overwriting concurrent
+      // writes from shared source during async operations (e.g., runVerification).
       ctx.session.updateMeta({
-        ...meta,
         previousStage: currentStage,
         currentStage: resolvedTarget ?? "completed",
         stageStartTime: Date.now(),

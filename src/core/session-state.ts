@@ -144,6 +144,14 @@ export function createSessionState(
             const shared = JSON.parse(content) as SessionMeta;
             // Only trust shared source if pipelineId matches (guard against stale files)
             if (shared && shared.pipelineId === localPipelineId) {
+              // Check if the local entry has a _sharedStale flag, which means the
+              // last shared source write failed. In that case, fall back to local
+              // entries to prevent state regression from old shared data.
+              if ((localMeta as any)?._sharedStale) {
+                // Return local meta without the internal stale markers
+                const { _sharedStale, _sharedStaleAt, ...cleanLocal } = localMeta as any;
+                return cleanLocal as SessionMeta;
+              }
               return shared;
             }
           } catch {
@@ -176,12 +184,24 @@ export function createSessionState(
             const metaPath = path.join(metaDir, "meta.json");
             fs.writeFileSync(metaPath, JSON.stringify(merged, null, 2), "utf-8");
           } catch (sharedErr) {
-            // Fail-open: log but don't block pipeline
+            // Fail-open: log but don't block pipeline.
+            // Mark shared source as stale in the local entry so that getMeta
+            // can detect and fall back to local entries on next read,
+            // preventing partial-failure amplification (old shared source
+            // overriding newer local state).
             const errMsg = sharedErr instanceof Error ? sharedErr.message : String(sharedErr);
             safeWriteAuditLog("session_state_error", {
               operation: "updateMeta_shared",
               error: errMsg,
             }, "warn");
+
+            // Stamp local entry with sharedStale flag so getMeta detects it
+            try {
+              const staleMerged = { ...merged, _sharedStale: true, _sharedStaleAt: Date.now() };
+              pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, staleMerged);
+            } catch {
+              // Best-effort: if even this fails, local state is still consistent
+            }
           }
         }
 

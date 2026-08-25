@@ -20,8 +20,11 @@ function createCtx(meta: SessionMeta) {
     session: {
       getMeta: () => meta,
       updateMeta: (m: SessionMeta) => {
-        updates.push(m);
-        Object.assign(meta, m);
+        // Merge with current meta to match real session-state behavior
+        const merged = { ...meta, ...m } as SessionMeta;
+        updates.push(merged);
+        Object.assign(meta, merged);
+        return merged;
       },
       setModel: async (_model: string) => {},
     },

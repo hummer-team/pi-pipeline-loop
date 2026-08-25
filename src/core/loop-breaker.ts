@@ -85,7 +85,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           (meta.currentStage === "develop" || meta.currentStage === "fix")
         ) {
           const newLoopCount = meta.loopCount + 1;
-          ctx.session.updateMeta({ ...meta, loopCount: newLoopCount });
+          ctx.session.updateMeta({ loopCount: newLoopCount });
 
           if (newLoopCount >= meta.maxLoops) {
             // Circuit break: freeze pipeline and prompt for user decision
@@ -128,7 +128,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
           }
 
           const newLoopCount = meta.loopCount + 1;
-          ctx.session.updateMeta({ ...meta, loopCount: newLoopCount });
+          ctx.session.updateMeta({ loopCount: newLoopCount });
 
           if (newLoopCount >= meta.maxLoops) {
             // Circuit break: freeze pipeline and prompt for user decision
@@ -193,7 +193,6 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
       ) {
         const nextStepIndex = (meta.currentStepIndex ?? 0) + 1;
         ctx.session.updateMeta({
-          ...meta,
           currentStepIndex: nextStepIndex,
         });
       }

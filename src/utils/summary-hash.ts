@@ -96,6 +96,52 @@ export function verifySummaryHash(meta: {
 }
 
 /**
+ * Check a single stage's summary hash integrity.
+ *
+ * Returns the hash check result for the specified stage, or undefined
+ * if the stage has no summary entry.
+ *
+ * @param meta - Current session metadata
+ * @param stage - The stage to check
+ * @returns Hash check result, or undefined if no summary exists for the stage
+ */
+export function checkStageSummaryHash(
+  meta: { summaries: Record<string, { path: string; hash: string; status?: string }> },
+  stage: string,
+): SummaryHashCheck | undefined {
+  const summary = meta.summaries?.[stage];
+  if (!summary || !summary.path || !summary.hash) return undefined;
+
+  const actualHash = computeFileHash(summary.path);
+
+  if (actualHash === null) {
+    return {
+      stage,
+      path: summary.path,
+      recordedHash: summary.hash,
+      match: false,
+      status: "missing",
+    };
+  } else if (actualHash === summary.hash) {
+    return {
+      stage,
+      path: summary.path,
+      recordedHash: summary.hash,
+      match: true,
+      status: "ok",
+    };
+  } else {
+    return {
+      stage,
+      path: summary.path,
+      recordedHash: summary.hash,
+      match: false,
+      status: "mismatch",
+    };
+  }
+}
+
+/**
  * Find the first summary with a hash mismatch (file modified manually).
  *
  * Returns the stage name of the first mismatched summary, or undefined
@@ -112,6 +158,8 @@ export function findFirstMismatch(meta: {
   summaries: Record<string, { path: string; hash: string; status?: string }>;
 }): string | undefined {
   const checks = verifySummaryHash(meta);
-  const mismatch = checks.find((c) => c.status === "mismatch");
+  // Block on both "mismatch" (file modified) and "missing" (file deleted) —
+  // both indicate the summary has been changed externally.
+  const mismatch = checks.find((c) => c.status === "mismatch" || c.status === "missing");
   return mismatch?.stage;
 }

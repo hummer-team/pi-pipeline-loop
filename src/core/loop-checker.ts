@@ -85,7 +85,6 @@ export function createLoopChecker(config: PipelineConfig): Tool {
       const maxLoops = meta.maxLoops;
 
       ctx.session.updateMeta({
-        ...meta,
         loopCount: newLoopCount,
         currentStepIndex: meta.currentStepIndex + 1,
       });

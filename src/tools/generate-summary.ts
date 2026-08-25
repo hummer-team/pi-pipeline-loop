@@ -18,7 +18,24 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { PipelineConfig, Tool, SessionMeta, SummaryMeta } from "../types";
 import { safeWriteStageAudit } from "../utils/auditLog";
-import { estimateTokens } from "@earendil-works/pi-coding-agent";
+
+/**
+ * Dynamically import estimateTokens from pi-coding-agent SDK.
+ * Fail-safe: if the SDK version doesn't export it, returns null.
+ * This avoids a hard top-level import that would crash plugin loading
+ * when the peer dependency version drifts (e.g., pre-0.84.x).
+ */
+async function loadEstimateTokens(): Promise<((msg: { role: string; content: string }) => number) | null> {
+  try {
+    const mod = await import("@earendil-works/pi-coding-agent");
+    if (typeof mod.estimateTokens === "function") {
+      return mod.estimateTokens as (msg: { role: string; content: string }) => number;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Resolve the next versioned summary filename.
@@ -136,7 +153,6 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
           ? [config.stages[stage].nextStage]
           : [],
         validation_status: "pending",
-        hash: "",
       };
 
       // Build body (human-readable)
@@ -171,48 +187,50 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         frontmatter.version = version;
       }
 
-      // Placeholder approach: hash covers the full structure including the hash field length
-      const HASH_PLACEHOLDER = "__PLACEHOLDER_HASH__";
-      frontmatter.hash = HASH_PLACEHOLDER;
-      const contentWithPlaceholder = `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${body}`;
-      const hash = crypto.createHash("sha256").update(contentWithPlaceholder).digest("hex");
-      const finalContent = contentWithPlaceholder.replace(HASH_PLACEHOLDER, hash);
-      frontmatter.hash = hash;
-      await fs.writeFile(summaryPath, finalContent);
-
-      // Token estimation via pi-coding-agent SDK
+      // Token estimation via pi-coding-agent SDK (dynamic import, fail-safe)
       let estimatedTokens = 0;
       try {
-        // estimateTokens accepts an AgentMessage-shaped object with role and content
-        const messageForEstimate = { role: "user" as const, content: finalContent };
-        estimatedTokens = estimateTokens(messageForEstimate as any);
+        const estimateFn = await loadEstimateTokens();
+        if (estimateFn) {
+          // estimateTokens accepts an AgentMessage-shaped object with role and content
+          const messageForEstimate = { role: "user", content: body };
+          estimatedTokens = estimateFn(messageForEstimate as { role: string; content: string });
+        }
       } catch {
         // Fail-open: estimation failure should not block summary generation
       }
 
-      // Update frontmatter with estimated_tokens (re-write file)
+      // Record estimated_tokens in frontmatter
       if (estimatedTokens > 0) {
         frontmatter.estimated_tokens = estimatedTokens;
-        // Re-hash since frontmatter changed
-        const contentWithPlaceholder2 = `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${body}`;
-        const hash2 = crypto.createHash("sha256").update(contentWithPlaceholder2).digest("hex");
-        const finalContent2 = contentWithPlaceholder2.replace(HASH_PLACEHOLDER, hash2);
-        frontmatter.hash = hash2;
-        await fs.writeFile(summaryPath, finalContent2);
       }
 
-      // Update session metadata with summary reference
+      // Remove hash from frontmatter — it's only tracked in meta, not in the file.
+      // This avoids a circular dependency (hash depends on content, content includes hash).
+      delete frontmatter.hash;
+
+      // Write the definitive file content
+      const finalContent = `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${body}`;
+      await fs.writeFile(summaryPath, finalContent);
+
+      // Compute hash of the actual file content on disk.
+      // This guarantees meta.hash always matches the disk file exactly.
+      const hash = crypto.createHash("sha256").update(finalContent).digest("hex");
+
+      // Update session metadata with summary reference.
+      // Pass only the delta (not a full snapshot) to avoid overwriting
+      // concurrent writes from shared source (race condition fix).
       const summaryMeta: SummaryMeta = {
         path: summaryPath,
-        hash: frontmatter.hash as string,
+        hash,
         status: "pending",
         version,
       };
 
+      const latestMeta = ctx.session.getMeta() as SessionMeta;
       ctx.session.updateMeta({
-        ...meta,
         summaries: {
-          ...meta.summaries,
+          ...(latestMeta?.summaries || {}),
           [stage]: summaryMeta,
         },
       });

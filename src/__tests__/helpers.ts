@@ -47,7 +47,7 @@ export function makeTestMeta(overrides?: Partial<SessionMeta>): SessionMeta {
     stageStartTime: Date.now(),
     pipelineId: "pipe-test-001",
     domain: { id: "general", version: "latest", skillPath: "/tmp/domain.md" },
-    summaries: { plan: { path: "/tmp/summary.md", hash: "abc123", status: "valid" } },
+    summaries: {},
     loopCount: 0,
     currentStepIndex: 0,
     maxLoops: 3,
@@ -93,6 +93,7 @@ export function createMockCtx(
     session: {
       getMeta: () => meta,
       updateMeta: (patch: Partial<SessionMeta>) => {
+        // Merge with current meta to match real session-state behavior
         const merged = { ...meta, ...patch };
         metadataUpdates.push(merged);
         Object.assign(meta, merged);

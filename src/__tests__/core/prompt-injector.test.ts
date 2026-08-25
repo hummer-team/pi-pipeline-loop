@@ -32,7 +32,13 @@ describe("createPromptInjector", () => {
 
     const config = makeTestConfig({ projectRoot: TMP });
     config.stages["develop"] = { ...config.stages["develop"], requireDomain: true, skillPath: "test-skill/SKILL.md" } as any;
-    const meta = makeTestMeta({ currentStage: "develop", previousStage: "plan" });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      previousStage: "plan",
+      summaries: {
+        plan: { path: "/tmp/plan-summary.md", hash: "abc123", status: "valid" as const },
+      },
+    });
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);

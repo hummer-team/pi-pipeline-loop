@@ -6,6 +6,7 @@
  */
 
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
 
@@ -78,19 +79,37 @@ export function createValidateSummary(config: PipelineConfig): Tool {
           `---\n${JSON.stringify(fm, null, 2)}\n---\n` +
           parts.slice(2).join("---\n");
         await fs.writeFile(summary.path, newContent);
-      }
 
-      // Update session metadata
-      ctx.session.updateMeta({
-        ...meta,
-        summaries: {
-          ...meta.summaries,
-          [stage]: {
-            ...summary,
-            status: isApproved ? "valid" : "invalid",
+        // Recompute hash after rewrite so meta.hash stays in sync with disk.
+        // This prevents Phase 4 hash-check from falsely flagging validate's
+        // own frontmatter update as a "manual modification".
+        const newHash = crypto.createHash("sha256").update(newContent).digest("hex");
+
+        // Update session metadata — pass only the delta (not a full snapshot)
+        // to avoid overwriting concurrent writes from shared source.
+        const latestMeta = ctx.session.getMeta() as SessionMeta;
+        ctx.session.updateMeta({
+          summaries: {
+            ...(latestMeta?.summaries || {}),
+            [stage]: {
+              ...summary,
+              status: isApproved ? "valid" : "invalid",
+              hash: newHash,
+            },
           },
-        },
-      });
+        });
+      } else {
+        // File doesn't have expected frontmatter structure — update status only
+        ctx.session.updateMeta({
+          summaries: {
+            ...(meta.summaries || {}),
+            [stage]: {
+              ...summary,
+              status: isApproved ? "valid" : "invalid",
+            },
+          },
+        });
+      }
 
       // Write audit log
       await writeAuditLog("summary_validated", {

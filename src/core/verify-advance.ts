@@ -134,9 +134,8 @@ export async function applyVerifyPass(
   opts: ApplyVerifyPassOpts,
 ): Promise<VerifyPassReturn | void> {
   if (nextStage) {
-    // Advance to next stage
+    // Advance to next stage — pass only the delta to avoid overwriting concurrent writes
     ctx.session.updateMeta({
-      ...meta,
       previousStage: stageName,
       currentStage: nextStage,
       stageStartTime: Date.now(),
@@ -242,7 +241,6 @@ export async function applyVerifyFail(
   // incrementing verifyAttempts, giving the user the decision menu.
   if (config && isConfigError(verifyFailures)) {
     ctx.session.updateMeta({
-      ...meta,
       verifyFailures,
       verifyConfigError: true,
     });
@@ -283,7 +281,6 @@ export async function applyVerifyFail(
 
   const updatedVerifyAttempts = (meta.verifyAttempts || 0) + 1;
   ctx.session.updateMeta({
-    ...meta,
     verifyAttempts: updatedVerifyAttempts,
     verifyFailures,
   });
