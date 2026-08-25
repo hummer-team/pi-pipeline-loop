@@ -102,7 +102,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       // SDK uses overloaded typed events. Cast needed for generic registration.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (pi.on as any)(h.event, async (event: unknown, ctx: ExtensionContext) => {
-        const rctx = buildRuntimeCtx(pi, ctx, event as Record<string, unknown>);
+        const rctx = buildRuntimeCtx(pi, ctx, event as Record<string, unknown>, config);
         return h.handler(rctx);
       });
     }
@@ -110,7 +110,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // ── Model selection recording (Q4-A: read-only observation) ──
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (pi.on as any)("model_select", async (event: any, ctx: ExtensionContext) => {
-      const rctx = buildRuntimeCtx(pi, ctx);
+      const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
       const meta = rctx.session.getMeta();
       if (meta && event?.model) {
         rctx.session.updateMeta({
@@ -140,7 +140,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         description: t.description,
         parameters: t.parameters as never,
         execute: async (_toolCallId: string, params: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx: ExtensionContext) => {
-          const rctx = buildRuntimeCtx(pi, ctx);
+          const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
           const result = await t.execute(params, rctx);
           return {
             content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result) }],
@@ -162,7 +162,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         description: verifyTool.description,
         parameters: verifyTool.parameters as never,
         execute: async (_toolCallId: string, params: Record<string, unknown>, _signal: unknown, _onUpdate: unknown, ctx: ExtensionContext) => {
-          const rctx = buildRuntimeCtx(pi, ctx);
+          const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
           const result = await verifyTool.execute(params, rctx);
           return {
             content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result) }],
@@ -183,7 +183,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       pi.registerCommand(cmd.name, {
         description: cmd.description,
         handler: async (args: string, ctx: ExtensionContext) => {
-          const rctx = buildRuntimeCtx(pi, ctx);
+          const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
           const parsed = parseCommandArgs(cmd.name, args);
           const result = await cmd.execute(parsed, rctx);
           if (result && typeof result === "object") {
@@ -203,7 +203,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       (pi.registerShortcut as any)(shortcutKey, {
         description: "Pipeline decision menu",
         handler: async (ctx: ExtensionContext) => {
-          const rctx = buildRuntimeCtx(pi, ctx);
+          const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
           const meta = rctx.session.getMeta();
           if (!meta) return;
 

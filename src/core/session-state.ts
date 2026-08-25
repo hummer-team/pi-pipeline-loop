@@ -5,8 +5,17 @@
  * Provides a unified getMeta/updateMeta interface for persisting pipeline
  * SessionMeta across session reloads, replacing the non-existent ctx.session
  * API from the original stub.
+ *
+ * Phase 1 (143): Introduces shared state source — a per-pipeline meta.json
+ * file at `{projectRoot}/{auditDir}/{pipelineId}/meta.json`. This file is
+ * the authority for cross-session stage synchronization (sub-agent fork
+ * and breakpoint resume). getMeta() reads shared source first (if pipelineId
+ * matches), falling back to local session entries. updateMeta() dual-writes
+ * to both local entries and the shared meta.json (fail-open on shared write).
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SessionMeta } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
@@ -14,6 +23,18 @@ import type { PipelineConfig } from "../types";
 
 /** CustomEntry type identifier for pipeline metadata persistence. */
 export const PIPELINE_META_CUSTOM_TYPE = "pi-pipeline:meta";
+
+/**
+ * Options for createSessionState enabling the shared state source.
+ * When projectRoot is provided, getMeta/updateMeta will dual-read/write
+ * the shared meta.json at `{projectRoot}/{auditDir}/{pipelineId}/meta.json`.
+ */
+export interface SessionStateOptions {
+  /** Absolute path to the project root directory */
+  projectRoot?: string;
+  /** Audit directory relative to projectRoot (default ".pi/audit") */
+  auditDir?: string;
+}
 
 /**
  * Unified interface for reading and writing pipeline SessionMeta
@@ -34,19 +55,69 @@ export interface SessionState {
 }
 
 /**
+ * Module-level cache for the shared state base directory.
+ * Resolved once from projectRoot + auditDir on first createSessionState call.
+ * Reset via __resetSharedStateDir() for test isolation.
+ *
+ * NOTE: The base dir is also captured per-instance via closure in createSessionState
+ * so that concurrent sessions with different projectRoots don't interfere.
+ * The module-level cache exists primarily for backward compatibility with
+ * code that doesn't pass options.
+ */
+let sharedStateBaseDir = "";
+
+/**
+ * Test-only reset hook for the shared state base directory.
+ * Mirrors __resetAuditDirPath() in auditLog.ts.
+ */
+export function __resetSharedStateDir(): void {
+  sharedStateBaseDir = "";
+}
+
+/**
+ * Resolve the shared state base directory from options.
+ * Updates the module-level cache and returns the resolved path.
+ */
+function resolveSharedStateBaseDir(options?: SessionStateOptions): string {
+  if (options?.projectRoot) {
+    const auditDir = options.auditDir || ".pi/audit";
+    const resolved = path.resolve(options.projectRoot, auditDir);
+    if (!sharedStateBaseDir) sharedStateBaseDir = resolved;
+    return resolved;
+  }
+  return sharedStateBaseDir;
+}
+
+/**
  * Create a SessionState adapter bound to the current pi ExtensionAPI and ExtensionContext.
  *
- * Read path: scans ctx.sessionManager.getEntries() in reverse for the latest
- * CustomEntry with customType === PIPELINE_META_CUSTOM_TYPE.
+ * Read path:
+ *   1. Scan local session entries in reverse for the latest pipeline meta CustomEntry.
+ *      Extract pipelineId from it.
+ *   2. If shared state base dir is configured AND pipelineId is known, read
+ *      `{baseDir}/{pipelineId}/meta.json`. If it exists and contains a matching
+ *      pipelineId, return it as the authoritative state (shared source wins).
+ *   3. Otherwise fall back to the local entry result.
  *
- * Write path: calls pi.appendEntry() with the merged metadata snapshot.
+ * Write path: calls pi.appendEntry() + writes meta.json (dual-write, fail-open on shared).
  */
-export function createSessionState(pi: ExtensionAPI, ctx: ExtensionContext): SessionState {
+export function createSessionState(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  options?: SessionStateOptions,
+): SessionState {
+  // Resolve base dir per-instance (captured in closure) — avoids cross-test interference.
+  // Also updates module-level cache for backward compat.
+  const instanceBaseDir = resolveSharedStateBaseDir(options);
+
   return {
     getMeta(): SessionMeta | undefined {
       try {
         const entries = ctx.sessionManager.getEntries();
-        // Scan in reverse to find the most recent pipeline meta entry
+
+        // Step 1: Scan local entries for pipelineId and local meta snapshot
+        let localPipelineId: string | undefined;
+        let localMeta: SessionMeta | undefined;
         for (let i = entries.length - 1; i >= 0; i--) {
           const entry = entries[i];
           if (
@@ -56,11 +127,32 @@ export function createSessionState(pi: ExtensionAPI, ctx: ExtensionContext): Ses
           ) {
             const data = (entry as { data?: unknown }).data;
             if (data && typeof data === "object") {
-              return data as SessionMeta;
+              if (!localMeta) localMeta = data as SessionMeta;
+              if (!localPipelineId && (data as SessionMeta).pipelineId) {
+                localPipelineId = (data as SessionMeta).pipelineId;
+              }
+              if (localMeta && localPipelineId) break;
             }
           }
         }
-        return undefined;
+
+        // Step 2: Read shared source if available (use per-instance base dir)
+        if (localPipelineId && instanceBaseDir) {
+          try {
+            const metaPath = path.join(instanceBaseDir, localPipelineId, "meta.json");
+            const content = fs.readFileSync(metaPath, "utf-8");
+            const shared = JSON.parse(content) as SessionMeta;
+            // Only trust shared source if pipelineId matches (guard against stale files)
+            if (shared && shared.pipelineId === localPipelineId) {
+              return shared;
+            }
+          } catch {
+            // Shared source doesn't exist or is unreadable — fall through to local
+          }
+        }
+
+        // Step 3: Fall back to local entries
+        return localMeta;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         safeWriteAuditLog("session_state_error", { operation: "getMeta", error: errMsg }, "error");
@@ -72,7 +164,27 @@ export function createSessionState(pi: ExtensionAPI, ctx: ExtensionContext): Ses
       try {
         const current = this.getMeta();
         const merged = current ? { ...current, ...patch } : (patch as SessionMeta);
+
+        // Write 1: appendEntry (local session)
         pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, merged);
+
+        // Write 2: meta.json (shared source, fail-open; use per-instance base dir)
+        if (merged.pipelineId && instanceBaseDir) {
+          try {
+            const metaDir = path.join(instanceBaseDir, merged.pipelineId);
+            fs.mkdirSync(metaDir, { recursive: true });
+            const metaPath = path.join(metaDir, "meta.json");
+            fs.writeFileSync(metaPath, JSON.stringify(merged, null, 2), "utf-8");
+          } catch (sharedErr) {
+            // Fail-open: log but don't block pipeline
+            const errMsg = sharedErr instanceof Error ? sharedErr.message : String(sharedErr);
+            safeWriteAuditLog("session_state_error", {
+              operation: "updateMeta_shared",
+              error: errMsg,
+            }, "warn");
+          }
+        }
+
         return merged;
       } catch (err) {
         // Fail-open: log but don't throw to avoid blocking the pipeline

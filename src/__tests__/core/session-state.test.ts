@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { createSessionState, extractAssistantMessages, extractToolCallRecords, PIPELINE_META_CUSTOM_TYPE } from "../../core/session-state";
+import { createSessionState, extractAssistantMessages, extractToolCallRecords, PIPELINE_META_CUSTOM_TYPE, __resetSharedStateDir } from "../../core/session-state";
 import type { SessionMeta } from "../../types";
 import { makeTestMeta, makeTestConfig, makeMockSessionManager } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -372,5 +373,193 @@ describe("extractToolCallRecords", () => {
 
     expect(records).toHaveLength(1);
     expect(records[0].exitCode).toBe(0);
+  });
+});
+
+// ─── Phase 1 (143): Shared state source tests ────────────────────────────────
+
+let SHARED_TMP: string;
+
+describe("SessionState — shared state source (143)", () => {
+  beforeEach(async () => {
+    SHARED_TMP = path.join(tmpdir(), "pi-ss-shared-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    await fs.mkdir(SHARED_TMP, { recursive: true });
+    __resetSharedStateDir();
+  });
+
+  afterEach(async () => {
+    __resetSharedStateDir();
+    await fs.rm(SHARED_TMP, { recursive: true, force: true });
+  });
+
+  /** Build a mock pi + ctx for shared-state tests */
+  function makeSharedMocks(
+    localEntries: unknown[] = [],
+    pipelineId = "pipe-shared-001",
+  ) {
+    const appended: Array<{ customType: string; data: unknown }> = [];
+    const pi: any = {
+      appendEntry: (customType: string, data: unknown) => {
+        appended.push({ customType, data });
+      },
+      appended,
+    };
+    const ctx = {
+      sessionManager: makeMockSessionManager(localEntries),
+    } as any;
+    return { pi, ctx, appended };
+  }
+
+  /** Write a shared meta.json into the temp directory */
+  async function writeSharedMeta(pipelineId: string, meta: Partial<SessionMeta>) {
+    const dir = path.join(SHARED_TMP, ".pi", "audit", pipelineId);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta));
+  }
+
+  it("returns shared source content when shared meta.json exists", async () => {
+    const pipelineId = "pipe-shared-exist";
+    // Local entries have old stage (clarify)
+    const localMeta = makeTestMeta({ currentStage: "clarify", pipelineId });
+    const localEntries = [
+      { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: localMeta },
+    ];
+    // Shared source has newer stage (develop)
+    const sharedMeta = makeTestMeta({ currentStage: "develop", pipelineId });
+    await writeSharedMeta(pipelineId, sharedMeta);
+
+    const { pi, ctx } = makeSharedMocks(localEntries, pipelineId);
+    const state = createSessionState(pi, ctx, {
+      projectRoot: SHARED_TMP,
+      auditDir: ".pi/audit",
+    });
+
+    const result = state.getMeta();
+    expect(result).toBeDefined();
+    expect(result!.currentStage).toBe("develop"); // shared source wins
+    expect(result!.pipelineId).toBe(pipelineId);
+  });
+
+  it("updateMeta dual-writes meta.json and local entries", async () => {
+    const pipelineId = "pipe-shared-dual";
+    const existing = makeTestMeta({ currentStage: "clarify", pipelineId });
+    const localEntries = [
+      { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: existing },
+    ];
+    await writeSharedMeta(pipelineId, existing);
+
+    const { pi, ctx } = makeSharedMocks(localEntries, pipelineId);
+    const state = createSessionState(pi, ctx, {
+      projectRoot: SHARED_TMP,
+      auditDir: ".pi/audit",
+    });
+
+    // Update stage to "plan"
+    state.updateMeta({ currentStage: "plan" });
+
+    // Verify: local appendEntry was called
+    expect(pi.appended.length).toBeGreaterThanOrEqual(1);
+    const lastAppend = pi.appended[pi.appended.length - 1];
+    expect((lastAppend.data as SessionMeta).currentStage).toBe("plan");
+
+    // Verify: meta.json was written
+    const metaPath = path.join(SHARED_TMP, ".pi", "audit", pipelineId, "meta.json");
+    expect(fsSync.existsSync(metaPath)).toBe(true);
+    const diskMeta = JSON.parse(fsSync.readFileSync(metaPath, "utf-8"));
+    expect(diskMeta.currentStage).toBe("plan");
+    expect(diskMeta.pipelineId).toBe(pipelineId);
+  });
+
+  it("falls back to local entries when shared meta.json is missing", () => {
+    const pipelineId = "pipe-shared-missing";
+    const localMeta = makeTestMeta({ currentStage: "plan", pipelineId });
+    const localEntries = [
+      { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: localMeta },
+    ];
+
+    const { pi, ctx } = makeSharedMocks(localEntries, pipelineId);
+    const state = createSessionState(pi, ctx, {
+      projectRoot: SHARED_TMP,
+      auditDir: ".pi/audit",
+    });
+
+    const result = state.getMeta();
+    expect(result).toBeDefined();
+    expect(result!.currentStage).toBe("plan"); // local fallback
+    expect(result!.pipelineId).toBe(pipelineId);
+  });
+
+  it("sub-agent scenario: local entries stale (clarify), shared source authoritative (develop)", async () => {
+    const pipelineId = "pipe-subagent-001";
+    // Sub-agent forked when main was at clarify — local entries reflect clarify
+    const staleLocalMeta = makeTestMeta({ currentStage: "clarify", pipelineId });
+    const localEntries = [
+      { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: staleLocalMeta },
+    ];
+    // Main session advanced to develop — shared meta.json reflects develop
+    const advancedSharedMeta = makeTestMeta({
+      currentStage: "develop",
+      previousStage: "plan",
+      pipelineId,
+    });
+    await writeSharedMeta(pipelineId, advancedSharedMeta);
+
+    const { pi, ctx } = makeSharedMocks(localEntries, pipelineId);
+    const state = createSessionState(pi, ctx, {
+      projectRoot: SHARED_TMP,
+      auditDir: ".pi/audit",
+    });
+
+    // getMeta() should return the shared (develop) state, not local (clarify)
+    const result = state.getMeta();
+    expect(result).toBeDefined();
+    expect(result!.currentStage).toBe("develop");
+    expect(result!.pipelineId).toBe(pipelineId);
+  });
+
+  it("falls back to local when shared source pipelineId mismatches", async () => {
+    const localPipelineId = "pipe-local-001";
+    const sharedPipelineId = "pipe-other-002";
+    const localMeta = makeTestMeta({ currentStage: "plan", pipelineId: localPipelineId });
+    const localEntries = [
+      { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: localMeta },
+    ];
+    // Shared file has a DIFFERENT pipelineId (e.g. leftover from another run)
+    const sharedMeta = makeTestMeta({ currentStage: "develop", pipelineId: sharedPipelineId });
+    await writeSharedMeta(localPipelineId, sharedMeta); // write under localPipelineId dir but content has different pipelineId
+
+    const { pi, ctx } = makeSharedMocks(localEntries, localPipelineId);
+    const state = createSessionState(pi, ctx, {
+      projectRoot: SHARED_TMP,
+      auditDir: ".pi/audit",
+    });
+
+    const result = state.getMeta();
+    expect(result).toBeDefined();
+    expect(result!.currentStage).toBe("plan"); // local fallback (pipelineId mismatch)
+    expect(result!.pipelineId).toBe(localPipelineId);
+  });
+
+  it("updateMeta is fail-open when shared write fails (bad dir)", async () => {
+    const pipelineId = "pipe-shared-failopen";
+    const existing = makeTestMeta({ currentStage: "clarify", pipelineId });
+    const localEntries = [
+      { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: existing },
+    ];
+
+    // Use a path that cannot be written (file instead of directory)
+    const blockingFile = path.join(SHARED_TMP, "blocking-file");
+    fsSync.writeFileSync(blockingFile, "blocker");
+
+    const { pi, ctx } = makeSharedMocks(localEntries, pipelineId);
+    const state = createSessionState(pi, ctx, {
+      projectRoot: blockingFile, // invalid: points to a file
+      auditDir: ".pi/audit",
+    });
+
+    // updateMeta should succeed (local write) even if shared write fails
+    const result = state.updateMeta({ currentStage: "plan" });
+    expect(result).toBeDefined();
+    expect(result!.currentStage).toBe("plan");
   });
 });

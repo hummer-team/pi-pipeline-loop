@@ -56,13 +56,20 @@ export interface RuntimeCtx {
  * - tool_result: extracts toolName → toolCall.name, input → toolCall.arguments,
  *   isError → result.success (inverted), exitCode 1 if error
  * - other events: toolCall and result are undefined
+ *
+ * Phase 1 (143): Accepts optional PipelineConfig to pass projectRoot/auditDir
+ * to createSessionState, enabling the shared state source (meta.json).
  */
 export function buildRuntimeCtx(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   event?: Record<string, unknown>,
+  config?: { projectRoot?: string; auditDir?: string },
 ): RuntimeCtx {
-  const session = createSessionState(pi, ctx);
+  const session = createSessionState(pi, ctx, config ? {
+    projectRoot: config.projectRoot,
+    auditDir: config.auditDir,
+  } : undefined);
   const ui = ctx.ui;
 
   // 138: Forward pi so that hooks (e.g., agent_settled) can call pi.sendUserMessage

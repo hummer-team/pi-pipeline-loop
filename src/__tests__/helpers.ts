@@ -1,5 +1,7 @@
 import type { PipelineConfig, SessionMeta, PipelineStage } from "../types";
 import { PROTECTED_PATHS } from "../constants";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 
 export const STAGE_LIST: PipelineStage[] = [
   "clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed",
@@ -15,9 +17,19 @@ export function makeStageConfig(overrides?: Partial<Record<string, unknown>>) {
   };
 }
 
+/**
+ * Generate a unique test projectRoot to avoid cross-test pollution
+ * of the shared state source (meta.json) and audit logs.
+ */
+let _testProjectRootCounter = 0;
+function makeUniqueTestRoot(): string {
+  _testProjectRootCounter++;
+  return path.join(tmpdir(), `pi-pipeline-test-${Date.now()}-${_testProjectRootCounter}`);
+}
+
 export function makeTestConfig(overrides?: Partial<PipelineConfig>): PipelineConfig {
   return {
-    projectRoot: "/tmp/test-pipeline",
+    projectRoot: makeUniqueTestRoot(),
     stages: Object.fromEntries(STAGE_LIST.map((s, i) => [s, makeStageConfig({ nextStage: STAGE_LIST[i + 1] ?? null })])),
     maxLoops: 3,
     auditDir: ".pi/audit",
