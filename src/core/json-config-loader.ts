@@ -12,6 +12,7 @@ import type {
   ProtectConfig,
   StageConfig,
   StageJsonConfig,
+  StartStageMode,
 } from "../types";
 import {
   DEFAULT_SKILL_PATH,
@@ -85,6 +86,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     output: parseOutputConfig(json.output),
     llmExtract: typeof json.llmExtract === "boolean" ? json.llmExtract : undefined,
     protect: parseProtectConfig(json.protect),
+    startStageMode: parseStartStageMode(json.startStageMode),
   };
 }
 
@@ -219,6 +221,22 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
   }
 
   return result;
+}
+
+/**
+ * Parses and validates a startStageMode value from JSON config.
+ * Must be one of "auto", "confirm", or "ask".
+ * Invalid values log a warning and return undefined (resolved to "auto" default).
+ */
+function parseStartStageMode(raw: unknown): StartStageMode | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (raw === "auto" || raw === "confirm" || raw === "ask") {
+    return raw;
+  }
+  console.warn(
+    `[pi-pipeline] Invalid startStageMode "${String(raw)}" — expected "auto"|"confirm"|"ask", falling back to "auto"`,
+  );
+  return undefined;
 }
 
 /**
@@ -416,5 +434,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       allow: json.protect?.allow ?? [],
       ask: json.protect?.ask ?? false,
     },
+    startStageMode: json.startStageMode ?? "auto",
   };
 }

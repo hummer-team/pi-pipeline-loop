@@ -866,3 +866,97 @@ describe("Phase 0 (140): agentPath transparency", () => {
     }
   });
 });
+
+describe("startStageMode config", () => {
+  it("loadJsonConfig parses startStageMode: 'ask'", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      startStageMode: "ask",
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.startStageMode).toBe("ask");
+  });
+
+  it("loadJsonConfig parses startStageMode: 'confirm'", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      startStageMode: "confirm",
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.startStageMode).toBe("confirm");
+  });
+
+  it("loadJsonConfig parses startStageMode: 'auto'", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      startStageMode: "auto",
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.startStageMode).toBe("auto");
+  });
+
+  it("loadJsonConfig warns and returns undefined for invalid startStageMode", async () => {
+    const originalWarn = console.warn;
+    const captured: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      if (typeof args[0] === "string") captured.push(args[0]);
+    };
+    try {
+      await writeJson({
+        stages: { clarify: {} },
+        startStageMode: "foo",
+      });
+      const result = loadJsonConfig(jsonPath);
+      expect(result.startStageMode).toBeUndefined();
+      expect(captured.some((msg) => msg.includes("Invalid startStageMode"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("loadJsonConfig returns undefined when startStageMode is missing", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.startStageMode).toBeUndefined();
+  });
+
+  it("resolvePipelineConfig defaults startStageMode to 'auto'", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.startStageMode).toBe("auto");
+  });
+
+  it("resolvePipelineConfig preserves startStageMode: 'ask'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      startStageMode: "ask",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.startStageMode).toBe("ask");
+  });
+
+  it("resolvePipelineConfig preserves startStageMode: 'confirm'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      startStageMode: "confirm",
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.startStageMode).toBe("confirm");
+  });
+
+  it("backward compatible: old config without startStageMode resolves to 'auto'", () => {
+    const json: PipelineJsonConfig = {
+      stages: {
+        clarify: { nextStage: "plan" },
+        plan: { nextStage: "develop" },
+        develop: { nextStage: "review" },
+        review: { nextStage: "fix" },
+        fix: { nextStage: "completed" },
+      },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.startStageMode).toBe("auto");
+  });
+});

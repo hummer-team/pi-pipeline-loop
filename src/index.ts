@@ -322,4 +322,5 @@ export type {
   VerifyResultSnapshot,
   ExecFn,
   FlowState,
+  StartStageMode,
 } from "./types";

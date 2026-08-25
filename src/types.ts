@@ -46,6 +46,20 @@ export type ExecFn = (
   cwd: string
 ) => Promise<{ stdout: string; stderr: string; code: number }>;
 
+// ─── Start Stage Mode ─────────────────────────────────────────────────────────
+
+/**
+ * Startup behavior mode for /pipeline-start command.
+ * - "auto": Zero-interaction default (backward compatible with 142).
+ *   Fresh → clarify; aborted → resume/new matrix unchanged.
+ * - "confirm": Lightweight confirmation on resume. Resumable aborted
+ *   pipelines prompt "Resume at {stage}? [Y/n]" before proceeding.
+ * - "ask": Interactive TUI menu with new/resume/spec/cancel options.
+ *   Supports jumping to a specific stage (spec mode).
+ * Default: "auto" (backward compatible).
+ */
+export type StartStageMode = "auto" | "confirm" | "ask";
+
 // ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 /**
@@ -462,6 +476,13 @@ export interface PipelineConfig {
    * Default: { gitignore: true, paths: [], allow: [] }
    */
   protect?: ProtectConfig;
+
+  /**
+   * Startup behavior mode for /pipeline-start command.
+   * Controls how the pipeline handles fresh starts and aborted resumes.
+   * Default: "auto" (zero-interaction, backward compatible).
+   */
+  startStageMode?: StartStageMode;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -563,6 +584,13 @@ export interface PipelineJsonConfig {
 
   /** File protection configuration (default: { gitignore: true, paths: [], allow: [] }) */
   protect?: ProtectConfig;
+
+  /**
+   * Startup behavior mode for /pipeline-start command.
+   * Controls how the pipeline handles fresh starts and aborted resumes.
+   * Default: "auto" (zero-interaction, backward compatible).
+   */
+  startStageMode?: StartStageMode;
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────
