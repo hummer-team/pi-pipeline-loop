@@ -428,6 +428,12 @@ async function startNewPipeline(
     ? ` Next: run @feat-design-plan-agent ${file} 1 to start requirement clarification`
     : "";
 
+  // Phase 2 (144): Auto-launch clarify subagent for fresh/spec→clarify
+  // Only for clarify start (not resume — round state is in document)
+  if (startStage === "clarify") {
+    maybeAutoLaunchClarify(ctx, config, ui, newMeta, file);
+  }
+
   return {
     success: true,
     message: messagePrefix + messageSuffix,
@@ -435,6 +441,110 @@ async function startNewPipeline(
     currentStage: startStage,
     requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),
   };
+}
+
+/**
+ * Resolves the agent mention name for @mention injection.
+ *
+ * Resolution order:
+ * 1. Read config.stages[stage].agentPath → parse frontmatter `name:` field
+ * 2. If no frontmatter name → fallback to path.basename(agentPath, ".md")
+ * 3. If agentPath is undefined or file unreadable → return null
+ *
+ * @param config - Pipeline configuration
+ * @param stage - The stage to resolve agent mention for
+ * @returns Agent name string, or null if unresolvable
+ */
+function resolveAgentMention(
+  config: PipelineConfig,
+  stage: PipelineStage,
+): string | null {
+  const stageConfig = config.stages[stage];
+  if (!stageConfig?.agentPath) return null;
+
+  const agentFilePath = path.join(config.projectRoot, stageConfig.agentPath);
+
+  // Try to read frontmatter name from agent file
+  try {
+    const content = fs.readFileSync(agentFilePath, "utf-8");
+    // Parse YAML frontmatter: ^---\n...\n---
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const fmBody = fmMatch[1];
+      const nameMatch = fmBody.match(/^name:\s*(.+)$/m);
+      if (nameMatch) {
+        return nameMatch[1].trim();
+      }
+    }
+  } catch {
+    // File unreadable — fall through to basename fallback
+  }
+
+  // Fallback: basename without extension
+  return path.basename(stageConfig.agentPath, ".md");
+}
+
+/**
+ * Auto-launches the clarify subagent via pi.sendUserMessage.
+ *
+ * Injects `@<agentName> <requirementDoc> 1` with expandPromptTemplates: true.
+ * Only called for fresh/spec→clarify (NOT resume, to avoid resetting round state).
+ *
+ * Degradation:
+ * - No agentPath → notify fallback, does not block success
+ * - No pi.sendUserMessage → notify + audit, does not throw
+ *
+ * @param ctx - pi extension context (uses ctx.pi.sendUserMessage)
+ * @param config - Pipeline configuration
+ * @param ui - PipelineUI instance for notify
+ * @param meta - Newly initialized session metadata
+ * @param file - The requirement doc file path
+ */
+function maybeAutoLaunchClarify(
+  ctx: any,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  meta: SessionMeta,
+  file: string,
+): void {
+  const agentName = resolveAgentMention(config, "clarify");
+
+  if (!agentName) {
+    // No agentPath configured → notify fallback
+    ui.notify(ctx, `Next: run @feat-design-plan-agent ${file} 1`);
+    return;
+  }
+
+  const message = `@${agentName} ${file} 1`;
+
+  if (typeof ctx?.pi?.sendUserMessage === "function") {
+    try {
+      ctx.pi.sendUserMessage(message, { expandPromptTemplates: true });
+      // Fire-and-forget audit (do not await to avoid blocking)
+      safeWriteAuditLog("pipeline_start_launch", {
+        agentName,
+        requirementDoc: file,
+        pipelineId: meta.pipelineId,
+        stage: "clarify",
+      }).catch(() => { /* audit failure is non-fatal */ });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      safeWriteAuditLog("pipeline_start_launch_error", {
+        agentName,
+        error: errMsg,
+        pipelineId: meta.pipelineId,
+      }, "error").catch(() => { /* audit failure is non-fatal */ });
+      ui.notify(ctx, `Failed to auto-launch clarify: ${errMsg}. Run @${agentName} ${file} 1 manually.`);
+    }
+  } else {
+    // No pi.sendUserMessage available → notify fallback
+    safeWriteAuditLog("pipeline_start_launch_skipped", {
+      agentName,
+      reason: "no_sendUserMessage",
+      pipelineId: meta.pipelineId,
+    }).catch(() => { /* audit failure is non-fatal */ });
+    ui.notify(ctx, `Next: run @${agentName} ${file} 1`);
+  }
 }
 
 /**

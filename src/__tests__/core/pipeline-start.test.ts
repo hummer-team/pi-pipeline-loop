@@ -1410,4 +1410,265 @@ describe("createPipelineStartCommand", () => {
       expect(result.missingStages).toContain("fix");
     });
   });
+
+  // ─── Phase 144 Phase 2: clarify auto-launch injection ──────────────────────────
+  describe("clarify auto-launch injection (Phase 144 Phase 2)", () => {
+    it("fresh clarify + agentPath with frontmatter name → sendUserMessage called with @mention", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      // Create agent file with frontmatter name
+      const agentDir = path.join(TMP, ".pi", "agents");
+      await fs.mkdir(agentDir, { recursive: true });
+      await fs.writeFile(
+        path.join(agentDir, "clarify-agent.md"),
+        "---\nname: feat-design-plan-agent\n---\n# Clarify Agent\n",
+        "utf-8",
+      );
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: s === "clarify" ? ".pi/agents/clarify-agent.md" : "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const sentMessages: string[] = [];
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: { notify: () => {}, setStatus: () => {} },
+        pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(sentMessages).toHaveLength(1);
+      expect(sentMessages[0]).toBe("@feat-design-plan-agent req.md 1");
+    });
+
+    it("agentPath file without frontmatter name → fallback to basename", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      // Create agent file WITHOUT frontmatter
+      const agentDir = path.join(TMP, ".pi", "agents");
+      await fs.mkdir(agentDir, { recursive: true });
+      await fs.writeFile(
+        path.join(agentDir, "my-clarify-agent.md"),
+        "# Clarify Agent\nNo frontmatter here\n",
+        "utf-8",
+      );
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: s === "clarify" ? ".pi/agents/my-clarify-agent.md" : "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const sentMessages: string[] = [];
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: { notify: () => {}, setStatus: () => {} },
+        pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(sentMessages).toHaveLength(1);
+      expect(sentMessages[0]).toBe("@my-clarify-agent req.md 1");
+    });
+
+    it("agentPath file missing → no inject, notify fallback, still returns success", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                // clarify agentPath points to non-existent file
+                agentPath: s === "clarify" ? ".pi/agents/nonexistent.md" : "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const sentMessages: string[] = [];
+      let notifyMsg = "";
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: { notify: (msg: string) => { notifyMsg = msg; }, setStatus: () => {} },
+        pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      // Should succeed (fallback doesn't block)
+      expect(result.success).toBe(true);
+      // sendUserMessage uses basename fallback since file is unreadable
+      expect(sentMessages).toHaveLength(1);
+      expect(sentMessages[0]).toBe("@nonexistent req.md 1");
+    });
+
+    it("pi undefined → no throw, notify hint, still returns success", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let notifyMsg = "";
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: { notify: (msg: string) => { notifyMsg = msg; }, setStatus: () => {} },
+        // No pi object (undefined)
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(notifyMsg).toContain("@");
+      expect(notifyMsg).toContain("req.md");
+    });
+
+    it("spec→develop → no sendUserMessage call (no clarify inject)", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      // Create verify.md for develop and fix
+      for (const s of ["develop", "fix"]) {
+        const dir = path.join(TMP, ".pi", "references", `${s}_spec`);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, "verify.md"), "---\n---\n", "utf-8");
+      }
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        startStageMode: "ask",
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const sentMessages: string[] = [];
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: develop";
+          },
+        },
+        pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.currentStage).toBe("develop");
+      // No sendUserMessage for spec→develop
+      expect(sentMessages).toHaveLength(0);
+    });
+
+    it("spec→clarify → injects sendUserMessage", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        startStageMode: "ask",
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const sentMessages: string[] = [];
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: clarify";
+          },
+        },
+        pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.currentStage).toBe("clarify");
+      expect(sentMessages).toHaveLength(1);
+      expect(sentMessages[0]).toBe("@a req.md 1");
+    });
+  });
 });
