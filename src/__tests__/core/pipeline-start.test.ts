@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
-import { makeTestConfig, createMockCtx, makeTestMeta } from "../helpers";
+import { makeTestConfig, createMockCtx, createMockRuntimeCtx, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 
 let TMP: string;
@@ -24,13 +24,7 @@ describe("createPipelineStartCommand", () => {
     await fs.writeFile(docPath, "# My Requirements\nDo X and Y", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    let updatedMeta: any = null;
-    const ctx = {
-      session: {
-        getMeta: () => meta,
-        updateMeta: (m: any) => { updatedMeta = m; },
-      },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "req.md" }, ctx);
@@ -39,20 +33,16 @@ describe("createPipelineStartCommand", () => {
     expect(result.pipelineId).toMatch(/^pipe-/);
     expect(result.currentStage).toBe("clarify");
     expect(result.requirementContent).toContain("# My Requirements");
-    expect(updatedMeta).not.toBeNull();
-    expect(updatedMeta.currentStage).toBe("clarify");
-    expect(updatedMeta.requirementDoc).toBe("req.md");
+    expect(ctx.metadataUpdates.length).toBeGreaterThan(0);
+    const finalMeta = ctx.session.getMeta()!;
+    expect(finalMeta.currentStage).toBe("clarify");
+    expect(finalMeta.requirementDoc).toBe("req.md");
   });
 
   it("returns error when file is missing", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    const ctx = {
-      session: {
-        getMeta: () => meta,
-        updateMeta: () => {},
-      },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "nonexistent.md" }, ctx);
@@ -213,13 +203,7 @@ describe("createPipelineStartCommand", () => {
   it("no file → returns error with /pipeline-start <doc_file> hint (no state machine initialized)", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    let updatedMeta: any = null;
-    const ctx = {
-      session: {
-        getMeta: () => meta,
-        updateMeta: (m: any) => { updatedMeta = m; },
-      },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "" }, ctx);
@@ -228,7 +212,7 @@ describe("createPipelineStartCommand", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("/pipeline-start");
     expect(result.error).toContain("run /pipeline-start <doc_file>");
-    expect(updatedMeta).toBeNull();
+    expect(ctx.metadataUpdates.length).toBe(0);
   });
 
   it("returns error when pipeline already running", async () => {
@@ -311,20 +295,14 @@ describe("createPipelineStartCommand", () => {
     await fs.writeFile(docPath, "", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    let updatedMeta: any = null;
-    const ctx = {
-      session: {
-        getMeta: () => meta,
-        updateMeta: (m: any) => { updatedMeta = m; },
-      },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "req.md" }, ctx);
 
     expect(result.success).toBe(true);
     expect(result.requirementContent).toBe("");
-    expect(updatedMeta.requirementDoc).toBe("req.md");
+    expect(ctx.session.getMeta()!.requirementDoc).toBe("req.md");
   });
 
   it("returns error when verify.md is missing for stages with verify.require", async () => {
@@ -351,12 +329,7 @@ describe("createPipelineStartCommand", () => {
     });
 
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    const ctx = {
-      session: {
-        getMeta: () => meta,
-        updateMeta: () => {},
-      },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "req.md" }, ctx);
@@ -395,19 +368,13 @@ describe("createPipelineStartCommand", () => {
     });
 
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    let updatedMeta: any = null;
-    const ctx = {
-      session: {
-        getMeta: () => meta,
-        updateMeta: (m: any) => { updatedMeta = m; },
-      },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "req.md" }, ctx);
 
     expect(result.success).toBe(true);
-    expect(updatedMeta).not.toBeNull();
+    expect(ctx.metadataUpdates.length).toBeGreaterThan(0);
   });
 
   it("writes pipeline_start_error to audit when file is missing", async () => {
@@ -418,12 +385,7 @@ describe("createPipelineStartCommand", () => {
     await initAuditLog(config);
 
     const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    const ctx = {
-      session: {
-        getMeta: () => meta,
-        updateMeta: () => {},
-      },
-    };
+    const ctx = createMockRuntimeCtx(meta);
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "nonexistent.md" }, ctx);
@@ -537,13 +499,7 @@ describe("createPipelineStartCommand", () => {
         ) as any,
       });
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-      let updatedMeta: any = null;
-      const ctx = {
-        session: {
-          getMeta: () => meta,
-          updateMeta: (m: any) => { updatedMeta = m; },
-        },
-      };
+      const ctx = createMockRuntimeCtx(meta);
 
       const cmd = createPipelineStartCommand(config);
       const result: any = await cmd.execute({ file: "req.md" }, ctx);
@@ -554,7 +510,7 @@ describe("createPipelineStartCommand", () => {
       expect(result.error).toContain("fix");
       expect(result.error).toContain(".pi/agents/develop-agent.md");
       // Meta must NOT be initialized
-      expect(updatedMeta).toBeNull();
+      expect(ctx.metadataUpdates.length).toBe(0);
     });
 
     it("all active stages have agentPath → start proceeds normally", async () => {
@@ -562,20 +518,14 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       // makeTestConfig sets agentPath for all stages via helpers.ts
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-      let updatedMeta: any = null;
-      const ctx = {
-        session: {
-          getMeta: () => meta,
-          updateMeta: (m: any) => { updatedMeta = m; },
-        },
-      };
+      const ctx = createMockRuntimeCtx(meta);
 
       const cmd = createPipelineStartCommand(config);
       const result: any = await cmd.execute({ file: "req.md" }, ctx);
 
       expect(result.success).toBe(true);
-      expect(updatedMeta).not.toBeNull();
-      expect(updatedMeta.currentStage).toBe("clarify");
+      expect(ctx.metadataUpdates.length).toBeGreaterThan(0);
+      expect(ctx.session.getMeta()!.currentStage).toBe("clarify");
     });
 
     it("missing agentPath also blocks aborted restart", async () => {
@@ -638,21 +588,15 @@ describe("createPipelineStartCommand", () => {
         ) as any,
       });
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-      let updatedMeta: any = null;
-      const ctx = {
-        session: {
-          getMeta: () => meta,
-          updateMeta: (m: any) => { updatedMeta = m; },
-        },
-      };
+      const ctx = createMockRuntimeCtx(meta);
 
       const cmd = createPipelineStartCommand(config);
       const result: any = await cmd.execute({ file: "req.md" }, ctx);
 
       // Should succeed because disabled stage is skipped in validation
       expect(result.success).toBe(true);
-      expect(updatedMeta).not.toBeNull();
-      expect(updatedMeta.currentStage).toBe("clarify");
+      expect(ctx.metadataUpdates.length).toBeGreaterThan(0);
+      expect(ctx.session.getMeta()!.currentStage).toBe("clarify");
     });
   });
 
@@ -1605,12 +1549,7 @@ describe("createPipelineStartCommand", () => {
         ) as any,
       });
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-      const ctx = {
-        session: {
-          getMeta: () => meta,
-          updateMeta: () => {},
-        },
-      };
+      const ctx = createMockRuntimeCtx(meta);
 
       const cmd = createPipelineStartCommand(config);
       const result: any = await cmd.execute({ file: "req.md" }, ctx);
