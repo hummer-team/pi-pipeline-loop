@@ -1,11 +1,15 @@
 /**
  * @module pipeline-start
  * /pipeline-start <doc_file.md> — initializes a pipeline run from a requirement document.
+ * Supports three startup modes (config.startStageMode):
+ * - "auto": Zero-interaction default (fresh → clarify; aborted → resume/new matrix).
+ * - "confirm": Lightweight confirmation on resume-eligible aborted pipelines.
+ * - "ask": Interactive TUI menu (new/resume/spec/cancel) with spec-stage jump.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import type { PipelineConfig, PipelineStage, Command, SessionMeta } from "../types";
+import type { PipelineConfig, PipelineStage, Command, SessionMeta, StartStageMode } from "../types";
 import {
   DEFAULT_VERIFY_FILE,
   DEFAULT_DECISION_SHORTCUT,
@@ -50,18 +54,54 @@ function checkAgentPaths(config: PipelineConfig): PipelineStage[] {
 }
 
 /**
- * Checks for missing verify.md files across all stages that require verification.
+ * Collects the set of stages reachable from `startStage` by walking the
+ * nextStage chain. Includes `startStage` itself. Uses a visited set for
+ * cycle protection (max 16 iterations as a safety bound).
  *
  * @param config - Pipeline configuration
+ * @param startStage - The starting stage
+ * @returns Set of reachable stage names
+ */
+function collectStagesFrom(
+  config: PipelineConfig,
+  startStage: PipelineStage,
+): Set<PipelineStage> {
+  const reachable = new Set<PipelineStage>();
+  let current: PipelineStage | null = startStage;
+  const visited = new Set<string>();
+
+  for (let i = 0; i < 16 && current && !visited.has(current); i++) {
+    reachable.add(current);
+    visited.add(current);
+    const stageConf: import("../types").StageConfig | undefined = config.stages[current];
+    if (!stageConf) break;
+    const next: PipelineStage | null = stageConf.nextStage;
+    if (next === null) break;
+    current = next;
+  }
+
+  return reachable;
+}
+
+/**
+ * Checks for missing verify.md files across stages reachable from `startStage`.
+ * When startStage is "clarify" (default), this is equivalent to checking all
+ * active stages (backward compatible). When startStage is a later stage (e.g.
+ * "develop"), only develop and its successors are checked.
+ *
+ * @param config - Pipeline configuration
+ * @param startStage - The starting stage to check from (default "clarify")
  * @returns Array of stage names whose verify.md is missing
  */
-function checkVerifyFiles(config: PipelineConfig): PipelineStage[] {
+function checkVerifyFiles(config: PipelineConfig, startStage: PipelineStage = "clarify"): PipelineStage[] {
   const missingStages: PipelineStage[] = [];
+  const reachable = collectStagesFrom(config, startStage);
   const activeStages: PipelineStage[] = [
     "clarify", "plan", "develop", "review", "fix",
   ];
 
   for (const stage of activeStages) {
+    if (!reachable.has(stage)) continue;
     const stageConfig = config.stages[stage];
     if (!stageConfig.verify?.require) continue;
 
@@ -116,6 +156,67 @@ function buildRestartMeta(
     // persist and risk pipeline-handoff cycle-detection misfires / stale contextFiles.
     previousStage: undefined,
     stageVisitOrder: undefined,
+    contextFiles: undefined,
+    violations: [],
+    advancedThisTurn: undefined,
+    loopCycleCount: undefined,
+    verifyConfigError: undefined,
+    blockedReason: undefined,
+    terminated: undefined,
+    terminateReason: undefined,
+  };
+  return { pipelineId, newMeta };
+}
+
+/**
+ * Builds SessionMeta for a new pipeline start (fresh / spec-stage jump).
+ * Generalizes buildRestartMeta to support custom startStage.
+ *
+ * When startStage is "clarify" (default), behavior is identical to buildRestartMeta.
+ * When startStage is a later stage (spec jump), previousStage and stageVisitOrder
+ * are rebuilt to form a valid stage chain from "clarify" to startStage.
+ *
+ * @param meta - Current session metadata (may be empty for fresh start)
+ * @param config - Pipeline configuration
+ * @param requirementDoc - The requirement doc path
+ * @param startStage - Starting stage (default "clarify")
+ */
+function buildStartMeta(
+  meta: SessionMeta | undefined,
+  config: PipelineConfig,
+  requirementDoc: string,
+  startStage: PipelineStage = "clarify",
+): { pipelineId: string; newMeta: SessionMeta } {
+  const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  // For spec-stage jump, rebuild stage chain from clarify to startStage
+  const previousStage = startStage === "clarify"
+    ? undefined
+    : resolvePreviousStage(config, startStage);
+  const stageVisitOrder = startStage === "clarify"
+    ? undefined
+    : buildResumeVisitOrder(config, startStage);
+
+  const newMeta: SessionMeta = {
+    currentStage: startStage,
+    stageStartTime: Date.now(),
+    pipelineId,
+    domain: meta?.domain ?? { id: "general", version: "latest", skillPath: "" },
+    summaries: {},
+    loopCount: 0,
+    currentStepIndex: 0,
+    maxLoops: config.maxLoops || 3,
+    maxLoopCycles: config.maxLoopCycles ?? 3,
+    flowState: "running",
+    verifyAttempts: 0,
+    verifyFailures: [],
+    requirementDoc,
+
+    // Spec jump: rebuilt stage chain
+    previousStage,
+    stageVisitOrder,
+
+    // Clear stage-chain residue (same as buildRestartMeta)
     contextFiles: undefined,
     violations: [],
     advancedThisTurn: undefined,
@@ -245,6 +346,98 @@ function buildResumeMeta(
 }
 
 /**
+ * Unified new-pipeline execution path for fresh / spec-stage / ask-new flows.
+ *
+ * Steps:
+ * 1. Read requirement file (error → audit + reject)
+ * 2. checkVerifyFiles(config, startStage) — only checks reachable stages
+ * 3. buildStartMeta → updateMeta → syncStageStatusBar → audit
+ * 4. Return success with pipelineId, currentStage, requirementContent
+ *
+ * @param ctx - pi extension context
+ * @param config - Pipeline configuration
+ * @param ui - PipelineUI instance
+ * @param file - Requirement doc file path (relative to projectRoot)
+ * @param startStage - Starting stage (default "clarify")
+ * @param existingMeta - Existing meta (may be undefined for fresh start)
+ */
+async function startNewPipeline(
+  ctx: any,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  file: string,
+  startStage: PipelineStage = "clarify",
+  existingMeta?: SessionMeta,
+): Promise<{
+  success: boolean;
+  message?: string;
+  error?: string;
+  pipelineId?: string;
+  currentStage?: PipelineStage;
+  requirementContent?: string;
+  missingStages?: PipelineStage[];
+  suggestion?: string;
+}> {
+  // Step 1: Read requirement file
+  const docPath = path.join(config.projectRoot, file);
+  let content: string;
+  try {
+    content = fs.readFileSync(docPath, "utf-8");
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog("pipeline_start_error", { file, error: errMsg }, "error");
+    return {
+      success: false,
+      error: `File not found: ${file} (${errMsg})`,
+    };
+  }
+
+  // Step 2: Check verify.md files (only for reachable stages from startStage)
+  const missingStages = checkVerifyFiles(config, startStage);
+  if (missingStages.length > 0) {
+    return {
+      success: false,
+      error: `verify.md missing for stages: [${missingStages.join(", ")}]`,
+      missingStages,
+      suggestion: "Run /pipeline-init 1 to generate verify.md files",
+    };
+  }
+
+  // Detect if this is a restart (existing meta was aborted) for message wording
+  // Must check BEFORE updateMeta which mutates the existingMeta object in-place
+  const isRestart = existingMeta && getFlowState(existingMeta) === "aborted";
+
+  // Step 3: Build meta and initialize
+  const { pipelineId, newMeta } = buildStartMeta(existingMeta, config, file, startStage);
+  ctx?.session?.updateMeta?.(newMeta);
+  syncStageStatusBar(ui, ctx);
+
+  // Step 4: Audit (with mode and startStage fields for traceability)
+  const auditMode = startStage === "clarify" ? "fresh" : "spec";
+  await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+    command: `/pipeline-start ${file}`,
+    file,
+    mode: auditMode,
+    startStage,
+    previousStage: auditMode === "fresh" ? "none" : (existingMeta?.currentStage ?? "none"),
+  });
+  const messagePrefix = isRestart
+    ? `Pipeline restarted as "${pipelineId}" at stage "${startStage}".`
+    : `Pipeline "${pipelineId}" started with document: ${file}.`;
+  const messageSuffix = startStage === "clarify"
+    ? ` Next: run @feat-design-plan-agent ${file} 1 to start requirement clarification`
+    : "";
+
+  return {
+    success: true,
+    message: messagePrefix + messageSuffix,
+    pipelineId,
+    currentStage: startStage,
+    requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),
+  };
+}
+
+/**
  * Unified handler for the aborted pipeline branch in /pipeline-start.
  *
  * Decision matrix:
@@ -325,20 +518,38 @@ async function handleAbortedPipeline(
   }
 
   // --- Start new pipeline (different file, or no requirementDoc with file provided) ---
-  const { pipelineId, newMeta } = buildRestartMeta(meta, config, meta.requirementDoc || file);
-  ctx?.session?.updateMeta?.(newMeta);
-  syncStageStatusBar(ui, ctx);
-  await safeWriteStageAudit(config, "pipeline_start", newMeta, {
-    command: file ? `/pipeline-start ${file}` : "/pipeline-start",
-    file: file || "(none)",
-    previousStage: meta.currentStage,
-  });
-  return {
-    success: true,
-    message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
-    pipelineId,
-    currentStage: "clarify",
-  };
+  // Backward compat: when meta.requirementDoc exists (different file case),
+  // preserve it and skip re-reading the file (the old buildRestartMeta path
+  // did not call readFileSync). When only a new file is provided, use the
+  // unified startNewPipeline path.
+  if (meta.requirementDoc) {
+    // Preserve existing requirementDoc (do not re-read file)
+    const { pipelineId, newMeta } = buildStartMeta(meta, config, meta.requirementDoc, "clarify");
+    ctx?.session?.updateMeta?.(newMeta);
+    syncStageStatusBar(ui, ctx);
+    await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+      command: file ? `/pipeline-start ${file}` : "/pipeline-start",
+      file: file || "(none)",
+      mode: "fresh",
+      startStage: "clarify",
+      previousStage: meta.currentStage,
+    });
+    return {
+      success: true,
+      message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
+      pipelineId,
+      currentStage: "clarify",
+    };
+  }
+
+  // No existing requirementDoc — use new file via unified path
+  if (!file) {
+    return {
+      success: false,
+      error: "run /pipeline-start <doc_file> start pipeline loop",
+    };
+  }
+  return startNewPipeline(ctx, config, ui, file, "clarify", meta);
 }
 
 export function createPipelineStartCommand(config: PipelineConfig): Command {
@@ -350,6 +561,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
       const file = (args.file as string) || "";
       const ui = createPipelineUI(config);
+      const mode: StartStageMode = config.startStageMode ?? "auto";
 
       const meta = ctx?.session?.getMeta?.();
 
@@ -368,18 +580,12 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         };
       }
 
-      // Phase 5 (Bug 5): fresh start without doc_file is rejected — doc_file is required.
-      // (Previous "no file → init state machine only" branch removed.)
-      if (!file) {
-        if (meta?.currentStage && meta.pipelineId) {
-          const flowState = getFlowState(meta);
+      // ── Branch: existing pipeline state ──────────────────────────────────
+      if (meta?.currentStage && meta.pipelineId) {
+        const flowState = getFlowState(meta);
 
-          // Aborted → unified resume/new decision matrix
-          if (flowState === "aborted") {
-            return handleAbortedPipeline(ctx, meta, file, ui, config);
-          }
-
-          // Running or blocked → reject with shortcut hint
+        // Running or blocked → reject with shortcut hint (unchanged across all modes)
+        if (flowState === "running" || flowState === "blocked") {
           const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
           return {
             success: false,
@@ -389,90 +595,258 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           };
         }
 
-        // Fresh start without doc_file → reject, do NOT initialize state machine
+        // Aborted → mode-specific handling
+        if (flowState === "aborted") {
+          return handleAbortedWithMode(ctx, meta, file, ui, config, mode);
+        }
+
+        // Completed → error (unchanged)
+        if (meta.currentStage === "completed") {
+          return {
+            success: false,
+            error: "Pipeline already completed. Use /pipeline-start <file> to start a new pipeline.",
+          };
+        }
+
+        // awaiting_human → error with decision menu hint (unchanged)
+        if (meta.currentStage === "awaiting_human") {
+          const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
+          return {
+            success: false,
+            error: `Pipeline is at awaiting_human stage. Press ${shortcutKey} to open the decision menu.`,
+          };
+        }
+      }
+
+      // ── Branch: fresh start (no existing pipeline) ──────────────────────
+      // No file → reject
+      if (!file) {
         return {
           success: false,
           error: "run /pipeline-start <doc_file> start pipeline loop",
         };
       }
 
-      // File provided — fresh start path (aborted restart preserves existing requirementDoc)
-      if (meta?.currentStage && meta.pipelineId) {
-        const flowState = getFlowState(meta);
-
-        if (flowState === "aborted") {
-          return handleAbortedPipeline(ctx, meta, file, ui, config);
-        }
-
-        // Running or blocked → reject with shortcut hint
-        const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
-        return {
-          success: false,
-          error:
-            `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}" (${flowState}). ` +
-            `Press ${shortcutKey} to open the decision menu to handle it.`,
-        };
+      // Fresh start with file → mode-specific handling
+      if (mode === "ask") {
+        return handleAskMenu(ctx, config, ui, file, undefined);
       }
 
-      const docPath = path.join(config.projectRoot, file);
-
-      let content: string;
-      try {
-        content = fs.readFileSync(docPath, "utf-8");
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        await safeWriteAuditLog("pipeline_start_error", { file, error: errMsg }, "error");
-        return {
-          success: false,
-          error: `File not found: ${file} (${errMsg})`,
-        };
-      }
-
-      // Check for missing verify.md files
-      const missingStages = checkVerifyFiles(config);
-      if (missingStages.length > 0) {
-        return {
-          success: false,
-          error: `verify.md missing for stages: [${missingStages.join(", ")}]`,
-          missingStages,
-          suggestion: "Run /pipeline-init 1 to generate verify.md files",
-        };
-      }
-
-      const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-      const newMeta: SessionMeta = {
-        currentStage: "clarify",
-        stageStartTime: Date.now(),
-        pipelineId,
-        domain: { id: "general", version: "latest", skillPath: "" },
-        summaries: {},
-        loopCount: 0,
-        currentStepIndex: 0,
-        maxLoops: config.maxLoops || 3,
-        maxLoopCycles: config.maxLoopCycles ?? 3,
-        flowState: "running",
-        requirementDoc: file,
-      };
-
-      ctx?.session?.updateMeta?.(newMeta);
-      syncStageStatusBar(ui, ctx);
-
-      // Audit successful fresh start
-      await safeWriteStageAudit(config, "pipeline_start", newMeta, {
-        command: `/pipeline-start ${file}`,
-        file,
-        previousStage: "none",
-      });
-
-      return {
-        success: true,
-          message: `Pipeline "${pipelineId}" started with document: ${file}. ` +
-            `Next: run @feat-design-plan-agent ${file} 1 to start requirement clarification`,
-        pipelineId,
-        currentStage: "clarify",
-        requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),
-      };
+      // auto/confirm fresh start: both go to clarify directly
+      return startNewPipeline(ctx, config, ui, file, "clarify", meta);
     },
   };
+}
+
+/**
+ * Handles aborted pipeline with mode-specific behavior.
+ * - auto: existing 142 matrix (resume/new unchanged)
+ * - confirm: resume-eligible → confirm dialog → resume or cancel
+ * - ask: TUI menu (resume/new/spec/cancel)
+ */
+async function handleAbortedWithMode(
+  ctx: any,
+  meta: SessionMeta,
+  file: string,
+  ui: ReturnType<typeof createPipelineUI>,
+  config: PipelineConfig,
+  mode: StartStageMode,
+): Promise<unknown> {
+  const resumable = RESUMABLE_STAGES.includes(meta.currentStage);
+  const sameDoc = !!file && !!meta.requirementDoc && file === meta.requirementDoc;
+  const resumeEligible = resumable && (sameDoc || (!file && !!meta.requirementDoc));
+
+  // ── auto mode: existing 142 matrix unchanged ──
+  if (mode === "auto") {
+    return handleAbortedPipeline(ctx, meta, file, ui, config);
+  }
+
+  // ── confirm mode ──
+  if (mode === "confirm") {
+    if (resumeEligible) {
+      // A3: if ui.confirm is unavailable → fall back to auto behavior
+      if (typeof ctx?.ui?.confirm !== "function") {
+        return handleAbortedPipeline(ctx, meta, file, ui, config);
+      }
+      const confirmed = await ctx.ui.confirm(
+        `Resume at "${meta.currentStage}"? [Confirm / Cancel]`,
+      );
+      if (confirmed) {
+        // Resume path: reuse buildResumeMeta from handleAbortedPipeline
+        const newMeta = buildResumeMeta(meta, config);
+        ctx?.session?.updateMeta?.(newMeta);
+        syncStageStatusBar(ui, ctx);
+        await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+          command: file ? `/pipeline-start ${file}` : "/pipeline-start",
+          file: file || "(none)",
+          mode: "resume",
+          previousStage: meta.currentStage,
+        });
+        await safeWriteStageAudit(config, "pipeline_resumed", newMeta, {
+          fromStage: meta.currentStage,
+          toStage: newMeta.currentStage,
+          reason: "pipeline_start_confirm_resume",
+          requirementDoc: newMeta.requirementDoc ?? "",
+        });
+        return {
+          success: true,
+          message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
+          pipelineId: newMeta.pipelineId,
+          currentStage: newMeta.currentStage,
+        };
+      }
+      // Cancelled → no meta change
+      return { success: false, error: "Pipeline start cancelled." };
+    }
+    // Not resume-eligible → same as auto (new pipeline or error)
+    return handleAbortedPipeline(ctx, meta, file, ui, config);
+  }
+
+  // ── ask mode ──
+  if (mode === "ask") {
+    return handleAskMenu(ctx, config, ui, file || meta.requirementDoc || "", meta);
+  }
+
+  // Fallback (should never reach)
+  return handleAbortedPipeline(ctx, meta, file, ui, config);
+}
+
+/**
+ * Builds the list of spec-eligible stages for the ask menu.
+ * Excludes awaiting_human and completed (not startable).
+ * Only includes enabled stages (not disabled).
+ */
+function getSpecEligibleStages(config: PipelineConfig): PipelineStage[] {
+  const eligible: PipelineStage[] = [];
+  const order: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix"];
+  for (const stage of order) {
+    const stageConf = config.stages[stage];
+    if (stageConf?.disabled) continue;
+    eligible.push(stage);
+  }
+  return eligible;
+}
+
+/**
+ * TUI ask menu handler: presents new/resume/spec/cancel options.
+ * SDK select has no default-index → priority item placed first.
+ * A3 degradation: if ui.select unavailable → fall back to auto + notify.
+ */
+async function handleAskMenu(
+  ctx: any,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  file: string,
+  existingMeta: SessionMeta | undefined,
+): Promise<unknown> {
+  // A3: no TUI → degrade to auto + notify
+  if (typeof ctx?.ui?.select !== "function") {
+    ctx?.ui?.notify?.("TUI select unavailable — falling back to auto mode");
+    if (existingMeta && getFlowState(existingMeta) === "aborted") {
+      return handleAbortedPipeline(ctx, existingMeta, file, ui, config);
+    }
+    return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta);
+  }
+
+  const resumable = existingMeta
+    ? RESUMABLE_STAGES.includes(existingMeta.currentStage) && !!existingMeta.requirementDoc
+    : false;
+
+  // Build options: priority item first (simulate default highlight)
+  const options: string[] = [];
+  if (resumable) {
+    options.push(`Resume stage (${existingMeta!.currentStage})`);
+  }
+  options.push("New pipeline");
+  options.push("Spec stage");
+  options.push("Cancel");
+
+  const selection = await ctx.ui.select("Pipeline start mode:", options);
+
+  // Cancel / select returns undefined
+  if (!selection) {
+    return { success: false, error: "Pipeline start cancelled." };
+  }
+
+  // ── Resume ──
+  if (selection.startsWith("Resume stage")) {
+    if (!existingMeta) {
+      return { success: false, error: "No pipeline to resume." };
+    }
+    const newMeta = buildResumeMeta(existingMeta, config);
+    ctx?.session?.updateMeta?.(newMeta);
+    syncStageStatusBar(ui, ctx);
+    await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+      command: file ? `/pipeline-start ${file}` : "/pipeline-start",
+      file: file || "(none)",
+      mode: "resume",
+      previousStage: existingMeta.currentStage,
+    });
+    await safeWriteStageAudit(config, "pipeline_resumed", newMeta, {
+      fromStage: existingMeta.currentStage,
+      toStage: newMeta.currentStage,
+      reason: "pipeline_start_ask_resume",
+      requirementDoc: newMeta.requirementDoc ?? "",
+    });
+    return {
+      success: true,
+      message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
+      pipelineId: newMeta.pipelineId,
+      currentStage: newMeta.currentStage,
+    };
+  }
+
+  // ── New pipeline ──
+  if (selection === "New pipeline") {
+    // A1: if there's an unfinished pipeline → discard confirmation
+    if (existingMeta && getFlowState(existingMeta) === "aborted") {
+      if (typeof ctx?.ui?.confirm === "function") {
+        const confirmed = await ctx.ui.confirm(
+          "Discard unfinished pipeline and start new?",
+        );
+        if (!confirmed) {
+          return { success: false, error: "Pipeline start cancelled." };
+        }
+      }
+    }
+    // Need a file for new pipeline
+    if (!file) {
+      return { success: false, error: "run /pipeline-start <doc_file> start pipeline loop" };
+    }
+    return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta);
+  }
+
+  // ── Spec stage ──
+  if (selection === "Spec stage") {
+    const eligibleStages = getSpecEligibleStages(config);
+    const stageLabels = eligibleStages.map((s) => `Start at: ${s}`);
+
+    const stageSelection = await ctx.ui.select("Select starting stage:", stageLabels);
+    if (!stageSelection) {
+      return { success: false, error: "Pipeline start cancelled." };
+    }
+
+    // Parse selected stage from label "Start at: {stage}"
+    const selectedStage = stageSelection.replace("Start at: ", "") as PipelineStage;
+
+    // A1: discard confirmation for unfinished pipeline
+    if (existingMeta && getFlowState(existingMeta) === "aborted") {
+      if (typeof ctx?.ui?.confirm === "function") {
+        const confirmed = await ctx.ui.confirm(
+          "Discard unfinished pipeline and start new?",
+        );
+        if (!confirmed) {
+          return { success: false, error: "Pipeline start cancelled." };
+        }
+      }
+    }
+
+    if (!file) {
+      return { success: false, error: "run /pipeline-start <doc_file> start pipeline loop" };
+    }
+    return startNewPipeline(ctx, config, ui, file, selectedStage, existingMeta);
+  }
+
+  // ── Cancel ──
+  return { success: false, error: "Pipeline start cancelled." };
 }

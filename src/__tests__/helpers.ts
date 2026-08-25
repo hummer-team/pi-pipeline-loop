@@ -65,6 +65,8 @@ export type MockCtx = {
     setStatus: (key: string, text: string) => void;
     /** Optional TUI select — injectable for ask-protect tests */
     select?: (message: string, options: string[]) => Promise<string | undefined>;
+    /** Optional TUI confirm — injectable for confirm-mode tests */
+    confirm?: (message: string) => Promise<boolean>;
   };
   toolCall: { name: string; arguments: Record<string, unknown> };
   result: { success?: boolean; exitCode?: number; error?: string } | undefined;
@@ -74,15 +76,19 @@ export type MockCtx = {
    * 138: Optional pi SDK mock for wake-up tests.
    * When provided, sendUserMessage will be tracked for assertion.
    */
-  pi?: { sendUserMessage: (msg: string) => void };
+  pi?: { sendUserMessage: (msg: string, opts?: Record<string, unknown>) => void };
 };
 
 export function createMockCtx(
   meta: SessionMeta,
   opts?: {
     selectReturn?: string | undefined;
+    /** Confirm dialog return value (default: true when provided) */
+    confirmReturn?: boolean;
+    /** Whether confirm is available (default: true if confirmReturn is set) */
+    hasConfirm?: boolean;
     /** 138: Optional pi mock with sendUserMessage spy for wake-up tests */
-    pi?: { sendUserMessage: (msg: string) => void };
+    pi?: { sendUserMessage: (msg: string, opts?: Record<string, unknown>) => void };
   },
 ) {
   const metadataUpdates: SessionMeta[] = [];
@@ -110,6 +116,11 @@ export function createMockCtx(
       select: opts?.selectReturn !== undefined
         ? async (_message: string, _options: string[]) => opts.selectReturn
         : async (_message: string, _options: string[]) => undefined,
+      confirm: (opts?.hasConfirm !== false && opts?.confirmReturn !== undefined)
+        ? async (_message: string) => opts.confirmReturn ?? true
+        : opts?.hasConfirm === false
+          ? undefined
+          : async (_message: string) => true,
     },
     toolCall: { name: "read", arguments: {} },
     result: undefined,

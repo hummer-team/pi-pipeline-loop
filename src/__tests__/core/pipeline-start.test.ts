@@ -1005,4 +1005,409 @@ describe("createPipelineStartCommand", () => {
       expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • plan ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> develop${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
     });
   });
+
+  // ─── Phase 144: confirm mode ──────────────────────────────────────────────────
+  describe("confirm mode (Phase 144)", () => {
+    it("aborted + resumable + confirm(true) → resume preserves stage position and pipelineId", async () => {
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "confirm" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      const originalPipelineId = meta.pipelineId;
+      const ctx = createMockCtx(meta, { confirmReturn: true });
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("resumed");
+      expect(result.currentStage).toBe("plan");
+      expect(result.pipelineId).toBe(originalPipelineId);
+    });
+
+    it("aborted + resumable + confirm(false) → cancelled, meta not changed", async () => {
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "confirm" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          confirm: async () => false,
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("cancelled");
+      expect(updatedMeta).toBeNull();
+    });
+
+    it("aborted + not resumable (awaiting_human) → no confirm, returns awaiting_human error", async () => {
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "confirm" });
+      const meta = makeTestMeta({
+        currentStage: "awaiting_human",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      const ctx = createMockCtx(meta, { confirmReturn: true });
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("awaiting_human");
+    });
+
+    it("fresh + confirm mode → no confirm dialog, starts new pipeline at clarify", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "confirm" });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let confirmCalled = false;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          confirm: async () => { confirmCalled = true; return true; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.currentStage).toBe("clarify");
+      expect(confirmCalled).toBe(false);
+    });
+  });
+
+  // ─── Phase 144: ask mode ──────────────────────────────────────────────────────
+  describe("ask mode (Phase 144)", () => {
+    it("fresh + file → select called with 3 options (no resume for fresh)", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let selectOptions: string[] = [];
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, opts: string[]) => {
+            selectOptions = opts;
+            return "New pipeline";
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(selectOptions).toContain("New pipeline");
+      expect(selectOptions).toContain("Spec stage");
+      expect(selectOptions).toContain("Cancel");
+      expect(selectOptions).not.toContain("Resume stage (develop)");
+    });
+
+    it("ask → select Spec stage → second select excludes awaiting_human/completed", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let stageOptions: string[] = [];
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            // Second select: stage list
+            stageOptions = opts;
+            return "Start at: develop";
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.currentStage).toBe("develop");
+      expect(stageOptions).toContain("Start at: clarify");
+      expect(stageOptions).toContain("Start at: plan");
+      expect(stageOptions).toContain("Start at: develop");
+      expect(stageOptions).toContain("Start at: review");
+      expect(stageOptions).toContain("Start at: fix");
+      expect(stageOptions.some(o => o.includes("awaiting_human"))).toBe(false);
+      expect(stageOptions.some(o => o.includes("completed"))).toBe(false);
+    });
+
+    it("ask → spec select develop → previousStage=plan, stageVisitOrder=[clarify,plan,develop], new pipelineId", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let updatedMeta: any = null;
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: develop";
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.currentStage).toBe("develop");
+      expect(updatedMeta.currentStage).toBe("develop");
+      expect(updatedMeta.previousStage).toBe("plan");
+      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan", "develop"]);
+      expect(updatedMeta.pipelineId).toMatch(/^pipe-/);
+      expect(updatedMeta.requirementDoc).toBe("req.md");
+    });
+
+    it("ask → spec select plan → previousStage=clarify, stageVisitOrder=[clarify,plan]", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let updatedMeta: any = null;
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: plan";
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(updatedMeta.previousStage).toBe("clarify");
+      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan"]);
+    });
+
+    it("ask → select Cancel / undefined → cancelled, meta not changed", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let updatedMeta: any = null;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async () => undefined,
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("cancelled");
+      expect(updatedMeta).toBeNull();
+    });
+
+    it("aborted + resumable → select includes resume item; select Resume → resume", async () => {
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "docs/design/req.md",
+      });
+      const originalPipelineId = meta.pipelineId;
+      let selectOptions: string[] = [];
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, opts: string[]) => {
+            selectOptions = opts;
+            return "Resume stage (plan)";
+          },
+          confirm: async () => true,
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("resumed");
+      expect(result.currentStage).toBe("plan");
+      expect(result.pipelineId).toBe(originalPipelineId);
+      expect(selectOptions[0]).toContain("Resume stage");
+    });
+
+    it("A3: no ui.select → degrades to auto + notify", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let notifyCalled = false;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => { notifyCalled = true; },
+          setStatus: () => {},
+          // No select function (A3)
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(notifyCalled).toBe(true);
+    });
+  });
+
+  // ─── Phase 144: checkVerifyFiles start-stage aware ─────────────────────────────
+  describe("checkVerifyFiles start-stage aware (Phase 144)", () => {
+    it("spec start develop → only checks develop+ (skips clarify/plan verify.md)", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      // Create develop and fix verify.md but NOT clarify/plan/review
+      const developVerifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(developVerifyDir, { recursive: true });
+      await fs.writeFile(path.join(developVerifyDir, "verify.md"), "---\nrules:\n---\n", "utf-8");
+      const fixVerifyDir = path.join(TMP, ".pi", "references", "fix_spec");
+      await fs.mkdir(fixVerifyDir, { recursive: true });
+      await fs.writeFile(path.join(fixVerifyDir, "verify.md"), "---\nrules:\n---\n", "utf-8");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        startStageMode: "ask",
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+                verify: (s === "develop" || s === "fix") ? { require: true } : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      let updatedMeta: any = null;
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: develop";
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      // Should succeed — clarify/plan verify.md not required when starting at develop
+      expect(result.success).toBe(true);
+      expect(updatedMeta.currentStage).toBe("develop");
+    });
+
+    it("start at clarify → checks ALL stages with verify.require=true", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      // No verify.md files exist at all
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+                verify: (s === "develop" || s === "fix") ? { require: true } : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+      // Should fail — develop and fix verify.md missing when starting at clarify
+      expect(result.success).toBe(false);
+      expect(result.missingStages).toContain("develop");
+      expect(result.missingStages).toContain("fix");
+    });
+  });
 });
