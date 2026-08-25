@@ -1,9 +1,10 @@
 /**
  * @module prompt-injector
  * Factory for the `before_agent_start` hook.
- * Composes an 8-part system prompt appended after the pi base system prompt,
+ * Composes a 10-part system prompt appended after the pi base system prompt,
  * providing context references, domain skills, stage skills, loop status,
- * pipeline status, verification failures, verify tool guidance, and write scope.
+ * pipeline status, verification failures, verify tool guidance, write scope,
+ * stage executor scheduling, and plugin default deliverables.
  *
  * Injection method (D3): Plugin prompt is appended after `ctx.getSystemPrompt()`
  * (pi base + prior plugin modifications), separated by `\n\n---\n\n`.
@@ -452,7 +453,7 @@ export function createPromptInjector(config: PipelineConfig): Hook {
           }, pluginPrompt);
         }
       } else {
-        // Default path: no yml template → use 8-part assembly (no snapshot, E4 ❌)
+        // Default path: no yml template → use 10-part assembly (no snapshot, E4 ❌)
         pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
       }
 
@@ -478,9 +479,22 @@ export function createPromptInjector(config: PipelineConfig): Hook {
 }
 
 /**
- * Builds the default 8-part prompt by calling each part builder and joining
+ * Builds the default 10-part prompt by calling each part builder and joining
  * non-null results with `\n\n---\n\n`. Used as the fallback when no yml
  * template is available or when critical placeholders are missing.
+ *
+ * Parts:
+ * 1. Context Reference
+ * 2. Domain Skill
+ * 3. Stage Skill
+ * 4. Loop Status (develop/fix only)
+ * 5. Pipeline Status
+ * 6. Verification Failures
+ * 6b. Violations
+ * 7. Verify Tool Guidance
+ * 8. Stage Write Scope (non-loop stages)
+ * 9. Stage Executor Scheduling (Phase 4: 139)
+ * 10. Stage Deliverables (Phase 0: 146, plugin default deliverables)
  *
  * @param config - Pipeline configuration
  * @param meta - Current session metadata
@@ -504,8 +518,12 @@ async function buildDefaultPrompt(
   const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
     ? buildStageWriteScope(stageConfig, true, meta.currentStage)
     : null;
+  // Part 9: Stage Executor Scheduling (Phase 4: 139)
+  const part9 = await buildStageExecutor(config, stageConfig, meta);
+  // Part 10: Plugin Default Deliverables (Phase 0: 146)
+  const part10 = await buildStageDeliverables(config, meta);
 
-  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8].filter(
+  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10].filter(
     (p): p is string => p !== null,
   );
 
@@ -514,7 +532,7 @@ async function buildDefaultPrompt(
 
 /**
  * Builds the dynamic placeholder values map for template rendering.
- * Maps each of the 8 known placeholder keys to its computed value.
+ * Maps each of the 10 known placeholder keys to its computed value.
  * Null values trigger paragraph-level removal in renderStageTemplate.
  *
  * @param config - Pipeline configuration
@@ -543,13 +561,16 @@ async function buildDynamicValues(
     stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true, meta.currentStage),
     // Phase 4 (139): Stage executor scheduling segment (reads from yml)
     stage_executor: await buildStageExecutor(config, stageConfig, meta),
+    // Phase 0 (146): Plugin default deliverables (reads from yml stage_deliverable_{stage})
+    stage_deliverables: await buildStageDeliverables(config, meta),
   };
 }
 
-// ─── Stage executor mapping (Phase 4 / 139) ─────────────────────────────────
+// ─── Stage executor mapping (Phase 4 / 139 + Phase 0 / 146) ─────────────────
 
 /** Stage → subagent_type mapping for {{stage_executor}} injection */
 const STAGE_EXECUTOR_MAP: Record<string, { subagent_type: string; mode: string }> = {
+  clarify: { subagent_type: "feat-design-plan-agent", mode: "lightweight-advance" },
   plan: { subagent_type: "feat-design-plan-agent", mode: "lightweight-advance" },
   develop: { subagent_type: "develop-agent", mode: "task-invocation" },
   review: { subagent_type: "code-review-agent", mode: "task-invocation" },
@@ -559,11 +580,11 @@ const STAGE_EXECUTOR_MAP: Record<string, { subagent_type: string; mode: string }
 /**
  * Builds the stage executor scheduling segment for {{stage_executor}} placeholder.
  * Returns the per-stage executor configuration text, or null for stages that
- * don't have executor injection (clarify, completed, awaiting_human).
+ * don't have executor injection (completed, awaiting_human).
  *
  * Reads from yml `stage_executor_{stage}` key first; fills {subagent_type} and
  * {context_arg} placeholders from the stage→agent mapping. Falls back to
- * hardcoded default text when yml key is missing or empty.
+ * hardcoded English default text when yml key is missing or empty.
  *
  * @param config - Pipeline configuration (for projectRoot to load yml)
  * @param _stageConfig - Current stage configuration
@@ -592,26 +613,56 @@ async function buildStageExecutor(
       .replaceAll("{context_arg}", `<document path filled by main thread, e.g. _plan.md>`);
   }
 
-  // Fallback: hardcoded default text (when yml key is missing/empty)
+  // Fallback: hardcoded English default text (when yml key is missing/empty)
   const lines: string[] = [];
-  lines.push("## 阶段执行者调度");
+  lines.push("## Stage Executor Scheduling");
   lines.push("");
 
-  if (executor.mode === "task-invocation") {
-    lines.push(`本阶段由子 agent 执行：\`${executor.subagent_type}\``);
+  if (meta.currentStage === "clarify") {
+    // Clarify: user-invoked lightweight-advance mode
+    lines.push(`This stage is executed by the user-invoked agent: \`${executor.subagent_type}\``);
     lines.push("");
-    lines.push(`**调度方式**: 主线程通过 task 工具唤起 \`${executor.subagent_type}\``);
-    lines.push(`**返回协议**: 子 agent 完成后返回 \`nextStage: <stage>\` 建议，由主线程调用 stage_advance 推进`);
-    lines.push(`**上下文传递**: context_arg 由主线程据文档产物填写（如 \`_plan.md\`、\`_commit.md\` 等）`);
+    lines.push(`**Scheduling**: User @\`${executor.subagent_type}\` in chat with the requirement document path.`);
+    lines.push(`**Return protocol**: On \`full-und?\` confirmation, write the \`## 模型确认\` marker to the requirement document and STOP. Do NOT call \`stage_advance\` — the \`agent_settled\` hook auto-verifies (completionMarker) and advances to \`plan\`.`);
+  } else if (executor.mode === "task-invocation") {
+    lines.push(`This stage is executed by sub-agent: \`${executor.subagent_type}\``);
+    lines.push("");
+    lines.push(`**Scheduling**: Main thread invokes \`${executor.subagent_type}\` via task tool.`);
+    lines.push(`**Return protocol**: Sub-agent returns \`nextStage: <stage>\` suggestion; main thread calls stage_advance.`);
+    lines.push(`**Context**: context_arg filled by main thread from document artifacts (e.g. \`_plan.md\`, \`_commit.md\`)`);
   } else {
     // lightweight-advance: plan stage — receive @feat-design-plan-agent return then advance
-    lines.push(`本阶段由 \`${executor.subagent_type}\` 执行（轻量推进模式）`);
+    lines.push(`This stage uses \`${executor.subagent_type}\` (lightweight advance mode).`);
     lines.push("");
-    lines.push(`**调度方式**: 用户在聊天中 @\`${executor.subagent_type}\`，本阶段接收其返回后推进`);
-    lines.push(`**返回协议**: 收到 \`nextStage: develop\` 后由主线程调用 stage_advance`);
+    lines.push(`**Scheduling**: User @\`${executor.subagent_type}\` in chat; main thread receives \`nextStage: develop\` and calls stage_advance.`);
+    lines.push(`**Context**: context_arg filled by main thread from document artifacts`);
   }
 
   return lines.join("\n");
+}
+
+/**
+ * Builds the plugin default deliverables segment for {{stage_deliverables}} placeholder.
+ * Reads from yml `stage_deliverable_{stage}` key and wraps with a header.
+ * Returns null when the key is missing/empty (paragraph auto-removed by renderStageTemplate).
+ *
+ * @param config - Pipeline configuration (for projectRoot to load yml)
+ * @param meta - Current session metadata
+ * @returns Rendered deliverables segment string, or null if not applicable
+ */
+async function buildStageDeliverables(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<string | null> {
+  const ymlKey = `stage_deliverable_${meta.currentStage}`;
+  const promptConfig = await loadPromptConfig(config.projectRoot);
+  const value = promptConfig[ymlKey];
+
+  if (!value || !value.trim()) {
+    return null;
+  }
+
+  return `# STAGE DELIVERABLES (PLUGIN)\n${value.trim()}`;
 }
 
 

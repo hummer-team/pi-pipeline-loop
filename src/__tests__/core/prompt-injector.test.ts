@@ -1120,8 +1120,8 @@ describe("createPromptInjector", () => {
       const hook = createPromptInjector(config);
       const result = (await hook.handler(ctx)) as any;
 
-      // Should contain the stage executor scheduling section
-      expect(result.systemPrompt).toContain("阶段执行者调度");
+      // Should contain the stage executor scheduling section (Phase 0 (146): fallback now in English)
+      expect(result.systemPrompt).toContain("Stage Executor Scheduling");
       expect(result.systemPrompt).toContain("develop-agent");
 
       resetPromptConfigCache();
@@ -1248,6 +1248,157 @@ describe("createPromptInjector", () => {
 
       // review stage should not have commitIds requirement
       expect(result.systemPrompt).not.toContain("阶段总结要求");
+    });
+  });
+
+  // ─── Phase 0 (146): stage_deliverables injection + fallback English ──────────
+
+  describe("Phase 0 (146): stage_deliverables injection + fallback English", () => {
+    it("renders plugin deliverables segment when yml template contains {{stage_deliverables}}", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p0-deliv-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // Write yml with stage_deliverables placeholder + stage_deliverable_develop key
+      const refDir = join(TMP, ".pi", "references");
+      await mkdir(refDir, { recursive: true });
+      const ymlContent = [
+        "develop: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{loop_status}}",
+        "  ---",
+        "  {{stage_executor}}",
+        "  ---",
+        "  {{stage_deliverables}}",
+        "stage_executor_develop: |",
+        "  ## Stage Executor Scheduling",
+        "  test executor text for {subagent_type}",
+        "stage_deliverable_develop: |",
+        "  ## Plugin Default Deliverables (develop)",
+        "  - **MUST** run build",
+      ].join("\n");
+      await writeFile(join(refDir, "pipeline-stage-prompt.yml"), ymlContent);
+
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base prompt",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
+      expect(result.systemPrompt).toContain("**MUST** run build");
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("does not fail when yml template lacks {{stage_deliverables}} (non-critical)", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p0-no-deliv-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // Write yml WITHOUT {{stage_deliverables}} placeholder
+      const refDir = join(TMP, ".pi", "references");
+      await mkdir(refDir, { recursive: true });
+      const ymlContent = [
+        "develop: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{loop_status}}",
+        "  ---",
+        "  {{stage_executor}}",
+        "stage_executor_develop: |",
+        "  ## Stage Executor Scheduling",
+        "  test executor for {subagent_type}",
+      ].join("\n");
+      await writeFile(join(refDir, "pipeline-stage-prompt.yml"), ymlContent);
+
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base prompt",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      // Should render successfully without the deliverables segment
+      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt).not.toContain("STAGE DELIVERABLES (PLUGIN)");
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("default 10-part path (no yml template) injects plugin deliverables for develop", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p0-default-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // Write yml with ONLY stage_deliverable_develop (no stage templates → default path)
+      const refDir = join(TMP, ".pi", "references");
+      await mkdir(refDir, { recursive: true });
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  ## Plugin Default Deliverables (develop)",
+        "  - **MUST** commit changes",
+      ].join("\n");
+      await writeFile(join(refDir, "pipeline-stage-prompt.yml"), ymlContent);
+
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base prompt",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      // Default 10-part path should also inject the deliverables segment
+      expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
+      expect(result.systemPrompt).toContain("**MUST** commit changes");
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("buildStageExecutor fallback is in English (no Chinese characters)", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p0-en-fallback-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // No yml at all → buildStageExecutor uses hardcoded English fallback
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      // Fallback should be English — no Chinese characters in the executor section
+      const chinesePattern = /[\u4e00-\u9fff]/;
+      // Find the executor section (between "Stage Executor Scheduling" and next heading or end)
+      const executorMatch = result.systemPrompt.match(/## Stage Executor Scheduling[\s\S]*?(?=\n# |\n## (?!Stage Executor)|$)/);
+      if (executorMatch) {
+        expect(chinesePattern.test(executorMatch[0])).toBe(false);
+      }
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
     });
   });
 });

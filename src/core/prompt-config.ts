@@ -9,6 +9,8 @@
  *   - 5 per-stage verify prompts: verify_clarify, verify_plan, verify_develop, verify_review, verify_fix
  *   - 5 per-stage extract prompts: verify_extract_clarify, verify_extract_plan, verify_extract_develop, verify_extract_review, verify_extract_fix
  *   - 1 global extract fallback: verify_extract
+ *   - 5 per-stage executor prompts: stage_executor_clarify, stage_executor_plan, stage_executor_develop, stage_executor_review, stage_executor_fix
+ *   - 3 per-stage plugin deliverables: stage_deliverable_develop, stage_deliverable_review, stage_deliverable_fix
  *
  * Verify prompt protocol:
  *   - verify_{stage}: Used as modelPrompt during stage verification (execution phase).
@@ -69,6 +71,7 @@ const KNOWN_PLACEHOLDER_KEYS = [
   "verify_tool_guidance",
   "stage_write_scope",
   "stage_executor", // Phase 4 (139): stage executor scheduling
+  "stage_deliverables", // Phase 0 (146): plugin default deliverables (optional, not critical)
 ];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
