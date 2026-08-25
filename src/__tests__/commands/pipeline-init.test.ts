@@ -1367,6 +1367,42 @@ describe("createPipelineInitCommand", () => {
       expect(content).toContain("clarify: custom");
     });
   });
+
+  // ─── Phase 0 (146): stripped templates migration ──────────────────────────
+
+  describe("Phase 0 (146): stripped template migration", () => {
+    it("new template SKILL files do not contain plugin control keywords after copy", async () => {
+      // Create template with stripped SKILL files (no plugin keywords)
+      for (const stage of ["develop", "review", "fix"]) {
+        const skillDir = path.join(templateDir, "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        // Stripped template: no stage_advance, loop_check, pipeline marker, nextStage
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `## ${stage} business rules\n- **必须** ${stage}-output.md\n`,
+          "utf-8",
+        );
+      }
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" });
+
+      expect(result.success).toBe(true);
+
+      // Verify copied SKILL files don't contain plugin keywords
+      for (const stage of ["develop", "review", "fix"]) {
+        const skillPath = path.join(TMP, ".pi", "skills", stage, "SKILL.md");
+        const content = await fs.readFile(skillPath, "utf-8");
+        expect(content).not.toContain("stage_advance");
+        expect(content).not.toContain("loop_check");
+        expect(content).not.toContain("nextStage:");
+        expect(content).not.toMatch(/pipeline:\s*\{pipelineId\}/);
+        // But still contains business **必须** markers
+        expect(content).toContain("**必须**");
+      }
+    });
+  });
 });
 
 // Need to import PipelineConfig type for the Phase 0 tests

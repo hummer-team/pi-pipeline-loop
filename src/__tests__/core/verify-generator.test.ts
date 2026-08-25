@@ -1262,5 +1262,58 @@ describe("verify-generator", () => {
       expect(mergedContent).toContain("pipeline");
       expect(mergedContent).toContain("keywords:");
     });
+
+    it("hasCustom protection: plugin rules do NOT override user-authored custom rules", async () => {
+      resetPromptConfigCache();
+      // Write yml with plugin deliverable for develop
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  - **MUST** include `pipeline: {pipelineId}` in the artifact file header",
+      ].join("\n");
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(path.join(refsDir, "pipeline-stage-prompt.yml"), ymlContent, "utf-8");
+      await fs.writeFile(path.join(TMP, "package.json"), "{}", "utf-8");
+      await fs.writeFile(path.join(TMP, "bun.lock"), "", "utf-8");
+
+      // Write skill with business items
+      const skillContent = [
+        "---",
+        "title: develop",
+        "---",
+        "## 交付项",
+        "- **必须** 创建开发总结 docs/design/dev.md",
+      ].join("\n");
+      const config = await setupConfigWithSkill("develop", skillContent);
+
+      // Pre-create an old verify.md WITH user custom fileContentPattern
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      const customVerify = [
+        "---",
+        "rules:",
+        "  requiredFiles:",
+        '    - "docs/design/dev.md"',
+        "  fileContentPattern:",
+        '    - path: "docs/design/dev.md"',
+        '      pattern: "^# Summary"',
+        "  mode: or",
+        "---",
+        "User-customized verify body",
+      ].join("\n");
+      await fs.writeFile(path.join(verifyDir, "verify.md"), customVerify, "utf-8");
+
+      // Re-generate: hasCustom protection should skip merging plugin rules
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results.length).toBe(1);
+      expect(results[0].status).toBe("skipped");
+      expect(results[0].reason).toBe("exists_custom");
+
+      // Plugin rules should NOT be merged into user-customized verify.md
+      const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
+      expect(content).toContain("fileContentPattern");
+      expect(content).not.toContain("keywords:");
+      expect(content).toContain("User-customized verify body");
+    });
   });
 });
