@@ -148,3 +148,38 @@ Respond with JSON array:
 ]
 
 Respond ONLY with the JSON array.`;
+
+/**
+ * Default system prompt for model-based conflict/overlap detection between
+ * business SKILL content and plugin-injected prompt segments.
+ * Used by runConflictCheck in pipeline-init when yml conflict_check_prompt
+ * key is missing or empty.
+ *
+ * Phase 6 (146): mirrors the structure of DEFAULT_VERIFY_EXTRACT_PROMPT.
+ */
+export const DEFAULT_CONFLICT_CHECK_PROMPT = `You are a prompt conflict analyzer. Given the business skill content and the plugin-injected prompt segments for the same pipeline stage, detect CONFLICTS and OVERLAPS between them.
+
+Definitions:
+- "conflict": the two sources give contradictory instructions (e.g., one says "call stage_advance" and the other says "must NOT call stage_advance").
+- "overlap": the two sources cover the same requirement redundantly with different wording (e.g., both describe the nextStage handoff protocol) — not contradictory but duplicated; recommend which source should own it.
+
+For each issue, respond with a JSON object:
+{
+  "stage": "<stage>",
+  "items": [
+    {
+      "kind": "conflict" | "overlap",
+      "skillSnippet": "<verbatim quote from the skill content>",
+      "pluginSnippet": "<verbatim quote from the plugin segment>",
+      "reason": "<why this is a conflict or overlap>",
+      "suggestion": "<recommended fix: which source to change and how>"
+    }
+  ]
+}
+
+Rules:
+- Only report real issues; do not invent problems.
+- Quote snippets verbatim.
+- If no issues found, respond with {"stage": "<stage>", "items": []}.
+
+Respond ONLY with the JSON object.`;

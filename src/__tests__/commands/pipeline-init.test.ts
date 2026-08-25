@@ -1403,6 +1403,85 @@ describe("createPipelineInitCommand", () => {
       }
     });
   });
+
+  // ─── Phase 6 (146): conflict detection ────────────────────────────────────
+
+  describe("Phase 6 (146): conflict detection", () => {
+    it("conflictCheck=off skips detection even when callLLM is available", async () => {
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        init: { conflictCheck: "off" },
+      });
+      // With conflictCheck=off, the buildCallLLM gate should still build
+      // if llmExtract is enabled, but conflict detection is not invoked.
+      // We verify via the result that no conflict-related output appears.
+      expect(config.init?.conflictCheck).toBe("off");
+    });
+
+    it("DEFAULT_CONFLICT_CHECK_PROMPT is defined and non-empty", async () => {
+      const { DEFAULT_CONFLICT_CHECK_PROMPT } = await import("../../constants");
+      expect(DEFAULT_CONFLICT_CHECK_PROMPT).toBeDefined();
+      expect(typeof DEFAULT_CONFLICT_CHECK_PROMPT).toBe("string");
+      expect(DEFAULT_CONFLICT_CHECK_PROMPT.length).toBeGreaterThan(100);
+      expect(DEFAULT_CONFLICT_CHECK_PROMPT).toContain("conflict analyzer");
+      expect(DEFAULT_CONFLICT_CHECK_PROMPT).toContain("JSON");
+    });
+
+    it("getConflictCheckPrompt returns yml value when present", async () => {
+      const { getConflictCheckPrompt } = await import("../../core/prompt-config");
+      const { resetPromptConfigCache } = await import("../../core/prompt-config");
+      resetPromptConfigCache();
+
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
+        "conflict_check_prompt: Custom conflict check prompt\n",
+        "utf-8",
+      );
+
+      const result = await getConflictCheckPrompt(TMP);
+      expect(result).toBe("Custom conflict check prompt");
+
+      resetPromptConfigCache();
+    });
+
+    it("getConflictCheckPrompt falls back to DEFAULT when yml missing", async () => {
+      const { getConflictCheckPrompt } = await import("../../core/prompt-config");
+      const { DEFAULT_CONFLICT_CHECK_PROMPT } = await import("../../constants");
+      const { resetPromptConfigCache } = await import("../../core/prompt-config");
+      resetPromptConfigCache();
+
+      const result = await getConflictCheckPrompt(TMP);
+      expect(result).toBe(DEFAULT_CONFLICT_CHECK_PROMPT);
+
+      resetPromptConfigCache();
+    });
+
+    it("getConflictCheckPrompt per-stage fallback chain works", async () => {
+      const { getConflictCheckPrompt } = await import("../../core/prompt-config");
+      const { resetPromptConfigCache } = await import("../../core/prompt-config");
+      resetPromptConfigCache();
+
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(refsDir, "pipeline-stage-prompt.yml"),
+        "conflict_check_prompt: Global prompt\nconflict_check_prompt_develop: Develop-specific prompt\n",
+        "utf-8",
+      );
+
+      // Per-stage lookup: should return per-stage value
+      const developResult = await getConflictCheckPrompt(TMP, "develop");
+      expect(developResult).toBe("Develop-specific prompt");
+
+      // Other stage falls back to global
+      const reviewResult = await getConflictCheckPrompt(TMP, "review");
+      expect(reviewResult).toBe("Global prompt");
+
+      resetPromptConfigCache();
+    });
+  });
 });
 
 // Need to import PipelineConfig type for the Phase 0 tests

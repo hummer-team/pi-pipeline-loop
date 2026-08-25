@@ -493,6 +493,20 @@ export interface PipelineConfig {
    *   - "off": Do not write prompt snapshot (zero overhead).
    */
   audit?: { promptSnapshot?: "full" | "plugin" | "off" };
+
+  /**
+   * Initialization behavior configuration for /pipeline-init command.
+   * Phase 6 (146).
+   */
+  init?: {
+    /**
+     * Model-based conflict detection between SKILL and plugin prompts.
+     * Default: "model" (run detection during /pipeline-init 1).
+     *   - "model": Use LLM to detect conflicts/overlaps; TUI prompt for action.
+     *   - "off": Skip conflict detection entirely.
+     */
+    conflictCheck?: "model" | "off";
+  };
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────

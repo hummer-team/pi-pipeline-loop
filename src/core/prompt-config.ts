@@ -27,7 +27,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parse as yamlParse } from "yaml";
-import { CONFIG_DIR_NAME, DEFAULT_VERIFY_EXTRACT_PROMPT } from "../constants";
+import { CONFIG_DIR_NAME, DEFAULT_VERIFY_EXTRACT_PROMPT, DEFAULT_CONFLICT_CHECK_PROMPT } from "../constants";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -205,6 +205,44 @@ export async function getVerifyExtractPrompt(
   const globalValue = config["verify_extract"];
   if (globalValue === undefined || globalValue.trim() === "") {
     return DEFAULT_VERIFY_EXTRACT_PROMPT;
+  }
+  return globalValue;
+}
+
+/**
+ * Returns the conflict check prompt from the yml config with per-stage fallback chain.
+ *
+ * Fallback chain when stage is provided:
+ *   conflict_check_prompt_{stage} → global conflict_check_prompt → DEFAULT_CONFLICT_CHECK_PROMPT
+ *
+ * When stage is not provided:
+ *   global conflict_check_prompt → DEFAULT_CONFLICT_CHECK_PROMPT
+ *
+ * Phase 6 (146): mirrors getVerifyExtractPrompt structure.
+ *
+ * @param projectRoot - Absolute path to the project root
+ * @param stage - Optional pipeline stage name for per-stage lookup
+ * @returns The conflict check prompt string (custom from yml or default)
+ */
+export async function getConflictCheckPrompt(
+  projectRoot: string,
+  stage?: string,
+): Promise<string> {
+  const config = await loadPromptConfig(projectRoot);
+
+  // Per-stage lookup when stage is provided
+  if (stage) {
+    const perStageKey = `conflict_check_prompt_${stage}`;
+    const perStageValue = config[perStageKey];
+    if (perStageValue !== undefined && perStageValue.trim() !== "") {
+      return perStageValue;
+    }
+  }
+
+  // Global fallback
+  const globalValue = config["conflict_check_prompt"];
+  if (globalValue === undefined || globalValue.trim() === "") {
+    return DEFAULT_CONFLICT_CHECK_PROMPT;
   }
   return globalValue;
 }

@@ -358,7 +358,9 @@ async function buildCallLLM(
   config: PipelineConfig,
   ctx?: any,
 ): Promise<((prompt: string) => Promise<string>) | null> {
-  if (config.llmExtract !== true) return null;
+  // Phase 6 (146): decouple gate — enable when llmExtract=true OR init.conflictCheck="model"
+  const conflictCheckEnabled = config.init?.conflictCheck === "model";
+  if (config.llmExtract !== true && !conflictCheckEnabled) return null;
 
   try {
     const extCtx = ctx?._ctx;
@@ -558,10 +560,31 @@ async function executeVerifyBranch(
     llmEnabled: String(llmEnabled),
   });
 
+  // Phase 6 (146): model-based conflict detection (after verify generation)
+  let conflictContent = "";
+  if (config.init?.conflictCheck !== "off") {
+    try {
+      const conflictResults = await runConflictCheck(config, callLLM);
+      if (conflictResults.length > 0) {
+        conflictContent = await handleConflictResults(config, conflictResults, ctx);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await safeWriteAuditLog("pipeline-init_conflict_check_error", {
+        error: errMsg,
+      }, "warn");
+      // Failure doesn't block init — graceful degradation
+    }
+  }
+
+  const finalContent = conflictContent
+    ? lines.join("\n") + "\n\n" + conflictContent
+    : lines.join("\n");
+
   return {
     success: true,
     summary: `Generated ${generated.length} verify.md file(s), merged ${merged.length}, skipped ${skipped.length}, errors ${errored.length}`,
-    content: lines.join("\n"),
+    content: finalContent,
     results,
   };
 }
@@ -634,4 +657,189 @@ function mergeInitResults(
     content: [dir.content, verify.content].filter(Boolean).join("\n\n"),
     results: verify.results,
   };
+}
+
+// ─── Phase 6 (146): Model-based conflict detection ──────────────────────────
+
+/** A single conflict/overlap item detected by the model */
+interface ConflictItem {
+  kind: "conflict" | "overlap";
+  skillSnippet: string;
+  pluginSnippet: string;
+  reason: string;
+  suggestion: string;
+}
+
+/** Result of conflict detection for a single stage */
+interface ConflictCheckResult {
+  stage: string;
+  items: ConflictItem[];
+  error?: string;
+}
+
+/**
+ * Runs model-based conflict detection between business SKILL content and
+ * plugin-injected prompt segments for each pipeline stage.
+ *
+ * @param config - Pipeline configuration
+ * @param callLLM - LLM function (null if unavailable)
+ * @returns Array of per-stage conflict results; empty if detection skipped
+ */
+async function runConflictCheck(
+  config: PipelineConfig,
+  callLLM: ((prompt: string) => Promise<string>) | null,
+): Promise<ConflictCheckResult[]> {
+  if (!callLLM) {
+    await safeWriteAuditLog("pipeline-init_conflict_check_skipped", {
+      reason: "llm_unavailable",
+    });
+    return [];
+  }
+
+  if (config.init?.conflictCheck === "off") {
+    return [];
+  }
+
+  // Dynamic import for getConflictCheckPrompt + loadPromptConfig
+  const { getConflictCheckPrompt } = await import("../core/prompt-config");
+  const { readSkillBody } = await import("../core/verify-generator");
+  const { loadPromptConfig } = await import("../core/prompt-config");
+
+  const promptConfig = await loadPromptConfig(config.projectRoot);
+  const stages: Array<[string, string]> = [
+    ["clarify", "design/SKILL.md"],
+    ["plan", "plan/SKILL.md"],
+    ["develop", "develop/SKILL.md"],
+    ["review", "review/SKILL.md"],
+    ["fix", "fix/SKILL.md"],
+  ];
+
+  const results: ConflictCheckResult[] = [];
+
+  for (const [stage, skillPath] of stages) {
+    const skillBody = await readSkillBody(
+      path.join(CONFIG_DIR_NAME, "skills", skillPath),
+      config.projectRoot,
+    );
+    if (!skillBody) continue;
+
+    // Build plugin segments for this stage
+    const executorKey = `stage_executor_${stage}`;
+    const deliverableKey = `stage_deliverable_${stage}`;
+    const pluginSegments: string[] = [];
+    if (promptConfig[executorKey]) pluginSegments.push(`[stage_executor_${stage}]\n${promptConfig[executorKey]}`);
+    if (promptConfig[deliverableKey]) pluginSegments.push(`[stage_deliverable_${stage}]\n${promptConfig[deliverableKey]}`);
+
+    if (pluginSegments.length === 0) continue;
+
+    // Get conflict check prompt (with fallback chain)
+    const checkPrompt = await getConflictCheckPrompt(config.projectRoot, stage);
+    const fullPrompt = `${checkPrompt}\n\n---\n\nSkill content:\n\n${skillBody}\n\n---\n\nPlugin segments:\n\n${pluginSegments.join("\n\n")}`;
+
+    // Call LLM with retry on parse failure
+    let parsed: ConflictCheckResult | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await callLLM(fullPrompt);
+        let cleaned = response.trim();
+        const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (codeBlockMatch) cleaned = codeBlockMatch[1].trim();
+
+        const obj = JSON.parse(cleaned);
+        if (obj && typeof obj === "object" && Array.isArray(obj.items)) {
+          parsed = { stage, items: obj.items };
+          break;
+        }
+      } catch (err) {
+        if (attempt === 1) {
+          // Second attempt failed — skip + audit
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await safeWriteAuditLog("pipeline-init_conflict_check_error", {
+            stage,
+            error: errMsg,
+          }, "warn");
+          results.push({ stage, items: [], error: errMsg });
+        }
+        // First attempt failed — retry silently
+      }
+    }
+
+    if (parsed) {
+      results.push(parsed);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Presents conflict detection results to the user via TUI and handles their choice.
+ * Returns a summary of actions taken.
+ */
+async function handleConflictResults(
+  config: PipelineConfig,
+  conflictResults: ConflictCheckResult[],
+  ctx?: any,
+): Promise<string> {
+  const stagesWithIssues = conflictResults.filter(r => r.items.length > 0);
+  if (stagesWithIssues.length === 0) {
+    return "No conflicts/overlaps detected between SKILL and plugin prompts.";
+  }
+
+  // Build summary of issues
+  const lines: string[] = ["# SKILL vs Plugin Conflict Detection"];
+  let totalIssues = 0;
+  for (const r of stagesWithIssues) {
+    lines.push(`\n## Stage: ${r.stage} (${r.items.length} issue(s))`);
+    for (const item of r.items) {
+      totalIssues++;
+      lines.push(`- [${item.kind}] ${item.reason}`);
+      lines.push(`  - Skill: "${item.skillSnippet.slice(0, 80)}..."`);
+      lines.push(`  - Plugin: "${item.pluginSnippet.slice(0, 80)}..."`);
+    }
+  }
+  lines.push(`\nTotal: ${totalIssues} issue(s) across ${stagesWithIssues.length} stage(s)`);
+
+  // TUI interaction: offer 3 choices
+  const choice = await ctx?.ui?.select?.(
+    `Detected ${totalIssues} conflict/overlap issue(s). Choose action:`,
+    ["auto-optimize", "manual-optimize", "skip"],
+  );
+
+  if (choice === "auto-optimize") {
+    // Collect suggestions
+    const suggestions: string[] = [];
+    for (const r of stagesWithIssues) {
+      for (const item of r.items) {
+        suggestions.push(`[${r.stage}] ${item.suggestion}`);
+      }
+    }
+    // Second confirmation
+    const confirm = await ctx?.ui?.select?.(
+      `Apply these suggestions?\n${suggestions.join("\n")}`,
+      ["yes", "no"],
+    );
+    if (confirm === "yes") {
+      await safeWriteAuditLog("pipeline-init_conflict_check_auto", {
+        issues: String(totalIssues),
+        action: "auto-optimize",
+      });
+      lines.push("\nAuto-optimize: suggestions logged. Manual application required (SKILL files are user-owned).");
+    } else {
+      lines.push("\nAuto-optimize cancelled by user.");
+    }
+  } else if (choice === "manual-optimize") {
+    ctx?.ui?.notify?.(`Please manually fix the ${totalIssues} issue(s) listed above in your SKILL files.`);
+    await safeWriteAuditLog("pipeline-init_conflict_check_manual", {
+      issues: String(totalIssues),
+    });
+  } else {
+    // skip or no UI
+    await safeWriteAuditLog("pipeline-init_conflict_check_skip", {
+      issues: String(totalIssues),
+    });
+    lines.push("\nConflict detection skipped by user.");
+  }
+
+  return lines.join("\n");
 }
