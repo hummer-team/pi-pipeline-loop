@@ -144,12 +144,22 @@ export function createMockCtx(
  * MockCtx structure does not satisfy RuntimeCtx (real ExtensionUIContext/ExtensionContext
  * have many members). This helper centralizes the unsafe cast in one place so call sites
  * need not use `as any`.
+ *
+ * The return type intersects RuntimeCtx with the mock-specific assertion helpers
+ * (metadataUpdates/notifications/statusCalls) so tests can assert on call history
+ * while still passing the ctx as RuntimeCtx to production code.
  */
+export type MockRuntimeCtx = RuntimeCtx & {
+  metadataUpdates: SessionMeta[];
+  notifications: string[];
+  statusCalls: { key: string; text: string }[];
+};
+
 export function createMockRuntimeCtx(
   meta: SessionMeta,
   opts?: Parameters<typeof createMockCtx>[1],
-): RuntimeCtx {
-  return createMockCtx(meta, opts) as unknown as RuntimeCtx;
+): MockRuntimeCtx {
+  return createMockCtx(meta, opts) as unknown as MockRuntimeCtx;
 }
 
 /**
