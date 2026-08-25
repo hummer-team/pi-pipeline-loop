@@ -408,6 +408,22 @@ function normalizeCmd(cmd: string): string {
 }
 
 /**
+ * Normalizes a keyword string for cross-language deduplication.
+ * Issue 4 fix: Chinese/English keyword variants (e.g. "产物文件头部包含 pipeline: {pipelineId}"
+ * vs "include pipeline: {pipelineId} in the artifact file header") differ only in
+ * surrounding prose. Normalize by stripping the `{pipelineId}` placeholder and
+ * collapsing whitespace so both variants reduce to the same canonical key
+ * containing "pipeline". This prevents duplicate rules under mode:and.
+ */
+function normalizeKeywordForDedup(keyword: string): string {
+  return keyword
+    .trim()
+    .replace(/\{pipelineId\}/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/**
  * Computes the diff between expected delivery items and existing verify.md rules.
  *
  * - expectedItems → expected rules (file → requiredFiles, command → requiredCommands,
@@ -433,7 +449,7 @@ export function diffAndMergeRules(
   const existingCmds = new Set(
     (existing.requiredCommands ?? []).map(c => normalizeCmd(c.cmd)),
   );
-  const existingKeywords = new Set((existing.keywords ?? []).map(k => k.trim()));
+  const existingKeywords = new Set((existing.keywords ?? []).map(k => normalizeKeywordForDedup(k)));
   const hasGit = !!existing.requiredGit && Object.keys(existing.requiredGit).length > 0;
 
   // Detect user-authored extras that the expected set cannot reproduce.
@@ -454,7 +470,7 @@ export function diffAndMergeRules(
       toAdd.push(item);
     } else if (item.type === "command" && !existingCmds.has(normalizeCmd(item.target))) {
       toAdd.push(item);
-    } else if (item.type === "keyword" && !existingKeywords.has(item.target.trim())) {
+    } else if (item.type === "keyword" && !existingKeywords.has(normalizeKeywordForDedup(item.target))) {
       toAdd.push(item);
     } else if (item.type === "git" && !hasGit) {
       toAdd.push(item);

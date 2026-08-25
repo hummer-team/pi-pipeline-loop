@@ -615,6 +615,25 @@ export interface PipelineJsonConfig {
    * Default: "auto" (zero-interaction, backward compatible).
    */
   startStageMode?: StartStageMode;
+
+  /**
+   * Audit configuration for prompt snapshots.
+   * Controls what is recorded in the prompt snapshot audit log.
+   * Default: { promptSnapshot: "full" }.
+   */
+  audit?: { promptSnapshot?: "full" | "plugin" | "off" };
+
+  /**
+   * Initialization behavior configuration for /pipeline-init command.
+   * Phase 6 (146).
+   */
+  init?: {
+    /**
+     * Model-based conflict detection between SKILL and plugin prompts.
+     * Default: "model" (run detection during /pipeline-init 1).
+     */
+    conflictCheck?: "model" | "off";
+  };
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────

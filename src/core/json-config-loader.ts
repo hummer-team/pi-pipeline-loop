@@ -87,6 +87,8 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     llmExtract: typeof json.llmExtract === "boolean" ? json.llmExtract : undefined,
     protect: parseProtectConfig(json.protect),
     startStageMode: parseStartStageMode(json.startStageMode),
+    audit: parseAuditConfig(json.audit),
+    init: parseInitConfig(json.init),
   };
 }
 
@@ -126,6 +128,55 @@ function parseOutputConfig(raw: unknown): { pipelineStage?: boolean } | undefine
     return undefined;
   }
   return { pipelineStage: typeof pipelineStage === "boolean" ? pipelineStage : undefined };
+}
+
+/**
+ * Parses the audit configuration from JSON config.
+ * Validates promptSnapshot is one of "full" | "plugin" | "off".
+ * Returns undefined for missing/invalid audit config.
+ */
+function parseAuditConfig(raw: unknown): { promptSnapshot?: "full" | "plugin" | "off" } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    console.warn(`[pi-pipeline] Invalid audit config — expected object, got ${typeof raw}`);
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const promptSnapshot = obj.promptSnapshot;
+  if (promptSnapshot !== undefined &&
+      promptSnapshot !== "full" &&
+      promptSnapshot !== "plugin" &&
+      promptSnapshot !== "off") {
+    console.warn(
+      `[pi-pipeline] Invalid audit.promptSnapshot "${String(promptSnapshot)}" — expected "full"|"plugin"|"off", ignoring`,
+    );
+    return undefined;
+  }
+  return { promptSnapshot: (promptSnapshot as "full" | "plugin" | "off") ?? undefined };
+}
+
+/**
+ * Parses the init configuration from JSON config.
+ * Validates conflictCheck is one of "model" | "off".
+ * Returns undefined for missing/invalid init config.
+ */
+function parseInitConfig(raw: unknown): { conflictCheck?: "model" | "off" } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    console.warn(`[pi-pipeline] Invalid init config — expected object, got ${typeof raw}`);
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const conflictCheck = obj.conflictCheck;
+  if (conflictCheck !== undefined &&
+      conflictCheck !== "model" &&
+      conflictCheck !== "off") {
+    console.warn(
+      `[pi-pipeline] Invalid init.conflictCheck "${String(conflictCheck)}" — expected "model"|"off", ignoring`,
+    );
+    return undefined;
+  }
+  return { conflictCheck: (conflictCheck as "model" | "off") ?? undefined };
 }
 
 /**
@@ -435,5 +486,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       ask: json.protect?.ask ?? false,
     },
     startStageMode: json.startStageMode ?? "auto",
+    audit: { promptSnapshot: json.audit?.promptSnapshot ?? "full" },
+    init: { conflictCheck: json.init?.conflictCheck ?? "model" },
   };
 }

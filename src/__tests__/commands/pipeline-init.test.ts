@@ -1407,15 +1407,83 @@ describe("createPipelineInitCommand", () => {
   // ─── Phase 6 (146): conflict detection ────────────────────────────────────
 
   describe("Phase 6 (146): conflict detection", () => {
-    it("conflictCheck=off skips detection even when callLLM is available", async () => {
+    it("conflictCheck=off skips detection and no conflict output appears", async () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         init: { conflictCheck: "off" },
       });
-      // With conflictCheck=off, the buildCallLLM gate should still build
-      // if llmExtract is enabled, but conflict detection is not invoked.
-      // We verify via the result that no conflict-related output appears.
+      // Create .pi/skills with skill files so verify branch runs
+      for (const stage of ["plan", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-result.md\n`,
+          "utf-8",
+        );
+      }
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" });
+      // conflictCheck=off → no conflict detection output
+      expect(result.success).toBe(true);
+      expect(result.content).not.toContain("Conflict Detection");
       expect(config.init?.conflictCheck).toBe("off");
+    });
+
+    it("conflictCheck=model with unavailable LLM emits TUI hint, not silent", async () => {
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        init: { conflictCheck: "model" },
+        llmExtract: false,
+      });
+      for (const stage of ["plan", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-result.md\n`,
+          "utf-8",
+        );
+      }
+      const notifications: string[] = [];
+      const mockCtx = { ui: { notify: (m: string) => { notifications.push(m); } } };
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "1" }, mockCtx);
+      // Model unavailable → TUI hint about degraded conflictCheck
+      expect(result.success).toBe(true);
+      const hint = notifications.find(n => n.includes("conflictCheck"));
+      expect(hint).toBeDefined();
+      expect(hint).toContain("off");
+    });
+
+    it("JSON config loader resolves audit.promptSnapshot and init.conflictCheck defaults", async () => {
+      const { loadJsonConfig, resolvePipelineConfig } = await import("../../core/json-config-loader");
+      // Write a minimal pipeline_loop.json with audit/init fields
+      const jsonPath = path.join(TMP, "pipeline_loop.json");
+      await fs.writeFile(jsonPath, JSON.stringify({
+        stages: { clarify: { nextStage: "plan" } },
+        audit: { promptSnapshot: "off" },
+        init: { conflictCheck: "off" },
+      }), "utf-8");
+      const json = loadJsonConfig(jsonPath);
+      expect(json.audit?.promptSnapshot).toBe("off");
+      expect(json.init?.conflictCheck).toBe("off");
+
+      const resolved = resolvePipelineConfig(json, TMP);
+      expect(resolved.audit?.promptSnapshot).toBe("off");
+      expect(resolved.init?.conflictCheck).toBe("off");
+    });
+
+    it("JSON config loader defaults audit.promptSnapshot=full and init.conflictCheck=model", async () => {
+      const { loadJsonConfig, resolvePipelineConfig } = await import("../../core/json-config-loader");
+      const jsonPath = path.join(TMP, "pipeline_loop_default.json");
+      await fs.writeFile(jsonPath, JSON.stringify({
+        stages: { clarify: { nextStage: "plan" } },
+      }), "utf-8");
+      const json = loadJsonConfig(jsonPath);
+      const resolved = resolvePipelineConfig(json, TMP);
+      expect(resolved.audit?.promptSnapshot).toBe("full");
+      expect(resolved.init?.conflictCheck).toBe("model");
     });
 
     it("DEFAULT_CONFLICT_CHECK_PROMPT is defined and non-empty", async () => {

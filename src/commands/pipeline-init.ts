@@ -437,6 +437,10 @@ async function executeVerifyBranch(
   // Construct callLLM if llmExtract is enabled
   const callLLM = await buildCallLLM(config, ctx);
   const llmEnabled = callLLM !== null;
+  // Issue 10 fix: display flag reflects llmExtract specifically, not conflictCheck
+  // (conflictCheck may build callLLM even when llmExtract is off; the display
+  // should not mislead the user into thinking verify LLM extraction is active)
+  const llmExtractEnabled = config.llmExtract === true && llmEnabled;
 
   // LLM extraction progress animation (gated by output.pipelineStage)
   const ui = createPipelineUI(config);
@@ -482,7 +486,7 @@ async function executeVerifyBranch(
     `- merged: ${merged.length}`,
     `- skipped: ${skipped.length}`,
     `- errors: ${errored.length}`,
-    `- llmExtract: ${llmEnabled ? "on" : "off"}`,
+    `- llmExtract: ${llmExtractEnabled ? "on" : "off"}`,
   ];
   if (generated.length > 0) {
     lines.push("Generated:");
@@ -564,9 +568,22 @@ async function executeVerifyBranch(
   let conflictContent = "";
   if (config.init?.conflictCheck !== "off") {
     try {
-      const conflictResults = await runConflictCheck(config, callLLM);
+      // Per-stage progress callback via the same UI used for verify branch
+      const onStageProgress = showWorking
+        ? (stage: string) => { ui.progressUpdate(ctx, `(conflict-check:${stage})`); }
+        : undefined;
+      const conflictResults = await runConflictCheck(config, callLLM, onStageProgress);
       if (conflictResults.length > 0) {
         conflictContent = await handleConflictResults(config, conflictResults, ctx);
+      } else if (!callLLM) {
+        // Issue 1 fix: explicit TUI hint when conflictCheck="model" but LLM unavailable
+        // (previously silent audit noise). Only when llmExtract=false AND conflictCheck="model"
+        // (if llmExtract=true the "llm: unavailable" line is already emitted above).
+        if (config.llmExtract !== true) {
+          const hint = "- conflictCheck: model requested but LLM unavailable; set init.conflictCheck='off' to silence";
+          lines.push(hint);
+          ctx?.ui?.notify?.(hint);
+        }
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -688,6 +705,7 @@ interface ConflictCheckResult {
 async function runConflictCheck(
   config: PipelineConfig,
   callLLM: ((prompt: string) => Promise<string>) | null,
+  onStageProgress?: (stage: string) => void,
 ): Promise<ConflictCheckResult[]> {
   if (!callLLM) {
     await safeWriteAuditLog("pipeline-init_conflict_check_skipped", {
@@ -700,10 +718,9 @@ async function runConflictCheck(
     return [];
   }
 
-  // Dynamic import for getConflictCheckPrompt + loadPromptConfig
-  const { getConflictCheckPrompt } = await import("../core/prompt-config");
+  // Dynamic import for getConflictCheckPrompt + loadPromptConfig (merged single import)
+  const { getConflictCheckPrompt, loadPromptConfig } = await import("../core/prompt-config");
   const { readSkillBody } = await import("../core/verify-generator");
-  const { loadPromptConfig } = await import("../core/prompt-config");
 
   const promptConfig = await loadPromptConfig(config.projectRoot);
   const stages: Array<[string, string]> = [
@@ -717,6 +734,7 @@ async function runConflictCheck(
   const results: ConflictCheckResult[] = [];
 
   for (const [stage, skillPath] of stages) {
+    onStageProgress?.(stage);
     const skillBody = await readSkillBody(
       path.join(CONFIG_DIR_NAME, "skills", skillPath),
       config.projectRoot,
@@ -750,6 +768,9 @@ async function runConflictCheck(
           parsed = { stage, items: obj.items };
           break;
         }
+        // Issue 6 fix: invalid JSON structure (items not an array) — treat as
+        // parse failure so the retry + audit path is taken uniformly.
+        throw new Error("invalid conflict-check JSON schema: items is not an array");
       } catch (err) {
         if (attempt === 1) {
           // Second attempt failed — skip + audit
@@ -814,17 +835,60 @@ async function handleConflictResults(
         suggestions.push(`[${r.stage}] ${item.suggestion}`);
       }
     }
-    // Second confirmation
+    // Second confirmation before writing back to user-owned SKILL files
     const confirm = await ctx?.ui?.select?.(
-      `Apply these suggestions?\n${suggestions.join("\n")}`,
+      `Apply these suggestions to SKILL files? (will write to disk)\n${suggestions.join("\n")}`,
       ["yes", "no"],
     );
     if (confirm === "yes") {
+      // Issue 2 fix: implement real write-back of suggestions to SKILL.md files.
+      // Group suggestions by stage → locate SKILL file → apply each suggestion's
+      // edit (skillSnippet → suggestion) via text replacement. Backup original first.
+      const appliedStages: string[] = [];
+      for (const r of stagesWithIssues) {
+        const [, skillPath] = [["clarify", "design/SKILL.md"], ["plan", "plan/SKILL.md"],
+          ["develop", "develop/SKILL.md"], ["review", "review/SKILL.md"],
+          ["fix", "fix/SKILL.md"]].find(([s]) => s === r.stage) || [];
+        if (!skillPath) continue;
+        const skillFile = path.join(config.projectRoot, CONFIG_DIR_NAME, "skills", skillPath);
+        if (!fs.existsSync(skillFile)) continue;
+        try {
+          const original = fs.readFileSync(skillFile, "utf-8");
+          // Audit original content hash for traceability
+          let modified = original;
+          for (const item of r.items) {
+            if (!item.suggestion || !item.skillSnippet) continue;
+            // Apply suggestion: replace skillSnippet with suggestion text in the file
+            const snippet = item.skillSnippet.trim();
+            if (modified.includes(snippet)) {
+              modified = modified.replace(snippet, item.suggestion.trim());
+            }
+          }
+          if (modified !== original) {
+            // Backup original with .bak timestamp
+            const backupPath = `${skillFile}.bak-${Date.now()}`;
+            fs.writeFileSync(backupPath, original, "utf-8");
+            fs.writeFileSync(skillFile, modified, "utf-8");
+            appliedStages.push(r.stage);
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await safeWriteAuditLog("pipeline-init_conflict_check_auto_error", {
+            stage: r.stage,
+            error: errMsg,
+          }, "error");
+        }
+      }
       await safeWriteAuditLog("pipeline-init_conflict_check_auto", {
         issues: String(totalIssues),
         action: "auto-optimize",
+        appliedStages: appliedStages.join(",") || "none",
       });
-      lines.push("\nAuto-optimize: suggestions logged. Manual application required (SKILL files are user-owned).");
+      if (appliedStages.length > 0) {
+        lines.push(`\nAuto-optimize applied to: ${appliedStages.join(", ")} (originals backed up as .bak-<timestamp>).`);
+      } else {
+        lines.push("\nAuto-optimize: no changes applicable (snippets not matched in SKILL files).");
+      }
     } else {
       lines.push("\nAuto-optimize cancelled by user.");
     }
