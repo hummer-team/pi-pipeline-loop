@@ -137,3 +137,36 @@ describe("createValidateSummary", () => {
     expect(line).toContain("comment=ok");
   });
 });
+
+// ─── Phase 2 (143): Versioned summary validation ─────────────────────────────
+
+describe("validate_summary — versioned file (143)", () => {
+  it("validates a versioned summary file (review-2.md) and updates frontmatter", async () => {
+    const TMP = join(tmpdir(), "pi-validate-versioned-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const summaryPath = join(TMP, "review-2.md");
+    const fm = {
+      ...SAMPLE_FM,
+      stage: "review",
+      version: 2,
+    };
+    await writeFile(summaryPath, `---\n${JSON.stringify(fm)}\n---\n# Review\nBody`);
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      summaries: { review: { path: summaryPath, hash: "abc", status: "pending" as const, version: 2 } },
+    });
+    const ctx = createCtx(meta);
+
+    const tool = createValidateSummary(config);
+    const result = (await tool.execute({
+      stage: "review", isApproved: true, comment: "v2 looks good",
+    }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+
+    const updated = await readFile(summaryPath, "utf-8");
+    expect(updated).toContain('"validation_status": "valid"');
+    expect(updated).toContain('"version": 2');
+  });
+});

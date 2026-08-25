@@ -157,6 +157,14 @@ export interface SummaryMeta {
 
   /** Validation status. "skipped" indicates the stage was skipped by user decision. */
   status: "pending" | "valid" | "invalid" | "skipped";
+
+  /**
+   * Version number for versioned summary artifacts.
+   * First generation: 1 (or undefined, treated as 1).
+   * Subsequent loop iterations: 2, 3, ... (file named `{stage}-{n}.md`).
+   * Backward-compatible: missing field is treated as version 1.
+   */
+  version?: number;
 }
 
 // ─── Domain Configuration ────────────────────────────────────────────────────
