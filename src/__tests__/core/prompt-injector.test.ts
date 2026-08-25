@@ -1154,4 +1154,94 @@ describe("createPromptInjector", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  // ─── Phase 3 (143): context_reference dedup + commitIds hint ─────────────────
+
+  describe("context_reference deduplication (143 Phase 3)", () => {
+    it("dedupes when prevSummary.path and contextFiles contain the same file", async () => {
+      const config = makeTestConfig({ projectRoot: "/my/project" });
+      const sharedPath = "/my/project/.pi/audit/pipe-1/develop.md";
+      const meta = makeTestMeta({
+        currentStage: "review",
+        previousStage: "develop",
+        summaries: {
+          develop: { path: sharedPath, hash: "abc", status: "valid" },
+        },
+        contextFiles: {
+          review: [sharedPath, "/other/file.md"],
+        },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // The shared path should appear only once in the REQUIRED CONTEXT FILES
+      const occurrences = (result.systemPrompt.match(new RegExp(sharedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+      expect(occurrences).toBe(1);
+
+      // The other file should also appear
+      expect(result.systemPrompt).toContain("/other/file.md");
+    });
+
+    it("keeps all files when prevSummary and contextFiles are different", async () => {
+      const config = makeTestConfig({ projectRoot: "/my/project" });
+      const meta = makeTestMeta({
+        currentStage: "review",
+        previousStage: "develop",
+        summaries: {
+          develop: { path: "/my/project/.pi/audit/pipe-1/develop.md", hash: "abc", status: "valid" },
+        },
+        contextFiles: {
+          review: ["/my/project/.pi/audit/pipe-1/plan.md"],
+        },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // Both files should be listed
+      expect(result.systemPrompt).toContain("develop.md");
+      expect(result.systemPrompt).toContain("plan.md");
+    });
+  });
+
+  describe("commitIds hint in develop/fix stage executor (143 Phase 3)", () => {
+    it("develop stage executor prompt includes commitIds requirement", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = { session: { getMeta: () => meta }, getSystemPrompt: () => "" };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("commitIds");
+      expect(result.systemPrompt).toContain("generate_stage_summary");
+    });
+
+    it("fix stage executor prompt includes commitIds requirement", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "fix" });
+      const ctx = { session: { getMeta: () => meta }, getSystemPrompt: () => "" };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result.systemPrompt).toContain("commitIds");
+      expect(result.systemPrompt).toContain("generate_stage_summary");
+    });
+
+    it("review stage executor prompt does NOT include commitIds requirement", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "review" });
+      const ctx = { session: { getMeta: () => meta }, getSystemPrompt: () => "" };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // review stage should not have commitIds requirement
+      expect(result.systemPrompt).not.toContain("阶段总结要求");
+    });
+  });
 });

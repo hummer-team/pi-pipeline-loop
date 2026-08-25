@@ -40,17 +40,20 @@ function buildContextReference(
 ): string | null {
   const prevStage = meta.previousStage;
   const prevSummary = prevStage ? meta.summaries[prevStage] : undefined;
-  const filesToRead: string[] = [];
+  // Use Set for deduplication: prevSummary.path and contextFiles may reference
+  // the same file (e.g. when the summary is also listed as a context file).
+  // Dedup prevents the agent from being asked to read the same file twice.
+  const filesToReadSet = new Set<string>();
 
   // Clarify stage: include requirement document path at the top (D2)
   if (meta.currentStage === "clarify" && meta.requirementDoc) {
     const reqDocPath = path.join(config.projectRoot, meta.requirementDoc);
-    filesToRead.push(reqDocPath);
+    filesToReadSet.add(reqDocPath);
   }
 
   // Include previous stage's validated summary
   if (prevSummary && prevSummary.status === "valid") {
-    filesToRead.push(prevSummary.path);
+    filesToReadSet.add(prevSummary.path);
   }
 
   // Include any context files for the current stage (set during handoff)
@@ -60,17 +63,17 @@ function buildContextReference(
     if (Array.isArray(stageContextFiles)) {
       for (const f of stageContextFiles) {
         if (typeof f === "string") {
-          filesToRead.push(f);
+          filesToReadSet.add(f);
         }
       }
     }
   }
 
-  if (filesToRead.length === 0) {
+  if (filesToReadSet.size === 0) {
     return null;
   }
 
-  return `# REQUIRED CONTEXT FILES (MUST READ FIRST)\n${filesToRead.map((f) => `- ${f}`).join("\n")}`;
+  return `# REQUIRED CONTEXT FILES (MUST READ FIRST)\n${[...filesToReadSet].map((f) => `- ${f}`).join("\n")}`;
 }
 
 /**
@@ -198,7 +201,9 @@ async function buildLoopStatus(
     `- Constraint: You MUST run tests after changes. If tests fail, this counts as an attempt.\n` +
     `- Limit: After ${meta.maxLoops} failed attempts, the pipeline will freeze.\n` +
     `- ${scopeParts.join("\n- ")}\n` +
-    `- Write Scope: ${buildWriteScopeLine(config.stages[meta.currentStage])}`
+    `- Write Scope: ${buildWriteScopeLine(config.stages[meta.currentStage])}\n` +
+    // Phase 3 (143): develop/fix stages must carry commitIds in stage summary
+    `- Summary Requirement: Stage summary MUST call \`generate_stage_summary\` with \`commitIds\` parameter (all git commit ids produced in this stage)`
   );
 }
 
