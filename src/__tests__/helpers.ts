@@ -1,4 +1,5 @@
 import type { PipelineConfig, SessionMeta, PipelineStage } from "../types";
+import type { RuntimeCtx } from "../core/runtime-ctx";
 import { PROTECTED_PATHS } from "../constants";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -136,6 +137,19 @@ export function createMockCtx(
   }
 
   return mock;
+}
+
+/**
+ * Return a type-complete RuntimeCtx test mock.
+ * MockCtx structure does not satisfy RuntimeCtx (real ExtensionUIContext/ExtensionContext
+ * have many members). This helper centralizes the unsafe cast in one place so call sites
+ * need not use `as any`.
+ */
+export function createMockRuntimeCtx(
+  meta: SessionMeta,
+  opts?: Parameters<typeof createMockCtx>[1],
+): RuntimeCtx {
+  return createMockCtx(meta, opts) as unknown as RuntimeCtx;
 }
 
 /**
