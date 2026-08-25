@@ -143,3 +143,77 @@ describe("createPipelineHandoff", () => {
     expect(result.error).toContain("Unknown stage");
   });
 });
+
+// ─── Phase 4 (143): Hash mismatch blocks handoff ─────────────────────────────
+
+import { writeFile, rm } from "node:fs/promises";
+import crypto from "node:crypto";
+import { __resetSharedStateDir } from "../../core/session-state";
+import { __resetAuditDirPath } from "../../utils/auditLog";
+
+describe("pipeline_handoff — hash mismatch (143 Phase 4)", () => {
+  it("blocks handoff when summary file has been manually modified", async () => {
+    const TMP = join(tmpdir(), `pi-handoff-hash-${Date.now()}`);
+    await mkdir(TMP, { recursive: true });
+    const summaryPath = join(TMP, "develop.md");
+
+    // Write initial content and compute hash
+    const originalContent = "# Develop Summary\nOriginal content";
+    await writeFile(summaryPath, originalContent, "utf-8");
+    const originalHash = crypto.createHash("sha256").update(originalContent).digest("hex");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      summaries: {
+        develop: { path: summaryPath, hash: originalHash, status: "valid" as const },
+      },
+    });
+    const ctx = createCtx(meta);
+
+    // Simulate manual modification
+    await writeFile(summaryPath, "# Develop Summary\nModified by human reviewer", "utf-8");
+
+    const tool = createPipelineHandoff(config);
+    const result = (await tool.execute({ nextStage: "review" }, ctx as any)) as any;
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("modified manually");
+    expect(result.error).toContain("hash mismatch");
+    expect(result.mismatchedStage).toBe("develop");
+
+    __resetSharedStateDir();
+    __resetAuditDirPath();
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("allows handoff when hashes match", async () => {
+    const TMP = join(tmpdir(), `pi-handoff-ok-${Date.now()}`);
+    await mkdir(TMP, { recursive: true });
+    const summaryPath = join(TMP, "develop.md");
+
+    const content = "# Develop Summary\nValid content";
+    await writeFile(summaryPath, content, "utf-8");
+    const hash = crypto.createHash("sha256").update(content).digest("hex");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      summaries: {
+        develop: { path: summaryPath, hash, status: "valid" as const },
+      },
+    });
+    const ctx = createCtx(meta);
+
+    const tool = createPipelineHandoff(config);
+    const result = (await tool.execute({ nextStage: "review" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+
+    __resetSharedStateDir();
+    __resetAuditDirPath();
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

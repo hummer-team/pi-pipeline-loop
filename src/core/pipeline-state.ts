@@ -7,6 +7,7 @@
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { buildStageSequence } from "../utils/stage-sequence";
 import { safeWriteStageAudit } from "../utils/auditLog";
+import { verifySummaryHash } from "../utils/summary-hash";
 
 /**
  * Creates the `pipeline_state` tool.
@@ -60,6 +61,8 @@ export function createPipelineState(config: PipelineConfig): Tool {
         },
         summaries: meta.summaries,
         stageStartTime: new Date(meta.stageStartTime).toISOString(),
+        // Phase 4 (143): Hash integrity check results for all tracked summaries
+        summaryIntegrity: verifySummaryHash(meta),
       };
 
       // Audit pipeline_state query with full snapshot

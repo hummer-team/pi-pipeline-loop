@@ -463,4 +463,57 @@ Verify plan document exists.`,
       expect((result as any).message).toContain("skipVerify is only allowed");
     });
   });
+
+  // ─── Phase 4 (143): Hash mismatch blocks advance ────────────────────────────
+
+  describe("summary hash mismatch precheck (143 Phase 4)", () => {
+    it("blocks advance when current stage summary hash mismatches disk", async () => {
+      const TMP = join(tmpdir(), `pi-advancer-hash-${Date.now()}`);
+      await mkdir(TMP, { recursive: true });
+      const summaryPath = join(TMP, "develop.md");
+
+      // Write file and compute hash
+      const content = "# Develop Summary\nOriginal";
+      await writeFile(summaryPath, content, "utf-8");
+      const originalHash = require("node:crypto").createHash("sha256").update(content).digest("hex");
+
+      // Modify file (simulate manual edit)
+      await writeFile(summaryPath, "# Develop Summary\nModified", "utf-8");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        summaries: {
+          develop: { path: summaryPath, hash: originalHash, status: "valid" as const },
+        },
+      });
+      const ctx = createCtx(meta);
+
+      const tool = createStageAdvancer(config);
+      const result = (await tool.execute({}, ctx as any)) as any;
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("modified manually");
+      expect(result.message).toContain("hash mismatch");
+      expect(result.mismatchedStage).toBe("develop");
+
+      await require("node:fs/promises").rm(TMP, { recursive: true, force: true });
+    });
+
+    it("allows advance when no summary exists for current stage", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        summaries: {},
+      });
+      const ctx = createCtx(meta);
+
+      const tool = createStageAdvancer(config);
+      const result = (await tool.execute({}, ctx as any)) as any;
+
+      // Should NOT block on hash check (no summary to check)
+      // May still fail on verification, but not on hash mismatch
+      expect(result.mismatchedStage).toBeUndefined();
+    });
+  });
 });

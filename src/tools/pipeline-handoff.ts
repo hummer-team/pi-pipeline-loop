@@ -9,6 +9,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types"
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { freezeAndPrompt } from "../core/flow-state";
+import { findFirstMismatch } from "../utils/summary-hash";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -67,6 +68,18 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
             `'${currentSummary?.status || "missing"}'. ` +
             `Please generate and validate summary first.`,
           help: "Run: generate_stage_summary, then validate_summary",
+        };
+      }
+
+      // Phase 4 (143): Hash integrity check — detect manual summary modifications
+      const mismatchedStage = findFirstMismatch(meta);
+      if (mismatchedStage) {
+        return {
+          success: false,
+          error:
+            `Summary '${mismatchedStage}' has been modified manually (hash mismatch). ` +
+            `Confirm to re-enter stage via stage_advance({ nextStage: "${mismatchedStage}" }).`,
+          mismatchedStage,
         };
       }
 

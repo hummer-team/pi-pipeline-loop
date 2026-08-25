@@ -16,6 +16,7 @@ import { runVerification, precheckRequiredFiles } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { applyVerifyFail, maybeHandlePlanHumanGate } from "./verify-advance";
 import { safeWriteStageAudit } from "../utils/auditLog";
+import { findFirstMismatch } from "../utils/summary-hash";
 
 /**
  * Dependencies injected into the stage advancer for verification execution.
@@ -83,6 +84,23 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       const meta = ctx.session.getMeta() as SessionMeta;
       const currentStage: PipelineStage = meta.currentStage;
+
+      // Phase 4 (143): Hash integrity check — if current stage has a summary
+      // with a hash mismatch, block advance and prompt for re-entry
+      if (meta.summaries[currentStage]) {
+        const mismatchedStage = findFirstMismatch(meta);
+        if (mismatchedStage) {
+          return {
+            success: false,
+            message:
+              `Summary '${mismatchedStage}' has been modified manually (hash mismatch). ` +
+              `Cannot advance. Re-enter stage '${mismatchedStage}' to regenerate summary, ` +
+              `or call stage_advance({ nextStage: "${mismatchedStage}" }) to confirm re-entry.`,
+            mismatchedStage,
+            hint: `stage_advance({ nextStage: "${mismatchedStage}" })`,
+          };
+        }
+      }
 
       // (a) Intercept completed stage
       if (currentStage === "completed") {
