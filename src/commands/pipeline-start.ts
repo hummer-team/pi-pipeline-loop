@@ -346,6 +346,53 @@ function buildResumeMeta(
 }
 
 /**
+ * Unified resume execution path shared by auto / confirm / ask branches.
+ *
+ * Centralizes buildResumeMeta → updateMeta → syncStageStatusBar → dual audit
+ * (pipeline_start + pipeline_resumed) so that future field / audit changes
+ * need only be made in one place (DRY).
+ *
+ * @param ctx - pi extension context
+ * @param meta - Current (aborted) session metadata
+ * @param config - Pipeline configuration
+ * @param ui - PipelineUI instance
+ * @param file - User-supplied file argument (may be empty)
+ * @param reason - Audit reason tag (pipeline_start_resume / _confirm_resume / _ask_resume)
+ */
+async function resumePipeline(
+  ctx: any,
+  meta: SessionMeta,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  file: string,
+  reason: string,
+): Promise<{ success: boolean; message?: string; pipelineId?: string; currentStage?: PipelineStage }> {
+  const newMeta = buildResumeMeta(meta, config);
+  ctx?.session?.updateMeta?.(newMeta);
+  syncStageStatusBar(ui, ctx);
+
+  await safeWriteStageAudit(config, "pipeline_start", newMeta, {
+    command: file ? `/pipeline-start ${file}` : "/pipeline-start",
+    file: file || "(none)",
+    mode: "resume",
+    previousStage: meta.currentStage,
+  });
+  await safeWriteStageAudit(config, "pipeline_resumed", newMeta, {
+    fromStage: meta.currentStage,
+    toStage: newMeta.currentStage,
+    reason,
+    requirementDoc: newMeta.requirementDoc ?? "",
+  });
+
+  return {
+    success: true,
+    message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
+    pipelineId: newMeta.pipelineId,
+    currentStage: newMeta.currentStage,
+  };
+}
+
+/**
  * Unified new-pipeline execution path for fresh / spec-stage / ask-new flows.
  *
  * Steps:
@@ -434,6 +481,12 @@ async function startNewPipeline(
     maybeAutoLaunchClarify(ctx, config, ui, newMeta, file);
   }
 
+  // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
+  // but still emit a notify hint so the user knows the next step (Medium #3).
+  if (startStage === "plan") {
+    ui.notify(ctx, `Pipeline started at stage "plan". Run the plan agent to continue.`);
+  }
+
   return {
     success: true,
     message: messagePrefix + messageSuffix,
@@ -464,23 +517,28 @@ function resolveAgentMention(
 
   const agentFilePath = path.join(config.projectRoot, stageConfig.agentPath);
 
-  // Try to read frontmatter name from agent file
+  // Read agent file — distinguish file-missing/unreadable (return null so
+  // the caller falls back to notify) from file-exists-but-no-frontmatter
+  // (basename fallback is still safe to inject). Medium #4.
+  let content: string;
   try {
-    const content = fs.readFileSync(agentFilePath, "utf-8");
-    // Parse YAML frontmatter: ^---\n...\n---
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (fmMatch) {
-      const fmBody = fmMatch[1];
-      const nameMatch = fmBody.match(/^name:\s*(.+)$/m);
-      if (nameMatch) {
-        return nameMatch[1].trim();
-      }
-    }
+    content = fs.readFileSync(agentFilePath, "utf-8");
   } catch {
-    // File unreadable — fall through to basename fallback
+    // File unreadable / missing → null (caller does notify fallback, no inject)
+    return null;
   }
 
-  // Fallback: basename without extension
+  // Parse YAML frontmatter: ^---\n...\n---
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (fmMatch) {
+    const fmBody = fmMatch[1];
+    const nameMatch = fmBody.match(/^name:\s*(.+)$/m);
+    if (nameMatch) {
+      return nameMatch[1].trim();
+    }
+  }
+
+  // File exists but no frontmatter name → basename fallback (safe to inject)
   return path.basename(stageConfig.agentPath, ".md");
 }
 
@@ -576,30 +634,7 @@ async function handleAbortedPipeline(
 
   // --- Resume branch ---
   if (resumeEligible) {
-    const newMeta = buildResumeMeta(meta, config);
-    ctx?.session?.updateMeta?.(newMeta);
-    syncStageStatusBar(ui, ctx);
-
-    // Dual audit events for resume
-    await safeWriteStageAudit(config, "pipeline_start", newMeta, {
-      command: file ? `/pipeline-start ${file}` : "/pipeline-start",
-      file: file || "(none)",
-      mode: "resume",
-      previousStage: meta.currentStage,
-    });
-    await safeWriteStageAudit(config, "pipeline_resumed", newMeta, {
-      fromStage: meta.currentStage,
-      toStage: newMeta.currentStage,
-      reason: "pipeline_start_resume",
-      requirementDoc: newMeta.requirementDoc ?? "",
-    });
-
-    return {
-      success: true,
-      message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
-      pipelineId: newMeta.pipelineId,
-      currentStage: newMeta.currentStage,
-    };
+    return resumePipeline(ctx, meta, config, ui, file, "pipeline_start_resume");
   }
 
   // --- Terminal stage: completed → require fresh start ---
@@ -628,28 +663,12 @@ async function handleAbortedPipeline(
   }
 
   // --- Start new pipeline (different file, or no requirementDoc with file provided) ---
-  // Backward compat: when meta.requirementDoc exists (different file case),
-  // preserve it and skip re-reading the file (the old buildRestartMeta path
-  // did not call readFileSync). When only a new file is provided, use the
-  // unified startNewPipeline path.
+  // Unified path: both the "different doc" and "no requirementDoc + new file"
+  // cases go through startNewPipeline so that the new file is re-read, verify.md
+  // files are re-checked, and maybeAutoLaunchClarify is invoked (fixes Medium #1).
   if (meta.requirementDoc) {
-    // Preserve existing requirementDoc (do not re-read file)
-    const { pipelineId, newMeta } = buildStartMeta(meta, config, meta.requirementDoc, "clarify");
-    ctx?.session?.updateMeta?.(newMeta);
-    syncStageStatusBar(ui, ctx);
-    await safeWriteStageAudit(config, "pipeline_start", newMeta, {
-      command: file ? `/pipeline-start ${file}` : "/pipeline-start",
-      file: file || "(none)",
-      mode: "fresh",
-      startStage: "clarify",
-      previousStage: meta.currentStage,
-    });
-    return {
-      success: true,
-      message: `Pipeline restarted as "${pipelineId}" at stage "clarify".`,
-      pipelineId,
-      currentStage: "clarify",
-    };
+    // Different doc: prefer user's new file; defensive fallback to existing doc
+    return startNewPipeline(ctx, config, ui, file || meta.requirementDoc, "clarify", meta);
   }
 
   // No existing requirementDoc — use new file via unified path
@@ -774,36 +793,16 @@ async function handleAbortedWithMode(
   // ── confirm mode ──
   if (mode === "confirm") {
     if (resumeEligible) {
-      // A3: if ui.confirm is unavailable → fall back to auto behavior
+      // A3: if ui.confirm is unavailable → fall back to auto behavior + notify
       if (typeof ctx?.ui?.confirm !== "function") {
+        ctx?.ui?.notify?.("TUI confirm unavailable — falling back to auto mode");
         return handleAbortedPipeline(ctx, meta, file, ui, config);
       }
       const confirmed = await ctx.ui.confirm(
         `Resume at "${meta.currentStage}"? [Confirm / Cancel]`,
       );
       if (confirmed) {
-        // Resume path: reuse buildResumeMeta from handleAbortedPipeline
-        const newMeta = buildResumeMeta(meta, config);
-        ctx?.session?.updateMeta?.(newMeta);
-        syncStageStatusBar(ui, ctx);
-        await safeWriteStageAudit(config, "pipeline_start", newMeta, {
-          command: file ? `/pipeline-start ${file}` : "/pipeline-start",
-          file: file || "(none)",
-          mode: "resume",
-          previousStage: meta.currentStage,
-        });
-        await safeWriteStageAudit(config, "pipeline_resumed", newMeta, {
-          fromStage: meta.currentStage,
-          toStage: newMeta.currentStage,
-          reason: "pipeline_start_confirm_resume",
-          requirementDoc: newMeta.requirementDoc ?? "",
-        });
-        return {
-          success: true,
-          message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
-          pipelineId: newMeta.pipelineId,
-          currentStage: newMeta.currentStage,
-        };
+        return resumePipeline(ctx, meta, config, ui, file, "pipeline_start_confirm_resume");
       }
       // Cancelled → no meta change
       return { success: false, error: "Pipeline start cancelled." };
@@ -858,13 +857,20 @@ async function handleAskMenu(
     return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta);
   }
 
-  const resumable = existingMeta
-    ? RESUMABLE_STAGES.includes(existingMeta.currentStage) && !!existingMeta.requirementDoc
+  // Resume eligibility must mirror auto mode's resumeEligible logic
+  // (sameDoc || (!file && requirementDoc)), otherwise a user-supplied different
+  // doc would still show the resume option and default-highlight it (Medium #2).
+  const sameDoc = existingMeta
+    ? !!file && !!existingMeta.requirementDoc && file === existingMeta.requirementDoc
+    : false;
+  const resumeEligible = existingMeta
+    ? RESUMABLE_STAGES.includes(existingMeta.currentStage) &&
+      (sameDoc || (!file && !!existingMeta.requirementDoc))
     : false;
 
   // Build options: priority item first (simulate default highlight)
   const options: string[] = [];
-  if (resumable) {
+  if (resumeEligible) {
     options.push(`Resume stage (${existingMeta!.currentStage})`);
   }
   options.push("New pipeline");
@@ -883,27 +889,7 @@ async function handleAskMenu(
     if (!existingMeta) {
       return { success: false, error: "No pipeline to resume." };
     }
-    const newMeta = buildResumeMeta(existingMeta, config);
-    ctx?.session?.updateMeta?.(newMeta);
-    syncStageStatusBar(ui, ctx);
-    await safeWriteStageAudit(config, "pipeline_start", newMeta, {
-      command: file ? `/pipeline-start ${file}` : "/pipeline-start",
-      file: file || "(none)",
-      mode: "resume",
-      previousStage: existingMeta.currentStage,
-    });
-    await safeWriteStageAudit(config, "pipeline_resumed", newMeta, {
-      fromStage: existingMeta.currentStage,
-      toStage: newMeta.currentStage,
-      reason: "pipeline_start_ask_resume",
-      requirementDoc: newMeta.requirementDoc ?? "",
-    });
-    return {
-      success: true,
-      message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
-      pipelineId: newMeta.pipelineId,
-      currentStage: newMeta.currentStage,
-    };
+    return resumePipeline(ctx, existingMeta, config, ui, file, "pipeline_start_ask_resume");
   }
 
   // ── New pipeline ──

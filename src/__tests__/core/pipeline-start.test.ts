@@ -719,6 +719,7 @@ describe("createPipelineStartCommand", () => {
     });
 
     // Case 3: aborted + plan + file!==requirementDoc → open new clarify
+    // Medium #1 fix: unified path now re-reads the new file and adopts it as requirementDoc
     it("aborted + plan + file !== requirementDoc → opens new pipeline at clarify", async () => {
       await fs.writeFile(docPath, "content", "utf-8");
       const config = makeTestConfig({ projectRoot: TMP });
@@ -744,8 +745,8 @@ describe("createPipelineStartCommand", () => {
       expect(result.currentStage).toBe("clarify");
       expect(updatedMeta.currentStage).toBe("clarify");
       expect(updatedMeta.pipelineId).not.toBe(originalPipelineId);
-      // When meta has existing requirementDoc, buildRestartMeta preserves it (meta.requirementDoc || file)
-      expect(updatedMeta.requirementDoc).toBe("old-doc.md");
+      // Medium #1 fix: new file is re-read and adopted as requirementDoc (no longer preserves old doc)
+      expect(updatedMeta.requirementDoc).toBe("req.md");
     });
 
     // Case 3b (Medium fix #1 — RC3 on "start new" branch): opening a new pipeline
@@ -1095,6 +1096,37 @@ describe("createPipelineStartCommand", () => {
       expect(result.currentStage).toBe("clarify");
       expect(confirmCalled).toBe(false);
     });
+
+    // Medium #5 fix: confirm A3 degradation emits notify
+    it("A3: confirm unavailable → notify + fallback to auto", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "confirm" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "req.md",
+      });
+      const notifyMessages: string[] = [];
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: (msg: string) => { notifyMessages.push(msg); },
+          setStatus: () => {},
+          // No confirm function (A3)
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "" }, ctx as any);
+
+      // Should fall back to auto mode (resume since same doc)
+      expect(result.success).toBe(true);
+      // Medium #5 fix: notify emitted on degradation
+      expect(notifyMessages.some(m => m.includes("falling back to auto mode"))).toBe(true);
+    });
   });
 
   // ─── Phase 144: ask mode ──────────────────────────────────────────────────────
@@ -1314,6 +1346,185 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
       expect(notifyCalled).toBe(true);
     });
+
+    // Medium #2 fix: ask mode resume option NOT shown when user provides different doc
+    it("ask aborted + different doc → resume option NOT shown, New pipeline first", async () => {
+      await fs.writeFile(docPath, "new content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "old-doc.md",
+      });
+      let selectOptions: string[] = [];
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, opts: string[]) => {
+            selectOptions = opts;
+            return "New pipeline";
+          },
+          confirm: async () => true,
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      // Medium #2 fix: different doc → resume not eligible, no resume option
+      expect(selectOptions.some(o => o.startsWith("Resume stage"))).toBe(false);
+      expect(selectOptions[0]).toBe("New pipeline");
+    });
+
+    // Medium #6: A1 discard confirm → confirm(true) starts new pipeline
+    it("A1: aborted + New pipeline + confirm(true) → new pipeline", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "old-doc.md",
+      });
+      const originalPipelineId = meta.pipelineId;
+      let updatedMeta: any = null;
+      let confirmCalled = false;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => "New pipeline",
+          confirm: async (_msg: string) => { confirmCalled = true; return true; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(confirmCalled).toBe(true);
+      expect(updatedMeta).not.toBeNull();
+      expect(updatedMeta.pipelineId).not.toBe(originalPipelineId);
+      expect(updatedMeta.currentStage).toBe("clarify");
+    });
+
+    // Medium #6: A1 discard confirm → confirm(false) cancels
+    it("A1: aborted + New pipeline + confirm(false) → cancelled, meta unchanged", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "old-doc.md",
+      });
+      let updatedMeta: any = null;
+      let confirmCalled = false;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => "New pipeline",
+          confirm: async (_msg: string) => { confirmCalled = true; return false; },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("cancelled");
+      expect(confirmCalled).toBe(true);
+      expect(updatedMeta).toBeNull();
+    });
+
+    // Medium #6: A1 discard confirm for Spec stage
+    it("A1: aborted + Spec stage + confirm(true) → new pipeline at selected stage", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "old-doc.md",
+      });
+      const originalPipelineId = meta.pipelineId;
+      let updatedMeta: any = null;
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: develop";
+          },
+          confirm: async () => true,
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.currentStage).toBe("develop");
+      expect(updatedMeta.pipelineId).not.toBe(originalPipelineId);
+      expect(updatedMeta.currentStage).toBe("develop");
+      expect(updatedMeta.previousStage).toBe("plan");
+      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan", "develop"]);
+    });
+
+    // Medium #6: A1 Spec stage + confirm(false) → cancelled
+    it("A1: aborted + Spec stage + confirm(false) → cancelled", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        requirementDoc: "old-doc.md",
+      });
+      let updatedMeta: any = null;
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { updatedMeta = m; },
+        },
+        ui: {
+          notify: () => {},
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: develop";
+          },
+          confirm: async () => false,
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("cancelled");
+      expect(updatedMeta).toBeNull();
+    });
   });
 
   // ─── Phase 144: checkVerifyFiles start-stage aware ─────────────────────────────
@@ -1505,6 +1716,7 @@ describe("createPipelineStartCommand", () => {
       expect(sentMessages[0]).toBe("@my-clarify-agent req.md 1");
     });
 
+    // Medium #4 fix: agentPath file missing → no @mention inject, notify fallback only
     it("agentPath file missing → no inject, notify fallback, still returns success", async () => {
       await fs.writeFile(docPath, "content", "utf-8");
       const config = makeTestConfig({
@@ -1541,9 +1753,10 @@ describe("createPipelineStartCommand", () => {
 
       // Should succeed (fallback doesn't block)
       expect(result.success).toBe(true);
-      // sendUserMessage uses basename fallback since file is unreadable
-      expect(sentMessages).toHaveLength(1);
-      expect(sentMessages[0]).toBe("@nonexistent req.md 1");
+      // Medium #4 fix: file missing → no @mention inject, notify only
+      expect(sentMessages).toHaveLength(0);
+      expect(notifyMsg).toContain("@");
+      expect(notifyMsg).toContain("req.md");
     });
 
     it("pi undefined → no throw, notify hint, still returns success", async () => {
@@ -1566,6 +1779,58 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
       expect(notifyMsg).toContain("@");
       expect(notifyMsg).toContain("req.md");
+    });
+
+    // Medium #3 fix: spec→plan emits a notify hint
+    it("spec→plan → notify emitted, no sendUserMessage", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        startStageMode: "ask",
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
+      const sentMessages: string[] = [];
+      const notifyMessages: string[] = [];
+      let selectCallCount = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: () => {},
+        },
+        ui: {
+          notify: (msg: string) => { notifyMessages.push(msg); },
+          setStatus: () => {},
+          select: async (_msg: string, _opts: string[]) => {
+            selectCallCount++;
+            if (selectCallCount === 1) return "Spec stage";
+            return "Start at: plan";
+          },
+        },
+        pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      expect(result.success).toBe(true);
+      expect(result.currentStage).toBe("plan");
+      // No sendUserMessage for spec→plan (plan agent is task-invoked)
+      expect(sentMessages).toHaveLength(0);
+      // Medium #3 fix: notify hint for plan stage
+      expect(notifyMessages.some(m => m.includes("plan"))).toBe(true);
     });
 
     it("spec→develop → no sendUserMessage call (no clarify inject)", async () => {
@@ -1625,6 +1890,14 @@ describe("createPipelineStartCommand", () => {
 
     it("spec→clarify → injects sendUserMessage", async () => {
       await fs.writeFile(docPath, "content", "utf-8");
+      // Medium #4 fix: agent file must exist for resolveAgentMention to inject @mention
+      const agentDir = path.join(TMP, ".pi", "agents");
+      await fs.mkdir(agentDir, { recursive: true });
+      await fs.writeFile(
+        path.join(agentDir, "clarify-agent.md"),
+        "---\nname: clarify-agent\n---\n# Clarify\n",
+        "utf-8",
+      );
       const config = makeTestConfig({
         projectRoot: TMP,
         startStageMode: "ask",
@@ -1633,7 +1906,7 @@ describe("createPipelineStartCommand", () => {
             (s, i, a) => [
               s,
               {
-                agentPath: "a.md",
+                agentPath: s === "clarify" ? ".pi/agents/clarify-agent.md" : "a.md",
                 skillPath: "s.md",
                 nextStage: a[i + 1] ?? null,
                 requireDomain: false,
@@ -1668,7 +1941,7 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
       expect(result.currentStage).toBe("clarify");
       expect(sentMessages).toHaveLength(1);
-      expect(sentMessages[0]).toBe("@a req.md 1");
+      expect(sentMessages[0]).toBe("@clarify-agent req.md 1");
     });
   });
 });
