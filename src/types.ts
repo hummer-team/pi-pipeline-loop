@@ -414,7 +414,7 @@ export interface PipelineConfig {
   /** Absolute path to the project root directory */
   projectRoot: string;
 
-  /** Optional directory for audit logs (relative to projectRoot); defaults to ".audit" */
+  /** Optional directory for audit logs (relative to projectRoot); defaults to ".pi/audit" */
   auditDir?: string;
 
   /** Optional directory for domain definitions (relative to projectRoot); defaults to ".domains" */

@@ -99,10 +99,13 @@ export function createValidateSummary(config: PipelineConfig): Tool {
           },
         });
       } else {
-        // File doesn't have expected frontmatter structure — update status only
+        // File doesn't have expected frontmatter structure — update status only.
+        // Use latestMeta (fresh read) to match the if-branch and avoid a narrow
+        // TOCTOU window where concurrent validates could overwrite each other.
+        const latestMetaElse = ctx.session.getMeta() as SessionMeta;
         ctx.session.updateMeta({
           summaries: {
-            ...(meta.summaries || {}),
+            ...(latestMetaElse?.summaries || {}),
             [stage]: {
               ...summary,
               status: isApproved ? "valid" : "invalid",

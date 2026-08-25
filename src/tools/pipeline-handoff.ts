@@ -9,7 +9,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types"
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { freezeAndPrompt } from "../core/flow-state";
-import { findFirstMismatch, checkStageSummaryHash } from "../utils/summary-hash";
+import { checkStageSummaryHash } from "../utils/summary-hash";
 
 /**
  * Creates the `pipeline_handoff` tool.

@@ -78,8 +78,10 @@ function resolveVersionedFilename(dir: string, stage: string): [string, number] 
  *
  * Called once at the end of each stage to produce a summary artifact.
  * The artifact contains:
- * - JSON frontmatter (stage, pipelineId, domain, validation_status, hash,
+ * - JSON frontmatter (stage, pipelineId, domain, validation_status,
  *   estimated_tokens, optional commit_ids, optional version)
+ *   Note: hash is tracked in SessionMeta.summaries[stage].hash, NOT in frontmatter,
+ *   to avoid circular dependency (hash depends on content, content includes hash).
  * - Markdown body (core content, constraints, pending items, reference files,
  *   optional commit IDs section)
  *
@@ -205,11 +207,10 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         frontmatter.estimated_tokens = estimatedTokens;
       }
 
-      // Remove hash from frontmatter — it's only tracked in meta, not in the file.
-      // This avoids a circular dependency (hash depends on content, content includes hash).
-      delete frontmatter.hash;
-
-      // Write the definitive file content
+      // Write the definitive file content.
+      // Note: hash is intentionally NOT in frontmatter — it's tracked in
+      // SessionMeta.summaries[stage].hash and computed AFTER writing, so the
+      // on-disk file equals sha256(meta.hash) exactly.
       const finalContent = `---\n${JSON.stringify(frontmatter, null, 2)}\n---\n${body}`;
       await fs.writeFile(summaryPath, finalContent);
 

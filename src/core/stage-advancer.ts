@@ -16,7 +16,7 @@ import { runVerification, precheckRequiredFiles } from "./auto-verifier";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { applyVerifyFail, maybeHandlePlanHumanGate } from "./verify-advance";
 import { safeWriteStageAudit } from "../utils/auditLog";
-import { findFirstMismatch, checkStageSummaryHash } from "../utils/summary-hash";
+import { checkStageSummaryHash } from "../utils/summary-hash";
 
 /**
  * Dependencies injected into the stage advancer for verification execution.

@@ -151,6 +151,19 @@ describe("summary-hash", () => {
       expect(findFirstMismatch(meta)).toBe("develop");
     });
 
+    it("returns stage name when summary file has been deleted (missing)", async () => {
+      const summaryPath = path.join(HASH_TMP, "review.md");
+      // Write file, record hash, then delete to simulate manual file removal
+      const hash = await writeAndHash(summaryPath, "review content");
+      await fs.rm(summaryPath);
+
+      const meta = {
+        summaries: { review: { path: summaryPath, hash, status: "valid" } },
+      };
+
+      expect(findFirstMismatch(meta)).toBe("review");
+    });
+
     it("returns first mismatched stage when multiple exist", async () => {
       const planPath = path.join(HASH_TMP, "plan.md");
       const planHash = await writeAndHash(planPath, "plan");
