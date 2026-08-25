@@ -114,6 +114,15 @@ describe("prompt-config", () => {
 
       await fs.rm(TMP2, { recursive: true, force: true });
     });
+
+    it("reads stage_deliverable_develop key as non-empty string (Phase 0: 146)", async () => {
+      await writeYml("stage_deliverable_develop: |\n  ## Plugin Default Deliverables (develop)\n  - **MUST** run build\n");
+      const config = await loadPromptConfig(TMP);
+      expect(config["stage_deliverable_develop"]).toBeDefined();
+      expect(typeof config["stage_deliverable_develop"]).toBe("string");
+      expect(config["stage_deliverable_develop"].trim().length).toBeGreaterThan(0);
+      expect(config["stage_deliverable_develop"]).toContain("**MUST**");
+    });
   });
 
   // ─── getStagePrompt ──────────────────────────────────────────────────────────
@@ -602,13 +611,15 @@ describe("prompt-config", () => {
       expect(typeof parsed).toBe("object");
       expect(parsed).not.toBeNull();
 
-      // All 20 keys: 5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 4 stage_executor_{stage} + 1 global verify_extract
+      // All 24 keys: 5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 5 stage_executor_{stage} + 3 stage_deliverable_{stage} + 1 global verify_extract
+      // (conflict_check_prompt will be added in Phase 6 bringing total to 25)
       const expectedKeys = [
         "clarify", "plan", "develop", "review", "fix",
         "verify_clarify", "verify_plan", "verify_develop", "verify_review", "verify_fix",
         "verify_extract_clarify", "verify_extract_plan", "verify_extract_develop",
         "verify_extract_review", "verify_extract_fix",
-        "stage_executor_plan", "stage_executor_develop", "stage_executor_review", "stage_executor_fix",
+        "stage_executor_clarify", "stage_executor_plan", "stage_executor_develop", "stage_executor_review", "stage_executor_fix",
+        "stage_deliverable_develop", "stage_deliverable_review", "stage_deliverable_fix",
         "verify_extract",
       ];
       for (const key of expectedKeys) {
@@ -616,8 +627,8 @@ describe("prompt-config", () => {
         expect(typeof parsed[key]).toBe("string");
         expect((parsed[key] as string).trim().length).toBeGreaterThan(0);
       }
-      // Ensure total key count matches plan (20 keys: Phase 4/139 added 4 stage_executor_{stage} keys)
-      expect(Object.keys(parsed).length).toBe(20);
+      // Ensure total key count matches Phase 0 (146): 24 keys
+      expect(Object.keys(parsed).length).toBe(24);
     });
 
     it("clarify template contains all 7 non-loop placeholders (no requirement_doc)", () => {
