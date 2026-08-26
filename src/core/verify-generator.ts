@@ -2,6 +2,13 @@
  * @module verify-generator
  * Shared module for generating verify.md files from skill definitions.
  * Extracted from pipeline-init-verify.ts to be reusable by pipeline-init command.
+ *
+ * 148 Phase 1: `diffAndMergeRules` uses `TEMPLATE_BUILTIN_CONTENT_PATTERNS`
+ * as a white-list to distinguish template-built-in fileContentPattern rules
+ * from user-authored ones. Only non-builtin patterns set `hasCustom = true`,
+ * ensuring that init 1 still merges plugin default deliverables when the
+ * existing verify.md contains only template patterns (plan doc reference,
+ * clarify lookahead, full-und, plan confirmation, review conclusion).
  */
 
 import fs from "node:fs/promises";
@@ -53,6 +60,35 @@ export type VerifyGenerateResult = {
    */
   hasRequirementDocPlaceholder?: boolean;
 };
+
+// ─── Template Built-in Content Patterns (148 Phase 1) ─────────────────────────
+
+/**
+ * White-list of fileContentPattern rules that ship with the built-in
+ * stage templates (develop/fix/clarify/plan/review). When an existing
+ * verify.md contains ONLY patterns from this white-list, the `hasCustom`
+ * flag in `diffAndMergeRules` is NOT set, allowing plugin default
+ * deliverables to be merged (init 1 backward compatibility).
+ *
+ * Each entry is a { path, pattern } tuple matched exactly against
+ * `existing.fileContentPattern` entries. If any entry in the existing
+ * rules is NOT found in this white-list → hasCustom = true (protect).
+ */
+export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern: string }[] = [
+  // clarify: existing full-und confirmation check
+  { path: "{requirementDoc}", pattern: "full-und\\? 理解确认：是" },
+  // clarify: conditional lookahead for clarification structure (148)
+  {
+    path: "{requirementDoc}",
+    pattern: "(?<![\\s\\S])(?:(?![\\s\\S]*?^# 第 \\d+ 轮澄清)|(?=[\\s\\S]*?^# 第 \\d+ 轮澄清)(?=[\\s\\S]*?^- 方案 [A-Z])(?=[\\s\\S]*?^答：))",
+  },
+  // plan: user confirmation marker
+  { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+  // review: pass conclusion
+  { path: "docs/review/code_review_*.md", pattern: "结论：通过" },
+  // develop / fix: plan doc reference in commit record
+  { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
+];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
 
@@ -460,9 +496,19 @@ export function diffAndMergeRules(
   const hasGit = !!existing.requiredGit && Object.keys(existing.requiredGit).length > 0;
 
   // Detect user-authored extras that the expected set cannot reproduce.
-  // fileContentPattern, custom requiredCommand fields (expectOutput), etc.
+  // fileContentPattern: only counts as custom if any pattern is NOT in the
+  // template built-in white-list (148 Phase 1). Pure template patterns
+  // (plan doc reference, clarify lookahead, full-und, etc.) are skipped
+  // so that init 1 can still merge plugin default deliverables.
+  const existingFcp = existing.fileContentPattern ?? [];
+  const hasNonBuiltinContentPattern = existingFcp.some(
+    (rule) =>
+      !TEMPLATE_BUILTIN_CONTENT_PATTERNS.some(
+        (builtin) => builtin.path === rule.path && builtin.pattern === rule.pattern,
+      ),
+  );
   const hasCustom =
-    (existing.fileContentPattern !== undefined && existing.fileContentPattern.length > 0) ||
+    hasNonBuiltinContentPattern ||
     (existing.requiredCommands ?? []).some(c => c.expectOutput !== undefined) ||
     // keywords with mode="and" when expected set has no keyword rules
     (existing.mode === "and" && expectedItems.filter(i => i.type === "keyword").length === 0);

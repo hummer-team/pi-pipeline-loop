@@ -250,3 +250,122 @@ describe("verifyFileContentPattern — Phase 1 empty/directory path defense", ()
     expect(result.detail).toContain("path points to a directory");
   });
 });
+
+// ─── Phase 1 (148): plan doc reference pattern (develop/fix) ─────────────
+
+describe("verifyFileContentPattern — 148 plan doc reference pattern", () => {
+  it("passes when commit.md contains **plan doc**: reference", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    await fs.writeFile(
+      path.join(TMP, "docs", "design", "148_commit.md"),
+      "# plan & commit id's\n**plan doc**: docs/design/148_plan.md\n\n**dev commit id**: abc123\n",
+    );
+
+    const result = await verifyFileContentPattern(
+      [{ path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("fails when commit.md does not contain **plan doc**: reference", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "design"), { recursive: true });
+    await fs.writeFile(
+      path.join(TMP, "docs", "design", "148_commit.md"),
+      "# plan & commit id's\n\n**dev commit id**: abc123\n",
+    );
+
+    const result = await verifyFileContentPattern(
+      [{ path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+  });
+});
+
+// ─── Phase 1 (148): clarify conditional lookahead pattern (4 states) ─────
+
+describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 states)", () => {
+  // The lookahead pattern in the YAML (after unescaping) is:
+  const LOOKAHEAD_PATTERN =
+    "(?<![\\s\\S])(?:(?![\\s\\S]*?^# 第 \\d+ 轮澄清)|(?=[\\s\\S]*?^# 第 \\d+ 轮澄清)(?=[\\s\\S]*?^- 方案 [A-Z])(?=[\\s\\S]*?^答：))";
+
+  it("state 1: no clarification section → passes (direct confirmation)", async () => {
+    const content = [
+      "# Requirement",
+      "Some requirement description.",
+      "",
+      "## 模型确认",
+      "- full-und? 理解确认：是",
+      "- 确认时间：2026-08-26",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("state 2: clarification section with plan AND answer → passes", async () => {
+    const content = [
+      "# Requirement",
+      "",
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "- 方案 A：仅检查 SKILL.md",
+      "  - 优点：范围最小",
+      "  - 缺点：覆盖不全",
+      "- 方案 B：检查 SKILL.md + agents",
+      "  - 优点：覆盖更全",
+      "推荐：方案 B",
+      "---",
+      "答：方案 B",
+      "",
+      "## 模型确认",
+      "- full-und? 理解确认：是",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("state 3: clarification section with plan but NO answer → fails", async () => {
+    const content = [
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "- 方案 A：仅检查 SKILL.md",
+      "- 方案 B：检查 SKILL.md + agents",
+      "推荐：方案 B",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+  });
+
+  it("state 4: clarification section with answer but NO plan → fails", async () => {
+    const content = [
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "Some question without plan options.",
+      "---",
+      "答：需要更多信息",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(false);
+  });
+});

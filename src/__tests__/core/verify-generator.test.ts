@@ -15,6 +15,8 @@ import {
   parseVerifyRulesFromContent,
   repairVerifyFrontmatter,
   loadPluginDeliverables,
+  diffAndMergeRules,
+  TEMPLATE_BUILTIN_CONTENT_PATTERNS,
 } from "../../core/verify-generator";
 import { parseFrontmatter } from "../../core/auto-verifier";
 import { makeTestConfig } from "../helpers";
@@ -1360,6 +1362,150 @@ describe("verify-generator", () => {
       expect(content).toContain("fileContentPattern");
       expect(content).not.toContain("keywords:");
       expect(content).toContain("User-customized verify body");
+    });
+  });
+
+  // ── Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list ──────────
+
+  describe("Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list", () => {
+    it("white-list contains all 5 expected template entries", () => {
+      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(5);
+      const paths = TEMPLATE_BUILTIN_CONTENT_PATTERNS.map(e => e.path);
+      expect(paths).toContain("{requirementDoc}");
+      expect(paths).toContain("docs/design/*_plan.md");
+      expect(paths).toContain("docs/review/code_review_*.md");
+      expect(paths).toContain("docs/design/*_commit.md");
+    });
+
+    it("hasCustom=false when existing rules contain only template plan doc pattern (develop)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/design/*_commit.md"],
+        fileContentPattern: [
+          { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
+        ],
+      };
+      const pluginItems = [
+        { type: "command" as const, target: "bun run build" },
+        { type: "command" as const, target: "bun test" },
+        { type: "git" as const, target: "git commit" },
+      ];
+      const result = diffAndMergeRules(existing, pluginItems);
+      expect(result.hasCustom).toBe(false);
+      // Plugin items should still be merged
+      expect(result.merged.length).toBeGreaterThan(0);
+    });
+
+    it("hasCustom=false when existing rules contain only template clarify lookahead pattern", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        fileContentPattern: [
+          { path: "{requirementDoc}", pattern: "full-und\\? 理解确认：是" },
+          {
+            path: "{requirementDoc}",
+            pattern:
+              "(?<![\\s\\S])(?:(?![\\s\\S]*?^# 第 \\d+ 轮澄清)|(?=[\\s\\S]*?^# 第 \\d+ 轮澄清)(?=[\\s\\S]*?^- 方案 [A-Z])(?=[\\s\\S]*?^答：))",
+          },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    it("hasCustom=true when existing rules contain non-builtin fileContentPattern", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/design/*_commit.md"],
+        fileContentPattern: [
+          { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
+          { path: "docs/design/*_commit.md", pattern: "^# Custom User Rule" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(true);
+    });
+
+    it("hasCustom=true when existing fileContentPattern has same path but different pattern", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        fileContentPattern: [
+          { path: "docs/design/*_commit.md", pattern: "^\\*\\*custom doc\\*\\*:" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(true);
+    });
+
+    it("init 1 merge regression: develop template with plan doc pattern still merges plugin defaults", async () => {
+      resetPromptConfigCache();
+      const ymlContent = [
+        "stage_deliverable_develop: |",
+        "  - **MUST** run the project build command and confirm it passes (command determined by project tech stack)",
+        "  - **MUST** run the project unit test command and confirm it passes (command determined by project tech stack)",
+      ].join("\n");
+      const refsDir = path.join(TMP, ".pi", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(path.join(refsDir, "pipeline-stage-prompt.yml"), ymlContent);
+      await fs.writeFile(path.join(TMP, "package.json"), "{}", "utf-8");
+      await fs.writeFile(path.join(TMP, "bun.lock"), "", "utf-8");
+
+      // Skill with no business deliverables (develop has Template-TODO placeholder)
+      const skillContent = [
+        "---",
+        "title: develop",
+        "---",
+        "## 交付项",
+        "- Template-TODO: add business deliverables here",
+      ].join("\n");
+
+      // Pre-create verify.md with template plan doc pattern (simulating first init)
+      const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      const templateVerify = [
+        "---",
+        "rules:",
+        "  requiredFiles:",
+        '    - "docs/design/*_commit.md"',
+        "  fileContentPattern:",
+        '    - path: "docs/design/*_commit.md"',
+        '      pattern: "^\\\\*\\\\*plan doc\\\\*\\\\*:"',
+        "---",
+        "Verify develop commit doc references plan doc.",
+      ].join("\n");
+      await fs.writeFile(path.join(verifyDir, "verify.md"), templateVerify, "utf-8");
+
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), skillContent, "utf-8");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: `${s}/SKILL.md`,
+                nextStage: a[i + 1] ?? null,
+                requireDomain: false,
+              },
+            ],
+          ),
+        ) as any,
+      });
+
+      const results = await generateVerifyFiles(config, { stage: "develop" });
+      expect(results.length).toBe(1);
+      // Should NOT be "skipped" with "exists_custom" — white-list allows merge
+      expect(results[0].status).not.toBe("skipped");
+      // Should be "merged" with plugin items
+      expect(results[0].status).toBe("merged");
+      expect(results[0].pluginCount).toBeGreaterThan(0);
     });
   });
 });
