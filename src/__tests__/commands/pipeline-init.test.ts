@@ -1583,6 +1583,150 @@ describe("createPipelineInitCommand", () => {
 
       resetPromptConfigCache();
     });
+
+    // ─── Phase 5 (147) code-review fix: conflict three-choice interaction tests ─
+
+    it("handleConflictResults: mock callLLM conflict JSON → outputs conflict list + three choices; skip writes no files", async () => {
+      // Create .pi/skills/develop/SKILL.md so readSkillBody returns content
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      const skillContent = "- **Must** develop-output.md\n";
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), skillContent, "utf-8");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        init: { conflictCheck: "model" },
+      });
+
+      // Mock @earendil-works/pi-ai/compat so buildCallLLM succeeds
+      const conflictJson = JSON.stringify({
+        items: [{
+          kind: "conflict",
+          skillSnippet: "**Must** develop-output.md",
+          pluginSnippet: "plugin instruction",
+          reason: "Test conflict between skill and plugin",
+          suggestion: "Replace with optimized text",
+        }],
+      });
+      mock.module("@earendil-works/pi-ai/compat", () => ({
+        complete: async () => ({
+          content: [{ type: "text", text: conflictJson }],
+        }),
+      }));
+
+      // Mock prompt-config so runConflictCheck gets non-empty plugin segments
+      // for the develop stage (other stages return empty → skipped via `continue`).
+      mock.module("../../core/prompt-config", () => ({
+        loadPromptConfig: async () => ({
+          stage_executor_develop: "test executor segment",
+        }),
+        getConflictCheckPrompt: async () => "Test conflict check prompt",
+        resetPromptConfigCache: () => {},
+      }));
+
+      const selections = ["skip"];
+      let selectIdx = 0;
+      const notifications: string[] = [];
+      const mockCtx = {
+        _ctx: {
+          modelRegistry: {
+            getAvailable: () => [{ id: "test-model", api: "openai" }],
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
+          },
+          model: { id: "test-model", api: "openai" },
+        },
+        ui: {
+          notify: (m: string) => { notifications.push(m); },
+          select: async (_msg: string, _opts: string[]) => selections[selectIdx++],
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "2" }, mockCtx);
+
+      expect(result.success).toBe(true);
+      // Conflict detection output should appear
+      expect(result.content).toContain("Conflict Detection");
+      expect(result.content).toContain("1 issue(s)");
+      // SKILL file should NOT be modified (skip path)
+      const afterContent = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8");
+      expect(afterContent).toBe(skillContent);
+      // Skip message should appear
+      expect(result.content).toContain("skipped by user");
+    });
+
+    it("handleConflictResults: auto-optimize + confirm → writes modified SKILL + backup", async () => {
+      // SKILL.md with a known snippet that the mock LLM will suggest replacing
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      const originalContent = "- **Must** develop-output.md\n- **Must** extra-rule.md\n";
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), originalContent, "utf-8");
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        init: { conflictCheck: "model" },
+      });
+
+      // Mock callLLM to return a conflict suggesting replacement
+      const conflictJson = JSON.stringify({
+        items: [{
+          kind: "conflict",
+          skillSnippet: "**Must** develop-output.md",
+          pluginSnippet: "plugin instruction",
+          reason: "Test conflict",
+          suggestion: "**Must** plugin-optimized-output.md",
+        }],
+      });
+      mock.module("@earendil-works/pi-ai/compat", () => ({
+        complete: async () => ({
+          content: [{ type: "text", text: conflictJson }],
+        }),
+      }));
+
+      mock.module("../../core/prompt-config", () => ({
+        loadPromptConfig: async () => ({
+          stage_executor_develop: "test executor segment",
+        }),
+        getConflictCheckPrompt: async () => "Test conflict check prompt",
+        resetPromptConfigCache: () => {},
+      }));
+
+      const selections = ["auto-optimize", "yes"];
+      let selectIdx = 0;
+      const notifications: string[] = [];
+      const mockCtx = {
+        _ctx: {
+          modelRegistry: {
+            getAvailable: () => [{ id: "test-model", api: "openai" }],
+            getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
+          },
+          model: { id: "test-model", api: "openai" },
+        },
+        ui: {
+          notify: (m: string) => { notifications.push(m); },
+          select: async (_msg: string, _opts: string[]) => selections[selectIdx++],
+        },
+      };
+
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "2" }, mockCtx);
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("Conflict Detection");
+
+      // SKILL file should be modified (snippet replaced with suggestion)
+      const afterContent = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8");
+      expect(afterContent).toContain("plugin-optimized-output.md");
+      expect(afterContent).not.toContain("develop-output.md");
+
+      // Backup file should exist (.bak-<timestamp>)
+      const dirEntries = await fs.readdir(skillDir);
+      const backupFile = dirEntries.find(e => e.startsWith("SKILL.md.bak-"));
+      expect(backupFile).toBeDefined();
+
+      // Auto-optimize message should appear
+      expect(result.content).toContain("Auto-optimize");
+    });
   });
 
   // ─── Phase 5 (147): check branch (sub="2") ──────────────────────────────

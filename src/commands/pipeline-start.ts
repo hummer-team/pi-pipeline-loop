@@ -116,8 +116,9 @@ async function templateResidueGate(
     return null;
   }
 
-  // Residues found
-  const hitList = result.hits
+  // Residues found — hitList is recomputed inside the loop after each recheck
+  // so that subsequent iterations display fresh file:line entries (Medium #2 fix).
+  let hitList = result.hits
     .map(h => `  - ${h.file}:${h.line}: ${h.marker}`)
     .join("\n");
 
@@ -186,6 +187,10 @@ async function templateResidueGate(
     result.hits.length = 0;
     result.hits.push(...recheck.hits);
     result.scanned = recheck.scanned;
+    // Recompute hitList so the next iteration shows fresh file:line entries
+    hitList = result.hits
+      .map(h => `  - ${h.file}:${h.line}: ${h.marker}`)
+      .join("\n");
   }
 }
 

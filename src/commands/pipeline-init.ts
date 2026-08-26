@@ -106,6 +106,9 @@ export function createPipelineInitCommand(
         if (runDir) {
           const dirResult = await executeDirBranch(config, ctx);
           if (!dirResult.success) return dirResult;
+          // 147 Phase 5: notify hint so the user knows to run /pipeline-init 2
+          // next. copyTemplateFiles lacks ctx access, so the notify is issued here.
+          ctx?.ui?.notify?.("Initialization complete. Run /pipeline-init 2 to check template placeholders.");
           // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
           const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
           if (needVerify) {
@@ -306,8 +309,8 @@ async function copyTemplateFiles(
       }
     }
 
-    // 147 Phase 5: notify hint when TUI is available
-    // (no ctx access here — notify is issued by the caller via the dirResult content)
+    // 147 Phase 5: notify hint is issued by the caller (execute) which has ctx access.
+    // copyTemplateFiles is intentionally ctx-free for testability and reuse.
 
     return {
       success: true,

@@ -81,31 +81,46 @@ const GATE_STATUS_FILE = "template-residue-check.json";
  * a pure process declaration after Phase 4 generalization; no placeholders).
  */
 function resolveScanTargets(projectRoot: string): string[] {
-  const piDir = path.join(projectRoot, CONFIG_DIR_NAME);
-  if (!fs.existsSync(piDir)) return [];
+  try {
+    const piDir = path.join(projectRoot, CONFIG_DIR_NAME);
+    if (!fs.existsSync(piDir)) return [];
 
-  const targets: string[] = [];
+    const targets: string[] = [];
 
-  // skills: .pi/skills/*/SKILL.md
-  const skillsDir = path.join(piDir, "skills");
-  if (fs.existsSync(skillsDir) && fs.statSync(skillsDir).isDirectory()) {
-    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const skillFile = path.join(skillsDir, entry.name, "SKILL.md");
-      if (fs.existsSync(skillFile)) targets.push(skillFile);
+    // skills: .pi/skills/*/SKILL.md
+    // Each directory is independently wrapped so a permission/concurrent-delete
+    // error on one does not prevent scanning the other (fail-open per directory).
+    const skillsDir = path.join(piDir, "skills");
+    try {
+      if (fs.existsSync(skillsDir) && fs.statSync(skillsDir).isDirectory()) {
+        for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const skillFile = path.join(skillsDir, entry.name, "SKILL.md");
+          if (fs.existsSync(skillFile)) targets.push(skillFile);
+        }
+      }
+    } catch {
+      // skills dir enumeration failed — skip (fail-open)
     }
-  }
 
-  // agents: .pi/agents/*.md
-  const agentsDir = path.join(piDir, "agents");
-  if (fs.existsSync(agentsDir) && fs.statSync(agentsDir).isDirectory()) {
-    for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-      targets.push(path.join(agentsDir, entry.name));
+    // agents: .pi/agents/*.md
+    try {
+      const agentsDir = path.join(piDir, "agents");
+      if (fs.existsSync(agentsDir) && fs.statSync(agentsDir).isDirectory()) {
+        for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+          if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+          targets.push(path.join(agentsDir, entry.name));
+        }
+      }
+    } catch {
+      // agents dir enumeration failed — skip (fail-open)
     }
-  }
 
-  return targets;
+    return targets;
+  } catch {
+    // Outer safety net: any unexpected failure → empty set (fail-open)
+    return [];
+  }
 }
 
 // ─── checkTemplateResidues ────────────────────────────────────────────────────
