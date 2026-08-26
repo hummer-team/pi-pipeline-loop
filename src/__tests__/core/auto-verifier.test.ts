@@ -15,6 +15,7 @@ import {
   resolvePlanDocPath,
   planDocHasConfirmMarker,
   applyConcreteStageDocPaths,
+  diagnoseVerifyConfig,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1602,5 +1603,113 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
 
     // Non-plan stage: rules returned as-is (identity)
     expect(result).toBe(rules);
+  });
+});
+
+// ── Phase 2 (148): runVerification skipped on config error ───────────────
+
+describe("runVerification — 148 Phase 2 skipped on config error", () => {
+  it("returns skipped=true when verify.md has invalid mode", async () => {
+    const vrPath = path.join(TMP, "references", "develop_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      '---\nrules:\n  keywords:\n    - "test"\n  mode: xor\n---\nBody\n',
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify: s === "develop" ? { require: true, verifyFile: "references/develop_spec/verify.md" } : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const result = await runVerification(config, meta, []);
+    expect(result.skipped).toBe(true);
+    expect(result.configErrors).toBeDefined();
+    expect(result.configErrors!.some(e => e.includes("xor"))).toBe(true);
+    expect(result.rulePassed).toBe(false);
+    expect(result.needsModelVerify).toBe(false);
+  });
+
+  it("returns skipped=true when verify.md has unknown top-level key", async () => {
+    const vrPath = path.join(TMP, "references", "develop_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      '---\nrules:\n  requiredFiles:\n    - "test.md"\nbadKey: value\n---\nBody\n',
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify: s === "develop" ? { require: true, verifyFile: "references/develop_spec/verify.md" } : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const result = await runVerification(config, meta, []);
+    expect(result.skipped).toBe(true);
+    expect(result.configErrors).toBeDefined();
+    expect(result.configErrors!.some(e => e.includes("badKey"))).toBe(true);
+  });
+
+  it("returns skipped=false when verify.md is valid", async () => {
+    await fs.writeFile(path.join(TMP, "output.md"), "content");
+    const vrPath = path.join(TMP, "references", "develop_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      '---\nrules:\n  requiredFiles:\n    - "output.md"\n---\nBody\n',
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify: s === "develop" ? { require: true, verifyFile: "references/develop_spec/verify.md" } : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const result = await runVerification(config, meta, []);
+    expect(result.skipped).toBeUndefined();
+    expect(result.rulePassed).toBe(true);
   });
 });

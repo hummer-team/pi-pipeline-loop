@@ -212,8 +212,8 @@ describe("verify-integration", () => {
     expect(result2.needsModelVerify).toBe(true);
   });
 
-  // Scenario G: no verify.md file → needsModelVerify
-  it("Scenario G: missing verify.md file returns needsModelVerify", async () => {
+  // Scenario G: no verify.md file → config error → skipped (148 Phase 2)
+  it("Scenario G: missing verify.md file returns skipped with config error", async () => {
     const config = makeConfigWithVerify(["develop"]);
     // No verify.md file created
 
@@ -221,7 +221,11 @@ describe("verify-integration", () => {
     const result = await runVerification(config, meta, []);
 
     expect(result.rulePassed).toBe(false);
-    expect(result.needsModelVerify).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.configErrors).toBeDefined();
+    expect(result.configErrors!.length).toBeGreaterThan(0);
+    expect(result.configErrors![0]).toContain("not found");
+    expect(result.needsModelVerify).toBe(false);
   });
 
   // ── Phase 4: LLM verification layer removed (Q6-B) ─────────────────────
