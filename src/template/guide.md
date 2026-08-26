@@ -769,6 +769,116 @@ Verify the delivery items...
 
 `/pipeline-init 1` 会自动清洗已损坏的文件（见 §9.4.1）。新文件生成天然正确。手工编辑 verify.md 时，请确保 `---` 独立成行。
 
+#### 9.4.B 自定义 verify 规则完整参考
+
+入口：编辑 `.pi/references/{stage}_spec/verify.md` 的 YAML frontmatter。插件支持五类规则，可组合使用。
+
+##### 1. `requiredFiles` — 文件存在性校验
+
+路径支持 glob（`*`/`?`），至少一个匹配即通过。
+
+```yaml
+rules:
+  requiredFiles:
+    - "docs/design/*_plan.md"
+    - "docs/design/*_commit.md"
+```
+
+##### 2. `requiredCommands` — 命令执行校验
+
+`cmd` 为命令字符串，`expectExit` 为期望退出码（默认 0），`expectOutput` 为期望 stdout 子串（可选）。
+
+```yaml
+rules:
+  requiredCommands:
+    - cmd: "bun run build"
+      expectExit: 0
+    - cmd: "bun test"
+      expectExit: 0
+      expectOutput: "pass"
+```
+
+配合 `verify.selfVerifySkip: true` 可跳过模型已在本 stage 成功执行的相同命令（详见 §9.2）。`VERIFIED_COMMANDS` 自报协议见 §5。
+
+##### 3. `requiredGit` — Git 状态校验
+
+```yaml
+rules:
+  requiredGit:
+    lastCommitWithin: "1h"
+    branch: "main"
+    cleanWorkingTree: true
+```
+
+##### 4. `fileContentPattern` — 文件内容正则校验
+
+`path` 支持 glob（glob path 只查**最新 mtime** 文件）。`pattern` 为 JavaScript regex，使用 `m` 模式 + `test()` 存在匹配语义（匹配到任意位置即通过）。
+
+```yaml
+rules:
+  fileContentPattern:
+    - path: "docs/design/*_commit.md"
+      pattern: "^\\*\\*plan doc\\*\\*:"
+    - path: "docs/design/*_plan.md"
+      pattern: "^## 用户确认"
+    - path: "docs/review/code_review_*.md"
+      pattern: "结论：通过"
+```
+
+**占位符**：`{requirementDoc}` 由 `/pipeline-start` 设置的需求文档路径替换（引用 §4.2）。未设置时规则不生效（运行时报 `requirementDoc not set`，属运行时配置错误 → freeze + 决策菜单）。
+
+##### 5. `keywords` + `mode` — 关键词聚合校验（legacy）
+
+校验对象是**主线程 assistantMessages 聚合**（subagent 文件产物请用 `fileContentPattern`）。`mode` 仅支持 `and`/`or`（大小写敏感）。
+
+```yaml
+rules:
+  keywords:
+    - "方案推荐"
+    - "分析完成"
+  mode: and
+```
+
+##### 完整示例（clarify_spec/verify.md 形态）
+
+```yaml
+---
+rules:
+  fileContentPattern:
+    - path: "{requirementDoc}"
+      pattern: "full-und\\? 理解确认：是"
+    - path: "{requirementDoc}"
+      pattern: "(?<![\\s\\S])(?:(?![\\s\\S]*?^# 第 \\d+ 轮澄清)|(?=[\\s\\S]*?^# 第 \\d+ 轮澄清)(?=[\\s\\S]*?^- 方案 [A-Z])(?=[\\s\\S]*?^答：))"
+---
+等待用户输入 full-und? 询问是否完全理解需求；澄清节（含 `# 第 N 轮澄清`）必须包含方案推荐（`- 方案 [A-Z]`）与用户答复（`答：`）；无澄清节直接通过。
+```
+
+##### 坑点
+
+- `---` 闭合分隔符独立成行（§9.4.A），否则 `mode: and` 等尾部规则静默降级
+- glob path 只查**最新 mtime** 文件（引擎既有语义，不扩展）
+- regex 为**存在匹配语义**：匹配到任意位置即通过；需用 `^`/`$` 锚定行首行尾
+- `mode` 仅支持 `and`/`or`（大小写敏感），其他值（如 `xor`）会触发配置诊断错误
+- `{requirementDoc}` 未设置时规则不生效（运行时 freeze，非静态跳过）
+
+##### 配置错误行为（148 新增）
+
+每次 `runVerification` 前实时诊断 verify.md frontmatter。以下情形判定为配置错误：
+
+| 错误码 | 触发条件 | 行为 |
+|--------|---------|------|
+| `file_missing` | verify.md 文件缺失 | 跳过验证（视为通过）+ TUI 提示 + audit `verify_config_skip` |
+| `frontmatter_missing` | 无 `---` 分隔符 | 同上 |
+| `yaml_parse_error` | frontmatter 解析失败 | 同上 |
+| `unknown_top_level_key` | 未知顶层 key | 同上 |
+| `invalid_mode` | `mode` 非 `and`/`or` | 同上 |
+| `empty_rule_item` | 空 path/pattern/keyword | 同上 |
+| `no_rules` | 无任何规则 | 同上 |
+
+**运行时配置错误**（静态诊断无法发现）：EISDIR / 路径指向目录 / 未解析 `{requirementDoc}` 占位符 → freeze + 决策菜单（保留既有 `isConfigError` 行为）。
+
+修复后下阶段验证自动恢复（每次验证前重新诊断）。
+
 ### 9.5 破坏性命令拦截
 
 插件维护破坏性命令黑名单，自动拦截危险操作（如 `sudo`、`rm -rf /`、`mkfs`、`dd of=/dev/` 等）。
