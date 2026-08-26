@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { createPipelineVerify } from "../../tools/pipeline-verify";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog } from "../../utils/auditLog";
@@ -269,5 +269,44 @@ describe("createPipelineVerify", () => {
     // Pipeline should be frozen (verifyAttempts overflow)
     expect(meta.flowState).toBe("blocked");
     expect(meta.blockedReason).toBe("verify_attempt_overflow");
+  });
+});
+
+// ── Phase 3 (148): pipeline_verify returns skipped on config error ─────────
+
+describe("Phase 3 (148): pipeline_verify skipped on config error", () => {
+  it("config error (missing verify.md) → returns {success:true, skipped:true, configErrors}", async () => {
+    const stageTmp = join(tmpdir(), "pi-verify-skip-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      nextStage: "review",
+      verify: { require: true, mode: "tool" },
+    };
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const ctx = {
+      _ctx: { messages: [] },
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => Object.assign(meta, m),
+      },
+      ui: { notify: () => {} },
+    };
+
+    const tool = createPipelineVerify(config);
+    const result = await tool.execute({ stage: "develop" }, ctx as any) as Record<string, unknown>;
+
+    // Should return skipped result
+    expect(result.success).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.configErrors).toBeDefined();
+    expect((result.configErrors as string[]).length).toBeGreaterThan(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
   });
 });

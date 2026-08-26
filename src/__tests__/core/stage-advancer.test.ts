@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { createStageAdvancer } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, STAGE_LIST } from "../helpers";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -232,9 +232,10 @@ describe("createStageAdvancer", () => {
       expect(meta.currentStage).toBe("plan");
     });
 
-    it("verify.require=true and no verify.md file → verification fails, no advance", async () => {
-      // When verify.require is true but no verify.md exists,
-      // runVerification returns rulePassed=false → should block advance
+    it("verify.require=true and no verify.md file → config skip, treated as pass (148 Phase 2)", async () => {
+      // 148 Phase 2/3: When verify.require is true but no verify.md exists,
+      // diagnoseVerifyConfig returns file_missing → runVerification returns skipped=true
+      // → stage-advancer treats as pass → advance to nextStage
       const config = makeTestConfig();
       config.stages["clarify"] = {
         ...config.stages["clarify"],
@@ -247,10 +248,9 @@ describe("createStageAdvancer", () => {
       const tool = createStageAdvancer(config);
       const result = await tool.execute({}, ctx as any);
 
-      // Verification fails (no verify.md → no rules → rulePassed=false)
-      expect((result as any).success).toBe(false);
-      expect((result as any).message).toContain("Verification failed");
-      expect(meta.currentStage).toBe("clarify"); // did NOT advance
+      // Config skip treated as pass → advance succeeds
+      expect((result as any).success).toBe(true);
+      expect(meta.currentStage).toBe("plan"); // advanced
     });
 
     it("verify.require=true and verification passes → advance to nextStage", async () => {
@@ -300,12 +300,32 @@ Verify plan document exists.`,
     });
 
     it("tool mode: verify failure at maxVerifyAttempts triggers circuit breaker (flowState → blocked)", async () => {
-      const config = makeTestConfig();
+      // Create a verify.md with a rule that will FAIL (fileContentPattern won't match)
+      const TMP = join(tmpdir(), "pi-advancer-circuit-" + Date.now());
+      const verifyDir = join(TMP, ".pi", "references", "clarify_spec");
+      await mkdir(verifyDir, { recursive: true });
+      // Create a dummy file that exists but doesn't match the pattern
+      const dummyFile = join(TMP, "docs", "design", "dummy.md");
+      await mkdir(join(TMP, "docs", "design"), { recursive: true });
+      await writeFile(dummyFile, "This file does not contain the required pattern.");
+      // Create verify.md with a fileContentPattern rule that will fail
+      await writeFile(
+        join(verifyDir, "verify.md"),
+        `---
+rules:
+  fileContentPattern:
+    - path: "docs/design/dummy.md"
+      pattern: "^## Required Section"
+---
+Verification that will fail because the pattern does not match.`,
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
       config.maxVerifyAttempts = 2;
       config.stages["clarify"] = {
         ...config.stages["clarify"],
         nextStage: "plan",
-        verify: { require: true, mode: "tool" },
+        verify: { require: true, mode: "tool", verifyFile: ".pi/references/clarify_spec/verify.md" },
       };
       const meta = makeTestMeta({
         currentStage: "clarify",
@@ -321,6 +341,9 @@ Verify plan document exists.`,
       // Should fail and freeze the pipeline (circuit breaker)
       expect((result as any).success).toBe(false);
       expect(meta.flowState).toBe("blocked");
+
+      // Cleanup
+      await rm(TMP, { recursive: true, force: true });
     });
 
     // ─── Phase 3: skipVerify escape hatch ──────────────────────────────────
@@ -383,6 +406,7 @@ Verify plan document exists.`,
     });
 
     it("skipVerify=false (default) behaves normally with verification gate", async () => {
+      // 148 Phase 2/3: no verify.md → config skip → treated as pass → advance
       const config = makeTestConfig();
       config.stages["clarify"] = {
         ...config.stages["clarify"],
@@ -405,9 +429,9 @@ Verify plan document exists.`,
       // skipVerify not set — normal verification gate applies
       const result = await tool.execute({}, ctx as any);
 
-      // Should run verification (which fails since no verify.md exists)
-      expect((result as any).success).toBe(false);
-      expect(meta.currentStage).toBe("clarify"); // NOT advanced
+      // Config skip (no verify.md) treated as pass → advance succeeds
+      expect((result as any).success).toBe(true);
+      expect(meta.currentStage).toBe("plan"); // advanced
     });
 
     it("skipVerify parameter is declared in tool schema", () => {

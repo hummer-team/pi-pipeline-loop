@@ -11,6 +11,7 @@ import type { RunVerificationOptions } from "../core/auto-verifier";
 import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { extractAssistantMessages } from "../core/session-state";
+import { safeWriteAuditLog } from "../utils/auditLog";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -134,6 +135,29 @@ export function createPipelineVerify(
         ruleMissing: vr.ruleMissing,
         verifyResult: vr.verifyResult ?? null,
       };
+
+      // 148 Phase 3: Config-error skip → return skipped result (treat as pass for tool caller)
+      if (vr.skipped) {
+        const errorSummary = vr.configErrors?.join("; ") ?? "unknown config error";
+        const notifyMsg = `Verification config error: ${errorSummary}. Verification skipped. See guide.md §9.4.B for correct rule syntax.`;
+        ui.notify(sessionCtx, notifyMsg);
+        await safeWriteAuditLog("verify_config_skip", {
+          pipelineId: meta.pipelineId,
+          stage: stageName,
+          errorCount: String(vr.configErrors?.length ?? 0),
+          errors: errorSummary,
+        }, "warn");
+        return {
+          success: true,
+          passed: false,
+          skipped: true,
+          message: notifyMsg,
+          configErrors: vr.configErrors,
+          structuredResult: vr.structuredResult,
+          ruleMissing: vr.ruleMissing,
+          verifyResult: vr.verifyResult ?? null,
+        };
+      }
 
       // S1: Verification passes only on structured rules (rulePassed)
       if (vr.rulePassed) {

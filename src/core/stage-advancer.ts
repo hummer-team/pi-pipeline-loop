@@ -191,26 +191,38 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         const toolCallRecords = extractToolCallRecords(ctx._ctx);
         const vr = await runVerification(config, meta, messages, { execFn: deps?.execFn, toolCallRecords });
 
-        // S1: Verification passes only on structured rules (rulePassed)
-        const verifyPassed = vr.rulePassed;
-        if (!verifyPassed) {
-          // Audit verify-gate failure
-          await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+        // 148 Phase 3: Config-error skip → treat as pass with notify/audit
+        if (vr.skipped) {
+          const errorSummary = vr.configErrors?.join("; ") ?? "unknown config error";
+          ui.notify(ctx, `Verification config error: ${errorSummary}. Verification skipped. See guide.md §9.4.B for correct rule syntax.`);
+          await safeWriteStageAudit(config, "verify_config_skip", meta, {
             fromStage: currentStage,
-            reason: "verify_failed",
+            errorCount: String(vr.configErrors?.length ?? 0),
+            errors: errorSummary,
           }, "warn");
-          // Build shared result shape for applyVerifyFail
-          const sharedResult = {
-            structuredResult: vr.verifyResult?.structured,
-            ruleMissing: vr.ruleMissing,
-            verifyResult: vr.verifyResult,
-          };
-          const failResult = await applyVerifyFail(ctx, meta, currentStage, sharedResult, "tool", ui, config);
-          return {
-            success: false,
-            message: failResult.message,
-            failures: failResult.failures,
-          };
+          // Skip verify-fail branch, continue to advance below
+        } else {
+          // S1: Verification passes only on structured rules (rulePassed)
+          const verifyPassed = vr.rulePassed;
+          if (!verifyPassed) {
+            // Audit verify-gate failure
+            await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+              fromStage: currentStage,
+              reason: "verify_failed",
+            }, "warn");
+            // Build shared result shape for applyVerifyFail
+            const sharedResult = {
+              structuredResult: vr.verifyResult?.structured,
+              ruleMissing: vr.ruleMissing,
+              verifyResult: vr.verifyResult,
+            };
+            const failResult = await applyVerifyFail(ctx, meta, currentStage, sharedResult, "tool", ui, config);
+            return {
+              success: false,
+              message: failResult.message,
+              failures: failResult.failures,
+            };
+          }
         }
         // Verification passed — continue to advance
       } else if (stageConfig.verify?.require && argSkipVerify) {

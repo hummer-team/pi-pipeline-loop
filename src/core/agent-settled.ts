@@ -129,6 +129,23 @@ export function createAgentSettled(
         verifyResult: vr.verifyResult ?? null,
       };
 
+      // 148 Phase 3: Config-error skip → treat as pass with notify/audit
+      if (vr.skipped) {
+        const errorSummary = vr.configErrors?.join("; ") ?? "unknown config error";
+        ui.notify(ctx, `Verification config error: ${errorSummary}. Verification skipped. See guide.md §9.4.B for correct rule syntax.`);
+        await writeAuditLog("verify_config_skip", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          errorCount: String(vr.configErrors?.length ?? 0),
+          errors: errorSummary,
+        }, "warn");
+        // Treat as pass → auto-advance (reuse pass channel with ctxWithPi for wake)
+        const fromStage = meta.currentStage;
+        const toStage = stageConfig.nextStage;
+        await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui);
+        return;
+      }
+
       if (vr.rulePassed) {
         // Capture stage names BEFORE advance mutates meta.currentStage
         const fromStage = meta.currentStage;

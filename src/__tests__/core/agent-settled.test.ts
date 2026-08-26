@@ -766,3 +766,46 @@ describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── Phase 3 (148): verify config skip flows through agent_settled ──────────
+
+describe("Phase 3 (148): agent_settled verify config skip", () => {
+  it("config error (missing verify.md) → notify + audit verify_config_skip + auto-advance (pass)", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-skip-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      nextStage: "review",
+      verify: { require: true },
+    };
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const notifies: string[] = [];
+    const ctx = {
+      _ctx: { messages: [] },
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => Object.assign(meta, m),
+      },
+      pi: { sendUserMessage: () => {} },
+      ui: { notify: (msg?: string) => { if (msg) notifies.push(msg); } },
+    };
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should have notified about config skip
+    expect(notifies.some(n => n.includes("config error"))).toBe(true);
+    // Should have advanced (pass path)
+    expect(meta.currentStage).toBe("review");
+    // Should have audit log verify_config_skip
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_config_skip");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
