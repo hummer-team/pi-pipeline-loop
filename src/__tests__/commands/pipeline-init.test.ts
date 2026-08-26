@@ -1398,8 +1398,13 @@ describe("createPipelineInitCommand", () => {
         expect(content).not.toContain("loop_check");
         expect(content).not.toContain("nextStage:");
         expect(content).not.toMatch(/pipeline:\s*\{pipelineId\}/);
-        // But still contains business **必须** markers
-        expect(content).toContain("**必须**");
+        // 147 Phase 1: develop uses Template-TODO placeholder (no **必须**);
+        // review/fix still carry business **必须** markers.
+        if (stage === "develop") {
+          expect(content).toContain("Template-TODO");
+        } else {
+          expect(content).toContain("**必须**");
+        }
       }
     });
   });

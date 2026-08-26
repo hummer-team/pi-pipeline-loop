@@ -48,5 +48,5 @@ userInvocable: false
 
 ---
 ## 交付项
-<!-- TODO: 补充项目业务交付项（插件默认交付项如 build/test/commit/pipeline 标记由插件注入段提供） -->
-- **必须** TODO: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等）
+<!-- Template-TODO: 补充项目业务交付项（插件默认交付项如 build/test/commit/pipeline 标记由插件注入段提供） -->
+- **Template-TODO**: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等）

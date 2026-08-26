@@ -1088,11 +1088,13 @@ describe("verify-generator", () => {
       });
     }
 
-    // develop should also contain **必须** (TODO business items)
-    it("develop/SKILL.md still contains **必须** business delivery markers", async () => {
+    // develop switched from **必须** TODO to Template-TODO placeholder (147 Phase 1).
+    // The deliverables section now uses the reserved marker; no business **必须** remains.
+    it("develop/SKILL.md deliverables section uses Template-TODO placeholder (no **必须**)", async () => {
       const content = await readTemplate("develop/SKILL.md");
       if (!content) return;
-      expect(content).toContain("**必须**");
+      expect(content).toContain("Template-TODO");
+      expect(content).not.toContain("**必须**");
     });
 
     it("extractHardcodedItems finds **必须** items from template SKILL content", () => {

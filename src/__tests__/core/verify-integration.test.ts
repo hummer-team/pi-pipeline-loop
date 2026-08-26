@@ -375,6 +375,14 @@ describe("verify-integration", () => {
       await fs.writeFile(path.join(destDir, "SKILL.md"), content, "utf-8");
     }
 
+    // Copy pipeline-stage-prompt.yml so plugin default deliverables resolve
+    // (147 Phase 1: develop lost its **必须** marker → relies on plugin defaults)
+    const templateRefsDir = path.join(templateDir, "references");
+    const piRefsDir = path.join(TMP, ".pi", "references");
+    await fs.mkdir(piRefsDir, { recursive: true });
+    const ymlContent = await fs.readFile(path.join(templateRefsDir, "pipeline-stage-prompt.yml"), "utf-8");
+    await fs.writeFile(path.join(piRefsDir, "pipeline-stage-prompt.yml"), ymlContent, "utf-8");
+
     // Load actual template pipeline_loop.json and resolve to full PipelineConfig
     const templateJsonPath = path.resolve(__dirname, "..", "..", "template", "pipeline_loop.json");
     const json = loadJsonConfig(templateJsonPath);
@@ -389,9 +397,15 @@ describe("verify-integration", () => {
     expect(generated.length).toBe(5);
     expect(skipped.length).toBe(0);
 
-    // Verify no keyword-only items leaked through (phrase-bold filtering works)
+    // Verify no keyword-only items leaked through (phrase-bold filtering works).
+    // develop no longer ships **必须** (switched to Template-TODO placeholder),
+    // so its hardcodedCount can be 0 — but plugin default deliverables cover it.
     for (const r of generated) {
-      expect(r.hardcodedCount).toBeGreaterThan(0);
+      if (r.stage === "develop") {
+        expect((r.hardcodedCount ?? 0) + (r.pluginCount ?? 0)).toBeGreaterThan(0);
+      } else {
+        expect(r.hardcodedCount).toBeGreaterThan(0);
+      }
     }
   });
 
