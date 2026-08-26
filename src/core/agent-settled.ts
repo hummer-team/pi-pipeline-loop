@@ -140,9 +140,10 @@ export function createAgentSettled(
           errors: errorSummary,
         }, "warn");
         // Treat as pass → auto-advance (reuse pass channel with ctxWithPi for wake)
+        // M1 fix: skipPassAudit=true — skipped must NOT write auto_verify_pass audit
         const fromStage = meta.currentStage;
         const toStage = stageConfig.nextStage;
-        await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui);
+        await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui, { skipPassAudit: true });
         return;
       }
 

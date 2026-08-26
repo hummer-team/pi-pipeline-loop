@@ -419,6 +419,35 @@ describe("output.pipelineStage: false (silent)", () => {
     expect(meta.blockedReason).toBe("verify_attempt_overflow");
   });
 
+  // H2 fix: overflow freeze must NOT wake the model (even when pi is present)
+  it("overflow freeze does NOT call sendUserMessage when pi is present (H2 fix)", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 2 });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyAttempts: 1,
+    });
+    const ctx = createCtx(meta);
+    // Add pi field to context — this is what the real hook path provides
+    let wakeCalls = 0;
+    (ctx as any).pi = { sendUserMessage: (_msg: string) => { wakeCalls++; } };
+
+    const sharedResult = {
+      structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "missing" }] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(
+      ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI, config,
+    );
+
+    // Pipeline should be frozen
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_attempt_overflow");
+    // Must NOT have woken the model (H2 fix — previously fell through to wake code)
+    expect(wakeCalls).toBe(0);
+  });
+
   it("applyVerifyFail does NOT freeze when verifyAttempts below maxVerifyAttempts", async () => {
     const config = makeTestConfig({ maxVerifyAttempts: 5 });
     const meta = makeTestMeta({

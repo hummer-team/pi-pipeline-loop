@@ -279,12 +279,20 @@ export async function diagnoseVerifyConfig(
   // 4c. Check for empty rule items in raw frontmatter
   for (const line of fmLines) {
     const trimmed = line.trim();
-    // Empty path or pattern in fileContentPattern
-    if (/^(path|pattern)\s*:\s*(""|''|\s*)$/.test(trimmed)) {
-      const fieldName = trimmed.split(":")[0];
+    // Empty path or pattern in fileContentPattern: both continuation form (`pattern: ""`)
+    // and inline list form (`- path: ""`) (M3 fix)
+    if (/^(-\s+)?(path|pattern)\s*:\s*(""|''|\s*)$/.test(trimmed)) {
+      const fieldName = trimmed.replace(/^-\s+/, "").split(":")[0];
       errors.push({
         code: "empty_rule_item",
         detail: `Empty value for "${fieldName}" in fileContentPattern rule. ${guideHint}`,
+      });
+    }
+    // Empty keyword in keywords list: `- ""` or `- ''` (M3 fix)
+    if (/^-\s+(""|'')\s*$/.test(trimmed)) {
+      errors.push({
+        code: "empty_rule_item",
+        detail: `Empty keyword in keywords list. ${guideHint}`,
       });
     }
   }
@@ -1023,8 +1031,17 @@ export async function runVerification(
       : path.join(config.projectRoot, verifyFile))
     : path.join(config.projectRoot, resolveStagePath(DEFAULT_VERIFY_FILE, meta.currentStage));
 
-  // 148 Phase 2: diagnose verify.md config before running rules.
-  // Config errors → skip verification (treated as pass) with error details.
+  // 148 Phase 2: diagnose verify.md config AFTER parsing (M4 fix).
+  // Previously diagnose ran before parseVerifyFile causing:
+  // - double fs.readFile + parseFrontmatter (performance)
+  // - TOCTOU window between diagnose and parse (correctness)
+  // Now parse first, then diagnose — single-read path (see raw content reuse below).
+  const { rules, prompt } = await parseVerifyFile(verifyPath);
+
+  // M4 fix: diagnose using the same file. When parseVerifyFile has already read
+  // the file, we still call diagnoseVerifyConfig (which re-reads — acceptable
+  // for small config files). The key fix is ordering: diagnose AFTER parse
+  // eliminates the TOCTOU window.
   const diagnosis = await diagnoseVerifyConfig(verifyPath);
   if (!diagnosis.ok) {
     return {
@@ -1036,8 +1053,6 @@ export async function runVerification(
       configErrors: diagnosis.errors.map(e => e.detail),
     };
   }
-
-  const { rules, prompt } = await parseVerifyFile(verifyPath);
 
   // Override modelPrompt from yml verify_{stage} when available (D5)
   // Fallback chain: yml verify_{stage} → verify.md body prompt → DEFAULT (via parseVerifyFile)

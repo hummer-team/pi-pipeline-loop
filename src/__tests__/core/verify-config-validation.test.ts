@@ -100,6 +100,36 @@ describe("diagnoseVerifyConfig", () => {
     expect(emptyError!.detail).toContain("pattern");
   });
 
+  it("returns empty_rule_item for inline list form `- path: \"\"` (M3 fix)", async () => {
+    const fp = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      fp,
+      '---\nrules:\n  fileContentPattern:\n    - path: ""\n      pattern: "some-pattern"\n---\nBody\n',
+      "utf-8",
+    );
+
+    const result = await diagnoseVerifyConfig(fp);
+    expect(result.ok).toBe(false);
+    const emptyError = result.errors.find(e => e.code === "empty_rule_item");
+    expect(emptyError).toBeDefined();
+    expect(emptyError!.detail).toContain("path");
+  });
+
+  it("returns empty_rule_item for empty keyword mixed with valid keywords (M3 fix)", async () => {
+    const fp = path.join(TMP, "verify.md");
+    await fs.writeFile(
+      fp,
+      '---\nrules:\n  keywords:\n    - "valid keyword"\n    - ""\n  mode: or\n  requiredFiles:\n    - "test.md"\n---\nBody\n',
+      "utf-8",
+    );
+
+    const result = await diagnoseVerifyConfig(fp);
+    expect(result.ok).toBe(false);
+    const emptyError = result.errors.find(e => e.code === "empty_rule_item");
+    expect(emptyError).toBeDefined();
+    expect(emptyError!.detail).toContain("keyword");
+  });
+
   it("returns ok:true for valid template verify.md (develop)", async () => {
     const templatePath = path.resolve(
       __dirname,

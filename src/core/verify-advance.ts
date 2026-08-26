@@ -55,6 +55,12 @@ interface ApplyVerifyPassOpts {
   returnResult: boolean;
   /** Optional PipelineUI for TUI output */
   ui?: PipelineUI;
+  /**
+   * M1 fix: When true, suppress writing the auto_verify_pass audit event.
+   * Used by the "skipped" path (config-error skip treated as pass) where
+   * writing auto_verify_pass would misrepresent a skip as a real pass.
+   */
+  skipPassAudit?: boolean;
 }
 
 /**
@@ -146,12 +152,16 @@ export async function applyVerifyPass(
       advancedThisTurn: undefined, // Clear C2 flag on stage transition
     });
 
-    await writeAuditLog("auto_verify_pass", {
-      pipelineId: meta.pipelineId,
-      fromStage: stageName,
-      nextStage,
-      method: opts.method,
-    });
+    // M1 fix: skip auto_verify_pass audit when called from the "skipped" path
+    // (config-error skip treated as pass — should NOT write auto_verify_pass)
+    if (!opts.skipPassAudit) {
+      await writeAuditLog("auto_verify_pass", {
+        pipelineId: meta.pipelineId,
+        fromStage: stageName,
+        nextStage,
+        method: opts.method,
+      });
+    }
 
     // TUI stage transition output (gated by output.pipelineStage)
     opts.ui?.transition(ctx, stageName, nextStage);
@@ -168,12 +178,15 @@ export async function applyVerifyPass(
   }
 
   // Terminal stage (no next stage)
-  await writeAuditLog("auto_verify_pass", {
-    pipelineId: meta.pipelineId,
-    stage: stageName,
-    method: opts.method,
-    note: "terminal stage, no advance",
-  });
+  // M1 fix: skip auto_verify_pass audit when called from the "skipped" path
+  if (!opts.skipPassAudit) {
+    await writeAuditLog("auto_verify_pass", {
+      pipelineId: meta.pipelineId,
+      stage: stageName,
+      method: opts.method,
+      note: "terminal stage, no advance",
+    });
+  }
 
   if (opts.handleTerminal && opts.returnResult) {
     // Pipeline reaching completed — clear status bar
@@ -319,6 +332,15 @@ export async function applyVerifyFail(
       await freezeAndPrompt(ctx, meta, "verify_attempt_overflow", config, {
         ui: flowUI,
       });
+      // H2 fix: return immediately after freeze to prevent fall-through
+      // to the wake-model code block below. Overflow freeze hands control
+      // to the user (decision menu); waking the model would interfere.
+      return {
+        success: false,
+        passed: false,
+        message: `Verification failed for "${stageName}" (attempt overflow — frozen): ${failureSummary}`,
+        failures: verifyFailures,
+      };
     }
   }
 
@@ -374,6 +396,8 @@ export async function autoAdvanceAfterVerify(
   toStage: PipelineStage | null,
   verifyResult: VerifyAdvanceResult,
   pipelineUI: PipelineUI,
+  /** M1 fix: optional flags for callers (e.g., skipped path suppresses auto_verify_pass audit) */
+  options?: { skipPassAudit?: boolean },
 ): Promise<void> {
   const clearedMeta = { ...meta, advancedThisTurn: undefined };
 
@@ -382,6 +406,7 @@ export async function autoAdvanceAfterVerify(
     handleTerminal: false,
     returnResult: false,
     ui: pipelineUI,
+    skipPassAudit: options?.skipPassAudit,
   });
 
   // Stage audit

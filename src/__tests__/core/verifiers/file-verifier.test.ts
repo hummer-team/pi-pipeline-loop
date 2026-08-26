@@ -283,12 +283,14 @@ describe("verifyFileContentPattern — 148 plan doc reference pattern", () => {
   });
 });
 
-// ─── Phase 1 (148): clarify conditional lookahead pattern (4 states) ─────
+// ─── Phase 1 (148): clarify conditional lookahead pattern (4 states + M2) ──
 
-describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 states)", () => {
+describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 states + M2)", () => {
   // The lookahead pattern in the YAML (after unescaping) is:
+  // - Supports both non-bold (`- 方案 A`) and bold (`- **方案 A：**`) forms (H1 fix)
+  // - Scopes 方案/答 search to AFTER the clarify header (M2 fix)
   const LOOKAHEAD_PATTERN =
-    "(?<![\\s\\S])(?:(?![\\s\\S]*?^# 第 \\d+ 轮澄清)|(?=[\\s\\S]*?^# 第 \\d+ 轮澄清)(?=[\\s\\S]*?^- 方案 [A-Z])(?=[\\s\\S]*?^答：))";
+    "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案 [A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^答：))";
 
   it("state 1: no clarification section → passes (direct confirmation)", async () => {
     const content = [
@@ -308,16 +310,16 @@ describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 stat
     expect(result.passed).toBe(true);
   });
 
-  it("state 2: clarification section with plan AND answer → passes", async () => {
+  it("state 2: clarification section with bold plan AND answer → passes (real doc format)", async () => {
     const content = [
       "# Requirement",
       "",
       "# 第 1 轮澄清",
       "## 问题 1",
-      "- 方案 A：仅检查 SKILL.md",
+      "- **方案 A：** 仅检查 SKILL.md",
       "  - 优点：范围最小",
       "  - 缺点：覆盖不全",
-      "- 方案 B：检查 SKILL.md + agents",
+      "- **方案 B：** 检查 SKILL.md + agents",
       "  - 优点：覆盖更全",
       "推荐：方案 B",
       "---",
@@ -335,12 +337,33 @@ describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 stat
     expect(result.passed).toBe(true);
   });
 
-  it("state 3: clarification section with plan but NO answer → fails", async () => {
+  it("state 2b: clarification section with non-bold plan AND answer → passes (regression)", async () => {
     const content = [
+      "# Requirement",
+      "",
       "# 第 1 轮澄清",
       "## 问题 1",
       "- 方案 A：仅检查 SKILL.md",
       "- 方案 B：检查 SKILL.md + agents",
+      "推荐：方案 B",
+      "---",
+      "答：方案 B",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("state 3: clarification section with plan but NO answer → fails", async () => {
+    const content = [
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "- **方案 A：** 仅检查 SKILL.md",
+      "- **方案 B：** 检查 SKILL.md + agents",
       "推荐：方案 B",
     ].join("\n");
     await fs.writeFile(path.join(TMP, "req.md"), content);
@@ -366,6 +389,26 @@ describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 stat
       [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
       TMP,
     );
+    expect(result.passed).toBe(false);
+  });
+
+  it("M2 fix: plan/answer in body BEFORE clarify section → fails (no false negative)", async () => {
+    const content = [
+      "# Requirement",
+      "We discussed - 方案 A as a candidate.",
+      "答：maybe this works",
+      "",
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "Just a question without plan or answer in the clarify section.",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    // Must FAIL: plan/answer before clarify header must not mask missing structure
     expect(result.passed).toBe(false);
   });
 });

@@ -860,6 +860,8 @@ describe("Phase 3 (148): agent_settled verify config skip", () => {
     // Should have audit log verify_config_skip
     const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("verify_config_skip");
+    // M1 fix: skipped must NOT write auto_verify_pass audit
+    expect(logContent).not.toContain("auto_verify_pass");
 
     await rm(stageTmp, { recursive: true, force: true });
   });
