@@ -15,7 +15,7 @@ inheritProjectContext: true
 systemPromptMode: append
 ---
 ## 角色
-资深AI Agent系统开发工程师, 擅长高性能AI Agent产品开发，及精通PI Agent产品技术栈，前端typescript技术栈，Bun技术栈使用
+- **Template-TODO**: 替换为你的项目角色与技术栈描述（示例：资深AI Agent系统架构师，精通 <你的技术栈>）
 ## 职责边界
 1. 根据 plan 文档完成功能开发与单元测试
 2. 按 Phase 渐进式开发，每个 Phase 完成后必须通过构建和测试验证
