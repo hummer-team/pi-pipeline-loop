@@ -1107,6 +1107,50 @@ describe("verify-generator", () => {
       const items = extractHardcodedItems(sampleContent);
       expect(items.length).toBeGreaterThanOrEqual(2);
     });
+
+    // ── Phase 2 (147): Template-TODO placeholder lines are skipped ──────────
+
+    it("skips lines carrying the Template-TODO reserved placeholder (no keyword rule emitted)", () => {
+      // Even if prefixed with **必须**, Template-TODO lines are user-fillable stubs
+      // and must NOT be extracted as delivery rules (147 Bug fix).
+      const sampleContent = [
+        "## Deliverables",
+        "- **必须** Template-TODO: 补充业务交付项",
+        "- **必须** run build successfully",
+      ].join("\n");
+      const items = extractHardcodedItems(sampleContent);
+      // Only the second line should be extracted; the Template-TODO line is skipped.
+      expect(items.length).toBe(1);
+      expect(items[0].target).toBe("run build successfully");
+    });
+
+    it("skips HTML-comment lines carrying Template-TODO", () => {
+      const sampleContent = [
+        "## Deliverables",
+        "<!-- Template-TODO: 补充项目业务交付项 -->",
+        "- **必须** generate API documentation",
+      ].join("\n");
+      const items = extractHardcodedItems(sampleContent);
+      expect(items.length).toBe(1);
+      expect(items[0].target).toBe("generate API documentation");
+    });
+
+    it("mixed: real business items extracted while adjacent Template-TODO lines skipped", () => {
+      const sampleContent = [
+        "## Deliverables",
+        "<!-- Template-TODO: 补充项目业务交付项 -->",
+        "- **Template-TODO**: 补充项目特有的业务交付项",
+        "- **必须** 生成 API 文档",
+        "- **必须** 更新 CHANGELOG",
+        "- **必须** Template-TODO: 伪规则（跳过）",
+      ].join("\n");
+      const items = extractHardcodedItems(sampleContent);
+      // Only the two real business items should be extracted
+      expect(items.length).toBe(2);
+      const targets = items.map(i => i.target);
+      expect(targets).toContain("生成 API 文档");
+      expect(targets).toContain("更新 CHANGELOG");
+    });
   });
 
   // ─── Phase 0 (146): loadPluginDeliverables + double-source merge ─────────────

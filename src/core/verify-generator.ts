@@ -195,6 +195,9 @@ export async function readSkillBody(
  *
  * If both patterns match on the same line, the independent marker takes priority.
  *
+ * `Template-TODO` reserved placeholder lines are skipped (147): they are user-fillable
+ * stubs in skill templates and must never be mis-extracted as delivery rules.
+ *
  * @param skillBody - The skill file content (without frontmatter)
  * @returns Array of delivery items extracted via keyword matching
  */
@@ -208,6 +211,10 @@ export function extractHardcodedItems(skillBody: string): DeliveryItem[] {
 
   const lines = skillBody.split("\n");
   for (const line of lines) {
+    // Template placeholder lines are user-fillable stubs, never delivery rules.
+    // Skip any line carrying the reserved Template-TODO marker (147).
+    if (line.includes("Template-TODO")) continue;
+
     // Reset lastIndex (global regexes are stateful)
     INDEPENDENT_MARKER.lastIndex = 0;
     PHRASE_BOLD.lastIndex = 0;
