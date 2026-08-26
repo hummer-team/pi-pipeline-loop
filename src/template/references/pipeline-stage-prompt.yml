@@ -1,0 +1,442 @@
+# Pipeline Stage Prompt Configuration
+# ==========================================
+#
+# This file configures per-stage agent prompts and verification prompts
+# for the pi-pipeline plugin. It is read from `.pi/references/pipeline-stage-prompt.yml`.
+#
+# Key Structure:
+#   Stage prompt keys (5):
+#     clarify, plan, develop, review, fix
+#     — Rendered as the agent's system prompt for each stage.
+#
+#   Per-stage verify execution prompts (5):
+#     verify_clarify, verify_plan, verify_develop, verify_review, verify_fix
+#     — Used as modelPrompt during stage verification (execution phase).
+#     — Empty/missing → falls back to DEFAULT_VERIFY_PROMPT.
+#
+#   Per-stage verify extract prompts (5):
+#     verify_extract_clarify, verify_extract_plan, verify_extract_develop,
+#     verify_extract_review, verify_extract_fix
+#     — Used for LLM-based delivery item extraction (generation phase).
+#     — Fallback chain: verify_extract_{stage} → verify_extract → DEFAULT_VERIFY_EXTRACT_PROMPT.
+#
+#   Per-stage executor prompts (5) — Phase 4 (139) + Phase 0 (146):
+#     stage_executor_clarify, stage_executor_plan, stage_executor_develop,
+#     stage_executor_review, stage_executor_fix
+#     — Rendered as "## Stage Executor Scheduling" section describing which sub-agent
+#       executes the stage and how the main thread orchestrates the handoff.
+#     — Injected via {{stage_executor}} placeholder (clarify: optional, not in CRITICAL_PLACEHOLDERS).
+#
+#   Per-stage plugin default deliverables (3) — Phase 0 (146):
+#     stage_deliverable_develop, stage_deliverable_review, stage_deliverable_fix
+#     — Read by verify-generator as plugin default delivery items (verify rule layer).
+#     — Also injected via {{stage_deliverables}} placeholder into system prompt (inform agent).
+#     — clarify/plan have no plugin default deliverables (no code artifacts/commit/build).
+#
+#   Global verify extract fallback (1):
+#     verify_extract
+#     — Fallback when per-stage verify_extract_{stage} is empty/missing.
+#
+#   Conflict check prompt (1) — Phase 6 (146):
+#     conflict_check_prompt
+#     — System prompt for model-based SKILL/plugin conflict detection during /pipeline-init.
+#     — Fallback chain: conflict_check_prompt_{stage} → conflict_check_prompt → DEFAULT_CONFLICT_CHECK_PROMPT.
+#     — Not a stage template placeholder; read directly by runConflictCheck.
+#
+# Total: 25 keys (5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 5 stage_executor_{stage} + 3 stage_deliverable_{stage} + 1 verify_extract + 1 conflict_check_prompt)
+#
+# Placeholder Protocol:
+#   Placeholders use the format {{key}} and are replaced at runtime with
+#   dynamic values built from pipeline state.
+#
+# Available placeholders (10 total):
+#   {{context_reference}}    — Part 1: previous summary + context files + requirement doc path
+#   {{domain_skill}}         — Part 2: business domain rules
+#   {{stage_skill}}          — Part 3: current stage skill content (.pi/skills/{skillPath})
+#   {{loop_status}}          — Part 4: loop engineering status (develop/fix only)
+#   {{pipeline_status}}      — Part 5: pipeline ID, stage, domain, validation
+#   {{verify_failures}}      — Part 6: previous verification failures
+#   {{verify_tool_guidance}} — Part 7: verification tool mode guidance
+#   {{stage_write_scope}}    — Part 8: write scope for non-loop stages
+#   {{stage_executor}}       — Part 9: stage executor scheduling (all 5 stages; clarify optional)
+#   {{stage_deliverables}}   — Part 10: plugin default deliverables (develop/review/fix; optional)
+#
+# Paragraph Format:
+#   Each placeholder occupies its own paragraph. Paragraphs separated by
+#   a line containing only `---`. When a placeholder's dynamic value is null
+#   or empty, the entire paragraph (between --- separators) is removed from
+#   the rendered output.
+#
+# Unknown Placeholders:
+#   Any {{xxx}} not in the 10 known keys above is preserved as-is (not replaced).
+#
+# Critical Placeholder Missing:
+#   If a critical placeholder is absent from the template, the entire stage
+#   falls back to the default prompt. Critical placeholders by stage:
+#   - All stages: {{pipeline_status}}
+#   - develop/fix: + {{loop_status}}
+#   - clarify/plan/review: + {{stage_write_scope}}
+#   - plan/develop/review/fix: + {{stage_executor}}
+#   Note: {{stage_deliverables}} and clarify's {{stage_executor}} are NOT critical
+#   (existing yml templates without them should not trigger fallback).
+#
+# Empty Value Fallback:
+#   If a stage key's value is empty or whitespace-only, the default prompt
+#   is used (same as if the key were missing entirely).
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Stage Prompts (5 keys)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+clarify: |
+  {{context_reference}}
+  ---
+  {{domain_skill}}
+  ---
+  {{stage_skill}}
+  ---
+  {{pipeline_status}}
+  ---
+  {{verify_failures}}
+  ---
+  {{verify_tool_guidance}}
+  ---
+  {{stage_write_scope}}
+  ---
+  {{stage_executor}}
+
+plan: |
+  {{context_reference}}
+  ---
+  {{domain_skill}}
+  ---
+  {{stage_skill}}
+  ---
+  {{pipeline_status}}
+  ---
+  {{verify_failures}}
+  ---
+  {{verify_tool_guidance}}
+  ---
+  {{stage_write_scope}}
+  ---
+  {{stage_executor}}
+
+develop: |
+  {{context_reference}}
+  ---
+  {{domain_skill}}
+  ---
+  {{stage_skill}}
+  ---
+  {{loop_status}}
+  ---
+  {{pipeline_status}}
+  ---
+  {{verify_failures}}
+  ---
+  {{verify_tool_guidance}}
+  ---
+  {{stage_executor}}
+  ---
+  {{stage_deliverables}}
+
+review: |
+  {{context_reference}}
+  ---
+  {{domain_skill}}
+  ---
+  {{stage_skill}}
+  ---
+  {{pipeline_status}}
+  ---
+  {{verify_failures}}
+  ---
+  {{verify_tool_guidance}}
+  ---
+  {{stage_write_scope}}
+  ---
+  {{stage_executor}}
+  ---
+  {{stage_deliverables}}
+
+fix: |
+  {{context_reference}}
+  ---
+  {{domain_skill}}
+  ---
+  {{stage_skill}}
+  ---
+  {{loop_status}}
+  ---
+  {{pipeline_status}}
+  ---
+  {{verify_failures}}
+  ---
+  {{verify_tool_guidance}}
+  ---
+  {{stage_executor}}
+  ---
+  {{stage_deliverables}}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-stage Executor Prompts (5 keys) — Phase 4 (139) + Phase 0 (146)
+# Rendered as "## Stage Executor Scheduling" section via {{stage_executor}} placeholder.
+# Placeholders within these values: {subagent_type}, {context_arg}
+# {subagent_type} is filled from the stage→agent mapping.
+# {context_arg} is a hint for the main thread to fill the document path.
+# stage_executor_clarify is optional (not in CRITICAL_PLACEHOLDERS).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+stage_executor_clarify: |
+  ## Stage Executor Scheduling
+  This stage is executed by the user-invoked agent: `{subagent_type}`
+  **Scheduling**: User @`{subagent_type}` in chat with the requirement document path.
+  **Return protocol**: On `full-und?` confirmation, write the `## 模型确认` marker to the requirement document and STOP. Do NOT call `stage_advance` — the `agent_settled` hook auto-verifies (completionMarker) and advances to `plan`.
+
+stage_executor_plan: |
+  ## Stage Executor Scheduling
+  This stage uses `{subagent_type}` (lightweight advance mode).
+  **Scheduling**: User @`{subagent_type}` in chat; main thread receives `nextStage: develop` and calls stage_advance.
+  **Context**: {context_arg}
+
+stage_executor_develop: |
+  ## Stage Executor Scheduling
+  This stage is executed by sub-agent: `{subagent_type}`
+  **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
+  **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
+  **Context**: {context_arg}
+
+stage_executor_review: |
+  ## Stage Executor Scheduling
+  This stage is executed by sub-agent: `{subagent_type}`
+  **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
+  **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
+  **Context**: {context_arg}
+
+stage_executor_fix: |
+  ## Stage Executor Scheduling
+  This stage is executed by sub-agent: `{subagent_type}`
+  **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
+  **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
+  **Context**: {context_arg}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-stage Plugin Default Deliverables (3 keys) — Phase 0 (146)
+# Read by verify-generator as plugin default delivery items (verify rule layer).
+# Also injected via {{stage_deliverables}} placeholder into system prompt (inform agent).
+# clarify/plan have no plugin default deliverables (no code artifacts/commit/build).
+# Items use **MUST** markers so extractHardcodedItems can parse them.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+stage_deliverable_develop: |
+  - **MUST** run the project build command and confirm it passes (command determined by project tech stack)
+  - **MUST** run the project unit test command and confirm it passes (command determined by project tech stack)
+  - **MUST** commit changes
+  - **MUST** include `pipeline: {pipelineId}` in the artifact file header
+
+stage_deliverable_review: |
+  - **MUST** include `pipeline: {pipelineId}` in the artifact file header
+
+stage_deliverable_fix: |
+  - **MUST** run the project build command and confirm it passes (command determined by project tech stack)
+  - **MUST** run the project unit test command and confirm it passes (command determined by project tech stack)
+  - **MUST** include `pipeline: {pipelineId}` in the artifact file header
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-stage Verify Execution Prompts (5 keys)
+# Used as modelPrompt during stage verification.
+# Empty/missing → falls back to DEFAULT_VERIFY_PROMPT.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+verify_clarify: |
+  - Fully understand the requirement context (goals, scope, boundaries)
+  - Clear and unambiguous solution selection that covers all requirement boundaries
+
+verify_plan: |
+  - Fully understand the requirement context (goals, scope, boundaries)
+  - Clear and unambiguous solution selection that covers all requirement boundaries
+
+verify_develop: |
+  - Fully understand the requirement context (goals, scope, boundaries)
+  - Clear and unambiguous solution selection that covers all requirement boundaries
+
+verify_review: |
+  - Fully understand the requirement context (goals, scope, boundaries)
+  - Clear and unambiguous solution selection that covers all requirement boundaries
+
+verify_fix: |
+  - Fully understand the requirement context (goals, scope, boundaries)
+  - Clear and unambiguous solution selection that covers all requirement boundaries
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-stage Verify Extract Prompts (5 keys)
+# Used for LLM-based delivery item extraction during verify generation.
+# Fallback chain: verify_extract_{stage} → verify_extract → DEFAULT_VERIFY_EXTRACT_PROMPT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+verify_extract_clarify: |
+  You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
+
+  Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.
+
+  For each deliverable, classify it as one of:
+  - "file": a file that must be created/modified
+  - "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
+  - "git": a git state that must be true
+  - "keyword": a keyword that must appear in the output
+
+  Respond with JSON array:
+  [
+    {"type": "file", "target": "docs/design/commit.md"},
+    {"type": "command", "target": "<build command from project>"},
+    {"type": "command", "target": "<test command from project>"},
+    {"type": "keyword", "target": "答"}
+  ]
+
+  Respond ONLY with the JSON array.
+
+verify_extract_plan: |
+  You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
+
+  Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.
+
+  For each deliverable, classify it as one of:
+  - "file": a file that must be created/modified
+  - "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
+  - "git": a git state that must be true
+  - "keyword": a keyword that must appear in the output
+
+  Respond with JSON array:
+  [
+    {"type": "file", "target": "docs/design/commit.md"},
+    {"type": "command", "target": "<build command from project>"},
+    {"type": "command", "target": "<test command from project>"},
+    {"type": "keyword", "target": "答"}
+  ]
+
+  Respond ONLY with the JSON array.
+
+verify_extract_develop: |
+  You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
+
+  Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.
+
+  For each deliverable, classify it as one of:
+  - "file": a file that must be created/modified
+  - "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
+  - "git": a git state that must be true
+  - "keyword": a keyword that must appear in the output
+
+  Respond with JSON array:
+  [
+    {"type": "file", "target": "docs/design/commit.md"},
+    {"type": "command", "target": "<build command from project>"},
+    {"type": "command", "target": "<test command from project>"},
+    {"type": "keyword", "target": "答"}
+  ]
+
+  Respond ONLY with the JSON array.
+
+verify_extract_review: |
+  You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
+
+  Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.
+
+  For each deliverable, classify it as one of:
+  - "file": a file that must be created/modified
+  - "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
+  - "git": a git state that must be true
+  - "keyword": a keyword that must appear in the output
+
+  Respond with JSON array:
+  [
+    {"type": "file", "target": "docs/design/commit.md"},
+    {"type": "command", "target": "<build command from project>"},
+    {"type": "command", "target": "<test command from project>"},
+    {"type": "keyword", "target": "答"}
+  ]
+
+  Respond ONLY with the JSON array.
+
+verify_extract_fix: |
+  You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
+
+  Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.
+
+  For each deliverable, classify it as one of:
+  - "file": a file that must be created/modified
+  - "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
+  - "git": a git state that must be true
+  - "keyword": a keyword that must appear in the output
+
+  Respond with JSON array:
+  [
+    {"type": "file", "target": "docs/design/commit.md"},
+    {"type": "command", "target": "<build command from project>"},
+    {"type": "command", "target": "<test command from project>"},
+    {"type": "keyword", "target": "答"}
+  ]
+
+  Respond ONLY with the JSON array.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Global Verify Extract Fallback (1 key)
+# Used when per-stage verify_extract_{stage} is empty/missing.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+verify_extract: |
+  You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
+
+  Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.
+
+  For each deliverable, classify it as one of:
+  - "file": a file that must be created/modified
+  - "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
+  - "git": a git state that must be true
+  - "keyword": a keyword that must appear in the output
+
+  Respond with JSON array:
+  [
+    {"type": "file", "target": "docs/design/commit.md"},
+    {"type": "command", "target": "<build command from project>"},
+    {"type": "command", "target": "<test command from project>"},
+    {"type": "keyword", "target": "答"}
+  ]
+
+  Respond ONLY with the JSON array.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Conflict Check Prompt (1 key) — Phase 6 (146)
+# System prompt for model-based SKILL/plugin conflict detection during /pipeline-init.
+# Fallback chain: conflict_check_prompt_{stage} → conflict_check_prompt → DEFAULT.
+# Not a stage template placeholder; read directly by runConflictCheck.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+conflict_check_prompt: |
+  You are a prompt conflict analyzer. Given the business skill content and the plugin-injected prompt segments for the same pipeline stage, detect CONFLICTS and OVERLAPS between them.
+
+  Definitions:
+  - "conflict": the two sources give contradictory instructions (e.g., one says "call stage_advance" and the other says "must NOT call stage_advance").
+  - "overlap": the two sources cover the same requirement redundantly with different wording (e.g., both describe the nextStage handoff protocol) — not contradictory but duplicated; recommend which source should own it.
+
+  For each issue, respond with a JSON object:
+  {
+    "stage": "<stage>",
+    "items": [
+      {
+        "kind": "conflict" | "overlap",
+        "skillSnippet": "<verbatim quote from the skill content>",
+        "pluginSnippet": "<verbatim quote from the plugin segment>",
+        "reason": "<why this is a conflict or overlap>",
+        "suggestion": "<recommended fix: which source to change and how>"
+      }
+    ]
+  }
+
+  Rules:
+  - Only report real issues; do not invent problems.
+  - Quote snippets verbatim.
+  - If no issues found, respond with {"stage": "<stage>", "items": []}.
+
+  Respond ONLY with the JSON object.

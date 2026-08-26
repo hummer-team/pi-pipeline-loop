@@ -1,0 +1,46 @@
+{
+  "startStageMode": "auto",
+  "llmExtract": true,
+  "output": { "pipelineStage": true },
+  "decisionShortcutKey": "ctrl+enter",
+  "protect": {
+    "gitignore": true,
+    "ask":true,
+    "allow": []
+  },
+  "audit": { "promptSnapshot": "full" },
+  "init": { "conflictCheck": "model" },
+  "stages": {
+    "clarify": {
+      "agentPath": ".pi/agents/feat-design-plan-agent.md",
+      "skillPath": "design/SKILL.md",
+      "nextStage": "plan",
+      "verify": { "require": true, "completionMarker": "## 模型确认" }
+    },
+    "plan": {
+      "agentPath": ".pi/agents/feat-design-plan-agent.md",
+      "skillPath": "plan/SKILL.md",
+      "nextStage": "develop",
+      "verify": { "require": true }
+    },
+    "develop": {
+      "agentPath": ".pi/agents/develop-agent.md",
+      "skillPath": "develop/SKILL.md",
+      "nextStage": "review",
+      "verify": { "require": true, "selfVerifySkip": true }
+    },
+    "review": {
+      "agentPath": ".pi/agents/code-review-agent.md",
+      "skillPath": "review/SKILL.md",
+      "nextStage": "fix"
+    },
+    "fix": {
+      "agentPath": ".pi/agents/code-review-withfix-agent.md",
+      "skillPath": "fix/SKILL.md",
+      "nextStage": "review",
+      "verify": { "require": true, "selfVerifySkip": true }
+    },
+    "awaiting_human": { "nextStage": null },
+    "completed": { "nextStage": null }
+  }
+}

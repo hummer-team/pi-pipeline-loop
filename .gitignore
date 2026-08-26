@@ -18,8 +18,8 @@ design/udf.md
 design/udf_3.md
 prompts/
 *.md
+!src/template/**/*.md
 AGENTS_bak
 .opencode
 .pi
 .pi/session*
-/src/template/
