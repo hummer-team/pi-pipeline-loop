@@ -622,4 +622,112 @@ describe("verify-integration", () => {
       expect(meta.verifyFailures).toBeUndefined();
     });
   });
+
+  // ─── Phase 7 (148): regression tests ──────────────────────────────────────
+
+  describe("Phase 7 (148): regression tests", () => {
+    it("review stage with verify.require=true and report '结论：通过' → pass", async () => {
+      const config = makeConfigWithVerify(["review"]);
+
+      // Create verify.md with fileContentPattern for review conclusion
+      const verifyDir = path.join(TMP, ".pi", "references", "review_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"docs/review/code_review_test.md\"\n  fileContentPattern:\n    - path: \"docs/review/code_review_test.md\"\n      pattern: \"结论：通过\"\n---\nReview verification\n",
+      );
+
+      // Create docs/review dir and report file WITH the pass conclusion
+      const reviewDir = path.join(TMP, "docs", "review");
+      await fs.mkdir(reviewDir, { recursive: true });
+      await fs.writeFile(
+        path.join(reviewDir, "code_review_test.md"),
+        "# Code Review\n\n## 结论\n结论：通过\n",
+      );
+
+      const meta = makeTestMeta({ currentStage: "review" });
+      const ctx = createMockCtx(meta);
+
+      const hook = createAgentSettled(config);
+      await hook.handler(ctx as any);
+
+      // Should advance to next stage (review → fix)
+      const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      expect(lastUpdate.currentStage).toBe("fix");
+    });
+
+    it("review stage with verify.require=true and report '结论：不通过' → fail + wake", async () => {
+      const config = makeConfigWithVerify(["review"]);
+
+      // Create verify.md with fileContentPattern for review conclusion
+      const verifyDir = path.join(TMP, ".pi", "references", "review_spec");
+      await fs.mkdir(verifyDir, { recursive: true });
+      await fs.writeFile(
+        path.join(verifyDir, "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"docs/review/code_review_test.md\"\n  fileContentPattern:\n    - path: \"docs/review/code_review_test.md\"\n      pattern: \"结论：通过\"\n---\nReview verification\n",
+      );
+
+      // Create docs/review dir and report file with FAIL conclusion
+      const reviewDir = path.join(TMP, "docs", "review");
+      await fs.mkdir(reviewDir, { recursive: true });
+      await fs.writeFile(
+        path.join(reviewDir, "code_review_test.md"),
+        "# Code Review\n\n## 结论\n结论：不通过\n",
+      );
+
+      const meta = makeTestMeta({ currentStage: "review" });
+      const sentMessages: string[] = [];
+      const ctx = createMockCtx(meta, {
+        pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+      });
+
+      const hook = createAgentSettled(config);
+      await hook.handler(ctx as any);
+
+      // Should stay in review (fail)
+      expect(meta.currentStage).toBe("review");
+      // Should wake the model to fix (148 Phase 4)
+      expect(sentMessages.length).toBe(1);
+      expect(sentMessages[0]).toContain("Verification failed");
+    });
+
+    it("template JSON has review.verify.require=true", async () => {
+      const templateJsonPath = path.resolve(
+        __dirname, "..", "..", "template", "pipeline_loop.json",
+      );
+      const json = JSON.parse(await fs.readFile(templateJsonPath, "utf-8"));
+      expect(json.stages.review.verify).toBeDefined();
+      expect(json.stages.review.verify.require).toBe(true);
+    });
+
+    it("develop template verify.md contains plan doc pattern (148 Phase 1)", async () => {
+      const verifyPath = path.resolve(
+        __dirname, "..", "..", "template", "references", "develop_spec", "verify.md",
+      );
+      const content = await fs.readFile(verifyPath, "utf-8");
+      // Pattern uses YAML-escaped regex: `^\\*\\*plan doc\\*\\*:`
+      expect(content).toContain("plan doc");
+      expect(content).toContain("fileContentPattern");
+    });
+
+    it("fix template verify.md contains plan doc pattern (148 Phase 1)", async () => {
+      const verifyPath = path.resolve(
+        __dirname, "..", "..", "template", "references", "fix_spec", "verify.md",
+      );
+      const content = await fs.readFile(verifyPath, "utf-8");
+      expect(content).toContain("plan doc");
+      expect(content).toContain("fileContentPattern");
+    });
+
+    it("clarify template verify.md contains conditional lookahead pattern (148 Phase 1)", async () => {
+      const verifyPath = path.resolve(
+        __dirname, "..", "..", "template", "references", "clarify_spec", "verify.md",
+      );
+      const content = await fs.readFile(verifyPath, "utf-8");
+      expect(content).toContain("第");
+      expect(content).toContain("轮澄清");
+      expect(content).toContain("方案");
+      expect(content).toContain("答");
+    });
+  });
 });
