@@ -1,10 +1,12 @@
 /**
  * @module pipeline-init
- * /pipeline-init [0|1] — initializes the .pi/ directory structure and generates verify.md files.
+ * /pipeline-init [0|1|2] — initializes the .pi/ directory, generates verify.md files,
+ * and checks for unresolved template placeholders.
  *
  * - `0` (dir): Creates .pi/ directory and copies template files from src/template/
- * - `1` (verify): Generates verify.md files from skill definitions
- * - No argument: Runs dir first, then verify
+ * - `1` (verify): Generates verify.md files from skill definitions (pure generation)
+ * - `2` (check): Rule-based Template-TODO residue check + model-based conflict detection
+ * - No argument: Runs dir first, then verify (equivalent to 0+1)
  *
  * Emits stage-convention status via PipelineUI and returns detailed result content
  * for the command bridge.
@@ -20,6 +22,12 @@ import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { askProtectDecision } from "../utils/protect-ask";
 import { resolveStagePath, DEFAULT_VERIFY_FILE } from "../constants";
+import {
+  checkTemplateResidues,
+  computeResidueFingerprint,
+  writeResidueGateStatus,
+  clearResidueGateStatus,
+} from "../core/template-residue-check";
 
 /** Template directory — resolves to dist/template/ in production or src/template/ in dev */
 const TEMPLATE_DIR = path.resolve(__dirname, "..", "template");
@@ -71,20 +79,28 @@ export function createPipelineInitCommand(
     name: "pipeline-init",
     description:
       "Initialize the .pi/ directory structure and generate verify.md files. " +
-      "Use 0 for directory setup, 1 for verify generation, or no argument for both.",
+      "Use 0 for directory setup, 1 for verify generation only, " +
+      "2 for template residue check + conflict detection, " +
+      "or no argument for both (0+1).",
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
       const ui = createPipelineUI(config);
       try {
         // Goal 1: Override status bar to "init" stage during command execution
         ui.setStage(ctx, "init");
 
-        // Parse argument — supports string "0"/"1"/"" or object { sub: "0"|"1"|"" }
+        // Parse argument — supports string "0"/"1"/"2"/"" or object { sub: "0"|"1"|"2"|"" }
         const sub = typeof args === "string"
           ? (args as string).trim()
           : String((args as Record<string, unknown>)?.sub ?? "").trim();
 
         const runDir = sub === "0" || sub === "";
         const runVerify = sub === "1" || sub === "";
+        const runCheck = sub === "2";
+
+        // ── Check branch (sub="2") ─────────────────────────────────────────
+        if (runCheck) {
+          return await executeCheckBranch(config, ctx);
+        }
 
         // ── Dir branch ─────────────────────────────────────────────────────
         if (runDir) {
@@ -263,6 +279,11 @@ async function copyTemplateFiles(
       docsDir: docsCreated ? "created" : "exists",
     });
 
+    // 147 Phase 5: (Re-)distribution invalidates any cached residue-gate pass.
+    // Fresh templates reintroduce Template-TODO placeholders, so the old passed
+    // state would be misleading. Clear it (idempotent no-op when file missing).
+    clearResidueGateStatus(config.projectRoot, config.auditDir);
+
     // Build content string for bridge display
     const lines: string[] = [
       "# pipeline-init — .pi/ directory setup",
@@ -270,6 +291,7 @@ async function copyTemplateFiles(
       `- skipped: ${skippedCount}`,
       `- target: ${CONFIG_DIR_NAME}/`,
       `- docs/: ${docsCreated ? "created" : "already exists"}`,
+      `- hint: run /pipeline-init 2 to check template placeholders`,
     ];
     if (copiedFiles.length > 0) {
       lines.push("Copied files:");
@@ -283,6 +305,9 @@ async function copyTemplateFiles(
         lines.push(`  - ${f}`);
       }
     }
+
+    // 147 Phase 5: notify hint when TUI is available
+    // (no ctx access here — notify is issued by the caller via the dirResult content)
 
     return {
       success: true,
@@ -564,44 +589,13 @@ async function executeVerifyBranch(
     llmEnabled: String(llmEnabled),
   });
 
-  // Phase 6 (146): model-based conflict detection (after verify generation)
-  let conflictContent = "";
-  if (config.init?.conflictCheck !== "off") {
-    try {
-      // Per-stage progress callback via the same UI used for verify branch
-      const onStageProgress = showWorking
-        ? (stage: string) => { ui.progressUpdate(ctx, `(conflict-check:${stage})`); }
-        : undefined;
-      const conflictResults = await runConflictCheck(config, callLLM, onStageProgress);
-      if (conflictResults.length > 0) {
-        conflictContent = await handleConflictResults(config, conflictResults, ctx);
-      } else if (!callLLM) {
-        // Issue 1 fix: explicit TUI hint when conflictCheck="model" but LLM unavailable
-        // (previously silent audit noise). Only when llmExtract=false AND conflictCheck="model"
-        // (if llmExtract=true the "llm: unavailable" line is already emitted above).
-        if (config.llmExtract !== true) {
-          const hint = "- conflictCheck: model requested but LLM unavailable; set init.conflictCheck='off' to silence";
-          lines.push(hint);
-          ctx?.ui?.notify?.(hint);
-        }
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      await safeWriteAuditLog("pipeline-init_conflict_check_error", {
-        error: errMsg,
-      }, "warn");
-      // Failure doesn't block init — graceful degradation
-    }
-  }
-
-  const finalContent = conflictContent
-    ? lines.join("\n") + "\n\n" + conflictContent
-    : lines.join("\n");
+  // 147 Phase 5: conflict detection has moved to executeCheckBranch (sub="2").
+  // init 1 is now pure verify generation — no LLM-driven overlap checks here.
 
   return {
     success: true,
     summary: `Generated ${generated.length} verify.md file(s), merged ${merged.length}, skipped ${skipped.length}, errors ${errored.length}`,
-    content: finalContent,
+    content: lines.join("\n"),
     results,
   };
 }
@@ -623,6 +617,115 @@ function formatStageDetail(r: VerifyGenerateResult): string {
     // LLM not enabled — don't show llm detail
   }
   return parts.length > 0 ? `${r.status}, ${parts.join(", ")}` : r.status;
+}
+
+// ─── Phase 5 (147): Check branch (sub="2") ───────────────────────────────────
+
+/**
+ * Check branch: rule-based Template-TODO residue scan + model-based conflict detection.
+ *
+ * 1. Runs checkTemplateResidues — pure fs substring scan.
+ *    - Clean → writes gate status (passed + fingerprint) so pipeline-start can skip re-check.
+ *    - Residues → clears gate status + reports hit list.
+ * 2. Runs runConflictCheck + handleConflictResults (three-way choice) when LLM is available.
+ *    - LLM unavailable → degrade to skip + hint (non-blocking).
+ */
+async function executeCheckBranch(
+  config: PipelineConfig,
+  ctx?: any,
+): Promise<{ success: boolean; summary?: string; content?: string }> {
+  const ui = createPipelineUI(config);
+  const lines: string[] = ["# pipeline-init — template residue check"];
+
+  // Step 1: Rule-based residue scan
+  const residueResult = checkTemplateResidues(config.projectRoot);
+  lines.push(`- scanned: ${residueResult.scanned} file(s)`);
+  lines.push(`- hits: ${residueResult.hits.length}`);
+
+  const fingerprint = computeResidueFingerprint(config.projectRoot);
+
+  if (residueResult.clean) {
+    // Clean → persist gate status for pipeline-start short-circuit
+    writeResidueGateStatus(config.projectRoot, {
+      passed: true,
+      checkedAt: new Date().toISOString(),
+      fingerprint,
+    }, config.auditDir);
+    lines.push("- status: ALL CLEAR — template placeholders resolved");
+    ctx?.ui?.notify?.("All template placeholders resolved.");
+    await safeWriteAuditLog("pipeline_init_residue_check", {
+      scanned: String(residueResult.scanned),
+      hits: "0",
+      clean: "true",
+      fingerprint,
+    });
+  } else {
+    // Residues → clear gate status + detailed report
+    clearResidueGateStatus(config.projectRoot, config.auditDir);
+    lines.push("- status: RESIDUES FOUND — see hit list below");
+    // Group hits by file for readability
+    const hitsByFile = new Map<string, typeof residueResult.hits>();
+    for (const hit of residueResult.hits) {
+      const arr = hitsByFile.get(hit.file) ?? [];
+      arr.push(hit);
+      hitsByFile.set(hit.file, arr);
+    }
+    for (const [file, hits] of hitsByFile) {
+      lines.push(`\n## ${file}`);
+      for (const hit of hits) {
+        lines.push(`- L${hit.line}: ${hit.marker}`);
+      }
+    }
+    ctx?.ui?.notify?.(`Template residue check: ${residueResult.hits.length} unresolved placeholder(s) found.`);
+    await safeWriteAuditLog("pipeline_init_residue_check", {
+      scanned: String(residueResult.scanned),
+      hits: String(residueResult.hits.length),
+      clean: "false",
+      fingerprint,
+      files: Array.from(hitsByFile.keys()).join(","),
+    });
+  }
+
+  // Step 2: Model-based conflict detection (migrated from executeVerifyBranch)
+  let conflictContent = "";
+  if (config.init?.conflictCheck !== "off") {
+    try {
+      const callLLM = await buildCallLLM(config, ctx);
+      const onStageProgress = (stage: string) => {
+        ui.progressUpdate?.(ctx, `(conflict-check:${stage})`);
+      };
+      const conflictResults = await runConflictCheck(config, callLLM, onStageProgress);
+      if (conflictResults.length > 0) {
+        conflictContent = await handleConflictResults(config, conflictResults, ctx);
+      } else if (!callLLM) {
+        // LLM unavailable — degrade gracefully with a hint
+        const hint = "- conflictCheck: model requested but LLM unavailable; skipped (set init.conflictCheck='off' to silence)";
+        lines.push(hint);
+        ctx?.ui?.notify?.(hint);
+        await safeWriteAuditLog("pipeline-init_conflict_check_skipped", {
+          reason: "llm_unavailable",
+        });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await safeWriteAuditLog("pipeline-init_conflict_check_error", {
+        error: errMsg,
+      }, "warn");
+      // Failure doesn't block init — graceful degradation
+    }
+  }
+
+  const finalContent = conflictContent
+    ? lines.join("\n") + "\n\n" + conflictContent
+    : lines.join("\n");
+
+  return {
+    success: true,
+    summary: residueResult.clean
+      ? "Template residue check passed"
+      : `Template residue check: ${residueResult.hits.length} unresolved placeholder(s)`,
+    content: finalContent,
+  };
 }
 
 /**

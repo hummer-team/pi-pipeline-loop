@@ -1435,7 +1435,36 @@ describe("createPipelineInitCommand", () => {
       expect(config.init?.conflictCheck).toBe("off");
     });
 
-    it("conflictCheck=model with unavailable LLM emits TUI hint, not silent", async () => {
+    it("conflictCheck=model with unavailable LLM emits TUI hint, not silent (check branch sub=2)", async () => {
+      // 147 Phase 5: conflict detection moved from init 1 (verify) to init 2 (check).
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        init: { conflictCheck: "model" },
+        llmExtract: false,
+      });
+      for (const stage of ["plan", "develop"]) {
+        const skillDir = path.join(TMP, ".pi", "skills", stage);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(skillDir, "SKILL.md"),
+          `- **Must** ${stage}-result.md\n`,
+          "utf-8",
+        );
+      }
+      const notifications: string[] = [];
+      const mockCtx = { ui: { notify: (m: string) => { notifications.push(m); } } };
+      const cmd = createPipelineInitCommand(config);
+      // sub="2" → check branch (residue + conflict detection)
+      const result: any = await cmd.execute({ sub: "2" }, mockCtx);
+      // Model unavailable → TUI hint about degraded conflictCheck
+      expect(result.success).toBe(true);
+      const hint = notifications.find(n => n.includes("conflictCheck"));
+      expect(hint).toBeDefined();
+      expect(hint).toContain("off");
+    });
+
+    it("init sub=1 (verify) does NOT trigger conflict detection (147 Phase 5)", async () => {
+      // init 1 is now pure verify generation — conflict detection moved to sub=2.
       const config = makeTestConfig({
         projectRoot: TMP,
         init: { conflictCheck: "model" },
@@ -1454,11 +1483,11 @@ describe("createPipelineInitCommand", () => {
       const mockCtx = { ui: { notify: (m: string) => { notifications.push(m); } } };
       const cmd = createPipelineInitCommand(config);
       const result: any = await cmd.execute({ sub: "1" }, mockCtx);
-      // Model unavailable → TUI hint about degraded conflictCheck
       expect(result.success).toBe(true);
+      // No conflictCheck hint should be emitted by verify branch
       const hint = notifications.find(n => n.includes("conflictCheck"));
-      expect(hint).toBeDefined();
-      expect(hint).toContain("off");
+      expect(hint).toBeUndefined();
+      expect(result.content).not.toContain("Conflict Detection");
     });
 
     it("JSON config loader resolves audit.promptSnapshot and init.conflictCheck defaults", async () => {
@@ -1553,6 +1582,79 @@ describe("createPipelineInitCommand", () => {
       expect(reviewResult).toBe("Global prompt");
 
       resetPromptConfigCache();
+    });
+  });
+
+  // ─── Phase 5 (147): check branch (sub="2") ──────────────────────────────
+
+  describe("Phase 5 (147): check branch (sub=\"2\")", () => {
+    it("sub=2 with residues → content lists hits, gate status NOT written", async () => {
+      const config = makeTestConfig({ projectRoot: TMP, init: { conflictCheck: "off" } });
+      // Create a template with Template-TODO placeholders
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "## Deliverables\n<!-- Template-TODO: 补充业务交付项 -->\n- **Template-TODO**: 补充项目特有的业务交付项\n",
+        "utf-8",
+      );
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "2" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("RESIDUES FOUND");
+      expect(result.content).toContain(".pi/skills/develop/SKILL.md");
+      expect(result.content).toContain("Template-TODO");
+      // Gate status file should not exist (residues → cleared)
+      const statusPath = path.join(TMP, ".pi", "audit", "template-residue-check.json");
+      expect(fsSync.existsSync(statusPath)).toBe(false);
+    });
+
+    it("sub=2 clean → writes gate status with passed=true and fingerprint", async () => {
+      const config = makeTestConfig({ projectRoot: TMP, init: { conflictCheck: "off" } });
+      // Create a clean template (no Template-TODO)
+      const skillDir = path.join(TMP, ".pi", "skills", "develop");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        "## Deliverables\n- **必须** run build\n",
+        "utf-8",
+      );
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "2" });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toContain("ALL CLEAR");
+      // Gate status file should exist with passed=true
+      const statusPath = path.join(TMP, ".pi", "audit", "template-residue-check.json");
+      expect(fsSync.existsSync(statusPath)).toBe(true);
+      const statusContent = JSON.parse(await fs.readFile(statusPath, "utf-8"));
+      expect(statusContent.passed).toBe(true);
+      expect(typeof statusContent.fingerprint).toBe("string");
+      expect(typeof statusContent.checkedAt).toBe("string");
+    });
+
+    it("sub=0 first-time distribution clears gate status and includes hint", async () => {
+      // Pre-write a stale passed gate status
+      const auditDir = path.join(TMP, ".pi", "audit");
+      await fs.mkdir(auditDir, { recursive: true });
+      await fs.writeFile(
+        path.join(auditDir, "template-residue-check.json"),
+        JSON.stringify({ passed: true, checkedAt: "2020-01-01", fingerprint: "stale" }),
+        "utf-8",
+      );
+
+      // Ensure TEMPLATE_DIR exists (uses real src/template via dist/)
+      const config = makeTestConfig({ projectRoot: TMP });
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute({ sub: "0" });
+
+      expect(result.success).toBe(true);
+      // Stale gate status should be cleared
+      const statusPath = path.join(TMP, ".pi", "audit", "template-residue-check.json");
+      expect(fsSync.existsSync(statusPath)).toBe(false);
+      // Content should include hint
+      expect(result.content).toContain("pipeline-init 2");
     });
   });
 });

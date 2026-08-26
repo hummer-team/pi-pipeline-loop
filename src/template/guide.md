@@ -72,7 +72,20 @@ bun add @earendil-works/pi-pipeline
 
 **前置条件**：需先执行 `/pipeline-init 0` 创建目录结构。如果 `.pi/skills` 目录不存在，命令会跳过并提示先执行 dir 步骤。
 
-### 2.3 不传参数（全部执行）
+### 2.3 检查模板预留项 + 冲突检测
+
+```text
+/pipeline-init 2
+```
+
+规则扫描 `.pi/skills/*/SKILL.md` 和 `.pi/agents/*.md` 中的 `Template-TODO` 预留标识。命中即视为模板未修改，逐文件列出 `file:line:marker` 清单。
+
+- **全部清除**：写状态文件 `{auditDir}/template-residue-check.json`（`{passed, checkedAt, fingerprint}`），后续 `/pipeline-start` 通过指纹短路免检。
+- **存在残留**：清除状态文件；`/pipeline-start` 将在启动时阻塞并要求二选（重新检查 / 取消启动）。
+
+同时执行模型冲突/重叠检测（`init.conflictCheck` 配置控制）：检查 SKILL 内容与插件注入段是否冲突，三选一（auto-optimize / manual-optimize / skip）。LLM 不可用时降级跳过并提示。
+
+### 2.4 不传参数（全部执行）
 
 ```text
 /pipeline-init
@@ -400,12 +413,13 @@ clarify → plan → develop → review ⇄ fix → completed
 ### pipeline-init
 
 ```text
-/pipeline-init [0|1]
+/pipeline-init [0|1|2]
 ```
 
 - `0`：创建目录并复制模板
-- `1`：生成 verify.md 文件
-- 不传参数：全部执行（先 dir 后 verify）
+- `1`：仅生成 verify.md 文件
+- `2`：规则预留项检查（Template-TODO）+ 模型冲突/重叠检测
+- 不传参数：全部执行（先 dir 后 verify，等价 0+1）
 
 ---
 
