@@ -194,7 +194,8 @@ bun add @earendil-works/pi-pipeline
         "skillPath": "review/SKILL.md",
         "nextStage": "fix",              // review→fix 质量环（review 不通过时进入 fix）
         "allowedWritePaths": ["docs/", "doc/", "documentation/"],
-        // review 默认无 verify（review 由 LLM 判断，不跑构建/测试规则）
+        // review 默认启用 verify：`结论：通过` 强校验（review_spec/verify.md）
+        "verify": { "require": true },
       },
       "fix": {
         "agentPath": ".pi/agents/code-review-withfix-agent.md",
@@ -298,6 +299,7 @@ bun add @earendil-works/pi-pipeline
 - 写范围：`docs/`、`doc/`、`documentation/`（可通过 `allowedWritePaths` 覆盖）
 - Bash：仅允许只读 git 子命令（`git log`、`git status`、`git diff`、`git show`），`git add`/`git commit`/`git push` 因不匹配任何前缀天然被拒
 - 可读取全项目（读不受限）
+- review 启用 verify：`结论：通过` 由 verify.md 规则强校验；报告「不通过」触发 hook 唤醒模型修复并更新报告，最终由 `stage_advance` 显式推进
 
 **违规反馈**：
 - 拦截返回 `{ block: true, reason: "FORBIDDEN: '<path>' not in allowed write paths for '<stage>' stage." }`
@@ -381,7 +383,7 @@ clarify → plan → develop → review ⇄ fix → completed
 | **clarify** | 分析需求文档，识别歧义，提出澄清问题；获得用户 full-und? 确认后完成。full-und? 确认标记（`## 模型确认`）落盘后由 agent_settled 自动验证推进 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + completionMarker 预检） |
 | **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证） |
 | **develop** | 按规划编写代码，运行测试，产出 _commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
-| **review** | 审查代码质量，产出 code review 报告；通过→completed 或 不通过→fix | read, bash, write, edit, stage_advance（写限 docs/；无 verify） |
+| **review** | 审查代码质量，产出 code review 报告；`结论：通过` 由 verify 规则强校验；通过→completed 或 不通过→fix（hook 唤醒模型修复后重新验证） | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 `结论：通过`） |
 | **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→completed | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **awaiting_human** | 流水线冻结，等待人工介入（仅用于兜底） | read（受限） |
 | **completed** | 终端状态，流水线结束 | 无 |
@@ -681,7 +683,7 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `hook`（默认） | Agent 进入 idle 状态时，`agent_settled` hook 自动执行验证 | clarify, plan, develop, fix |
 | `tool` | Agent 调用 `stage_advance` 工具时，工具内部执行验证门 | 任意（需配置） |
 
-**推荐实践**：clarify/plan/develop/fix 使用 hook 模式（agent_settled 自动触发），review 不使用 verify（由 LLM 判断）。
+**推荐实践**：clarify/plan/develop/review/fix 均使用 hook 模式（agent_settled 自动触发）。review 启用 verify 将「结论：通过」作为规则强校验（review_spec/verify.md 含 `结论：通过` pattern）；报告「不通过」触发 hook 唤醒模型修复，直至报告「通过」后由 agent 的 `stage_advance` 显式推进至 completed（避免 review↔fix 死循环）。
 
 ### 9.2 selfVerifySkip 机制
 
