@@ -19,6 +19,12 @@ import {
 import { safeWriteAuditLog, safeWriteStageAudit } from "../utils/auditLog";
 import { getFlowState } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
+import {
+  checkTemplateResidues,
+  computeResidueFingerprint,
+  readResidueGateStatus,
+  writeResidueGateStatus,
+} from "../core/template-residue-check";
 
 /**
  * Writes the persistent TUI status bar showing current pipeline stage.
@@ -51,6 +57,136 @@ function checkAgentPaths(config: PipelineConfig): PipelineStage[] {
     }
   }
   return missing;
+}
+
+/**
+ * 147 Phase 6: Template-residue gate check.
+ *
+ * Blocks pipeline-start when `.pi/skills/` or `.pi/agents/` files still carry
+ * unresolved `Template-TODO` placeholders. The check is pure-rule (no LLM).
+ *
+ * Short-circuit: if the persistent gate status file reports `passed=true` AND
+ * the current fingerprint matches, the check is skipped entirely (cross-restart
+ * idempotent).
+ *
+ * Failure modes:
+ * - Clean residues → write gate status + proceed (return null).
+ * - Residues + TUI available → block with a 2-choice select (re-check / cancel).
+ * - Residues + no TUI → degrade to non-blocking notify + audit; proceed.
+ *
+ * @returns null when the check passes / degrades, or `{ success: false, error }`
+ *   when the user cancels startup.
+ */
+async function templateResidueGate(
+  config: PipelineConfig,
+  ctx?: any,
+): Promise<null | { success: false; error: string }> {
+  // Short-circuit: persisted pass + matching fingerprint → skip re-scan
+  try {
+    const status = readResidueGateStatus(config.projectRoot, config.auditDir);
+    if (status?.passed === true) {
+      const currentFp = computeResidueFingerprint(config.projectRoot);
+      if (status.fingerprint === currentFp) {
+        // Fingerprints match — cached pass is still valid
+        return null;
+      }
+      // Fingerprint drift — file content changed, re-check
+    }
+  } catch {
+    // Any read failure → fail-open, proceed to full scan
+  }
+
+  const result = checkTemplateResidues(config.projectRoot);
+
+  if (result.clean) {
+    // Clean → persist gate status for future short-circuit
+    try {
+      const fingerprint = computeResidueFingerprint(config.projectRoot);
+      writeResidueGateStatus(config.projectRoot, {
+        passed: true,
+        checkedAt: new Date().toISOString(),
+        fingerprint,
+      }, config.auditDir);
+    } catch {
+      // Write failure → fail-open (already clean, no blocking needed)
+    }
+    await safeWriteAuditLog("pipeline_start_template_residue_passed", {
+      scanned: String(result.scanned),
+    });
+    return null;
+  }
+
+  // Residues found
+  const hitList = result.hits
+    .map(h => `  - ${h.file}:${h.line}: ${h.marker}`)
+    .join("\n");
+
+  const hasTui = typeof ctx?.ui?.select === "function";
+  if (!hasTui) {
+    // No TUI — degrade to non-blocking notify + audit
+    const msg = `Template residue check: ${result.hits.length} unresolved placeholder(s). Fix Template-TODO markers before /pipeline-start.`;
+    ctx?.ui?.notify?.(msg);
+    if (ctx?.ui?.content) {
+      try {
+        ctx.ui.content(`# Template residue check (degraded — no TUI)\n\n${hitList}`);
+      } catch {
+        // content write failure is non-blocking
+      }
+    }
+    await safeWriteAuditLog("pipeline_start_template_residue_degraded", {
+      hits: String(result.hits.length),
+      scanned: String(result.scanned),
+    }, "warn");
+    // Fail-open — don't write gate status, proceed
+    return null;
+  }
+
+  // TUI available → blocking 2-choice loop
+  while (true) {
+    const choice: string | undefined = await ctx.ui.select(
+      `Template residue check: ${result.hits.length} unresolved placeholder(s) found.\n${hitList}\n\nPlease fix Template-TODO markers before starting the pipeline.`,
+      [
+        "1. I've fixed them — re-check",
+        "2. Cancel startup",
+      ],
+    );
+
+    if (!choice || choice === "2" || choice === "2. Cancel startup") {
+      await safeWriteAuditLog("pipeline_start_template_residue_blocked", {
+        hits: String(result.hits.length),
+        scanned: String(result.scanned),
+        action: "cancelled",
+      }, "warn");
+      return {
+        success: false,
+        error: "Template residue check blocked pipeline start. Fix Template-TODO placeholders first.",
+      };
+    }
+
+    // Re-check
+    const recheck = checkTemplateResidues(config.projectRoot);
+    if (recheck.clean) {
+      try {
+        const fingerprint = computeResidueFingerprint(config.projectRoot);
+        writeResidueGateStatus(config.projectRoot, {
+          passed: true,
+          checkedAt: new Date().toISOString(),
+          fingerprint,
+        }, config.auditDir);
+      } catch {
+        // Write failure → fail-open
+      }
+      await safeWriteAuditLog("pipeline_start_template_residue_passed", {
+        scanned: String(recheck.scanned),
+        retries: "1",
+      });
+      return null;
+    }
+    // Still residues → loop with updated hit list
+    result.hits.length = 0;
+    result.hits.push(...recheck.hits);
+    result.scanned = recheck.scanned;
+  }
 }
 
 /**
@@ -707,6 +843,14 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             `pipeline_loop.json missing agentPath for stage(s): [${missingAgentPaths.join(", ")}]. ` +
             `Add agentPath to each active stage config, e.g. ".pi/agents/develop-agent.md".`,
         };
+      }
+
+      // 147 Phase 6: Template-residue gate (after checkAgentPaths, before branch判定)
+      // Blocks when Template-TODO placeholders remain in .pi/skills/ or .pi/agents/.
+      // Persists pass-status to disk so subsequent restarts short-circuit via fingerprint.
+      const gateResult = await templateResidueGate(config, ctx);
+      if (gateResult !== null) {
+        return gateResult;
       }
 
       // ── Branch: existing pipeline state ──────────────────────────────────
