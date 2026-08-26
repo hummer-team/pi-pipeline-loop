@@ -1634,6 +1634,58 @@ describe("createPipelineInitCommand", () => {
       expect(typeof statusContent.checkedAt).toBe("string");
     });
 
+    it("migration smoke: init 0 distributes → init 2 detects residues → fix → clean", async () => {
+      // Simulate migration of an existing project: run init 0 (distributes new
+      // templates with Template-TODO markers) → init 2 should detect residues →
+      // user fixes templates → init 2 should pass and write gate status.
+      const config = makeTestConfig({ projectRoot: TMP, init: { conflictCheck: "off" } });
+      const cmd = createPipelineInitCommand(config);
+
+      // Step 1: init 0 distributes templates
+      const init0: any = await cmd.execute({ sub: "0" });
+      expect(init0.success).toBe(true);
+      expect(init0.content).toContain("pipeline-init 2");
+
+      // Step 2: init 2 detects residues (the newly distributed templates have Template-TODO)
+      const init2a: any = await cmd.execute({ sub: "2" });
+      expect(init2a.success).toBe(true);
+      expect(init2a.content).toContain("RESIDUES FOUND");
+      // Gate status should NOT be written when residues exist
+      const statusPath = path.join(TMP, ".pi", "audit", "template-residue-check.json");
+      expect(fsSync.existsSync(statusPath)).toBe(false);
+
+      // Step 3: "user" replaces Template-TODO placeholders with real content
+      // Iterate all SKILL files in .pi/skills/*/SKILL.md + agents/*.md
+      const skillsRoot = path.join(TMP, ".pi", "skills");
+      if (fsSync.existsSync(skillsRoot)) {
+        for (const stageDir of await fs.readdir(skillsRoot)) {
+          const skillFile = path.join(skillsRoot, stageDir, "SKILL.md");
+          if (!fsSync.existsSync(skillFile)) continue;
+          let content = await fs.readFile(skillFile, "utf-8");
+          content = content.replace(/Template-TODO/g, "项目业务交付项");
+          await fs.writeFile(skillFile, content, "utf-8");
+        }
+      }
+      const agentsDir = path.join(TMP, ".pi", "agents");
+      if (fsSync.existsSync(agentsDir)) {
+        for (const agentFile of await fs.readdir(agentsDir)) {
+          if (!agentFile.endsWith(".md")) continue;
+          const agentPath = path.join(agentsDir, agentFile);
+          let content = await fs.readFile(agentPath, "utf-8");
+          content = content.replace(/Template-TODO/g, "资深工程师");
+          await fs.writeFile(agentPath, content, "utf-8");
+        }
+      }
+
+      // Step 4: init 2 should now pass and write gate status
+      const init2b: any = await cmd.execute({ sub: "2" });
+      expect(init2b.success).toBe(true);
+      expect(init2b.content).toContain("ALL CLEAR");
+      expect(fsSync.existsSync(statusPath)).toBe(true);
+      const status = JSON.parse(await fs.readFile(statusPath, "utf-8"));
+      expect(status.passed).toBe(true);
+    });
+
     it("sub=0 first-time distribution clears gate status and includes hint", async () => {
       // Pre-write a stale passed gate status
       const auditDir = path.join(TMP, ".pi", "audit");
