@@ -377,7 +377,8 @@ describe("createAgentSettled", () => {
   });
 
   // Case 2: verify fails → sendUserMessage NOT called
-  it("138 wake: verification failure does NOT trigger sendUserMessage", async () => {
+  // 148 Phase 4: verification failure now DOES trigger sendUserMessage in hook mode
+  it("148 wake: verification failure triggers sendUserMessage in hook mode", async () => {
     const stageTmp = await makeFailingVerifyTmp("pi-settled-wake-2");
 
     const config = makeHookVerifyConfig(stageTmp, "develop");
@@ -390,8 +391,10 @@ describe("createAgentSettled", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    // Should NOT advance
-    expect(sentMessages.length).toBe(0);
+    // 148 Phase 4: Should wake the model to fix verification failures
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0]).toContain("Verification failed");
+    expect(sentMessages[0]).toContain("develop");
 
     await rm(stageTmp, { recursive: true, force: true });
   });
@@ -599,9 +602,61 @@ describe("createAgentSettled", () => {
 
     await rm(stageTmp, { recursive: true, force: true });
   });
-});
 
-// ─── Phase 3 (140): completionMarker precheck ─────────────────────────────────
+  // ── Phase 4 (148): verify fail wake guards ─────────────────────────────────
+
+  it("148 wake guard: tool mode fail → sendUserMessage NOT called (hook skips tool mode)", async () => {
+    const stageTmp = await makeFailingVerifyTmp("pi-settled-wake-p4-1");
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      auditDir: ".pi/audit",
+    });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      nextStage: "review",
+      verify: { require: true, mode: "tool", verifyFile: ".pi/references/develop_spec/verify.md" },
+    };
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+
+    // Tool mode doesn't go through agent_settled hook verify — hook skips it.
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    expect(sentMessages.length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("148 wake guard: sendUserMessage throws during fail wake → audit verify_fail_wake_failed", async () => {
+    const stageTmp = await makeFailingVerifyTmp("pi-settled-wake-p4-2");
+
+    const config = makeHookVerifyConfig(stageTmp, "develop");
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta, {
+      pi: {
+        sendUserMessage: (_msg: string) => {
+          throw new Error("wake failure");
+        },
+      },
+    });
+
+    const hook = createAgentSettled(config);
+    // Should not throw
+    await expect(hook.handler(ctx as any)).resolves.toBeUndefined();
+
+    // Audit log should contain verify_fail_wake_failed
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_fail_wake_failed");
+    expect(logContent).toContain("wake failure");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
 describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
   const markerTmp = join(tmpdir(), "pi-marker-settled-" + Date.now());
 

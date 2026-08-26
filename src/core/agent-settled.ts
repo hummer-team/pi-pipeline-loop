@@ -154,7 +154,8 @@ export function createAgentSettled(
         // Reuse ctxWithPi (declared above for gate) for autoAdvanceAfterVerify wake message
         await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui);
       } else {
-        await applyVerifyFail(ctx, meta, meta.currentStage, sharedResult, "rule", ui, config);
+        // 148 Phase 4: pass ctxWithPi so applyVerifyFail can send wake message via pi.sendUserMessage
+        await applyVerifyFail(ctxWithPi, meta, meta.currentStage, sharedResult, "rule", ui, config);
       }
     },
   };

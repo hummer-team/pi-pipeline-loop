@@ -322,6 +322,29 @@ export async function applyVerifyFail(
     }
   }
 
+  // 148 Phase 4: wake the model to fix verification failures in hook mode.
+  // Freeze branches above hand control to the user; only the ordinary fail
+  // path wakes the model. Tool mode stays silent (R2-Q1-A).
+  if (method === "rule" && ctx.pi && typeof ctx.pi.sendUserMessage === "function") {
+    try {
+      ctx.pi.sendUserMessage(
+        `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification.`,
+      );
+      await writeAuditLog("verify_fail_wake", {
+        pipelineId: meta.pipelineId,
+        stage: stageName,
+        method,
+        failureCount: String(verifyFailures.length),
+      });
+    } catch (err) {
+      await writeAuditLog("verify_fail_wake_failed", {
+        pipelineId: meta.pipelineId,
+        stage: stageName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return {
     success: false,
     passed: false,
