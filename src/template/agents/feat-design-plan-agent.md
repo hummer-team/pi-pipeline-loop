@@ -1,6 +1,7 @@
 ---
 name: feat-design-plan-agent
 description: Solution Design & Planning Expert‑Design solutions based on features, write detailed planning documents and guide subsequent development and implementation
+# your set model
 model: deepseek/deepseek-v4-flash
 permission:
   edit: allow

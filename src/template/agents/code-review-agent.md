@@ -1,6 +1,7 @@
 ---
 name: code-review-agent
 description: Code‑Review Expert ‑ Review the implementation against the plan and identify issues
+# your set model
 model: deepseek/deepseek-v4-flash
 permission:
   edit: allow

@@ -1,6 +1,7 @@
 ---
 name: code-review-withfix-agent
 description: Senior System Development Engineer‑Fix relevant issues based on review results
+# your set model
 model: bailian-token-plan-personal/qwen3.7-plus
 permission:
   edit: allow

@@ -1,6 +1,7 @@
 ---
 name: develop-agent
 description: Senior System Development Engineer - Complete feature development and unit testing according to the plan
+# your set model
 model: bailian-token-plan-personal/qwen3.7-plus
 permission:
   edit: allow
