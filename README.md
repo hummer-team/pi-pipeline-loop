@@ -122,7 +122,7 @@ Each action is audited. The menu is also available programmatically when no TUI 
 
 | Layer | Mechanism | Exemptable? |
 |-------|-----------|-------------|
-| Hardcoded paths | `.pi/`, `AGENTS.md`, `.git/` always protected | No |
+| Hardcoded paths | `.pi/`, `.git/` always protected | No |
 | Dynamic gitignore | Files matching `.gitignore` patterns are protected | Yes, via `protect.allow` |
 | Allow list | Specific paths exempted from gitignore protection | Edit only; git add/commit still blocked |
 
