@@ -395,6 +395,8 @@ describe("createAgentSettled", () => {
     expect(sentMessages.length).toBe(1);
     expect(sentMessages[0]).toContain("Verification failed");
     expect(sentMessages[0]).toContain("develop");
+    // 159 Phase 3: wake message must instruct SKILL-format compliance
+    expect(sentMessages[0]).toContain("Please strictly follow the SKILL output format requirements");
 
     await rm(stageTmp, { recursive: true, force: true });
   });

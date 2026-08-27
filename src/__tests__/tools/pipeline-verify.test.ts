@@ -125,6 +125,10 @@ describe("createPipelineVerify", () => {
     expect(result.passed).toBe(false);
     expect(result.failures).toBeDefined();
     expect((result.failures as unknown[]).length).toBeGreaterThan(0);
+    // 159 Phase 3: tool-mode return message must instruct SKILL-format compliance
+    expect(result.message).toBeDefined();
+    expect(result.message as string).toContain("Verification failed");
+    expect(result.message as string).toContain("Please strictly follow the SKILL output format requirements");
 
     // Should NOT have advanced
     const lastUpdate = ctx.updates[ctx.updates.length - 1];

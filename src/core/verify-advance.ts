@@ -350,7 +350,7 @@ export async function applyVerifyFail(
   if (method === "rule" && ctx.pi && typeof ctx.pi.sendUserMessage === "function") {
     try {
       ctx.pi.sendUserMessage(
-        `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification.`,
+        `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification. Please strictly follow the SKILL output format requirements.`,
       );
       await writeAuditLog("verify_fail_wake", {
         pipelineId: meta.pipelineId,
@@ -370,7 +370,7 @@ export async function applyVerifyFail(
   return {
     success: false,
     passed: false,
-    message: `Verification failed for "${stageName}": ${failureSummary}`,
+    message: `Verification failed for "${stageName}": ${failureSummary}. Please strictly follow the SKILL output format requirements.`,
     failures: verifyFailures,
   };
 }

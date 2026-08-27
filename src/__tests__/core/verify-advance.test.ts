@@ -728,3 +728,47 @@ describe("isConfigError helper", () => {
     expect(isConfigError([])).toBe(false);
   });
 });
+
+// ── 159 Phase 3: SKILL-format feedback in verify failure messages ──────────
+
+describe("159 Phase 3: SKILL-format feedback in verify failure messages", () => {
+  it("rule mode wake message contains SKILL-format instruction (sendUserMessage)", async () => {
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createCtx(meta);
+
+    const sentMessages: string[] = [];
+    (ctx as any).pi = { sendUserMessage: (msg: string) => { sentMessages.push(msg); } };
+
+    const sharedResult = {
+      structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "missing" }] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI);
+
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0]).toContain("Verification failed");
+    expect(sentMessages[0]).toContain("develop");
+    expect(sentMessages[0]).toContain("Please strictly follow the SKILL output format requirements");
+  });
+
+  it("tool mode return value contains SKILL-format instruction", async () => {
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "missing" }] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    const result = await applyVerifyFail(
+      ctx as any, meta, "develop", sharedResult, "tool", ctx.pipelineUI,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Verification failed");
+    expect(result.message).toContain("Please strictly follow the SKILL output format requirements");
+  });
+});
