@@ -21,4 +21,3 @@ systemPromptMode: append
 1. 修复 review 报告中标记为 Blocker/High/Medium 的问题
 2. 禁止修改与 Blocker/High/Medium 无关的代码
 3. 修复后必须通过构建和测试验证
-4. 最多循环 3 轮修复-review，超过上限需人工介入
