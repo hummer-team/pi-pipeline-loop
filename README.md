@@ -15,7 +15,7 @@
 | **Decision Menu** | Keyboard shortcut (default `Ctrl+Enter`) for 5-option frozen pipeline recovery: resume / skip / rollback / restart / abort |
 | **5 Verification Rules** | `requiredFiles`, `requiredCommands`, `requiredGit`, `fileContentPattern`, `keywords` — with `and`/`or` combinator mode |
 | **Hook/Tool Dual Mode** | Verification triggers automatically via hook (default) or on-demand via explicit tool call |
-| **Three-Layer File Protection** | Hardcoded paths (`.pi/`, `AGENTS.md`, `.git/`) → dynamic `.gitignore` protection → allow-list exemptions, plus stage-level write whitelists |
+| **Three-Layer File Protection** | Hardcoded paths (`.pi/`, `.git/`) → dynamic `.gitignore` protection → allow-list exemptions, plus stage-level write whitelists |
 | **Audit Trail** | JSONL event log, prompt snapshot archival, and per-file diff archiving |
 | **JSON Config Entry** | Simplified setup via `pipeline_loop.json` — no TypeScript config needed |
 | **Crash Recovery** | Stale session auto-reset on process restart (covers SIGKILL / terminal force-kill) |
