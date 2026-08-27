@@ -79,12 +79,14 @@ export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern
   { path: "{requirementDoc}", pattern: "full-und\\? 理解确认：是" },
   // clarify: conditional lookahead for clarification structure (148)
   // The pattern checks that if a clarify section exists, it must contain both
-  // a plan option (with optional bold markdown `**方案 X`) and an answer (`答：`).
-  // The negative lookahead is scoped to AFTER the clarify header to prevent
-  // body content before the header from masking missing structure (M2 fix).
+  // a plan option (with optional bold markdown `**方案 X`, tolerates no-space
+  // form `- 方案A`) and an answer (tolerates indented `  答：...` and half-width
+  // colon `答:`). The negative lookahead is scoped to AFTER the clarify header
+  // to prevent body content before the header from masking missing structure
+  // (M2 fix). Must stay byte-identical with clarify_spec/verify.md template.
   {
     path: "{requirementDoc}",
-    pattern: "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案 [A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^答：))",
+    pattern: "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))",
   },
   // plan: user confirmation marker
   { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },

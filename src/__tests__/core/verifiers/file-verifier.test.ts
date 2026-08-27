@@ -285,12 +285,15 @@ describe("verifyFileContentPattern — 148 plan doc reference pattern", () => {
 
 // ─── Phase 1 (148): clarify conditional lookahead pattern (4 states + M2) ──
 
-describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 states + M2)", () => {
+describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 states + M2 + tolerant variants)", () => {
   // The lookahead pattern in the YAML (after unescaping) is:
   // - Supports both non-bold (`- 方案 A`) and bold (`- **方案 A：**`) forms (H1 fix)
+  // - Tolerates no-space plan option form `- 方案A` via `方案[ \t]*[A-Z]`
+  // - Tolerates indented answers (e.g. `  答：方案 A`) and half-width colon `答:`
+  //   via `^[ \t]*答[:：]` (H1 root-cause fix for 148_Verify.md:240)
   // - Scopes 方案/答 search to AFTER the clarify header (M2 fix)
   const LOOKAHEAD_PATTERN =
-    "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案 [A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^答：))";
+    "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))";
 
   it("state 1: no clarification section → passes (direct confirmation)", async () => {
     const content = [
@@ -409,6 +412,87 @@ describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 stat
       TMP,
     );
     // Must FAIL: plan/answer before clarify header must not mask missing structure
+    expect(result.passed).toBe(false);
+  });
+
+  // ── 159 Phase 1: tolerant variants (indented answer / half-colon / no-space plan) ──
+
+  it("tolerant: indented answer (`  答：方案 A`) → passes (H1 root-cause fix for 148_Verify.md:240)", async () => {
+    const content = [
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "- 方案 A：默认推荐",
+      "- 方案 B：完整检查",
+      "推荐：方案 A",
+      "---",
+      "  答：方案 A，同意默认推荐",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("tolerant: half-width colon answer (`答: 方案 A`) → passes", async () => {
+    const content = [
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "- 方案 A：仅检查 SKILL.md",
+      "- 方案 B：检查 SKILL.md + agents",
+      "推荐：方案 B",
+      "---",
+      "答: 方案 B",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("tolerant: no-space plan option (`- 方案A：`) + normal answer → passes (goal literal coverage)", async () => {
+    const content = [
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "- 方案A：仅检查 SKILL.md",
+      "- 方案B：检查 SKILL.md + agents",
+      "推荐：方案 B",
+      "---",
+      "答：方案 B",
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
+    expect(result.passed).toBe(true);
+  });
+
+  it("M2 regression: indented answer in body + clarify section without answer → fails", async () => {
+    const content = [
+      "# Requirement",
+      "Some prior discussion.",
+      "  答：maybe this earlier answer",
+      "",
+      "# 第 1 轮澄清",
+      "## 问题 1",
+      "- 方案 A：option A",
+      "推荐：方案 A",
+      // NOTE: clarify section has plan but NO answer → must FAIL even if body
+      // contains indented `  答：...` (scoped lookahead must not leak)
+    ].join("\n");
+    await fs.writeFile(path.join(TMP, "req.md"), content);
+
+    const result = await verifyFileContentPattern(
+      [{ path: "req.md", pattern: LOOKAHEAD_PATTERN }],
+      TMP,
+    );
     expect(result.passed).toBe(false);
   });
 });
