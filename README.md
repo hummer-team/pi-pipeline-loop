@@ -1,467 +1,185 @@
 # @earendil-works/pi-pipeline
 
-> Pipeline loop plugin for [pi agent](https://github.com/earendil-works/pi) — 基于阶段的智能体编排引擎，支持项目级配置注入、工具安全管控、循环熔断与审计追踪。
-
-## 目录
-
-- [安装](#安装)
-- [快速开始](#快速开始)
-- [PipelineConfig 配置](#pipelineconfig-配置)
-- [Pipeline 工作流](#pipeline-工作流)
-- [Hooks 与 Tools](#hooks-与-tools)
-- [命令](#命令)
-- [Domain 提示词配置](#domain-提示词配置)
-- [审计日志](#审计日志)
-- [npm 发布](#npm-发布)
-- [API 类型参考](#api-类型参考)
+> A controlled pipeline plugin for [pi agent](https://github.com/earendil-works/pi) — enforcing a 7-stage quality loop with automated verification, file protection, circuit breakers, and full audit trail.
 
 ---
 
-## 安装
+## Capabilities
 
-### 1. 安装 npm 包
+| Capability | Description |
+|------------|-------------|
+| **7-Stage Pipeline** | `clarify → plan → develop → review ⇄ fix → completed` with `awaiting_human` as fallback freeze state |
+| **6 Lifecycle Hooks** | Automatic verification, prompt injection, tool safety, loop circuit breaking, session recovery, and shutdown |
+| **6+1 Tools** | Stage advancement, loop checking, pipeline state, summary generation, summary validation, handoff, plus conditional `pipeline_verify` (registered when any stage uses tool mode) |
+| **4 Commands** | `/pipeline-init`, `/pipeline-start`, `/pipeline-status`, `/pipeline-quit` |
+| **Decision Menu** | Keyboard shortcut (default `Ctrl+Enter`) for 5-option frozen pipeline recovery: resume / skip / rollback / restart / abort |
+| **5 Verification Rules** | `requiredFiles`, `requiredCommands`, `requiredGit`, `fileContentPattern`, `keywords` — with `and`/`or` combinator mode |
+| **Hook/Tool Dual Mode** | Verification triggers automatically via hook (default) or on-demand via explicit tool call |
+| **Three-Layer File Protection** | Hardcoded paths (`.pi/`, `AGENTS.md`, `.git/`) → dynamic `.gitignore` protection → allow-list exemptions, plus stage-level write whitelists |
+| **Audit Trail** | JSONL event log, prompt snapshot archival, and per-file diff archiving |
+| **JSON Config Entry** | Simplified setup via `pipeline_loop.json` — no TypeScript config needed |
+| **Crash Recovery** | Stale session auto-reset on process restart (covers SIGKILL / terminal force-kill) |
+
+---
+
+## Quick Start
+
+**1. Install**
 
 ```bash
 npm install @earendil-works/pi-pipeline
 ```
 
-> **注意**：`@earendil-works/pi` 是 peerDependency，请确保目标项目已安装 pi SDK。
-
-### 2. 创建项目侧配置
-
-在目标项目的 `.pi/extensions/pipeline/` 目录下创建以下文件：
-
-```
-.pi/extensions/pipeline/
-├── package.json          # 声明依赖
-├── pipeline.config.ts    # 项目专属 PipelineConfig
-└── index.ts              # 入口文件，注册插件
-```
-
-**`package.json`**：
+**2. Create `.pi/pipeline_loop.json`**
 
 ```json
 {
-  "name": "my-project-pipeline",
-  "private": true,
-  "dependencies": {
-    "@earendil-works/pi-pipeline": "^0.1.0"
+  "stages": {
+    "clarify": { "skillPath": "design-und/SKILL.md" },
+    "plan":    { "skillPath": "design-plan/SKILL.md" },
+    "develop": { "skillPath": "fast-develop/SKILL.md" },
+    "review":  { "skillPath": "code-review/SKILL.md" },
+    "fix":     { "skillPath": "code-review-withfix/SKILL.md" }
   }
 }
 ```
 
-**`pipeline.config.ts`**：
-
-```ts
-import type { PipelineConfig } from "@earendil-works/pi-pipeline";
-
-const config: PipelineConfig = {
-  projectRoot: process.cwd(),
-  auditDir: ".pi/audit",
-  domainDir: ".pi/domains",
-  maxLoops: 3,
-  stages: {
-    clarify: {
-      agentFile: "feat-design-plan-agent.md",
-      skillPath: "design-und/SKILL.md",
-      model: "claude-sonnet-4-20250514",
-      allowedTools: ["read", "write", "bash", "generate_stage_summary"],
-      allowedBashPrefixes: ["cat", "ls", "find"],
-      nextStage: "design",
-      requireDomain: true,
-    },
-    design: {
-      agentFile: "feat-design-plan-agent.md",
-      skillPath: "design-plan/SKILL.md",
-      model: "claude-sonnet-4-20250514",
-      allowedTools: ["read", "write", "bash", "generate_stage_summary"],
-      allowedBashPrefixes: ["cat", "ls", "find"],
-      nextStage: "plan",
-      requireDomain: true,
-    },
-    plan: {
-      agentFile: "feat-design-plan-agent.md",
-      skillPath: "design-plan/SKILL.md",
-      model: "claude-sonnet-4-20250514",
-      allowedTools: ["read", "write", "bash", "generate_stage_summary", "validate_summary"],
-      allowedBashPrefixes: ["cat", "ls", "find"],
-      nextStage: "develop",
-      requireDomain: true,
-    },
-    develop: {
-      agentFile: "develop-agent.md",
-      skillPath: "fast-develop/SKILL.md",
-      model: "claude-sonnet-4-20250514",
-      allowedTools: ["read", "write", "edit", "bash", "loop_check", "generate_stage_summary"],
-      allowedBashPrefixes: ["npm", "bun", "git", "npx"],
-      nextStage: "review",
-      requireDomain: true,
-    },
-    review: {
-      agentFile: "code-review-agent.md",
-      skillPath: "code-review/SKILL.md",
-      model: "claude-sonnet-4-20250514",
-      allowedTools: ["read", "bash", "generate_stage_summary"],
-      allowedBashPrefixes: ["npm", "bun", "git"],
-      nextStage: "fix",
-      requireDomain: false,
-    },
-    fix: {
-      agentFile: "code-review-withfix-agent.md",
-      skillPath: "code-review-withfix/SKILL.md",
-      model: "claude-sonnet-4-20250514",
-      allowedTools: ["read", "write", "edit", "bash", "loop_check", "generate_stage_summary"],
-      allowedBashPrefixes: ["npm", "bun", "git", "npx"],
-      nextStage: "review",
-      requireDomain: false,
-    },
-    awaiting_human: {
-      agentFile: "develop-agent.md",
-      skillPath: "",
-      allowedTools: [],
-      allowedBashPrefixes: [],
-      nextStage: null,
-      requireDomain: false,
-    },
-    completed: {
-      agentFile: "develop-agent.md",
-      skillPath: "",
-      allowedTools: [],
-      allowedBashPrefixes: [],
-      nextStage: null,
-      requireDomain: false,
-    },
-  },
-};
-
-export default config;
-```
-
-**`index.ts`**：
-
-```ts
-import { createPipeline } from "@earendil-works/pi-pipeline";
-import config from "./pipeline.config";
-
-export default createPipeline(config);
-```
-
----
-
-## 快速开始
+**3. Start pi agent**
 
 ```bash
-# 1. 安装依赖
-npm install @earendil-works/pi-pipeline
-
-# 2. 创建项目配置（参考上方 PipelineConfig 配置）
-# 3. 启动 pi agent（插件自动加载 .pi/extensions/pipeline/）
 pi start
-
-# 4. 输入需求，pipeline 自动运行
 ```
+
+The plugin auto-detects `.pi/pipeline_loop.json` via `createPipelineFromJson` and registers all hooks, tools, and commands. Stages not listed in the JSON are disabled. All other fields receive sensible defaults.
 
 ---
 
-## PipelineConfig 配置
+## Workflow
 
-`PipelineConfig` 是项目侧提供的配置对象，通过 `createPipeline(config)` 注入到插件：
+```
+┌─────────┐    ┌──────┐    ┌─────────┐    ┌─────────┐    ┌─────┐
+│ clarify │───▶│ plan │───▶│ develop │───▶│ review  │───▶│ fix │
+└─────────┘    └──────┘    └─────────┘    └─────────┘    └─────┘
+                                    ▲                   │
+                                    └───────────────────┘
+                                     review ⇄ fix loop
+                                     (≤ maxLoops per stage)
+                                                       │
+                                                       ▼
+                                               ┌───────────┐
+                                               │ completed │
+                                               └───────────┘
+```
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `stages` | `Record<PipelineStage, StageConfig>` | 是 | — | 8 个阶段的完整配置映射 |
-| `projectRoot` | `string` | 是 | — | 项目根目录的绝对路径 |
-| `auditDir` | `string` | 否 | `".pi/audit"` | 审计日志和摘要输出目录 |
-| `domainDir` | `string` | 否 | `".pi/domains"` | Domain 提示词文件目录 |
-| `maxLoops` | `number` | 否 | `3` | develop/fix 循环最大次数 |
+| Stage | Purpose |
+|-------|---------|
+| **clarify** | Requirement analysis and ambiguity resolution. Produces a clarified requirement document. |
+| **plan** | Solution design and implementation planning. Includes a human confirmation gate before proceeding. |
+| **develop** | Code implementation following the plan. Verification gates check deliverables before review. |
+| **review** | Code review against the plan and requirements. |
+| **fix** | Address review findings. Loops back to review (up to `maxLoops` iterations). |
+| **completed** | Terminal state — all stages passed. |
+| **awaiting_human** | Fallback freeze state — pipeline frozen due to circuit breaker or manual intervention required. |
 
-### StageConfig 字段说明
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `agentFile` | `string` | Agent 定义文件路径（相对于 projectRoot） |
-| `skillPath` | `string` | Skill 文件路径（相对于 `.pi/skills/`） |
-| `model` | `string?` | 该阶段使用的模型（如 `"claude-sonnet-4-20250514"`） |
-| `allowedTools` | `string[]` | 该阶段允许使用的工具列表 |
-| `allowedBashPrefixes` | `string[]` | 该阶段允许的 bash 命令前缀 |
-| `nextStage` | `PipelineStage \| null` | 下一阶段，`null` 表示终止 |
-| `requireDomain` | `boolean` | 是否需要注入 Domain 提示词 |
+Each stage transition is governed by verification rules. The pipeline advances only when all checks pass.
 
 ---
 
-## Pipeline 工作流
+## Key Features
 
-Pipeline 包含 8 个阶段，按以下流程自动流转：
+### Verification Gates & Failure Wake
 
-```
-┌─────────┐    ┌────────┐    ┌──────┐    ┌─────────┐    ┌────────┐    ┌─────┐
-│ clarify │───▶│ design │───▶│ plan │───▶│ develop │───▶│ review │───▶│ fix │
-└─────────┘    └────────┘    └──────┘    └─────────┘    └────────┘    └─────┘
-                                  │                         ▲            │
-                                  │ 人工卡点                 │            │
-                                  │ (validate_summary)      └────────────┘
-                                  │                         review↔fix 循环
-                                  ▼                         (≤ maxLoops 次)
-                            ┌──────────────┐
-                            │awaiting_human│  ← 熔断 / 人工审核
-                            └──────────────┘
-                                  │
-                                  ▼
-                            ┌───────────┐
-                            │ completed │
-                            └───────────┘
-```
+When the agent settles, the `agent_settled` hook automatically runs verification against the current stage's rules. If verification fails:
 
-### 完整使用流程
+- The pipeline does **not** advance.
+- The model is woken up with specific failure details to fix the issues.
+- The cycle repeats until verification passes or the circuit breaker triggers.
 
-1. **安装配置**：项目安装 `@earendil-works/pi-pipeline`，编写 `pipeline.config.ts`
-2. **启动 pi agent**：插件自动从 `.pi/extensions/pipeline/` 加载
-3. **输入需求** → 自动进入 `clarify` 阶段
-4. **clarify → design → plan**：自动流转，每个阶段结束时 agent 调用 `generate_stage_summary` 生成摘要
-5. **人工审核 plan**：用户 review plan 文档后，调用 `validate_summary` 批准 → 进入 `develop`
-6. **develop**：按 plan Phase 逐步实现代码，完成后自动进入 `review`
-7. **review ↔ fix 循环**：自动循环（最多 `maxLoops` 次），超过限制后 pipeline 冻结进入 `awaiting_human`
-8. **全流程完成**：pipeline 进入 `completed`
+Verification supports five rule types (file existence, command execution, git state, content patterns, keywords) with `and`/`or` combinator logic. Rules are defined in per-stage `verify.md` files with YAML frontmatter.
 
-### 阶段流转规则
+### Loop Circuit Breaker
 
-- 每个阶段结束时，agent 必须调用 `generate_stage_summary` 生成摘要
-- 摘要必须经过 `validate_summary` 人工审核（status 变为 `"valid"`）
-- `pipeline_handoff` 仅在摘要已验证的情况下允许阶段切换
-- `develop` 和 `fix` 阶段支持自动循环，测试失败计数 +1，达到 `maxLoops` 后熔断
+Two independent circuit breakers prevent infinite loops:
 
----
+- **maxLoops** — Maximum iterations within a single stage (default: 3). Triggered by test failures or verification failures.
+- **maxLoopCycles** — Maximum full pipeline cycles (e.g., fix → develop loops, default: 3).
 
-## Hooks 与 Tools
+When either limit is reached, the pipeline freezes and presents the decision menu.
 
-### Hooks（5 个事件钩子）
+### Decision Menu
 
-| Hook | 事件 | 功能 |
-|------|------|------|
-| `session_start` | 会话启动 | 初始化 pipeline 元数据（pipelineId、domain、stage） |
-| `before_agent_start` | Agent 启动前 | 注入 5 段提示词（上下文、Domain、Skill、Loop 状态、Pipeline 状态） |
-| `tool_call` | 工具调用前 | 工具权限校验、Bash 命令前缀检查、文件写入保护、冻结状态拦截 |
-| `tool_result` | 工具执行后 | 测试失败计数、循环熔断、文件修改 diff 归档 |
-| `session_end` | 会话结束 | 写入 `session_end` 审计日志 |
+When the pipeline is frozen (circuit breaker, `awaiting_human`, or manual block), press the configured shortcut (default `Ctrl+Enter`) to open a 5-option menu:
 
-### Tools（6 个自定义工具）
+1. **Resume** — Continue from the current stage
+2. **Skip** — Skip the current stage
+3. **Rollback** — Return to the previous stage
+4. **Restart** — Restart the current stage
+5. **Abort** — Terminate the pipeline
 
-| Tool | 参数 | 功能 |
-|------|------|------|
-| `stage_advance` | 无 | 按配置推进到下一阶段 |
-| `loop_check` | `result: "pass"\|"fail"`, `summary?` | 检查循环状态，返回 advance/retry/halt |
-| `pipeline_state` | 无 | 获取完整 pipeline 状态 |
-| `generate_stage_summary` | `coreContent`, `constraints`, `pendingItems`, `referenceFiles` | 生成阶段摘要（frontmatter + markdown） |
-| `validate_summary` | `stage`, `isApproved`, `comment?` | 人工审核摘要（valid/invalid） |
-| `pipeline_handoff` | `nextStage`, `note?` | 阶段切换（需摘要已验证） |
+Each action is audited. The menu is also available programmatically when no TUI is present.
 
-### 工具安全管控
+### Three-Layer File Protection
 
-`tool_call` hook 执行四层安全检查：
+| Layer | Mechanism | Exemptable? |
+|-------|-----------|-------------|
+| Hardcoded paths | `.pi/`, `AGENTS.md`, `.git/` always protected | No |
+| Dynamic gitignore | Files matching `.gitignore` patterns are protected | Yes, via `protect.allow` |
+| Allow list | Specific paths exempted from gitignore protection | Edit only; git add/commit still blocked |
 
-1. **工具权限**：仅允许 `StageConfig.allowedTools` 中的工具
-2. **Bash 前缀**：仅允许 `StageConfig.allowedBashPrefixes` 匹配的命令
-3. **冻结状态**：`awaiting_human` 阶段阻止所有工具调用
-4. **文件保护**：禁止写入 `.pi/`、`AGENTS.md`、`.git/` 等受保护路径
+Additionally, each stage has a write whitelist controlling which directories can be modified. Stage whitelists cannot override hardcoded protection.
+
+When `protect.ask` is enabled, a 3-choice dialog is shown for protection violations: follow plugin default / allow this edit / allow for session.
+
+### Destructive Command Interception
+
+Bash commands matching destructive patterns (`rm -rf /`, `sudo`, system-level paths) are blocked by default. With `protect.ask`, a confirmation dialog is shown instead.
+
+### Git Safety
+
+`git add` and `git commit` operations are intercepted and checked against protection rules using `--dry-run` and `diff --cached`. Protected paths cannot be staged or committed, even via `-a` flags.
+
+### Crash Recovery
+
+On process restart, if the pipeline was not cleanly shut down, the session state is automatically reset to `aborted`. This covers SIGKILL, terminal force-kill, and other ungraceful shutdown paths.
+
+### Audit & Diff Archiving
+
+All pipeline events are recorded as JSON Lines in the audit directory:
+
+- Stage transitions, verification results, circuit breaker triggers
+- Prompt snapshots (configurable: full / plugin-only / off)
+- Per-file diffs archived at `{auditDir}/{pipelineId}/step-{n}/loop-{n}/`
+
+### Plan Human Gate
+
+The `plan` stage includes a mandatory human confirmation gate. Before advancing to `develop`, the user must confirm the plan document via a TUI dialog (confirm / adjust / cancel). Without UI, the pipeline waits silently.
+
+### Summary Hash Integrity
+
+Each stage summary includes a content hash. If a summary is manually modified outside the pipeline, the hash mismatch blocks stage advancement until the stage is re-entered.
 
 ---
 
-## 命令
+## Commands
 
-### `/pipeline-status`
-
-查看当前 pipeline 运行状态：
-
-```
-# Pipeline Status
-- ID: pipe-1721356800000-a1b2c3
-- Stage: develop
-- Model: claude-sonnet-4-20250514
-- Domain: sap-btp@1.0.0
-- Summary Status: pending (Path: .pi/audit/pipe-xxx/develop.md)
-- Loop: 1/3 (Step: 2)
-- Protected: .pi/, AGENTS.md, .git/
-```
+| Command | Description |
+|---------|-------------|
+| `/pipeline-init` | Initialize the pipeline configuration for a project |
+| `/pipeline-start` | Start a new pipeline run (requires a requirement document) |
+| `/pipeline-status` | Display current pipeline state, stage, loop count, and model |
+| `/pipeline-quit` | Terminate the current pipeline session |
 
 ---
 
-## Domain 提示词配置
+## Startup Modes
 
-Domain 提示词为特定业务领域提供上下文知识，仅在 `requireDomain: true` 的阶段注入。
+The `/pipeline-start` command supports three modes (configurable via `startStageMode`):
 
-### 目录结构
-
-```
-~/.pi/domains/
-├── sap-btp.md        # SAP BTP 领域知识
-├── e-commerce.md     # 电商领域知识
-└── default.md        # 默认领域（fallback）
-```
-
-### Domain 文件格式
-
-支持可选的 YAML frontmatter：
-
-```markdown
----
-id: sap-btp
-version: 1.0.0
----
-
-# SAP BTP 领域知识
-
-## 技术栈
-- SAP BTP (Business Technology Platform)
-- CAP (Cloud Application Programming Model)
-- ...
-
-## 编码规范
-- 使用 CDS 定义数据模型
-- ...
-```
-
-如果没有 frontmatter，文件名（不含 `.md`）将作为 domain id。
-
-### 加载规则
-
-1. `session_start` 时从 `{domainDir}/domain.md` 加载默认 domain
-2. `before_agent_start` 时从 `~/.pi/domains/{domain.id}.md` 加载领域知识
-3. 仅 `requireDomain: true` 的阶段会注入 domain 内容
-
----
-
-## 审计日志
-
-所有关键事件以 JSON Lines 格式写入 `{auditDir}/audit.log`：
-
-### 事件类型
-
-| 事件 | 触发时机 | 记录字段 |
-|------|----------|----------|
-| `loop_break` | 循环熔断（测试失败达到 maxLoops） | timestamp, pipelineId, stage, loopCount |
-| `file_modified` | 文件写入/编辑成功 | timestamp, pipelineId, stage, step, loop, file, diff |
-| `summary_validated` | 摘要人工审核 | timestamp, pipelineId, stage, approved, comment |
-| `handoff` | 阶段切换 | timestamp, pipelineId, from, to, model, summaryHash, note |
-| `session_end` | 会话结束 | timestamp, pipelineId, finalStage |
-
-### 日志示例
-
-```json
-{"timestamp":"2026-07-19T10:30:00.000Z","pipelineId":"pipe-1721356800000-a1b2c3","action":"handoff","from":"plan","to":"develop","model":"claude-sonnet-4-20250514","summaryHash":"abc123...","note":"Plan approved"}
-{"timestamp":"2026-07-19T10:35:00.000Z","pipelineId":"pipe-1721356800000-a1b2c3","action":"file_modified","stage":"develop","step":0,"loop":0,"file":"src/handler.ts","diff":".pi/audit/pipe-xxx/step-0/loop-0/handler.ts.diff.md"}
-{"timestamp":"2026-07-19T10:40:00.000Z","pipelineId":"pipe-1721356800000-a1b2c3","action":"loop_break","stage":"develop","loopCount":3}
-```
-
-### 摘要文件结构
-
-摘要文件输出到 `{auditDir}/{pipelineId}/{stage}.md`，包含 JSON frontmatter 和 markdown body：
-
-```markdown
----
-{
-  "stage": "plan",
-  "pipeline_id": "pipe-1721356800000-a1b2c3",
-  "generated_at": "2026-07-19T10:25:00.000Z",
-  "domain": "sap-btp@1.0.0",
-  "validation_status": "valid",
-  "hash": "sha256:abc123..."
-}
----
-# PLAN Stage Summary
-
-## Core Content
-...
-
-## Constraints
-- ...
-
-## Pending Items
-- ...
-
-## Reference Files
-- ...
-```
-
----
-
-## npm 发布
-
-### 版本号规范
-
-遵循 [Semantic Versioning](https://semver.org/)：
-
-- `MAJOR.MINOR.PATCH`（如 `0.1.0` → `0.2.0` → `1.0.0`）
-- 破坏性变更 → MAJOR
-- 新功能（向后兼容）→ MINOR
-- Bug 修复 → PATCH
-
-### 发布步骤
-
-```bash
-# 1. 确保构建通过
-bun run build
-
-# 2. 更新版本号
-npm version patch   # 或 minor / major
-
-# 3. 发布到 npm
-npm publish --access public
-```
-
-### 发布内容
-
-`package.json` 中 `"files": ["dist"]` 确保仅发布编译产物：
-
-```
-dist/
-├── index.js          # 主入口（CommonJS）
-├── index.d.ts        # 类型声明
-├── types.js / .d.ts
-├── core/
-│   ├── session-starter.js / .d.ts
-│   ├── prompt-injector.js / .d.ts
-│   ├── tool-guard.js / .d.ts
-│   ├── loop-breaker.js / .d.ts
-│   ├── stage-advancer.js / .d.ts
-│   ├── loop-checker.js / .d.ts
-│   ├── pipeline-state.js / .d.ts
-│   └── session-ender.js / .d.ts
-├── tools/
-│   ├── generate-summary.js / .d.ts
-│   ├── validate-summary.js / .d.ts
-│   └── pipeline-handoff.js / .d.ts
-└── commands/
-    └── pipeline-status.js / .d.ts
-```
-
----
-
-## API 类型参考
-
-### 导出的类型
-
-```ts
-import type {
-  PipelineStage,    // "clarify" | "design" | "plan" | "develop" | "review" | "fix" | "awaiting_human" | "completed"
-  StageConfig,      // 单阶段配置（agentFile, skillPath, model, allowedTools, ...）
-  PipelineConfig,   // 顶层配置（stages, projectRoot, auditDir, domainDir, maxLoops）
-  SessionMeta,      // 运行时元数据（currentStage, pipelineId, domain, summaries, loopCount, ...）
-  SummaryMeta,      // 摘要元数据（path, hash, status）
-  DomainConfig,     // Domain 配置（id, version, skillPath）
-  Hook,             // pi SDK 事件钩子接口
-  Tool,             // pi SDK 自定义工具接口
-  Command,          // pi SDK 自定义命令接口
-  PipelinePlugin,   // createPipeline() 返回的插件对象 { hooks, tools, commands }
-} from "@earendil-works/pi-pipeline";
-```
-
-### createPipeline
-
-```ts
-function createPipeline(config: PipelineConfig): PipelinePlugin;
-```
-
-接收项目级 `PipelineConfig`，返回包含 `hooks`（5个）、`tools`（6个）、`commands`（1个）的插件对象，供 pi SDK 注册。
+| Mode | Behavior |
+|------|----------|
+| `auto` | Zero-interaction default. Fresh start → clarify; aborted → resume at last stage |
+| `confirm` | Resumable aborted pipelines prompt "Resume at {stage}?" before proceeding |
+| `ask` | Interactive TUI menu with new / resume / spec / cancel options |
 
 ---
 
