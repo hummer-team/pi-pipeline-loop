@@ -86,6 +86,7 @@
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Stage Prompts (5 keys)
+# Trigger: stage entry system-prompt rendering (getStagePrompt, prompt-config.ts:141)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 clarify: |
@@ -186,6 +187,7 @@ fix: |
 # {subagent_type} is filled from the stage→agent mapping.
 # {context_arg} is a hint for the main thread to fill the document path.
 # stage_executor_clarify is optional (not in CRITICAL_PLACEHOLDERS).
+# Trigger: stage entry system-prompt rendering via {{stage_executor}} placeholder
 # ═══════════════════════════════════════════════════════════════════════════════
 
 stage_executor_clarify: |
@@ -227,6 +229,7 @@ stage_executor_fix: |
 # Also injected via {{stage_deliverables}} placeholder into system prompt (inform agent).
 # clarify/plan have no plugin default deliverables (no code artifacts/commit/build).
 # Items use **MUST** markers so extractHardcodedItems can parse them.
+# Trigger: /pipeline-init 1 verify generation (loadPluginDeliverables, verify-generator.ts:131); {{stage_deliverables}} system-prompt injection
 # ═══════════════════════════════════════════════════════════════════════════════
 
 stage_deliverable_develop: |
@@ -247,6 +250,7 @@ stage_deliverable_fix: |
 # Per-stage Verify Execution Prompts (5 keys)
 # Used as modelPrompt during stage verification.
 # Empty/missing → falls back to DEFAULT_VERIFY_PROMPT.
+# Trigger: stage verification on stage exit (getVerifyPrompt via runVerification, auto-verifier.ts:1059; agent_settled / pipeline_verify tool / stage_advance entries)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 verify_clarify: |
@@ -273,6 +277,7 @@ verify_fix: |
 # Per-stage Verify Extract Prompts (5 keys)
 # Used for LLM-based delivery item extraction during verify generation.
 # Fallback chain: verify_extract_{stage} → verify_extract → DEFAULT_VERIFY_EXTRACT_PROMPT
+# Trigger: /pipeline-init 1 verify generation (getVerifyExtractPrompt, prompt-config.ts:189 / verify-generator.ts:112)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 verify_extract_clarify: |
@@ -383,6 +388,7 @@ verify_extract_fix: |
 # ═══════════════════════════════════════════════════════════════════════════════
 # Global Verify Extract Fallback (1 key)
 # Used when per-stage verify_extract_{stage} is empty/missing.
+# Trigger: /pipeline-init 1 verify generation (getVerifyExtractPrompt, prompt-config.ts:189 / verify-generator.ts:112)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 verify_extract: |
@@ -411,6 +417,7 @@ verify_extract: |
 # System prompt for model-based SKILL/plugin conflict detection during /pipeline-init.
 # Fallback chain: conflict_check_prompt_{stage} → conflict_check_prompt → DEFAULT.
 # Not a stage template placeholder; read directly by runConflictCheck.
+# Trigger: /pipeline-init 2 — model-based SKILL/plugin conflict detection (runConflictCheck, pipeline-init.ts:700)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 conflict_check_prompt: |
