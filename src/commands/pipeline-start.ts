@@ -19,6 +19,7 @@ import {
 import { safeWriteAuditLog, safeWriteStageAudit } from "../utils/auditLog";
 import { getFlowState } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
+import { buildStageSequence } from "../utils/stage-sequence";
 import {
   checkTemplateResidues,
   computeResidueFingerprint,
@@ -195,33 +196,19 @@ async function templateResidueGate(
 }
 
 /**
- * Collects the set of stages reachable from `startStage` by walking the
- * nextStage chain. Includes `startStage` itself. Uses a visited set for
- * cycle protection (max 16 iterations as a safety bound).
+ * Collects all stages reachable from `startStage` by following nextStage links.
+ * Delegates to the authoritative `buildStageSequence` walker; wraps the result
+ * in a Set for O(1) membership checks.
  *
  * @param config - Pipeline configuration
  * @param startStage - The starting stage
  * @returns Set of reachable stage names
  */
-function collectStagesFrom(
+export function collectStagesFrom(
   config: PipelineConfig,
   startStage: PipelineStage,
 ): Set<PipelineStage> {
-  const reachable = new Set<PipelineStage>();
-  let current: PipelineStage | null = startStage;
-  const visited = new Set<string>();
-
-  for (let i = 0; i < 16 && current && !visited.has(current); i++) {
-    reachable.add(current);
-    visited.add(current);
-    const stageConf: import("../types").StageConfig | undefined = config.stages[current];
-    if (!stageConf) break;
-    const next: PipelineStage | null = stageConf.nextStage;
-    if (next === null) break;
-    current = next;
-  }
-
-  return reachable;
+  return new Set<PipelineStage>(buildStageSequence(config, startStage));
 }
 
 /**
@@ -405,30 +392,15 @@ function resolvePreviousStage(
  * @param stage - The target stage (inclusive endpoint)
  * @returns Ordered stage sequence ending at `stage`
  */
-function buildResumeVisitOrder(
+export function buildResumeVisitOrder(
   config: PipelineConfig,
   stage: PipelineStage,
 ): PipelineStage[] {
-  const sequence: PipelineStage[] = [];
-  let s: PipelineStage | null = "clarify";
-  const visited = new Set<string>();
-
-  for (let i = 0; i < 16 && s && !visited.has(s); i++) {
-    sequence.push(s);
-    if (s === stage) break;
-    visited.add(s);
-    const stageConf: import("../types").StageConfig | undefined = config.stages[s];
-    if (!stageConf) break;
-    const next: PipelineStage | null = stageConf.nextStage;
-    if (next === null) break;
-    s = next;
-  }
-
-  // Defensive fallback: chain did not reach target stage
-  if (sequence[sequence.length - 1] !== stage) {
-    return [stage];
-  }
-  return sequence;
+  // Build full chain from clarify; slice up to and including target stage
+  const sequence = buildStageSequence(config, "clarify");
+  const targetIdx = sequence.indexOf(stage);
+  // Defensive fallback: chain did not reach target stage (misconfiguration)
+  return targetIdx === -1 ? [stage] : sequence.slice(0, targetIdx + 1);
 }
 
 /**

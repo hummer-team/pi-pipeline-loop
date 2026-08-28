@@ -3,9 +3,11 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { createPipelineStartCommand } from "../../commands/pipeline-start";
+import { createPipelineStartCommand, collectStagesFrom, buildResumeVisitOrder } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
+import { buildStageSequence } from "../../utils/stage-sequence";
+import type { PipelineStage } from "../../types";
 
 let TMP: string;
 
@@ -181,5 +183,58 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     // Template gate should NOT have been reached
     const statusPath = path.join(TMP, ".pi", "audit", "template-residue-check.json");
     expect(fsSync.existsSync(statusPath)).toBe(false);
+  });
+});
+
+// ─── Phase 2: collectStagesFrom / buildResumeVisitOrder equivalence ─────────
+describe("collectStagesFrom equivalence with buildStageSequence", () => {
+  it("normal chain: collectStagesFrom(config,'develop') == buildStageSequence result as Set", () => {
+    const config = makeTestConfig();
+    const reachable = collectStagesFrom(config, "develop");
+    const expected = new Set<PipelineStage>(buildStageSequence(config, "develop"));
+    expect(reachable).toEqual(expected);
+  });
+
+  it("circular chain: develop→review→develop stays within 16 iterations", () => {
+    const config = makeTestConfig();
+    (config.stages.develop as any).nextStage = "review";
+    (config.stages.review as any).nextStage = "develop";
+
+    const reachable = collectStagesFrom(config, "develop");
+    const expected = new Set<PipelineStage>(buildStageSequence(config, "develop"));
+    expect(reachable).toEqual(expected);
+    expect(reachable.size).toBeLessThanOrEqual(16);
+  });
+});
+
+describe("buildResumeVisitOrder equivalence", () => {
+  it("clarify→fix returns ordered chain ending at fix", () => {
+    const config = makeTestConfig();
+    const result = buildResumeVisitOrder(config, "fix");
+    // Default chain: clarify→plan→develop→review→fix (5 elements)
+    expect(result[result.length - 1]).toBe("fix");
+    expect(result[0]).toBe("clarify");
+    expect(result).toContain("develop");
+    expect(result).toContain("review");
+  });
+
+  it("target not in chain (misconfigured) → fallback [stage]", () => {
+    // Create a chain that does NOT include the target stage
+    const config = makeTestConfig();
+    // Break the chain after plan so clarify→plan but not beyond
+    (config.stages.plan as any).nextStage = null;
+    const result = buildResumeVisitOrder(config, "develop");
+    // develop is not reachable from clarify→plan(null) → fallback
+    expect(result).toEqual(["develop"]);
+  });
+
+  it("circular chain: stays within 16 iterations", () => {
+    const config = makeTestConfig();
+    (config.stages.develop as any).nextStage = "review";
+    (config.stages.review as any).nextStage = "develop";
+
+    const result = buildResumeVisitOrder(config, "fix");
+    // fix is not reachable in the cycle, so fallback
+    expect(result.length).toBeLessThanOrEqual(16);
   });
 });

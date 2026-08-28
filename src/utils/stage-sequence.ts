@@ -10,13 +10,15 @@
  */
 
 import type { PipelineConfig, PipelineStage } from "../types";
+import { MAX_STAGE_CHAIN_LENGTH } from "../constants";
 
 /**
  * Builds an ordered array of stage names starting from `fromStage` and
  * following `config.stages[s].nextStage` links until the chain terminates
  * (nextStage === null) or a cycle is detected via visited-set.
  *
- * A hard cap of 16 iterations prevents runaway loops from misconfigured chains.
+ * A hard cap of MAX_STAGE_CHAIN_LENGTH (16) iterations prevents runaway loops
+ * from misconfigured chains (see constants.ts).
  *
  * @param config    - The pipeline configuration containing stage definitions
  * @param fromStage - The starting stage for sequence computation
@@ -30,7 +32,7 @@ export function buildStageSequence(
   let s: PipelineStage | null = fromStage;
   const visited = new Set<string>();
 
-  for (let i = 0; i < 16 && s && !visited.has(s); i++) {
+  for (let i = 0; i < MAX_STAGE_CHAIN_LENGTH && s && !visited.has(s); i++) {
     sequence.push(s);
     visited.add(s);
     const stageConf: import("../types").StageConfig | undefined = config.stages[s];

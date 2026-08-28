@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { buildStageSequence } from "../../utils/stage-sequence";
 import { makeTestConfig, STAGE_LIST } from "../helpers";
+import { MAX_STAGE_CHAIN_LENGTH } from "../../constants";
 import type { PipelineConfig, PipelineStage } from "../../types";
 
 describe("buildStageSequence", () => {
@@ -62,7 +63,11 @@ describe("buildStageSequence", () => {
     const config = { projectRoot: "/tmp/test", stages } as unknown as PipelineConfig;
 
     const result = buildStageSequence(config, "stage_0" as PipelineStage);
-    // Hard cap is 16 iterations
-    expect(result.length).toBe(16);
+    // Hard cap is MAX_STAGE_CHAIN_LENGTH iterations
+    expect(result.length).toBe(MAX_STAGE_CHAIN_LENGTH);
+  });
+
+  it("MAX_STAGE_CHAIN_LENGTH constant equals 16", () => {
+    expect(MAX_STAGE_CHAIN_LENGTH).toBe(16);
   });
 });
