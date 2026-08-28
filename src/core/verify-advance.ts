@@ -152,6 +152,7 @@ export async function applyVerifyPass(
       verifyFailures: [],
       violations: [],
       advancedThisTurn: undefined, // Clear C2 flag on stage transition
+      reviewConclusionDeclared: undefined, // Clear 163 declaration flag on stage transition
     });
 
     // M1 fix: skip auto_verify_pass audit when called from the "skipped" path
@@ -401,7 +402,7 @@ export async function autoAdvanceAfterVerify(
   /** M1 fix: optional flags for callers (e.g., skipped path suppresses auto_verify_pass audit) */
   options?: { skipPassAudit?: boolean },
 ): Promise<void> {
-  const clearedMeta = { ...meta, advancedThisTurn: undefined };
+  const clearedMeta = { ...meta, advancedThisTurn: undefined, reviewConclusionDeclared: undefined };
 
   await applyVerifyPass(ctx, clearedMeta, fromStage, toStage, verifyResult, {
     method: "rule",

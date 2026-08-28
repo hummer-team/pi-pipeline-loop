@@ -287,6 +287,7 @@ function buildRestartMeta(
     contextFiles: undefined,
     violations: [],
     advancedThisTurn: undefined,
+    reviewConclusionDeclared: undefined,
     loopCycleCount: undefined,
     verifyConfigError: undefined,
     blockedReason: undefined,
@@ -350,6 +351,7 @@ function buildStartMeta(
     contextFiles: undefined,
     violations: [],
     advancedThisTurn: undefined,
+    reviewConclusionDeclared: undefined,
     loopCycleCount: undefined,
     verifyConfigError: undefined,
     blockedReason: undefined,
@@ -448,6 +450,7 @@ function buildResumeMeta(
     verifyFailures: [],
     violations: [],
     advancedThisTurn: undefined,
+    reviewConclusionDeclared: undefined,
     loopCycleCount: undefined,
     verifyConfigError: undefined,
     // Phase 4 (162): reset confirm rejection counter on resume

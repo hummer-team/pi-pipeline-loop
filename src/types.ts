@@ -359,6 +359,16 @@ export interface SessionMeta {
    */
   advancedThisTurn?: boolean;
 
+  /**
+   * 163 Goal 2: set true when stage_advance receives a reviewConclusion declaration
+   * (pass or fail) in the review stage. Consumed by agent_settled to distinguish
+   * "declared but not advanced" (verify fail / confirm gate pending / overflow pending)
+   * from "genuinely not declared". Same per-turn lifecycle as advancedThisTurn:
+   * cleared after consumption by agent_settled, on stage transitions, and on
+   * pipeline start/restart/resume.
+   */
+  reviewConclusionDeclared?: boolean;
+
   /** Path to the requirement document loaded by /pipeline-start */
   requirementDoc?: string;
 

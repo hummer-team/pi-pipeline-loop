@@ -1109,4 +1109,61 @@ describe("Phase 1 (163): review_declaration_missing audit", () => {
 
     await rm(stageTmp, { recursive: true, force: true });
   });
+
+  // 163 fix: reviewConclusionDeclared=true suppresses false-positive review_declaration_missing
+  // when the model declared reviewConclusion but stage did not advance (verify fail / gate pending).
+  it("review settle with reviewConclusionDeclared=true → no review_declaration_missing audit", async () => {
+    const stageTmp = join(tmpdir(), "pi-163-decl-flag-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Config: review stage with verify.require=true, hook mode (same as the missing-decl test)
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "review"
+                ? { require: true, verifyFile: "references/spec/verify.md", mode: "hook" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    // Create verify.md that passes
+    const vrDir = join(stageTmp, "references", "spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nBody\n",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+
+    // reviewConclusionDeclared=true simulates the model calling stage_advance({ reviewConclusion })
+    // but the stage did not advance (e.g., verify fail or confirm gate pending).
+    const meta = makeTestMeta({ currentStage: "review", reviewConclusionDeclared: true });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should NOT have review_declaration_missing (declaration was made)
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).not.toContain("review_declaration_missing");
+
+    // The flag should have been cleared after consumption
+    const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(lastMeta.reviewConclusionDeclared).toBeUndefined();
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
 });

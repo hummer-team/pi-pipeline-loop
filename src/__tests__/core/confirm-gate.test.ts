@@ -524,14 +524,25 @@ describe("Phase 1 (163): resolveStageDocPath mtime-newest for review", () => {
     const fileA = path.join(reviewDir, "code_review_A.md");
     const fileB = path.join(reviewDir, "code_review_B.md");
 
-    // Write B first (older mtime)
+    // Write B first (older mtime) — no marker
     await fs.writeFile(fileB, "# Review B\n", "utf-8");
 
     // Small delay to ensure distinct mtimes
     await new Promise((r) => setTimeout(r, 50));
 
-    // Write A second (newer mtime)
-    await fs.writeFile(fileA, "# Review A\n", "utf-8");
+    // Write A second (newer mtime) WITH a plugin confirm marker.
+    // If mtime-newest is honored, routeConfirmReject will clean this marker from A.
+    // If the old alphabetical behavior were used (picking B), A's marker would remain.
+    const markerContent = [
+      "# Review A",
+      "",
+      "## Confirmation: Approved",
+      "",
+      "> Confirmation timestamp: 2024-01-01T00:00:00.000Z",
+      "",
+      "Some review content.",
+    ].join("\n");
+    await fs.writeFile(fileA, markerContent, "utf-8");
 
     const config = makeReviewConfig(tmpDir);
     const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
@@ -544,10 +555,18 @@ describe("Phase 1 (163): resolveStageDocPath mtime-newest for review", () => {
       expect(result.action).toBe("routed");
     }
 
-    // The routing targets the mtime-newest file (A), not the alphabetical last (B)
-    // We verify by checking that the marker cleanup ran on file A (the newest one)
-    // Since fileA has no marker to clean, both files remain intact — but the route
-    // used fileA. We confirm by checking that the stage transitioned to fix.
+    // The mtime-newest file (A) should have been selected — its marker must be cleaned.
+    // If the old alphabetical behavior picked B, A's marker would remain intact.
+    const contentA = await fs.readFile(fileA, "utf-8");
+    expect(contentA).not.toContain("## Confirmation: Approved");
+    expect(contentA).toContain("# Review A");
+    expect(contentA).toContain("Some review content.");
+
+    // File B should remain untouched (no marker was placed there)
+    const contentB = await fs.readFile(fileB, "utf-8");
+    expect(contentB).toBe("# Review B\n");
+
+    // Stage should transition to fix
     const updatedMeta = ctx.session.getMeta() as SessionMeta;
     expect(updatedMeta.currentStage).toBe("fix");
   });

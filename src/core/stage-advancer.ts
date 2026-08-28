@@ -806,6 +806,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       // (c2) Review conclusion declaration handling (163 Goal 2)
       const argReviewConclusion = typeof args.reviewConclusion === "string" ? args.reviewConclusion.trim() : "";
+      // Track declaration so agent-settled can distinguish "declared but not advanced"
+      // (verify fail / confirm gate pending / overflow pending) from "not declared".
+      if (currentStage === "review" && argReviewConclusion) {
+        ctx.session.updateMeta({ reviewConclusionDeclared: true });
+      }
       if (argReviewConclusion && currentStage !== "review") {
         // reviewConclusion passed in non-review stage — ignore and audit
         await writeAuditLog("review_conclusion_ignored", {

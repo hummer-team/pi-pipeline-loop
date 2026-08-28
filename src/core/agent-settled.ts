@@ -74,20 +74,28 @@ export function createAgentSettled(
           stage: meta.currentStage,
           reason: "advancedThisTurn=true, stage_advance already verified this turn",
         });
-        // Clear the flag to prevent residual state
-        ctx.session.updateMeta({ advancedThisTurn: undefined });
+        // Clear the flags to prevent residual state
+        ctx.session.updateMeta({ advancedThisTurn: undefined, reviewConclusionDeclared: undefined });
         return;
       }
 
       // 163 Goal 2: audit when review stage settles without a reviewConclusion declaration.
       // The model should have called stage_advance({ reviewConclusion }) explicitly.
       // Falling back to verify + manual confirm gate is safe (no deadlock) but suboptimal.
+      // When reviewConclusionDeclared=true, the declaration was made but the stage did not
+      // advance (verify fail / confirm gate pending / overflow pending) — skip the
+      // false-positive "missing" audit and clear the flag.
       if (meta.currentStage === "review") {
-        await writeAuditLog("review_declaration_missing", {
-          pipelineId: meta.pipelineId,
-          stage: meta.currentStage,
-          reason: "no stage_advance reviewConclusion declaration, falling back to verify + confirm gate",
-        }, "info");
+        if (meta.reviewConclusionDeclared === true) {
+          // Declaration was made but stage did not advance — clear the consumed flag
+          ctx.session.updateMeta({ reviewConclusionDeclared: undefined });
+        } else {
+          await writeAuditLog("review_declaration_missing", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            reason: "no stage_advance reviewConclusion declaration, falling back to verify + confirm gate",
+          }, "info");
+        }
       }
 
       // Phase 4 (162): confirm gate wiring.
