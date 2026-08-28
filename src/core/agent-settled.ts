@@ -15,6 +15,12 @@ import { extractAssistantMessages, extractToolCallRecords } from "./session-stat
 import { isFrozen } from "./flow-state";
 import { DEFAULT_DECISION_SHORTCUT } from "../constants";
 import type { RuntimeCtx } from "./runtime-ctx";
+import {
+  PLAN_CONFIRM_MARKER_RULE,
+  shouldDeferPlanMarkerRule,
+  autoWriteConfirmMarker,
+  maybeHandleConfirmGate,
+} from "./stage-advancer";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -73,8 +79,7 @@ export function createAgentSettled(
         return;
       }
 
-      // Phase 3 (162): legacy plan human-gate removed.
-      // Confirm gate will be wired here in Phase 4.
+      // Phase 4 (162): confirm gate wiring.
       const ctxWithPi = { ...ctx, pi: (ctx as RuntimeCtx).pi };
 
       // 2. Auto-verification
@@ -93,6 +98,18 @@ export function createAgentSettled(
         return;
       }
 
+      // Phase 4 (162): Smart confirm short-circuit — defer to stage_advance tool.
+      // Smart mode uses the stage_advance tool's needConfirm parameter to declare complexity,
+      // so the hook should not run verification or auto-advance.
+      if (stageConfig.confirm?.mode === "smart") {
+        await writeAuditLog("confirm_smart_defer_to_tool", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          reason: "smart confirm defers verification+advance to stage_advance tool",
+        });
+        return;
+      }
+
       // CompletionMarker precheck: if configured, verify the marker has been
       // written to the requirement doc before running verification.
       // When marker is not found: skip verification, do NOT advance, do NOT
@@ -107,15 +124,25 @@ export function createAgentSettled(
         return;
       }
 
+      // Phase 4 (162): auto-write confirm marker for plan stage (auto mode).
+      // This writes the bilingual marker before verify runs, so the verify rule
+      // passes naturally without needing deferral.
+      await autoWriteConfirmMarker(config, ctxWithPi, meta, ui);
+
       // Extract assistant messages from session branch for verification
       const assistantMessages = extractAssistantMessages(ctx._ctx);
       // Extract tool call records for selfVerifySkip (model self-verified commands)
       const toolCallRecords = extractToolCallRecords(ctx._ctx);
+
+      // Phase 4 (162): defer plan marker rule when confirm mode is manual (C2 fix).
+      // Smart mode is already handled above (returns early).
+      const deferPatterns = shouldDeferPlanMarkerRule(stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+
       const vr = await runVerification(
         config,
         meta,
         assistantMessages,
-        { ...verifyOptions, toolCallRecords },
+        { ...verifyOptions, toolCallRecords, deferContentPatterns: deferPatterns },
       );
 
       // Build the shared result shape consumed by applyVerifyPass/applyVerifyFail
@@ -144,6 +171,16 @@ export function createAgentSettled(
       }
 
       if (vr.rulePassed) {
+        // Phase 4 (162): manual confirm gate — intercept verify-pass to show TUI dialog.
+        if (stageConfig.confirm?.mode === "manual") {
+          const gate = await maybeHandleConfirmGate(config, ctxWithPi, meta, ui, { mode: "manual" });
+          if (gate.result === "handled") {
+            // advanced / routed / pending / aborted — all handled by confirm gate, skip autoAdvance
+            return;
+          }
+          // no-gate (marker already present) — fall through to autoAdvanceAfterVerify
+        }
+
         // Capture stage names BEFORE advance mutates meta.currentStage
         const fromStage = meta.currentStage;
         const toStage = stageConfig.nextStage;

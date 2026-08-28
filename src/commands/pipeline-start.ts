@@ -292,6 +292,8 @@ function buildRestartMeta(
     blockedReason: undefined,
     terminated: undefined,
     terminateReason: undefined,
+    // Phase 4 (162): reset confirm rejection counter on restart
+    confirmRejections: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -353,6 +355,8 @@ function buildStartMeta(
     blockedReason: undefined,
     terminated: undefined,
     terminateReason: undefined,
+    // Phase 4 (162): reset confirm rejection counter on start
+    confirmRejections: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -446,6 +450,8 @@ function buildResumeMeta(
     advancedThisTurn: undefined,
     loopCycleCount: undefined,
     verifyConfigError: undefined,
+    // Phase 4 (162): reset confirm rejection counter on resume
+    confirmRejections: undefined,
 
     // Cleared terminal / blocked state
     blockedReason: undefined,

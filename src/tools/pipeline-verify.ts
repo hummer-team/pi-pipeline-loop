@@ -12,6 +12,7 @@ import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { extractAssistantMessages } from "../core/session-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -106,6 +107,12 @@ export function createPipelineVerify(
         verifyOptions.verifyFile = args.verifyFile;
       }
 
+      // Phase 4 (162): defer plan marker rule when confirm mode is non-auto (C2 fix).
+      const deferPatterns = shouldDeferPlanMarkerRule(stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+      if (deferPatterns.length > 0) {
+        verifyOptions.deferContentPatterns = deferPatterns;
+      }
+
       // Extract assistant messages from session branch for verification
       const assistantMessages = extractAssistantMessages(sessionCtx._ctx as any);
 
@@ -161,6 +168,23 @@ export function createPipelineVerify(
 
       // S1: Verification passes only on structured rules (rulePassed)
       if (vr.rulePassed) {
+        // Phase 4 (162): bypass prevention — confirm non-auto stages must go through
+        // stage_advance tool, not pipeline_verify. This prevents agents from skipping
+        // the confirm gate by calling pipeline_verify directly.
+        if (stageConfig.confirm?.mode && stageConfig.confirm.mode !== "auto") {
+          await safeWriteAuditLog("confirm_defer_to_stage_advance", {
+            pipelineId: meta.pipelineId,
+            stage: stageName,
+            confirmMode: stageConfig.confirm.mode,
+          });
+          return {
+            success: false,
+            passed: true,
+            pending: true,
+            message: `Stage "${stageName}" uses confirm gate (mode=${stageConfig.confirm.mode}). Call stage_advance to confirm and advance.`,
+          };
+        }
+
         return (await applyVerifyPass(sessionCtx, meta, stageName, stageConfig.nextStage, sharedResult, {
           method: "tool",
           handleTerminal: true,

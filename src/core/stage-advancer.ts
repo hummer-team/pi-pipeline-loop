@@ -636,6 +636,13 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             "(EISDIR, empty path, directory path, or unresolved requirementDoc placeholder). " +
             "Will be rejected if no config-class error is detected.",
         },
+        needConfirm: {
+          type: "boolean",
+          description:
+            "Smart-confirm mode only: set true when the stage work is complex and requires " +
+            "human confirmation before advancing. Omit/false advances automatically " +
+            "(recorded as confirm_smart_skip in the audit log).",
+        },
       },
       required: [],
     },
@@ -726,13 +733,22 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           };
         }
 
-        // Phase 3 (162): legacy plan human-gate removed.
-        // Confirm gate will be wired here in Phase 4.
+        // Phase 4 (162): auto-write confirm marker for plan stage (auto mode).
+        const ctxForAutoWrite = { ui: { notify: (msg: string) => ui.notify(ctx, msg) } };
+        await autoWriteConfirmMarker(config, ctxForAutoWrite, meta, ui);
 
         const messages = extractAssistantMessages(ctx._ctx);
         // Extract tool call records for selfVerifySkip (same as agent-settled hook path)
         const toolCallRecords = extractToolCallRecords(ctx._ctx);
-        const vr = await runVerification(config, meta, messages, { execFn: deps?.execFn, toolCallRecords });
+
+        // Phase 4 (162): defer plan marker rule when confirm mode is manual/smart (C2 fix).
+        const deferPatterns = shouldDeferPlanMarkerRule(stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+
+        const vr = await runVerification(config, meta, messages, {
+          execFn: deps?.execFn,
+          toolCallRecords,
+          deferContentPatterns: deferPatterns,
+        });
 
         // 148 Phase 3: Config-error skip → treat as pass with notify/audit
         if (vr.skipped) {
@@ -765,6 +781,52 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
               message: failResult.message,
               failures: failResult.failures,
             };
+          }
+        }
+
+        // Phase 4 (162): confirm gate after verify passes.
+        const confirmMode = stageConfig.confirm?.mode ?? "auto";
+        if (confirmMode !== "auto") {
+          const ctxForGate = {
+            session: ctx.session,
+            ui: ctx.ui,
+            pi: (ctx as { pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } }).pi,
+          };
+          const gate = await maybeHandleConfirmGate(config, ctxForGate, meta, ui, {
+            mode: confirmMode,
+            needConfirm: args.needConfirm === true,
+          });
+          if (gate.result === "handled") {
+            if (gate.action === "advanced" || gate.action === "routed") {
+              const updatedMeta = ctx.session.getMeta() as SessionMeta;
+              return {
+                success: true,
+                message: gate.action === "advanced"
+                  ? `Confirm approved. Stage advanced to ${gate.toStage ?? "next"}.`
+                  : `Confirm rejected. Stage routed to ${gate.toStage ?? "rework"}.`,
+                currentStage: updatedMeta.currentStage,
+              };
+            }
+            if (gate.action === "aborted") {
+              return {
+                success: false,
+                message: "Pipeline aborted: confirm rejection limit reached.",
+              };
+            }
+            // pending
+            return {
+              success: false,
+              pending: true,
+              message: "Stage awaiting human confirmation. Stage not advanced.",
+            };
+          }
+          // no-gate (smart + non-complex): audit skip + clear counter + proceed to advance
+          if (confirmMode === "smart" && args.needConfirm !== true) {
+            await safeWriteStageAudit(config, "confirm_smart_skip", meta, {
+              fromStage: currentStage,
+              reason: "not complex",
+            }, "info");
+            ctx.session.updateMeta({ confirmRejections: undefined });
           }
         }
         // Verification passed — continue to advance
