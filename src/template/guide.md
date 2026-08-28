@@ -602,6 +602,27 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `code-review-agent` | review | `.pi/agents/code-review-agent.md` | 代码审查 |
 | `code-review-withfix-agent` | fix | `.pi/agents/code-review-withfix-agent.md` | 修复 Blocker/High/Medium |
 
+### 7.9 clarify 双入口与 stage skill 注入
+
+clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发插件的 `before_agent_start` 注入：
+
+1. **用户手动启动**：`@feat-design-plan-agent <doc> <round>`
+2. **自动启动**：`/pipeline-start <doc>` — 插件自动调用 `maybeAutoLaunchClarify`，经 `sendUserMessage` 唤起 clarify subagent
+
+**注入行为**：两种方式均会在 fork 子会话中触发插件注入当前 stage 的 skill（`STAGE-SPECIFIC RULES`），这是插件的目标特性，自动注入是正确的。
+
+**跨上下文重复**：`/pipeline-start` 自动启动场景下，主会话（orchestrator）在 `sendUserMessage` 触发的 turn 中也可能携带同一 stage skill，与 fork 子会话各一份。同一 LLM 上下文内不会重复注入；跨上下文重复属于编排语义，非缺陷。
+
+**审计定位**：当 `config.audit.promptSnapshot` 为 `full`（默认）时，audit log 包含以下独立事件，可精确区分 base 与 plugin 内容：
+
+| 事件 | 内容 |
+|------|------|
+| `prompt_snapshot` | 合并后的完整 system prompt（base + plugin） |
+| `prompt_snapshot_base` | pi 基础 system prompt（无 base 时写入占位文本） |
+| `prompt_snapshot_plugin` | 插件注入的 prompt（含 stage skill） |
+
+每个事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
+
 ---
 
 ## 8. 常见问题与恢复
