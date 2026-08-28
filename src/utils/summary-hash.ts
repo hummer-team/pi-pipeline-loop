@@ -10,8 +10,7 @@
  * to block progression when summaries have been modified externally.
  */
 
-import fsSync from "node:fs";
-import crypto from "node:crypto";
+import { computeFileHashSync } from "./hash";
 
 /**
  * Result of a single stage's hash verification.
@@ -31,15 +30,11 @@ export interface SummaryHashCheck {
 
 /**
  * Compute the SHA-256 hash of a file's content.
+ * Delegates to the shared sync core in hash.ts.
  * Returns null if the file cannot be read.
  */
 function computeFileHash(filePath: string): string | null {
-  try {
-    const content = fsSync.readFileSync(filePath, "utf-8");
-    return crypto.createHash("sha256").update(content).digest("hex");
-  } catch {
-    return null;
-  }
+  return computeFileHashSync(filePath);
 }
 
 /**
