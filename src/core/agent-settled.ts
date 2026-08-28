@@ -136,7 +136,7 @@ export function createAgentSettled(
 
       // Phase 4 (162): defer plan marker rule when confirm mode is manual (C2 fix).
       // Smart mode is already handled above (returns early).
-      const deferPatterns = shouldDeferPlanMarkerRule(stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+      const deferPatterns = shouldDeferPlanMarkerRule(meta.currentStage, stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
 
       const vr = await runVerification(
         config,

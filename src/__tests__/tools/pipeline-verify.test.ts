@@ -314,3 +314,66 @@ describe("Phase 3 (148): pipeline_verify skipped on config error", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+describe("Phase 4 (162): pipeline_verify confirm gate bypass prevention", () => {
+  it("confirm non-auto + verify pass → returns pending + confirm_defer_to_stage_advance audit", async () => {
+    const stageTmp = join(tmpdir(), "pi-verify-defer-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" });
+    // Plan stage: verify required + confirm mode = manual
+    config.stages["plan"] = {
+      ...config.stages["plan"],
+      nextStage: "develop" as PipelineStage,
+      verify: { require: true },
+      allowedWritePaths: ["docs/"],
+      confirm: { mode: "manual" },
+    };
+
+    // Create plan doc
+    const docsDir = join(stageTmp, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_plan.md"), "# Plan\nplan content\n", "utf-8");
+
+    // Create verify.md that passes
+    const refDir = join(stageTmp, ".pi", "references", "plan_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(
+      join(refDir, "verify.md"),
+      "---\nrequiredFiles:\n  - \"docs/design/77_Config_plan.md\"\n---\nVerify plan.",
+      "utf-8",
+    );
+
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+    });
+    const ctx = {
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => Object.assign(meta, m),
+      },
+      ui: { notify: () => {} },
+    };
+
+    const tool = createPipelineVerify(config);
+    const result = await tool.execute({ stage: "plan" }, ctx as any) as Record<string, unknown>;
+
+    // Should return pending (not auto-advance)
+    expect(result.success).toBe(false);
+    expect(result.pending).toBe(true);
+    expect((result.message as string)).toContain("confirm gate");
+
+    // Should have audit event
+    const { readFile } = await import("node:fs/promises");
+    const { getDateAuditFileName } = await import("../../utils/auditLog");
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("confirm_defer_to_stage_advance");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

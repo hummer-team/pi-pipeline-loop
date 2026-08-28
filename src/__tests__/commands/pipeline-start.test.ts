@@ -238,3 +238,27 @@ describe("buildResumeVisitOrder equivalence", () => {
     expect(result.length).toBeLessThanOrEqual(16);
   });
 });
+
+describe("Phase 4 (162): pipeline-start confirmRejections reset", () => {
+  it("start command initializes meta with confirmRejections: undefined", async () => {
+    await scaffoldMinimalPi();
+    const config = makeTestConfig({ projectRoot: TMP });
+    // Create the doc file so startNewPipeline can read it
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "77_Config.md"), "# Requirement\n", "utf-8");
+
+    const meta = makeTestMeta({
+      currentStage: undefined as any,
+      pipelineId: undefined as any,
+      confirmRejections: 5, // Simulate prior rejections
+    });
+    const ctx = createMockCtx(meta);
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "docs/design/77_Config.md" }, ctx as any);
+
+    // After start, confirmRejections should be reset to undefined
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.confirmRejections).toBeUndefined();
+  });
+});

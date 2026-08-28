@@ -55,22 +55,29 @@ describe("Phase 3 (162): confirm gate helpers", () => {
 
   it("shouldDeferPlanMarkerRule: false when confirm not configured", () => {
     const base = makeTestConfig();
-    expect(shouldDeferPlanMarkerRule(base.stages.plan)).toBe(false);
+    expect(shouldDeferPlanMarkerRule("plan", base.stages.plan)).toBe(false);
   });
 
   it("shouldDeferPlanMarkerRule: false when confirm mode is 'auto'", () => {
     const config = makePlanConfigWithConfirm(tmpDir, "auto");
-    expect(shouldDeferPlanMarkerRule(config.stages.plan)).toBe(false);
+    expect(shouldDeferPlanMarkerRule("plan", config.stages.plan)).toBe(false);
   });
 
   it("shouldDeferPlanMarkerRule: true when confirm mode is 'manual'", () => {
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
-    expect(shouldDeferPlanMarkerRule(config.stages.plan)).toBe(true);
+    expect(shouldDeferPlanMarkerRule("plan", config.stages.plan)).toBe(true);
   });
 
   it("shouldDeferPlanMarkerRule: true when confirm mode is 'smart'", () => {
     const config = makePlanConfigWithConfirm(tmpDir, "smart");
-    expect(shouldDeferPlanMarkerRule(config.stages.plan)).toBe(true);
+    expect(shouldDeferPlanMarkerRule("plan", config.stages.plan)).toBe(true);
+  });
+
+  it("shouldDeferPlanMarkerRule: false when currentStage is not 'plan' (e.g. review)", () => {
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    // Even with manual mode, deferral only applies during plan stage
+    expect(shouldDeferPlanMarkerRule("review", config.stages.plan)).toBe(false);
+    expect(shouldDeferPlanMarkerRule("develop", config.stages.plan)).toBe(false);
   });
 
   it("resolveConfirmMaxRejections: default 5 when nothing configured", () => {
@@ -334,5 +341,110 @@ describe("Phase 4 (162): pipeline-start confirmRejections reset", () => {
     // After reset (simulated):
     const resetMeta = { ...meta, confirmRejections: undefined };
     expect(resetMeta.confirmRejections).toBeUndefined();
+  });
+});
+
+describe("Phase 3 (162): review stage confirm gate scenarios", () => {
+  function makeReviewConfigWithConfirm(root: string, confirmMode: "auto" | "manual" | "smart") {
+    const base = makeTestConfig({ projectRoot: root });
+    const reviewStage = {
+      ...base.stages.review,
+      allowedWritePaths: ["docs/"],
+      confirm: { mode: confirmMode },
+    };
+    return {
+      ...base,
+      stages: { ...base.stages, review: reviewStage as typeof base.stages.review },
+    };
+  }
+
+  async function createReviewDoc(content: string) {
+    const reviewDir = path.join(tmpDir, "docs", "review");
+    await fs.mkdir(reviewDir, { recursive: true });
+    const reviewPath = path.join(reviewDir, "code_review_99_Feature.md");
+    await fs.writeFile(reviewPath, content, "utf-8");
+    return reviewPath;
+  }
+
+  it("review approve advances to completed", async () => {
+    await createReviewDoc("# Review Report\n");
+    const config = makeReviewConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "review" });
+    const ctx = createMockCtx(meta, { selectReturn: "Approve & Complete" });
+    const ui = { notify: () => {}, transition: () => {}, clearStage: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx, meta, ui as any, { mode: "manual" });
+    expect(result.result).toBe("handled");
+    if (result.result === "handled") {
+      expect(result.action).toBe("advanced");
+      expect(result.toStage).toBe("completed");
+    }
+    const updatedMeta = ctx.session.getMeta() as SessionMeta;
+    expect(updatedMeta.confirmRejections).toBeUndefined();
+  });
+
+  it("review reject routes to fix and increments counter", async () => {
+    await createReviewDoc("# Review Report\n");
+    const config = makeReviewConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 1 });
+    const ctx = createMockCtx(meta, { selectReturn: "Reject & Send to Fix" });
+    const ui = { notify: () => {}, transition: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx, meta, ui as any, { mode: "manual" });
+    expect(result.result).toBe("handled");
+    if (result.result === "handled") {
+      expect(result.action).toBe("routed");
+      expect(result.toStage).toBe("fix");
+    }
+    const updatedMeta = ctx.session.getMeta() as SessionMeta;
+    expect(updatedMeta.confirmRejections).toBe(2);
+    expect(updatedMeta.currentStage).toBe("fix");
+  });
+
+  it("review: counter preserved across fix→review round trip", async () => {
+    await createReviewDoc("# Review Report\n");
+    const config = makeReviewConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 3 });
+    const ctx = createMockCtx(meta, { selectReturn: "Reject & Send to Fix" });
+    const ui = { notify: () => {}, transition: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx, meta, ui as any, { mode: "manual" });
+    if (result.result === "handled") {
+      expect(result.action).toBe("routed");
+    }
+    const updatedMeta = ctx.session.getMeta() as SessionMeta;
+    // Counter incremented to 4, preserved when returning to review
+    expect(updatedMeta.confirmRejections).toBe(4);
+  });
+});
+
+describe("Phase 3 (162): confirm marker allowedWritePaths enforcement", () => {
+  it("writeConfirmMarker refuses when doc path not in allowedWritePaths", async () => {
+    // Create plan doc outside allowed paths
+    const docsDir = path.join(tmpDir, "other", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    const planPath = path.join(docsDir, "77_Config_plan.md");
+    await fs.writeFile(planPath, "# Plan\n", "utf-8");
+
+    // Config with restricted allowedWritePaths (does not include "other/")
+    const base = makeTestConfig({ projectRoot: tmpDir });
+    const planStage = {
+      ...base.stages.plan,
+      allowedWritePaths: ["docs/"],
+      confirm: { mode: "manual" as const },
+    };
+    const config = {
+      ...base,
+      stages: { ...base.stages, plan: planStage as typeof base.stages.plan },
+    };
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "other/design/77_Config.md" });
+    const ctx = createMockCtx(meta, { selectReturn: "Approve & Advance" });
+    const ui = { notify: () => {}, transition: () => {} };
+
+    // The gate should handle the failure (pending because marker write fails due to allowedWritePaths)
+    const result = await maybeHandleConfirmGate(config, ctx, meta, ui as any, { mode: "manual" });
+    expect(result.result).toBe("handled");
+    // The advance fails because writeConfirmMarker rejects the path
+    if (result.result === "handled") {
+      expect(result.action).toBe("pending");
+    }
   });
 });

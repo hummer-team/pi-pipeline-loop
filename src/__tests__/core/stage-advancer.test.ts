@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { createStageAdvancer } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, STAGE_LIST } from "../helpers";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import type { PipelineStage } from "../../types";
 
 /** Minimal mock ctx with session + _ctx for extractAssistantMessages */
 function createCtx(meta: any) {
@@ -542,5 +544,205 @@ Verification that will fail because the pattern does not match.`,
       // May still fail on verification, but not on hash mismatch
       expect(result.mismatchedStage).toBeUndefined();
     });
+  });
+});
+
+describe("Phase 4 (162): stage_advance confirm gate integration", () => {
+  function createCtxWithUI(meta: any, selectReturn?: string) {
+    const updates: any[] = [];
+    const notifications: string[] = [];
+    return {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => {
+          const merged = { ...meta, ...m };
+          updates.push(merged);
+          Object.assign(meta, merged);
+          return merged;
+        },
+      },
+      updates,
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      ui: {
+        notify: (msg: string) => { notifications.push(msg); },
+        select: selectReturn !== undefined
+          ? async () => selectReturn
+          : async () => undefined,
+        transition: () => {},
+        clearStage: () => {},
+      },
+      pi: { sendUserMessage: () => {} },
+    };
+  }
+
+  function makePlanConfigWithConfirm(root: string, mode: "auto" | "manual" | "smart") {
+    const base = makeTestConfig({ projectRoot: root });
+    const planStage = {
+      ...base.stages.plan,
+      nextStage: "develop" as PipelineStage,
+      verify: { require: true },
+      allowedWritePaths: ["docs/"],
+      confirm: { mode },
+    };
+    return {
+      ...base,
+      stages: { ...base.stages, plan: planStage as typeof base.stages.plan },
+    };
+  }
+
+  it("needConfirm parameter is accepted in tool schema", () => {
+    const tool = createStageAdvancer(makeTestConfig());
+    const params = tool.parameters as Record<string, any>;
+    expect(params.properties?.needConfirm).toBeDefined();
+    expect(params.properties.needConfirm.type).toBe("boolean");
+  });
+
+  it("smart mode + needConfirm not set → confirm_smart_skip + advance", async () => {
+    const stageTmp = join(tmpdir(), "pi-advancer-smart-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "smart");
+    // Create plan doc + verify.md with no rules (passes trivially)
+    const docsDir = join(stageTmp, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_plan.md"), "# Plan\nplan\n", "utf-8");
+    const refDir = join(stageTmp, ".pi", "references", "plan_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(join(refDir, "verify.md"), "---\nrequiredFiles:\n  - \"docs/design/77_Config_plan.md\"\n---\nVerify.", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createCtxWithUI(meta);
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("develop");
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("confirm_smart_skip");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("smart mode + needConfirm=true → confirm gate triggered", async () => {
+    const stageTmp = join(tmpdir(), "pi-advancer-smart-complex-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "smart");
+    const docsDir = join(stageTmp, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_plan.md"), "# Plan\nplan\n", "utf-8");
+    const refDir = join(stageTmp, ".pi", "references", "plan_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(join(refDir, "verify.md"), "---\nrequiredFiles:\n  - \"docs/design/77_Config_plan.md\"\n---\nVerify.", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    // Select returns "Approve & Advance"
+    const ctx = createCtxWithUI(meta, "Approve & Advance");
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ needConfirm: true }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("develop");
+    expect(meta.confirmRejections).toBeUndefined();
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("confirm_approved");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("manual mode + approve → advance to develop", async () => {
+    const stageTmp = join(tmpdir(), "pi-advancer-manual-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "manual");
+    const docsDir = join(stageTmp, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_plan.md"), "# Plan\nplan\n", "utf-8");
+    const refDir = join(stageTmp, ".pi", "references", "plan_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(join(refDir, "verify.md"), "---\nrequiredFiles:\n  - \"docs/design/77_Config_plan.md\"\n---\nVerify.", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createCtxWithUI(meta, "Approve & Advance");
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("develop");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("manual mode + reject → route to clarify", async () => {
+    const stageTmp = join(tmpdir(), "pi-advancer-manual-reject-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "manual");
+    const docsDir = join(stageTmp, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_plan.md"), "# Plan\nplan\n", "utf-8");
+    const refDir = join(stageTmp, ".pi", "references", "plan_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(join(refDir, "verify.md"), "---\nrequiredFiles:\n  - \"docs/design/77_Config_plan.md\"\n---\nVerify.", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createCtxWithUI(meta, "Reject & Rework (back to clarify)");
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("clarify");
+    expect(meta.confirmRejections).toBe(1);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("auto mode → no confirm gate, advances normally", async () => {
+    const stageTmp = join(tmpdir(), "pi-advancer-auto-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "auto");
+    const docsDir = join(stageTmp, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_plan.md"), "# Plan\nplan\n", "utf-8");
+    const refDir = join(stageTmp, ".pi", "references", "plan_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(join(refDir, "verify.md"), "---\nrequiredFiles:\n  - \"docs/design/77_Config_plan.md\"\n---\nVerify.", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createCtxWithUI(meta);
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("develop");
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("confirm_auto_write");
+    // Should NOT have confirm gate audit events
+    expect(logContent).not.toContain("confirm_approved");
+    expect(logContent).not.toContain("confirm_pending");
+
+    await rm(stageTmp, { recursive: true, force: true });
   });
 });

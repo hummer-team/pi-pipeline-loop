@@ -25,7 +25,7 @@ import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getVerifyPrompt } from "./prompt-config";
 import { parseFrontmatter, type VerifyRules } from "./verify-frontmatter";
-import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths } from "./verify-path-resolver";
+import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
 import { diagnoseVerifyConfig } from "./verify-config-diagnosis";
 
 /**
@@ -405,12 +405,31 @@ export async function runVerification(
   // This is a per-execution skip — does not touch verify.md or hasCustom state.
   // Used by confirm gate to prevent the plan marker rule from blocking verification
   // when the marker will be written later by the confirm gate (C2 ordering fix).
+  //
+  // Glob-aware matching: `applyConcreteStageDocPaths` above replaces plan doc globs
+  // (e.g. `docs/design/*_plan.md`) with the concrete relative path (e.g.
+  // `docs/design/162_Confirm_plan.md`). The caller's defer entries may still use the
+  // glob form. We resolve globs in the defer list using the same concrete path
+  // derivation so that pattern equality comparison works on both glob and non-glob inputs.
   const deferList = options?.deferContentPatterns;
   let deferredCount = 0;
   if (deferList && deferList.length > 0 && resolvedRules.fileContentPattern) {
+    // Resolve plan doc globs in defer entries so they match resolvedRules paths
+    let resolvedDeferList = deferList;
+    if (meta.currentStage === "plan") {
+      const planDocPath = await resolvePlanDocPath(config, meta);
+      if (planDocPath) {
+        const relPlanDoc = path.relative(config.projectRoot, planDocPath);
+        resolvedDeferList = deferList.map((d) => ({
+          ...d,
+          path: isPlanDocGlob(d.path) ? relPlanDoc : d.path,
+        }));
+      }
+    }
+
     const original = resolvedRules.fileContentPattern;
     const filtered = original.filter(
-      (r) => !deferList.some((d) => d.path === r.path && d.pattern === r.pattern),
+      (r) => !resolvedDeferList.some((d) => d.path === r.path && d.pattern === r.pattern),
     );
     deferredCount = original.length - filtered.length;
     if (deferredCount > 0) {

@@ -108,7 +108,7 @@ export function createPipelineVerify(
       }
 
       // Phase 4 (162): defer plan marker rule when confirm mode is non-auto (C2 fix).
-      const deferPatterns = shouldDeferPlanMarkerRule(stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+      const deferPatterns = shouldDeferPlanMarkerRule(stageName, stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
       if (deferPatterns.length > 0) {
         verifyOptions.deferContentPatterns = deferPatterns;
       }

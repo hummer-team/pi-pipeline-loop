@@ -57,9 +57,16 @@ export const PLAN_CONFIRM_MARKER_RULE = {
  * Determines whether the plan marker rule should be deferred for this stage.
  * Returns true when currentStage is "plan" AND confirm is configured AND mode is not "auto".
  * Used by callers (agent-settled, stage-advancer) to construct deferContentPatterns.
+ *
+ * The `currentStage` parameter ensures the deferral only applies during plan
+ * stage verification — without it, the function would incorrectly return true
+ * for review/manual (relying on path mismatch as a safety net).
  */
-export function shouldDeferPlanMarkerRule(stageConfig: StageConfig): boolean {
-  return stageConfig.confirm !== undefined && stageConfig.confirm.mode !== undefined && stageConfig.confirm.mode !== "auto";
+export function shouldDeferPlanMarkerRule(currentStage: PipelineStage, stageConfig: StageConfig): boolean {
+  return currentStage === "plan"
+    && stageConfig.confirm !== undefined
+    && stageConfig.confirm.mode !== undefined
+    && stageConfig.confirm.mode !== "auto";
 }
 
 /**
@@ -289,6 +296,9 @@ async function handleConfirmOverflow(
  * Routing matrix:
  * - plan → clarify (reject to re-clarify)
  * - review → fix (reject to re-fix)
+ *
+ * Also clears any existing confirmation markers from the source stage's document
+ * to prevent the old marker from bypassing the confirm gate on re-entry (Medium #8 fix).
  */
 async function routeConfirmReject(
   config: PipelineConfig,
@@ -298,6 +308,32 @@ async function routeConfirmReject(
   toStage: PipelineStage,
   nextCount: number,
 ): Promise<void> {
+  // Clear old confirmation markers from the source stage doc to prevent
+  // bypass on re-entry (e.g. plan→clarify→plan round trip).
+  const sourceDocPath = await resolveStageDocPath(config, meta, fromStage);
+  if (sourceDocPath) {
+    try {
+      const content = await fs.readFile(sourceDocPath, "utf-8");
+      // Remove bilingual confirmation markers and their adjacent timestamp lines.
+      // Matches lines starting with "## 用户确认" or "## User Confirmation",
+      // plus up to 2 following lines (blank + timestamp).
+      const cleaned = content.replace(
+        /^## (?:用户确认|User Confirmation).*\n(?:>.*\n|\n)*/gm,
+        "",
+      );
+      if (cleaned !== content) {
+        await fs.writeFile(sourceDocPath, cleaned, "utf-8");
+        await writeAuditLog("confirm_marker_cleared_on_reject", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          docPath: sourceDocPath,
+        });
+      }
+    } catch {
+      // File doesn't exist or unreadable — skip cleanup (not an error)
+    }
+  }
+
   // Update meta with routing + rejection count
   ctx.session.updateMeta({
     previousStage: fromStage,
@@ -371,7 +407,12 @@ async function advanceConfirmApproved(
           "",
         ];
 
-    await writeConfirmMarker(config, ctx, meta, docPath, lines, "confirm_approved");
+    const writeOk = await writeConfirmMarker(config, ctx, meta, docPath, lines, "confirm_approved");
+    if (!writeOk) {
+      // Marker write failed (e.g. write path not in allowedWritePaths) — do not advance.
+      // writeConfirmMarker has already written audit + notified the user.
+      return false;
+    }
   }
 
   // Audit the approval
@@ -400,6 +441,12 @@ async function advanceConfirmApproved(
     pipelineUI as unknown as Parameters<typeof autoAdvanceAfterVerify>[6],
     { skipPassAudit: true },
   );
+
+  // Phase 3 (162): when advancing to completed, clear the stage display
+  // (mirrors stage-advancer.ts terminal branch at line 867).
+  if (toStage === "completed" && ctx.ui?.clearStage) {
+    ctx.ui.clearStage(ctx);
+  }
 
   return true;
 }
@@ -742,7 +789,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         const toolCallRecords = extractToolCallRecords(ctx._ctx);
 
         // Phase 4 (162): defer plan marker rule when confirm mode is manual/smart (C2 fix).
-        const deferPatterns = shouldDeferPlanMarkerRule(stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+        const deferPatterns = shouldDeferPlanMarkerRule(currentStage, stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
 
         const vr = await runVerification(config, meta, messages, {
           execFn: deps?.execFn,

@@ -868,3 +868,167 @@ describe("Phase 3 (148): agent_settled verify config skip", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+describe("Phase 4 (162): agent_settled confirm gate integration", () => {
+  function makePlanConfigWithConfirm(root: string, mode: "auto" | "manual" | "smart") {
+    const base = makeTestConfig({ projectRoot: root });
+    const planStage = {
+      ...base.stages.plan,
+      nextStage: "develop" as PipelineStage,
+      verify: { require: true },
+      allowedWritePaths: ["docs/"],
+      confirm: { mode },
+    };
+    return {
+      ...base,
+      stages: { ...base.stages, plan: planStage as typeof base.stages.plan },
+    };
+  }
+
+  async function createPlanDoc(root: string, content: string) {
+    const docsDir = join(root, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    const planPath = join(docsDir, "77_Config_plan.md");
+    await writeFile(planPath, content, "utf-8");
+    return planPath;
+  }
+
+  async function createVerifyMd(root: string, content: string) {
+    const stageDir = join(root, ".pi", "references", "plan_spec");
+    await mkdir(stageDir, { recursive: true });
+    const verifyPath = join(stageDir, "verify.md");
+    await writeFile(verifyPath, content, "utf-8");
+  }
+
+  it("smart mode: short-circuits with confirm_smart_defer_to_tool audit", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-smart-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "smart");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("confirm_smart_defer_to_tool");
+    // Stage should not change
+    expect(meta.currentStage).toBe("plan");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("auto mode: pre-writes bilingual marker before verify (confirm_auto_write)", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-auto-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "auto");
+    await createPlanDoc(stageTmp, "# Plan\nplan content here\n");
+    // verify.md with requiredFiles pointing to existing plan doc → passes
+    await createVerifyMd(stageTmp, `---
+requiredFiles:
+  - "docs/design/77_Config_plan.md"
+---
+Verify plan quality.`);
+
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("confirm_auto_write");
+
+    // Plan doc should have bilingual marker
+    const planDoc = await readFile(join(stageTmp, "docs", "design", "77_Config_plan.md"), "utf-8");
+    expect(planDoc).toContain("## 用户确认：确认无误");
+    expect(planDoc).toContain("## User Confirmation: Confirmed");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("manual mode: triggers confirm gate — approve advances to develop", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-manual-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "manual");
+    const planPath = await createPlanDoc(stageTmp, "# Plan\nplan content here\n");
+    // verify.md with requiredFiles pointing to existing plan doc → passes
+    const relPlanPath = "docs/design/77_Config_plan.md";
+    await createVerifyMd(stageTmp, `---
+requiredFiles:
+  - "${relPlanPath}"
+---
+Verify plan.`);
+
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+    });
+    // select returns "Approve & Advance" to simulate user approval
+    const ctx = createMockCtx(meta, { selectReturn: "Approve & Advance" });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // After approval, should advance to develop
+    expect(meta.currentStage).toBe("develop");
+    expect(meta.confirmRejections).toBeUndefined();
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("confirm_approved");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("deferContentPatterns: plan marker rule does not block verify in manual mode", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-defer-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "manual");
+    // Plan doc WITHOUT the confirmation marker
+    await createPlanDoc(stageTmp, "# Plan\nplan content here\nno marker yet\n");
+    // verify.md with a requiredFiles rule (passes) + the plan marker rule that should be deferred
+    await createVerifyMd(stageTmp, `---
+requiredFiles:
+  - "docs/design/77_Config_plan.md"
+fileContentPattern:
+  - path: "docs/design/*_plan.md"
+    pattern: "^## (用户确认|User Confirmation)"
+---
+Verify plan.`);
+
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+    });
+    // Select returns undefined (Esc) — pending
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    // Deferral should have been applied (marker rule skipped during verify)
+    expect(logContent).toContain("verify_rule_deferred");
+    // Confirm gate triggered — Esc → pending
+    expect(logContent).toContain("confirm_pending");
+    // Stage should not change (pending)
+    expect(meta.currentStage).toBe("plan");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

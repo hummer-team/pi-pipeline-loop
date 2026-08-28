@@ -1857,3 +1857,33 @@ describe("createPipelineInitCommand", () => {
 
 // Need to import PipelineConfig type for the Phase 0 tests
 import type { PipelineConfig } from "../../types";
+
+describe("Phase 6 (162): template confirm config", () => {
+  it("real template pipeline_loop.json contains plan/review confirm manual mode", async () => {
+    // Read the real template file from dist/ (build output)
+    const distPath = path.join(process.cwd(), "dist", "template", "pipeline_loop.json");
+    const content = await fs.readFile(distPath, "utf-8");
+    const parsed = JSON.parse(content);
+
+    // Verify plan stage has confirm.mode = "manual"
+    expect(parsed.stages?.plan?.confirm?.mode).toBe("manual");
+    // Verify review stage has confirm.mode = "manual"
+    expect(parsed.stages?.review?.confirm?.mode).toBe("manual");
+    // Verify global confirmOverflow
+    expect(parsed.confirmOverflow).toBe("ask");
+  });
+
+  it("template confirm config is parseable by json-config-loader", async () => {
+    const { resolvePipelineConfig } = await import("../../core/json-config-loader");
+    const distPath = path.join(process.cwd(), "dist", "template", "pipeline_loop.json");
+    const content = await fs.readFile(distPath, "utf-8");
+    const raw = JSON.parse(content);
+
+    const config = resolvePipelineConfig(raw, process.cwd());
+    expect(config.stages.plan.confirm?.mode).toBe("manual");
+    expect(config.stages.review.confirm?.mode).toBe("manual");
+    expect(config.confirmOverflow).toBe("ask");
+    // Default maxConfirmRejections should be 5
+    expect(config.maxConfirmRejections).toBe(5);
+  });
+});

@@ -200,7 +200,7 @@ bun add @earendil-works/pi-pipeline
       "fix": {
         "agentPath": ".pi/agents/code-review-withfix-agent.md",
         "skillPath": "fix/SKILL.md",
-        "nextStage": "completed",        // fix 复验通过后直接完成（不再回环到 develop）
+        "nextStage": "review",            // fix 复验后回 review 复验（由 review 确认门收敛到 completed）
         "allowedWritePaths": ["**"],
         "verify": { "require": true, "selfVerifySkip": true }
       },
@@ -373,7 +373,7 @@ rules:
 流水线阶段序列（质量环：review ⇄ fix，review 确认通过→completed）：
 
 ```text
-clarify → plan → develop → review ⇄ fix → completed
+clarify → plan → develop → review ⇄ fix → review (loop) → completed
                 ↑ selfVerifySkip   ↑ confirm 门（manual）
                 └── 模型自验跳过或插件兜底 ──┘
 ```
@@ -392,7 +392,7 @@ clarify → plan → develop → review ⇄ fix → completed
 
 **selfVerifySkip 语义**：develop/fix 配置 `verify.selfVerifySkip: true` 时，插件根据工具调用记录判定模型是否已在本 stage 成功执行过相同 requiredCommand（命令 token 前缀匹配，`./mvnw`/`mvnw` 归一化）。命中且 exitCode=0 则跳过重执行、仅写 audit（`method:"self_verified"`）；此后若有 write/edit 成功记录则失效强制重验。Phase 6 (139) 新增 VERIFIED_COMMANDS 协议识别——子 agent 通过 task 返回的 `VERIFIED_COMMANDS: cmd1,cmd2` 行也计入已验证命令集合。
 
-**质量环**（review ⇄ fix → completed）：
+**质量环**（review ⇄ fix → review，confirm 通过→completed）：
 - review 报告有 Blocker/High/Medium → confirm 门拒绝→fix → 修复后→review 复验
 - review confirm 门通过 → completed
 - fix 复验通过 → review（再次 confirm 门）
@@ -879,7 +879,7 @@ rules:
     - path: "docs/design/*_commit.md"
       pattern: "^\\*\\*plan doc\\*\\*:"
     - path: "docs/design/*_plan.md"
-      pattern: "^## 用户确认"
+      pattern: "^## (用户确认|User Confirmation)"
     - path: "docs/review/code_review_*.md"
       pattern: "结论：通过"
 ```
@@ -953,17 +953,18 @@ rules:
 
 ### 9.6 质量环与 8→7 阶段迁移
 
-新版模板使用 7 阶段形态，质量环路径为 **review → fix → develop**（而非老版的 review → fix → review）：
+新版模板使用 7 阶段形态，质量环路径为 **review ⇄ fix**（review 拒绝→fix，fix 复验后回 review），由 review 确认门收敛到 completed：
 
 ```text
-clarify → plan → develop → review ⇄ fix → develop (loop)
+clarify → plan → develop → review ⇄ fix → review (loop) → completed (confirm approved)
 ```
 
 老项目迁移步骤：
 1. 更新 `pipeline_loop.json` 的 `review.nextStage` 从 `"completed"` 改为 `"fix"`
-2. 重跑 `/pipeline-init 0` 刷新模板文件
-3. 重跑 `/pipeline-init 1` 合并重建 verify.md（旧 bun 命令将被补入正确的项目命令）
-4. （可选）启用 `llmExtract: true` 让 LLM 提取更贴合项目技术栈的 verify 规则
+2. 更新 `fix.nextStage` 从 `"completed"` 改为 `"review"`（修复后回 review 复验，完成由 review 确认门收敛）
+3. 重跑 `/pipeline-init 0` 刷新模板文件
+4. 重跑 `/pipeline-init 1` 合并重建 verify.md（旧 bun 命令将被补入正确的项目命令）
+5. （可选）启用 `llmExtract: true` 让 LLM 提取更贴合项目技术栈的 verify 规则
 
 ### 9.7 completionMarker 交互预检机制
 
