@@ -223,6 +223,14 @@ export interface RunVerificationOptions {
   logError?: AuditLogFn;
   /** Tool call records for selfVerifySkip (extracted from session by agent-settled) */
   toolCallRecords?: Array<{ name: string; command?: string; exitCode?: number; success?: boolean; ts: number }>;
+  /**
+   * Content-pattern rules to defer (skip) for this single verify execution.
+   * When a rule's { path, pattern } exactly matches an entry here, the rule is
+   * excluded from execution. Used by confirm gate to prevent the plan marker
+   * rule from blocking verification when the marker will be written later by
+   * the confirm gate (C2 ordering fix). Does NOT modify verify.md or hasCustom.
+   */
+  deferContentPatterns?: { path: string; pattern: string }[];
 }
 
 /**
@@ -392,6 +400,28 @@ export async function runVerification(
 
   // Replace plan doc glob with concrete path (only for plan stage)
   resolvedRules = await applyConcreteStageDocPaths(resolvedRules, config, meta);
+
+  // Defer content-pattern rules that match the caller's deferContentPatterns list.
+  // This is a per-execution skip — does not touch verify.md or hasCustom state.
+  // Used by confirm gate to prevent the plan marker rule from blocking verification
+  // when the marker will be written later by the confirm gate (C2 ordering fix).
+  const deferList = options?.deferContentPatterns;
+  let deferredCount = 0;
+  if (deferList && deferList.length > 0 && resolvedRules.fileContentPattern) {
+    const original = resolvedRules.fileContentPattern;
+    const filtered = original.filter(
+      (r) => !deferList.some((d) => d.path === r.path && d.pattern === r.pattern),
+    );
+    deferredCount = original.length - filtered.length;
+    if (deferredCount > 0) {
+      resolvedRules = { ...resolvedRules, fileContentPattern: filtered };
+      await safeWriteAuditLog("verify_rule_deferred", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        deferredCount: String(deferredCount),
+      }, "info");
+    }
+  }
 
   // Detect unresolved {requirementDoc} placeholders (L2-A: explicit failure instead of EISDIR)
   const unresolvedPlaceholder = /\{requirementDoc\}/;

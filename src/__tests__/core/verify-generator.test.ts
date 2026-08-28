@@ -1368,8 +1368,8 @@ describe("verify-generator", () => {
   // ── Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list ──────────
 
   describe("Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list", () => {
-    it("white-list contains all 5 expected template entries", () => {
-      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(5);
+    it("white-list contains all 6 expected template entries (5 + bilingual plan marker)", () => {
+      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(6);
       const paths = TEMPLATE_BUILTIN_CONTENT_PATTERNS.map(e => e.path);
       expect(paths).toContain("{requirementDoc}");
       expect(paths).toContain("docs/design/*_plan.md");
@@ -1438,6 +1438,33 @@ describe("verify-generator", () => {
       };
       const result = diffAndMergeRules(existing, []);
       expect(result.hasCustom).toBe(true);
+    });
+
+    // Phase 2 (162): bilingual plan marker pattern in whitelist
+    it("hasCustom=false when existing rules contain only bilingual plan marker pattern", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/design/*_plan.md"],
+        fileContentPattern: [
+          { path: "docs/design/*_plan.md", pattern: "^## (用户确认|User Confirmation)" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    it("hasCustom=false when existing rules contain legacy plan marker pattern (init 1 backward compat)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/design/*_plan.md"],
+        fileContentPattern: [
+          { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
     });
 
     it("init 1 merge regression: develop template with plan doc pattern still merges plugin defaults", async () => {

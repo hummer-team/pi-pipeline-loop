@@ -106,15 +106,16 @@ export async function resolvePlanDocPath(
 }
 
 /**
- * Checks whether the plan document contains the `## 用户确认` confirmation marker.
- * The pattern matches the header at the start of any line (multiline mode).
+ * Checks whether the plan document contains a confirmation marker.
+ * Matches either the legacy Chinese marker `## 用户确认` or the bilingual
+ * marker `## User Confirmation` at the start of any line (multiline mode).
  *
  * @param planDocPath - Absolute path to the plan document
  */
 export async function planDocHasConfirmMarker(planDocPath: string): Promise<boolean> {
   try {
     const content = await fs.readFile(planDocPath, "utf-8");
-    return /^## 用户确认/m.test(content);
+    return /^## (用户确认|User Confirmation)/m.test(content);
   } catch {
     return false;
   }

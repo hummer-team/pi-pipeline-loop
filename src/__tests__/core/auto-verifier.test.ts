@@ -1523,6 +1523,101 @@ describe("Phase 1 (141): planDocHasConfirmMarker", () => {
     const result = await planDocHasConfirmMarker(path.join(tmpDir, "nonexistent.md"));
     expect(result).toBe(false);
   });
+
+  // Phase 2 (162): bilingual marker detection
+  it("returns true when ## User Confirmation marker exists (bilingual)", async () => {
+    const planPath = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planPath, "# Plan\n\n## User Confirmation: Confirmed\n");
+    const result = await planDocHasConfirmMarker(planPath);
+    expect(result).toBe(true);
+  });
+
+  it("returns true when legacy ## 用户确认：确认无误 marker exists (extended Chinese form)", async () => {
+    const planPath = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planPath, "# Plan\n\n## 用户确认：确认无误\n");
+    const result = await planDocHasConfirmMarker(planPath);
+    expect(result).toBe(true);
+  });
+});
+
+// ─── Phase 2 (162): runVerification deferContentPatterns ─────────────────────
+describe("Phase 2 (162): runVerification deferContentPatterns", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = path.join(tmpdir(), "pi-defer-" + Date.now());
+    await fs.mkdir(tmpDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function makePlanConfigWithVerify(root: string) {
+    const base = makeTestConfig({ projectRoot: root });
+    // Override plan stage to have verify.require = true
+    const planStage = { ...base.stages.plan, verify: { require: true, verifyFile: "", mode: "hook" as const } };
+    return {
+      ...base,
+      stages: { ...base.stages, plan: planStage as typeof base.stages.plan },
+    };
+  }
+
+  it("deferred fileContentPattern rule is excluded from execution", async () => {
+    // Write a plan doc WITHOUT the marker — without deferral, verification fails
+    const planPath = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planPath, "# Plan\n\nNo marker here\n");
+
+    const config = makePlanConfigWithVerify(tmpDir);
+    const meta = makeTestMeta({ currentStage: "plan" });
+
+    // Write verify.md with a marker rule
+    const verifyDir = path.join(tmpDir, ".pi", "references", "plan_spec");
+    await fs.mkdir(verifyDir, { recursive: true });
+    const verifyPath = path.join(verifyDir, "verify.md");
+    await fs.writeFile(
+      verifyPath,
+      "---\nrules:\n  requiredFiles:\n    - \"plan.md\"\n  fileContentPattern:\n" +
+        "    - path: \"plan.md\"\n      pattern: \"^## 用户确认\"\n---\n",
+      "utf-8",
+    );
+
+    // Without deferContentPatterns: verification fails (marker missing)
+    const resultWithoutDefer = await runVerification(config, meta, [], { verifyFile: verifyPath });
+    expect(resultWithoutDefer.rulePassed).toBe(false);
+
+    // With deferContentPatterns: the marker rule is skipped → verification passes
+    const resultWithDefer = await runVerification(config, meta, [], {
+      verifyFile: verifyPath,
+      deferContentPatterns: [{ path: "plan.md", pattern: "^## 用户确认" }],
+    });
+    expect(resultWithDefer.rulePassed).toBe(true);
+  });
+
+  it("non-deferred rules still execute normally", async () => {
+    const planPath = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planPath, "# Plan\n\n## 用户确认\n");
+
+    const config = makePlanConfigWithVerify(tmpDir);
+    const meta = makeTestMeta({ currentStage: "plan" });
+
+    const verifyDir = path.join(tmpDir, ".pi", "references", "plan_spec");
+    await fs.mkdir(verifyDir, { recursive: true });
+    const verifyPath = path.join(verifyDir, "verify.md");
+    await fs.writeFile(
+      verifyPath,
+      "---\nrules:\n  requiredFiles:\n    - \"plan.md\"\n  fileContentPattern:\n" +
+        "    - path: \"plan.md\"\n      pattern: \"^## 用户确认\"\n    - path: \"plan.md\"\n      pattern: \"nonexistent_pattern\"\n---\n",
+      "utf-8",
+    );
+
+    // Defer only the first rule — second still runs and fails
+    const result = await runVerification(config, meta, [], {
+      verifyFile: verifyPath,
+      deferContentPatterns: [{ path: "plan.md", pattern: "^## 用户确认" }],
+    });
+    expect(result.rulePassed).toBe(false);
+  });
 });
 
 // ─── Phase 1 (141): applyConcreteStageDocPaths ──────────────────────────────────

@@ -88,8 +88,10 @@ export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern
     path: "{requirementDoc}",
     pattern: "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))",
   },
-  // plan: user confirmation marker
+  // plan: user confirmation marker (bilingual — old + new patterns both whitelisted
+  // so existing projects' verify.md stays mergeable under init 1, 148 compat)
   { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+  { path: "docs/design/*_plan.md", pattern: "^## (用户确认|User Confirmation)" },
   // review: pass conclusion
   { path: "docs/review/code_review_*.md", pattern: "结论：通过" },
   // develop / fix: plan doc reference in commit record
