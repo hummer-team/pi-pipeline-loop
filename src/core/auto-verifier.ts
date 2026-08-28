@@ -216,7 +216,7 @@ export async function diagnoseVerifyConfig(
   verifyPath: string,
 ): Promise<VerifyConfigDiagnosis> {
   const errors: VerifyConfigError[] = [];
-  const guideHint = "See guide.md §9.4.B for correct rule syntax.";
+  const guideHint = "See guide.md for correct rule syntax.";
 
   // 1. Check file exists and is readable
   let raw: string;

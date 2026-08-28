@@ -132,7 +132,7 @@ export function createAgentSettled(
       // 148 Phase 3: Config-error skip → treat as pass with notify/audit
       if (vr.skipped) {
         const errorSummary = vr.configErrors?.join("; ") ?? "unknown config error";
-        ui.notify(ctx, `Verification config error: ${errorSummary}. Verification skipped. See guide.md §9.4.B for correct rule syntax.`);
+        ui.notify(ctx, `Verification config error: ${errorSummary}. Verification skipped. See guide.md for correct rule syntax.`);
         await writeAuditLog("verify_config_skip", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,

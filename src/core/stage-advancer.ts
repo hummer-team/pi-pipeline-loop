@@ -194,7 +194,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // 148 Phase 3: Config-error skip → treat as pass with notify/audit
         if (vr.skipped) {
           const errorSummary = vr.configErrors?.join("; ") ?? "unknown config error";
-          ui.notify(ctx, `Verification config error: ${errorSummary}. Verification skipped. See guide.md §9.4.B for correct rule syntax.`);
+          ui.notify(ctx, `Verification config error: ${errorSummary}. Verification skipped. See guide.md for correct rule syntax.`);
           await safeWriteStageAudit(config, "verify_config_skip", meta, {
             fromStage: currentStage,
             errorCount: String(vr.configErrors?.length ?? 0),

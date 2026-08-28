@@ -139,7 +139,7 @@ export function createPipelineVerify(
       // 148 Phase 3: Config-error skip → return skipped result (treat as pass for tool caller)
       if (vr.skipped) {
         const errorSummary = vr.configErrors?.join("; ") ?? "unknown config error";
-        const notifyMsg = `Verification config error: ${errorSummary}. Verification skipped. See guide.md §9.4.B for correct rule syntax.`;
+        const notifyMsg = `Verification config error: ${errorSummary}. Verification skipped. See guide.md for correct rule syntax.`;
         ui.notify(sessionCtx, notifyMsg);
         await safeWriteAuditLog("verify_config_skip", {
           pipelineId: meta.pipelineId,
