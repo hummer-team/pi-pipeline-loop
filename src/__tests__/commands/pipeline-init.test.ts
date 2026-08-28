@@ -1394,7 +1394,10 @@ describe("createPipelineInitCommand", () => {
       for (const stage of ["develop", "review", "fix"]) {
         const skillPath = path.join(TMP, ".pi", "skills", stage, "SKILL.md");
         const content = await fs.readFile(skillPath, "utf-8");
-        expect(content).not.toContain("stage_advance");
+        // 163: review SKILL intentionally references stage_advance for reviewConclusion declaration
+        if (stage !== "review") {
+          expect(content).not.toContain("stage_advance");
+        }
         expect(content).not.toContain("loop_check");
         expect(content).not.toContain("nextStage:");
         expect(content).not.toMatch(/pipeline:\s*\{pipelineId\}/);

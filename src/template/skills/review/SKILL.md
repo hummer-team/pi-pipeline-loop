@@ -93,21 +93,24 @@ userInvocable: false
   ## 结论
   - 结论：通过（或 不通过）
   ```
+- **声明协议**：完成审查后**必须**调用 `stage_advance({ reviewConclusion: "pass" | "fail" })` 声明结论。
+  - `fail` 时插件自动路由至 fix 阶段（不经 confirm 门）
+  - `pass` 时进入 confirm 门由人工确认
 
 ## 9. confirm 确认门（Phase 3 — 162）
 
 verify 通过后，confirm 门提供第二道人工/智能确认（由 `stages.review.confirm.mode` 配置）：
 
-- **auto 模式**：verify 通过后自动推进到 completed，无 TUI 对话框。
-- **manual 模式**：verify 通过后弹出 TUI 英文确认对话框：
+- **auto 模式**：verify 通过后自动推进到 completed（`review.nextStage="completed"`），无 TUI 对话框。
+- **manual 模式**：verify 通过后弹出 TUI 英文确认对话框（2 选项）：
   - `Approve & Complete` → 写确认标记，推进到 completed
   - `Reject & Send to Fix` → 路由到 fix 阶段修复
-  - `Cancel` → 停留在 review，等待后续操作
+  - Esc → 停留在 review，等待后续操作（不计次）
 - **smart 模式**：Agent 自评复杂度：
   - 复杂：在审查报告写 `## 智能确认：复杂`，然后调用推进工具并声明 `needConfirm: true` 触发确认门
   - 非复杂：直接调用推进工具自动推进到 completed（audit `confirm_smart_skip`）
 
-**与 verify 的关系**：verify 管报告结论（`结论：通过`），confirm 门管人对代码质量的最终认可。两者独立。
+**与 verify 的关系**：verify 管报告结论存在（`结论：(通过|不通过)`）；声明管流转（`fail`→fix / `pass`→confirm 门）。两者独立。
 
 ---
 ## 交付项

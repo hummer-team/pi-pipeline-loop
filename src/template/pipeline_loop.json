@@ -35,7 +35,7 @@
     "review": {
       "agentPath": ".pi/agents/code-review-agent.md",
       "skillPath": "review/SKILL.md",
-      "nextStage": "fix",
+      "nextStage": "completed",
       "verify": { "require": true },
       "confirm": { "mode": "manual" }
     },

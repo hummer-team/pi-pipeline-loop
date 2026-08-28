@@ -114,7 +114,7 @@ bun add @earendil-works/pi-pipeline
                     "skillPath": "develop/SKILL.md", "nextStage": "review",
                     "verify": { "require": true, "selfVerifySkip": true } },
     "review":     { "agentPath": ".pi/agents/code-review-agent.md",
-                    "skillPath": "review/SKILL.md", "nextStage": "fix" },
+                    "skillPath": "review/SKILL.md", "nextStage": "completed" },
     "fix":        { "agentPath": ".pi/agents/code-review-withfix-agent.md",
                     "skillPath": "fix/SKILL.md", "nextStage": "completed",
                     "verify": { "require": true, "selfVerifySkip": true } },
@@ -192,7 +192,7 @@ bun add @earendil-works/pi-pipeline
       "review": {
         "agentPath": ".pi/agents/code-review-agent.md",
         "skillPath": "review/SKILL.md",
-        "nextStage": "fix",              // review→fix 质量环（review 不通过时进入 fix）
+        "nextStage": "completed",        // review 通过→completed（fail 由 reviewConclusion 声明自动路由至 fix）
         "allowedWritePaths": ["docs/", "doc/", "documentation/"],
         // review 默认启用 verify：`结论：(通过|不通过)` 校验结论存在（review_spec/verify.md）
         "verify": { "require": true },
@@ -423,7 +423,7 @@ verify 通过后，confirm 门提供第二道人工/智能确认。配置：
 | mode | 行为 |
 |------|------|
 | `auto` | 插件自动写双语标记（`## 用户确认：确认无误` + `## User Confirmation: Confirmed`），verify 自然通过，无 TUI 对话框 |
-| `manual` | verify 通过后弹出 TUI 英文确认对话框，用户选择 Approve & Advance / Reject & Rework / Cancel |
+| `manual` | verify 通过后弹出 TUI 英文确认对话框。plan：3 选项（Approve & Advance / Reject & Rework / Cancel）；review：2 选项（Approve & Complete / Reject & Send to Fix），Esc=取消。拒绝=声明 fail 或人工拒绝（同计数语义） |
 | `smart` | Agent 自评复杂度：复杂→写 `## 智能确认：复杂` + `stage_advance({ needConfirm: true })` 触发确认门；非复杂→`stage_advance()` 自动推进（audit `confirm_smart_skip`） |
 
 **拒绝去向矩阵**：
@@ -961,11 +961,13 @@ clarify → plan → develop → review ⇄ fix → review (loop) → completed 
 ```
 
 老项目迁移步骤：
-1. 更新 `pipeline_loop.json` 的 `review.nextStage` 从 `"completed"` 改为 `"fix"`
+1. 确认 `pipeline_loop.json` 的 `review.nextStage` 为 `"completed"`（163 收敛：通过→completed；fail 由 `reviewConclusion` 声明自动路由至 fix）
 2. 更新 `fix.nextStage` 从 `"completed"` 改为 `"review"`（修复后回 review 复验，完成由 review 确认门收敛）
-3. 重跑 `/pipeline-init 0` 刷新模板文件
-4. 重跑 `/pipeline-init 1` 合并重建 verify.md（旧 bun 命令将被补入正确的项目命令）
-5. （可选）启用 `llmExtract: true` 让 LLM 提取更贴合项目技术栈的 verify 规则
+3. （可选）更新 review `verify.md` 规则：`结论：通过` → `结论：(通过|不通过)`（163 规则放宽，verify 仅校验结论存在）
+4. 重跑 `/pipeline-init 0` 刷新模板文件
+5. 重跑 `/pipeline-init 1` 合并重建 verify.md（旧 bun 命令将被补入正确的项目命令）
+6. （可选）启用 `llmExtract: true` 让 LLM 提取更贴合项目技术栈的 verify 规则
+7. review 模型需按 SKILL 声明协议调用 `stage_advance({ reviewConclusion: "pass" | "fail" })` 声明结论
 
 ### 9.7 completionMarker 交互预检机制
 

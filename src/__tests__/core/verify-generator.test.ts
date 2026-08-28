@@ -1067,12 +1067,16 @@ describe("verify-generator", () => {
     }
 
     // develop/review/fix must NOT contain plugin control keywords
+    // Exception: review/SKILL.md is allowed to reference stage_advance for the
+    // reviewConclusion declaration protocol (163 Goal 2).
     const pluginKeywords = ["stage_advance", "loop_check"];
     for (const stage of ["develop", "review", "fix"]) {
       it(`${stage}/SKILL.md does NOT contain plugin control keywords`, async () => {
         const content = await readTemplate(`${stage}/SKILL.md`);
         if (!content) return; // skip if template not found
         for (const kw of pluginKeywords) {
+          // 163: review SKILL intentionally references stage_advance for reviewConclusion declaration
+          if (stage === "review" && kw === "stage_advance") continue;
           expect(content).not.toContain(kw);
         }
         // pipeline marker and nextStage return protocol are also plugin-owned

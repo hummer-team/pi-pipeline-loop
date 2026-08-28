@@ -561,7 +561,7 @@ export async function maybeHandleConfirmGate(
   // Build dialog options based on stage
   const options = currentStage === "plan"
     ? ["Approve & Advance", "Reject & Rework (back to clarify)", "Cancel"]
-    : ["Approve & Complete", "Reject & Send to Fix", "Cancel"];
+    : ["Approve & Complete", "Reject & Send to Fix"];
 
   const choice = await rawSelect(
     `${currentStage} confirmation gate: please select an action`,
