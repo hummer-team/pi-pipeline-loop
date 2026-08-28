@@ -22,6 +22,7 @@ import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, DEFAULT_DECISION_SHORTCUT } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
+import { computeStringHash } from "../utils/hash";
 import { isFrozen } from "./flow-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 
@@ -467,16 +468,44 @@ export function createPromptInjector(config: PipelineConfig): Hook {
         ? base + "\n\n---\n\n" + pluginPromptFull
         : pluginPromptFull;
 
-      // Phase 5 (146): unified prompt snapshot — record after full assembly
+      // Phase 5 (146) + Phase 6 (161): unified prompt snapshot — record after full assembly
       // Snapshot level controlled by config.audit.promptSnapshot (default "full")
+      // "full" mode writes 3 events: combined snapshot + separate base/plugin snapshots
+      // "plugin" mode writes only pluginPromptFull (backward compatible)
+      // "off" skips all snapshots
       const snapshotLevel = config.audit?.promptSnapshot ?? "full";
       if (snapshotLevel !== "off") {
-        const snapshotContent = snapshotLevel === "full" ? systemPrompt : pluginPromptFull;
-        await safeWritePromptSnapshot("prompt_snapshot", {
-          stage: meta.currentStage,
-          pipelineId: meta.pipelineId,
-          source: snapshotSource,
-        }, snapshotContent);
+        if (snapshotLevel === "full") {
+          // Combined snapshot (preserves existing behavior)
+          await safeWritePromptSnapshot("prompt_snapshot", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            source: snapshotSource,
+            prompt_hash: computeStringHash(systemPrompt),
+          }, systemPrompt);
+          // Base prompt snapshot (placeholder when no base exists)
+          const baseContent = base || "(no base system prompt)";
+          await safeWritePromptSnapshot("prompt_snapshot_base", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            source: snapshotSource,
+            prompt_hash: computeStringHash(baseContent),
+          }, baseContent);
+          // Plugin prompt snapshot
+          await safeWritePromptSnapshot("prompt_snapshot_plugin", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            source: snapshotSource,
+            prompt_hash: computeStringHash(pluginPromptFull),
+          }, pluginPromptFull);
+        } else {
+          // Non-full mode (e.g., "plugin"): write only plugin content
+          await safeWritePromptSnapshot("prompt_snapshot", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            source: snapshotSource,
+          }, pluginPromptFull);
+        }
       }
 
       return { systemPrompt };

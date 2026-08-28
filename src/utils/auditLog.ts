@@ -13,6 +13,12 @@
  *   4. `=== PROMPT END ===`
  *   5. Trailing blank line to separate from next event
  *
+ * Event naming convention (Phase 6 / 161_Feat):
+ *   - prompt_snapshot: combined system prompt (base + plugin)
+ *   - prompt_snapshot_base: pi base system prompt only (placeholder when absent)
+ *   - prompt_snapshot_plugin: plugin-injected prompt only
+ *   All three events carry a prompt_hash metadata field for content identification.
+ *
  * All snapshot lines are appended to `{auditDir}/YYYYMMDD_audit.log` alongside
  * regular single-line audit events.
  */

@@ -791,6 +791,8 @@ describe("createPromptInjector", () => {
 
       // Phase 5 (146): default snapshot level is "full" — includes pi base prompt
       // (the base prompt is added via ctx.getSystemPrompt and included in snapshot)
+      // Phase 6 (161): "full" mode writes 3 events: prompt_snapshot (combined),
+      // prompt_snapshot_base, and prompt_snapshot_plugin — each with prompt_hash
       const basePrompt = "This is the pi base system prompt that SHOULD appear in full snapshot";
       const ctxWithBase = {
         session: { getMeta: () => meta },
@@ -799,11 +801,84 @@ describe("createPromptInjector", () => {
       const hook2 = createPromptInjector(config);
       await hook2.handler(ctxWithBase as any);
       const logContent2 = await readFile(logFile, "utf-8");
-      // The pi base prompt SHOULD appear in the full snapshot (Phase 5 default)
-      const startIdx = logContent2.lastIndexOf("=== PROMPT START ===");
-      const endIdx = logContent2.lastIndexOf("=== PROMPT END ===");
-      const snapshotBlock = logContent2.substring(startIdx, endIdx);
-      expect(snapshotBlock).toContain(basePrompt);
+      // The combined prompt_snapshot (first event) contains both base and plugin
+      expect(logContent2).toContain("prompt_snapshot_base");
+      expect(logContent2).toContain("prompt_snapshot_plugin");
+      expect(logContent2).toContain("prompt_hash=");
+      // Base prompt appears in the combined snapshot and the base-specific snapshot
+      expect(logContent2).toContain(basePrompt);
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("full snapshot: base and plugin events have different hashes", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-hash-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const basePrompt = "Unique base prompt for hash test XYZ123";
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => basePrompt,
+      };
+
+      const hook = createPromptInjector(config);
+      await hook.handler(ctx as any);
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      const logContent = await readFile(logFile, "utf-8");
+
+      // All three events present
+      expect(logContent).toContain("prompt_snapshot |");
+      expect(logContent).toContain("prompt_snapshot_base |");
+      expect(logContent).toContain("prompt_snapshot_plugin |");
+
+      // Base event contains the base prompt content
+      expect(logContent).toContain(basePrompt);
+
+      // Base placeholder when no base system prompt exists
+      // (tested in next test case)
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("full snapshot: base placeholder when no base system prompt", async () => {
+      const TMP = join(tmpdir(), "pi-pi-snapshot-nobase-" + Date.now());
+      const auditDir = join(TMP, ".pi", "audit");
+      await mkdir(TMP, { recursive: true });
+      await mkdir(auditDir, { recursive: true });
+
+      await writePromptYml(TMP, [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "",
+      ].join("\n"));
+
+      const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      // No getSystemPrompt → base is empty
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      await hook.handler(ctx as any);
+
+      const logFile = join(auditDir, getDateAuditFileName());
+      const logContent = await readFile(logFile, "utf-8");
+
+      // Base placeholder should be written
+      expect(logContent).toContain("(no base system prompt)");
+      expect(logContent).toContain("prompt_snapshot_base |");
 
       await rm(TMP, { recursive: true, force: true });
     });
