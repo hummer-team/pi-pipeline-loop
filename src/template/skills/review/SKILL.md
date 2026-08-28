@@ -6,21 +6,20 @@ userInvocable: false
 
 ## workflow
 1. **解析输入**：从上级 Agent 传递的任务描述中，提取文件路径 `code-review-agent {file}_commit.md`
-   - 举例：`code-review-agent docs/design/04_feat_fn_ecom_fulfillment_efficiency_plan_commit.md` 则文件为 `04_feat_fn_ecom_fulfillment_efficiency_plan_commit.md`
 2. 查看 `{file}_commit.md` 如果缺失 `plan doc` 中断 review 并输出"缺失plan文档请补充"，如果缺失 `commit id` 则获取 git 最近的 10 条 commit log
 3. 查看 `{file}_commit.md` 文档引用
    - `plan doc`，阅读理解 plan
    - `commit id`，根据 dev commit id 或 fix commit id 完成 review
-4. 按以下步骤 1~10 完成 review
+4. 按以下步骤完成 review
 
 ### 1. 作用域合规
-- 检查 `{file}_commit.md` 的 dev/fix commit id 改动内容是否涉及与 plan 规划无关的文件被意外修改？若存在则标记等级 `High`。
+- 检查 `{file}_commit.md` 的 dev/fix commit id 改动内容是否涉及与 plan 规划无关的文件被意外修改？若存在则标记等级 `High`
 - 注意：如果不在 commit 内容的变动是历史增量修改，review 时请忽略
-- 新增文件是否归属已有包结构？未归入现有包则标记 `Medium`。
+- 新增文件是否是plan文档明确指定？如果非plan则标记`Medium`
 
 ### 2. 类型与空值安全
 <!-- Template-TODO: 替换为项目审查规范 -->
-- 以下规则为通用模板，具体以项目 `.pi/references/{stack}_code_spec.md` 为准（`{stack}` 见 develop SKILL 占位）。
+- 以下规则为通用模板，具体以项目 `.pi/references/{stack}_code_spec.md` 为准（`{stack}` 见 develop SKILL 占位）
 - **禁止裸类型（raw type）**：泛型类必须指定类型参数。
 - **可空类型正确处理**：返回可能为空的值时，必须对空值做显式处理（如提前返回、默认值、断言），禁止未检查直接使用。
 - **公共方法参数非空检查**：核心 public 方法入口应对关键参数做 `null`/空值检查。
@@ -56,19 +55,23 @@ userInvocable: false
 ### 问题/等级/改进建议
 1. 问题等级定义
    - **Blocker**:
-     - 没有实现 plan 定义的 phase
+     - 遗漏 plan 定义的 phase
      - 内存泄漏、OOM
    - **High**：
      - 未完全遵循 plan 文档定义的 Task
    - **Medium**:
-     - 不影响核心功能正常运行，仅局部场景体验变差
+     - 逻辑覆盖plan不完整
+     - 实现边界不清晰，代码复杂，不易维护
+     - 部分场景可能影响功能
    - **LOW**
+     - 非功能问题 
      - 仅格式、命名、风格、可读性问题
 2. **Blocker**,**High**,**Medium** 的问题标记为 `待修复`，**LOW** 的问题不需要修复
 
 ### Review 结果输出目录 `docs/review`
 1. 文件命名格式：`code_review_{file}.md`
    - 多轮复验更新同一文件，仅保留最终结论（复验历史由 git 追溯）
+   - 多轮复验多新问题则追加到review文档中
 2. **必须遵循**文件内容模板：
    ```
    # Summary
