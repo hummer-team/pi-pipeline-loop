@@ -3,6 +3,8 @@
   "llmExtract": true,
   "output": { "pipelineStage": true },
   "decisionShortcutKey": "ctrl+enter",
+  "maxConfirmRejections": 5,
+  "confirmOverflow": "ask",
   "protect": {
     "gitignore": true,
     "ask":true,
@@ -21,7 +23,8 @@
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
       "skillPath": "plan/SKILL.md",
       "nextStage": "develop",
-      "verify": { "require": true }
+      "verify": { "require": true },
+      "confirm": { "mode": "manual" }
     },
     "develop": {
       "agentPath": ".pi/agents/develop-agent.md",
@@ -33,7 +36,8 @@
       "agentPath": ".pi/agents/code-review-agent.md",
       "skillPath": "review/SKILL.md",
       "nextStage": "fix",
-      "verify": { "require": true }
+      "verify": { "require": true },
+      "confirm": { "mode": "manual" }
     },
     "fix": {
       "agentPath": ".pi/agents/code-review-withfix-agent.md",

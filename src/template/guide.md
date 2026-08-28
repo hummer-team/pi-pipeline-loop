@@ -370,35 +370,73 @@ rules:
 
 ## 5. 7 阶段流转说明
 
-流水线阶段序列（质量环：review → fix → completed）：
+流水线阶段序列（质量环：review ⇄ fix，review 确认通过→completed）：
 
 ```text
 clarify → plan → develop → review ⇄ fix → completed
-                ↑ selfVerifySkip         ↑ fix.nextStage = completed
+                ↑ selfVerifySkip   ↑ confirm 门（manual）
                 └── 模型自验跳过或插件兜底 ──┘
 ```
 
 | 阶段 | 目标 | 工具权限 |
 |------|------|---------|
 | **clarify** | 分析需求文档，识别歧义，提出澄清问题；获得用户 full-und? 确认后完成。full-und? 确认标记（`## 模型确认`）落盘后由 agent_settled 自动验证推进 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + completionMarker 预检） |
-| **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证） |
+| **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
 | **develop** | 按规划编写代码，运行测试，产出 _commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
-| **review** | 审查代码质量，产出 code review 报告；`结论：通过` 由 verify 规则强校验；通过→completed 或 不通过→fix（hook 唤醒模型修复后重新验证） | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 `结论：通过`） |
-| **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→completed | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
+| **review** | 审查代码质量，产出 code review 报告；verify 校验 `结论：通过`；confirm 门通过后→completed / 拒绝→fix | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
+| **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→review 复验 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **awaiting_human** | 流水线冻结，等待人工介入（仅用于兜底） | read（受限） |
 | **completed** | 终端状态，流水线结束 | 无 |
 
-**阶段交接流程**：验证模式为 `hook` 时，Agent 完成工作后进入 idle 状态，插件在 `agent_settled` hook 自动执行验证，通过则自动进入下一阶段。
+**阶段交接流程**：验证模式为 `hook` 时，Agent 完成工作后进入 idle 状态，插件在 `agent_settled` hook 自动执行验证，通过则自动进入下一阶段。配置了 confirm 门的阶段（plan/review），verify 通过后还需通过 confirm 门（TUI 确认对话框）才能推进。
 
 **selfVerifySkip 语义**：develop/fix 配置 `verify.selfVerifySkip: true` 时，插件根据工具调用记录判定模型是否已在本 stage 成功执行过相同 requiredCommand（命令 token 前缀匹配，`./mvnw`/`mvnw` 归一化）。命中且 exitCode=0 则跳过重执行、仅写 audit（`method:"self_verified"`）；此后若有 write/edit 成功记录则失效强制重验。Phase 6 (139) 新增 VERIFIED_COMMANDS 协议识别——子 agent 通过 task 返回的 `VERIFIED_COMMANDS: cmd1,cmd2` 行也计入已验证命令集合。
 
 **质量环**（review ⇄ fix → completed）：
-- review 报告有 Blocker/High/Medium → `stage_advance(nextStage:"fix")` → 修复后 → completed
-- review 报告通过 → `stage_advance` → completed
-- fix 复验通过 → `stage_advance` → completed
+- review 报告有 Blocker/High/Medium → confirm 门拒绝→fix → 修复后→review 复验
+- review confirm 门通过 → completed
+- fix 复验通过 → review（再次 confirm 门）
 - `loopCycleCount` 跟踪 review/fix 回环次数 → 达到 `maxLoopCycles` → 流水线终止
 
-> **fix.nextStage 修正 (139)**：`fix.nextStage` 已改为 `"completed"`，消除 fix→develop 空转回环。已初始化项目请更新 `pipeline_loop.json` 的 `fix.nextStage` 为 `"completed"`。
+> **fix.nextStage 修正 (162)**：`fix.nextStage` 为 `"review"`，修复后回 review 复验，由 review confirm 门收敛至 completed。
+
+### 5.1 confirm 确认门
+
+verify 通过后，confirm 门提供第二道人工/智能确认。配置：
+
+```json
+"stages": {
+  "plan": {
+    "confirm": { "mode": "manual", "maxRejections": 5 }
+  },
+  "review": {
+    "confirm": { "mode": "manual" }
+  }
+},
+"maxConfirmRejections": 5,
+"confirmOverflow": "ask"
+```
+
+**三模式行为**：
+
+| mode | 行为 |
+|------|------|
+| `auto` | 插件自动写双语标记（`## 用户确认：确认无误` + `## User Confirmation: Confirmed`），verify 自然通过，无 TUI 对话框 |
+| `manual` | verify 通过后弹出 TUI 英文确认对话框，用户选择 Approve & Advance / Reject & Rework / Cancel |
+| `smart` | Agent 自评复杂度：复杂→写 `## 智能确认：复杂` + `stage_advance({ needConfirm: true })` 触发确认门；非复杂→`stage_advance()` 自动推进（audit `confirm_smart_skip`） |
+
+**拒绝去向矩阵**：
+- plan 拒绝 → clarify（重新澄清）
+- review 拒绝 → fix（修复后回 review 复验）
+- review 确认通过 → completed
+
+**循环上限**：`confirmRejections` 独立计数（不复用 maxLoops/maxVerifyAttempts）。超限行为由 `confirmOverflow` 控制：
+- `"ask"`（默认）：弹出 Continue/Terminate 选择
+- `"terminate"`：直接 `flowState: "aborted"`
+
+**计数器生命周期**：start/restart/resume 复位；plan→clarify→plan 往返保留计数；review→fix→review 往返保留计数。
+
+**与 verify 关系**：confirm 门在 verify 之后触发。plan manual/smart 模式下，verify 的标记规则（`^## (用户确认|User Confirmation)`）通过 `deferContentPatterns` 延后，不阻塞 verify（C2 顺序修复）。`pipeline_verify` 工具对 confirm 非 auto 阶段返回 `pending`，引导 agent 调用 `stage_advance`（防绕过，audit `confirm_defer_to_stage_advance`）。
 
 ---
 

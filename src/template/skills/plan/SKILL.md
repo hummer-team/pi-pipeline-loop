@@ -52,12 +52,20 @@ userInvocable: false
 ### 7. not commit design and plan docs
 1. 设计、规划文档 local 存储，不需要 commit
 
-### 8. 用户确认（方案 Z — 文档留痕式确认）
-- **确认交互**：提示用户在 `_plan.md` 末尾追加以下之一：
-  - `## 用户确认：确认无误` — 表示通过
-  - `## 调整意见` 节 — 表示需要调整
-- **判定规则**：**必须以 Read 检测文档标记为准，聊天文本不作为确认依据**
-- 检测到 `## 用户确认` 标记后：补写确认节（时间戳）
+### 8. confirm 确认门（Phase 3 — 162）
+
+插件在 verify 通过后提供第二道确认门，由 `stages.plan.confirm.mode` 配置控制：
+
+- **auto 模式**：插件自动写双语标记（`## 用户确认：确认无误` + `## User Confirmation: Confirmed`），无 TUI 对话框，直接推进。
+- **manual 模式**：verify 通过后弹出 TUI 英文确认对话框：
+  - `Approve & Advance` → 写双语标记，推进到 develop
+  - `Reject & Rework (back to clarify)` → 路由回 clarify 重新澄清
+  - `Cancel` → 停留在 plan，等待后续操作
+- **smart 模式**：Agent 自评复杂度：
+  - 复杂：在规划文档写 `## 智能确认：复杂`，然后调用 `stage_advance({ needConfirm: true })` 触发确认门
+  - 非复杂：直接调用 `stage_advance()` 自动推进（audit `confirm_smart_skip`）
+
+**标记规则**：confirm 标记（`## 用户确认` 或 `## User Confirmation`）由插件自动写入，agent 无需手动添加。
 
 ---
 ## 交付项
