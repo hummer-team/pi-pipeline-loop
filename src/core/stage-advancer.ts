@@ -92,13 +92,29 @@ async function resolveStageDocPath(
     return resolvePlanDocPath(config, meta);
   }
   if (stage === "review") {
-    // Review reports live in docs/review/ — find the latest one
+    // Review reports live in docs/review/ — find the latest one by mtime (aligned with file-verifier.ts:151-164)
     const reviewDir = config.projectRoot + "/docs/review";
     try {
       const entries = await fs.readdir(reviewDir);
-      const reviewFiles = entries.filter((e) => e.startsWith("code_review_") && e.endsWith(".md")).sort();
-      if (reviewFiles.length > 0) {
-        return reviewDir + "/" + reviewFiles[reviewFiles.length - 1];
+      const reviewFiles = entries.filter((e) => e.startsWith("code_review_") && e.endsWith(".md"));
+      if (reviewFiles.length === 0) return null;
+
+      // Stat all files and pick the one with the newest mtime
+      let bestFile: string | null = null;
+      let bestMtime = 0;
+      for (const file of reviewFiles) {
+        try {
+          const stat = await fs.stat(reviewDir + "/" + file);
+          if (stat.mtimeMs > bestMtime) {
+            bestMtime = stat.mtimeMs;
+            bestFile = file;
+          }
+        } catch {
+          // stat failure — treat mtime as 0 (will not be selected unless it's the only file)
+        }
+      }
+      if (bestFile) {
+        return reviewDir + "/" + bestFile;
       }
     } catch {
       // Directory doesn't exist yet
@@ -307,6 +323,7 @@ async function routeConfirmReject(
   fromStage: PipelineStage,
   toStage: PipelineStage,
   nextCount: number,
+  opts?: { reason?: string; auditEvent?: string },
 ): Promise<void> {
   // Clear old confirmation markers from the source stage doc to prevent
   // bypass on re-entry (e.g. plan→clarify→plan round trip).
@@ -352,11 +369,14 @@ async function routeConfirmReject(
     confirmRejections: nextCount,
   });
 
-  await writeAuditLog("confirm_rejected", {
+  // Use custom audit event if provided (e.g. "review_auto_route_fix" to avoid double-writing)
+  const auditEvent = opts?.auditEvent ?? "confirm_rejected";
+  await writeAuditLog(auditEvent, {
     pipelineId: meta.pipelineId,
     stage: fromStage,
     toStage,
     confirmRejections: String(nextCount),
+    ...(opts?.reason ? { reason: opts.reason } : {}),
   });
 
   // UI transition
@@ -364,10 +384,11 @@ async function routeConfirmReject(
     ctx.ui.transition(ctx, fromStage, toStage);
   }
 
-  // Wake-up message (same pattern as autoAdvanceAfterVerify)
+  // Wake-up message: use custom reason if provided, otherwise default message
   if (ctx.pi?.sendUserMessage) {
+    const reason = opts?.reason ?? "rejected by confirm gate";
     ctx.pi.sendUserMessage(
-      `Stage "${fromStage}" rejected by confirm gate. Routing to "${toStage}" for rework.`,
+      `Stage "${fromStage}" ${reason}. Routing to "${toStage}" for rework.`,
     );
   }
 }
@@ -699,6 +720,15 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             "human confirmation before advancing. Omit/false advances automatically " +
             "(recorded as confirm_smart_skip in the audit log).",
         },
+        reviewConclusion: {
+          type: "string",
+          enum: ["pass", "fail"],
+          description:
+            "Review verdict declaration (review stage only). " +
+            "\"fail\" auto-routes to fix stage without going through the confirm gate. " +
+            "\"pass\" proceeds to the original verify + confirm gate flow. " +
+            "Omit to fall back to the default verify + manual confirm gate behavior.",
+        },
       },
       required: [],
     },
@@ -773,6 +803,62 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           currentStage,
         };
       }
+
+      // (c2) Review conclusion declaration handling (163 Goal 2)
+      const argReviewConclusion = typeof args.reviewConclusion === "string" ? args.reviewConclusion.trim() : "";
+      if (argReviewConclusion && currentStage !== "review") {
+        // reviewConclusion passed in non-review stage — ignore and audit
+        await writeAuditLog("review_conclusion_ignored", {
+          pipelineId: meta.pipelineId,
+          stage: currentStage,
+          reviewConclusion: argReviewConclusion,
+          reason: "reviewConclusion only applies to review stage",
+        }, "warn");
+        // Fall through to original flow (do not return)
+      } else if (currentStage === "review" && argReviewConclusion === "fail") {
+        // Review declared fail → auto-route to fix (bypasses verify + confirm gate)
+        const nextCount = (meta.confirmRejections ?? 0) + 1;
+        const maxRejections = resolveConfirmMaxRejections(config, stageConfig);
+
+        if (nextCount > maxRejections) {
+          // Overflow — delegate to shared overflow handler
+          const overflowResult = await handleConfirmOverflow(config, ctx, meta);
+
+          if (overflowResult === "terminate") {
+            ctx.session.updateMeta({
+              flowState: "aborted",
+              terminateReason: "review_auto_route_overflow",
+            });
+            await writeAuditLog("review_auto_route_overflow_terminate", {
+              pipelineId: meta.pipelineId,
+              stage: currentStage,
+              confirmRejections: String(nextCount),
+            });
+            ui.notify(ctx, "Pipeline aborted: review auto-route rejection limit exceeded.");
+            return { success: true, message: "Pipeline aborted: review rejection limit exceeded.", currentStage };
+          }
+          if (overflowResult === "pending") {
+            ui.notify(ctx, "Review auto-route overflow. Awaiting UI interaction.");
+            return { success: true, message: "Review auto-route overflow. Awaiting UI.", currentStage };
+          }
+          // overflowResult === "continue": reset counter to 0 and route
+          await routeConfirmReject(config, ctx, meta, "review", "fix", 0, {
+            reason: "reviewConclusion declared fail (auto, overflow continue)",
+            auditEvent: "review_auto_route_fix",
+          });
+          const updatedMeta = ctx.session.getMeta() as SessionMeta;
+          return { success: true, message: "Review declared fail. Routed to fix.", currentStage: updatedMeta.currentStage };
+        }
+
+        // Not exceeded — route to fix with incremented counter
+        await routeConfirmReject(config, ctx, meta, "review", "fix", nextCount, {
+          reason: "reviewConclusion declared fail (auto)",
+          auditEvent: "review_auto_route_fix",
+        });
+        const updatedMeta = ctx.session.getMeta() as SessionMeta;
+        return { success: true, message: "Review declared fail. Routed to fix.", currentStage: updatedMeta.currentStage };
+      }
+      // reviewConclusion === "pass" or not provided → fall through to original verify + confirm gate flow
 
       // (d) Verification gate: run when stage requires it (unless skipVerify is valid)
       const argSkipVerify = args.skipVerify === true;

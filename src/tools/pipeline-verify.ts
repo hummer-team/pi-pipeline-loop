@@ -177,11 +177,15 @@ export function createPipelineVerify(
             stage: stageName,
             confirmMode: stageConfig.confirm.mode,
           });
+          // 163 Goal 2: in review scenario, guide the agent to declare reviewConclusion
+          const reviewGuidance = stageName === "review"
+            ? ' Call stage_advance({ reviewConclusion: "pass" | "fail" }) to declare the review verdict and advance.'
+            : "";
           return {
             success: false,
             passed: true,
             pending: true,
-            message: `Stage "${stageName}" uses confirm gate (mode=${stageConfig.confirm.mode}). Call stage_advance to confirm and advance.`,
+            message: `Stage "${stageName}" uses confirm gate (mode=${stageConfig.confirm.mode}). Call stage_advance to confirm and advance.${reviewGuidance}`,
           };
         }
 

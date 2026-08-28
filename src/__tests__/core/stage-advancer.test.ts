@@ -746,3 +746,207 @@ describe("Phase 4 (162): stage_advance confirm gate integration", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── Phase 1 (163): reviewConclusion declaration auto-route ──────────────────
+
+describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
+  function createCtxWithFullUI(meta: any, selectReturn?: string) {
+    const notifications: string[] = [];
+    const wakeMessages: string[] = [];
+    return {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => {
+          const merged = { ...meta, ...m };
+          Object.assign(meta, merged);
+          return merged;
+        },
+      },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      ui: {
+        notify: (msg: string) => { notifications.push(msg); },
+        select: selectReturn !== undefined
+          ? async () => selectReturn
+          : async () => undefined,
+        transition: () => {},
+      },
+      pi: { sendUserMessage: (msg: string) => { wakeMessages.push(msg); } },
+      notifications,
+      wakeMessages,
+    };
+  }
+
+  function makeReviewConfig(root: string, confirmMode?: "auto" | "manual" | "smart") {
+    const base = makeTestConfig({ projectRoot: root });
+    const reviewStage = {
+      ...base.stages.review,
+      nextStage: "completed" as PipelineStage,
+      verify: { require: false },
+      ...(confirmMode ? { confirm: { mode: confirmMode } } : {}),
+    };
+    return {
+      ...base,
+      stages: { ...base.stages, review: reviewStage as typeof base.stages.review },
+    };
+  }
+
+  it("review + reviewConclusion:'fail' → routes to fix + confirmRejections=1 + audit review_auto_route_fix", async () => {
+    const stageTmp = join(tmpdir(), "pi-163-fail-route-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeReviewConfig(stageTmp);
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+    const ctx = createCtxWithFullUI(meta);
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("Review declared fail");
+    expect(result.currentStage).toBe("fix");
+    expect(meta.currentStage).toBe("fix");
+    expect(meta.confirmRejections).toBe(1);
+    expect(meta.advancedThisTurn).toBe(true);
+
+    // Audit: single review_auto_route_fix event, NOT confirm_rejected
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("review_auto_route_fix");
+    expect(logContent).not.toContain("confirm_rejected");
+
+    // Wake message contains the reason
+    expect(ctx.wakeMessages.length).toBe(1);
+    expect(ctx.wakeMessages[0]).toContain("reviewConclusion declared fail");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("review + reviewConclusion:'pass' → falls through to original flow (no auto-route)", async () => {
+    const stageTmp = join(tmpdir(), "pi-163-pass-flow-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeReviewConfig(stageTmp);
+    // review stage has verify.require=false, so it advances normally
+    const meta = makeTestMeta({ currentStage: "review" });
+    const ctx = createCtxWithFullUI(meta);
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "pass" }, ctx as any)) as any;
+
+    // Should advance normally (pass falls through to original flow)
+    expect(result.success).toBe(true);
+    // No review_auto_route_fix audit — pass does not trigger auto-route
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).not.toContain("review_auto_route_fix");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("non-review stage + reviewConclusion → ignored + audit review_conclusion_ignored", async () => {
+    const stageTmp = join(tmpdir(), "pi-163-ignore-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    config.stages["clarify"] = { ...config.stages["clarify"], nextStage: "plan" };
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createCtxWithFullUI(meta);
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    // Should advance normally (reviewConclusion ignored for non-review stage)
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("plan");
+
+    // Audit: review_conclusion_ignored
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("review_conclusion_ignored");
+    expect(logContent).not.toContain("review_auto_route_fix");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("reviewConclusion parameter declared in tool schema", () => {
+    const tool = createStageAdvancer(makeTestConfig());
+    const params = tool.parameters as Record<string, any>;
+    expect(params.properties?.reviewConclusion).toBeDefined();
+    expect(params.properties.reviewConclusion.type).toBe("string");
+    expect(params.properties.reviewConclusion.enum).toEqual(["pass", "fail"]);
+  });
+
+  it("fail consecutive overflow: ask + Continue → reset counter to 0 and route", async () => {
+    const stageTmp = join(tmpdir(), "pi-163-overflow-continue-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = {
+      ...makeReviewConfig(stageTmp),
+      maxConfirmRejections: 2,
+      confirmOverflow: "ask" as const,
+    };
+    // Set confirmRejections at the limit (2), so nextCount=3 exceeds max=2
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 2 });
+    // Overflow dialog → select "Continue"
+    const ctx = createCtxWithFullUI(meta, "Continue");
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.currentStage).toBe("fix");
+    // Counter reset to 0 after overflow Continue
+    expect(meta.confirmRejections).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("fail consecutive overflow: terminate → aborted", async () => {
+    const stageTmp = join(tmpdir(), "pi-163-overflow-terminate-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = {
+      ...makeReviewConfig(stageTmp),
+      maxConfirmRejections: 1,
+      confirmOverflow: "terminate" as const,
+    };
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 1 });
+    const ctx = createCtxWithFullUI(meta);
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("aborted");
+    expect(meta.flowState).toBe("aborted");
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("review_auto_route_overflow_terminate");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("old call without reviewConclusion → behavior unchanged (regression)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    config.stages["clarify"] = { ...config.stages["clarify"], nextStage: "plan" };
+
+    const ctx = createCtxWithFullUI(meta);
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("plan");
+  });
+});

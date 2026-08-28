@@ -315,6 +315,62 @@ describe("Phase 3 (148): pipeline_verify skipped on config error", () => {
   });
 });
 
+// ── Phase 1 (163): pipeline_verify review pending message guidance ──────────
+
+describe("Phase 1 (163): pipeline_verify review pending message includes reviewConclusion guidance", () => {
+  it("review + confirm non-auto + verify pass → pending message includes reviewConclusion guidance", async () => {
+    const stageTmp = join(tmpdir(), "pi-163-verify-review-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp, auditDir: ".pi/audit" });
+    config.stages["review"] = {
+      ...config.stages["review"],
+      nextStage: "completed" as PipelineStage,
+      verify: { require: true },
+      allowedWritePaths: ["docs/"],
+      confirm: { mode: "manual" },
+    };
+
+    // Create review doc
+    const reviewDir = join(stageTmp, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_01_Feature.md"), "# Review\n结论：通过\n", "utf-8");
+
+    // Create verify.md that passes
+    const refDir = join(stageTmp, ".pi", "references", "review_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(
+      join(refDir, "verify.md"),
+      "---\nrequiredFiles:\n  - \"docs/review/code_review_01_Feature.md\"\n---\nVerify review.",
+      "utf-8",
+    );
+
+    const meta = makeTestMeta({ currentStage: "review" });
+    const ctx = {
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => Object.assign(meta, m),
+      },
+      ui: { notify: () => {} },
+    };
+
+    const tool = createPipelineVerify(config);
+    const result = await tool.execute({ stage: "review" }, ctx as any) as Record<string, unknown>;
+
+    // Should return pending with reviewConclusion guidance
+    expect(result.success).toBe(false);
+    expect(result.pending).toBe(true);
+    expect(result.message as string).toContain("reviewConclusion");
+    expect(result.message as string).toContain("pass");
+    expect(result.message as string).toContain("fail");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
 describe("Phase 4 (162): pipeline_verify confirm gate bypass prevention", () => {
   it("confirm non-auto + verify pass → returns pending + confirm_defer_to_stage_advance audit", async () => {
     const stageTmp = join(tmpdir(), "pi-verify-defer-" + Date.now());

@@ -79,6 +79,17 @@ export function createAgentSettled(
         return;
       }
 
+      // 163 Goal 2: audit when review stage settles without a reviewConclusion declaration.
+      // The model should have called stage_advance({ reviewConclusion }) explicitly.
+      // Falling back to verify + manual confirm gate is safe (no deadlock) but suboptimal.
+      if (meta.currentStage === "review") {
+        await writeAuditLog("review_declaration_missing", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          reason: "no stage_advance reviewConclusion declaration, falling back to verify + confirm gate",
+        }, "info");
+      }
+
       // Phase 4 (162): confirm gate wiring.
       const ctxWithPi = { ...ctx, pi: (ctx as RuntimeCtx).pi };
 
