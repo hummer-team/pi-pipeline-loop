@@ -11,24 +11,25 @@ userInvocable: false
 3. 查看 `{file}_commit.md` 文档引用
    - `plan doc`，阅读理解 plan
    - `commit id`，根据 dev commit id 或 fix commit id 完成 review
-4. 按以下章节步骤 0~7 完成 review
+4. 按以下步骤 1~10 完成 review
 
-## 0. 作用域合规
+### 1. 作用域合规
 - 检查 `{file}_commit.md` 的 dev/fix commit id 改动内容是否涉及与 plan 规划无关的文件被意外修改？若存在则标记等级 `High`。
 - 注意：如果不在 commit 内容的变动是历史增量修改，review 时请忽略
 - 新增文件是否归属已有包结构？未归入现有包则标记 `Medium`。
 
-## 1. 类型与空值安全
+### 2. 类型与空值安全
 <!-- Template-TODO: 替换为项目审查规范 -->
+- 以下规则为通用模板，具体以项目 `.pi/references/{stack}_code_spec.md` 为准（`{stack}` 见 develop SKILL 占位）。
 - **禁止裸类型（raw type）**：泛型类必须指定类型参数。
-- **Optional 正确使用**：返回 `Optional` 时必须用 `orElseThrow` 或 `ifPresent` 处理，禁止直接 `Optional.get()` 无检查。
-- **公共方法参数非空检查**：核心 service/public 方法入口应对关键参数做 `null` 检查或使用 `@NonNull` 注解。
+- **可空类型正确处理**：返回可能为空的值时，必须对空值做显式处理（如提前返回、默认值、断言），禁止未检查直接使用。
+- **公共方法参数非空检查**：核心 public 方法入口应对关键参数做 `null`/空值检查。
 
-## 2. 回归与副作用检测
+### 3. 回归与副作用检测
 - **方法签名兼容**：修改后的 public/protected 方法签名必须与所有调用方兼容。
-<!-- Template-TODO: 替换为项目特有的回归检测规则（如 JPA 实体变更、定时任务调度影响等） -->
+<!-- Template-TODO: 替换为项目特有的回归检测规则（如 ORM 实体变更、定时任务调度影响等） -->
 
-## 3. 代码质量
+### 4. 代码质量
 - **函数过长**：单个方法超过 100 行且无强耦合理由，标记 `Medium`。
 - **命名不规范**：变量/方法命名中性化、无明确业务含义，标记 `Low`。
 - **鲁棒性**：
@@ -38,20 +39,20 @@ userInvocable: false
 - **代码重复**：违反 DRY 原则。
 <!-- Template-TODO: 替换为项目特有的代码质量规则（如外部调用规范等） -->
 
-## 4. 日志规范
+### 5. 日志规范
 <!-- Template-TODO: 替换为项目审查规范 -->
-- **框架统一**：使用项目约定的日志框架，禁止 `System.out.println` / `console.log`。
+- **框架统一**：使用项目约定的日志框架，禁止直接使用标准输出流。
 - **日志级别**：
   - 方法入口/出口与核心业务流程 → `info`
   - 中间过程数据 → `debug`
   - 异常 → `error`
 - **日志内容**：关键日志必须包含上下文信息，异常日志必须包含错误堆栈。
 
-## 5. 配置安全
+### 6. 配置安全
 - 禁止在代码中硬编码密钥、密码、Token 等敏感信息。
 <!-- Template-TODO: 替换为项目特有的配置安全规则 -->
 
-## 6. 输出格式
+### 7. 输出格式
 ### 问题/等级/改进建议
 1. 问题等级定义
    - **Blocker**:
@@ -66,7 +67,8 @@ userInvocable: false
 2. **Blocker**,**High**,**Medium** 的问题标记为 `待修复`，**LOW** 的问题不需要修复
 
 ### Review 结果输出目录 `docs/review`
-1. 文件命名格式：`code_review_{file}_plan.md`
+1. 文件命名格式：`code_review_{file}.md`
+   - 多轮复验更新同一文件，仅保留最终结论（复验历史由 git 追溯）
 2. **必须遵循**文件内容模板：
    ```
    # Summary
@@ -82,33 +84,20 @@ userInvocable: false
    - 改进建议：再次根据规划实施 phase x
    ```
 
-## 7. not commit review doc
+### 8. not commit review doc
 1. 所有 review 相关文档，模板 local 存储不需要 commit
 
-## 8. 输出格式补充
-- §6 输出格式模板末尾补"结论：通过/不通过"：
+### 9. 结论标记
+- 输出格式模板（步骤 7）末尾须补"结论：通过/不通过"：
   ```
   ## 结论
   - 结论：通过（或 不通过）
   ```
-- **声明协议**：完成审查后**必须**调用 `stage_advance({ reviewConclusion: "pass" | "fail" })` 声明结论。
-  - `fail` 时插件自动路由至 fix 阶段（不经 confirm 门）
-  - `pass` 时进入 confirm 门由人工确认
 
-## 9. confirm 确认门（Phase 3 — 162）
-
-verify 通过后，confirm 门提供第二道人工/智能确认（由 `stages.review.confirm.mode` 配置）：
-
-- **auto 模式**：verify 通过后自动推进到 completed（`review.nextStage="completed"`），无 TUI 对话框。
-- **manual 模式**：verify 通过后弹出 TUI 英文确认对话框（2 选项）：
-  - `Approve & Complete` → 写确认标记，推进到 completed
-  - `Reject & Send to Fix` → 路由到 fix 阶段修复
-  - Esc → 停留在 review，等待后续操作（不计次）
-- **smart 模式**：Agent 自评复杂度：
-  - 复杂：在审查报告写 `## 智能确认：复杂`，然后调用推进工具并声明 `needConfirm: true` 触发确认门
-  - 非复杂：直接调用推进工具自动推进到 completed（audit `confirm_smart_skip`）
-
-**与 verify 的关系**：verify 管报告结论存在（`结论：(通过|不通过)`）；声明管流转（`fail`→fix / `pass`→confirm 门）。两者独立。
+### 10. 声明式交接
+- 完成审查后**必须**声明审查结论（"通过"或"不通过"），由插件据此路由：
+  - `fail`（不通过）→ 自动进入 fix 修复阶段
+  - `pass`（通过）→ 进入 confirm 门由人工确认
 
 ---
 ## 交付项
