@@ -5,8 +5,6 @@ userInvocable: false
 ---
 
 ## workflow
-当你被其他 Agent 触发时，你会收到一个**任务描述**，其中通常包含待审查的文件路径或 commit 信息。
-
 1. **解析输入**：从上级 Agent 传递的任务描述中，提取文件路径 `code-review-agent {file}_commit.md`
    - 举例：`code-review-agent docs/design/04_feat_fn_ecom_fulfillment_efficiency_plan_commit.md` 则文件为 `04_feat_fn_ecom_fulfillment_efficiency_plan_commit.md`
 2. 查看 `{file}_commit.md` 如果缺失 `plan doc` 中断 review 并输出"缺失plan文档请补充"，如果缺失 `commit id` 则获取 git 最近的 10 条 commit log

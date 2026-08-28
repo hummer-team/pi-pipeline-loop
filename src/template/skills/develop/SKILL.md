@@ -5,6 +5,10 @@ userInvocable: false
 ---
 
 ## workflow
+### 必须遵循
+1. **plan** 严格遵循 plan doc Phase 顺序完成规划的所有任务(不能跳跃，遗漏)
+2. **技术规范**：read `.pi/references/frontend_ts_code_spec.md`
+
 ### phase 开发流程
 1. **前置校验**：
    - 检查规划文件是否存在，不存在则提示用户并终止。
@@ -23,9 +27,6 @@ userInvocable: false
    - 参考模板 `@.pi/references/develop_commit_template.md`
    - 新建 `docs/design/{plan文件名}_commit.md`，把 git commit id 追加到 `dev commit id` 行
 
-### 严禁
-跳过 Phase 或一次性实现多个 Phase。
-
 ### 交付规范
 每次代码交付必须包含以下结构：
 ```
@@ -35,17 +36,6 @@ userInvocable: false
 ✅ 测试用例：（列出 A/B/C 测试场景及预期结果）
 ⚠️ 已知风险：（如有潜在副作用，必须说明）
 ```
----
-## 开发规范
-### 0. 每个 phase 完成必须 commit，Git 规范
-- 分支命名：`feature/xxx` / `fix/xxx`
-- Commit 格式：`<type>(<scope>): <subject>`（type: feat/fix/docs/refactor/test/chore）
-- 基于 `rebase main` 更新，冲突时**切勿自动强行合并**，必须报告并请求干预。
-
----
-### 1. 通用技术原则
-- `@.pi/references/code_spec.md`
-
 ---
 ## 交付项
 <!-- Template-TODO: 补充项目业务交付项（插件默认交付项如 build/test/commit/pipeline 标记由插件注入段提供） -->
