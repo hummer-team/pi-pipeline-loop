@@ -591,10 +591,12 @@ describe("verify-integration", () => {
       expect(lastUpdate.currentStage).toBe("develop");
     });
 
-    it("plan verify: missing '## 用户确认' marker triggers human-gate (Esc → stays in plan)", async () => {
+    // Phase 3 (162): legacy plan human-gate removed. Missing marker now goes through
+    // normal verify flow → verify fails → stays in plan with verifyFailures set.
+    it("plan verify: missing '## 用户确认' marker fails verification (stays in plan)", async () => {
       const config = makeConfigWithVerify(["plan"]);
 
-      // Create verify.md with fileContentPattern for plan human-review gate
+      // Create verify.md with fileContentPattern for plan confirm marker
       const verifyDir = path.join(TMP, ".pi", "references", "plan_spec");
       await fs.mkdir(verifyDir, { recursive: true });
       await fs.writeFile(
@@ -616,10 +618,11 @@ describe("verify-integration", () => {
       const hook = createAgentSettled(config);
       await hook.handler(ctx as any);
 
-      // Gate triggers (marker missing) → Esc (no selectReturn set) → stays in plan
+      // Without the legacy gate, normal verify flow runs → fails → stays in plan
       expect(meta.currentStage).toBe("plan");
-      // No verifyFailures set (gate handled before normal verify flow)
-      expect(meta.verifyFailures).toBeUndefined();
+      // verifyFailures now set (verify failed due to missing marker)
+      expect(meta.verifyFailures).toBeDefined();
+      expect(meta.verifyFailures!.length).toBeGreaterThan(0);
     });
   });
 

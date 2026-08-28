@@ -9,7 +9,7 @@ import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { runVerification, precheckCompletionMarker } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
-import { applyVerifyFail, autoAdvanceAfterVerify, maybeHandlePlanHumanGate } from "./verify-advance";
+import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
 import { isFrozen } from "./flow-state";
@@ -73,13 +73,9 @@ export function createAgentSettled(
         return;
       }
 
-      // Plan human-gate pre-check: if triggered, handles confirm dialog and returns
-      // without entering normal verify flow (no verifyAttempts increment, no ⚠ verify failed)
+      // Phase 3 (162): legacy plan human-gate removed.
+      // Confirm gate will be wired here in Phase 4.
       const ctxWithPi = { ...ctx, pi: (ctx as RuntimeCtx).pi };
-      const gateResult = await maybeHandlePlanHumanGate(config, ctxWithPi, meta, ui);
-      if (gateResult.result === "handled") {
-        return;
-      }
 
       // 2. Auto-verification
       const stageConfig = config.stages[meta.currentStage];
