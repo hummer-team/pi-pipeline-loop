@@ -960,3 +960,206 @@ describe("startStageMode config", () => {
     expect(result.startStageMode).toBe("auto");
   });
 });
+
+describe("confirm config (Phase 1 — 162)", () => {
+  describe("stage-level confirm", () => {
+    it("missing confirm → StageConfig.confirm is undefined (current behavior)", () => {
+      const json: PipelineJsonConfig = { stages: { plan: {} } };
+      const result = resolvePipelineConfig(json);
+      expect(result.stages.plan.confirm).toBeUndefined();
+    });
+
+    it("confirm: { mode: 'manual' } is parsed correctly", async () => {
+      await writeJson({
+        stages: { plan: { confirm: { mode: "manual" } } },
+      });
+      const loaded = loadJsonConfig(jsonPath);
+      expect(loaded.stages.plan!.confirm).toBeDefined();
+      expect(loaded.stages.plan!.confirm!.mode).toBe("manual");
+      const result = resolvePipelineConfig(loaded);
+      expect(result.stages.plan.confirm!.mode).toBe("manual");
+    });
+
+    it("confirm: { mode: 'smart', maxRejections: 3 } is parsed", () => {
+      const json: PipelineJsonConfig = {
+        stages: { review: { confirm: { mode: "smart", maxRejections: 3 } } },
+      };
+      const result = resolvePipelineConfig(json);
+      expect(result.stages.review.confirm!.mode).toBe("smart");
+      expect(result.stages.review.confirm!.maxRejections).toBe(3);
+    });
+
+    it("invalid confirm.mode ('xor') → warn + fallback to 'auto'", () => {
+      const originalWarn = console.warn;
+      const captured: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        if (typeof args[0] === "string") captured.push(args[0]);
+      };
+      try {
+        const json: PipelineJsonConfig = {
+          stages: { plan: { confirm: { mode: "xor" as any } } },
+        };
+        const result = resolvePipelineConfig(json);
+        expect(result.stages.plan.confirm!.mode).toBe("auto");
+        expect(captured.some((m) => m.includes("Invalid confirm.mode"))).toBe(true);
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
+    it("invalid confirm.maxRejections (0) → warn + ignored", () => {
+      const originalWarn = console.warn;
+      const captured: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        if (typeof args[0] === "string") captured.push(args[0]);
+      };
+      try {
+        const json: PipelineJsonConfig = {
+          stages: { plan: { confirm: { maxRejections: 0 } } },
+        };
+        const result = resolvePipelineConfig(json);
+        expect(result.stages.plan.confirm!.maxRejections).toBeUndefined();
+        expect(captured.some((m) => m.includes("Invalid confirm.maxRejections"))).toBe(true);
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
+    it("invalid confirm.maxRejections (-1) → warn + ignored", () => {
+      const json: PipelineJsonConfig = {
+        stages: { plan: { confirm: { maxRejections: -1 } } },
+      };
+      const result = resolvePipelineConfig(json);
+      expect(result.stages.plan.confirm!.maxRejections).toBeUndefined();
+    });
+
+    it("invalid confirm.maxRejections (string) → warn + ignored", () => {
+      const json: PipelineJsonConfig = {
+        stages: { plan: { confirm: { maxRejections: "three" as any } } },
+      };
+      const result = resolvePipelineConfig(json);
+      expect(result.stages.plan.confirm!.maxRejections).toBeUndefined();
+    });
+
+    it("invalid confirm (non-object) → warn + undefined", () => {
+      const json: PipelineJsonConfig = {
+        stages: { plan: { confirm: "manual" as any } },
+      };
+      const result = resolvePipelineConfig(json);
+      expect(result.stages.plan.confirm).toBeUndefined();
+    });
+  });
+
+  describe("top-level maxConfirmRejections", () => {
+    it("defaults to 5 when not configured", () => {
+      const json: PipelineJsonConfig = { stages: { clarify: {} } };
+      const result = resolvePipelineConfig(json);
+      expect(result.maxConfirmRejections).toBe(5);
+    });
+
+    it("parses user-specified value", () => {
+      const json: PipelineJsonConfig = {
+        stages: { clarify: {} },
+        maxConfirmRejections: 10,
+      };
+      const result = resolvePipelineConfig(json);
+      expect(result.maxConfirmRejections).toBe(10);
+    });
+
+    it("loadJsonConfig parses from JSON file", async () => {
+      await writeJson({
+        stages: { clarify: {} },
+        maxConfirmRejections: 7,
+      });
+      const result = loadJsonConfig(jsonPath);
+      expect(result.maxConfirmRejections).toBe(7);
+    });
+
+    it("loadJsonConfig ignores non-number maxConfirmRejections", async () => {
+      await writeJson({
+        stages: { clarify: {} },
+        maxConfirmRejections: "many",
+      });
+      const result = loadJsonConfig(jsonPath);
+      expect(result.maxConfirmRejections).toBeUndefined();
+    });
+  });
+
+  describe("top-level confirmOverflow", () => {
+    it("defaults to 'ask' when not configured", () => {
+      const json: PipelineJsonConfig = { stages: { clarify: {} } };
+      const result = resolvePipelineConfig(json);
+      expect(result.confirmOverflow).toBe("ask");
+    });
+
+    it("parses 'terminate'", () => {
+      const json: PipelineJsonConfig = {
+        stages: { clarify: {} },
+        confirmOverflow: "terminate",
+      };
+      const result = resolvePipelineConfig(json);
+      expect(result.confirmOverflow).toBe("terminate");
+    });
+
+    it("invalid value → warn + fallback to 'ask'", () => {
+      const originalWarn = console.warn;
+      const captured: string[] = [];
+      console.warn = (...args: unknown[]) => {
+        if (typeof args[0] === "string") captured.push(args[0]);
+      };
+      try {
+        const json: PipelineJsonConfig = {
+          stages: { clarify: {} },
+          confirmOverflow: "invalid" as any,
+        };
+        const result = resolvePipelineConfig(json);
+        expect(result.confirmOverflow).toBe("ask");
+        expect(captured.some((m) => m.includes("Invalid confirmOverflow"))).toBe(true);
+      } finally {
+        console.warn = originalWarn;
+      }
+    });
+
+    it("loadJsonConfig parses confirmOverflow from JSON", async () => {
+      await writeJson({
+        stages: { clarify: {} },
+        confirmOverflow: "terminate",
+      });
+      const result = loadJsonConfig(jsonPath);
+      expect(result.confirmOverflow).toBe("terminate");
+    });
+
+    it("loadJsonConfig ignores invalid confirmOverflow", async () => {
+      await writeJson({
+        stages: { clarify: {} },
+        confirmOverflow: "abort",
+      });
+      const result = loadJsonConfig(jsonPath);
+      expect(result.confirmOverflow).toBeUndefined();
+    });
+  });
+
+  describe("backward compatibility", () => {
+    it("old config without confirm fields parses without changes", () => {
+      const json: PipelineJsonConfig = {
+        stages: {
+          clarify: { nextStage: "plan" },
+          plan: { nextStage: "develop" },
+          develop: { nextStage: "review" },
+          review: { nextStage: "fix" },
+          fix: { nextStage: "completed" },
+        },
+      };
+      const result = resolvePipelineConfig(json);
+      // Confirm is undefined on all stages (current behavior preserved)
+      expect(result.stages.clarify.confirm).toBeUndefined();
+      expect(result.stages.plan.confirm).toBeUndefined();
+      expect(result.stages.develop.confirm).toBeUndefined();
+      expect(result.stages.review.confirm).toBeUndefined();
+      expect(result.stages.fix.confirm).toBeUndefined();
+      // Global defaults
+      expect(result.maxConfirmRejections).toBe(5);
+      expect(result.confirmOverflow).toBe("ask");
+    });
+  });
+});

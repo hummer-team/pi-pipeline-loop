@@ -6,6 +6,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  ConfirmConfig,
+  ConfirmMode,
   PipelineConfig,
   PipelineJsonConfig,
   PipelineStage,
@@ -18,6 +20,8 @@ import {
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
   DEFAULT_DECISION_SHORTCUT,
+  DEFAULT_CONFIRM_MAX_REJECTIONS,
+  DEFAULT_CONFIRM_OVERFLOW,
   STAGE_TYPE_TOOL_DEFAULTS,
   resolveStagePath,
 } from "../constants";
@@ -89,6 +93,14 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     startStageMode: parseStartStageMode(json.startStageMode),
     audit: parseAuditConfig(json.audit),
     init: parseInitConfig(json.init),
+    maxConfirmRejections:
+      typeof json.maxConfirmRejections === "number"
+        ? json.maxConfirmRejections
+        : undefined,
+    confirmOverflow:
+      json.confirmOverflow === "ask" || json.confirmOverflow === "terminate"
+        ? json.confirmOverflow
+        : undefined,
   };
 }
 
@@ -291,6 +303,77 @@ function parseStartStageMode(raw: unknown): StartStageMode | undefined {
 }
 
 /**
+ * Parses and validates a confirm mode value from JSON config.
+ * Must be one of "auto", "manual", or "smart".
+ * Invalid values log a warning and fall back to "auto" (current behavior).
+ */
+function parseConfirmMode(raw: unknown): ConfirmMode {
+  if (raw === "auto" || raw === "manual" || raw === "smart") {
+    return raw;
+  }
+  if (raw !== undefined) {
+    console.warn(
+      `[pi-pipeline] Invalid confirm.mode "${String(raw)}" — falling back to "auto"`,
+    );
+  }
+  return "auto";
+}
+
+/**
+ * Parses and validates a per-stage confirm configuration object from JSON config.
+ * Returns undefined if the input is missing or not an object (no confirm config).
+ * Validates: mode (ConfirmMode via parseConfirmMode), maxRejections (positive integer).
+ */
+function parseConfirmConfig(raw: unknown): ConfirmConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    console.warn(
+      `[pi-pipeline] Invalid confirm config — expected object, got ${typeof raw}`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const result: ConfirmConfig = {};
+
+  if (obj.mode !== undefined) {
+    result.mode = parseConfirmMode(obj.mode);
+  }
+
+  if (obj.maxRejections !== undefined) {
+    if (
+      typeof obj.maxRejections === "number" &&
+      Number.isInteger(obj.maxRejections) &&
+      obj.maxRejections > 0
+    ) {
+      result.maxRejections = obj.maxRejections;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid confirm.maxRejections "${String(obj.maxRejections)}" — expected positive integer, ignoring`,
+      );
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Parses and validates the top-level confirmOverflow value from JSON config.
+ * Must be one of "ask" or "terminate".
+ * Invalid values log a warning and fall back to "ask".
+ */
+function parseConfirmOverflow(raw: unknown): "ask" | "terminate" {
+  if (raw === "ask" || raw === "terminate") {
+    return raw;
+  }
+  if (raw !== undefined) {
+    console.warn(
+      `[pi-pipeline] Invalid confirmOverflow "${String(raw)}" — falling back to "ask"`,
+    );
+  }
+  return "ask";
+}
+
+/**
  * Parses and validates allowedWritePaths from JSON stage config.
  * Must be string[] (each entry is a path prefix or "**").
  * Invalid types are logged as warnings and ignored (returns undefined).
@@ -412,6 +495,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
             completionMarker: jsonStage.verify.completionMarker,
           }
         : undefined,
+      confirm: parseConfirmConfig(jsonStage.confirm),
     };
   }
 
@@ -488,5 +572,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     startStageMode: json.startStageMode ?? "auto",
     audit: { promptSnapshot: json.audit?.promptSnapshot ?? "full" },
     init: { conflictCheck: json.init?.conflictCheck ?? "model" },
+    maxConfirmRejections:
+      json.maxConfirmRejections ?? DEFAULT_CONFIRM_MAX_REJECTIONS,
+    confirmOverflow: parseConfirmOverflow(json.confirmOverflow),
   };
 }

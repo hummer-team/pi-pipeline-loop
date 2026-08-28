@@ -116,6 +116,33 @@ export interface VerifyConfig {
 }
 
 /**
+ * Confirmation gate mode for a stage (post-verify second gate).
+ * - "auto": (default) Plugin auto-writes the bilingual confirmation marker
+ *   after verify passes and advances automatically (current behavior).
+ * - "manual": Plugin shows a TUI confirmation dialog after verify passes;
+ *   user chooses Approve & Advance / Reject & Rework / Cancel.
+ * - "smart": Agent self-assesses complexity and explicitly declares via
+ *   stage_advance({ needConfirm: true }); non-complex skips with audit only.
+ */
+export type ConfirmMode = "auto" | "manual" | "smart";
+
+/**
+ * Per-stage confirmation gate config (post-verify).
+ * Default { mode: "auto" } = current behavior (plugin auto-writes marker,
+ * verify passes naturally, and advance continues without TUI dialog).
+ */
+export interface ConfirmConfig {
+  /** Confirmation mode (default "auto" when omitted). */
+  mode?: ConfirmMode;
+  /**
+   * Rejection cap for this stage; falls back to config.maxConfirmRejections
+   * (default 5) when undefined. When exceeded, behavior is controlled by
+   * config.confirmOverflow ("ask" | "terminate").
+   */
+  maxRejections?: number;
+}
+
+/**
  * Per-stage configuration that maps a pipeline stage to its agent, skill,
  * write scope restrictions, and transition rules.
  */
@@ -154,6 +181,9 @@ export interface StageConfig {
 
   /** Optional verification configuration for auto-verification */
   verify?: VerifyConfig;
+
+  /** Optional post-verify confirmation gate configuration (default: { mode: "auto" }) */
+  confirm?: ConfirmConfig;
 }
 
 // ─── Summary Metadata ────────────────────────────────────────────────────────
@@ -373,6 +403,15 @@ export interface SessionMeta {
    * Cleared on stage transitions (advance/skip/rollback/restart/resume).
    */
   violations?: ViolationItem[];
+
+  /**
+   * Confirm-rejection counter for the current confirm loop (per stage).
+   * Incremented on gate rejection; reset on gate approval, smart non-complex
+   * skip, pipeline start/restart/resume, and overflow "Continue". Preserved
+   * across reject-route round trips (plan→clarify→plan, review→fix→review)
+   * so the cap counts cumulative rejections within a single stage visit.
+   */
+  confirmRejections?: number;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
@@ -507,6 +546,20 @@ export interface PipelineConfig {
      */
     conflictCheck?: "model" | "off";
   };
+
+  /**
+   * Default cap on confirm rejections per stage (default 5).
+   * Stage-level `confirm.maxRejections` overrides this value.
+   * When exceeded, behavior is controlled by `confirmOverflow`.
+   */
+  maxConfirmRejections?: number;
+
+  /**
+   * Overflow behavior when confirm rejections exceed the cap (default "ask").
+   * - "ask": Prompt the user with Continue/Terminate TUI select.
+   * - "terminate": Immediately abort the pipeline with flowState="aborted".
+   */
+  confirmOverflow?: "ask" | "terminate";
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -539,6 +592,17 @@ export interface VerifyJsonConfig {
 }
 
 /**
+ * Per-stage confirmation gate config as defined in pipeline_loop.json.
+ * All fields are optional — defaults are filled by the JSON config loader.
+ */
+export interface ConfirmJsonConfig {
+  /** Confirmation mode: "auto" (default), "manual", or "smart" */
+  mode?: ConfirmMode;
+  /** Rejection cap for this stage; falls back to config.maxConfirmRejections */
+  maxRejections?: number;
+}
+
+/**
  * Per-stage configuration as defined in pipeline_loop.json.
  * All fields are optional — defaults are filled by the JSON config loader.
  */
@@ -563,6 +627,9 @@ export interface StageJsonConfig {
 
   /** Optional verification configuration */
   verify?: VerifyJsonConfig;
+
+  /** Optional post-verify confirmation gate configuration */
+  confirm?: ConfirmJsonConfig;
 }
 
 /**
@@ -634,6 +701,19 @@ export interface PipelineJsonConfig {
      */
     conflictCheck?: "model" | "off";
   };
+
+  /**
+   * Default cap on confirm rejections per stage (default 5).
+   * Stage-level `confirm.maxRejections` overrides this value.
+   */
+  maxConfirmRejections?: number;
+
+  /**
+   * Overflow behavior when confirm rejections exceed the cap (default "ask").
+   * - "ask": Prompt the user with Continue/Terminate TUI select.
+   * - "terminate": Immediately abort the pipeline with flowState="aborted".
+   */
+  confirmOverflow?: "ask" | "terminate";
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────

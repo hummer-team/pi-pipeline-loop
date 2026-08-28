@@ -50,6 +50,20 @@ export const DEFAULT_DECISION_SHORTCUT = "ctrl+enter";
 export const DEFAULT_MAX_VIOLATIONS = 3;
 
 /**
+ * Default cap on confirm rejections per stage (post-verify confirm gate).
+ * Stage-level `confirm.maxRejections` overrides this value.
+ * When exceeded, behavior is controlled by `confirmOverflow` ("ask" | "terminate").
+ */
+export const DEFAULT_CONFIRM_MAX_REJECTIONS = 5;
+
+/**
+ * Default overflow behavior when confirm rejections exceed the cap.
+ * - "ask": Prompt the user with Continue/Terminate TUI select.
+ * - "terminate": Immediately abort the pipeline with flowState="aborted".
+ */
+export const DEFAULT_CONFIRM_OVERFLOW = "ask" as const;
+
+/**
  * Default write whitelist for read-only stages (clarify/plan/review).
  * These stages may only write to documentation directories.
  */
