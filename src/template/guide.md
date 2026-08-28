@@ -194,7 +194,7 @@ bun add @earendil-works/pi-pipeline
         "skillPath": "review/SKILL.md",
         "nextStage": "fix",              // review→fix 质量环（review 不通过时进入 fix）
         "allowedWritePaths": ["docs/", "doc/", "documentation/"],
-        // review 默认启用 verify：`结论：通过` 强校验（review_spec/verify.md）
+        // review 默认启用 verify：`结论：(通过|不通过)` 校验结论存在（review_spec/verify.md）
         "verify": { "require": true },
       },
       "fix": {
@@ -299,7 +299,7 @@ bun add @earendil-works/pi-pipeline
 - 写范围：`docs/`、`doc/`、`documentation/`（可通过 `allowedWritePaths` 覆盖）
 - Bash：仅允许只读 git 子命令（`git log`、`git status`、`git diff`、`git show`），`git add`/`git commit`/`git push` 因不匹配任何前缀天然被拒
 - 可读取全项目（读不受限）
-- review 启用 verify：`结论：通过` 由 verify.md 规则强校验；报告「不通过」触发 hook 唤醒模型修复并更新报告，最终由 `stage_advance` 显式推进
+- review 启用 verify：`结论：(通过|不通过)` 由 verify.md 规则校验结论存在；结论由模型经 `stage_advance({ reviewConclusion: "fail" })` 声明后自动路由至 fix；未声明则退回 verify + confirm 门
 
 **违规反馈**：
 - 拦截返回 `{ block: true, reason: "FORBIDDEN: '<path>' not in allowed write paths for '<stage>' stage." }`
@@ -383,7 +383,7 @@ clarify → plan → develop → review ⇄ fix → review (loop) → completed
 | **clarify** | 分析需求文档，识别歧义，提出澄清问题；获得用户 full-und? 确认后完成。full-und? 确认标记（`## 模型确认`）落盘后由 agent_settled 自动验证推进 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + completionMarker 预检） |
 | **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
 | **develop** | 按规划编写代码，运行测试，产出 _commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
-| **review** | 审查代码质量，产出 code review 报告；verify 校验 `结论：通过`；confirm 门通过后→completed / 拒绝→fix | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
+| **review** | 审查代码质量，产出 code review 报告；verify 校验 `结论：(通过|不通过)`；结论由模型经 stage_advance 声明：fail→自动转 fix，pass→confirm 门通过后→completed | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
 | **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→review 复验 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **awaiting_human** | 流水线冻结，等待人工介入（仅用于兜底） | read（受限） |
 | **completed** | 终端状态，流水线结束 | 无 |
@@ -393,6 +393,7 @@ clarify → plan → develop → review ⇄ fix → review (loop) → completed
 **selfVerifySkip 语义**：develop/fix 配置 `verify.selfVerifySkip: true` 时，插件根据工具调用记录判定模型是否已在本 stage 成功执行过相同 requiredCommand（命令 token 前缀匹配，`./mvnw`/`mvnw` 归一化）。命中且 exitCode=0 则跳过重执行、仅写 audit（`method:"self_verified"`）；此后若有 write/edit 成功记录则失效强制重验。Phase 6 (139) 新增 VERIFIED_COMMANDS 协议识别——子 agent 通过 task 返回的 `VERIFIED_COMMANDS: cmd1,cmd2` 行也计入已验证命令集合。
 
 **质量环**（review ⇄ fix → review，confirm 通过→completed）：
+- review 声明 `reviewConclusion: "fail"` → 自动转 fix（不经 confirm 门）；声明 pass / 未声明 → verify + confirm 门
 - review 报告有 Blocker/High/Medium → confirm 门拒绝→fix → 修复后→review 复验
 - review confirm 门通过 → completed
 - fix 复验通过 → review（再次 confirm 门）
@@ -742,7 +743,7 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 | `hook`（默认） | Agent 进入 idle 状态时，`agent_settled` hook 自动执行验证 | clarify, plan, develop, fix |
 | `tool` | Agent 调用 `stage_advance` 工具时，工具内部执行验证门 | 任意（需配置） |
 
-**推荐实践**：clarify/plan/develop/review/fix 均使用 hook 模式（agent_settled 自动触发）。review 启用 verify 将「结论：通过」作为规则强校验（review_spec/verify.md 含 `结论：通过` pattern）；报告「不通过」触发 hook 唤醒模型修复，直至报告「通过」后由 agent 的 `stage_advance` 显式推进至 completed（避免 review↔fix 死循环）。
+**推荐实践**：clarify/plan/develop/review/fix 均使用 hook 模式（agent_settled 自动触发）。review 启用 verify 将「结论：(通过|不通过)」作为规则校验结论存在（review_spec/verify.md 含 `结论：(通过|不通过)` pattern）；结论由模型调用 `stage_advance({ reviewConclusion: "fail" })` 声明后自动路由至 fix；声明 pass 或未声明则走 verify + confirm 门（避免 review↔fix 死循环）。
 
 ### 9.2 selfVerifySkip 机制
 
@@ -881,7 +882,7 @@ rules:
     - path: "docs/design/*_plan.md"
       pattern: "^## (用户确认|User Confirmation)"
     - path: "docs/review/code_review_*.md"
-      pattern: "结论：通过"
+      pattern: "结论：(通过|不通过)"
 ```
 
 **占位符**：`{requirementDoc}` 由 `/pipeline-start` 设置的需求文档路径替换（引用 §4.2）。未设置时规则不生效（运行时报 `requirementDoc not set`，属运行时配置错误 → freeze + 决策菜单）。

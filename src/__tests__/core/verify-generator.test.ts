@@ -1368,8 +1368,8 @@ describe("verify-generator", () => {
   // ── Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list ──────────
 
   describe("Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list", () => {
-    it("white-list contains all 6 expected template entries (5 + bilingual plan marker)", () => {
-      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(6);
+    it("white-list contains all 7 expected template entries (6 + bilingual plan marker + relaxed review pattern)", () => {
+      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(7);
       const paths = TEMPLATE_BUILTIN_CONTENT_PATTERNS.map(e => e.path);
       expect(paths).toContain("{requirementDoc}");
       expect(paths).toContain("docs/design/*_plan.md");
@@ -1461,6 +1461,33 @@ describe("verify-generator", () => {
         requiredFiles: ["docs/design/*_plan.md"],
         fileContentPattern: [
           { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    // Phase 1 (163): relaxed review conclusion pattern in whitelist
+    it("hasCustom=false when existing rules contain old review conclusion pattern (结论：通过)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/review/code_review_*.md"],
+        fileContentPattern: [
+          { path: "docs/review/code_review_*.md", pattern: "结论：通过" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    it("hasCustom=false when existing rules contain new review conclusion pattern (结论：(通过|不通过))", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/review/code_review_*.md"],
+        fileContentPattern: [
+          { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
         ],
       };
       const result = diffAndMergeRules(existing, []);

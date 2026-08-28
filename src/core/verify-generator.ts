@@ -92,8 +92,10 @@ export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern
   // so existing projects' verify.md stays mergeable under init 1, 148 compat)
   { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
   { path: "docs/design/*_plan.md", pattern: "^## (用户确认|User Confirmation)" },
-  // review: pass conclusion
+  // review: pass conclusion (old pattern kept for existing projects' verify.md merge compat)
   { path: "docs/review/code_review_*.md", pattern: "结论：通过" },
+  // review: either conclusion accepted (163 — verdict is declared via stage_advance, verify only checks existence)
+  { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
   // develop / fix: plan doc reference in commit record
   { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
 ];
