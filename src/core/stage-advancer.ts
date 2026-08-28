@@ -314,11 +314,16 @@ async function routeConfirmReject(
   if (sourceDocPath) {
     try {
       const content = await fs.readFile(sourceDocPath, "utf-8");
-      // Remove bilingual confirmation markers and their adjacent timestamp lines.
-      // Matches lines starting with "## 用户确认" or "## User Confirmation",
-      // plus up to 2 following lines (blank + timestamp).
+      // Remove only the exact markers written by the plugin, not user headings
+      // that happen to share a prefix (e.g. "## 用户确认流程" must NOT be deleted).
+      //
+      // Plugin-written marker forms:
+      //   plan  -> "## 用户确认：确认无误"  /  "## User Confirmation: Confirmed"
+      //   review -> "## Confirmation: Approved"
+      // Each is followed by a blank line, a "> Confirmation timestamp: <ISO>" line,
+      // and optional trailing blank lines.
       const cleaned = content.replace(
-        /^## (?:用户确认|User Confirmation).*\n(?:>.*\n|\n)*/gm,
+        /^## (?:用户确认：确认无误|User Confirmation: Confirmed|Confirmation: Approved)\n\n> Confirmation timestamp: [^\n]+\n\n*/gm,
         "",
       );
       if (cleaned !== content) {
@@ -380,9 +385,6 @@ async function advanceConfirmApproved(
   toStage: PipelineStage,
   pipelineUI: { notify: (ctx: unknown, msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void },
 ): Promise<boolean> {
-  // Reset rejection counter on approval
-  ctx.session.updateMeta({ confirmRejections: undefined });
-
   // Resolve the stage document for writing marker
   const docPath = await resolveStageDocPath(config, meta, fromStage);
   if (docPath) {
@@ -411,9 +413,14 @@ async function advanceConfirmApproved(
     if (!writeOk) {
       // Marker write failed (e.g. write path not in allowedWritePaths) — do not advance.
       // writeConfirmMarker has already written audit + notified the user.
+      // Counter is NOT reset — rejection count stays intact so the next attempt
+      // continues from the current value (consistent with "reset only on success").
       return false;
     }
   }
+
+  // Reset rejection counter on approval (after marker write succeeds)
+  ctx.session.updateMeta({ confirmRejections: undefined });
 
   // Audit the approval
   await writeAuditLog("confirm_approved", {
@@ -493,8 +500,10 @@ export async function maybeHandleConfirmGate(
     try {
       await fs.access(docPath);
       const content = await fs.readFile(docPath, "utf-8");
-      // Check for any confirm marker (bilingual or smart complex marker)
-      if (/^## (用户确认|User Confirmation)/m.test(content)) {
+      // Check for an exact plugin-written confirm marker (bilingual).
+      // Uses precise anchor text to avoid false positives on user-authored
+      // headings that share a prefix (e.g. "## 用户确认流程", "## User Confirmation Guide").
+      if (/^## (?:用户确认：确认无误|User Confirmation: Confirmed)/m.test(content)) {
         return { result: "no-gate" };
       }
     } catch {

@@ -366,12 +366,16 @@ describe("Phase 3 (162): review stage confirm gate scenarios", () => {
     return reviewPath;
   }
 
-  it("review approve advances to completed", async () => {
+  it("review approve advances to completed and calls clearStage", async () => {
     await createReviewDoc("# Review Report\n");
     const config = makeReviewConfigWithConfirm(tmpDir, "manual");
     const meta = makeTestMeta({ currentStage: "review" });
     const ctx = createMockCtx(meta, { selectReturn: "Approve & Complete" });
-    const ui = { notify: () => {}, transition: () => {}, clearStage: () => {} };
+    // Track clearStage invocations on ctx.ui to verify the terminal clear path (162 Phase 3).
+    // advanceConfirmApproved calls ctx.ui.clearStage(ctx), so the spy must live on ctx.ui.
+    let clearStageCalls = 0;
+    (ctx.ui as Record<string, unknown>).clearStage = () => { clearStageCalls++; };
+    const ui = { notify: () => {}, transition: () => {} };
     const result = await maybeHandleConfirmGate(config, ctx, meta, ui as any, { mode: "manual" });
     expect(result.result).toBe("handled");
     if (result.result === "handled") {
@@ -380,6 +384,8 @@ describe("Phase 3 (162): review stage confirm gate scenarios", () => {
     }
     const updatedMeta = ctx.session.getMeta() as SessionMeta;
     expect(updatedMeta.confirmRejections).toBeUndefined();
+    // clearStage must be called exactly once when advancing to completed
+    expect(clearStageCalls).toBe(1);
   });
 
   it("review reject routes to fix and increments counter", async () => {
@@ -397,6 +403,84 @@ describe("Phase 3 (162): review stage confirm gate scenarios", () => {
     const updatedMeta = ctx.session.getMeta() as SessionMeta;
     expect(updatedMeta.confirmRejections).toBe(2);
     expect(updatedMeta.currentStage).toBe("fix");
+  });
+
+  it("reject cleanup does NOT delete user headings that share prefix (e.g. ## 用户确认流程)", async () => {
+    // Create plan doc with user-authored headings that start with "## 用户确认" /
+    // "## User Confirmation" but are NOT plugin markers. These must survive cleanup.
+    const userContent = [
+      "# Plan",
+      "",
+      "## 用户确认流程",
+      "> 用户需要在文档中手写确认",
+      "> 或由插件自动写入",
+      "正文继续",
+      "",
+      "## User Confirmation Guide",
+      "> This is a user section, not a marker.",
+      "More content here.",
+      "",
+    ].join("\n");
+    await createPlanDoc(userContent);
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmRejections: 0,
+    });
+    const ctx = createMockCtx(meta, { selectReturn: "Reject & Rework (back to clarify)" });
+    const ui = { notify: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx, meta, ui as any, { mode: "manual" });
+    expect(result.result).toBe("handled");
+    // Read back the plan doc — user content must be intact
+    const docsDir = path.join(tmpDir, "docs", "design");
+    const planPath = path.join(docsDir, "77_Config_plan.md");
+    const after = await fs.readFile(planPath, "utf-8");
+    expect(after).toContain("## 用户确认流程");
+    expect(after).toContain("> 用户需要在文档中手写确认");
+    expect(after).toContain("正文继续");
+    expect(after).toContain("## User Confirmation Guide");
+    expect(after).toContain("> This is a user section, not a marker.");
+    expect(after).toContain("More content here.");
+  });
+
+  it("review reject cleanup removes Confirmation: Approved marker but preserves user headings", async () => {
+    // Review stage: "## Confirmation: Approved" is NOT caught by the no-gate check
+    // (by design — review always re-triggers the gate). So the cleanup in
+    // routeConfirmReject can remove a stale review marker while preserving user content.
+    const mixedContent = [
+      "# Review Report",
+      "",
+      "## Some section",
+      "",
+      "## Confirmation: Approved",
+      "",
+      "> Confirmation timestamp: 2024-01-01T00:00:00.000Z",
+      "",
+      "## User Confirmation Guide",
+      "> user-authored section, not a marker",
+      "More content here.",
+    ].join("\n");
+    await createReviewDoc(mixedContent);
+    const config = makeReviewConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+    const ctx = createMockCtx(meta, { selectReturn: "Reject & Send to Fix" });
+    const ui = { notify: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx, meta, ui as any, { mode: "manual" });
+    expect(result.result).toBe("handled");
+    if (result.result === "handled") {
+      expect(result.action).toBe("routed");
+    }
+    const reviewDir = path.join(tmpDir, "docs", "review");
+    const reviewPath = path.join(reviewDir, "code_review_99_Feature.md");
+    const after = await fs.readFile(reviewPath, "utf-8");
+    // Plugin review marker should be removed
+    expect(after).not.toContain("## Confirmation: Approved");
+    // User headings must be preserved
+    expect(after).toContain("## User Confirmation Guide");
+    expect(after).toContain("> user-authored section, not a marker");
+    expect(after).toContain("More content here.");
+    expect(after).toContain("## Some section");
   });
 
   it("review: counter preserved across fix→review round trip", async () => {
