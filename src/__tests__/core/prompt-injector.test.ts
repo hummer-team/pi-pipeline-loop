@@ -1571,3 +1571,87 @@ describe("createPromptInjector", () => {
     });
   });
 });
+
+describe("Phase 5 (162): smart confirm guidance injection", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
+  });
+
+  it("plan stage with confirm.mode='smart' includes SMART CONFIRM PROTOCOL", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-smart-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Plan Skill\n");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const baseConfig = makeTestConfig({ projectRoot: TMP });
+    const planStage = { ...baseConfig.stages.plan, confirm: { mode: "smart" as const } };
+    const config = { ...baseConfig, stages: { ...baseConfig.stages, plan: planStage as typeof baseConfig.stages.plan } };
+    const meta = makeTestMeta({ currentStage: "plan" });
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => "base prompt",
+    } as any);
+
+    expect(result.systemPrompt).toContain("SMART CONFIRM PROTOCOL");
+    expect(result.systemPrompt).toContain("needConfirm: true");
+    expect(result.systemPrompt).toContain("智能确认：复杂");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("plan stage with confirm.mode='auto' does NOT include smart confirm guidance", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-auto-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Plan Skill\n");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "plan" });
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => "base prompt",
+    } as any);
+
+    expect(result.systemPrompt).not.toContain("SMART CONFIRM PROTOCOL");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("develop stage never includes smart confirm guidance (even with smart config)", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-develop-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Develop Skill\n");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const baseConfig = makeTestConfig({ projectRoot: TMP });
+    const devStage = { ...baseConfig.stages.develop, confirm: { mode: "smart" as const } };
+    const config = { ...baseConfig, stages: { ...baseConfig.stages, develop: devStage as typeof baseConfig.stages.develop } };
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => "base prompt",
+    } as any);
+
+    expect(result.systemPrompt).not.toContain("SMART CONFIRM PROTOCOL");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

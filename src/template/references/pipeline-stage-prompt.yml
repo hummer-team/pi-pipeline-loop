@@ -49,17 +49,18 @@
 #   Placeholders use the format {{key}} and are replaced at runtime with
 #   dynamic values built from pipeline state.
 #
-# Available placeholders (10 total):
-#   {{context_reference}}    — Part 1: previous summary + context files + requirement doc path
-#   {{domain_skill}}         — Part 2: business domain rules
-#   {{stage_skill}}          — Part 3: current stage skill content (.pi/skills/{skillPath})
-#   {{loop_status}}          — Part 4: loop engineering status (develop/fix only)
-#   {{pipeline_status}}      — Part 5: pipeline ID, stage, domain, validation
-#   {{verify_failures}}      — Part 6: previous verification failures
-#   {{verify_tool_guidance}} — Part 7: verification tool mode guidance
-#   {{stage_write_scope}}    — Part 8: write scope for non-loop stages
-#   {{stage_executor}}       — Part 9: stage executor scheduling (all 5 stages; clarify optional)
-#   {{stage_deliverables}}   — Part 10: plugin default deliverables (develop/review/fix; optional)
+# Available placeholders (11 total):
+#   {{context_reference}}       — Part 1: previous summary + context files + requirement doc path
+#   {{domain_skill}}            — Part 2: business domain rules
+#   {{stage_skill}}             — Part 3: current stage skill content (.pi/skills/{skillPath})
+#   {{loop_status}}             — Part 4: loop engineering status (develop/fix only)
+#   {{pipeline_status}}         — Part 5: pipeline ID, stage, domain, validation
+#   {{verify_failures}}         — Part 6: previous verification failures
+#   {{verify_tool_guidance}}    — Part 7: verification tool mode guidance
+#   {{stage_write_scope}}       — Part 8: write scope for non-loop stages
+#   {{stage_executor}}          — Part 9: stage executor scheduling (all 5 stages; clarify optional)
+#   {{stage_deliverables}}      — Part 10: plugin default deliverables (develop/review/fix; optional)
+#   {{smart_confirm_guidance}}  — Part 11: smart confirm complexity protocol (plan/review smart mode only)
 #
 # Paragraph Format:
 #   Each placeholder occupies its own paragraph. Paragraphs separated by
@@ -68,7 +69,7 @@
 #   the rendered output.
 #
 # Unknown Placeholders:
-#   Any {{xxx}} not in the 10 known keys above is preserved as-is (not replaced).
+#   Any {{xxx}} not in the 11 known keys above is preserved as-is (not replaced).
 #
 # Critical Placeholder Missing:
 #   If a critical placeholder is absent from the template, the entire stage
@@ -122,6 +123,8 @@ plan: |
   {{stage_write_scope}}
   ---
   {{stage_executor}}
+  ---
+  {{smart_confirm_guidance}}
 
 develop: |
   {{context_reference}}
@@ -160,6 +163,8 @@ review: |
   {{stage_executor}}
   ---
   {{stage_deliverables}}
+  ---
+  {{smart_confirm_guidance}}
 
 fix: |
   {{context_reference}}

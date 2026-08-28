@@ -1,10 +1,11 @@
 /**
  * @module prompt-injector
  * Factory for the `before_agent_start` hook.
- * Composes a 10-part system prompt appended after the pi base system prompt,
+ * Composes an 11-part system prompt appended after the pi base system prompt,
  * providing context references, domain skills, stage skills, loop status,
  * pipeline status, verification failures, verify tool guidance, write scope,
- * stage executor scheduling, and plugin default deliverables.
+ * stage executor scheduling, plugin default deliverables, and smart confirm
+ * guidance (Phase 5: 162, plan/review smart mode only).
  *
  * Injection method (D3): Plugin prompt is appended after `ctx.getSystemPrompt()`
  * (pi base + prior plugin modifications), separated by `\n\n---\n\n`.
@@ -514,7 +515,40 @@ export function createPromptInjector(config: PipelineConfig): Hook {
 }
 
 /**
- * Builds the default 10-part prompt by calling each part builder and joining
+ * Phase 5 (162): Builds the smart confirm guidance section for stages with
+ * confirm.mode === "smart". Returns null for non-smart stages or stages
+ * that don't support the confirm gate (only plan/review).
+ *
+ * The guidance instructs the agent to self-assess complexity and explicitly
+ * declare via stage_advance({ needConfirm: true }) when the work is complex,
+ * or proceed automatically when not complex (recorded as confirm_smart_skip).
+ *
+ * @param stageConfig - Current stage configuration
+ * @param meta - Current session metadata
+ * @returns English protocol string, or null when not applicable
+ */
+function buildSmartConfirmGuidance(
+  stageConfig: StageConfig,
+  meta: SessionMeta,
+): string | null {
+  // Only plan and review stages support the confirm gate
+  if (meta.currentStage !== "plan" && meta.currentStage !== "review") return null;
+  // Only emit when confirm mode is "smart"
+  if (stageConfig.confirm?.mode !== "smart") return null;
+
+  const stage = meta.currentStage;
+  const docRef = stage === "plan" ? "plan document" : "review report";
+
+  return [
+    `# SMART CONFIRM PROTOCOL (${stage.toUpperCase()})`,
+    `Assess the complexity of your completed work.`,
+    `- Complex: write "## 智能确认：复杂" to the ${docRef}, then call stage_advance({ needConfirm: true }).`,
+    `- Not complex: call stage_advance() to proceed automatically (recorded in the audit log).`,
+  ].join("\n");
+}
+
+/**
+ * Builds the default 11-part prompt by calling each part builder and joining
  * non-null results with `\n\n---\n\n`. Used as the fallback when no yml
  * template is available or when critical placeholders are missing.
  *
@@ -530,6 +564,7 @@ export function createPromptInjector(config: PipelineConfig): Hook {
  * 8. Stage Write Scope (non-loop stages)
  * 9. Stage Executor Scheduling (Phase 4: 139)
  * 10. Stage Deliverables (Phase 0: 146, plugin default deliverables)
+ * 11. Smart Confirm Guidance (Phase 5: 162, plan/review smart mode only)
  *
  * @param config - Pipeline configuration
  * @param meta - Current session metadata
@@ -557,8 +592,10 @@ async function buildDefaultPrompt(
   const part9 = await buildStageExecutor(config, stageConfig, meta);
   // Part 10: Plugin Default Deliverables (Phase 0: 146)
   const part10 = await buildStageDeliverables(config, meta);
+  // Part 11: Smart Confirm Guidance (Phase 5: 162)
+  const part11 = buildSmartConfirmGuidance(stageConfig, meta);
 
-  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10].filter(
+  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11].filter(
     (p): p is string => p !== null,
   );
 
@@ -567,7 +604,7 @@ async function buildDefaultPrompt(
 
 /**
  * Builds the dynamic placeholder values map for template rendering.
- * Maps each of the 10 known placeholder keys to its computed value.
+ * Maps each of the 11 known placeholder keys to its computed value.
  * Null values trigger paragraph-level removal in renderStageTemplate.
  *
  * @param config - Pipeline configuration
@@ -598,6 +635,8 @@ async function buildDynamicValues(
     stage_executor: await buildStageExecutor(config, stageConfig, meta),
     // Phase 0 (146): Plugin default deliverables (reads from yml stage_deliverable_{stage})
     stage_deliverables: await buildStageDeliverables(config, meta),
+    // Phase 5 (162): Smart confirm guidance (plan/review smart mode only; null → paragraph removed)
+    smart_confirm_guidance: buildSmartConfirmGuidance(stageConfig, meta),
   };
 }
 
