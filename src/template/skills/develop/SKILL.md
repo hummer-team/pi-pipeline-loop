@@ -7,7 +7,7 @@ userInvocable: false
 ## workflow
 ### 必须遵循
 1. **plan** 严格遵循 plan doc Phase 顺序完成规划的所有任务(不能跳跃，遗漏)
-2. **技术规范**：read `.pi/references/frontend_ts_code_spec.md`
+2. **技术规范**：read `.pi/references/{stack}_code_spec.md`（`{stack}` 见交付项 Template-TODO 占位）
 
 ### phase 开发流程
 1. **前置校验**：
@@ -25,7 +25,8 @@ userInvocable: false
 5. **每个 phase 完成后，必须**：
    - 按 plan 文档中 commit 内容提交代码
    - 参考模板 `@.pi/references/develop_commit_template.md`
-   - 新建 `docs/design/{plan文件名}_commit.md`，把 git commit id 追加到 `dev commit id` 行
+    - 新建 `docs/design/{plan文件名}_commit.md`，把 git commit id 追加到 `dev commit id` 行
+6. **声明式交接**：开发交付完成（`_commit.md` 已建）后进入 review 阶段
 
 ### 交付规范
 每次代码交付必须包含以下结构：
@@ -40,3 +41,4 @@ userInvocable: false
 ## 交付项
 <!-- Template-TODO: 补充项目业务交付项（插件默认交付项如 build/test/commit/pipeline 标记由插件注入段提供） -->
 - **Template-TODO**: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等）
+<!-- Template-TODO: 配置项目技术栈 stack（如 frontend_ts / java），develop 按 .pi/references/{stack}_code_spec.md 读取对应规范 -->
