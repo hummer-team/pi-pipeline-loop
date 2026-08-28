@@ -51,20 +51,8 @@ userInvocable: false
 ### 6. not commit design and plan docs
 1. 设计、规划文档 local 存储，不需要 commit
 
-### 7. confirm 确认门（Phase 3 — 162）
-
-插件在 verify 通过后提供第二道确认门，由 `stages.plan.confirm.mode` 配置控制：
-
-- **auto 模式**：插件自动写双语标记（`## 用户确认：确认无误` + `## User Confirmation: Confirmed`），无 TUI 对话框，直接推进。
-- **manual 模式**：verify 通过后弹出 TUI 英文确认对话框：
-  - `Approve & Advance` → 写双语标记，推进到 develop
-  - `Reject & Rework (back to clarify)` → 路由回 clarify 重新澄清
-  - `Cancel` → 停留在 plan，等待后续操作
-- **smart 模式**：Agent 自评复杂度：
-  - 复杂：在规划文档写 `## 智能确认：复杂`，然后调用 `stage_advance({ needConfirm: true })` 触发确认门
-  - 非复杂：直接调用 `stage_advance()` 自动推进（audit `confirm_smart_skip`）
-
-**标记规则**：confirm 标记（`## 用户确认` 或 `## User Confirmation`）由插件自动写入，agent 无需手动添加。
+### 7. 声明式交接
+- 完成 _plan.md 并经确认门确认后，进入 develop 阶段（确认门协议由插件注入段提供）
 
 ---
 ## 交付项
