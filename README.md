@@ -9,6 +9,8 @@
 | Capability | Description |
 |------------|-------------|
 | **7-Stage Pipeline** | `clarify → plan → develop → review ⇄ fix → completed` with `awaiting_human` as fallback freeze state |
+| **Review⇄Fix Auto-Routing** | Declaration-driven: `stage_advance({ reviewConclusion: "fail" })` auto-routes to fix; `"pass"` enters confirm gate; undeclared falls back to verify + manual confirm |
+| **Confirm Gate** | Post-verify human confirmation (auto/manual/smart modes) with rejection counting and overflow protection |
 | **6 Lifecycle Hooks** | Automatic verification, prompt injection, tool safety, loop circuit breaking, session recovery, and shutdown |
 | **6+1 Tools** | Stage advancement, loop checking, pipeline state, summary generation, summary validation, handoff, plus conditional `pipeline_verify` (registered when any stage uses tool mode) |
 | **4 Commands** | `/pipeline-init`, `/pipeline-start`, `/pipeline-status`, `/pipeline-quit` |

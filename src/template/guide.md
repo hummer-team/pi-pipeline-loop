@@ -629,6 +629,14 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `pipeline_start_launch_skipped` | 无 pi SDK，降级 notify 提示 | agentName, reason |
 | `pipeline_state` | 每次 pipeline_state 查询 | snapshot (完整状态 JSON) |
 | `loop_check` | 每次 loop_check 调用 | action (advance/retry/halt), loopCount, summary |
+| `review_auto_route_fix` | review 声明 `reviewConclusion: "fail"` 自动路由至 fix | stage, toStage, confirmRejections, reason |
+| `review_declaration_missing` | review settle 未声明 reviewConclusion，退回 verify + confirm 门 | stage, reason |
+| `review_conclusion_ignored` | 非 review 阶段传入 reviewConclusion 参数，被忽略 | stage, reviewConclusion |
+| `review_auto_route_overflow_terminate` | review fail 声明连续超限触发终止 | stage, confirmRejections |
+| `confirm_rejected` | confirm 门人工拒绝（plan/review） | stage, toStage, confirmRejections |
+| `confirm_approved` | confirm 门人工批准 | stage, toStage |
+| `confirm_pending` | confirm 门等待交互（无 UI / Esc） | stage, action |
+| `confirm_defer_to_stage_advance` | pipeline_verify 对 confirm 非 auto 阶段返回 pending | stage, confirmMode |
 
 **通用字段**：所有 `writeStageAudit` 事件自动携带 `pipelineId`、`stage`、`sequence`（沿 nextStage 链到 completed）、`loopCount`、`maxLoops`。
 
