@@ -20,8 +20,12 @@ export const RESUMABLE_STAGES: PipelineStage[] = [
   "clarify", "plan", "develop", "review", "fix",
 ];
 
-/** Paths that agents in loop stages (develop/fix) must not modify */
-export const PROTECTED_PATHS = [".pi/", "AGENTS.md", ".git/"] as const;
+/**
+ * Paths that agents in loop stages (develop/fix) must not modify.
+ * Project rule files (e.g. AGENTS.md) are NOT protected by default;
+ * users may add them via `config.protect.paths` if needed.
+ */
+export const PROTECTED_PATHS = [".pi/", ".git/"] as const;
 
 /**
  * Sentinel value for allowedWritePaths meaning "all paths allowed".

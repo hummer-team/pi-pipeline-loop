@@ -6,7 +6,7 @@
  *
  * Protection layers:
  * 1. Destructive command blacklist — sudo, rm -rf /, mkfs, etc. (with user confirmation dialog)
- * 2. Hardcoded paths (.pi/, AGENTS.md, .git/) - always protected
+ * 2. Hardcoded paths (.pi/, .git/) - always protected
  * 3. Dynamic gitignore protection - parsed from .gitignore files
  * 4. Allow list - exempts from gitignore for edit only (not git add/commit)
  * 5. Stage write whitelist — restricts writable paths per stage
@@ -235,7 +235,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               type: "git_protected",
               tool: "bash",
               detail: blockResult.reason,
-              suggestion: `git add cannot stage protected paths (.pi/, AGENTS.md, .git/, gitignore).`,
+              suggestion: `git add cannot stage protected paths (.pi/, .git/, gitignore).`,
             });
             ui.notify(ctx, blockResult.reason);
             return blockResult;
@@ -248,7 +248,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               type: "git_protected",
               tool: "bash",
               detail: blockResult.reason,
-              suggestion: `git commit cannot include protected paths (.pi/, AGENTS.md, .git/, gitignore).`,
+              suggestion: `git commit cannot include protected paths (.pi/, .git/, gitignore).`,
             });
             ui.notify(ctx, blockResult.reason);
             return blockResult;
@@ -315,7 +315,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                         type: "write_protected",
                         tool: "bash",
                         detail: reason,
-                        suggestion: `Protected paths: .pi/, AGENTS.md, .git/ + gitignore patterns.`,
+                        suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.`,
                       });
                       ui.notify(ctx, reason);
                       return { block: true, reason };
@@ -328,7 +328,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     type: "write_protected",
                     tool: "bash",
                     detail: reason,
-                    suggestion: `Protected paths: .pi/, AGENTS.md, .git/ + gitignore patterns.`,
+                    suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.`,
                   });
                   ui.notify(ctx, reason);
                   return { block: true, reason };
@@ -467,7 +467,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                       type: "write_protected",
                       tool: toolName,
                       detail: reason,
-                      suggestion: `Hardcoded protected: .pi/, AGENTS.md, .git/.`,
+                      suggestion: `Hardcoded protected: .pi/, .git/.`,
                     });
                     ui.notify(ctx, reason);
                     return { block: true, reason };
@@ -479,7 +479,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     type: "write_protected",
                     tool: toolName,
                     detail: reason,
-                    suggestion: `Hardcoded protected: .pi/, AGENTS.md, .git/.`,
+                    suggestion: `Hardcoded protected: .pi/, .git/.`,
                   });
                   ui.notify(ctx, reason);
                   return { block: true, reason };

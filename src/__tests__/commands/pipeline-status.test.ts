@@ -42,7 +42,7 @@ describe("createPipelineStatusCommand", () => {
     expect(result.content).toContain("2/3");
     expect(result.content).toContain("Step: 3");
     expect(result.content).toContain(".pi/");
-    expect(result.content).toContain("AGENTS.md");
+    expect(result.content).not.toContain("AGENTS.md");
     expect(result.content).toContain(".git/");
   });
 

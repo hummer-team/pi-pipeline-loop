@@ -60,7 +60,7 @@ export function normalizeAllow(entries: string[]): string[] {
     // This fixes dotted directories like "docs/design.v2" being misclassified
     // as files due to path.extname() returning ".v2"
     if (entry.includes("/")) return entry + "/";
-    // Root-level entries with a file extension are treated as files (e.g., AGENTS.md)
+    // Root-level entries with a file extension are treated as files (e.g., README.md)
     if (path.extname(entry)) return entry;
     // Otherwise, treat as directory and add trailing /
     return entry + "/";

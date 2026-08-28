@@ -94,9 +94,25 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("FORBIDDEN");
     });
 
-    it("blocks writes to AGENTS.md", async () => {
-      const TMP = join(tmpdir(), "pi-tg-agents-" + Date.now());
+    it("blocks writes to .pi/ (hardcoded protected)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-pi-protected-" + Date.now());
+      await mkdir(join(TMP, ".pi"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "edit", arguments: { file_path: join(TMP, ".pi", "config.json") } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+    });
+
+    it("allows writes to AGENTS.md by default (no longer hardcoded protected)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-agents-allow-" + Date.now());
       await mkdir(TMP, { recursive: true });
+      await writeFile(join(TMP, "AGENTS.md"), "original");
 
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta();
@@ -106,7 +122,8 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      expect((result as any).block).toBe(true);
+      // AGENTS.md is no longer in default PROTECTED_PATHS → write allowed
+      expect(result).toBeUndefined();
     });
 
     it("allows writes to unprotected paths and records oldHash", async () => {
@@ -269,12 +286,12 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta();
       const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "bash", arguments: { command: "git add AGENTS.md" } };
+      ctx.toolCall = { name: "bash", arguments: { command: "git add .pi/config.json" } };
 
       // Mock execFn that simulates git add --dry-run output
       const mockExecFn: ExecFn = async (cmd, args, cwd) => {
         if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
-          return { stdout: "add 'AGENTS.md'\n", stderr: "", code: 0 };
+          return { stdout: "add '.pi/config.json'\n", stderr: "", code: 0 };
         }
         return { stdout: "", stderr: "", code: 1 };
       };
@@ -403,7 +420,7 @@ describe("createToolGuard", () => {
       // Mock execFn that simulates git diff --cached output
       const mockExecFn: ExecFn = async (cmd, args, cwd) => {
         if (cmd === "git" && args[0] === "diff" && args[1] === "--cached") {
-          return { stdout: "AGENTS.md\n", stderr: "", code: 0 };
+          return { stdout: ".pi/config.json\n", stderr: "", code: 0 };
         }
         return { stdout: "", stderr: "", code: 1 };
       };
@@ -646,11 +663,11 @@ describe("createToolGuard", () => {
       });
       const meta = makeTestMeta();
       const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "bash", arguments: { command: "git add AGENTS.md" } };
+      ctx.toolCall = { name: "bash", arguments: { command: "git add .pi/config.json" } };
 
       const mockExecFn: ExecFn = async (cmd, args, cwd) => {
         if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
-          return { stdout: "add 'AGENTS.md'\n", stderr: "", code: 0 };
+          return { stdout: "add '.pi/config.json'\n", stderr: "", code: 0 };
         }
         return { stdout: "", stderr: "", code: 1 };
       };
@@ -1456,14 +1473,14 @@ describe("createToolGuard", () => {
       "Allow edits for this session",
     ];
 
-    it("whitelist block + hardcoded protected path (AGENTS.md) + ask=true + allow_once → pass + audit allow_once", async () => {
+    it("whitelist block + hardcoded protected path (AGENTS.md via protect.paths) + ask=true + allow_once → pass + audit allow_once", async () => {
       const TMP = join(tmpdir(), "pi-tg-p1-wl-ask-hardcoded-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await writeFile(join(TMP, "AGENTS.md"), "");
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: true },
+        protect: { ask: true, paths: ["AGENTS.md"] },
       });
       // clarify: whitelist = docs/ only (does NOT include AGENTS.md)
       config.stages["clarify"] = {
@@ -1487,14 +1504,14 @@ describe("createToolGuard", () => {
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
 
-    it("whitelist block + hardcoded protected path (AGENTS.md) + ask=true + Esc → block with whitelist reason", async () => {
+    it("whitelist block + hardcoded protected path (AGENTS.md via protect.paths) + ask=true + Esc → block with whitelist reason", async () => {
       const TMP = join(tmpdir(), "pi-tg-p1-wl-ask-hardcoded-esc-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await writeFile(join(TMP, "AGENTS.md"), "");
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: true },
+        protect: { ask: true, paths: ["AGENTS.md"] },
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
@@ -1619,7 +1636,7 @@ describe("createToolGuard", () => {
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: false },
+        protect: { ask: false, paths: ["AGENTS.md"] },
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
@@ -1649,7 +1666,7 @@ describe("createToolGuard", () => {
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: true },
+        protect: { ask: true, paths: ["AGENTS.md"] },
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
@@ -1688,7 +1705,7 @@ describe("createToolGuard", () => {
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: true },
+        protect: { ask: true, paths: ["AGENTS.md"] },
       });
       // clarify: whitelist = docs/ only (does NOT include AGENTS.md)
       config.stages["clarify"] = {
@@ -1747,7 +1764,7 @@ describe("createToolGuard", () => {
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: true },
+        protect: { ask: true, paths: ["AGENTS.md"] },
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],

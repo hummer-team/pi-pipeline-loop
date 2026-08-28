@@ -19,10 +19,23 @@ describe("resolveProtectConfig", () => {
     delete (config as any).protect;
     const state = resolveProtectConfig(config, null);
     expect(state.hardcoded).toContain(".pi/");
-    expect(state.hardcoded).toContain("AGENTS.md");
+    expect(state.hardcoded).not.toContain("AGENTS.md");
     expect(state.hardcoded).toContain(".git/");
     expect(state.allow).toEqual([]);
     expect(state.gitignore).toBeNull();
+  });
+
+  it("AGENTS.md is NOT protected by default but can be added via protect.paths", () => {
+    const configDefault = makeTestConfig();
+    delete (configDefault as any).protect;
+    const stateDefault = resolveProtectConfig(configDefault, null);
+    expect(stateDefault.hardcoded).not.toContain("AGENTS.md");
+
+    const configWithAgents = makeTestConfig({
+      protect: { paths: ["AGENTS.md"] },
+    });
+    const stateWithAgents = resolveProtectConfig(configWithAgents, null);
+    expect(stateWithAgents.hardcoded).toContain("AGENTS.md");
   });
 
   it("merges user paths with hardcoded", () => {
@@ -142,19 +155,22 @@ describe("isPathAllowedWrite", () => {
 
 describe("isHardcodedProtected", () => {
   it("matches .pi/ directory", () => {
-    const hardcoded = [".pi/", "AGENTS.md", ".git/"];
+    const hardcoded = [".pi/", ".git/"];
     expect(isHardcodedProtected(".pi/agents/clarify.md", hardcoded)).toBe(true);
     expect(isHardcodedProtected(".pi", hardcoded)).toBe(true);
   });
 
-  it("matches AGENTS.md file", () => {
-    const hardcoded = [".pi/", "AGENTS.md", ".git/"];
-    expect(isHardcodedProtected("AGENTS.md", hardcoded)).toBe(true);
-    expect(isHardcodedProtected("src/AGENTS.md", hardcoded)).toBe(false);
+  it("matches AGENTS.md only when explicitly in hardcoded list", () => {
+    const withAgents = [".pi/", "AGENTS.md", ".git/"];
+    expect(isHardcodedProtected("AGENTS.md", withAgents)).toBe(true);
+    expect(isHardcodedProtected("src/AGENTS.md", withAgents)).toBe(false);
+
+    const withoutAgents = [".pi/", ".git/"];
+    expect(isHardcodedProtected("AGENTS.md", withoutAgents)).toBe(false);
   });
 
   it("matches .git/ directory", () => {
-    const hardcoded = [".pi/", "AGENTS.md", ".git/"];
+    const hardcoded = [".pi/", ".git/"];
     expect(isHardcodedProtected(".git/config", hardcoded)).toBe(true);
     expect(isHardcodedProtected(".git", hardcoded)).toBe(true);
   });
@@ -169,12 +185,12 @@ describe("isHardcodedProtected", () => {
 describe("isPathProtectedForModify", () => {
   it("blocks hardcoded paths (allow cannot exempt)", () => {
     const state: ProtectState = {
-      hardcoded: [".pi/", "AGENTS.md"],
-      allow: [".pi/", "AGENTS.md"], // Try to exempt
+      hardcoded: [".pi/", ".git/"],
+      allow: [".pi/", ".git/"], // Try to exempt
       gitignore: null,
     };
     expect(isPathProtectedForModify(".pi/test.md", state)).toBe(true);
-    expect(isPathProtectedForModify("AGENTS.md", state)).toBe(true);
+    expect(isPathProtectedForModify(".git/config", state)).toBe(true);
   });
 
   it("allows paths in allow list (exempts from gitignore)", () => {
@@ -204,12 +220,12 @@ describe("isPathProtectedForModify", () => {
 describe("isPathProtectedForGit", () => {
   it("blocks hardcoded paths", () => {
     const state: ProtectState = {
-      hardcoded: [".pi/", "AGENTS.md"],
+      hardcoded: [".pi/", ".git/"],
       allow: [],
       gitignore: null,
     };
     expect(isPathProtectedForGit(".pi/test.md", state)).toBe(true);
-    expect(isPathProtectedForGit("AGENTS.md", state)).toBe(true);
+    expect(isPathProtectedForGit(".git/config", state)).toBe(true);
   });
 
   it("blocks gitignore-matched paths even if in allow list", () => {

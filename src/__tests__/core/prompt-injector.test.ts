@@ -234,7 +234,7 @@ describe("createPromptInjector", () => {
       expect(result.systemPrompt).toContain("Protected:");
       // Should include hardcoded paths
       expect(result.systemPrompt).toContain(".pi/");
-      expect(result.systemPrompt).toContain("AGENTS.md");
+      expect(result.systemPrompt).not.toContain("AGENTS.md");
       // Should include gitignore patterns
       expect(result.systemPrompt).toContain("docs");
 
@@ -255,7 +255,7 @@ describe("createPromptInjector", () => {
       expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
       expect(result.systemPrompt).toContain("Protected:");
       expect(result.systemPrompt).toContain(".pi/");
-      expect(result.systemPrompt).toContain("AGENTS.md");
+      expect(result.systemPrompt).not.toContain("AGENTS.md");
       // Should not contain allow line (no allow configured)
       expect(result.systemPrompt).not.toContain("Allowed (editable):");
 
@@ -1102,7 +1102,7 @@ describe("createPromptInjector", () => {
       const meta = makeTestMeta({
         currentStage: "develop",
         violations: [
-          { type: "write_protected", tool: "write", detail: 'Cannot modify protected path \'.pi/config.json\'.', suggestion: "Protected paths: .pi/, AGENTS.md, .git/.", timestamp: Date.now() },
+          { type: "write_protected", tool: "write", detail: 'Cannot modify protected path \'.pi/config.json\'.', suggestion: "Protected paths: .pi/, .git/.", timestamp: Date.now() },
           { type: "git_protected", tool: "bash", detail: 'git add would stage protected path.', suggestion: "git add cannot stage protected paths.", timestamp: Date.now() },
         ],
       });
