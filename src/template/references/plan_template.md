@@ -11,12 +11,14 @@
 
 ### 目标
 xx
+
 ### 任务
 1. xx
 2. xx
-### 验收
-- `./mvnw clean compile` 零错误
-- `./mvnw clean test` 全部通过（无新增测试，类型兼容验证）
+3. 
+### 交付标准
+- `build/compile` 零错误
+- `test` 全部通过（无新增测试，类型兼容验证）
 
 ### Commit 遵循规范
 ```
