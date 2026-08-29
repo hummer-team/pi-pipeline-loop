@@ -384,18 +384,18 @@ function buildCompletedSummary(
   meta: SessionMeta,
 ): string {
   const lines: string[] = [];
-  lines.push("## 管线完成摘要");
+  lines.push("## Pipeline Completed Summary");
   lines.push("");
   lines.push(`- **pipelineId**: ${meta.pipelineId}`);
-  lines.push(`- **最终 stage**: ${meta.previousStage ?? "completed"}`);
-  lines.push(`- **质量环轮次**: ${meta.loopCycleCount ?? 0}`);
+  lines.push(`- **endStage**: ${meta.previousStage ?? "completed"}`);
+  lines.push(`- **loopCycle**: ${meta.loopCycleCount ?? 0}`);
 
   // List artifact files from summaries
   const artifactFiles = Object.entries(meta.summaries)
     .filter(([, s]) => s.status === "valid")
     .map(([stage, s]) => `- **${stage}**: ${s.path}`);
   if (artifactFiles.length > 0) {
-    lines.push("- **产物文件**:");
+    lines.push("- **Deliverable File**:");
     lines.push(...artifactFiles);
   }
 
@@ -738,5 +738,3 @@ async function buildStageDeliverables(
 
   return `# STAGE DELIVERABLES (PLUGIN)\n${value.trim()}`;
 }
-
-
