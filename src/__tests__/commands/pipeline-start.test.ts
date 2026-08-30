@@ -50,7 +50,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     const meta = makeTestMeta({ currentStage: "clarify" as any, pipelineId: undefined as any });
     const ctx = createMockCtx(meta, { selectReturn: "2. Cancel startup" });
     const cmd = createPipelineStartCommand(config);
-    const result: any = await cmd.execute({}, ctx);
+    const result: any = await cmd.execute({}, ctx as any);
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("Template residue check blocked");
@@ -69,7 +69,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
     const ctx = createMockCtx(meta);
     const cmd = createPipelineStartCommand(config);
-    const result: any = await cmd.execute({}, ctx);
+    const result: any = await cmd.execute({}, ctx as any);
 
     // pipeline-start should proceed (not blocked by gate)
     expect(result).toBeDefined();
@@ -99,7 +99,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
     const ctx = createMockCtx(meta);
     const cmd = createPipelineStartCommand(config);
-    const result: any = await cmd.execute({}, ctx);
+    const result: any = await cmd.execute({}, ctx as any);
 
     // Should succeed (not blocked by gate) — the check was short-circuited
     expect(result).toBeDefined();
@@ -135,7 +135,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     // User cancels when faced with residues
     const ctx = createMockCtx(meta, { selectReturn: "2. Cancel startup" });
     const cmd = createPipelineStartCommand(config);
-    const result: any = await cmd.execute({}, ctx);
+    const result: any = await cmd.execute({}, ctx as any);
 
     // Should be blocked because fingerprint drifted → re-check → residues found → cancel
     expect(result.success).toBe(false);
@@ -153,7 +153,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     const notifications: string[] = [];
     ctx.ui.notify = (m: string) => { notifications.push(m); };
     const cmd = createPipelineStartCommand(config);
-    const result: any = await cmd.execute({}, ctx);
+    const result: any = await cmd.execute({}, ctx as any);
 
     // Should proceed (not blocked) — degraded mode
     expect(result).toBeDefined();
@@ -175,7 +175,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
     const ctx = createMockCtx(meta);
     const cmd = createPipelineStartCommand(config);
-    const result: any = await cmd.execute({}, ctx);
+    const result: any = await cmd.execute({}, ctx as any);
 
     // Should fail with agentPath error (not template residue)
     expect(result.success).toBe(false);

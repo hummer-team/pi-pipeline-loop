@@ -40,15 +40,15 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // Pipeline status should be rendered
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("pipe-test-001");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("pipe-test-001");
     // Loop status should be rendered
-    expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+    expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
     // The output should contain the --- separator between the two paragraphs
-    expect(result.systemPrompt).toContain("---");
+    expect(result.systemPrompt!).toContain("---");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -79,13 +79,13 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // Pipeline status and write scope should be present
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
     // context_reference paragraph should be removed (not present)
-    expect(result.systemPrompt).not.toContain("REQUIRED CONTEXT FILES");
+    expect(result.systemPrompt!).not.toContain("REQUIRED CONTEXT FILES");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -111,11 +111,11 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // Should fall back to default prompt (contains Pipeline Status from default builder)
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
 
     // Audit log should contain the missing placeholder event
     const logFile = join(auditDir, getDateAuditFileName());
@@ -140,11 +140,11 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // Should use default path (develop gets loop status + pipeline status)
-    expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
-    expect(result.systemPrompt).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -174,12 +174,12 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
-    expect(result.systemPrompt).toContain("PREVIOUS VERIFICATION FAILURES");
-    expect(result.systemPrompt).toContain("[requiredFiles] Missing file");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
+    expect(result.systemPrompt!).toContain("PREVIOUS VERIFICATION FAILURES");
+    expect(result.systemPrompt!).toContain("[requiredFiles] Missing file");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -204,12 +204,12 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
     // verify_failures is null (empty array) → paragraph removed
-    expect(result.systemPrompt).not.toContain("PREVIOUS VERIFICATION FAILURES");
+    expect(result.systemPrompt!).not.toContain("PREVIOUS VERIFICATION FAILURES");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -240,11 +240,11 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES");
-    expect(result.systemPrompt).toContain("Stage skill rule: produce clarification doc");
-    expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+    expect(result.systemPrompt!).toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).toContain("Stage skill rule: produce clarification doc");
+    expect(result.systemPrompt!).not.toContain("{{stage_skill}}");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -273,14 +273,14 @@ describe("yml template rendering path", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // stage_skill is null → paragraph removed
-    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
-    expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+    expect(result.systemPrompt!).not.toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).not.toContain("{{stage_skill}}");
     // Other paragraphs remain
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -307,7 +307,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     const logFile = join(auditDir, getDateAuditFileName());
     const logContent = await readFile(logFile, "utf-8");
@@ -441,10 +441,10 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // Should fall back to default prompt
-    expect(result.systemPrompt).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
 
     const logFile = join(auditDir, getDateAuditFileName());
     const logContent = await readFile(logFile, "utf-8");
@@ -610,12 +610,12 @@ describe("violations prompt injection (Phase 5 Task 2)", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("PREVIOUS VIOLATIONS (MUST FIX)");
-    expect(result.systemPrompt).toContain("write_protected");
-    expect(result.systemPrompt).toContain("git_protected");
-    expect(result.systemPrompt).toContain('Cannot modify protected path');
+    expect(result.systemPrompt!).toContain("PREVIOUS VIOLATIONS (MUST FIX)");
+    expect(result.systemPrompt!).toContain("write_protected");
+    expect(result.systemPrompt!).toContain("git_protected");
+    expect(result.systemPrompt!).toContain('Cannot modify protected path');
   });
 
   it("does NOT inject violations section when violations is empty", async () => {
@@ -627,9 +627,9 @@ describe("violations prompt injection (Phase 5 Task 2)", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).not.toContain("PREVIOUS VIOLATIONS");
+    expect(result.systemPrompt!).not.toContain("PREVIOUS VIOLATIONS");
   });
 
   it("does NOT inject violations section when violations is undefined", async () => {
@@ -638,9 +638,9 @@ describe("violations prompt injection (Phase 5 Task 2)", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).not.toContain("PREVIOUS VIOLATIONS");
+    expect(result.systemPrompt!).not.toContain("PREVIOUS VIOLATIONS");
   });
 
   it("injects violations via yml template path when placeholder exists", async () => {
@@ -668,17 +668,17 @@ describe("violations prompt injection (Phase 5 Task 2)", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // The yml template should render the violations placeholder
     // If the template engine works, violations section should appear
     // (paragraph-level removal handles null by omitting the section)
-    if (result.systemPrompt.includes("PREVIOUS VIOLATIONS")) {
-      expect(result.systemPrompt).toContain("write_protected");
-      expect(result.systemPrompt).toContain("Cannot modify protected path.");
+    if (result.systemPrompt!.includes("PREVIOUS VIOLATIONS")) {
+      expect(result.systemPrompt!).toContain("write_protected");
+      expect(result.systemPrompt!).toContain("Cannot modify protected path.");
     }
     // If yml template not found, falls back to default path — still contains violations
-    expect(result.systemPrompt).toContain("PREVIOUS VIOLATIONS");
+    expect(result.systemPrompt!).toContain("PREVIOUS VIOLATIONS");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -714,11 +714,11 @@ describe("Phase 4: stage_executor injection", () => {
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
     // Should contain the stage executor scheduling section (Phase 0 (146): fallback now in English)
-    expect(result.systemPrompt).toContain("Stage Executor Scheduling");
-    expect(result.systemPrompt).toContain("develop-agent");
+    expect(result.systemPrompt!).toContain("Stage Executor Scheduling");
+    expect(result.systemPrompt!).toContain("develop-agent");
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });
@@ -745,12 +745,12 @@ describe("Phase 4: stage_executor injection", () => {
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
     // Should contain completed summary section
-    expect(result.systemPrompt).toContain("## Pipeline Completed Summary");
-    expect(result.systemPrompt).toContain("pipe-completed-test");
-    expect(result.systemPrompt).toContain("**endStage**");
+    expect(result.systemPrompt!).toContain("## Pipeline Completed Summary");
+    expect(result.systemPrompt!).toContain("pipe-completed-test");
+    expect(result.systemPrompt!).toContain("**endStage**");
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });
@@ -795,10 +795,10 @@ describe("Phase 0 (146): stage_deliverables injection + fallback English", () =>
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
-    expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
-    expect(result.systemPrompt).toContain("**MUST** run build");
+    expect(result.systemPrompt!).toContain("STAGE DELIVERABLES (PLUGIN)");
+    expect(result.systemPrompt!).toContain("**MUST** run build");
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });
@@ -834,11 +834,11 @@ describe("Phase 0 (146): stage_deliverables injection + fallback English", () =>
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
     // Should render successfully without the deliverables segment
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).not.toContain("STAGE DELIVERABLES (PLUGIN)");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).not.toContain("STAGE DELIVERABLES (PLUGIN)");
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });
@@ -868,11 +868,11 @@ describe("Phase 0 (146): stage_deliverables injection + fallback English", () =>
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
     // Default 10-part path should also inject the deliverables segment
-    expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
-    expect(result.systemPrompt).toContain("**MUST** commit changes");
+    expect(result.systemPrompt!).toContain("STAGE DELIVERABLES (PLUGIN)");
+    expect(result.systemPrompt!).toContain("**MUST** commit changes");
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });
@@ -893,12 +893,12 @@ describe("Phase 0 (146): stage_deliverables injection + fallback English", () =>
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
     // Fallback should be English — no Chinese characters in the executor section
     const chinesePattern = /[\u4e00-\u9fff]/;
     // Find the executor section (between "Stage Executor Scheduling" and next heading or end)
-    const executorMatch = result.systemPrompt.match(/## Stage Executor Scheduling[\s\S]*?(?=\n# |\n## (?!Stage Executor)|$)/);
+    const executorMatch = result.systemPrompt!.match(/## Stage Executor Scheduling[\s\S]*?(?=\n# |\n## (?!Stage Executor)|$)/);
     if (executorMatch) {
       expect(chinesePattern.test(executorMatch[0])).toBe(false);
     }
@@ -936,10 +936,10 @@ describe("Phase 0 (146): stage_deliverables injection + fallback English", () =>
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
-    expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
-    expect(result.systemPrompt).toContain("**MUST** produce clarification questions");
+    expect(result.systemPrompt!).toContain("STAGE DELIVERABLES (PLUGIN)");
+    expect(result.systemPrompt!).toContain("**MUST** produce clarification questions");
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });
@@ -973,10 +973,10 @@ describe("Phase 0 (146): stage_deliverables injection + fallback English", () =>
     };
 
     const hook = createPromptInjector(config);
-    const result = (await hook.handler(ctx)) as any;
+    const result = (await hook.handler(ctx as any)) as any;
 
-    expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
-    expect(result.systemPrompt).toContain("**MUST** produce a planning document");
+    expect(result.systemPrompt!).toContain("STAGE DELIVERABLES (PLUGIN)");
+    expect(result.systemPrompt!).toContain("**MUST** produce a planning document");
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });

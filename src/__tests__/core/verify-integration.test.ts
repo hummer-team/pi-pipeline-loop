@@ -156,13 +156,13 @@ describe("verify-integration", () => {
 
     // Now run prompt-injector — should include failures
     const injectorHook = createPromptInjector(config);
-    const promptResult = await injectorHook.handler({
+    const promptResult = (await injectorHook.handler({
       session: { getMeta: () => lastMeta },
-    } as any);
+    } as any))!;
 
-    expect(promptResult.systemPrompt).toContain("PREVIOUS VERIFICATION FAILURES");
-    expect(promptResult.systemPrompt).toContain("[requiredFiles]");
-    expect(promptResult.systemPrompt).toContain("missing-file.md");
+    expect(promptResult.systemPrompt!).toContain("PREVIOUS VERIFICATION FAILURES");
+    expect(promptResult.systemPrompt!).toContain("[requiredFiles]");
+    expect(promptResult.systemPrompt!).toContain("missing-file.md");
   });
 
   // Scenario E: loop-breaker detects verifyFailures → loopCount increments → freeze on overflow

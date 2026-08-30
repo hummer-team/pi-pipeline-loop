@@ -190,7 +190,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "0" }, ctx);
+      const result: any = await cmd.execute({ sub: "0" }, ctx as any);
       expect(result.success).toBe(true);
       expect(result.summary).toContain("Cancelled");
     });
@@ -209,7 +209,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "0" }, ctx);
+      const result: any = await cmd.execute({ sub: "0" }, ctx as any);
       expect(result.success).toBe(true);
       expect(result.summary).toContain("Cancelled");
     });
@@ -261,7 +261,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "0" }, ctx);
+      const result: any = await cmd.execute({ sub: "0" }, ctx as any);
 
       expect(result.success).toBe(true);
       expect(result.content).toContain("cancelled");
@@ -295,7 +295,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "0" }, ctx);
+      const result: any = await cmd.execute({ sub: "0" }, ctx as any);
 
       // Verify branch should have run and generated design verify.md
       expect(result.success).toBe(true);
@@ -328,7 +328,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "0" }, ctx);
+      const result: any = await cmd.execute({ sub: "0" }, ctx as any);
 
       expect(result.success).toBe(true);
       expect(
@@ -410,7 +410,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "0" }, ctx);
+      const result: any = await cmd.execute({ sub: "0" }, ctx as any);
 
       expect(result.success).toBe(true);
       expect(result.content).toBeDefined();
@@ -562,7 +562,7 @@ describe("createPipelineInitCommand", () => {
 
       const cmd = createPipelineInitCommand(config);
       // ctx has no session at all → getMeta() returns undefined → onMergeAsk must return "block"
-      const result: any = await cmd.execute({ sub: "1" }, {});
+      const result: any = await cmd.execute({ sub: "1" }, {} as any);
 
       expect(result.success).toBe(true);
       // develop stage should be skipped (blocked), NOT merged — count must be 0
@@ -598,7 +598,7 @@ describe("createPipelineInitCommand", () => {
 
       const { ctx, statusCalls } = makeUICtx();
       const cmd = createPipelineInitCommand(config);
-      await cmd.execute({ sub: "1" }, ctx);
+      await cmd.execute({ sub: "1" }, ctx as any);
 
       // Command-level setStage("Pipeline → init") at start, restore "Pipeline → clarify" in finally (ctx has no session → fallback)
       const texts = statusCalls.map(c => c.text);
@@ -616,7 +616,7 @@ describe("createPipelineInitCommand", () => {
 
       const { ctx, notifications, statusCalls } = makeUICtx();
       const cmd = createPipelineInitCommand(config);
-      await cmd.execute({ sub: "1" }, ctx);
+      await cmd.execute({ sub: "1" }, ctx as any);
 
       expect(notifications).toEqual([]);
       expect(statusCalls).toEqual([]);
@@ -628,7 +628,7 @@ describe("createPipelineInitCommand", () => {
 
       const cmd = createPipelineInitCommand(config);
       // ctx without ui — should not throw
-      await expect(cmd.execute({ sub: "1" }, {})).resolves.toBeDefined();
+      await expect(cmd.execute({ sub: "1" }, {} as any)).resolves.toBeDefined();
     });
   });
 
@@ -668,7 +668,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "0" }, ctx);
+      const result: any = await cmd.execute({ sub: "0" }, ctx as any);
 
       expect(result.success).toBe(true);
 
@@ -776,7 +776,7 @@ describe("createPipelineInitCommand", () => {
 
       const cmd = createPipelineInitCommand(config);
       // sub="" triggers both runDir and runVerify; option 3 in dir branch flags verifyAfter
-      const result: any = await cmd.execute("" as any, ctx);
+      const result: any = await cmd.execute("" as any, ctx as any);
 
       expect(result.success).toBe(true);
       // Verify output should be present (unified dispatch path)
@@ -997,7 +997,7 @@ describe("createPipelineInitCommand", () => {
       mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx as any);
 
       expect(result.success).toBe(true);
       // llmExtract should be "on" and llm items should be extracted
@@ -1025,7 +1025,7 @@ describe("createPipelineInitCommand", () => {
       mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx as any);
 
       expect(result.success).toBe(true);
       // LLM should have failed but hardcoded items still work (fallback)
@@ -1050,7 +1050,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx as any);
 
       expect(result.success).toBe(true);
       expect(result.content).toContain("llm: unavailable");
@@ -1072,7 +1072,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "1" }, brokenModelCtx);
+      const result: any = await cmd.execute({ sub: "1" }, brokenModelCtx as any);
 
       expect(result.success).toBe(true);
       // Should show unavailable (buildCallLLM caught the error)
@@ -1103,7 +1103,7 @@ describe("createPipelineInitCommand", () => {
       mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx as any);
 
       expect(result.success).toBe(true);
       const designResult = result.results?.find((r: any) => r.stage === "plan");
@@ -1127,7 +1127,7 @@ describe("createPipelineInitCommand", () => {
       mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "1" }, modelCtx);
+      const result: any = await cmd.execute({ sub: "1" }, modelCtx as any);
 
       expect(result.success).toBe(true);
       const designResult = result.results?.find((r: any) => r.stage === "plan");
@@ -1190,7 +1190,7 @@ describe("createPipelineInitCommand", () => {
       mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
 
       const cmd = createPipelineInitCommand(config);
-      await cmd.execute({ sub: "1" }, modelCtx);
+      await cmd.execute({ sub: "1" }, modelCtx as any);
 
       // statusCalls should contain Pipeline → init (progressStart first frame)
       const texts = statusCalls.map(c => c.text);
@@ -1240,7 +1240,7 @@ describe("createPipelineInitCommand", () => {
       mock.module("@earendil-works/pi-ai/compat", () => ({ complete: mockComplete }));
 
       const cmd = createPipelineInitCommand(config);
-      await cmd.execute({ sub: "1" }, modelCtx);
+      await cmd.execute({ sub: "1" }, modelCtx as any);
 
       // pipelineStage:false → no status calls (all PipelineUI methods are no-ops)
       expect(statusCalls).toEqual([]);
@@ -1267,7 +1267,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      await cmd.execute({ sub: "1" }, ctx);
+      await cmd.execute({ sub: "1" }, ctx as any);
 
       // Only setStage("Pipeline → init") + restore setStage("Pipeline → clarify") — no progress animation
       const texts = statusCalls.map(c => c.text);
@@ -1458,7 +1458,7 @@ describe("createPipelineInitCommand", () => {
       const mockCtx = { ui: { notify: (m: string) => { notifications.push(m); } } };
       const cmd = createPipelineInitCommand(config);
       // sub="2" → check branch (residue + conflict detection)
-      const result: any = await cmd.execute({ sub: "2" }, mockCtx);
+      const result: any = await cmd.execute({ sub: "2" }, mockCtx as any);
       // Model unavailable → TUI hint about degraded conflictCheck
       expect(result.success).toBe(true);
       const hint = notifications.find(n => n.includes("conflictCheck"));
@@ -1485,7 +1485,7 @@ describe("createPipelineInitCommand", () => {
       const notifications: string[] = [];
       const mockCtx = { ui: { notify: (m: string) => { notifications.push(m); } } };
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "1" }, mockCtx);
+      const result: any = await cmd.execute({ sub: "1" }, mockCtx as any);
       expect(result.success).toBe(true);
       // No conflictCheck hint should be emitted by verify branch
       const hint = notifications.find(n => n.includes("conflictCheck"));
@@ -1506,7 +1506,7 @@ describe("createPipelineInitCommand", () => {
       expect(json.audit?.promptSnapshot).toBe("off");
       expect(json.init?.conflictCheck).toBe("off");
 
-      const resolved = resolvePipelineConfig(json, TMP);
+      const resolved = resolvePipelineConfig(json);
       expect(resolved.audit?.promptSnapshot).toBe("off");
       expect(resolved.init?.conflictCheck).toBe("off");
     });
@@ -1518,7 +1518,7 @@ describe("createPipelineInitCommand", () => {
         stages: { clarify: { nextStage: "plan" } },
       }), "utf-8");
       const json = loadJsonConfig(jsonPath);
-      const resolved = resolvePipelineConfig(json, TMP);
+      const resolved = resolvePipelineConfig(json);
       expect(resolved.audit?.promptSnapshot).toBe("full");
       expect(resolved.init?.conflictCheck).toBe("model");
     });
@@ -1645,7 +1645,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "2" }, mockCtx);
+      const result: any = await cmd.execute({ sub: "2" }, mockCtx as any);
 
       expect(result.success).toBe(true);
       // Conflict detection output should appear
@@ -1712,7 +1712,7 @@ describe("createPipelineInitCommand", () => {
       };
 
       const cmd = createPipelineInitCommand(config);
-      const result: any = await cmd.execute({ sub: "2" }, mockCtx);
+      const result: any = await cmd.execute({ sub: "2" }, mockCtx as any);
 
       expect(result.success).toBe(true);
       expect(result.content).toContain("Conflict Detection");
@@ -1882,7 +1882,7 @@ describe("Phase 6 (162): template confirm config", () => {
     const content = await fs.readFile(distPath, "utf-8");
     const raw = JSON.parse(content);
 
-    const config = resolvePipelineConfig(raw, process.cwd());
+    const config = resolvePipelineConfig(raw);
     expect(config.stages.plan.confirm?.mode).toBe("manual");
     expect(config.stages.review.confirm?.mode).toBe("manual");
     expect(config.confirmOverflow).toBe("ask");

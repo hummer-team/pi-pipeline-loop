@@ -29,7 +29,7 @@ function createCtx(meta: SessionMeta) {
   };
 }
 
-function makeViolation(type: ViolationItem["type"] = "tool_not_allowed"): Omit<ViolationItem, "timestamp"> {
+function makeViolation(type: ViolationItem["type"] = "write_protected"): Omit<ViolationItem, "timestamp"> {
   return { type, tool: "write", detail: `Test ${type} violation detail.` };
 }
 
@@ -48,12 +48,12 @@ describe("recordViolation", () => {
     const meta = makeTestMeta();
     const ctx = createCtx(meta);
 
-    const item: ViolationItem = { ...makeViolation("tool_not_allowed"), timestamp: Date.now() };
+    const item: ViolationItem = { ...makeViolation("write_protected"), timestamp: Date.now() };
     await recordViolation(ctx as any, meta, item);
 
     expect(meta.violations).toBeDefined();
     expect(meta.violations!.length).toBe(1);
-    expect(meta.violations![0].type).toBe("tool_not_allowed");
+    expect(meta.violations![0].type).toBe("write_protected");
     expect(meta.violations![0].tool).toBe("write");
   });
 
@@ -62,12 +62,12 @@ describe("recordViolation", () => {
     const meta = makeTestMeta();
     const ctx = createCtx(meta);
 
-    await recordViolation(ctx as any, meta, { ...makeViolation("tool_not_allowed"), timestamp: Date.now() });
-    await recordViolation(ctx as any, meta, { ...makeViolation("bash_prefix"), timestamp: Date.now() });
+    await recordViolation(ctx as any, meta, { ...makeViolation("write_protected"), timestamp: Date.now() });
+    await recordViolation(ctx as any, meta, { ...makeViolation("bash_destructive"), timestamp: Date.now() });
     await recordViolation(ctx as any, meta, { ...makeViolation("write_protected"), timestamp: Date.now() });
 
     expect(meta.violations!.length).toBe(3);
-    expect(meta.violations!.map(v => v.type)).toEqual(["tool_not_allowed", "bash_prefix", "write_protected"]);
+    expect(meta.violations!.map(v => v.type)).toEqual(["write_protected", "bash_destructive", "write_protected"]);
   });
 
   it("handles undefined initial violations array", async () => {
@@ -89,7 +89,7 @@ describe("recordViolation", () => {
     await initAuditLog(config);
 
     const item: ViolationItem = {
-      type: "bash_prefix",
+      type: "bash_destructive",
       tool: "bash",
       detail: "Bash command not allowed.",
       timestamp: Date.now(),
@@ -99,7 +99,7 @@ describe("recordViolation", () => {
     const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("pipeline_violation");
-    expect(logContent).toContain("bash_prefix");
+    expect(logContent).toContain("bash_destructive");
     expect(logContent).toContain("Bash command not allowed.");
     expect(logContent).toContain("count=1");
   });
@@ -109,8 +109,8 @@ describe("checkViolationBreaker", () => {
   it("does NOT freeze when violations count < DEFAULT_MAX_VIOLATIONS", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ violations: [
-      { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
-      { type: "bash_prefix", tool: "bash", detail: "d2", timestamp: Date.now() },
+      { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
+      { type: "bash_destructive", tool: "bash", detail: "d2", timestamp: Date.now() },
     ]});
     const ctx = createCtx(meta);
 
@@ -125,8 +125,8 @@ describe("checkViolationBreaker", () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({
       violations: [
-        { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
-        { type: "bash_prefix", tool: "bash", detail: "d2", timestamp: Date.now() },
+        { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
+        { type: "bash_destructive", tool: "bash", detail: "d2", timestamp: Date.now() },
         { type: "write_protected", tool: "edit", detail: "d3", timestamp: Date.now() },
       ],
     });
@@ -142,8 +142,8 @@ describe("checkViolationBreaker", () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({
       violations: [
-        { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
-        { type: "bash_prefix", tool: "bash", detail: "d2", timestamp: Date.now() },
+        { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
+        { type: "bash_destructive", tool: "bash", detail: "d2", timestamp: Date.now() },
         { type: "write_protected", tool: "edit", detail: "d3", timestamp: Date.now() },
       ],
     });
@@ -177,8 +177,8 @@ describe("violations lifecycle — cleared on transition", () => {
       flowState: "blocked",
       blockedReason: "violation_overflow",
       violations: [
-        { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
-        { type: "bash_prefix", tool: "bash", detail: "d2", timestamp: Date.now() },
+        { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
+        { type: "bash_destructive", tool: "bash", detail: "d2", timestamp: Date.now() },
         { type: "write_protected", tool: "edit", detail: "d3", timestamp: Date.now() },
       ],
     });
@@ -199,8 +199,8 @@ describe("violations lifecycle — cleared on transition", () => {
       flowState: "blocked",
       blockedReason: "violation_overflow",
       violations: [
-        { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
-        { type: "bash_prefix", tool: "bash", detail: "d2", timestamp: Date.now() },
+        { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
+        { type: "bash_destructive", tool: "bash", detail: "d2", timestamp: Date.now() },
         { type: "write_protected", tool: "edit", detail: "d3", timestamp: Date.now() },
       ],
     });
@@ -223,8 +223,8 @@ describe("violations lifecycle — cleared on transition", () => {
       flowState: "blocked",
       blockedReason: "violation_overflow",
       violations: [
-        { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
-        { type: "bash_prefix", tool: "bash", detail: "d2", timestamp: Date.now() },
+        { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
+        { type: "bash_destructive", tool: "bash", detail: "d2", timestamp: Date.now() },
         { type: "write_protected", tool: "edit", detail: "d3", timestamp: Date.now() },
       ],
     });
@@ -245,8 +245,8 @@ describe("violations lifecycle — cleared on transition", () => {
       flowState: "blocked",
       blockedReason: "violation_overflow",
       violations: [
-        { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
-        { type: "bash_prefix", tool: "bash", detail: "d2", timestamp: Date.now() },
+        { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
+        { type: "bash_destructive", tool: "bash", detail: "d2", timestamp: Date.now() },
         { type: "write_protected", tool: "edit", detail: "d3", timestamp: Date.now() },
       ],
     });
@@ -266,7 +266,7 @@ describe("violations lifecycle — cleared on transition", () => {
     const meta = makeTestMeta({
       currentStage: "clarify",
       violations: [
-        { type: "tool_not_allowed", tool: "write", detail: "d1", timestamp: Date.now() },
+        { type: "write_protected", tool: "write", detail: "d1", timestamp: Date.now() },
       ],
     });
     const ctx = createCtx(meta);

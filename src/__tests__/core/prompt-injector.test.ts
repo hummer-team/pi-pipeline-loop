@@ -42,12 +42,12 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("REQUIRED CONTEXT FILES");
-    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES");
-    expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
-    expect(result.systemPrompt).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("REQUIRED CONTEXT FILES");
+    expect(result.systemPrompt!).toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
   });
 
   it("skips domain skill when requireDomain is false", async () => {
@@ -56,9 +56,9 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).not.toContain("BUSINESS DOMAIN RULES");
+    expect(result.systemPrompt!).not.toContain("BUSINESS DOMAIN RULES");
   });
 
   it("skips loop status for non-loop stages", async () => {
@@ -67,9 +67,9 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).not.toContain("LOOP ENGINEERING STATUS");
+    expect(result.systemPrompt!).not.toContain("LOOP ENGINEERING STATUS");
   });
 
   it("includes loop status for fix stage", async () => {
@@ -84,9 +84,9 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+    expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
   });
 
   it("includes pipeline status in every prompt", async () => {
@@ -95,10 +95,10 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("pipe-test-001");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("pipe-test-001");
   });
 
   it("handles missing stage skill file gracefully", async () => {
@@ -111,11 +111,11 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).not.toContain("Skill file not found at");
+    expect(result.systemPrompt!).not.toContain("Skill file not found at");
     // With null return, the prompt should not include any skill-related text
-    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).not.toContain("STAGE-SPECIFIC RULES");
   });
 
   it("shows pending validation when previous summary is pending", async () => {
@@ -130,9 +130,9 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("YES (Validate before proceed)");
+    expect(result.systemPrompt!).toContain("YES (Validate before proceed)");
   });
 
   it("includes verification failures in prompt when verifyFailures exist", async () => {
@@ -147,11 +147,11 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("PREVIOUS VERIFICATION FAILURES");
-    expect(result.systemPrompt).toContain("[requiredFiles] Missing: docs/commit.md");
-    expect(result.systemPrompt).toContain("[requiredGit] No commit within 10min");
+    expect(result.systemPrompt!).toContain("PREVIOUS VERIFICATION FAILURES");
+    expect(result.systemPrompt!).toContain("[requiredFiles] Missing: docs/commit.md");
+    expect(result.systemPrompt!).toContain("[requiredGit] No commit within 10min");
   });
 
   it("does not include verification failures section when verifyFailures is empty", async () => {
@@ -163,9 +163,9 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).not.toContain("PREVIOUS VERIFICATION FAILURES");
+    expect(result.systemPrompt!).not.toContain("PREVIOUS VERIFICATION FAILURES");
   });
 
   it("loader default skillPath resolves correctly under real .pi/skills/ layout (no double prefix)", async () => {
@@ -185,11 +185,11 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // Skill content should be injected successfully (no double prefix bug)
-    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES");
-    expect(result.systemPrompt).toContain("Clarify Skill");
+    expect(result.systemPrompt!).toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).toContain("Clarify Skill");
   });
 
   it("includes Part7 verification tool guidance when verify.mode is 'tool'", async () => {
@@ -202,11 +202,11 @@ describe("createPromptInjector", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
-    expect(result.systemPrompt).toContain("VERIFICATION MODE: TOOL");
-    expect(result.systemPrompt).toContain("VERIFICATION MODE: TOOL");
-    expect(result.systemPrompt).toContain("stage_advance");
+    expect(result.systemPrompt!).toContain("VERIFICATION MODE: TOOL");
+    expect(result.systemPrompt!).toContain("VERIFICATION MODE: TOOL");
+    expect(result.systemPrompt!).toContain("stage_advance");
   });
 
   describe("dynamic protection paths in loop status", () => {
@@ -224,19 +224,19 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // Should contain LOOP ENGINEERING STATUS
-      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
       // Should list allow first
-      expect(result.systemPrompt).toContain("Allowed (editable): src/template/");
+      expect(result.systemPrompt!).toContain("Allowed (editable): src/template/");
       // Should list protected paths
-      expect(result.systemPrompt).toContain("Protected:");
+      expect(result.systemPrompt!).toContain("Protected:");
       // Should include hardcoded paths
-      expect(result.systemPrompt).toContain(".pi/");
-      expect(result.systemPrompt).not.toContain("AGENTS.md");
+      expect(result.systemPrompt!).toContain(".pi/");
+      expect(result.systemPrompt!).not.toContain("AGENTS.md");
       // Should include gitignore patterns
-      expect(result.systemPrompt).toContain("docs");
+      expect(result.systemPrompt!).toContain("docs");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -250,14 +250,14 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
-      expect(result.systemPrompt).toContain("Protected:");
-      expect(result.systemPrompt).toContain(".pi/");
-      expect(result.systemPrompt).not.toContain("AGENTS.md");
+      expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt!).toContain("Protected:");
+      expect(result.systemPrompt!).toContain(".pi/");
+      expect(result.systemPrompt!).not.toContain("AGENTS.md");
       // Should not contain allow line (no allow configured)
-      expect(result.systemPrompt).not.toContain("Allowed (editable):");
+      expect(result.systemPrompt!).not.toContain("Allowed (editable):");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -271,10 +271,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
-      expect(result.systemPrompt).toContain("Protected:");
+      expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt!).toContain("Protected:");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -288,9 +288,9 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).not.toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt!).not.toContain("LOOP ENGINEERING STATUS");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -303,11 +303,11 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("FROZEN");
-      expect(result.systemPrompt).toContain("loop_overflow");
-      expect(result.systemPrompt).toContain("ctrl+enter");
+      expect(result.systemPrompt!).toContain("FROZEN");
+      expect(result.systemPrompt!).toContain("loop_overflow");
+      expect(result.systemPrompt!).toContain("ctrl+enter");
     });
 
     it("injects FROZEN hint with custom shortcut key", async () => {
@@ -316,10 +316,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("FROZEN");
-      expect(result.systemPrompt).toContain("alt+x");
+      expect(result.systemPrompt!).toContain("FROZEN");
+      expect(result.systemPrompt!).toContain("alt+x");
     });
 
     it("does not inject FROZEN hint when pipeline is running", async () => {
@@ -328,9 +328,9 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).not.toContain("FROZEN");
+      expect(result.systemPrompt!).not.toContain("FROZEN");
     });
   });
 
@@ -346,10 +346,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
-      expect(result.systemPrompt).toContain("Write Scope: docs/, doc/, documentation/");
+      expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt!).toContain("Write Scope: docs/, doc/, documentation/");
       // Git read-only hint removed in Phase 0 — will be re-added in Phase 1 with stage-based logic
     });
 
@@ -363,10 +363,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
-      expect(result.systemPrompt).toContain("Write Scope: docs/");
+      expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt!).toContain("Write Scope: docs/");
       // Git read-only hint removed in Phase 0 — will be re-added in Phase 1 with stage-based logic
     });
 
@@ -380,10 +380,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
-      expect(result.systemPrompt).toContain("Write Scope: docs/");
+      expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt!).toContain("Write Scope: docs/");
     });
 
     it("develop stage: loop status includes Write Scope line (no standalone section)", async () => {
@@ -402,13 +402,13 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // develop/fix: write scope is in LOOP ENGINEERING STATUS
-      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
-      expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
+      expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt!).toContain("Write Scope: all (global protect applies)");
       // No standalone STAGE WRITE SCOPE section for loop stages
-      expect(result.systemPrompt).not.toContain("# STAGE WRITE SCOPE");
+      expect(result.systemPrompt!).not.toContain("# STAGE WRITE SCOPE");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -429,10 +429,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("LOOP ENGINEERING STATUS");
-      expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
+      expect(result.systemPrompt!).toContain("LOOP ENGINEERING STATUS");
+      expect(result.systemPrompt!).toContain("Write Scope: all (global protect applies)");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -447,9 +447,9 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("Write Scope: none (write forbidden)");
+      expect(result.systemPrompt!).toContain("Write Scope: none (write forbidden)");
     });
 
     it("stage with full access shows 'all (global protect applies)'", async () => {
@@ -462,11 +462,11 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("Write Scope: all (global protect applies)");
+      expect(result.systemPrompt!).toContain("Write Scope: all (global protect applies)");
       // clarify is git read-only regardless of allowedWritePaths (phase 1 stage-based logic)
-      expect(result.systemPrompt).toContain("Git: read-only");
+      expect(result.systemPrompt!).toContain("Git: read-only");
     });
   });
 
@@ -481,18 +481,18 @@ describe("createPromptInjector", () => {
       };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // Should contain the pi base prompt
-      expect(result.systemPrompt).toContain(basePrompt);
+      expect(result.systemPrompt!).toContain(basePrompt);
       // Should contain the plugin prompt parts
-      expect(result.systemPrompt).toContain("Pipeline Status");
-      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt!).toContain("Pipeline Status");
+      expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
       // Should contain the separator
-      expect(result.systemPrompt).toContain("\n\n---\n\n");
+      expect(result.systemPrompt!).toContain("\n\n---\n\n");
       // Base should come before plugin content
-      const baseIndex = result.systemPrompt.indexOf(basePrompt);
-      const pipelineIndex = result.systemPrompt.indexOf("Pipeline Status");
+      const baseIndex = result.systemPrompt!.indexOf(basePrompt);
+      const pipelineIndex = result.systemPrompt!.indexOf("Pipeline Status");
       expect(baseIndex).toBeLessThan(pipelineIndex);
     });
 
@@ -503,14 +503,14 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // Should still contain plugin prompt parts
-      expect(result.systemPrompt).toContain("Pipeline Status");
-      expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+      expect(result.systemPrompt!).toContain("Pipeline Status");
+      expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
       // Prompt should not start with a base prefix + separator
       // It should start directly with plugin content (no "base\n\n---\n\n" prefix)
-      expect(result.systemPrompt.startsWith("You are")).toBe(false);
+      expect(result.systemPrompt!.startsWith("You are")).toBe(false);
     });
 
     it("returns only plugin prompt when ctx.getSystemPrompt returns empty string", async () => {
@@ -522,9 +522,9 @@ describe("createPromptInjector", () => {
       };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("Pipeline Status");
+      expect(result.systemPrompt!).toContain("Pipeline Status");
     });
   });
 
@@ -538,14 +538,14 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // Should contain the requirement doc path in context files
-      expect(result.systemPrompt).toContain("REQUIRED CONTEXT FILES");
-      expect(result.systemPrompt).toContain("/my/project/docs/requirement.md");
-      expect(result.systemPrompt).toContain("MUST READ FIRST");
+      expect(result.systemPrompt!).toContain("REQUIRED CONTEXT FILES");
+      expect(result.systemPrompt!).toContain("/my/project/docs/requirement.md");
+      expect(result.systemPrompt!).toContain("MUST READ FIRST");
       // Should NOT contain full-text requirement document
-      expect(result.systemPrompt).not.toContain("# USER REQUIREMENT DOCUMENT");
+      expect(result.systemPrompt!).not.toContain("# USER REQUIREMENT DOCUMENT");
     });
 
     it("non-clarify stage does not include requirementDoc path even if set", async () => {
@@ -557,10 +557,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // Should NOT contain the requirement doc path for non-clarify stages
-      expect(result.systemPrompt).not.toContain("/my/project/docs/requirement.md");
+      expect(result.systemPrompt!).not.toContain("/my/project/docs/requirement.md");
     });
 
     it("clarify stage without requirementDoc does not add extra context file", async () => {
@@ -574,10 +574,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // Without previous summary or requirementDoc, context_reference should be null
-      expect(result.systemPrompt).not.toContain("REQUIRED CONTEXT FILES");
+      expect(result.systemPrompt!).not.toContain("REQUIRED CONTEXT FILES");
     });
   });
 
@@ -600,14 +600,14 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // The shared path should appear only once in the REQUIRED CONTEXT FILES
-      const occurrences = (result.systemPrompt.match(new RegExp(sharedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
+      const occurrences = (result.systemPrompt!.match(new RegExp(sharedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
       expect(occurrences).toBe(1);
 
       // The other file should also appear
-      expect(result.systemPrompt).toContain("/other/file.md");
+      expect(result.systemPrompt!).toContain("/other/file.md");
     });
 
     it("keeps all files when prevSummary and contextFiles are different", async () => {
@@ -625,11 +625,11 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // Both files should be listed
-      expect(result.systemPrompt).toContain("develop.md");
-      expect(result.systemPrompt).toContain("plan.md");
+      expect(result.systemPrompt!).toContain("develop.md");
+      expect(result.systemPrompt!).toContain("plan.md");
     });
   });
 
@@ -640,10 +640,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta }, getSystemPrompt: () => "" };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("commitIds");
-      expect(result.systemPrompt).toContain("generate_stage_summary");
+      expect(result.systemPrompt!).toContain("commitIds");
+      expect(result.systemPrompt!).toContain("generate_stage_summary");
     });
 
     it("fix stage executor prompt includes commitIds requirement", async () => {
@@ -652,10 +652,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta }, getSystemPrompt: () => "" };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
-      expect(result.systemPrompt).toContain("commitIds");
-      expect(result.systemPrompt).toContain("generate_stage_summary");
+      expect(result.systemPrompt!).toContain("commitIds");
+      expect(result.systemPrompt!).toContain("generate_stage_summary");
     });
 
     it("review stage executor prompt does NOT include commitIds requirement", async () => {
@@ -664,10 +664,10 @@ describe("createPromptInjector", () => {
       const ctx = { session: { getMeta: () => meta }, getSystemPrompt: () => "" };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // review stage should not have commitIds requirement
-      expect(result.systemPrompt).not.toContain("commitIds");
+      expect(result.systemPrompt!).not.toContain("commitIds");
     });
   });
 
@@ -697,15 +697,15 @@ describe("Phase 5 (162): smart confirm guidance injection", () => {
     const meta = makeTestMeta({ currentStage: "plan" });
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler({
+    const result = (await hook.handler({
       session: { getMeta: () => meta, updateMeta: () => meta },
       ui: { notify: () => {}, setStatus: () => {} },
       getSystemPrompt: () => "base prompt",
-    } as any);
+    } as any))!;
 
-    expect(result.systemPrompt).toContain("SMART CONFIRM PROTOCOL");
-    expect(result.systemPrompt).toContain("needConfirm: true");
-    expect(result.systemPrompt).toContain("智能确认：复杂");
+    expect(result.systemPrompt!).toContain("SMART CONFIRM PROTOCOL");
+    expect(result.systemPrompt!).toContain("needConfirm: true");
+    expect(result.systemPrompt!).toContain("智能确认：复杂");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -721,13 +721,13 @@ describe("Phase 5 (162): smart confirm guidance injection", () => {
     const meta = makeTestMeta({ currentStage: "plan" });
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler({
+    const result = (await hook.handler({
       session: { getMeta: () => meta, updateMeta: () => meta },
       ui: { notify: () => {}, setStatus: () => {} },
       getSystemPrompt: () => "base prompt",
-    } as any);
+    } as any))!;
 
-    expect(result.systemPrompt).not.toContain("SMART CONFIRM PROTOCOL");
+    expect(result.systemPrompt!).not.toContain("SMART CONFIRM PROTOCOL");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -745,13 +745,13 @@ describe("Phase 5 (162): smart confirm guidance injection", () => {
     const meta = makeTestMeta({ currentStage: "develop" });
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler({
+    const result = (await hook.handler({
       session: { getMeta: () => meta, updateMeta: () => meta },
       ui: { notify: () => {}, setStatus: () => {} },
       getSystemPrompt: () => "base prompt",
-    } as any);
+    } as any))!;
 
-    expect(result.systemPrompt).not.toContain("SMART CONFIRM PROTOCOL");
+    expect(result.systemPrompt!).not.toContain("SMART CONFIRM PROTOCOL");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -802,14 +802,14 @@ describe("Phase 0: idempotent stage-skill injection", () => {
     };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // stage_skill paragraph should be removed (idempotent hit)
-    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
-    expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+    expect(result.systemPrompt!).not.toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).not.toContain("{{stage_skill}}");
     // Other paragraphs should remain
-    expect(result.systemPrompt).toContain("Pipeline Status");
-    expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -848,13 +848,13 @@ describe("Phase 0: idempotent stage-skill injection", () => {
     };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // stage_skill paragraph should be removed (fingerprint hit)
-    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES (CLARIFY)");
-    expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+    expect(result.systemPrompt!).not.toContain("STAGE-SPECIFIC RULES (CLARIFY)");
+    expect(result.systemPrompt!).not.toContain("{{stage_skill}}");
     // Pipeline status should still be present
-    expect(result.systemPrompt).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -892,12 +892,12 @@ describe("Phase 0: idempotent stage-skill injection", () => {
     };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // stage_skill should be injected (no idempotent hit)
-    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES (CLARIFY)");
-    expect(result.systemPrompt).toContain("Design Skill");
-    expect(result.systemPrompt).toContain("Short content.");
+    expect(result.systemPrompt!).toContain("STAGE-SPECIFIC RULES (CLARIFY)");
+    expect(result.systemPrompt!).toContain("Design Skill");
+    expect(result.systemPrompt!).toContain("Short content.");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -939,11 +939,11 @@ describe("Phase 0: idempotent stage-skill injection", () => {
     };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // stage_skill should be injected (no match — plan skill != design skill)
-    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES (CLARIFY)");
-    expect(result.systemPrompt).toContain("Clarify Skill");
+    expect(result.systemPrompt!).toContain("STAGE-SPECIFIC RULES (CLARIFY)");
+    expect(result.systemPrompt!).toContain("Clarify Skill");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -978,14 +978,14 @@ describe("Phase 0: idempotent stage-skill injection", () => {
     };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // Base should be preserved at the start
-    expect(result.systemPrompt.startsWith("UNIQUE BASE PROMPT PREFIX FOR TESTING")).toBe(true);
+    expect(result.systemPrompt!.startsWith("UNIQUE BASE PROMPT PREFIX FOR TESTING")).toBe(true);
     // Separator between base and plugin prompt
-    expect(result.systemPrompt).toContain("\n\n---\n\n");
+    expect(result.systemPrompt!).toContain("\n\n---\n\n");
     // Plugin prompt should still contain pipeline status
-    expect(result.systemPrompt).toContain("Pipeline Status");
+    expect(result.systemPrompt!).toContain("Pipeline Status");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -1019,10 +1019,10 @@ describe("Phase 1: empty content guard", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // No STAGE-SPECIFIC RULES paragraph when skill content is whitespace-only
-    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).not.toContain("STAGE-SPECIFIC RULES");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -1043,10 +1043,10 @@ describe("Phase 1: empty content guard", () => {
     const ctx = { session: { getMeta: () => meta } };
 
     const hook = createPromptInjector(config);
-    const result = await hook.handler(ctx as any);
+    const result = (await hook.handler(ctx as any))!;
 
     // No STAGE-SPECIFIC RULES paragraph when skill content is empty
-    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt!).not.toContain("STAGE-SPECIFIC RULES");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -1075,10 +1075,10 @@ describe("Phase 1: empty content guard", () => {
       const ctx = { session: { getMeta: () => meta } };
 
       const hook = createPromptInjector(config);
-      const result = await hook.handler(ctx as any);
+      const result = (await hook.handler(ctx as any))!;
 
       // No BUSINESS DOMAIN RULES paragraph when domain content is whitespace-only
-      expect(result.systemPrompt).not.toContain("BUSINESS DOMAIN RULES");
+      expect(result.systemPrompt!).not.toContain("BUSINESS DOMAIN RULES");
     } finally {
       // Always clean up the domain file we created in home directory
       await rm(domainFile, { force: true });
