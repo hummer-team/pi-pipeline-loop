@@ -1569,6 +1569,81 @@ describe("createPromptInjector", () => {
       resetPromptConfigCache();
       await rm(TMP, { recursive: true, force: true });
     });
+
+    it("renders plugin deliverables segment for clarify stage when yml contains {{stage_deliverables}}", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p0-clarify-deliv-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // Write yml with stage_deliverables placeholder + stage_deliverable_clarify key
+      const refDir = join(TMP, ".pi", "references");
+      await mkdir(refDir, { recursive: true });
+      const ymlContent = [
+        "clarify: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "  ---",
+        "  {{stage_deliverables}}",
+        "stage_deliverable_clarify: |",
+        "  - **MUST** produce clarification questions",
+      ].join("\n");
+      await writeFile(join(refDir, "pipeline-stage-prompt.yml"), ymlContent);
+
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base prompt",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
+      expect(result.systemPrompt).toContain("**MUST** produce clarification questions");
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("renders plugin deliverables segment for plan stage when yml contains {{stage_deliverables}}", async () => {
+      const TMP = join(tmpdir(), "pi-pi-p0-plan-deliv-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const refDir = join(TMP, ".pi", "references");
+      await mkdir(refDir, { recursive: true });
+      const ymlContent = [
+        "plan: |",
+        "  {{pipeline_status}}",
+        "  ---",
+        "  {{stage_write_scope}}",
+        "  ---",
+        "  {{stage_deliverables}}",
+        "stage_deliverable_plan: |",
+        "  - **MUST** produce a planning document",
+      ].join("\n");
+      await writeFile(join(refDir, "pipeline-stage-prompt.yml"), ymlContent);
+
+      const meta = makeTestMeta({ currentStage: "plan" });
+      const ctx = {
+        session: { getMeta: () => meta },
+        getSystemPrompt: () => "base prompt",
+      };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx)) as any;
+
+      expect(result.systemPrompt).toContain("STAGE DELIVERABLES (PLUGIN)");
+      expect(result.systemPrompt).toContain("**MUST** produce a planning document");
+
+      resetPromptConfigCache();
+      await rm(TMP, { recursive: true, force: true });
+    });
   });
 });
 

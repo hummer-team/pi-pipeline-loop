@@ -1235,16 +1235,21 @@ describe("verify-generator", () => {
       expect(keywordItems[0].target).toContain("pipeline");
     });
 
-    it("loadPluginDeliverables returns empty for stages without plugin key (clarify)", async () => {
+    it("loadPluginDeliverables returns mechanism items for clarify stage", async () => {
       resetPromptConfigCache();
       const ymlContent = [
-        "stage_deliverable_develop: |",
-        "  - **MUST** run build",
+        "stage_deliverable_clarify: |",
+        "  - **MUST** produce clarification questions and record answers",
+        "  - **MUST** write `## 模型确认` marker to the requirement document via write/edit upon full-und? confirmation",
       ].join("\n");
       await writePluginYmlAndStack(ymlContent);
 
       const items = await loadPluginDeliverables(TMP, "clarify");
-      expect(items).toEqual([]);
+      // Should return the mechanism-coupled deliverables for clarify
+      expect(items.length).toBeGreaterThan(0);
+      // Should contain keyword items (no command/git items for clarify)
+      const keywordItems = items.filter(i => i.type === "keyword");
+      expect(keywordItems.length).toBeGreaterThan(0);
     });
 
     it("loadPluginDeliverables falls back to keyword when tech stack detection fails", async () => {

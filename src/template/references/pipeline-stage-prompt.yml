@@ -27,11 +27,13 @@
 #       executes the stage and how the main thread orchestrates the handoff.
 #     — Injected via {{stage_executor}} placeholder (clarify: optional, not in CRITICAL_PLACEHOLDERS).
 #
-#   Per-stage plugin default deliverables (3) — Phase 0 (146):
-#     stage_deliverable_develop, stage_deliverable_review, stage_deliverable_fix
+#   Per-stage plugin default deliverables (5) — Phase 0 (146):
+#     stage_deliverable_clarify, stage_deliverable_plan, stage_deliverable_develop,
+#     stage_deliverable_review, stage_deliverable_fix
 #     — Read by verify-generator as plugin default delivery items (verify rule layer).
 #     — Also injected via {{stage_deliverables}} placeholder into system prompt (inform agent).
-#     — clarify/plan have no plugin default deliverables (no code artifacts/commit/build).
+#     — clarify/plan have mechanism-coupled deliverables (model confirmation, planning docs).
+#     — develop/review/fix have code artifact deliverables (build, test, commit, review report).
 #
 #   Global verify extract fallback (1):
 #     verify_extract
@@ -43,7 +45,7 @@
 #     — Fallback chain: conflict_check_prompt_{stage} → conflict_check_prompt → DEFAULT_CONFLICT_CHECK_PROMPT.
 #     — Not a stage template placeholder; read directly by runConflictCheck.
 #
-# Total: 25 keys (5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 5 stage_executor_{stage} + 3 stage_deliverable_{stage} + 1 verify_extract + 1 conflict_check_prompt)
+# Total: 27 keys (5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 5 stage_executor_{stage} + 5 stage_deliverable_{stage} + 1 verify_extract + 1 conflict_check_prompt)
 #
 # Placeholder Protocol:
 #   Placeholders use the format {{key}} and are replaced at runtime with
@@ -59,7 +61,7 @@
 #   {{verify_tool_guidance}}    — Part 7: verification tool mode guidance
 #   {{stage_write_scope}}       — Part 8: write scope for non-loop stages
 #   {{stage_executor}}          — Part 9: stage executor scheduling (all 5 stages; clarify optional)
-#   {{stage_deliverables}}      — Part 10: plugin default deliverables (develop/review/fix; optional)
+#   {{stage_deliverables}}      — Part 10: plugin default deliverables (all 5 stages; optional for clarify/plan)
 #   {{smart_confirm_guidance}}  — Part 11: smart confirm complexity protocol (plan/review smart mode only)
 #
 # Paragraph Format:
@@ -106,6 +108,8 @@ clarify: |
   {{stage_write_scope}}
   ---
   {{stage_executor}}
+  ---
+  {{stage_deliverables}}
 
 plan: |
   {{context_reference}}
@@ -123,6 +127,8 @@ plan: |
   {{stage_write_scope}}
   ---
   {{stage_executor}}
+  ---
+  {{stage_deliverables}}
   ---
   {{smart_confirm_guidance}}
 
@@ -229,13 +235,22 @@ stage_executor_fix: |
   **Context**: {context_arg}
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Per-stage Plugin Default Deliverables (3 keys) — Phase 0 (146)
+# Per-stage Plugin Default Deliverables (5 keys) — Phase 0 (146)
 # Read by verify-generator as plugin default delivery items (verify rule layer).
 # Also injected via {{stage_deliverables}} placeholder into system prompt (inform agent).
-# clarify/plan have no plugin default deliverables (no code artifacts/commit/build).
+# clarify/plan have mechanism-coupled deliverables (model confirmation, planning docs).
+# develop/review/fix have code artifact deliverables (build, test, commit, review report).
 # Items use **MUST** markers so extractHardcodedItems can parse them.
 # Trigger: /pipeline-init 1 verify generation (loadPluginDeliverables); {{stage_deliverables}} system-prompt injection
 # ═══════════════════════════════════════════════════════════════════════════════
+
+stage_deliverable_clarify: |
+  - **MUST** produce clarification questions and record answers
+  - **MUST** write `## 模型确认` marker to the requirement document via write/edit upon full-und? confirmation
+
+stage_deliverable_plan: |
+  - **MUST** produce a planning document with implementation steps
+  - **MUST** include phase breakdown and task descriptions
 
 stage_deliverable_develop: |
   - **MUST** run the project build command and confirm it passes (command determined by project tech stack)
@@ -245,11 +260,14 @@ stage_deliverable_develop: |
 
 stage_deliverable_review: |
   - **MUST** include `pipeline: {pipelineId}` in the artifact file header
+  - **MUST** perform code review and produce a review report
+  - **MUST** include a verdict line: either "结论：通过" or "结论：不通过" in the review report
 
 stage_deliverable_fix: |
   - **MUST** run the project build command and confirm it passes (command determined by project tech stack)
   - **MUST** run the project unit test command and confirm it passes (command determined by project tech stack)
   - **MUST** include `pipeline: {pipelineId}` in the artifact file header
+  - **MUST** fix the identified issues from the review report
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Per-stage Verify Execution Prompts (5 keys)
