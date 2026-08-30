@@ -301,3 +301,17 @@ export async function safeWritePromptSnapshot(
 export function __resetAuditDirPath(): void {
   auditDirPath = "";
 }
+
+/**
+ * Encode a value for single-line `key=value |` audit format.
+ * Aligns with the existing protect-ask convention (| → %7C, = → %3D, newline → space).
+ *
+ * Audit log lines use `|` as field separator and `=` as key-value separator.
+ * Values containing these characters would corrupt the line format if not escaped.
+ *
+ * @param value - Raw string value to encode
+ * @returns Encoded string safe for audit log embedding
+ */
+export function encodeAuditValue(value: string): string {
+  return value.replace(/\|/g, "%7C").replace(/=/g, "%3D").replace(/\n/g, " ");
+}

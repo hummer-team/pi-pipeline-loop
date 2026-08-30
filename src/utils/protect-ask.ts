@@ -19,7 +19,7 @@
  */
 
 import type { SessionMeta } from "../types";
-import { safeWriteAuditLog } from "./auditLog";
+import { safeWriteAuditLog, encodeAuditValue } from "./auditLog";
 
 /**
  * Prompt the user with a 3-choice dialog for a protected-path decision.
@@ -54,7 +54,7 @@ export async function askProtectDecision(
   }
 
   // Encode file path for audit (| → %7C, = → %3D)
-  const encodedFile = relPath.replace(/\|/g, "%7C").replace(/=/g, "%3D");
+  const encodedFile = encodeAuditValue(relPath);
 
   let action: string;
   let decision: "allow" | "block";
@@ -128,7 +128,7 @@ export async function askCommandDecision(
   }
 
   // Encode command for audit (| → %7C, = → %3D, newlines → space)
-  const encodedCmd = command.replace(/\|/g, "%7C").replace(/=/g, "%3D").replace(/\n/g, " ");
+  const encodedCmd = encodeAuditValue(command);
 
   let action: string;
   let decision: "allow" | "block";

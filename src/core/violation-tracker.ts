@@ -14,7 +14,7 @@
 
 import type { PipelineConfig, SessionMeta, ViolationItem } from "../types";
 import { DEFAULT_MAX_VIOLATIONS } from "../constants";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, encodeAuditValue } from "../utils/auditLog";
 import { freezeAndPrompt, type FlowStateCtx } from "./flow-state";
 
 /**
@@ -38,7 +38,7 @@ export async function recordViolation(
     stage: meta.currentStage,
     type: item.type,
     tool: item.tool ?? "",
-    detail: item.detail,
+    detail: encodeAuditValue(item.detail),
     count: String(violations.length),
   }, "warn");
 }

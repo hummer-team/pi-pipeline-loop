@@ -44,7 +44,7 @@ import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
-import { isDestructiveCommand, getDestructiveReason, isSystemPath } from "../utils/destructive-command";
+import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
@@ -202,7 +202,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // Prompt user with 3-choice dialog
               const decision = await askCommandDecision(ctx, meta, command);
               if (decision === "block") {
-                const reason = `FORBIDDEN: Destructive command blocked — ${getDestructiveReason(command)}`;
+                const reason = buildBlockedReason(command);
                 await trackViolation({
                   type: "bash_destructive",
                   tool: "bash",
@@ -215,7 +215,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // "allow" → fall through to file protection checks
             } else {
               // protect.ask=false: block destructive commands by default
-              const reason = `FORBIDDEN: Destructive command blocked — ${getDestructiveReason(command)}. Enable protect.ask for user confirmation.`;
+              const reason = buildBlockedReason(command) + ". Enable protect.ask for user confirmation.";
               await trackViolation({
                 type: "bash_destructive",
                 tool: "bash",

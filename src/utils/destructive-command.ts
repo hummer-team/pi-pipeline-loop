@@ -173,3 +173,15 @@ export function getDestructiveReason(command: string): string {
 
   return "Command matches destructive pattern";
 }
+
+/**
+ * Build the model-visible blocked reason containing the exact command.
+ * Escapes embedded double quotes for readability; command is NOT truncated.
+ *
+ * @param command - The destructive command that was blocked
+ * @returns Formatted reason string with command text and matched pattern description
+ */
+export function buildBlockedReason(command: string): string {
+  const escaped = command.replace(/"/g, '\\"');
+  return `FORBIDDEN: Destructive command blocked — "${escaped}": ${getDestructiveReason(command)}`;
+}

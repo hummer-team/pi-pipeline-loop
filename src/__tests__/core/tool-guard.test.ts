@@ -5,7 +5,7 @@ import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import type { ExecFn } from "../../types";
 
 describe("createToolGuard", () => {
@@ -2056,6 +2056,118 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("Destructive command");
 
       await rm(TMP2, { recursive: true, force: true });
+    });
+
+    // ─── Q3-C: Command text embedded in reason ──────────────────────────────
+    it("ask=false block: reason contains exact command text", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-cmd-reason-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2, protect: { ask: false } });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      // Q3-C: reason must contain the exact command wrapped in quotes
+      expect((result as any).reason).toContain('"rm -rf /"');
+      expect((result as any).reason).toContain("Destructive command blocked");
+      // Verify no dead fields
+      expect((result as any).blockedCommand).toBeUndefined();
+      expect((result as any).suggestAsk).toBeUndefined();
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("violation detail contains the blocked command", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-cmd-detail-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP2, protect: { ask: false } });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "sudo rm -rf /var" } };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeDefined();
+      expect(finalMeta.violations.length).toBe(1);
+      // Violation detail must contain the command for model feedback
+      expect(finalMeta.violations[0].detail).toContain("sudo rm -rf /var");
+      expect(finalMeta.violations[0].type).toBe("bash_destructive");
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    it("system-path block: reason contains exact command text", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-cmd-sys-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP2,
+        protect: { ask: false },
+        stages: {
+          develop: {
+            agentPath: "a.md",
+            skillPath: "s.md",
+            nextStage: "review",
+            requireDomain: false,
+            allowedWritePaths: ["**"],
+          },
+        } as any,
+      });
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /etc/passwd" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      // Q3-C: reason must contain the command
+      expect((result as any).reason).toContain('"rm -rf /etc/passwd"');
+
+      await rm(TMP2, { recursive: true, force: true });
+    });
+
+    // ─── Q3-C: Audit encoding for special characters ─────────────────────────
+    it("audit encodes command containing | and = characters", async () => {
+      const TMP2 = join(tmpdir(), "pi-tg-audit-enc-" + Date.now());
+      await mkdir(TMP2, { recursive: true });
+      await initAuditLog({ projectRoot: TMP2 } as any);
+
+      const config = makeTestConfig({ projectRoot: TMP2, auditDir: ".pi/audit", protect: { ask: false } });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      // Command with | and = that would break audit key=value|key format
+      ctx.toolCall = { name: "bash", arguments: { command: "sudo chmod a=rwx /x" } };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      // Read the audit log and verify encoding
+      const auditFile = join(TMP2, ".pi/audit", getDateAuditFileName());
+      const auditContent = await readFile(auditFile, "utf-8");
+      const violationLines = auditContent.split("\n").filter(l => l.includes("pipeline_violation"));
+      expect(violationLines.length).toBeGreaterThan(0);
+
+      // The detail= value must contain %3D (encoded =) and no raw = in the value part
+      const detailMatch = violationLines[0].match(/detail=([^\|]+)/);
+      expect(detailMatch).toBeTruthy();
+      const encodedDetail = detailMatch![1];
+      // Must contain encoded = as %3D
+      expect(encodedDetail).toContain("%3D");
+      // Must NOT contain a raw = that would be misinterpreted as a key-value separator
+      // (the only = should be in "detail=" prefix which we already matched past)
+      expect(encodedDetail).not.toMatch(/[^%]=[^%]/);
+
+      await rm(TMP2, { recursive: true, force: true });
+      __resetAuditDirPath();
     });
   });
 });
