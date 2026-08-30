@@ -3,6 +3,8 @@ import type { RuntimeCtx } from "../core/runtime-ctx";
 import { PROTECTED_PATHS } from "../constants";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 
 export const STAGE_LIST: PipelineStage[] = [
   "clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed",
@@ -176,3 +178,13 @@ export function makeMockSessionManager(entries: unknown[] = []) {
 }
 
 export { PROTECTED_PATHS };
+
+/**
+ * Write a pipeline-stage-prompt.yml file to the project's .pi/references/ directory.
+ * Shared helper to avoid duplicate definitions across test files.
+ */
+export async function writePromptYml(projectRoot: string, content: string): Promise<void> {
+  const refsDir = join(projectRoot, ".pi", "references");
+  await mkdir(refsDir, { recursive: true });
+  await writeFile(join(refsDir, "pipeline-stage-prompt.yml"), content, "utf-8");
+}
