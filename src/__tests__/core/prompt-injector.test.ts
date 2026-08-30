@@ -1896,3 +1896,65 @@ describe("Phase 0: idempotent stage-skill injection", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 });
+
+// ─── Phase 1: Empty content guard ───────────────────────────────────────────
+
+describe("Phase 1: empty content guard", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
+  });
+
+  it("stage skill with whitespace-only content returns null (no STAGE-SPECIFIC RULES paragraph)", async () => {
+    const TMP = join(tmpdir(), "pi-pi-empty-stageskill-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "empty-skill");
+    await mkdir(skillDir, { recursive: true });
+    // Write whitespace-only content
+    await writeFile(join(skillDir, "SKILL.md"), "   \n\n  \t  \n");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "empty-skill/SKILL.md",
+    } as any;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = { session: { getMeta: () => meta } };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // No STAGE-SPECIFIC RULES paragraph when skill content is whitespace-only
+    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("stage skill with empty content returns null", async () => {
+    const TMP = join(tmpdir(), "pi-pi-empty-stageskill-empty-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "truly-empty");
+    await mkdir(skillDir, { recursive: true });
+    // Write truly empty content
+    await writeFile(join(skillDir, "SKILL.md"), "");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "truly-empty/SKILL.md",
+    } as any;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = { session: { getMeta: () => meta } };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // No STAGE-SPECIFIC RULES paragraph when skill content is empty
+    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

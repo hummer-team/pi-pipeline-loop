@@ -108,6 +108,35 @@ describe("verify-generator", () => {
       const body = await readSkillBody(".pi/skills/missing/SKILL.md", TMP);
       expect(body).toBeNull();
     });
+
+    it("returns null for file with only whitespace content", async () => {
+      const skillDir = path.join(TMP, ".pi", "skills", "empty-ws");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), "   \n\n  \t  \n", "utf-8");
+
+      const body = await readSkillBody(".pi/skills/empty-ws/SKILL.md", TMP);
+      expect(body).toBeNull();
+    });
+
+    it("returns null for file with only frontmatter (no body)", async () => {
+      const skillDir = path.join(TMP, ".pi", "skills", "frontmatter-only");
+      await fs.mkdir(skillDir, { recursive: true });
+      const content = "---\nname: test\nversion: 1.0\n---\n";
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), content, "utf-8");
+
+      const body = await readSkillBody(".pi/skills/frontmatter-only/SKILL.md", TMP);
+      expect(body).toBeNull();
+    });
+
+    it("returns null for file with frontmatter followed by whitespace only", async () => {
+      const skillDir = path.join(TMP, ".pi", "skills", "frontmatter-ws");
+      await fs.mkdir(skillDir, { recursive: true });
+      const content = "---\nname: test\n---\n   \n\n  \t  ";
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), content, "utf-8");
+
+      const body = await readSkillBody(".pi/skills/frontmatter-ws/SKILL.md", TMP);
+      expect(body).toBeNull();
+    });
   });
 
   describe("extractHardcodedItems", () => {

@@ -105,6 +105,10 @@ async function buildDomainSkill(
 
   try {
     const domainContent = await fs.readFile(domainSkillPath, "utf-8");
+    // Guard: skip injection when file exists but content is empty/whitespace-only
+    if (!domainContent.trim()) {
+      return null;
+    }
     return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${domainContent}`;
   } catch {
     // Domain skill file doesn't exist — skip this part
@@ -172,7 +176,7 @@ export function isStageSkillInBase(
  * @param stageConfig - Current stage configuration
  * @param meta - Current session metadata
  * @param base - The base system prompt from ctx.getSystemPrompt()
- * @returns Prompt section string, or null if skill already in base or file missing
+ * @returns Prompt section string, or null if skill already in base, empty, or file missing
  */
 async function buildStageSkill(
   config: PipelineConfig,
@@ -189,6 +193,11 @@ async function buildStageSkill(
 
   try {
     const skillContent = await fs.readFile(stageSkillPath, "utf-8");
+
+    // Guard: skip injection when file exists but content is empty/whitespace-only
+    if (!skillContent.trim()) {
+      return null;
+    }
 
     // Idempotent check: if skill already in base, return null to avoid duplication
     // skillName is the first segment of skillPath (e.g. "design/SKILL.md" → "design")

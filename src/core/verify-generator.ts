@@ -209,7 +209,7 @@ export function resolveTargetStages(
  *
  * @param skillPath - Path to the skill file (relative to projectRoot)
  * @param projectRoot - Absolute project root path
- * @returns The skill file body content (without frontmatter), or null if file doesn't exist
+ * @returns The skill file body content (without frontmatter), or null if file doesn't exist or body is empty
  */
 export async function readSkillBody(
   skillPath: string,
@@ -222,7 +222,12 @@ export async function readSkillBody(
   try {
     const content = await fs.readFile(absPath, "utf-8");
     // Strip YAML frontmatter header (--- ... ---)
-    return content.replace(/^---[\s\S]*?---\s*/m, "").trim();
+    const body = content.replace(/^---[\s\S]*?---\s*/m, "").trim();
+    // Guard: return null when body is empty/whitespace-only (even if file exists)
+    if (!body) {
+      return null;
+    }
+    return body;
   } catch {
     return null;
   }
