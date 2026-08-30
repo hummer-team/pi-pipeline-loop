@@ -25,18 +25,9 @@ userInvocable: false
 5. **每个 phase 完成后，必须**：
    - 按 plan 文档中 commit 内容提交代码
    - 参考模板 `@.pi/references/develop_commit_template.md`
-    - 新建 `docs/design/{plan文件名}_commit.md`，把 git commit id 追加到 `dev commit id` 行
-6. **声明式交接**：开发交付完成（`_commit.md` 已建）后进入 review 阶段
+   - 新建 `docs/design/{plan文件名}_commit.md`，把 git commit id 追加到 `dev commit id` 行
+6. **交付规范**：参考 `@.pi/references/develop_deliverable_template.md`
 
-### 交付规范
-每次代码交付必须包含以下结构：
-```
-✅ 修改摘要：（1-3句话说明描述问题原因及修复思路）
-✅ 影响范围：（列出修改的文件）
-✅ 构建验证：（粘贴项目构建命令成功输出）
-✅ 测试用例：（列出 A/B/C 测试场景及预期结果）
-⚠️ 已知风险：（如有潜在副作用，必须说明）
-```
 ---
 ## 交付项
 <!-- Template-TODO: 补充项目业务交付项（插件默认交付项如 build/test/commit/pipeline 标记由插件注入段提供） -->

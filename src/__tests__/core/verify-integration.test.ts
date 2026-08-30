@@ -397,19 +397,17 @@ describe("verify-integration", () => {
     const generated = results.filter(r => r.status === "generated");
     const skipped = results.filter(r => r.status === "skipped");
 
-    // All 5 active stages should generate verify.md (template skills have **必须** markers)
+    // All 5 active stages should generate verify.md
+    // After Phase 3 migration: SKILLs use Template-TODO placeholders (no **必须**),
+    // plugin deliverables come from yml stage_deliverable_{stage}
     expect(generated.length).toBe(5);
     expect(skipped.length).toBe(0);
 
-    // Verify no keyword-only items leaked through (phrase-bold filtering works).
-    // develop no longer ships **必须** (switched to Template-TODO placeholder),
-    // so its hardcodedCount can be 0 — but plugin default deliverables cover it.
+    // After Phase 3 migration: all stages rely on plugin deliverables from yml
+    // (SKILLs no longer contain **必须** markers — they moved to yml)
     for (const r of generated) {
-      if (r.stage === "develop") {
-        expect((r.hardcodedCount ?? 0) + (r.pluginCount ?? 0)).toBeGreaterThan(0);
-      } else {
-        expect(r.hardcodedCount).toBeGreaterThan(0);
-      }
+      // Every stage should have pluginCount > 0 (deliverables from yml)
+      expect(r.pluginCount ?? 0).toBeGreaterThan(0);
     }
   });
 

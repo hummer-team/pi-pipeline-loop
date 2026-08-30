@@ -50,11 +50,3 @@ userInvocable: false
 
 ### 6. not commit design and plan docs
 1. 设计、规划文档 local 存储，不需要 commit
-
-### 7. 声明式交接
-- 完成 _plan.md 并经确认门确认后，进入 develop 阶段（确认门协议由插件注入段提供）
-
----
-## 交付项
-- **必须** 规划文档
-- **必须** 实现步骤

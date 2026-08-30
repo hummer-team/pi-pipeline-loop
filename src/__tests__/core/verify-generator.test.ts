@@ -1114,12 +1114,14 @@ describe("verify-generator", () => {
       });
     }
 
-    // review/fix/plan/design must still contain business **必须** markers
+    // review/fix/plan/design: deliverables moved to yml (Phase 3 migration)
+    // SKILLs no longer contain **必须** business markers for deliverables
     for (const stage of ["review", "fix", "plan", "design"]) {
-      it(`${stage}/SKILL.md still contains business **必须** delivery markers`, async () => {
+      it(`${stage}/SKILL.md no longer contains **必须** delivery markers (moved to yml)`, async () => {
         const content = await readTemplate(`${stage}/SKILL.md`);
         if (!content) return;
-        expect(content).toContain("**必须**");
+        // After Phase 3 migration, deliverables are in yml, not in SKILL
+        expect(content).not.toContain("**必须**");
       });
     }
 
@@ -1131,6 +1133,31 @@ describe("verify-generator", () => {
       expect(content).toContain("Template-TODO");
       expect(content).not.toContain("**必须**");
     });
+
+    // ── Phase 3: SKILL content extraction migration tests ──────────────────
+
+    it("design/SKILL.md no longer contains inline clarification format template or ## 模型确认 protocol text", async () => {
+      const content = await readTemplate("design/SKILL.md");
+      if (!content) return;
+      // After Phase 3 migration, clarification format is in clarify_template.md
+      expect(content).not.toContain("## 问题 1");
+      // The SKILL should NOT contain the inline protocol block (## 模型确认 followed by the marker content)
+      // It may reference clarify_template.md which contains the protocol
+      expect(content).not.toContain("- full-und? 理解确认：是");
+      expect(content).not.toContain("- 确认时间：");
+      // But it should reference the template file
+      expect(content).toContain("@.pi/references/clarify_template.md");
+    });
+
+    for (const stage of ["plan", "develop", "review", "fix"]) {
+      it(`${stage}/SKILL.md no longer contains stage_advance/nextStage declarative handover text`, async () => {
+        const content = await readTemplate(`${stage}/SKILL.md`);
+        if (!content) return;
+        // After Phase 3 migration, declarative handover is handled by {{stage_executor}}
+        expect(content).not.toContain("stage_advance");
+        expect(content).not.toContain("nextStage:");
+      });
+    }
 
     it("extractHardcodedItems finds **必须** items from template SKILL content", () => {
       const sampleContent = [

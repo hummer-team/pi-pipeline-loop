@@ -1401,13 +1401,13 @@ describe("createPipelineInitCommand", () => {
         expect(content).not.toContain("loop_check");
         expect(content).not.toContain("nextStage:");
         expect(content).not.toMatch(/pipeline:\s*\{pipelineId\}/);
-        // 147 Phase 1: develop uses Template-TODO placeholder (no **必须**);
-        // review/fix still carry business **必须** markers.
+        // Phase 3: all SKILLs no longer contain **必须** delivery markers (moved to yml)
+        // develop uses Template-TODO placeholder for business-specific items
         if (stage === "develop") {
           expect(content).toContain("Template-TODO");
-        } else {
-          expect(content).toContain("**必须**");
         }
+        // All stages: no **必须** delivery markers (now in yml stage_deliverable_{stage})
+        expect(content).not.toContain("**必须**");
       }
     });
   });
