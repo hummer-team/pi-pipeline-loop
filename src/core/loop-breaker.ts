@@ -8,6 +8,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
+import type { RuntimeCtx } from "./runtime-ctx";
 import { getFileHash } from "../utils/hash";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
@@ -57,7 +58,7 @@ function isTestCommand(command: string): boolean {
  * @param config - The pipeline configuration
  * @returns A Hook object for the "tool_result" event
  */
-export function createLoopBreaker(config: PipelineConfig): Hook {
+export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
   const ui = createPipelineUI(config);
   // Tracks the verifyAttempts value at which loopCount was last incremented
   // via write/edit throttling. Prevents multiple increments within the same
@@ -66,19 +67,21 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
 
   return {
     event: "tool_result",
-    handler: async (ctx: any): Promise<void> => {
+    handler: async (ctx: RuntimeCtx): Promise<void> => {
       const meta = ctx.session.getMeta() as SessionMeta;
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
+      // tool_result events always populate toolCall (buildRuntimeCtx guarantees it)
+      const toolCall = ctx.toolCall!;
 
       // ── 0. Assistant message collection removed (Q4-A) ──────────
       // Phase 3 will use extractAssistantMessages(ctx) for real-time extraction.
 
       // ── 1. Test failure counting and circuit breaker ─────────────────
       if (
-        ctx.toolCall.name === "bash" &&
-        typeof ctx.toolCall.arguments?.command === "string" &&
-        isTestCommand(ctx.toolCall.arguments.command as string)
+        toolCall.name === "bash" &&
+        typeof toolCall.arguments?.command === "string" &&
+        isTestCommand(toolCall.arguments.command as string)
       ) {
         if (
           ctx.result?.exitCode !== 0 &&
@@ -111,11 +114,11 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
         meta.verifyFailures &&
         meta.verifyFailures.length > 0 &&
         (meta.currentStage === "develop" || meta.currentStage === "fix") &&
-        (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit" || ctx.toolCall.name === "bash")
+        (toolCall.name === "write" || toolCall.name === "edit" || toolCall.name === "bash")
       ) {
-        const isBashFailure = ctx.toolCall.name === "bash" && ctx.result?.exitCode !== 0;
+        const isBashFailure = toolCall.name === "bash" && ctx.result?.exitCode !== 0;
         const isWriteEditSuccess =
-          (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit") &&
+          (toolCall.name === "write" || toolCall.name === "edit") &&
           ctx.result?.success;
 
         // Throttle write/edit increments: only increment once per verifyAttempts cycle
@@ -148,12 +151,12 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
 
       // ── 2. File modification diff archiving ──────────────────────────
       if (
-        (ctx.toolCall.name === "write" || ctx.toolCall.name === "edit") &&
+        (toolCall.name === "write" || toolCall.name === "edit") &&
         ctx.result?.success
       ) {
-        const filePath = (ctx.toolCall.arguments.file_path ||
-          ctx.toolCall.arguments.path) as string;
-        const oldHash = (ctx.toolCall as any).oldHash as string | undefined;
+        const filePath = (toolCall.arguments.file_path ||
+          toolCall.arguments.path) as string;
+        const oldHash = (toolCall as any).oldHash as string | undefined;
         const newHash = await getFileHash(filePath);
 
         if (oldHash && oldHash !== newHash) {
@@ -187,7 +190,7 @@ export function createLoopBreaker(config: PipelineConfig): Hook {
 
       // ── 3. Plan step counting (plan_run_script) ───────────────────────
       if (
-        ctx.toolCall.name === "plan_run_script" &&
+        toolCall.name === "plan_run_script" &&
         meta.currentStage === "plan" &&
         ctx.result?.success
       ) {

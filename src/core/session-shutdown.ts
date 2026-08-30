@@ -12,6 +12,7 @@
  */
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
+import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { markPipelineAborted } from "./flow-state";
@@ -28,11 +29,11 @@ import { markPipelineAborted } from "./flow-state";
  * @param config - The pipeline configuration
  * @returns A Hook object for the "session_shutdown" event
  */
-export function createSessionShutdown(config: PipelineConfig): Hook {
+export function createSessionShutdown(config: PipelineConfig): Hook<"session_shutdown"> {
   const ui = createPipelineUI(config);
   return {
     event: "session_shutdown",
-    handler: async (ctx: any): Promise<void> => {
+    handler: async (ctx: RuntimeCtx): Promise<void> => {
       const meta = ctx.session.getMeta() as SessionMeta;
 
       await writeAuditLog("session_shutdown", {

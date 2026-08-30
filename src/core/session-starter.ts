@@ -74,7 +74,7 @@ async function loadDomainFromFile(domainFilePath: string): Promise<DomainConfig>
  * @param config - The pipeline configuration
  * @returns A Hook object for the "session_start" event
  */
-export function createSessionStarter(config: PipelineConfig): Hook {
+export function createSessionStarter(config: PipelineConfig): Hook<"session_start"> {
   const ui = createPipelineUI(config);
   return {
     event: "session_start",

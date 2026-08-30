@@ -40,11 +40,11 @@ import {
 export function createAgentSettled(
   config: PipelineConfig,
   verifyOptions?: RunVerificationOptions,
-): Hook {
+): Hook<"agent_settled"> {
   const ui = createPipelineUI(config);
   return {
     event: "agent_settled",
-    handler: async (ctx: any): Promise<void> => {
+    handler: async (ctx: RuntimeCtx): Promise<void> => {
       const meta = ctx.session.getMeta() as SessionMeta;
 
       // 1. Write audit log
@@ -99,7 +99,7 @@ export function createAgentSettled(
       }
 
       // Phase 4 (162): confirm gate wiring.
-      const ctxWithPi = { ...ctx, pi: (ctx as RuntimeCtx).pi };
+      const ctxWithPi = { ...ctx, pi: ctx.pi };
 
       // 2. Auto-verification
       const stageConfig = config.stages[meta.currentStage];

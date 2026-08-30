@@ -20,12 +20,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
+import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
 import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, DEFAULT_DECISION_SHORTCUT } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
 import { isFrozen } from "./flow-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
+import type { RuntimeCtx } from "./runtime-ctx";
 
 /**
  * Builds Part 1: Context Reference.
@@ -489,10 +491,10 @@ function buildCompletedSummary(
  * @param config - The pipeline configuration
  * @returns A Hook object for the "before_agent_start" event
  */
-export function createPromptInjector(config: PipelineConfig): Hook {
+export function createPromptInjector(config: PipelineConfig): Hook<"before_agent_start"> {
   return {
     event: "before_agent_start",
-    handler: async (ctx: any): Promise<{ systemPrompt: string }> => {
+    handler: async (ctx: RuntimeCtx): Promise<BeforeAgentStartEventResult | void> => {
       const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
 

@@ -5,9 +5,25 @@
  * and configuration interfaces that projects use to customize their pipeline.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, BeforeAgentStartEventResult, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 export type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RuntimeCtx } from "./core/runtime-ctx";
+
+/**
+ * Local structural equivalent of the SDK's ToolResultEventResult.
+ * Defined locally because the SDK (v0.84.3) does not re-export this type
+ * from its main entry point. The shape matches `dist/core/extensions/types.d.ts`.
+ * When the SDK adds it to the public exports, this alias can be replaced by
+ * a direct `import type`.
+ */
+export interface ToolResultEventResult {
+  /** Replacement content for the tool result message */
+  content?: unknown[];
+  /** Replacement details for the tool result */
+  details?: unknown;
+  /** Override the error flag */
+  isError?: boolean;
+}
 
 // ─── Audit Log Types ──────────────────────────────────────────────────────────
 
@@ -729,16 +745,45 @@ export interface PipelineJsonConfig {
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────
 
 /**
- * Internal hook interface for pi SDK lifecycle events.
- * The handler receives a RuntimeCtx (built by the registration bridge in Phase 2).
- * Concrete event types: "session_start", "before_agent_start", "tool_call", "tool_result".
+ * Union of all hook event names handled by the pipeline plugin.
+ * Each event maps to a specific SDK lifecycle point with a corresponding result type.
  */
-export interface Hook {
-  /** The pi SDK event name to listen for */
-  event: string;
+export type HookEvent =
+  | "session_start"
+  | "before_agent_start"
+  | "tool_call"
+  | "tool_result"
+  | "agent_settled"
+  | "session_shutdown";
 
-  /** The handler function invoked when the event fires. May return a value (e.g., systemPrompt). */
-  handler: (ctx: RuntimeCtx) => unknown;
+/**
+ * Maps each HookEvent to its SDK event result type.
+ * Events with no result value map to `void`; events with SDK result types
+ * use `import type` from the SDK (or local structural equivalent).
+ */
+export type HookResultMap = {
+  session_start: void;
+  before_agent_start: BeforeAgentStartEventResult;
+  tool_call: ToolCallEventResult;
+  tool_result: ToolResultEventResult;
+  agent_settled: void;
+  session_shutdown: void;
+};
+
+/**
+ * Internal hook interface for pi SDK lifecycle events.
+ * Generic over the event type `E` so each factory can narrow the handler's
+ * return type to the corresponding SDK result type.
+ *
+ * Default type parameter `HookEvent` keeps `Hook[]` arrays backward-compatible
+ * (unions all event/result pairs).
+ */
+export interface Hook<E extends HookEvent = HookEvent> {
+  /** The pi SDK event name to listen for */
+  event: E;
+
+  /** The handler function invoked when the event fires. Returns the event result or void. */
+  handler: (ctx: RuntimeCtx) => Promise<HookResultMap[E] | void>;
 }
 
 /**

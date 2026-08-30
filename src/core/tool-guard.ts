@@ -24,6 +24,8 @@
 
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta, ExecFn, ViolationItem } from "../types";
+import type { RuntimeCtx } from "./runtime-ctx";
+import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { getFileHash } from "../utils/hash";
 import {
   resolveProtectConfig,
@@ -129,7 +131,7 @@ import { askProtectDecision } from "../utils/protect-ask";
  * @param deps - Optional dependencies (execFn for git operations)
  * @returns A Hook object for the "tool_call" event
  */
-export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): Hook {
+export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): Hook<"tool_call"> {
   const ui = createPipelineUI(config);
   const execFn = deps?.execFn;
 
@@ -165,10 +167,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
   return {
     event: "tool_call",
-    handler: async (ctx: any): Promise<unknown> => {
+    handler: async (ctx: RuntimeCtx): Promise<ToolCallEventResult | void> => {
       const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
-      const { name: toolName, arguments: args } = ctx.toolCall;
+      // tool_call events always populate toolCall (buildRuntimeCtx guarantees it)
+      const { name: toolName, arguments: args } = ctx.toolCall!;
 
       // Helper: record a violation and check the breaker (pure recording, no block side effects)
       async function trackViolation(item: Omit<ViolationItem, "timestamp">): Promise<void> {
@@ -207,7 +210,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   suggestion: `Use protect.ask dialog to allow, or avoid dangerous commands.`,
                 });
                 ui.notify(ctx, reason);
-                return { block: true, reason, suggestAsk: true, blockedCommand: command };
+                return { block: true, reason };
               }
               // "allow" → fall through to file protection checks
             } else {
@@ -220,7 +223,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 suggestion: `Avoid dangerous commands or enable protect.ask in config.`,
               });
               ui.notify(ctx, reason);
-              return { block: true, reason, blockedCommand: command };
+              return { block: true, reason };
             }
           }
           // Command is destructive but already allowed for session → continue

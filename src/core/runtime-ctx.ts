@@ -44,6 +44,14 @@ export interface RuntimeCtx {
    */
   pi?: ExtensionAPI;
 
+  /**
+   * Access to the current effective system prompt from the SDK ExtensionContext.
+   * Optional because test mocks may not provide it; consumers should use `?.()`
+   * to guard against undefined. Used by prompt-injector to read the base prompt
+   * for idempotent stage-skill detection.
+   */
+  getSystemPrompt?: () => string;
+
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
   _ctx: ExtensionContext;
 }
@@ -73,7 +81,14 @@ export function buildRuntimeCtx(
   const ui = ctx.ui;
 
   // 138: Forward pi so that hooks (e.g., agent_settled) can call pi.sendUserMessage
-  const rctx: RuntimeCtx = { session, ui, _ctx: ctx, pi };
+  // Forward getSystemPrompt (bound to ctx) so prompt-injector can read the base prompt
+  const rctx: RuntimeCtx = {
+    session,
+    ui,
+    _ctx: ctx,
+    pi,
+    getSystemPrompt: ctx.getSystemPrompt?.bind(ctx),
+  };
 
   if (event && typeof event === "object") {
     // Store raw event for downstream hooks (e.g., session_shutdown reads reason)
