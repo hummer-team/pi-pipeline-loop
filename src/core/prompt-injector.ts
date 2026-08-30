@@ -113,18 +113,72 @@ async function buildDomainSkill(
 }
 
 /**
+ * Strips YAML frontmatter from content.
+ * Used for fingerprint normalization in idempotent stage-skill detection.
+ *
+ * @param content - Raw file content potentially containing YAML frontmatter
+ * @returns Content with frontmatter removed
+ */
+export function stripFrontmatter(content: string): string {
+  return content.replace(/^---[\s\S]*?---\s*/m, "");
+}
+
+/**
+ * Checks if a stage skill is already present in the base system prompt.
+ * Used for idempotent injection to avoid duplicate skill content when
+ * pi-subagents preload (channel B) and plugin {{stage_skill}} (channel A)
+ * both inject the same skill into the same context.
+ *
+ * Detection strategy (priority order):
+ * 1. Marker check: base contains "# Preloaded Skill: {skillName}"
+ * 2. Fingerprint fallback: normalized skill content (trim + strip frontmatter,
+ *    take >=200 char substring) found in base
+ *
+ * @param base - The base system prompt from ctx.getSystemPrompt()
+ * @param skillContent - The raw skill file content
+ * @param skillName - The skill name (first segment of skillPath, e.g. "design")
+ * @returns true if skill is already in base, false otherwise
+ */
+export function isStageSkillInBase(
+  base: string,
+  skillContent: string,
+  skillName: string,
+): boolean {
+  // Strategy 1: marker check (highest priority)
+  if (base.includes(`# Preloaded Skill: ${skillName}`)) {
+    return true;
+  }
+
+  // Strategy 2: fingerprint fallback
+  // Normalize skill content: strip frontmatter, trim, take >=200 char substring
+  const normalized = stripFrontmatter(skillContent).trim();
+  if (normalized.length >= 200) {
+    const fingerprint = normalized.substring(0, 200);
+    if (base.includes(fingerprint)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Builds Part 3: Stage Skill.
  * Reads the stage-specific skill file from `{projectRoot}/.pi/skills/{skillPath}`.
+ * Implements idempotent injection: if the skill is already present in the base
+ * system prompt (from pi-subagents preload), returns null to avoid duplication.
  *
  * @param config - Pipeline configuration
  * @param stageConfig - Current stage configuration
  * @param meta - Current session metadata
- * @returns Prompt section string
+ * @param base - The base system prompt from ctx.getSystemPrompt()
+ * @returns Prompt section string, or null if skill already in base or file missing
  */
 async function buildStageSkill(
   config: PipelineConfig,
   stageConfig: StageConfig,
   meta: SessionMeta,
+  base: string,
 ): Promise<string | null> {
   const stageSkillPath = path.join(
     config.projectRoot,
@@ -135,6 +189,14 @@ async function buildStageSkill(
 
   try {
     const skillContent = await fs.readFile(stageSkillPath, "utf-8");
+
+    // Idempotent check: if skill already in base, return null to avoid duplication
+    // skillName is the first segment of skillPath (e.g. "design/SKILL.md" → "design")
+    const skillName = stageConfig.skillPath.split("/")[0];
+    if (isStageSkillInBase(base, skillContent, skillName)) {
+      return null;
+    }
+
     return `# STAGE-SPECIFIC RULES (${meta.currentStage.toUpperCase()})\n${skillContent}`;
   } catch {
     return null;
@@ -425,6 +487,10 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       const meta = ctx.session.getMeta() as SessionMeta;
       const stageConfig = config.stages[meta.currentStage];
 
+      // Extract base system prompt EARLY (before buildDynamicValues)
+      // Needed for idempotent stage-skill injection detection
+      const base = ctx.getSystemPrompt?.() ?? "";
+
       // Build the plugin prompt (yml template or default 10-part)
       let pluginPrompt: string;
       // Track rendering path for snapshot source label
@@ -433,14 +499,14 @@ export function createPromptInjector(config: PipelineConfig): Hook {
       // Try yml template path
       const template = await getStagePrompt(config.projectRoot, meta.currentStage);
       if (template !== null) {
-        const values = await buildDynamicValues(config, meta, stageConfig);
+        const values = await buildDynamicValues(config, meta, stageConfig, base);
         const rendered = renderStageTemplate(template, meta.currentStage, values);
         if (rendered.status === "missing_critical") {
           await safeWriteAuditLog("prompt_injector_missing_placeholder", {
             stage: meta.currentStage,
             missing: rendered.missing.join(","),
           }, "warn");
-          pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
+          pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig, base);
           snapshotSource = "fallback";
         } else {
           pluginPrompt = rendered.prompt;
@@ -448,12 +514,9 @@ export function createPromptInjector(config: PipelineConfig): Hook {
         }
       } else {
         // Default path: no yml template → use 10-part assembly
-        pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig);
+        pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig, base);
         snapshotSource = "default";
       }
-
-      // Append plugin prompt after pi base system prompt (D3)
-      const base = ctx.getSystemPrompt?.() ?? "";
 
       // Phase 4 (139): completed stage summary injection
       let completedSummary = "";
@@ -569,16 +632,18 @@ function buildSmartConfirmGuidance(
  * @param config - Pipeline configuration
  * @param meta - Current session metadata
  * @param stageConfig - Current stage configuration
+ * @param base - The base system prompt from ctx.getSystemPrompt()
  * @returns Assembled prompt string
  */
 async function buildDefaultPrompt(
   config: PipelineConfig,
   meta: SessionMeta,
   stageConfig: StageConfig,
+  base: string,
 ): Promise<string> {
   const part1 = buildContextReference(config, meta);
   const part2 = await buildDomainSkill(stageConfig, meta);
-  const part3 = await buildStageSkill(config, stageConfig, meta);
+  const part3 = await buildStageSkill(config, stageConfig, meta, base);
   const part4 = await buildLoopStatus(config, meta);
   const part5 = buildPipelineStatus(config, meta);
   const part6 = buildVerifyFailurePrompt(meta);
@@ -610,12 +675,14 @@ async function buildDefaultPrompt(
  * @param config - Pipeline configuration
  * @param meta - Current session metadata
  * @param stageConfig - Current stage configuration
+ * @param base - The base system prompt from ctx.getSystemPrompt()
  * @returns Record mapping placeholder keys (without {{}}) to their values
  */
 async function buildDynamicValues(
   config: PipelineConfig,
   meta: SessionMeta,
   stageConfig: StageConfig,
+  base: string,
 ): Promise<Record<string, string | null>> {
   const isLoopStage = meta.currentStage === "develop" || meta.currentStage === "fix";
 
@@ -623,7 +690,8 @@ async function buildDynamicValues(
     context_reference: buildContextReference(config, meta),
     domain_skill: await buildDomainSkill(stageConfig, meta),
     // Part 3: Stage Skill — now also available as {{stage_skill}} placeholder in yml templates
-    stage_skill: await buildStageSkill(config, stageConfig, meta),
+    // Idempotent: returns null if skill already preloaded in base
+    stage_skill: await buildStageSkill(config, stageConfig, meta, base),
     loop_status: await buildLoopStatus(config, meta),
     pipeline_status: buildPipelineStatus(config, meta),
     verify_failures: buildVerifyFailurePrompt(meta),

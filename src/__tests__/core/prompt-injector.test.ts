@@ -1655,3 +1655,244 @@ describe("Phase 5 (162): smart confirm guidance injection", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 });
+
+// ─── Phase 0: Idempotent stage-skill injection ──────────────────────────────
+
+describe("Phase 0: idempotent stage-skill injection", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
+  });
+
+  async function writePromptYml(projectRoot: string, content: string): Promise<void> {
+    const refsDir = join(projectRoot, ".pi", "references");
+    await mkdir(refsDir, { recursive: true });
+    await writeFile(join(refsDir, "pipeline-stage-prompt.yml"), content, "utf-8");
+  }
+
+  it("removes {{stage_skill}} paragraph when base contains '# Preloaded Skill: {skillName}' marker", async () => {
+    const TMP = join(tmpdir(), "pi-pi-idem-marker-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(skillDir, { recursive: true });
+    const skillContent = "# Design Skill\n\nThis is the design skill content for clarify stage.";
+    await writeFile(join(skillDir, "SKILL.md"), skillContent);
+
+    await writePromptYml(TMP, [
+      "clarify: |",
+      "  {{pipeline_status}}",
+      "  ---",
+      "  {{stage_skill}}",
+      "  ---",
+      "  {{stage_write_scope}}",
+      "",
+    ].join("\n"));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "design/SKILL.md",
+    } as any;
+    await initAuditLog(config);
+
+    // Base contains the preload marker for "design" skill
+    const base = "You are an assistant.\n\n# Preloaded Skill: design\n\n" + skillContent;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => base,
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // stage_skill paragraph should be removed (idempotent hit)
+    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
+    expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+    // Other paragraphs should remain
+    expect(result.systemPrompt).toContain("Pipeline Status");
+    expect(result.systemPrompt).toContain("STAGE WRITE SCOPE");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("removes {{stage_skill}} paragraph when base contains fingerprint (>=200 chars, no marker)", async () => {
+    const TMP = join(tmpdir(), "pi-pi-idem-fingerprint-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(skillDir, { recursive: true });
+    // Create a long skill content (>=200 chars after trim)
+    const skillContent = "# Design Skill\n\n" + "A".repeat(250) + "\n\nEnd of skill.";
+    await writeFile(join(skillDir, "SKILL.md"), skillContent);
+
+    await writePromptYml(TMP, [
+      "clarify: |",
+      "  {{pipeline_status}}",
+      "  ---",
+      "  {{stage_skill}}",
+      "  ---",
+      "  {{stage_write_scope}}",
+      "",
+    ].join("\n"));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "design/SKILL.md",
+    } as any;
+    await initAuditLog(config);
+
+    // Base contains the skill content directly (no marker, but fingerprint match)
+    const base = "You are an assistant.\n\n" + skillContent;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => base,
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // stage_skill paragraph should be removed (fingerprint hit)
+    expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES (CLARIFY)");
+    expect(result.systemPrompt).not.toContain("{{stage_skill}}");
+    // Pipeline status should still be present
+    expect(result.systemPrompt).toContain("Pipeline Status");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("injects full skill content when base has no marker and no fingerprint (zero regression)", async () => {
+    const TMP = join(tmpdir(), "pi-pi-idem-nomatch-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(skillDir, { recursive: true });
+    const skillContent = "# Design Skill\n\nShort content.";
+    await writeFile(join(skillDir, "SKILL.md"), skillContent);
+
+    await writePromptYml(TMP, [
+      "clarify: |",
+      "  {{pipeline_status}}",
+      "  ---",
+      "  {{stage_skill}}",
+      "  ---",
+      "  {{stage_write_scope}}",
+      "",
+    ].join("\n"));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "design/SKILL.md",
+    } as any;
+    await initAuditLog(config);
+
+    // Base does NOT contain skill content
+    const base = "You are an assistant with no skill preloaded.";
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => base,
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // stage_skill should be injected (no idempotent hit)
+    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES (CLARIFY)");
+    expect(result.systemPrompt).toContain("Design Skill");
+    expect(result.systemPrompt).toContain("Short content.");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("does not false-match when base contains different stage skill (plan vs clarify)", async () => {
+    const TMP = join(tmpdir(), "pi-pi-idem-nofalse-" + Date.now());
+    const clarifySkillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(clarifySkillDir, { recursive: true });
+    const clarifySkillContent = "# Clarify Skill\n\nUnique clarify content XYZ123 for testing.";
+    await writeFile(join(clarifySkillDir, "SKILL.md"), clarifySkillContent);
+
+    // Also create a plan skill with different content
+    const planSkillDir = join(TMP, ".pi", "skills", "plan");
+    await mkdir(planSkillDir, { recursive: true });
+    const planSkillContent = "# Plan Skill\n\n" + "B".repeat(300) + "\n\nPlan specific content.";
+    await writeFile(join(planSkillDir, "SKILL.md"), planSkillContent);
+
+    await writePromptYml(TMP, [
+      "clarify: |",
+      "  {{pipeline_status}}",
+      "  ---",
+      "  {{stage_skill}}",
+      "",
+    ].join("\n"));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "design/SKILL.md", // clarify uses design skill
+    } as any;
+    await initAuditLog(config);
+
+    // Base contains PLAN skill content (not clarify/design skill)
+    const base = "Assistant base.\n\n# Preloaded Skill: plan\n\n" + planSkillContent;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => base,
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // stage_skill should be injected (no match — plan skill != design skill)
+    expect(result.systemPrompt).toContain("STAGE-SPECIFIC RULES (CLARIFY)");
+    expect(result.systemPrompt).toContain("Clarify Skill");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("preserves base system prompt when idempotent hit occurs (preload not lost)", async () => {
+    const TMP = join(tmpdir(), "pi-pi-idem-basepreserve-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(skillDir, { recursive: true });
+    const skillContent = "# Design Skill\n\nSkill content here.";
+    await writeFile(join(skillDir, "SKILL.md"), skillContent);
+
+    await writePromptYml(TMP, [
+      "clarify: |",
+      "  {{pipeline_status}}",
+      "  ---",
+      "  {{stage_skill}}",
+      "",
+    ].join("\n"));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "design/SKILL.md",
+    } as any;
+    await initAuditLog(config);
+
+    const base = "UNIQUE BASE PROMPT PREFIX FOR TESTING\n\n# Preloaded Skill: design\n\n" + skillContent;
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => base,
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    // Base should be preserved at the start
+    expect(result.systemPrompt.startsWith("UNIQUE BASE PROMPT PREFIX FOR TESTING")).toBe(true);
+    // Separator between base and plugin prompt
+    expect(result.systemPrompt).toContain("\n\n---\n\n");
+    // Plugin prompt should still contain pipeline status
+    expect(result.systemPrompt).toContain("Pipeline Status");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});
