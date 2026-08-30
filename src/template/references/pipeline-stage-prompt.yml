@@ -246,7 +246,7 @@ stage_executor_fix: |
 
 stage_deliverable_clarify: |
   - **MUST** produce clarification questions and record answers
-  - **MUST** write `## 模型确认` marker to the requirement document via write/edit upon full-und? confirmation
+  - **MUST** write `## 模型确认` marker to the requirement document via write or edit tools upon full-und? confirmation
 
 stage_deliverable_plan: |
   - **MUST** produce a planning document with implementation steps

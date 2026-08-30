@@ -3,7 +3,7 @@ import { createPromptInjector } from "../../core/prompt-injector";
 import { makeTestConfig, makeTestMeta, writePromptYml } from "../helpers";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { resetPromptConfigCache } from "../../core/prompt-config";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1049,5 +1049,39 @@ describe("Phase 1: empty content guard", () => {
     expect(result.systemPrompt).not.toContain("STAGE-SPECIFIC RULES");
 
     await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("domain file with whitespace-only content returns null (no BUSINESS DOMAIN RULES paragraph)", async () => {
+    // Plan Phase 1 acceptance (a): domain file pure whitespace → no BUSINESS DOMAIN RULES paragraph.
+    // buildDomainSkill reads from ~/.pi/domains/{domain.id}.md, so we create a unique domain file
+    // in the real home directory and clean it up after the test.
+    const uniqueDomainId = `test-empty-domain-${Date.now()}`;
+    const domainDir = join(homedir(), ".pi", "domains");
+    const domainFile = join(domainDir, `${uniqueDomainId}.md`);
+    await mkdir(domainDir, { recursive: true });
+    // Write whitespace-only content (spaces, tabs, newlines)
+    await writeFile(domainFile, "   \n\n  \t  \n");
+
+    try {
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        requireDomain: true,
+      } as any;
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        domain: { id: uniqueDomainId, version: "v1", skillPath: "" },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = await hook.handler(ctx as any);
+
+      // No BUSINESS DOMAIN RULES paragraph when domain content is whitespace-only
+      expect(result.systemPrompt).not.toContain("BUSINESS DOMAIN RULES");
+    } finally {
+      // Always clean up the domain file we created in home directory
+      await rm(domainFile, { force: true });
+    }
   });
 });

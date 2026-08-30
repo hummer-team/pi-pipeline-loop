@@ -22,11 +22,10 @@ userInvocable: false
    - 每个 Phase 完成后，向用户汇报进度（如"Phase 1/5 已完成"）。
    - 每个 Phase 执行后必须运行项目构建与单元测试命令（以项目实际技术栈为准）确认通过。
      - 自动修复测试失败的问题
-5. **每个 phase 完成后，必须**：
-   - 按 plan 文档中 commit 内容提交代码
-   - 参考模板 `@.pi/references/develop_commit_template.md`
-   - 新建 `docs/design/{plan文件名}_commit.md`，把 git commit id 追加到 `dev commit id` 行
-6. **交付规范**：参考 `@.pi/references/develop_deliverable_template.md`
+ 5. **每个 phase 完成后，必须**：
+    - 按 plan 文档中 commit 内容提交代码
+    - 参考模板 `@.pi/references/develop_commit_template.md`
+ 6. **交付规范**：参考 `@.pi/references/develop_deliverable_template.md`
 
 ---
 ## 交付项

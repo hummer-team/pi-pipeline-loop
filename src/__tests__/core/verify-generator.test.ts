@@ -1267,7 +1267,7 @@ describe("verify-generator", () => {
       const ymlContent = [
         "stage_deliverable_clarify: |",
         "  - **MUST** produce clarification questions and record answers",
-        "  - **MUST** write `## 模型确认` marker to the requirement document via write/edit upon full-und? confirmation",
+        "  - **MUST** write `## 模型确认` marker to the requirement document via write or edit tools upon full-und? confirmation",
       ].join("\n");
       await writePluginYmlAndStack(ymlContent);
 
@@ -1277,6 +1277,12 @@ describe("verify-generator", () => {
       // Should contain keyword items (no command/git items for clarify)
       const keywordItems = items.filter(i => i.type === "keyword");
       expect(keywordItems.length).toBeGreaterThan(0);
+      // Regression: clarify deliverables must NEVER produce file-type items.
+      // A past bug had "write/edit" in yml text, where "/" caused classifyDeliveryItem
+      // to misclassify it as file type, making clarify verify.md contain requiredFiles
+      // that never exist, causing clarify verification to always fail.
+      const fileItems = items.filter(i => i.type === "file");
+      expect(fileItems).toEqual([]);
     });
 
     it("loadPluginDeliverables falls back to keyword when tech stack detection fails", async () => {
