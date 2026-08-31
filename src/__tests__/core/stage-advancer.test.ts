@@ -790,7 +790,7 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     };
   }
 
-  it("review + reviewConclusion:'fail' → routes to fix + confirmRejections=1 + audit review_auto_route_fix", async () => {
+  it("review + reviewConclusion:'fail' → routes to fix + confirmRejections unchanged (Bug 4) + audit review_auto_route_fix", async () => {
     const stageTmp = join(tmpdir(), "pi-163-fail-route-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
@@ -807,7 +807,8 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     expect(result.message).toContain("Review declared fail");
     expect(result.currentStage).toBe("fix");
     expect(meta.currentStage).toBe("fix");
-    expect(meta.confirmRejections).toBe(1);
+    // Bug 4: no +1 counting
+    expect(meta.confirmRejections).toBe(0);
     expect(meta.advancedThisTurn).toBe(true);
 
     // Audit: single review_auto_route_fix event, NOT confirm_rejected
@@ -882,7 +883,7 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     expect(params.properties.reviewConclusion.enum).toEqual(["pass", "fail"]);
   });
 
-  it("fail consecutive overflow: ask + Continue → reset counter to 0 and route", async () => {
+  it("reviewConclusion fail does NOT trigger overflow even with high confirmRejections (Bug 4)", async () => {
     const stageTmp = join(tmpdir(), "pi-163-overflow-continue-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
@@ -893,9 +894,8 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
       maxConfirmRejections: 2,
       confirmOverflow: "ask" as const,
     };
-    // Set confirmRejections at the limit (2), so nextCount=3 exceeds max=2
-    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 2 });
-    // Overflow dialog → select "Continue"
+    // Even with high confirmRejections, reviewConclusion fail does NOT count → no overflow
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 5 });
     const ctx = createCtxWithFullUI(meta, "Continue");
 
     const tool = createStageAdvancer(config);
@@ -903,13 +903,13 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
 
     expect(result.success).toBe(true);
     expect(result.currentStage).toBe("fix");
-    // Counter reset to 0 after overflow Continue
-    expect(meta.confirmRejections).toBe(0);
+    // Counter preserved (no +1, no overflow)
+    expect(meta.confirmRejections).toBe(5);
 
     await rm(stageTmp, { recursive: true, force: true });
   });
 
-  it("fail consecutive overflow: terminate → aborted", async () => {
+  it("reviewConclusion fail does NOT trigger terminate overflow (Bug 4)", async () => {
     const stageTmp = join(tmpdir(), "pi-163-overflow-terminate-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
@@ -920,19 +920,17 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
       maxConfirmRejections: 1,
       confirmOverflow: "terminate" as const,
     };
-    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 1 });
+    // High confirmRejections, but reviewConclusion fail doesn't count → no terminate
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 5 });
     const ctx = createCtxWithFullUI(meta);
 
     const tool = createStageAdvancer(config);
     const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
 
     expect(result.success).toBe(true);
-    expect(result.message).toContain("aborted");
-    expect(meta.flowState).toBe("aborted");
-
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
-    expect(logContent).toContain("review_auto_route_overflow_terminate");
+    expect(result.currentStage).toBe("fix");
+    // NOT aborted — reviewConclusion fail never triggers overflow
+    expect(meta.flowState).not.toBe("aborted");
 
     await rm(stageTmp, { recursive: true, force: true });
   });

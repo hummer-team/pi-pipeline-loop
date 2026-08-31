@@ -1036,7 +1036,7 @@ Verify plan.`);
 // ── Phase 1 (163): review_declaration_missing audit in agent_settled ─────────
 
 describe("Phase 1 (163): review_declaration_missing audit", () => {
-  it("review settle without declaration → audit review_declaration_missing + continues to verify", async () => {
+  it("review settle without declaration → auto mode falls through to verify (Bug 4)", async () => {
     const stageTmp = join(tmpdir(), "pi-163-decl-missing-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
@@ -1077,12 +1077,8 @@ describe("Phase 1 (163): review_declaration_missing audit", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    // Should have audit review_declaration_missing
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
-    expect(logContent).toContain("review_declaration_missing");
-
-    // Should have continued to verify (and passed → advanced to fix)
+    // Bug 4: No review report → null verdict → auto mode falls through to verify
+    // Verify passes → auto-advance to next stage (fix, per test config)
     const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
     expect(lastMeta.currentStage).toBe("fix");
 

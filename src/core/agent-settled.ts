@@ -20,7 +20,9 @@ import {
   shouldDeferPlanMarkerRule,
   autoWriteConfirmMarker,
   maybeHandleConfirmGate,
+  routeReviewFailAuto,
 } from "./stage-advancer";
+import { parseReviewConclusion } from "../utils/review-conclusion";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -85,16 +87,41 @@ export function createAgentSettled(
       // When reviewConclusionDeclared=true, the declaration was made but the stage did not
       // advance (verify fail / confirm gate pending / overflow pending) — skip the
       // false-positive "missing" audit and clear the flag.
+      // Bug 4: Review decision chain — parse review report for auto/manual routing
+      let reviewDefaultReject: boolean | undefined;
       if (meta.currentStage === "review") {
+        const reviewStageConfig = config.stages[meta.currentStage];
         if (meta.reviewConclusionDeclared === true) {
           // Declaration was made but stage did not advance — clear the consumed flag
           ctx.session.updateMeta({ reviewConclusionDeclared: undefined });
         } else {
-          await writeAuditLog("review_declaration_missing", {
-            pipelineId: meta.pipelineId,
-            stage: meta.currentStage,
-            reason: "no stage_advance reviewConclusion declaration, falling back to verify + confirm gate",
-          }, "info");
+          const confirmMode = reviewStageConfig?.confirm?.mode ?? "auto";
+          const reviewVerdict = await parseReviewConclusion(config.projectRoot);
+
+          if (confirmMode !== "manual") {
+            // Auto mode (or unconfigured): parse report → route directly
+            if (reviewVerdict && reviewVerdict.verdict === "fail") {
+              // Fail → route to fix (no count, no select, no verify)
+              await routeReviewFailAuto(config, ctx, meta, ui, {
+                reason: `review report parsed as fail (source: ${reviewVerdict.source})`,
+              });
+              if (reviewVerdict.warn) {
+                await writeAuditLog("review_auto_route_warn", {
+                  pipelineId: meta.pipelineId,
+                  stage: "review",
+                  warn: reviewVerdict.warn,
+                }, "warn");
+              }
+              return;
+            }
+            // pass or null→already covered by fail → fall through to verify + autoAdvance
+          } else {
+            // Manual mode: parse report for preselect
+            // preselect: fail → defaultReject=true, pass → defaultReject=false, null → defaultReject=true
+            reviewDefaultReject = reviewVerdict
+              ? reviewVerdict.verdict === "fail"
+              : true; // No report → conservative reject default
+          }
         }
       }
 
@@ -192,7 +219,10 @@ export function createAgentSettled(
       if (vr.rulePassed) {
         // Phase 4 (162): manual confirm gate — intercept verify-pass to show TUI dialog.
         if (stageConfig.confirm?.mode === "manual") {
-          const gate = await maybeHandleConfirmGate(config, ctxWithPi, meta, ui, { mode: "manual" });
+          const gate = await maybeHandleConfirmGate(config, ctxWithPi, meta, ui, {
+            mode: "manual",
+            ...(reviewDefaultReject !== undefined ? { defaultReject: reviewDefaultReject } : {}),
+          });
           if (gate.result === "handled") {
             // advanced / routed / pending / aborted — all handled by confirm gate, skip autoAdvance
             return;

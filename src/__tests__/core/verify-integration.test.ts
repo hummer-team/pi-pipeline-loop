@@ -685,11 +685,10 @@ describe("verify-integration", () => {
       const hook = createAgentSettled(config);
       await hook.handler(ctx as any);
 
-      // Should stay in review (fail)
-      expect(meta.currentStage).toBe("review");
-      // Should wake the model to fix (148 Phase 4)
-      expect(sentMessages.length).toBe(1);
-      expect(sentMessages[0]).toContain("Verification failed");
+      // Bug 4: report parsed as fail → auto route to fix (no verify, no counting)
+      expect(meta.currentStage).toBe("fix");
+      // Wake message from routeConfirmReject
+      expect(sentMessages.length).toBeGreaterThanOrEqual(1);
     });
 
     it("template JSON has review.verify.require=true", async () => {
