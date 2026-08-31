@@ -14,10 +14,12 @@ import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 import { recordStageVisit } from "../utils/stage-visit";
+import { spawnStageSubagent } from "../utils/subagent-rpc";
 
 /**
  * Session context interface shared by hook and tool callers.
  * Provides metadata access, audit, and UI notification capabilities.
+ * Phase 1 (169): session interface extended for spawn idempotency guard.
  */
 interface VerifyAdvanceCtx {
   session: {
@@ -26,7 +28,7 @@ interface VerifyAdvanceCtx {
   };
   ui?: { notify: (msg: string) => void; select?: (message: string, options: string[]) => Promise<string | undefined> };
   /** @internal pi SDK handle for sending wake messages (used by autoAdvanceAfterVerify) */
-  pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void };
+  pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void; events?: unknown };
 }
 
 /**
@@ -436,7 +438,28 @@ export async function autoAdvanceAfterVerify(
     });
   }
 
-  // Wake next stage via pi.sendUserMessage
+  // Phase 1 (169): Spawn subagent for the target stage before sending generic wake.
+  // When spawn succeeds (RPC or fallback), skip the generic wake to avoid dual execution.
+  const freshMeta = ctx.session.getMeta() ?? meta;
+  if (toStage && toStage !== "completed") {
+    const spawnResult = await spawnStageSubagent(ctx.pi, config, toStage, freshMeta, {
+      ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
+      session: ctx.session,
+    });
+
+    if (spawnResult.spawned || spawnResult.fallback) {
+      // Subagent spawned — skip generic wake to prevent dual execution
+      await writeAuditLog("auto_advance_wake_skipped", {
+        pipelineId: meta.pipelineId,
+        fromStage,
+        toStage,
+        reason: "subagent_spawned",
+      });
+      return;
+    }
+  }
+
+  // Wake next stage via pi.sendUserMessage (only reached when spawn did not fire)
   const pi = ctx.pi;
   if (
     pi

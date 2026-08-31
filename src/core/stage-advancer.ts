@@ -381,8 +381,13 @@ async function routeConfirmReject(
 
   // 168 Phase 4: auto-spawn subagent for the target stage after routing
   // (e.g. review reject → fix stage spawns fix-agent; plan reject → clarify is non-spawnable, auto-skipped)
-  await spawnStageSubagent(ctx.pi, config, toStage, meta, {
+  // Phase 1 (169): pass session for idempotency guard; use fresh meta (not stale snapshot)
+  // because stageStartTime was just updated in the updateMeta call above.
+  const sessionForSpawn = ctx.session as unknown as { getMeta?: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined };
+  const freshMetaForSpawn = sessionForSpawn.getMeta?.() ?? meta;
+  await spawnStageSubagent(ctx.pi, config, toStage, freshMetaForSpawn, {
     ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
+    session: sessionForSpawn.getMeta ? sessionForSpawn as { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined } : undefined,
   });
 }
 
@@ -500,13 +505,8 @@ async function advanceConfirmApproved(
     ctx.ui.clearStage(ctx);
   }
 
-  // 168 Phase 4: auto-spawn subagent for the target stage (skip completed)
-  if (toStage !== "completed") {
-    const freshMeta = ctx.session.getMeta() ?? meta;
-    await spawnStageSubagent(ctx.pi, config, toStage, freshMeta, {
-      ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
-    });
-  }
+  // Phase 1 (169): spawn removed from here — autoAdvanceAfterVerify (called above)
+  // now handles spawn centrally, preventing double-trigger with confirm approve path.
 
   return true;
 }
@@ -1059,6 +1059,19 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       });
 
       ui.transition(ctx, currentStage, resolvedTarget);
+
+      // Phase 1 (169): Spawn subagent for the target stage after transition
+      const freshMetaForSpawn = ctx.session.getMeta() as SessionMeta;
+      await spawnStageSubagent(
+        (ctx as { pi?: unknown }).pi,
+        config,
+        resolvedTarget,
+        freshMetaForSpawn,
+        {
+          ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
+          session: ctx.session,
+        },
+      );
 
       return {
         success: true,

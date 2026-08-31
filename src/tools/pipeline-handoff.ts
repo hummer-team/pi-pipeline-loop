@@ -12,6 +12,7 @@ import { freezeAndPrompt } from "../core/flow-state";
 import { checkStageSummaryHash } from "../utils/summary-hash";
 import { recordStageVisit } from "../utils/stage-visit";
 import { toProjectRelative } from "../utils/path-display";
+import { spawnStageSubagent } from "../utils/subagent-rpc";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -148,6 +149,21 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         ui.clearStage(ctx);
       } else {
         ui.transition(ctx, currentStage, nextStage);
+      }
+
+      // Phase 1 (169): Spawn subagent for the target stage after handoff
+      if (nextStage !== "completed") {
+        const freshMetaForSpawn = ctx.session.getMeta() as SessionMeta;
+        await spawnStageSubagent(
+          (ctx as { pi?: unknown }).pi,
+          config,
+          nextStage,
+          freshMetaForSpawn,
+          {
+            ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
+            session: ctx.session,
+          },
+        );
       }
 
       return {

@@ -438,6 +438,15 @@ export interface SessionMeta {
    * so the cap counts cumulative rejections within a single stage visit.
    */
   confirmRejections?: number;
+
+  /**
+   * Per-visit idempotency guard for subagent spawning (Phase 1 / 169).
+   * Maps each spawned stage to the stageStartTime at which it was spawned.
+   * When spawnedStages[stage] === meta.stageStartTime, a duplicate spawn is
+   * detected and skipped (same visit = same stageStartTime). On re-visits
+   * (stageStartTime changes), the guard naturally allows re-spawn.
+   */
+  spawnedStages?: Partial<Record<PipelineStage, number>>;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

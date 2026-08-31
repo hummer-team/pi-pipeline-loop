@@ -272,17 +272,17 @@ describe("watchSubagentLifecycle", () => {
 // ── 168 Phase 4: isSpawnableStage + resolveAgentMention + spawnStageSubagent ─
 
 describe("168 Phase 4: isSpawnableStage", () => {
-  it("returns true for develop/review/fix when agentPath exists", () => {
+  it("returns true for plan/develop/review/fix when agentPath exists", () => {
     const config = makeTestConfig();
+    expect(isSpawnableStage(config, "plan")).toBe(true);
     expect(isSpawnableStage(config, "develop")).toBe(true);
     expect(isSpawnableStage(config, "review")).toBe(true);
     expect(isSpawnableStage(config, "fix")).toBe(true);
   });
 
-  it("returns false for clarify/plan/completed/awaiting_human", () => {
+  it("returns false for clarify/completed/awaiting_human", () => {
     const config = makeTestConfig();
     expect(isSpawnableStage(config, "clarify")).toBe(false);
-    expect(isSpawnableStage(config, "plan")).toBe(false);
     expect(isSpawnableStage(config, "completed")).toBe(false);
     expect(isSpawnableStage(config, "awaiting_human")).toBe(false);
   });

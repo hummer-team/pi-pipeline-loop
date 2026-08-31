@@ -356,8 +356,10 @@ export function resolveAgentMention(
 /**
  * Checks whether a stage is eligible for automatic subagent spawning.
  *
- * Only develop, review, and fix stages are spawnable (they have dedicated
+ * Plan, develop, review, and fix stages are spawnable (they have dedicated
  * agent subagents). The stage must also have an agentPath configured.
+ * Clarify is NOT spawnable here — it has its own auto-launch path via
+ * /pipeline-start (maybeAutoLaunchClarify) with different idempotency semantics.
  *
  * @param config - Pipeline configuration
  * @param stage - The stage to check
@@ -367,7 +369,7 @@ export function isSpawnableStage(
   config: PipelineConfig,
   stage: PipelineStage,
 ): boolean {
-  const spawnableStages: PipelineStage[] = ["develop", "review", "fix"];
+  const spawnableStages: PipelineStage[] = ["plan", "develop", "review", "fix"];
   if (!spawnableStages.includes(stage)) return false;
   return !!config.stages[stage]?.agentPath;
 }
@@ -388,19 +390,33 @@ function hasSendUserMessage(pi: unknown): pi is PiWithSend {
 }
 
 /**
- * Spawns a subagent for the given stage after manual confirm gate approval.
+ * Session interface for the idempotency guard.
+ * When provided, spawnStageSubagent reads/writes spawnedStages in meta.
+ */
+interface SpawnSession {
+  getMeta: () => SessionMeta | undefined;
+  updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
+}
+
+/**
+ * Spawns a subagent for the given stage after stage transition.
  *
  * Three-tier dispatch (mirrors clarify auto-launch pattern):
  * 1. Non-spawnable stage → return { spawned: false } immediately
- * 2. resolveAgentMention fails → notify + audit stage_spawn_skipped
- * 3. RPC path (hasEventBus): ping → spawn → audit stage_spawn_rpc + watch lifecycle
- * 4. Fallback: sendUserMessage with deliverAs:"followUp" + notify + audit stage_spawn_fallback
+ * 2. Idempotency guard: if session provided and spawnedStages[stage] === stageStartTime
+ *    → audit stage_spawn_skipped reason=duplicate_spawn_guarded, return { spawned: false }
+ * 3. resolveAgentMention fails → notify + audit stage_spawn_skipped
+ * 4. RPC path (hasEventBus): ping → spawn → audit stage_spawn_rpc + watch lifecycle
+ * 5. Fallback: sendUserMessage with deliverAs:"followUp" + notify + audit stage_spawn_fallback
+ *
+ * On success (RPC or fallback), writes the guard: spawnedStages[stage] = stageStartTime.
+ * When session is not provided, the guard is skipped (backward compatible).
  *
  * @param pi - pi SDK ExtensionAPI handle
  * @param config - Pipeline configuration
  * @param stage - Target stage to spawn subagent for
  * @param meta - Current session metadata
- * @param opts - Optional UI notify handle
+ * @param opts - Optional UI notify handle and session for idempotency guard
  * @returns { spawned, fallback } indicating outcome
  */
 export async function spawnStageSubagent(
@@ -408,14 +424,27 @@ export async function spawnStageSubagent(
   config: PipelineConfig,
   stage: PipelineStage,
   meta: SessionMeta,
-  opts?: { ui?: { notify: (msg: string) => void } },
+  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession },
 ): Promise<{ spawned: boolean; fallback: boolean }> {
   // 1. Non-spawnable stage → skip silently
   if (!isSpawnableStage(config, stage)) {
     return { spawned: false, fallback: false };
   }
 
-  // 2. Resolve agent name from config
+  // 2. Idempotency guard: skip if already spawned for this visit
+  if (opts?.session) {
+    const freshMeta = opts.session.getMeta();
+    if (freshMeta && freshMeta.spawnedStages?.[stage] === freshMeta.stageStartTime) {
+      await safeWriteAuditLog("stage_spawn_skipped", {
+        pipelineId: meta.pipelineId,
+        stage,
+        reason: "duplicate_spawn_guarded",
+      });
+      return { spawned: false, fallback: false };
+    }
+  }
+
+  // 3. Resolve agent name from config
   const agentName = resolveAgentMention(config, stage);
   if (!agentName) {
     opts?.ui?.notify?.(`No agent configured for stage "${stage}". Please start manually.`);
@@ -427,10 +456,25 @@ export async function spawnStageSubagent(
     return { spawned: false, fallback: false };
   }
 
-  const prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}`;
+  // Phase 1 (169): spawn prompt includes requirementDoc pointer for context passing
+  const reqDocHint = meta.requirementDoc ?? "(unset)";
+  const prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}. Requirement doc: ${reqDocHint} — read it first (contains clarification conclusions)`;
   const description = `${stage}: ${meta.requirementDoc ?? ""}`;
 
-  // 3. RPC path: ping → spawn → success
+  /** Helper to write the idempotency guard after successful spawn */
+  const writeGuard = async (): Promise<void> => {
+    if (!opts?.session) return;
+    const currentMeta = opts.session.getMeta();
+    if (!currentMeta) return;
+    opts.session.updateMeta({
+      spawnedStages: {
+        ...(currentMeta.spawnedStages ?? {}),
+        [stage]: currentMeta.stageStartTime,
+      },
+    });
+  };
+
+  // 4. RPC path: ping → spawn → success
   if (hasEventBus(pi)) {
     const pinged = await pingSubagents(pi, 500);
     if (pinged) {
@@ -451,6 +495,7 @@ export async function spawnStageSubagent(
         const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
           cleanup();
         }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
+        await writeGuard();
         return { spawned: true, fallback: false };
       }
       // Spawn rejected/failed → log failure reason before falling back
@@ -464,7 +509,7 @@ export async function spawnStageSubagent(
     // Ping timeout or spawn failure → fall through
   }
 
-  // 4. Fallback: sendUserMessage with deliverAs:"followUp"
+  // 5. Fallback: sendUserMessage with deliverAs:"followUp"
   if (hasSendUserMessage(pi)) {
     try {
       pi.sendUserMessage(`@${agentName} ${prompt}`, { deliverAs: "followUp" });
@@ -474,6 +519,7 @@ export async function spawnStageSubagent(
         stage,
         agentName,
       });
+      await writeGuard();
       return { spawned: true, fallback: true };
     } catch {
       // sendUserMessage failure is non-fatal; fall through to notify

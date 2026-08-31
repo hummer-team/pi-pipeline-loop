@@ -55,8 +55,9 @@ function buildContextReference(
   // Dedup prevents the agent from being asked to read the same file twice.
   const filesToReadSet = new Set<string>();
 
-  // Clarify stage: include requirement document path at the top (D2)
-  if (meta.currentStage === "clarify" && meta.requirementDoc) {
+  // Clarify/plan stage: include requirement document path at the top (D2)
+  // Phase 1 (169): plan new session also needs the requirement doc for context passing
+  if ((meta.currentStage === "clarify" || meta.currentStage === "plan") && meta.requirementDoc) {
     const reqDocPath = path.join(config.projectRoot, meta.requirementDoc);
     filesToReadSet.add(reqDocPath);
   }

@@ -3,6 +3,12 @@
  * Factory for the `loop_check` tool.
  * Manages loop iteration counting and enforcement for the "develop"
  * and "fix" pipeline stages.
+ *
+ * Phase 1 (169) note: this module intentionally does NOT wire spawnStageSubagent.
+ * loop_check only returns action:"advance" as a recommendation — it does not
+ * perform stage transitions itself. The actual transition is done by the model
+ * calling stage_advance, which already has spawn wiring (stage-advancer execute).
+ * Adding spawn here would cause double-triggering.
  */
 
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
