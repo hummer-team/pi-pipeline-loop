@@ -448,6 +448,33 @@ describe("output.pipelineStage: false (silent)", () => {
     expect(wakeCalls).toBe(0);
   });
 
+  // 168 Phase 4: wake message uses deliverAs:"followUp" to avoid "Agent is already processing"
+  it("applyVerifyFail wake message includes deliverAs:followUp option (168 Phase 4)", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 5 });
+    const meta = makeTestMeta({ currentStage: "develop", verifyAttempts: 1 });
+    const ctx = createCtx(meta);
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    (ctx as any).pi = {
+      sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+        sentMessages.push({ msg, opts });
+      },
+    };
+
+    const sharedResult = {
+      structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "missing" }] },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(
+      ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI, config,
+    );
+
+    // Wake message should have been sent with deliverAs:"followUp"
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].opts).toEqual({ deliverAs: "followUp" });
+  });
+
   it("applyVerifyFail does NOT freeze when verifyAttempts below maxVerifyAttempts", async () => {
     const config = makeTestConfig({ maxVerifyAttempts: 5 });
     const meta = makeTestMeta({

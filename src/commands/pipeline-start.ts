@@ -26,7 +26,7 @@ import {
   writeResidueGateStatus,
 } from "../core/template-residue-check";
 import { registerSession } from "../utils/session-registry";
-import { pingSubagents, spawnClarifySubagent, watchSubagentLifecycle } from "../utils/subagent-rpc";
+import { pingSubagents, spawnClarifySubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
 
 /**
  * Writes the persistent TUI status bar showing current pipeline stage.
@@ -623,52 +623,6 @@ async function startNewPipeline(
     currentStage: startStage,
     requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),
   };
-}
-
-/**
- * Resolves the agent mention name for @mention injection.
- *
- * Resolution order:
- * 1. Read config.stages[stage].agentPath → parse frontmatter `name:` field
- * 2. If no frontmatter name → fallback to path.basename(agentPath, ".md")
- * 3. If agentPath is undefined or file unreadable → return null
- *
- * @param config - Pipeline configuration
- * @param stage - The stage to resolve agent mention for
- * @returns Agent name string, or null if unresolvable
- */
-function resolveAgentMention(
-  config: PipelineConfig,
-  stage: PipelineStage,
-): string | null {
-  const stageConfig = config.stages[stage];
-  if (!stageConfig?.agentPath) return null;
-
-  const agentFilePath = path.join(config.projectRoot, stageConfig.agentPath);
-
-  // Read agent file — distinguish file-missing/unreadable (return null so
-  // the caller falls back to notify) from file-exists-but-no-frontmatter
-  // (basename fallback is still safe to inject). Medium #4.
-  let content: string;
-  try {
-    content = fs.readFileSync(agentFilePath, "utf-8");
-  } catch {
-    // File unreadable / missing → null (caller does notify fallback, no inject)
-    return null;
-  }
-
-  // Parse YAML frontmatter: ^---\n...\n---
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (fmMatch) {
-    const fmBody = fmMatch[1];
-    const nameMatch = fmBody.match(/^name:\s*(.+)$/m);
-    if (nameMatch) {
-      return nameMatch[1].trim();
-    }
-  }
-
-  // File exists but no frontmatter name → basename fallback (safe to inject)
-  return path.basename(stageConfig.agentPath, ".md");
 }
 
 /**

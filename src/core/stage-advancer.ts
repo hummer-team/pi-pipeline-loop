@@ -31,6 +31,7 @@ import { safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { checkStageSummaryHash } from "../utils/summary-hash";
 import { DEFAULT_CONFIRM_MAX_REJECTIONS } from "../constants";
 import { findLatestReviewReport } from "../utils/review-conclusion";
+import { spawnStageSubagent } from "../utils/subagent-rpc";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -366,8 +367,15 @@ async function routeConfirmReject(
     const reason = opts?.reason ?? "rejected by confirm gate";
     ctx.pi.sendUserMessage(
       `Stage "${fromStage}" ${reason}. Routing to "${toStage}" for rework.`,
+      { deliverAs: "followUp" },
     );
   }
+
+  // 168 Phase 4: auto-spawn subagent for the target stage after routing
+  // (e.g. review reject → fix stage spawns fix-agent; plan reject → clarify is non-spawnable, auto-skipped)
+  await spawnStageSubagent(ctx.pi, config, toStage, meta, {
+    ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
+  });
 }
 
 /**
@@ -482,6 +490,14 @@ async function advanceConfirmApproved(
   // (mirrors stage-advancer.ts terminal branch at line 867).
   if (toStage === "completed" && ctx.ui?.clearStage) {
     ctx.ui.clearStage(ctx);
+  }
+
+  // 168 Phase 4: auto-spawn subagent for the target stage (skip completed)
+  if (toStage !== "completed") {
+    const freshMeta = ctx.session.getMeta() ?? meta;
+    await spawnStageSubagent(ctx.pi, config, toStage, freshMeta, {
+      ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
+    });
   }
 
   return true;

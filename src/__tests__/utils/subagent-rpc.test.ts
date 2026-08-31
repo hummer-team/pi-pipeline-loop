@@ -1,5 +1,16 @@
 import { describe, it, expect } from "bun:test";
-import { pingSubagents, spawnClarifySubagent, watchSubagentLifecycle } from "../../utils/subagent-rpc";
+import {
+  pingSubagents,
+  spawnClarifySubagent,
+  watchSubagentLifecycle,
+  isSpawnableStage,
+  resolveAgentMention,
+  spawnStageSubagent,
+} from "../../utils/subagent-rpc";
+import { makeTestConfig, makeTestMeta } from "../helpers";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { tmpdir } from "node:os";
 
 /**
  * Creates a programmable mock EventBus.
@@ -255,5 +266,118 @@ describe("watchSubagentLifecycle", () => {
     expect(typeof cleanup).toBe("function");
     // Should not throw
     cleanup();
+  });
+});
+
+// ── 168 Phase 4: isSpawnableStage + resolveAgentMention + spawnStageSubagent ─
+
+describe("168 Phase 4: isSpawnableStage", () => {
+  it("returns true for develop/review/fix when agentPath exists", () => {
+    const config = makeTestConfig();
+    expect(isSpawnableStage(config, "develop")).toBe(true);
+    expect(isSpawnableStage(config, "review")).toBe(true);
+    expect(isSpawnableStage(config, "fix")).toBe(true);
+  });
+
+  it("returns false for clarify/plan/completed/awaiting_human", () => {
+    const config = makeTestConfig();
+    expect(isSpawnableStage(config, "clarify")).toBe(false);
+    expect(isSpawnableStage(config, "plan")).toBe(false);
+    expect(isSpawnableStage(config, "completed")).toBe(false);
+    expect(isSpawnableStage(config, "awaiting_human")).toBe(false);
+  });
+});
+
+describe("168 Phase 4: resolveAgentMention (shared)", () => {
+  it("returns agent name from frontmatter or basename fallback", () => {
+    const tmpDir = path.join(tmpdir(), "pi-rpc-agent-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+
+    // Agent file with frontmatter name
+    fs.writeFileSync(
+      path.join(agentDir, "dev-agent.md"),
+      "---\nname: develop-agent\n---\n# Dev Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "agents/dev-agent.md",
+          skillPath: "develop/SKILL.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+
+    const name = resolveAgentMention(config, "develop");
+    expect(name).toBe("develop-agent");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns null when agentPath not configured", () => {
+    const config = makeTestConfig();
+    // completed stage has no agentPath
+    const name = resolveAgentMention(config, "completed");
+    expect(name).toBeNull();
+  });
+});
+
+describe("168 Phase 4: spawnStageSubagent", () => {
+  it("returns spawned:false for non-spawnable stage (completed)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "completed" });
+    const result = await spawnStageSubagent(null, config, "completed", meta);
+    expect(result.spawned).toBe(false);
+    expect(result.fallback).toBe(false);
+  });
+
+  it("falls back to sendUserMessage with deliverAs:followUp when no event bus", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-rpc-spawn-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "fix-agent.md"),
+      "---\nname: fix-agent\n---\n# Fix Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        fix: {
+          agentPath: "agents/fix-agent.md",
+          skillPath: "fix/SKILL.md",
+          nextStage: "develop",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    const meta = makeTestMeta({ currentStage: "fix", pipelineId: "pipe-spawn-test" });
+
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const mockPi = {
+      sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+        sentMessages.push({ msg, opts });
+      },
+    };
+
+    const notifications: string[] = [];
+    const result = await spawnStageSubagent(mockPi, config, "fix", meta, {
+      ui: { notify: (m: string) => { notifications.push(m); } },
+    });
+
+    expect(result.spawned).toBe(true);
+    expect(result.fallback).toBe(true);
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].opts).toEqual({ deliverAs: "followUp" });
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });

@@ -693,3 +693,109 @@ describe("Phase 3 (Bug 4): confirm gate defaultReject reordering", () => {
     await fs.rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── 168 Phase 4: confirm gate + auto-spawn integration ─────────────────────
+
+describe("168 Phase 4: confirm gate spawn behavior", () => {
+  it("plan approve → develop: confirm gate completes without error (spawnStageSubagent is non-blocking)", async () => {
+    const stageTmp = path.join(tmpdir(), "pi-cg-spawn-" + Date.now());
+    await fs.mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create plan doc for marker write
+    const planDir = path.join(stageTmp, "docs", "design");
+    await fs.mkdir(planDir, { recursive: true });
+    const planDoc = path.join(planDir, "Test_plan.md");
+    await fs.writeFile(planDoc, "# Test Plan\n");
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/Test.md",
+    });
+
+    let selectCalled = false;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => Object.assign(meta, patch),
+      },
+      ui: {
+        notify: () => {},
+        transition: () => {},
+        clearStage: () => {},
+        select: async (_msg: string, _opts: string[]) => {
+          selectCalled = true;
+          return "Approve & Advance";
+        },
+      },
+      pi: {
+        sendUserMessage: (_msg: string, _opts?: Record<string, unknown>) => {},
+      },
+    };
+
+    const ui = { notify: () => {}, transition: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx as any, meta, ui as any, {
+      mode: "manual",
+    });
+
+    // Should have called select (manual mode)
+    expect(selectCalled).toBe(true);
+    // Gate should handle (approve → advance)
+    expect(result.result).toBe("handled");
+
+    await fs.rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("review approve → completed: confirm gate handles without spawn (completed is non-spawnable)", async () => {
+    const stageTmp = path.join(tmpdir(), "pi-cg-compl-" + Date.now());
+    await fs.mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create review doc for marker write
+    const reviewDir = path.join(stageTmp, "docs", "review");
+    await fs.mkdir(reviewDir, { recursive: true });
+    const reviewDoc = path.join(reviewDir, "code_review_Test.md");
+    await fs.writeFile(reviewDoc, "# Review\n结论：通过\n");
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      requirementDoc: "docs/design/Test.md",
+    });
+
+    let selectOption = "";
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => Object.assign(meta, patch),
+      },
+      ui: {
+        notify: () => {},
+        transition: () => {},
+        clearStage: () => {},
+        select: async (_msg: string, opts: string[]) => {
+          // Find the "Approve & Complete" option
+          selectOption = opts.find(o => o.includes("Complete")) ?? opts[0];
+          return selectOption;
+        },
+      },
+      pi: {
+        sendUserMessage: (_msg: string, _opts?: Record<string, unknown>) => {},
+      },
+    };
+
+    const ui = { notify: () => {}, transition: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx as any, meta, ui as any, {
+      mode: "manual",
+    });
+
+    expect(result.result).toBe("handled");
+    // Should advance to completed
+    if ("toStage" in result) {
+      expect(result.toStage).toBe("completed");
+    }
+
+    await fs.rm(stageTmp, { recursive: true, force: true });
+  });
+});

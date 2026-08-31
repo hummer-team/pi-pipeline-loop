@@ -25,7 +25,7 @@ interface VerifyAdvanceCtx {
   };
   ui?: { notify: (msg: string) => void; select?: (message: string, options: string[]) => Promise<string | undefined> };
   /** @internal pi SDK handle for sending wake messages (used by autoAdvanceAfterVerify) */
-  pi?: { sendUserMessage?: (msg: string) => void };
+  pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void };
 }
 
 /**
@@ -355,6 +355,7 @@ export async function applyVerifyFail(
     try {
       ctx.pi.sendUserMessage(
         `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification. Please strictly follow the SKILL output format requirements.`,
+        { deliverAs: "followUp" },
       );
       await writeAuditLog("verify_fail_wake", {
         pipelineId: meta.pipelineId,
@@ -439,6 +440,7 @@ export async function autoAdvanceAfterVerify(
     try {
       pi.sendUserMessage(
         `Pipeline advanced from ${fromStage} to ${toStage}. Begin the ${toStage} stage work now.`,
+        { deliverAs: "followUp" },
       );
       await writeAuditLog("auto_advance_wake", {
         pipelineId: meta.pipelineId,

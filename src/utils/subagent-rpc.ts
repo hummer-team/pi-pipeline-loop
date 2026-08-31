@@ -12,7 +12,10 @@
  */
 
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { safeWriteAuditLog } from "./auditLog";
+import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 
 /**
  * Minimal EventBus interface expected from pi.events.
@@ -267,4 +270,186 @@ export function watchSubagentLifecycle(
       pi.events.off("subagents:failed", failedHandler);
     }
   };
+}
+
+// ─── Stage Subagent Spawn (168 Phase 4) ──────────────────────────────────────
+
+/**
+ * Resolves the agent name for a given stage from its agentPath configuration.
+ *
+ * Reads the agent file and extracts the `name` field from YAML frontmatter.
+ * Falls back to the file basename (without .md) when frontmatter is absent.
+ * Returns null when the file is unreadable or agentPath is not configured.
+ *
+ * 168 Phase 4: Migrated from pipeline-start.ts to enable reuse by
+ * spawnStageSubagent for any stage (not just clarify).
+ *
+ * @param config - Pipeline configuration
+ * @param stage - The stage to resolve agent name for
+ * @returns Agent name string, or null if unresolvable
+ */
+export function resolveAgentMention(
+  config: PipelineConfig,
+  stage: PipelineStage,
+): string | null {
+  const stageConfig = config.stages[stage];
+  if (!stageConfig?.agentPath) return null;
+
+  const agentFilePath = path.join(config.projectRoot, stageConfig.agentPath);
+
+  // Read agent file — distinguish file-missing/unreadable (return null so
+  // the caller falls back to notify) from file-exists-but-no-frontmatter
+  // (basename fallback is still safe to inject).
+  let content: string;
+  try {
+    content = fs.readFileSync(agentFilePath, "utf-8");
+  } catch {
+    // File unreadable / missing → null (caller does notify fallback, no inject)
+    return null;
+  }
+
+  // Parse YAML frontmatter: ^---\n...\n---
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (fmMatch) {
+    const fmBody = fmMatch[1];
+    const nameMatch = fmBody.match(/^name:\s*(.+)$/m);
+    if (nameMatch) {
+      return nameMatch[1].trim();
+    }
+  }
+
+  // File exists but no frontmatter name → basename fallback (safe to inject)
+  return path.basename(stageConfig.agentPath, ".md");
+}
+
+/**
+ * Checks whether a stage is eligible for automatic subagent spawning.
+ *
+ * Only develop, review, and fix stages are spawnable (they have dedicated
+ * agent subagents). The stage must also have an agentPath configured.
+ *
+ * @param config - Pipeline configuration
+ * @param stage - The stage to check
+ * @returns True if the stage can be auto-spawned
+ */
+export function isSpawnableStage(
+  config: PipelineConfig,
+  stage: PipelineStage,
+): boolean {
+  const spawnableStages: PipelineStage[] = ["develop", "review", "fix"];
+  if (!spawnableStages.includes(stage)) return false;
+  return !!config.stages[stage]?.agentPath;
+}
+
+/**
+ * Minimal pi interface for sendUserMessage with deliverAs option.
+ * SDK signature: sendUserMessage(msg, { deliverAs?: "steer" | "followUp" })
+ */
+interface PiWithSend {
+  sendUserMessage: (msg: string, opts?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean }) => void;
+}
+
+/**
+ * Type guard for pi with sendUserMessage.
+ */
+function hasSendUserMessage(pi: unknown): pi is PiWithSend {
+  return !!pi && typeof (pi as PiWithSend).sendUserMessage === "function";
+}
+
+/**
+ * Spawns a subagent for the given stage after manual confirm gate approval.
+ *
+ * Three-tier dispatch (mirrors clarify auto-launch pattern):
+ * 1. Non-spawnable stage → return { spawned: false } immediately
+ * 2. resolveAgentMention fails → notify + audit stage_spawn_skipped
+ * 3. RPC path (hasEventBus): ping → spawn → audit stage_spawn_rpc + watch lifecycle
+ * 4. Fallback: sendUserMessage with deliverAs:"followUp" + notify + audit stage_spawn_fallback
+ *
+ * @param pi - pi SDK ExtensionAPI handle
+ * @param config - Pipeline configuration
+ * @param stage - Target stage to spawn subagent for
+ * @param meta - Current session metadata
+ * @param opts - Optional UI notify handle
+ * @returns { spawned, fallback } indicating outcome
+ */
+export async function spawnStageSubagent(
+  pi: unknown,
+  config: PipelineConfig,
+  stage: PipelineStage,
+  meta: SessionMeta,
+  opts?: { ui?: { notify: (msg: string) => void } },
+): Promise<{ spawned: boolean; fallback: boolean }> {
+  // 1. Non-spawnable stage → skip silently
+  if (!isSpawnableStage(config, stage)) {
+    return { spawned: false, fallback: false };
+  }
+
+  // 2. Resolve agent name from config
+  const agentName = resolveAgentMention(config, stage);
+  if (!agentName) {
+    opts?.ui?.notify?.(`No agent configured for stage "${stage}". Please start manually.`);
+    await safeWriteAuditLog("stage_spawn_skipped", {
+      pipelineId: meta.pipelineId,
+      stage,
+      reason: "agentName_unresolvable",
+    });
+    return { spawned: false, fallback: false };
+  }
+
+  const prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId}`;
+  const description = `${stage}: ${meta.requirementDoc ?? ""}`;
+
+  // 3. RPC path: ping → spawn → success
+  if (hasEventBus(pi)) {
+    const pinged = await pingSubagents(pi, 500);
+    if (pinged) {
+      const spawnResult = await spawnClarifySubagent(pi, {
+        agentName,
+        prompt,
+        description,
+      });
+
+      if (spawnResult.ok) {
+        await safeWriteAuditLog("stage_spawn_rpc", {
+          pipelineId: meta.pipelineId,
+          stage,
+          agentName,
+          subagentId: spawnResult.id,
+        });
+        // Watch lifecycle (self-unregistering)
+        const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
+          cleanup();
+        });
+        return { spawned: true, fallback: false };
+      }
+      // Spawn failed → fall through to sendUserMessage fallback
+    }
+    // Ping timeout or spawn failure → fall through
+  }
+
+  // 4. Fallback: sendUserMessage with deliverAs:"followUp"
+  if (hasSendUserMessage(pi)) {
+    try {
+      pi.sendUserMessage(`@${agentName} ${prompt}`, { deliverAs: "followUp" });
+      opts?.ui?.notify?.(`Spawned ${stage} agent via followUp message.`);
+      await safeWriteAuditLog("stage_spawn_fallback", {
+        pipelineId: meta.pipelineId,
+        stage,
+        agentName,
+      });
+      return { spawned: true, fallback: true };
+    } catch {
+      // sendUserMessage failure is non-fatal; fall through to notify
+    }
+  }
+
+  // Final fallback: just notify
+  opts?.ui?.notify?.(`Next: run @${agentName} manually for ${stage} stage.`);
+  await safeWriteAuditLog("stage_spawn_fallback", {
+    pipelineId: meta.pipelineId,
+    stage,
+    agentName,
+    notify_only: "true",
+  });
+  return { spawned: false, fallback: false };
 }
