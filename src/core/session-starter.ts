@@ -10,11 +10,12 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
-import { writeAuditLog } from "../utils/auditLog";
+import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { DEFAULT_DECISION_SHORTCUT } from "../constants";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState, markPipelineAborted } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
+import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 
 /**
  * Attempts to load a DomainConfig from a domain.md file.
@@ -60,6 +61,94 @@ async function loadDomainFromFile(domainFilePath: string): Promise<DomainConfig>
 }
 
 /**
+ * Detects subagent/fork session signals from the runtime context.
+ *
+ * Signal detection:
+ * - Primary: getHeader()?.parentSession exists (SDK-provided parent reference)
+ * - Secondary: getSessionName() matches subagent pattern `^[a-z0-9-]+#[0-9a-f]{8}$`
+ * - Fork: event.reason === "fork"
+ *
+ * @param ctx - Runtime context with session manager access
+ * @returns Object with parentSession file and detection flags
+ */
+function detectSubagentSession(ctx: RuntimeCtx): {
+  parentSession: string | undefined;
+  isSubagent: boolean;
+  isFork: boolean;
+} {
+  const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
+    | { getHeader?: () => Record<string, unknown> | undefined; getSessionName?: () => string; getSessionFile?: () => string }
+    | undefined;
+
+  const parentSession = (sm?.getHeader?.() as Record<string, unknown> | undefined)?.parentSession as string | undefined;
+  const sessionName = sm?.getSessionName?.() ?? "";
+  const isFork = (ctx.event as Record<string, unknown> | undefined)?.reason === "fork";
+
+  // Subagent pattern: lowercase name + # + 8 hex chars (e.g., "code-review-agent#a1b2c3d4")
+  const SUBAGENT_NAME_PATTERN = /^[a-z0-9-]+#[0-9a-f]{8}$/;
+  const isSubagent = !!parentSession || SUBAGENT_NAME_PATTERN.test(sessionName) || isFork;
+
+  return { parentSession, isSubagent, isFork };
+}
+
+/**
+ * Handles JOIN: loads parent pipeline meta and merges into current session.
+ * Returns true if JOIN succeeded, false if it fell through to missing-registry path.
+ */
+async function handleSubagentJoin(
+  config: PipelineConfig,
+  ctx: RuntimeCtx,
+  ui: ReturnType<typeof createPipelineUI>,
+  parentSession: string,
+  sessionFile: string,
+): Promise<boolean> {
+  const parentPipelineId = await lookupParentPipeline(config, parentSession);
+  if (!parentPipelineId) {
+    // Registry miss — degrade to new pipeline with warn
+    await safeWriteAuditLog(
+      "session_join_missing_registry",
+      { parentSession, sessionFile },
+      "warn",
+    );
+    return false;
+  }
+
+  // Read parent pipeline meta.json
+  const auditDir = config.auditDir || ".pi/audit";
+  const parentMetaPath = path.resolve(config.projectRoot, auditDir, parentPipelineId, "meta.json");
+  let parentMeta: SessionMeta;
+  try {
+    const raw = await fs.readFile(parentMetaPath, "utf-8");
+    parentMeta = JSON.parse(raw) as SessionMeta;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog(
+      "session_join_meta_read_fail",
+      { parentPipelineId, parentMetaPath, error: errMsg },
+      "warn",
+    );
+    return false;
+  }
+
+  // Merge parent meta into current session
+  // pipelineId/currentStage/stageStartTime inherit from parent (not reset)
+  ctx.session.updateMeta({ ...parentMeta });
+
+  // Register this session too (supports nested subagents)
+  await registerSession(config, sessionFile, parentPipelineId);
+
+  // Audit JOIN event
+  await safeWriteAuditLog("session_join_parent", {
+    sessionFile,
+    pipelineId: parentPipelineId,
+    stage: parentMeta.currentStage,
+  });
+
+  ui.stageEntry(ctx, parentMeta.currentStage);
+  return true;
+}
+
+/**
  * Creates the `session_start` hook that initializes or resumes a pipeline session.
  *
  * On a new session (no `currentStage` in metadata):
@@ -86,6 +175,17 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
       await loadPromptConfig(projectRoot);
 
       if (!meta?.currentStage) {
+        // ── Subagent/fork JOIN detection (Q7) ──────────────────────────
+        const { parentSession, isSubagent } = detectSubagentSession(ctx);
+        if (isSubagent && parentSession) {
+          const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
+            | { getSessionFile?: () => string } | undefined;
+          const sessionFile = sm?.getSessionFile?.() ?? "";
+          const joined = await handleSubagentJoin(config, ctx, ui, parentSession, sessionFile);
+          if (joined) return; // JOIN succeeded — skip new pipeline creation
+          // JOIN failed (registry miss / meta read fail) — fall through to new pipeline
+        }
+
         // ── New pipeline: initialize metadata ──────────────────────────
         const pipelineId = `pipe-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
 
@@ -107,6 +207,14 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         };
 
         ctx.session.updateMeta(sessionMeta);
+
+        // Register session → pipeline mapping (fail-open)
+        const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
+          | { getSessionFile?: () => string } | undefined;
+        const sessionFile = sm?.getSessionFile?.() ?? "";
+        if (sessionFile) {
+          await registerSession(config, sessionFile, pipelineId);
+        }
 
         // Write session_start audit log
         await writeAuditLog("session_start", {

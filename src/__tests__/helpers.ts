@@ -74,12 +74,22 @@ export type MockCtx = {
   toolCall: { name: string; arguments: Record<string, unknown> };
   result: { success?: boolean; exitCode?: number; error?: string } | undefined;
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
-  _ctx: { sessionManager: { getBranch(): any[]; getEntries(): any[] } };
+  _ctx: {
+    sessionManager: {
+      getBranch(): unknown[];
+      getEntries(): unknown[];
+      getHeader?(): Record<string, unknown> | undefined;
+      getSessionName?(): string;
+      getSessionFile?(): string;
+    };
+  };
   /**
    * 138: Optional pi SDK mock for wake-up tests.
    * When provided, sendUserMessage will be tracked for assertion.
    */
   pi?: { sendUserMessage: (msg: string, opts?: Record<string, unknown>) => void };
+  /** Raw event object (for session_start reason detection) */
+  event?: Record<string, unknown>;
 };
 
 export function createMockCtx(
@@ -92,6 +102,14 @@ export function createMockCtx(
     hasConfirm?: boolean;
     /** 138: Optional pi mock with sendUserMessage spy for wake-up tests */
     pi?: { sendUserMessage: (msg: string, opts?: Record<string, unknown>) => void };
+    /** Session manager header override (for JOIN detection tests) */
+    sessionHeader?: Record<string, unknown>;
+    /** Session name override (for JOIN detection tests) */
+    sessionName?: string;
+    /** Session file override (for registry tests) */
+    sessionFile?: string;
+    /** Raw event override (for fork detection tests) */
+    event?: Record<string, unknown>;
   },
 ) {
   const metadataUpdates: SessionMeta[] = [];
@@ -127,7 +145,15 @@ export function createMockCtx(
     },
     toolCall: { name: "read", arguments: {} },
     result: undefined,
-    _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+    _ctx: {
+      sessionManager: {
+        getBranch: () => [] as unknown[],
+        getEntries: () => [] as unknown[],
+        getHeader: opts?.sessionHeader ? () => opts.sessionHeader! : undefined,
+        getSessionName: opts?.sessionName ? () => opts.sessionName! : undefined,
+        getSessionFile: opts?.sessionFile ? () => opts.sessionFile! : undefined,
+      },
+    },
     metadataUpdates,
     notifications,
     statusCalls,
@@ -136,6 +162,11 @@ export function createMockCtx(
   // 138: Forward pi mock if provided
   if (opts?.pi) {
     mock.pi = opts.pi;
+  }
+
+  // Forward event for session_start reason detection
+  if (opts?.event) {
+    mock.event = opts.event;
   }
 
   return mock;

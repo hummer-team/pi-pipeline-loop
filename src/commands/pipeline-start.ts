@@ -26,6 +26,7 @@ import {
   readResidueGateStatus,
   writeResidueGateStatus,
 } from "../core/template-residue-check";
+import { registerSession } from "../utils/session-registry";
 
 /**
  * Writes the persistent TUI status bar showing current pipeline stage.
@@ -580,6 +581,12 @@ async function startNewPipeline(
   const { pipelineId, newMeta } = buildStartMeta(existingMeta, config, file, startStage);
   ctx?.session?.updateMeta?.(newMeta);
   syncStageStatusBar(ui, ctx);
+
+  // Register session → pipeline mapping (fail-open, covers restart with new pipelineId)
+  const sessionFile = ctx?._ctx?.sessionManager?.getSessionFile?.() as string | undefined;
+  if (sessionFile) {
+    await registerSession(config, sessionFile, pipelineId);
+  }
 
   // Step 4: Audit (with mode and startStage fields for traceability)
   const auditMode = startStage === "clarify" ? "fresh" : "spec";

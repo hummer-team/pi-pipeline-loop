@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import { resetPromptConfigCache, loadPromptConfig } from "../../core/prompt-config";
+import { registerSession } from "../../utils/session-registry";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -323,6 +324,174 @@ describe("createSessionStarter", () => {
       // Cache should be loaded with empty config
       const promptConfig = await loadPromptConfig(TMP);
       expect(promptConfig).toEqual({});
+    });
+  });
+
+  describe("subagent JOIN (Q7)", () => {
+    /** Create a ctx with sessionManager mock for JOIN tests */
+    function createJoinCtx(meta: Record<string, unknown>, opts: {
+      parentSession?: string;
+      sessionName?: string;
+      sessionFile?: string;
+      event?: Record<string, unknown>;
+    }) {
+      const updates: any[] = [];
+      return {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => {
+            updates.push(m);
+            Object.assign(meta, m);
+          },
+        },
+        updates,
+        ui: { notify: () => {}, setStatus: () => {} },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => [],
+            getEntries: () => [],
+            getHeader: opts.parentSession ? () => ({ parentSession: opts.parentSession }) : () => ({}),
+            getSessionName: opts.sessionName ? () => opts.sessionName! : () => "",
+            getSessionFile: opts.sessionFile ? () => opts.sessionFile! : () => "",
+          },
+        },
+        event: opts.event,
+      };
+    }
+
+    it("JOIN: header.parentSession + registry hit → inherits parent meta", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-parent-1"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-parent-1",
+        stageStartTime: 1000000,
+        advancedThisTurn: true,
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-parent-1", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "parent-session-file", "pipe-parent-1");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtx(meta, {
+        parentSession: "parent-session-file",
+        sessionName: "code-review-agent#a1b2c3d4",
+        sessionFile: "subagent-session-file",
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.currentStage).toBe("develop");
+      expect(meta.pipelineId).toBe("pipe-parent-1");
+      expect(meta.stageStartTime).toBe(1000000);
+      expect(meta.pipelineId).not.toMatch(/^pipe-\d+-/);
+    });
+
+    it("JOIN: parentSession + registry miss → new pipeline + audit warn", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-miss-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtx(meta, {
+        parentSession: "missing-parent-session",
+        sessionFile: "subagent-file",
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.currentStage).toBe("clarify");
+      expect(meta.pipelineId).toMatch(/^pipe-/);
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("session_join_missing_registry");
+    });
+
+    it("JOIN: fork signal (reason=fork) with parentSession → JOIN", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-fork-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-fork-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "review",
+        pipelineId: "pipe-fork-parent",
+        stageStartTime: 2000000,
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-fork-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "fork-parent-session", "pipe-fork-parent");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtx(meta, {
+        parentSession: "fork-parent-session",
+        sessionFile: "fork-child-session",
+        event: { reason: "fork" },
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.pipelineId).toBe("pipe-fork-parent");
+      expect(meta.currentStage).toBe("review");
+    });
+
+    it("no subagent signal → existing new pipeline behavior", async () => {
+      const TMP = join(tmpdir(), "pi-ss-no-join-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtx(meta, { sessionFile: "normal-session" });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.currentStage).toBe("clarify");
+      expect(meta.pipelineId).toMatch(/^pipe-/);
+    });
+
+    it("JOIN preserves advancedThisTurn from parent (skip guard timing point 1)", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-adv-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-adv-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "review",
+        pipelineId: "pipe-adv-parent",
+        advancedThisTurn: true,
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-adv-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "adv-parent-session", "pipe-adv-parent");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtx(meta, {
+        parentSession: "adv-parent-session",
+        sessionFile: "adv-child-session",
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.advancedThisTurn).toBe(true);
     });
   });
 });
