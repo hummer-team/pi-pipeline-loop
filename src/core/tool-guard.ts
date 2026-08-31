@@ -39,10 +39,11 @@ import {
 } from "../utils/protect";
 import { ALLOWED_WRITE_ALL, DEFAULT_DECISION_SHORTCUT } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
-import { extractBashFileTargets } from "../utils/bash-parse";
+import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { checkGitAdd, checkGitCommit, type GitCheckResult } from "../utils/git-protect";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
@@ -125,6 +126,122 @@ function checkStageWriteBlock(
 import { askProtectDecision } from "../utils/protect-ask";
 
 /**
+ * Checks a single non-git bash segment for file-modification targets
+ * against the protection chain: session allowance → stage whitelist →
+ * global protection (hardcoded → allow → gitignore).
+ *
+ * @param segment - Single bash command segment
+ * @param state - Protection state (pre-built by caller)
+ * @param stageConfig - Current stage configuration (for whitelist)
+ * @param meta - Current session metadata
+ * @param config - Pipeline configuration
+ * @param ctx - Runtime context (for TUI ask dialogs)
+ * @param trackViolation - Violation recorder
+ * @param ui - Pipeline UI for notifications
+ * @returns Block result if a target is denied, undefined if all targets pass
+ */
+async function checkBashFileTargets(
+  segment: string,
+  state: ProtectState,
+  stageConfig: { allowedWritePaths?: string[] },
+  meta: SessionMeta,
+  config: PipelineConfig,
+  ctx: RuntimeCtx,
+  trackViolation: (item: Omit<ViolationItem, "timestamp">) => Promise<void>,
+  ui: ReturnType<typeof createPipelineUI>,
+): Promise<{ block: true; reason: string } | undefined> {
+  const targets = extractBashFileTargets(segment);
+  const sessionPaths = meta.sessionAllowedWritePaths || [];
+
+  for (const t of targets) {
+    const absTarget = path.isAbsolute(t.target)
+      ? t.target
+      : path.join(config.projectRoot, t.target);
+    const relPath = toProjectRelative(config.projectRoot, absTarget);
+
+    if (relPath) {
+      // Session allowance early bypass
+      if (sessionPaths.includes(relPath)) continue;
+
+      // Stage-level write whitelist check
+      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
+      if (stageCheck.status === "block") {
+        if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
+          const decision = await askProtectDecision(ctx, meta, relPath);
+          if (decision === "block") {
+            await trackViolation({
+              type: "write_protected", tool: "bash", detail: stageCheck.reason,
+              suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+            });
+            ui.notify(ctx, stageCheck.reason);
+            return { block: true, reason: stageCheck.reason };
+          }
+          continue;
+        }
+        await trackViolation({
+          type: "write_protected", tool: "bash", detail: stageCheck.reason,
+          suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+        });
+        ui.notify(ctx, stageCheck.reason);
+        return { block: true, reason: stageCheck.reason };
+      }
+
+      // Global protection chain (only when whitelist did not allow)
+      if (stageCheck.status !== "allow-whitelist") {
+        if (isPathProtectedForModify(relPath, state)) {
+          if (config.protect?.ask === true) {
+            const decision = await askProtectDecision(ctx, meta, relPath);
+            if (decision === "block") {
+              const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+              await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.` });
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
+            continue;
+          }
+          const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
+          await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.` });
+          ui.notify(ctx, reason);
+          return { block: true, reason };
+        }
+      }
+    } else {
+      // Path outside project root
+      const isWhitelistMode =
+        stageConfig.allowedWritePaths !== undefined &&
+        !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
+
+      // Redirect-class out-of-project targets are always allowed
+      if (t.kind === "redirect") continue;
+
+      // file-arg class: block in whitelist mode
+      if (isWhitelistMode) {
+        const reason = `FORBIDDEN: Target '${absTarget}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
+        await trackViolation({
+          type: "write_protected", tool: "bash", detail: reason,
+          suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+        });
+        ui.notify(ctx, reason);
+        return { block: true, reason };
+      }
+
+      // Full mode: safety net for destructive commands targeting system paths
+      const baseCmd = segment.trim().split(/\s+/)[0];
+      if (["rm", "mv", "chmod", "chown"].includes(baseCmd) && isSystemPath(absTarget)) {
+        const reason = `FORBIDDEN: Destructive command '${baseCmd}' targets system path '${absTarget}' outside project root.`;
+        await trackViolation({
+          type: "bash_destructive", tool: "bash", detail: reason,
+          suggestion: `Avoid destructive operations targeting system paths.`,
+        });
+        ui.notify(ctx, reason);
+        return { block: true, reason };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Creates the `tool_call` hook that intercepts and validates tool calls.
  *
  * @param config - The pipeline configuration
@@ -190,16 +307,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       if (toolName === "bash") {
         const command = args.command as string;
 
-        // ── DESTRUCTIVE COMMAND CHECK ──
-        // Check if command matches destructive patterns (rm -rf /, sudo, etc.)
-        // or targets system-level paths with destructive file commands.
-        // If destructive and not already allowed for session, prompt user.
+        // ── DESTRUCTIVE COMMAND CHECK (full command, pre-split) ──
         if (isDestructiveCommand(command)) {
           const sessionCommands = meta.sessionAllowedCommands || [];
           if (!sessionCommands.includes(command)) {
-            // Command is destructive and not pre-allowed
             if (config.protect?.ask === true) {
-              // Prompt user with 3-choice dialog
               const decision = await askCommandDecision(ctx, meta, command);
               if (decision === "block") {
                 const reason = buildBlockedReason(command);
@@ -212,9 +324,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
-              // "allow" → fall through to file protection checks
             } else {
-              // protect.ask=false: block destructive commands by default
               const reason = buildBlockedReason(command) + ". Enable protect.ask for user confirmation.";
               await trackViolation({
                 type: "bash_destructive",
@@ -226,169 +336,57 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               return { block: true, reason };
             }
           }
-          // Command is destructive but already allowed for session → continue
         }
 
-        // 2b. Git command protection check
-        if (GIT_ADD_PATTERN.test(command)) {
-          const gitState = await getProtectStateForGit();
-          const blockResult = await checkGitAdd(command, gitState, config.projectRoot, execFn);
-          if (blockResult) {
-            await trackViolation({
-              type: "git_protected",
-              tool: "bash",
-              detail: blockResult.reason,
-              suggestion: `git add cannot stage protected paths (.pi/, .git/, gitignore).`,
-            });
-            ui.notify(ctx, blockResult.reason);
-            return blockResult;
-          }
-        } else if (GIT_COMMIT_PATTERN.test(command)) {
-          const gitState = await getProtectStateForGit();
-          const blockResult = await checkGitCommit(command, gitState, config.projectRoot, execFn);
-          if (blockResult) {
-            await trackViolation({
-              type: "git_protected",
-              tool: "bash",
-              detail: blockResult.reason,
-              suggestion: `git commit cannot include protected paths (.pi/, .git/, gitignore).`,
-            });
-            ui.notify(ctx, blockResult.reason);
-            return blockResult;
-          }
-        } else {
-          // 2c. Bash file modification protection check
-          const state = await getProtectState();
-          const targets = extractBashFileTargets(command);
-          // Session-level file allowance: pre-evaluated outside loop so each
-          // target can bypass whitelist + global chain in O(1).
-          const sessionPaths = meta.sessionAllowedWritePaths || [];
-          for (const t of targets) {
-            // Resolve target path relative to projectRoot
-            const absTarget = path.isAbsolute(t.target)
-              ? t.target
-              : path.join(config.projectRoot, t.target);
-            const relPath = toProjectRelative(config.projectRoot, absTarget);
-            if (relPath) {
-              // Session allowance early bypass (overrides whitelist + protection)
-              if (sessionPaths.includes(relPath)) {
-                continue;
-              }
+        // ── SEGMENT-LEVEL PROTECTION (Bug 2: split compound commands) ──
+        const segments = splitShellSegments(command);
+        const warnings: string[] = [];
+        let bashFileState: ProtectState | undefined;
 
-              // Stage-level write whitelist check
-              const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
-
-              if (stageCheck.status === "block") {
-                // Phase 2: if protect.ask=true AND path is protected, surface ask dialog.
-                if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
-                  const decision = await askProtectDecision(ctx, meta, relPath);
-                  if (decision === "block") {
-                    await trackViolation({
-                      type: "write_protected",
-                      tool: "bash",
-                      detail: stageCheck.reason,
-                      suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-                    });
-                    ui.notify(ctx, stageCheck.reason);
-                    return { block: true, reason: stageCheck.reason };
-                  }
-                  // "allow" → continue loop to next target (current target allowed)
-                  continue;
-                }
-                // ask=false or non-protected path: original whitelist block
-                await trackViolation({
-                  type: "write_protected",
-                  tool: "bash",
-                  detail: stageCheck.reason,
-                  suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-                });
-                ui.notify(ctx, stageCheck.reason);
-                return { block: true, reason: stageCheck.reason };
-              }
-
-              // "allow-whitelist" → skip global chain, path is stage-authorized
-              // "continue" → fall through to global protection chain
-              if (stageCheck.status !== "allow-whitelist") {
-                if (isPathProtectedForModify(relPath, state)) {
-                  if (config.protect?.ask === true) {
-                    const decision = await askProtectDecision(ctx, meta, relPath);
-                    if (decision === "block") {
-                      const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
-                      await trackViolation({
-                        type: "write_protected",
-                        tool: "bash",
-                        detail: reason,
-                        suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.`,
-                      });
-                      ui.notify(ctx, reason);
-                      return { block: true, reason };
-                    }
-                    // "allow" → continue loop to next target
-                    continue;
-                  }
-                  const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
-                  await trackViolation({
-                    type: "write_protected",
-                    tool: "bash",
-                    detail: reason,
-                    suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.`,
-                  });
-                  ui.notify(ctx, reason);
-                  return { block: true, reason };
-                }
-              }
-            } else {
-              // Path outside project root
-              const isWhitelistMode =
-                stageConfig.allowedWritePaths !== undefined &&
-                !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
-
-              // Phase 2 (139): redirect-class out-of-project targets are allowed
-              // (e.g., > /dev/null, > /tmp/something, 2>&1 already filtered by bash-parse).
-              // file-arg class targets (rm/mv/cp/touch/tee) remain protected.
-              if (t.kind === "redirect") {
-                // Still pass destructive command check (handled above via isDestructiveCommand
-                // and the isSystemPath safety net below for /dev/sd*, /dev/hd* etc.)
-                if (isWhitelistMode) {
-                  // In whitelist mode, redirect-class out-of-project is allowed
-                  // (whitelist cannot cover out-of-project paths, but redirect targets
-                  // like /dev/null, /tmp/* are harmless shell idioms)
-                  continue;
-                }
-                // Full mode: allow redirect-class out-of-project (legacy behavior)
-                continue;
-              }
-
-              // file-arg class: block in whitelist mode (cannot satisfy whitelist)
-              if (isWhitelistMode) {
-                const reason = `FORBIDDEN: Target '${absTarget}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
-                await trackViolation({
-                  type: "write_protected",
-                  tool: "bash",
-                  detail: reason,
-                  suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-                });
-                ui.notify(ctx, reason);
-                return { block: true, reason };
-              }
-              // Full mode: safety net for destructive commands targeting system paths
-              // Even in full mode, destructive file operations targeting system-level paths
-              // (/, /etc, /usr, etc.) must be blocked to prevent system damage.
-              const baseCmd = command.trim().split(/\s+/)[0];
-              if (["rm", "mv", "chmod", "chown"].includes(baseCmd) && isSystemPath(absTarget)) {
-                const reason = `FORBIDDEN: Destructive command '${baseCmd}' targets system path '${absTarget}' outside project root.`;
-                await trackViolation({
-                  type: "bash_destructive",
-                  tool: "bash",
-                  detail: reason,
-                  suggestion: `Avoid destructive operations targeting system paths.`,
-                });
-                ui.notify(ctx, reason);
-                return { block: true, reason };
-              }
-              // Full mode: out-of-project paths bypass global chain (legacy behavior)
+        for (const segment of segments) {
+          if (GIT_ADD_PATTERN.test(segment)) {
+            const gitState = await getProtectStateForGit();
+            const result = await checkGitAdd(segment, gitState, config.projectRoot, execFn);
+            if (result.block) {
+              await trackViolation({
+                type: "git_protected",
+                tool: "bash",
+                detail: result.reason!,
+                suggestion: `git add cannot stage protected paths (.pi/, .git/, gitignore).`,
+              });
+              ui.notify(ctx, result.reason!);
+              return { block: true, reason: result.reason! };
             }
+            if (result.warn) warnings.push(result.warn);
+          } else if (GIT_COMMIT_PATTERN.test(segment)) {
+            const gitState = await getProtectStateForGit();
+            const result = await checkGitCommit(segment, gitState, config.projectRoot, execFn);
+            if (result.block) {
+              await trackViolation({
+                type: "git_protected",
+                tool: "bash",
+                detail: result.reason!,
+                suggestion: `git commit cannot include protected paths (.pi/, .git/, gitignore).`,
+              });
+              ui.notify(ctx, result.reason!);
+              return { block: true, reason: result.reason! };
+            }
+            if (result.warn) warnings.push(result.warn);
+          } else {
+            // Non-git segment: check bash file-modification targets
+            if (!bashFileState) bashFileState = await getProtectState();
+            const blockResult = await checkBashFileTargets(
+              segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
+            );
+            if (blockResult) return blockResult;
           }
+        }
+
+        // Aggregate warnings (non-blocking, not counted as violations)
+        if (warnings.length > 0) {
+          const warnMsg = `[git-protect warn] ${warnings.join("; ")}`;
+          ui.notify(ctx, warnMsg);
+          await safeWriteAuditLog("git_protect_warn", { warnings: warnings.join("|"), command }, "warn");
         }
       }
 
@@ -552,172 +550,6 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       return undefined;
     },
   };
-}
-
-/**
- * Checks if a git add command would stage protected paths.
- * Uses `git add --dry-run` to preview what would be staged.
- *
- * @param command - The git add command
- * @param state - Protection state (pre-built by caller)
- * @param projectRoot - Project root directory
- * @param execFn - Optional execution function
- * @returns Block result if protected paths would be staged, undefined otherwise
- */
-async function checkGitAdd(
-  command: string,
-  state: ProtectState,
-  projectRoot: string,
-  execFn?: ExecFn
-): Promise<{ block: true; reason: string } | undefined> {
-  // Fail-closed: if no execFn, block for safety
-  if (!execFn) {
-    return {
-      block: true,
-      reason: "FORBIDDEN: Cannot verify 'git add' safety (execFn not available).",
-    };
-  }
-
-  try {
-    // Extract args from the original command (after "git add")
-    const argsMatch = command.match(/^\s*git\s+add\s+(.*)$/);
-    const addArgs = argsMatch ? argsMatch[1].trim() : "";
-
-    // Run dry-run to see what would be added
-    const dryRunArgs = ["add", "--dry-run", ...addArgs.split(/\s+/).filter(Boolean)];
-    const result = await execFn("git", dryRunArgs, projectRoot);
-
-    // Parse output: "add 'path'" or "add path"
-    // Even on non-zero exit, try to extract paths for precise error messages
-    const lines = result.stdout.split("\n");
-    for (const line of lines) {
-      const match = line.match(/^add\s+['"]?([^'"]+)['"]?$/);
-      if (match) {
-        const stagedPath = match[1];
-        if (isPathProtectedForGit(stagedPath, state)) {
-          return {
-            block: true,
-            reason: `FORBIDDEN: 'git add' would stage protected path '${stagedPath}'.`,
-          };
-        }
-      }
-    }
-
-    if (result.code !== 0) {
-      // Check stderr for hints about ignored files
-      const stderrLower = result.stderr.toLowerCase();
-      if (stderrLower.includes("ignored") || stderrLower.includes("did not match")) {
-        // Provide more precise feedback based on stderr
-        return {
-          block: true,
-          reason: `FORBIDDEN: 'git add' rejected by git (possibly includes ignored/protected paths): ${result.stderr.trim()}`,
-        };
-      }
-      // Generic fail-closed
-      return {
-        block: true,
-        reason: `FORBIDDEN: 'git add --dry-run' failed (exit ${result.code}).`,
-      };
-    }
-  } catch (err) {
-    // Fail closed on any error — log for diagnostics (Problem 7)
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[tool-guard] checkGitAdd error: command="${command}", projectRoot="${projectRoot}", error=${errMsg}`);
-    return {
-      block: true,
-      reason: "FORBIDDEN: Cannot verify 'git add' safety (execution error).",
-    };
-  }
-
-  return undefined;
-}
-
-/**
- * Checks if a git commit command would include protected paths.
- * Uses `git diff --cached --name-only` to see staged files.
- *
- * @param command - The git commit command
- * @param state - Protection state (pre-built by caller)
- * @param projectRoot - Project root directory
- * @param execFn - Optional execution function
- * @returns Block result if protected paths would be committed, undefined otherwise
- */
-async function checkGitCommit(
-  command: string,
-  state: ProtectState,
-  projectRoot: string,
-  execFn?: ExecFn
-): Promise<{ block: true; reason: string } | undefined> {
-  // Fail-closed: if no execFn, block for safety
-  if (!execFn) {
-    return {
-      block: true,
-      reason: "FORBIDDEN: Cannot verify 'git commit' safety (execFn not available).",
-    };
-  }
-
-  try {
-    // Check staged files
-    const stagedResult = await execFn("git", ["diff", "--cached", "--name-only"], projectRoot);
-    if (stagedResult.code !== 0) {
-      return {
-        block: true,
-        reason: `FORBIDDEN: 'git diff --cached' failed (exit ${stagedResult.code}).`,
-      };
-    }
-
-    const stagedFiles = stagedResult.stdout.trim().split("\n").filter(Boolean);
-
-    for (const file of stagedFiles) {
-      if (isPathProtectedForGit(file, state)) {
-        return {
-          block: true,
-          reason: `FORBIDDEN: 'git commit' includes protected path '${file}'.`,
-        };
-      }
-    }
-
-    // If -a, -A, --all flag (including combined flags like -am), also check unstaged changes
-    // Problem 2 fix: detect combined flags like -am, -aM, -A etc.
-    if (hasGitCommitAllFlag(command)) {
-      const unstagedResult = await execFn("git", ["diff", "--name-only"], projectRoot);
-      if (unstagedResult.code === 0) {
-        const unstagedFiles = unstagedResult.stdout.trim().split("\n").filter(Boolean);
-        for (const file of unstagedFiles) {
-          if (isPathProtectedForGit(file, state)) {
-            return {
-              block: true,
-              reason: `FORBIDDEN: 'git commit -a' includes protected path '${file}'.`,
-            };
-          }
-        }
-      }
-    }
-  } catch (err) {
-    // Fail closed on any error — log for diagnostics (Problem 7)
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[tool-guard] checkGitCommit error: command="${command}", projectRoot="${projectRoot}", error=${errMsg}`);
-    return {
-      block: true,
-      reason: "FORBIDDEN: Cannot verify 'git commit' safety (execution error).",
-    };
-  }
-
-  return undefined;
-}
-
-/**
- * Detects if a git commit command contains -a, -A, or --all flag.
- * Handles combined flags like -am, -aM, -amc etc.
- */
-function hasGitCommitAllFlag(command: string): boolean {
-  const tokens = command.split(/\s+/);
-  for (const token of tokens) {
-    if (token === "--all") return true;
-    // Match combined single-char flags containing 'a' or 'A' (e.g., -am, -aM, -A)
-    if (/^-[a-zA-Z]*[aA][a-zA-Z]*$/.test(token)) return true;
-  }
-  return false;
 }
 
 // Re-exported from the centralized auditLog module for backward compatibility.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { extractBashFileTargets } from "../../utils/bash-parse";
+import { extractBashFileTargets, splitShellSegments, tokenize } from "../../utils/bash-parse";
 
 describe("extractBashFileTargets", () => {
   describe("redirect targets", () => {
@@ -209,5 +209,88 @@ describe("extractBashFileTargets", () => {
       const targets = extractBashFileTargets("echo hi > out.txt 2>&1");
       expect(targets).toEqual([{ kind: "redirect", target: "out.txt" }]);
     });
+  });
+});
+
+describe("splitShellSegments", () => {
+  it("splits by &&", () => {
+    expect(splitShellSegments("git add x && git commit -m 'msg'")).toEqual([
+      "git add x",
+      "git commit -m 'msg'",
+    ]);
+  });
+
+  it("splits by ;", () => {
+    expect(splitShellSegments("echo hi; echo bye")).toEqual(["echo hi", "echo bye"]);
+  });
+
+  it("splits by ||", () => {
+    expect(splitShellSegments("cmd1 || cmd2")).toEqual(["cmd1", "cmd2"]);
+  });
+
+  it("splits by newline", () => {
+    expect(splitShellSegments("cmd1\ncmd2")).toEqual(["cmd1", "cmd2"]);
+  });
+
+  it("does NOT split inside double quotes", () => {
+    expect(splitShellSegments('git commit -m "a && b"')).toEqual([
+      'git commit -m "a && b"',
+    ]);
+  });
+
+  it("does NOT split inside single quotes", () => {
+    expect(splitShellSegments("echo 'a;b;c'")).toEqual(["echo 'a;b;c'"]);
+  });
+
+  it("does NOT split escaped operators", () => {
+    expect(splitShellSegments("echo a\\&&b")).toEqual(["echo a\\&&b"]);
+  });
+
+  it("drops empty segments", () => {
+    expect(splitShellSegments("a && ; b")).toEqual(["a", "b"]);
+  });
+
+  it("trims whitespace", () => {
+    expect(splitShellSegments("  a  &&  b  ")).toEqual(["a", "b"]);
+  });
+
+  it("splits git add x && git commit -q -m 'feat: x; y' correctly", () => {
+    expect(splitShellSegments("git add x && git commit -q -m 'feat: x; y'")).toEqual([
+      "git add x",
+      "git commit -q -m 'feat: x; y'",
+    ]);
+  });
+
+  it("handles complex compound: git add x && git commit -q -m 'msg' && git log --oneline -1", () => {
+    expect(splitShellSegments("git add x && git commit -q -m 'msg' && git log --oneline -1")).toEqual([
+      "git add x",
+      "git commit -q -m 'msg'",
+      "git log --oneline -1",
+    ]);
+  });
+
+  it("returns single segment for simple command", () => {
+    expect(splitShellSegments("echo hello")).toEqual(["echo hello"]);
+  });
+
+  it("returns empty array for empty string", () => {
+    expect(splitShellSegments("")).toEqual([]);
+  });
+
+  it("handles escaped double-quote inside double-quotes", () => {
+    expect(splitShellSegments('echo "a\\"b" && echo c')).toEqual([
+      'echo "a\\"b"',
+      "echo c",
+    ]);
+  });
+});
+
+describe("tokenize (exported)", () => {
+  it("tokenizes simple command", () => {
+    expect(tokenize("git add src/file.ts")).toEqual(["git", "add", "src/file.ts"]);
+  });
+
+  it("handles double-quoted strings with spaces", () => {
+    expect(tokenize('echo "hello world"')).toEqual(["echo", '"hello world"']);
   });
 });

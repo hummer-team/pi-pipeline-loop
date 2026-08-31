@@ -359,7 +359,7 @@ describe("createToolGuard", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("fail-closed blocks git add when execFn is missing", async () => {
+    it("warns and passes when execFn is missing for git add (Bug 2: fail-open)", async () => {
       const TMP = join(tmpdir(), "pi-tg-git-add-noexec-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -368,17 +368,19 @@ describe("createToolGuard", () => {
       const ctx = createMockCtx(meta);
       ctx.toolCall = { name: "bash", arguments: { command: "git add ." } };
 
-      // No execFn provided
+      // No execFn provided — should degrade to warn, not block
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("execFn not available");
+      // Bug 2: fail-open — no execFn → warn + notify, not block
+      expect(result).toBeUndefined();
+      expect(ctx.notifications.length).toBeGreaterThan(0);
+      expect(ctx.notifications[0]).toContain("[git-protect warn]");
 
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("provides precise reason when dry-run fails with ignored hint (Problem 12 fix)", async () => {
+    it("warns and passes when dry-run fails with ignored hint (Bug 2: fail-open)", async () => {
       const TMP = join(tmpdir(), "pi-tg-git-add-ignored-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await writeFile(join(TMP, ".gitignore"), "dist\n");
@@ -399,9 +401,10 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config, { execFn: mockExecFn });
       const result = await hook.handler(ctx as any);
 
-      expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("rejected by git");
-      expect((result as any).reason).toContain("ignored");
+      // Bug 2: fail-open — non-positive failure → warn + notify, not block
+      expect(result).toBeUndefined();
+      expect(ctx.notifications.length).toBeGreaterThan(0);
+      expect(ctx.notifications[0]).toContain("[git-protect warn]");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -522,7 +525,7 @@ describe("createToolGuard", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("fail-closed blocks git commit when execFn is missing", async () => {
+    it("warns and passes when execFn is missing for git commit (Bug 2: fail-open)", async () => {
       const TMP = join(tmpdir(), "pi-tg-git-commit-noexec-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -531,12 +534,14 @@ describe("createToolGuard", () => {
       const ctx = createMockCtx(meta);
       ctx.toolCall = { name: "bash", arguments: { command: "git commit -m 'test'" } };
 
-      // No execFn provided
+      // No execFn provided — should degrade to warn, not block
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("execFn not available");
+      // Bug 2: fail-open — no execFn → warn + notify, not block
+      expect(result).toBeUndefined();
+      expect(ctx.notifications.length).toBeGreaterThan(0);
+      expect(ctx.notifications[0]).toContain("[git-protect warn]");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -2168,6 +2173,137 @@ describe("createToolGuard", () => {
 
       await rm(TMP2, { recursive: true, force: true });
       __resetAuditDirPath();
+    });
+  });
+
+  // ─── Bug 2: Compound command (splitShellSegments) regression ─────────────────
+  describe("compound command regression (Bug 2)", () => {
+    it("git add x && git commit -q -m 'msg' && git log --oneline -1 → NOT blocked (Bug 2 regression)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-compound-bug2-" + Date.now());
+      await mkdir(join(TMP, "src"), { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = {
+        name: "bash",
+        arguments: { command: "git add src/index.ts && git commit -q -m 'feat: add index' && git log --oneline -1" },
+      };
+
+      // Mock execFn: git add dry-run shows safe path, git diff --cached shows safe path
+      const mockExecFn: ExecFn = async (_cmd, args, _cwd) => {
+        if (args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "add 'src/index.ts'\n", stderr: "", code: 0 };
+        }
+        if (args[0] === "diff" && args[1] === "--cached") {
+          return { stdout: "src/index.ts\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      // Bug 2: compound command with -q in commit message should NOT be blocked
+      expect(result).toBeUndefined();
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("chain: git commit segment with protected staged path → blocked", async () => {
+      const TMP = join(tmpdir(), "pi-tg-chain-commit-block-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = {
+        name: "bash",
+        arguments: { command: "echo done && git commit -m 'feat: x'" },
+      };
+
+      // Mock execFn: git diff --cached shows protected path
+      const mockExecFn: ExecFn = async (_cmd, args, _cwd) => {
+        if (args[0] === "diff" && args[1] === "--cached") {
+          return { stdout: ".pi/config.json\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      // Chain git commit segment catches protected staged path
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain(".pi/config.json");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("real violation still counts and freezes (git add protected path in compound)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-compound-viol-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = {
+        name: "bash",
+        arguments: { command: "git add .pi/audit && echo done" },
+      };
+
+      // Mock execFn: git add dry-run shows protected path
+      const mockExecFn: ExecFn = async (_cmd, args, _cwd) => {
+        if (args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "add '.pi/audit'\n", stderr: "", code: 0 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      // Real violation: git add positively stages protected path → block
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("protected path");
+
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toBeDefined();
+      expect(finalMeta.violations.length).toBe(1);
+      expect(finalMeta.violations[0].type).toBe("git_protected");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("warn segments produce TUI notification but do NOT block", async () => {
+      const TMP = join(tmpdir(), "pi-tg-compound-warn-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta();
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = {
+        name: "bash",
+        arguments: { command: "git add nonexistent && echo done" },
+      };
+
+      // Mock execFn: git add fails with pathspec mismatch → warn
+      const mockExecFn: ExecFn = async (_cmd, args, _cwd) => {
+        if (args[0] === "add" && args[1] === "--dry-run") {
+          return { stdout: "", stderr: "fatal: pathspec 'nonexistent' did not match", code: 128 };
+        }
+        return { stdout: "", stderr: "", code: 0 };
+      };
+
+      const hook = createToolGuard(config, { execFn: mockExecFn });
+      const result = await hook.handler(ctx as any);
+
+      // Warn → no block, but TUI notification
+      expect(result).toBeUndefined();
+      expect(ctx.notifications.length).toBeGreaterThan(0);
+      expect(ctx.notifications[0]).toContain("[git-protect warn]");
+
+      await rm(TMP, { recursive: true, force: true });
     });
   });
 });

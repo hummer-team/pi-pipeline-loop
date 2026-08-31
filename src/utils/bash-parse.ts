@@ -3,10 +3,16 @@
  * Extracts file modification targets from bash commands.
  * Handles redirections and file-argument commands (rm, mv, cp, touch, tee).
  *
- * Known limitations (per R3Q3):
- * - Does not parse pipes, subshells, command substitution
- * - Does not handle variable expansion
- * - Does not parse && / ; compound commands
+ * Provides `splitShellSegments` for splitting compound commands by &&, ;, ||,
+ * and newline (quote/escape-aware), consumed by git-protect for per-segment
+ * git protection.
+ *
+ * Known limitations:
+ * - `extractBashFileTargets` does not parse &&, ;, pipes, subshells,
+ *   command substitution, or variable expansion — callers must split
+ *   compound commands via `splitShellSegments` first.
+ * - `splitShellSegments` does not parse pipes or subshells (treats them
+ *   as opaque characters within a segment).
  */
 
 /** Target type for bash file modification */
@@ -160,13 +166,107 @@ export function extractBashFileTargets(command: string): BashTarget[] {
 }
 
 /**
+ * Splits a compound shell command into individual segments by &&, ;, ||,
+ * and newline operators. Quote-aware (single/double) and escape-aware (\).
+ * Returns trimmed non-empty segments.
+ *
+ * @param command - Compound shell command (e.g., "git add x && git commit -m 'msg'")
+ * @returns Array of individual command segments
+ */
+export function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    const next = i + 1 < command.length ? command[i + 1] : "";
+
+    if (inSingleQuote) {
+      current += char;
+      if (char === "'") inSingleQuote = false;
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      current += char;
+      if (char === "\\" && next) {
+        current += next;
+        i++;
+        continue;
+      }
+      if (char === '"') inDoubleQuote = false;
+      continue;
+    }
+
+    // Not in quotes
+    if (char === "'") {
+      inSingleQuote = true;
+      current += char;
+      continue;
+    }
+
+    if (char === '"') {
+      inDoubleQuote = true;
+      current += char;
+      continue;
+    }
+
+    if (char === "\\") {
+      // Escaped character — literal, not a split point
+      current += char;
+      if (next) {
+        current += next;
+        i++;
+      }
+      continue;
+    }
+
+    // && operator
+    if (char === "&" && next === "&") {
+      const trimmed = current.trim();
+      if (trimmed) segments.push(trimmed);
+      current = "";
+      i++; // skip second &
+      continue;
+    }
+
+    // || operator
+    if (char === "|" && next === "|") {
+      const trimmed = current.trim();
+      if (trimmed) segments.push(trimmed);
+      current = "";
+      i++; // skip second |
+      continue;
+    }
+
+    // ; or newline — segment separators
+    if (char === ";" || char === "\n") {
+      const trimmed = current.trim();
+      if (trimmed) segments.push(trimmed);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  // Last segment
+  const trimmed = current.trim();
+  if (trimmed) segments.push(trimmed);
+
+  return segments;
+}
+
+/**
  * Simple tokenizer that handles quoted strings.
  * Does not handle all shell escape sequences.
  *
  * @param input - Command string
  * @returns Array of tokens
  */
-function tokenize(input: string): string[] {
+export function tokenize(input: string): string[] {
   const tokens: string[] = [];
   let current = "";
   let inSingleQuote = false;
