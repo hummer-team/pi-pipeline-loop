@@ -16,6 +16,7 @@
 import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
+import type { TerminalCompactCtx } from "./terminal-compact";
 
 // ─── Context Interface ──────────────────────────────────────────────────────
 
@@ -23,6 +24,12 @@ import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
  * Minimal context interface required by flow-state helpers.
  * Compatible with RuntimeCtx and test mock contexts.
  * Phase 4 (169): _ctx added for terminal compact wiring (W3).
+ *
+ * Note: _ctx type is re-exported from TerminalCompactCtx["_ctx"] (type-only import)
+ * to avoid structural duplication and eliminate strict-invariance incompatibilities
+ * between `onComplete: (r: unknown) => void` (here) and `(result: CompactResult) => void`
+ * (terminal-compact). The type-only import has zero runtime cost and does not introduce
+ * a circular dependency.
  */
 export interface FlowStateCtx {
   session: {
@@ -35,11 +42,7 @@ export interface FlowStateCtx {
     notify?: (msg: string, ...args: any[]) => void;
   };
   /** @internal ExtensionContext for terminal compact (W3 wiring). Optional for backward compat. */
-  _ctx?: {
-    isIdle?: () => boolean;
-    compact?: (opts: { customInstructions: string; onComplete: (r: unknown) => void; onError: (e: Error) => void }) => void;
-    getContextUsage?: () => { tokens: number | null } | undefined;
-  };
+  _ctx?: TerminalCompactCtx["_ctx"];
 }
 
 // ─── Decision Types ─────────────────────────────────────────────────────────
@@ -221,10 +224,11 @@ export async function executeDecision(
 
       // Phase 4 (169) W3: When skip targets completed, trigger terminal compaction.
       // The helper's internal isIdle guard handles the shortcut-key scenario.
+      // FlowStateCtx._ctx and TerminalCompactCtx._ctx share the same type
+      // (re-exported via type-only import), so no cast is required.
       if (toStage === "completed" && ctx._ctx) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await maybeCompactOnPipelineCompleted(
-          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx as any },
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
           config,
         );
       }

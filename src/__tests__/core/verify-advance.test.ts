@@ -826,3 +826,62 @@ describe("168 Phase 0: applyVerifyPass resets verifyAttempts to 0", () => {
     expect(meta.currentStage).toBe("review");
   });
 });
+
+// ── Phase 0 (169) P1: applyVerifyPass visitOrder append ─────────────────────
+//
+// Locks the plan Phase 0 requirement: verify-advance applyVerifyPass must
+// append the target stage to stageVisitOrder via recordStageVisit.
+
+describe("Phase 0 (169) P1: applyVerifyPass visitOrder append", () => {
+  it("applyVerifyPass appends target stage to stageVisitOrder", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      stageVisitOrder: ["clarify", "plan", "develop"],
+      loopCycleCount: 0,
+    });
+    const ctx = createCtx(meta);
+    const sharedResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: { structured: { passed: true }, llm: null, overallPassed: true },
+    };
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "develop",
+      "review" as PipelineStage,
+      sharedResult,
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
+    );
+
+    expect(meta.currentStage).toBe("review");
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review"]);
+  });
+
+  it("applyVerifyPass to completed appends 'completed' to stageVisitOrder", async () => {
+    const meta = makeTestMeta({
+      currentStage: "review",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      loopCycleCount: 0,
+    });
+    const ctx = createCtx(meta);
+    const sharedResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: { structured: { passed: true }, llm: null, overallPassed: true },
+    };
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "review",
+      "completed" as PipelineStage,
+      sharedResult,
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
+    );
+
+    expect(meta.currentStage).toBe("completed");
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "completed"]);
+  });
+});

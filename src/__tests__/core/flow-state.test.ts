@@ -639,3 +639,75 @@ describe("markPipelineAborted terminal guard", () => {
     expect(meta.terminateReason).toBe("session_quit");
   });
 });
+
+// ── Phase 4 (169) P1: W3 terminal compact wiring in executeDecision skip ──────
+//
+// Locks the plan Phase 4验收 requirement:
+// - W3: executeDecision("skip") with nextStage=completed → helper is called
+// - W3: executeDecision("skip") with nextStage≠completed → helper is NOT called
+
+describe("Phase 4 (169) P1: W3 terminal compact wiring in executeDecision", () => {
+  it("W3: skip to completed → maybeCompactOnPipelineCompleted is called", async () => {
+    const config = makeTestConfig();
+    // Override review.nextStage → completed so skip reaches terminal
+    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as any };
+    const meta = makeTestMeta({
+      currentStage: "review",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      pipelineId: "pipe-w3-001",
+    });
+
+    let compactCalled = false;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => Object.assign(meta, patch),
+      },
+      ui: { notify: () => {} },
+      _ctx: {
+        isIdle: () => true,
+        compact: () => { compactCalled = true; },
+        getContextUsage: () => ({ tokens: 1000 }),
+      },
+    };
+
+    await executeDecision(ctx as any, meta, "skip", config);
+
+    expect(meta.currentStage).toBe("completed");
+    // Helper was invoked: terminalCompact set or compact called
+    expect(meta.terminalCompact !== undefined || compactCalled).toBe(true);
+  });
+
+  it("W3: skip to non-completed → helper is NOT called", async () => {
+    const config = makeTestConfig();
+    // develop.nextStage is review (default chain)
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "verify_attempt_overflow",
+      pipelineId: "pipe-w3-noncompl",
+    });
+
+    let compactCalled = false;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => Object.assign(meta, patch),
+      },
+      ui: { notify: () => {} },
+      _ctx: {
+        isIdle: () => true,
+        compact: () => { compactCalled = true; },
+        getContextUsage: () => ({ tokens: 200_000 }),
+      },
+    };
+
+    await executeDecision(ctx as any, meta, "skip", config);
+
+    expect(meta.currentStage).toBe("review");
+    // Helper NOT invoked — non-completed target
+    expect(compactCalled).toBe(false);
+    expect(meta.terminalCompact).toBeUndefined();
+  });
+});

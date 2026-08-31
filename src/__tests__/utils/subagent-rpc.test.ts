@@ -565,3 +565,171 @@ describe("168 Phase 4: spawnStageSubagent", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
+
+// ── Phase 1 (169) P1: spawn prompt requirementDoc + dual-trigger guard ────────
+//
+// Locks the plan Phase 1验收 requirements:
+// - spawn prompt contains requirementDoc pointer (context passing to subagent)
+// - same visit (same stageStartTime) → second path audits duplicate_spawn_guarded
+// - different stageStartTime (re-visit) → allows re-spawn (guard naturally passes)
+
+describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
+  it("spawn prompt includes requirementDoc for context passing", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-169-reqdoc-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "plan-agent.md"),
+      "---\nname: plan-agent\n---\n# Plan Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        plan: {
+          agentPath: "agents/plan-agent.md",
+          skillPath: "plan/SKILL.md",
+          nextStage: "develop",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      pipelineId: "pipe-reqdoc-001",
+      requirementDoc: "docs/design/Requirements.md",
+    });
+
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const mockPi = {
+      sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+        sentMessages.push({ msg, opts });
+      },
+    };
+
+    await spawnStageSubagent(mockPi, config, "plan", meta, {
+      ui: { notify: () => {} },
+    });
+
+    expect(sentMessages.length).toBe(1);
+    // Prompt must contain the requirementDoc path for context passing
+    expect(sentMessages[0].msg).toContain("docs/design/Requirements.md");
+    expect(sentMessages[0].msg).toContain("plan");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("same visit (same stageStartTime): second spawn attempt audits duplicate_spawn_guarded", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-169-dup-guard-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "dev-agent.md"),
+      "---\nname: develop-agent\n---\n# Dev Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "agents/dev-agent.md",
+          skillPath: "develop/SKILL.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    const stageStartTime = Date.now();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-dup-001",
+      stageStartTime,
+      // First spawn has already been recorded for this visit
+      spawnedStages: { develop: stageStartTime },
+    });
+
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: any) => Object.assign(meta, patch),
+    };
+
+    const sentMessages: Array<{ msg: string }> = [];
+    const mockPi = {
+      sendUserMessage: (msg: string) => { sentMessages.push({ msg }); },
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session,
+    });
+
+    // Second spawn attempt must be blocked by the guard
+    expect(result.spawned).toBe(false);
+    expect(result.fallback).toBe(false);
+    // No new spawn message should be sent
+    expect(sentMessages.length).toBe(0);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("different visit (new stageStartTime): spawn allowed even if prior visit spawned", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-169-revisit-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "dev-agent.md"),
+      "---\nname: develop-agent\n---\n# Dev Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "agents/dev-agent.md",
+          skillPath: "develop/SKILL.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    // Prior visit had stageStartTime=1000, current visit has a new stageStartTime=2000
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-revisit-001",
+      stageStartTime: 2000,
+      spawnedStages: { develop: 1000 }, // stale key from prior visit
+    });
+
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: any) => Object.assign(meta, patch),
+    };
+
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const mockPi = {
+      sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+        sentMessages.push({ msg, opts });
+      },
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session,
+    });
+
+    // New visit → guard does NOT match → spawn proceeds
+    expect(result.spawned).toBe(true);
+    expect(result.fallback).toBe(true);
+    expect(sentMessages.length).toBe(1);
+    // Guard should now record the new stageStartTime
+    expect(meta.spawnedStages?.develop).toBe(2000);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});

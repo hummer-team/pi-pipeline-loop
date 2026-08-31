@@ -314,3 +314,42 @@ describe("generate_stage_summary — Phase 2 (143)", () => {
     expect(lastUpdate.summaries.review.version).toBe(2);
   });
 });
+
+// ── Phase 0 (169) P1: relative path display assertion ───────────────────────
+//
+// Locks the plan Phase 0验收 requirement: the result.message must display
+// the project-relative summary path (e.g. ".pi/audit/pipe-xxx/plan.md"),
+// NOT the absolute path. The summaryPath field itself stays absolute (for
+// programmatic consumers). The summaryRelPath field carries the relative form.
+
+describe("Phase 0 (169) P1: relative path display", () => {
+  it("message uses relative path; summaryPath stays absolute; summaryRelPath field present", async () => {
+    const TMP = join(tmpdir(), "pi-169-rel-path-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "plan", pipelineId: "pipe-rel-001" });
+    const ctx = createCtx(meta);
+
+    const tool = createGenerateSummary(config);
+    const result = (await tool.execute({
+      coreContent: "test",
+      constraints: [],
+      pendingItems: [],
+      referenceFiles: [],
+    }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    // summaryPath is absolute (storage contract)
+    expect(result.summaryPath.startsWith("/")).toBe(true);
+    expect(result.summaryPath).toContain(".pi/audit/pipe-rel-001/plan");
+    // summaryRelPath is present and project-relative
+    expect(result.summaryRelPath).toBeDefined();
+    expect(result.summaryRelPath).toContain(".pi/audit/pipe-rel-001/plan");
+    expect(result.summaryRelPath.startsWith(TMP)).toBe(false);
+    // message uses relative path for display
+    expect(result.message).toContain(result.summaryRelPath);
+    expect(result.message).not.toContain(TMP);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

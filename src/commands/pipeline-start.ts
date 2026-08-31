@@ -298,6 +298,11 @@ function buildRestartMeta(
     confirmRejections: undefined,
     // Phase 4 (169): clear terminal compaction flag on restart
     terminalCompact: undefined,
+    // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages so the new pipeline's
+    // idempotency guard starts fresh. Without this, restart's spread-merge updateMeta
+    // would retain the previous pipeline's guard keys (harmless in practice because
+    // stageStartTime is reset, but leaves stale data in meta.json).
+    spawnedStages: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -364,6 +369,9 @@ function buildStartMeta(
     confirmRejections: undefined,
     // Phase 4 (169): clear terminal compaction flag on start
     terminalCompact: undefined,
+    // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages on new pipeline start
+    // to prevent cross-pipeline guard key residue via updateMeta spread merge.
+    spawnedStages: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -460,6 +468,10 @@ function buildResumeMeta(
     verifyConfigError: undefined,
     // Phase 4 (162): reset confirm rejection counter on resume
     confirmRejections: undefined,
+    // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages on resume so the
+    // resumed run's idempotency guard starts fresh. stageStartTime is reset below,
+    // so stale guard keys would not mis-fire, but they leave residual data in meta.json.
+    spawnedStages: undefined,
 
     // Cleared terminal / blocked state
     blockedReason: undefined,

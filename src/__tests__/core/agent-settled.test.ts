@@ -1366,3 +1366,108 @@ describe("168 Phase 2: agent_settled frozen re-popup", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── Phase 4 (169) P1: W1 terminal compact wiring in agent_settled ─────────────
+//
+// Locks the plan Phase 4验收 requirement:
+// - W1: completed + no consumed flag → helper is called
+// - W1: advancedThisTurn=true + completed → helper still called (locks pre-short-circuit)
+// - W1: already consumed → helper is NOT called
+
+describe("Phase 4 (169) P1: W1 terminal compact wiring", () => {
+  it("W1: completed + no consumed flag → maybeCompactOnPipelineCompleted is called", async () => {
+    const stageTmp = join(tmpdir(), "pi-169-w1-called-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // No verify.require on completed → hook returns after W1 check
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "completed",
+      pipelineId: "pipe-w1-001",
+      // No terminalCompact flag → helper should be called
+    });
+
+    // Track compact calls via _ctx mock
+    let compactCalled = false;
+    const ctx = createMockCtx(meta);
+    (ctx as any)._ctx = {
+      ...((ctx as any)._ctx ?? {}),
+      isIdle: () => true,
+      compact: () => { compactCalled = true; },
+      getContextUsage: () => ({ tokens: 1000 }), // below threshold → skips, but proves call
+    };
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Guard consumed the flag (below_threshold or compacted) — W1 was reached
+    // The helper ran: either terminalCompact is set or compact was invoked
+    const freshMeta = meta;
+    // Helper was invoked: if tokens below threshold, it set skipped_below_threshold;
+    // otherwise it attempted compact. Either way, the call happened.
+    expect(freshMeta.terminalCompact !== undefined || compactCalled).toBe(true);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("W1: already consumed (terminalCompact set) → helper is a no-op", async () => {
+    const stageTmp = join(tmpdir(), "pi-169-w1-noop-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "completed",
+      pipelineId: "pipe-w1-consumed",
+      terminalCompact: { outcome: "compacted", at: Date.now() },
+    });
+
+    let compactCalled = false;
+    const ctx = createMockCtx(meta);
+    (ctx as any)._ctx = {
+      ...((ctx as any)._ctx ?? {}),
+      isIdle: () => true,
+      compact: () => { compactCalled = true; },
+      getContextUsage: () => ({ tokens: 200_000 }),
+    };
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Helper returned early (terminalCompact already set) — compact must NOT be called
+    expect(compactCalled).toBe(false);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("W1: advancedThisTurn=true + completed → helper still called (pre-short-circuit)", async () => {
+    const stageTmp = join(tmpdir(), "pi-169-w1-advturn-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "completed",
+      pipelineId: "pipe-w1-adv",
+      advancedThisTurn: true, // set by stage_advance tool
+    });
+
+    let compactCalled = false;
+    const ctx = createMockCtx(meta);
+    (ctx as any)._ctx = {
+      ...((ctx as any)._ctx ?? {}),
+      isIdle: () => true,
+      compact: () => { compactCalled = true; },
+      getContextUsage: () => ({ tokens: 1000 }),
+    };
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // W1 fires BEFORE advancedThisTurn short-circuit → helper reached
+    expect(meta.terminalCompact !== undefined || compactCalled).toBe(true);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

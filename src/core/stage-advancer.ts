@@ -1036,11 +1036,15 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       if (resolvedTarget === null || resolvedTarget === "completed") {
         ui.clearStage(ctx);
-        // Write pipeline_completed terminal audit event
-        await safeWriteStageAudit(config, "pipeline_completed", meta, {
+        // Phase 4 (169) P2-4 fix: re-read fresh meta for terminal audit event.
+        // The local `meta` snapshot predates updateMeta above (which appended "completed"
+        // to stageVisitOrder), so using it would produce audit fields that disagree with
+        // the meta.json that was just written. Fresh meta keeps audit/data consistent.
+        const freshMetaForAudit = ctx.session.getMeta() as SessionMeta;
+        await safeWriteStageAudit(config, "pipeline_completed", freshMetaForAudit, {
           finalStage: currentStage,
-          loopCycleCount: String(meta.loopCycleCount ?? 0),
-          stageVisitOrder: (meta.stageVisitOrder ?? []).join(","),
+          loopCycleCount: String(freshMetaForAudit.loopCycleCount ?? 0),
+          stageVisitOrder: (freshMetaForAudit.stageVisitOrder ?? []).join(","),
         });
         return {
           success: true,

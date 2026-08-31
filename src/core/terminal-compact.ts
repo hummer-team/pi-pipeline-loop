@@ -22,7 +22,7 @@
 
 import type { PipelineConfig, SessionMeta } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
-import { DEFAULT_COMPACT_ENABLED, DEFAULT_COMPACT_TOKEN_THRESHOLD, DEFAULT_COMPACT_INSTRUCTIONS } from "../constants";
+import { DEFAULT_COMPACT_TOKEN_THRESHOLD, DEFAULT_COMPACT_INSTRUCTIONS } from "../constants";
 
 /**
  * Minimal context interface for terminal compaction.
@@ -54,6 +54,15 @@ interface CompactResult {
   tokensBefore?: number;
   estimatedTokensAfter?: number | null;
 }
+
+/**
+ * Discriminated union for compact outcome (P3-10 fix): replaces the previous
+ * `_error` marker hack with a type-safe discriminated union. `ok: true` carries
+ * the success payload; `ok: false` carries the error message.
+ */
+type CompactOutcome =
+  | { ok: true; result: CompactResult }
+  | { ok: false; error: string };
 
 /**
  * Attempts one-shot terminal context compaction after pipeline completion.
@@ -151,49 +160,17 @@ async function executeCompactGuardChain(
   }
 
   // Guard 8: Execute compaction
-  const enabled = compactConfig?.enabled ?? DEFAULT_COMPACT_ENABLED;
-  if (!enabled) {
-    return;
-  }
+  // Note: enabled check was already done in Guard 1 (short-circuits when enabled===false).
+  // By the time we reach here, enabled is guaranteed true — no redundant re-check needed.
 
   const customInstructions = compactConfig?.customInstructions ?? DEFAULT_COMPACT_INSTRUCTIONS;
   const pipelineId = meta.pipelineId;
 
   try {
-    const result = await new Promise<CompactResult>((resolve) => {
-      ctx._ctx.compact!({
-        customInstructions,
-        onComplete: (res: CompactResult) => resolve(res),
-        onError: (err: Error) => resolve({
-          tokensBefore: tokens,
-          estimatedTokensAfter: null,
-          // Signal failure via a special marker
-          ...{ _error: err.message } as Record<string, unknown>,
-        } as CompactResult & { _error: string }),
-      });
-    });
+    const outcome = await runCompact(ctx, customInstructions, tokens);
 
-    // Check if the result contains an error marker
-    const errorFromCallback = (result as CompactResult & { _error?: string })._error;
-
-    if (errorFromCallback) {
-      // Failure branch: consume + audit + notify
-      ctx.session.updateMeta({
-        terminalCompact: {
-          outcome: "failed",
-          at: Date.now(),
-          tokensBefore: tokens,
-          error: errorFromCallback,
-        },
-      });
-      await safeWriteAuditLog("pipeline_compact_failed", {
-        pipelineId,
-        error: errorFromCallback,
-        tokensBefore: String(tokens),
-      }, "warn");
-      ctx.ui?.notify?.(
-        `Pipeline terminal context compaction failed: ${errorFromCallback}. You can manually run /compact to shrink the session.`,
-      );
+    if (!outcome.ok) {
+      await recordCompactFailure(ctx, pipelineId, tokens, outcome.error);
       return;
     }
 
@@ -202,33 +179,65 @@ async function executeCompactGuardChain(
       terminalCompact: {
         outcome: "compacted",
         at: Date.now(),
-        tokensBefore: result.tokensBefore ?? tokens,
-        tokensAfter: result.estimatedTokensAfter ?? null,
+        tokensBefore: outcome.result.tokensBefore ?? tokens,
+        tokensAfter: outcome.result.estimatedTokensAfter ?? null,
       },
     });
     await safeWriteAuditLog("pipeline_compacted", {
       pipelineId,
-      tokensBefore: String(result.tokensBefore ?? tokens),
-      tokensAfter: String(result.estimatedTokensAfter ?? "null"),
+      tokensBefore: String(outcome.result.tokensBefore ?? tokens),
+      tokensAfter: String(outcome.result.estimatedTokensAfter ?? "null"),
     });
   } catch (err) {
     // Synchronous throw from compact (e.g. "Already compacted", "Nothing to compact")
     const errMsg = err instanceof Error ? err.message : String(err);
-    ctx.session.updateMeta({
-      terminalCompact: {
-        outcome: "failed",
-        at: Date.now(),
-        tokensBefore: tokens,
-        error: errMsg,
-      },
-    });
-    await safeWriteAuditLog("pipeline_compact_failed", {
-      pipelineId,
-      error: errMsg,
-      tokensBefore: String(tokens),
-    }, "warn");
-    ctx.ui?.notify?.(
-      `Pipeline terminal context compaction failed: ${errMsg}. You can manually run /compact to shrink the session.`,
-    );
+    await recordCompactFailure(ctx, pipelineId, tokens, errMsg);
   }
+}
+
+/**
+ * Wraps ctx.compact in a Promise and returns a discriminated CompactOutcome.
+ * Extracted for readability (P3-11: keep executeCompactGuardChain ≤100 lines).
+ */
+function runCompact(
+  ctx: TerminalCompactCtx,
+  customInstructions: string,
+  tokens: number,
+): Promise<CompactOutcome> {
+  return new Promise<CompactOutcome>((resolve) => {
+    ctx._ctx.compact!({
+      customInstructions,
+      onComplete: (res: CompactResult) => resolve({ ok: true, result: res }),
+      onError: (err: Error) => resolve({ ok: false, error: err.message }),
+    });
+  });
+}
+
+/**
+ * Records a compaction failure (consumed flag + audit + notify).
+ * Shared between the onError branch and the catch branch to avoid duplication
+ * (P3-11: keep executeCompactGuardChain ≤100 lines).
+ */
+async function recordCompactFailure(
+  ctx: TerminalCompactCtx,
+  pipelineId: string,
+  tokens: number,
+  error: string,
+): Promise<void> {
+  ctx.session.updateMeta({
+    terminalCompact: {
+      outcome: "failed",
+      at: Date.now(),
+      tokensBefore: tokens,
+      error,
+    },
+  });
+  await safeWriteAuditLog("pipeline_compact_failed", {
+    pipelineId,
+    error,
+    tokensBefore: String(tokens),
+  }, "warn");
+  ctx.ui?.notify?.(
+    `Pipeline terminal context compaction failed: ${error}. You can manually run /compact to shrink the session.`,
+  );
 }

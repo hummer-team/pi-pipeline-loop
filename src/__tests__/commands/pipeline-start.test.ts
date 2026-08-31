@@ -479,3 +479,33 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     expect(notifications.some(n => n.includes("@feat-design-plan-agent") || n.includes("Next"))).toBe(true);
   });
 });
+
+// ── Phase 4 (169) P1: reset surface (start/restart clear terminalCompact & spawnedStages) ──
+//
+// Locks the plan Phase 4验收 requirement:
+// - start / restart / decision-restart → clear terminalCompact and spawnedStages
+// - resume → preserves pipelineId but still clears transient spawn guard
+
+describe("Phase 4 (169) P1: reset surface for terminalCompact and spawnedStages", () => {
+  it("start command clears terminalCompact and spawnedStages from prior run", async () => {
+    await scaffoldMinimalPi();
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "79_Reset.md"), "# Requirement\n", "utf-8");
+
+    const meta = makeTestMeta({
+      currentStage: undefined as any,
+      pipelineId: undefined as any,
+      terminalCompact: { outcome: "compacted", at: Date.now() - 1000 },
+      spawnedStages: { develop: 1000 },
+    });
+    const ctx = createMockCtx(meta);
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/79_Reset.md" }, ctx as any);
+
+    const updatedMeta = ctx.session.getMeta();
+    expect(updatedMeta.terminalCompact).toBeUndefined();
+    expect(updatedMeta.spawnedStages).toBeUndefined();
+  });
+});

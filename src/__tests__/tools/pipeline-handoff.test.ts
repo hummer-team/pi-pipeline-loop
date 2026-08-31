@@ -240,3 +240,35 @@ describe("pipeline_handoff — hash mismatch (143 Phase 4)", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 });
+
+// ── Phase 0 (169) P1: relative path display assertion ───────────────────────
+//
+// Locks the plan Phase 0验收 requirement: the handoff result.message must use
+// the project-relative path (e.g. "design.md"), NOT the absolute path prefix.
+
+describe("Phase 0 (169) P1: pipeline_handoff relative path display", () => {
+  it("message uses relative path for the loaded summary", async () => {
+    const TMP = join(tmpdir(), "pi-169-handoff-rel-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["plan"] = { ...config.stages["plan"], model: "claude" } as any;
+    const summaryPath = join(TMP, "design.md");
+    const hash = await writeAndHash(summaryPath, "# Clarify Summary\nRelative path test");
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      summaries: { clarify: { path: summaryPath, hash, status: "valid" as const } },
+    });
+    const ctx = createCtx(meta);
+
+    const tool = createPipelineHandoff(config);
+    const result = (await tool.execute({ nextStage: "plan", note: "ready" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    // Message must contain relative path (no absolute projectRoot prefix)
+    expect(result.message).toContain("design.md");
+    expect(result.message).not.toContain(TMP);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

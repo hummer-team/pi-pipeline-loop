@@ -213,6 +213,9 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           flowState: "running",
           stageVisitOrder: ["clarify"],
           terminalCompact: undefined,
+          // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages so the new pipeline's
+          // idempotency guard starts fresh (no residue from a prior run on the same session).
+          spawnedStages: undefined,
         };
 
         ctx.session.updateMeta(sessionMeta);

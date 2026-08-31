@@ -122,6 +122,26 @@ describe("createSessionStarter", () => {
       const meta = ctx.updates[0];
       expect(line).toContain(`pipelineId=${meta.pipelineId}`);
     });
+
+    // Phase 0 (169) P1: new session must initialize stageVisitOrder to ["clarify"]
+    // and explicitly clear spawnedStages + terminalCompact (no cross-run residue).
+    it("new session initializes stageVisitOrder=['clarify'] and clears transient fields", async () => {
+      const TMP = join(tmpdir(), "pi-ss-visit-init-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const ctx = createCtx({});
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const meta = ctx.updates[0];
+      expect(meta.stageVisitOrder).toEqual(["clarify"]);
+      // Explicit clears (P2-8): no residue from prior run
+      expect(meta.spawnedStages).toBeUndefined();
+      expect(meta.terminalCompact).toBeUndefined();
+    });
   });
 
   describe("session resume", () => {

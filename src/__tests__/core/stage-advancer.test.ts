@@ -985,3 +985,140 @@ describe("168 Phase 0: stage_advance tool resets verifyAttempts", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── Phase 0 (169) P1: visitOrder append + pipeline_completed audit sequence ───
+//
+// Locks the plan Phase 0验收 requirement: stage-advancer tool advance and
+// reject route must append to stageVisitOrder; the pipeline_completed audit
+// event must carry the FULL sequence (including "completed" as last item).
+// This test also exercises P2-4 (fresh meta for audit fields).
+
+describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () => {
+  it("tool advance to completed: stageVisitOrder appended and audit carries full sequence", async () => {
+    const stageTmp = join(tmpdir(), "pi-169-visit-complete-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    // Override review.nextStage → completed so the advance terminates the pipeline
+    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as PipelineStage | null };
+    const meta = makeTestMeta({
+      currentStage: "review",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      loopCycleCount: 0,
+    });
+
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("completed");
+    // Visit order includes "completed" as the terminal entry
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "completed"]);
+
+    // pipeline_completed audit event must carry the FULL sequence (text format)
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const completedLine = logContent.split("\n").find(l => l.includes("pipeline_completed"));
+    expect(completedLine).toBeDefined();
+    expect(completedLine).toContain("stageVisitOrder=clarify,plan,develop,review,completed");
+    expect(completedLine).toContain("loopCycleCount=0");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("reviewConclusion fail (reject route): stageVisitOrder appended via recordStageVisit", async () => {
+    const stageTmp = join(tmpdir(), "pi-169-visit-reject-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      loopCycleCount: 0,
+    });
+
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("fix");
+    // Visit order includes "fix" after the reject route
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "fix"]);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("non-terminal advance: stageVisitOrder appended correctly", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      stageVisitOrder: ["clarify", "plan"],
+      loopCycleCount: 0,
+    });
+
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("develop");
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop"]);
+  });
+});
+
+// ── Phase 1 (169) P1: stage_advance tool spawns subagent for target stage ─────
+//
+// Locks the plan Phase 1验收 requirement: stage_advance tool must trigger
+// spawnStageSubagent for the target stage (path 2: stage_advance→review spawn).
+
+describe("Phase 1 (169) P1: stage_advance tool spawn", () => {
+  it("stage_advance triggers spawn for the target stage (develop → review)", async () => {
+    const stageTmp = join(tmpdir(), "pi-169-adv-spawn-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    // Create real agent file for review stage so resolveAgentMention succeeds
+    const agentDir = join(stageTmp, "agents");
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, "review-agent.md"),
+      "---\nname: review-agent\n---\n# Review Agent\n",
+    );
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    config.stages["review"] = {
+      ...config.stages["review"],
+      agentPath: "agents/review-agent.md",
+    } as any;
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-adv-spawn-001",
+      requirementDoc: "docs/design/Req.md",
+    });
+
+    // Track pi sendUserMessage calls (fallback path)
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const ctx = {
+      ...createCtx(meta),
+      pi: {
+        sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+          sentMessages.push({ msg, opts });
+        },
+      },
+    };
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("review");
+    // Spawn should have been triggered via fallback (no event bus)
+    const spawnCalls = sentMessages.filter(m => m.msg.includes("@review-agent"));
+    expect(spawnCalls.length).toBe(1);
+    expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

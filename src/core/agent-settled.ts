@@ -73,9 +73,15 @@ export function createAgentSettled(
         });
         ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
         // 168 Phase 2: auto re-popup decision menu while frozen
-        // RuntimeCtx and FlowStateCtx are structurally compatible (session + ui),
-        // so a single structural adapter is sufficient (matches verify-advance.ts style).
-        await promptDecisionMenu({ session: ctx.session, ui: ctx.ui } as Parameters<typeof promptDecisionMenu>[0], meta, config);
+        // Phase 4 (169) P2-5 fix: pass `_ctx` so W3 skip→completed decisions
+        // triggered from the frozen menu can invoke terminal compaction. Without
+        // _ctx, the skip→completed path in flow-state.ts:224 early-returns
+        // (short-cut key entry remains unaffected — it passes _ctx directly).
+        await promptDecisionMenu(
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof promptDecisionMenu>[0],
+          meta,
+          config,
+        );
         return;
       }
 
@@ -242,6 +248,11 @@ export function createAgentSettled(
         const fromStage = meta.currentStage;
         const toStage = stageConfig.nextStage;
         await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui, { skipPassAudit: true });
+        // Phase 4 (169) P2-6 fix: after autoAdvance, if we landed on completed, invoke
+        // terminal compact helper. Covers the verify_config_skip→completed path where
+        // neither W1 (pre-advance) nor W2 (gate-handled) fires. Without this, compaction
+        // is deferred until the next user interaction (or never, if the session idles).
+        await compactIfTerminal(ctx, config);
         return;
       }
 
@@ -255,14 +266,11 @@ export function createAgentSettled(
           if (gate.result === "handled") {
             // Phase 4 (169) W2: After confirm gate handled, re-read meta and check if completed.
             // Covers T2 (hook path with no subsequent settle) — same dispatch, idle-safe.
-            if (gate.action === "advanced" || gate.action === "routed") {
-              const postGateMeta = ctx.session.getMeta() as SessionMeta;
-              if (postGateMeta.currentStage === "completed") {
-                await maybeCompactOnPipelineCompleted(
-                  { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
-                  config,
-                );
-              }
+            // P2-6 fix: also covers the "routed" action defensively (routeConfirmReject
+            // currently targets clarify/fix, not completed, but the helper is a no-op
+            // on non-completed meta, so including it is safe and future-proof).
+            if (gate.action === "advanced") {
+              await compactIfTerminal(ctx, config);
             }
             // advanced / routed / pending / aborted — all handled by confirm gate, skip autoAdvance
             return;
@@ -276,10 +284,36 @@ export function createAgentSettled(
 
         // Reuse ctxWithPi (declared above for gate) for autoAdvanceAfterVerify wake message
         await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui);
+        // Phase 4 (169) P2-6 fix: after autoAdvance, if we landed on completed, invoke
+        // terminal compact helper. Covers the no-gate→completed path where neither
+        // W1 (pre-advance) nor W2 (gate-handled) fires.
+        await compactIfTerminal(ctx, config);
       } else {
         // 148 Phase 4: pass ctxWithPi so applyVerifyFail can send wake message via pi.sendUserMessage
         await applyVerifyFail(ctxWithPi, meta, meta.currentStage, sharedResult, "rule", ui, config);
       }
     },
   };
+}
+
+/**
+ * Phase 4 (169) P2-6 helper: re-read fresh meta and, if the pipeline is now
+ * at "completed", invoke the terminal compaction helper exactly once.
+ *
+ * Shared across the vr.skipped / no-gate / gate-advanced paths so that every
+ * "autoAdvance landed on completed" scenario is covered (W2 generalization).
+ * The helper's internal consumed-flag guard ensures no double-compact even if
+ * W1 or an earlier invocation already ran.
+ */
+async function compactIfTerminal(
+  ctx: { session: { getMeta: () => SessionMeta | undefined }; ui: { notify?: (msg: string) => void }; _ctx?: Parameters<typeof maybeCompactOnPipelineCompleted>[0]["_ctx"] },
+  config: PipelineConfig,
+): Promise<void> {
+  const freshMeta = ctx.session.getMeta() as SessionMeta | undefined;
+  if (freshMeta?.currentStage === "completed") {
+    await maybeCompactOnPipelineCompleted(
+      { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
+      config,
+    );
+  }
 }
