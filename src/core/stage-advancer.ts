@@ -293,6 +293,8 @@ async function handleConfirmOverflow(
  *
  * Also clears any existing confirmation markers from the source stage's document
  * to prevent the old marker from bypassing the confirm gate on re-entry (Medium #8 fix).
+ *
+ * @returns true if routing succeeded, false if aborted (e.g. maxLoopCycles freeze)
  */
 async function routeConfirmReject(
   config: PipelineConfig,
@@ -302,7 +304,7 @@ async function routeConfirmReject(
   toStage: PipelineStage,
   nextCount: number,
   opts?: { reason?: string; auditEvent?: string },
-): Promise<void> {
+): Promise<boolean> {
   // Clear old confirmation markers from the source stage doc to prevent
   // bypass on re-entry (e.g. plan→clarify→plan round trip).
   const sourceDocPath = await resolveStageDocPath(config, meta, fromStage);
@@ -336,11 +338,33 @@ async function routeConfirmReject(
 
   // Record stage visit via shared helper (reject routing is a legitimate cycle,
   // cycle count semantics match handoff)
-  const freshMetaForVisit = (ctx.session as { getMeta?: () => SessionMeta }).getMeta?.() ?? meta;
+  const sessionForSpawn = ctx.session as unknown as { getMeta?: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined };
+  const freshMetaForVisit = sessionForSpawn.getMeta?.() ?? meta;
   const maxCycles = freshMetaForVisit.maxLoopCycles ?? config.maxLoopCycles ?? 3;
   const visitResult = recordStageVisit(freshMetaForVisit, toStage, maxCycles);
 
-  // Update meta with routing + rejection count + visit patch
+  // Nit 4 (reaudit): honor recordStageVisit().ok — when maxLoopCycles reached,
+  // freeze the pipeline and abort routing (aligned with stage-advancer tool + verify-advance).
+  // Without this, loopCycleCount could grow unbounded via manual Reject routing.
+  if (!visitResult.ok) {
+    ctx.session.updateMeta(visitResult.patch);
+    await import("./flow-state").then(({ freezeAndPrompt }) =>
+      freezeAndPrompt(
+        ctx as unknown as Parameters<typeof freezeAndPrompt>[0],
+        meta,
+        "max_loop_cycles",
+        config,
+      ),
+    );
+    return false;
+  }
+
+  // Update meta with routing + rejection count + visit patch.
+  // Minor 2 (reaudit): clear advancedThisTurn (undefined) instead of setting it to true.
+  // The route is triggered by an already-consumed settle (hook path), so no residual
+  // settle needs guarding. Clearing before spawn prevents the spawned subagent's JOIN
+  // from inheriting the flag — without this, the subagent's first settle would be
+  // eaten by C2 (agent-settled.ts:90-99), stalling the pipeline.
   ctx.session.updateMeta({
     ...visitResult.patch,
     previousStage: fromStage,
@@ -351,7 +375,7 @@ async function routeConfirmReject(
     verifyFailures: [],
     verifyAttempts: 0, // Reset per-stage attempt counter on stage advance (168 Phase 0)
     violations: [],
-    advancedThisTurn: true,
+    advancedThisTurn: undefined,
     confirmRejections: nextCount,
   });
 
@@ -370,25 +394,37 @@ async function routeConfirmReject(
     ctx.ui.transition(ctx, fromStage, toStage);
   }
 
-  // Wake-up message: use custom reason if provided, otherwise default message
-  if (ctx.pi?.sendUserMessage) {
-    const reason = opts?.reason ?? "rejected by confirm gate";
-    ctx.pi.sendUserMessage(
-      `Stage "${fromStage}" ${reason}. Routing to "${toStage}" for rework.`,
-      { deliverAs: "followUp" },
-    );
-  }
-
-  // 168 Phase 4: auto-spawn subagent for the target stage after routing
-  // (e.g. review reject → fix stage spawns fix-agent; plan reject → clarify is non-spawnable, auto-skipped)
-  // Phase 1 (169): pass session for idempotency guard; use fresh meta (not stale snapshot)
-  // because stageStartTime was just updated in the updateMeta call above.
-  const sessionForSpawn = ctx.session as unknown as { getMeta?: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined };
+  // Minor 1 (reaudit): spawn first, then conditionally send wake.
+  // Aligns with 169 autoAdvanceAfterVerify pattern: when spawn succeeds (RPC or fallback),
+  // skip the generic wake to prevent dual execution (wake in current session + subagent).
+  // When spawn fails entirely, fall back to wake + set C2 guard for the wake-triggered settle.
   const freshMetaForSpawn = sessionForSpawn.getMeta?.() ?? meta;
-  await spawnStageSubagent(ctx.pi, config, toStage, freshMetaForSpawn, {
+  const spawnResult = await spawnStageSubagent(ctx.pi, config, toStage, freshMetaForSpawn, {
     ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
     session: sessionForSpawn.getMeta ? sessionForSpawn as { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined } : undefined,
   });
+
+  if (spawnResult.spawned || spawnResult.fallback) {
+    // Subagent spawned — skip generic wake to prevent dual execution
+    await writeAuditLog("confirm_reject_wake_skipped", {
+      pipelineId: meta.pipelineId,
+      fromStage,
+      toStage,
+      reason: "subagent_spawned",
+    });
+  } else {
+    // Spawn did not fire — send wake and set C2 guard for the wake-triggered settle.
+    // The guard prevents the settle triggered by sendUserMessage from running redundant verification.
+    ctx.session.updateMeta({ advancedThisTurn: true });
+    if (ctx.pi?.sendUserMessage) {
+      const reason = opts?.reason ?? "rejected by confirm gate";
+      ctx.pi.sendUserMessage(
+        `Stage "${fromStage}" ${reason}. Routing to "${toStage}" for rework.`,
+        { deliverAs: "followUp" },
+      );
+    }
+  }
+  return true;
 }
 
 /**
@@ -412,12 +448,12 @@ export async function routeReviewFailAuto(
 ): Promise<void> {
   // Pass current confirmRejections value (no +1) → no overflow trigger
   const currentCount = meta.confirmRejections ?? 0;
-  await routeConfirmReject(config, ctx, meta, "review", "fix", currentCount, {
+  const routed = await routeConfirmReject(config, ctx, meta, "review", "fix", currentCount, {
     auditEvent: "review_auto_route_fix",
     reason: opts?.reason ?? "review report parsed as fail (auto)",
   });
-  // UI transition
-  if (ui.transition) {
+  // UI transition only if routing succeeded (not frozen by maxLoopCycles)
+  if (routed && ui.transition) {
     ui.transition(ctx, "review", "fix");
   }
 }
@@ -655,12 +691,20 @@ export async function maybeHandleConfirmGate(
         return { result: "handled", action: "pending" };
       }
       // overflowResult === "continue": reset counter to 0 and route
-      await routeConfirmReject(config, ctx, meta, currentStage, toStage, 0);
+      const routedContinue = await routeConfirmReject(config, ctx, meta, currentStage, toStage, 0);
+      if (!routedContinue) {
+        // Routing aborted (maxLoopCycles freeze) — gate handled but frozen
+        return { result: "handled", action: "aborted" as const };
+      }
       return { result: "handled", action: "routed", toStage };
     }
 
     // Not exceeded — route with incremented counter
-    await routeConfirmReject(config, ctx, meta, currentStage, toStage, nextCount);
+    const routed = await routeConfirmReject(config, ctx, meta, currentStage, toStage, nextCount);
+    if (!routed) {
+      // Routing aborted (maxLoopCycles freeze) — gate handled but frozen
+      return { result: "handled", action: "aborted" as const };
+    }
     return { result: "handled", action: "routed", toStage };
   }
 
@@ -858,10 +902,19 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       } else if (currentStage === "review" && argReviewConclusion === "fail") {
         // Review declared fail → auto-route to fix (no counting, no overflow)
         // Bug 4 fix: explicit declaration also does not count, matching auto-route behavior
-        await routeConfirmReject(config, ctx, meta, "review", "fix", meta.confirmRejections ?? 0, {
+        const routed = await routeConfirmReject(config, ctx, meta, "review", "fix", meta.confirmRejections ?? 0, {
           reason: "reviewConclusion declared fail (explicit, no count)",
           auditEvent: "review_auto_route_fix",
         });
+        if (!routed) {
+          // Routing aborted (e.g. maxLoopCycles freeze) — return failure
+          const frozenMeta = ctx.session.getMeta() as SessionMeta;
+          return {
+            success: false,
+            message: `Max loop cycles reached. Cannot route to "fix". Pipeline frozen. Use the decision menu to continue.`,
+            currentStage: frozenMeta.currentStage,
+          };
+        }
         const updatedMeta = ctx.session.getMeta() as SessionMeta;
         return { success: true, message: "Review declared fail. Routed to fix.", currentStage: updatedMeta.currentStage };
       }

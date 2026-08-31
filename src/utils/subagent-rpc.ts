@@ -197,6 +197,12 @@ export async function spawnClarifySubagent(
     try {
       pi.events.on(replyChannel, replyHandler);
 
+      // Note: run_in_background=false blocks the caller until the RPC reply arrives
+      // (~500ms ping + up to 5s spawn timeout). Originally constrained to command-handler
+      // async contexts only (E2E_Flow_Bug_plan Phase 2), but 168/169 generalized spawn
+      // to hook paths (agent_settled → autoAdvanceAfterVerify, routeConfirmReject).
+      // The blocking window is acceptable: it's the RPC handshake latency, not the full
+      // subagent lifecycle. See reaudit report Nit 5 for the design evolution rationale.
       pi.events.emit("subagents:rpc:spawn", {
         requestId,
         type: req.agentName,

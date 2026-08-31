@@ -809,6 +809,8 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     expect(meta.currentStage).toBe("fix");
     // Bug 4: no +1 counting
     expect(meta.confirmRejections).toBe(0);
+    // In this test, fix stage agentPath points to a non-existent file, so spawn fails.
+    // When spawn fails, advancedThisTurn is re-set to true for the wake-triggered settle guard.
     expect(meta.advancedThisTurn).toBe(true);
 
     // Audit: single review_auto_route_fix event, NOT confirm_rejected
@@ -817,7 +819,7 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     expect(logContent).toContain("review_auto_route_fix");
     expect(logContent).not.toContain("confirm_rejected");
 
-    // Wake message contains the reason
+    // Wake message contains the reason (spawn failed, so wake is sent as fallback)
     expect(ctx.wakeMessages.length).toBe(1);
     expect(ctx.wakeMessages[0]).toContain("reviewConclusion declared fail");
 
@@ -1118,6 +1120,181 @@ describe("Phase 1 (169) P1: stage_advance tool spawn", () => {
     const spawnCalls = sentMessages.filter(m => m.msg.includes("@review-agent"));
     expect(spawnCalls.length).toBe(1);
     expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
+// ── Reaudit: routeConfirmReject wake suppression + maxLoopCycles freeze ─────
+//
+// Covers Minor 1 (wake suppression when spawn succeeds), Minor 2 (advancedThisTurn
+// cleared on spawn success to prevent subagent C2 skip), and Nit 4 (recordStageVisit
+// !ok → freeze and abort routing).
+
+describe("Reaudit: routeConfirmReject wake suppression + C2 clear + maxLoopCycles freeze", () => {
+  /** Helper: create a config + ctx with a real agent file for the fix stage */
+  async function setupRejectSpawnTest(stageTmp: string) {
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create fix agent file so resolveAgentMention succeeds
+    const agentDir = join(stageTmp, "agents");
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, "fix-agent.md"),
+      "---\nname: fix-agent\n---\n# Fix Agent\n",
+    );
+
+    const baseConfig = makeTestConfig({ projectRoot: stageTmp });
+    const config = {
+      ...baseConfig,
+      stages: {
+        ...baseConfig.stages,
+        review: { ...baseConfig.stages.review, nextStage: "completed" as PipelineStage | null },
+        fix: { ...baseConfig.stages.fix, agentPath: "agents/fix-agent.md" },
+      },
+    };
+    return config;
+  }
+
+  it("Minor 1: reject→fix spawn success → zero routing wake, confirm_reject_wake_skipped audit", async () => {
+    const stageTmp = join(tmpdir(), "pi-reaudit-wake-suppress-" + Date.now());
+    const config = await setupRejectSpawnTest(stageTmp);
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<typeof meta>) => Object.assign(meta, patch),
+      },
+      ui: { notify: () => {}, transition: () => {} },
+      pi: {
+        sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+          sentMessages.push({ msg, opts });
+        },
+      },
+    };
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("fix");
+
+    // Old routing wake must NOT be present (spawn succeeded via fallback)
+    const routingWake = sentMessages.filter(m => m.msg.includes("Routing to"));
+    expect(routingWake.length).toBe(0);
+
+    // Spawn fallback message IS present
+    const spawnMsg = sentMessages.filter(m => m.msg.includes("@fix-agent"));
+    expect(spawnMsg.length).toBe(1);
+
+    // Wake suppression audit
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_reject_wake_skipped");
+    expect(logContent).toContain("subagent_spawned");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("Minor 2: reject→fix spawn success → advancedThisTurn cleared (subagent JOIN won't inherit C2 flag)", async () => {
+    const stageTmp = join(tmpdir(), "pi-reaudit-c2-clear-" + Date.now());
+    const config = await setupRejectSpawnTest(stageTmp);
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<typeof meta>) => Object.assign(meta, patch),
+      },
+      ui: { notify: () => {}, transition: () => {} },
+      pi: { sendUserMessage: () => {} },
+    };
+
+    const tool = createStageAdvancer(config);
+    await tool.execute({ reviewConclusion: "fail" }, ctx as any);
+
+    // Spawn succeeded (fallback) → advancedThisTurn cleared
+    // The subagent's JOIN reads meta AFTER this clearing, so C2 won't eat its first settle
+    expect(meta.advancedThisTurn).toBeUndefined();
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("Minor 2: reject→fix spawn fails → advancedThisTurn re-set (wake guard preserved)", async () => {
+    const stageTmp = join(tmpdir(), "pi-reaudit-c2-preserve-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // No agent file → resolveAgentMention returns null → spawn fails
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as PipelineStage | null };
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<typeof meta>) => Object.assign(meta, patch),
+      },
+      ui: { notify: () => {}, transition: () => {} },
+      pi: { sendUserMessage: () => {} },
+    };
+
+    const tool = createStageAdvancer(config);
+    await tool.execute({ reviewConclusion: "fail" }, ctx as any);
+
+    // Spawn failed → advancedThisTurn re-set for wake guard
+    expect(meta.advancedThisTurn).toBe(true);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("Nit 4: routeConfirmReject maxLoopCycles reached → freeze and abort routing", async () => {
+    const stageTmp = join(tmpdir(), "pi-reaudit-freeze-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as PipelineStage | null };
+
+    // Set up meta with maxLoopCycles=1 and already visited fix twice (cycle count at limit)
+    const meta = makeTestMeta({
+      currentStage: "review",
+      confirmRejections: 0,
+      maxLoopCycles: 1,
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review"],
+      loopCycleCount: 1,
+    });
+
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<typeof meta>) => Object.assign(meta, patch),
+      },
+      ui: {
+        notify: () => {},
+        transition: () => {},
+        select: async () => undefined,
+      },
+      pi: { sendUserMessage: () => {} },
+    };
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    // Routing should be aborted — tool returns failure
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Max loop cycles");
+
+    // Pipeline should be frozen (blocked)
+    expect(meta.flowState).toBe("blocked");
+
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("pipeline_blocked");
 
     await rm(stageTmp, { recursive: true, force: true });
   });

@@ -10,7 +10,7 @@ import { createPromptInjector } from "../../core/prompt-injector";
 import { createLoopBreaker } from "../../core/loop-breaker";
 import { runVerification, parseFrontmatter, resolvePlaceholders, applyConcreteStageDocPaths } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta, createMockCtx, createMockRuntimeCtx } from "../helpers";
-import { initAuditLog } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import type { SessionMeta } from "../../types";
 
 let TMP: string;
@@ -939,15 +939,24 @@ describe("168 Phase 4: routeReviewFailAuto triggers fix spawn", () => {
     // UI transition should be invoked
     expect(transitions).toContain("review->fix");
 
-    // Wake message via sendUserMessage with deliverAs:"followUp"
-    const wakeMessages = sentMessages.filter(m => m.msg.includes("review"));
-    expect(wakeMessages.length).toBeGreaterThanOrEqual(1);
-    expect(wakeMessages[0].opts).toEqual({ deliverAs: "followUp" });
+    // Minor 1 (reaudit): wake is suppressed when spawn succeeds (fallback path).
+    // The old "Stage review rejected, Routing to fix" wake message must NOT be sent
+    // because the spawn fallback already delivers the @fix-agent mention.
+    const wakeMessages = sentMessages.filter(m => m.msg.includes("Routing to"));
+    expect(wakeMessages.length).toBe(0);
 
-    // Fix spawn triggered via fallback (no event bus)
+    // Fix spawn triggered via fallback (no event bus) — this IS the wake mechanism now
     const spawnCalls = sentMessages.filter(m => m.msg.includes("@fix-agent"));
     expect(spawnCalls.length).toBe(1);
     expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
     expect(spawnCalls[0].msg).toContain("pipe-rrfa-001");
+
+    // Wake suppression audit event
+    const logContent = await fs.readFile(
+      path.join(TMP, ".pi", "audit", getDateAuditFileName()),
+      "utf-8",
+    );
+    expect(logContent).toContain("confirm_reject_wake_skipped");
+    expect(logContent).toContain("subagent_spawned");
   });
 });

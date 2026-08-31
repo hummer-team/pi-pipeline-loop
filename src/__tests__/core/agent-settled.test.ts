@@ -1471,3 +1471,78 @@ describe("Phase 4 (169) P1: W1 terminal compact wiring", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── Nit 3 (reaudit): agent-settled auto mode + fail report → hook-level route fix ──
+//
+// Plan Phase 3 acceptance explicitly requires this case: auto mode + report with
+// Blocker/High → route fix (no counting), via the agent_settled hook path.
+// Previously only indirectly covered (verify-integration.test.ts:865 calls
+// routeReviewFailAuto directly; agent-settled.test.ts:1044 covers auto+no-report).
+
+describe("Nit 3 (reaudit): agent-settled auto mode + fail report → route fix via hook", () => {
+  it("auto mode + report with Blocker → route to fix, confirmRejections unchanged, select not called", async () => {
+    const stageTmp = join(tmpdir(), "pi-nit3-auto-fail-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Config: review stage with auto confirm mode (default) and verify.require=false
+    // (no verify so the test focuses on the review decision chain path)
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              ...(s === "review" ? { confirm: { mode: "auto" as const } } : {}),
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    // Write review report with Blocker → parseReviewConclusion returns fail
+    const reviewDir = join(stageTmp, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(
+      join(reviewDir, "code_review_nit3.md"),
+      "# Review\n\n## 问题 1\n- 等级：Blocker\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n",
+      "utf-8",
+    );
+
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 2 });
+    let selectCalled = false;
+    const ctx = createMockCtx(meta, {
+      selectReturn: undefined,
+    });
+    // Override select to track calls
+    const origSelect = ctx.ui.select;
+    ctx.ui.select = async (msg: string, opts: string[]) => {
+      selectCalled = true;
+      return origSelect?.(msg, opts);
+    };
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should route to fix stage
+    expect(meta.currentStage).toBe("fix");
+    // confirmRejections must be unchanged (auto route does not count)
+    expect(meta.confirmRejections).toBe(2);
+    // select must NOT be called (auto mode routes directly)
+    expect(selectCalled).toBe(false);
+
+    // Audit: review_auto_route_fix must be present
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("review_auto_route_fix");
+    // Must NOT have confirm_rejected (no counting)
+    expect(logContent).not.toContain("confirm_rejected");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
