@@ -772,3 +772,30 @@ describe("159 Phase 3: SKILL-format feedback in verify failure messages", () => 
     expect(result.message).toContain("Please strictly follow the SKILL output format requirements");
   });
 });
+
+// ── 168 Phase 0: verifyAttempts reset on stage advance ─────────────────────
+
+describe("168 Phase 0: applyVerifyPass resets verifyAttempts to 0", () => {
+  it("applyVerifyPass resets verifyAttempts to 0 on advance", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", verifyAttempts: 3 });
+    const ctx = createCtx(meta);
+    const sharedResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: { structured: { passed: true }, llm: null, overallPassed: true },
+    };
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "develop",
+      "review" as PipelineStage,
+      sharedResult,
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
+    );
+
+    // verifyAttempts must be reset to 0 after stage advance
+    expect(meta.verifyAttempts).toBe(0);
+    expect(meta.currentStage).toBe("review");
+  });
+});

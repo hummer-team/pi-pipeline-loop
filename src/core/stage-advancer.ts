@@ -340,6 +340,7 @@ async function routeConfirmReject(
     loopCount: 0,
     currentStepIndex: 0,
     verifyFailures: [],
+    verifyAttempts: 0, // Reset per-stage attempt counter on stage advance (168 Phase 0)
     violations: [],
     advancedThisTurn: true,
     confirmRejections: nextCount,
@@ -982,6 +983,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         loopCount: 0,
         currentStepIndex: 0,
         verifyFailures: [],
+        verifyAttempts: 0, // Reset per-stage attempt counter on stage advance (168 Phase 0)
         verifyConfigError: undefined,
         violations: [],
         advancedThisTurn: true,

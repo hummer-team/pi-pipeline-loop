@@ -132,12 +132,13 @@ describe("verify-integration", () => {
   it("Scenario D: agent_settled writes verifyFailures, prompt-injector shows them", async () => {
     const config = makeConfigWithVerify(["develop"]);
 
-    // Create verify.md with a file that DOESN'T exist
+    // Create a file that exists (precheck passes — no requiredFiles) but pattern fails
+    await fs.writeFile(path.join(TMP, "doc.md"), "some content");
     const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
     await fs.mkdir(verifyDir, { recursive: true });
     await fs.writeFile(
       path.join(verifyDir, "verify.md"),
-      "---\nrules:\n  requiredFiles:\n    - \"missing-file.md\"\n---\nBody\n",
+      "---\nrules:\n  fileContentPattern:\n    - path: \"doc.md\"\n      pattern: \"^NEVER_MATCH$\"\n---\nBody\n",
     );
 
     const meta = makeTestMeta({ currentStage: "develop" });
@@ -152,7 +153,7 @@ describe("verify-integration", () => {
     expect(lastMeta.currentStage).toBe("develop"); // NOT advanced
     expect(lastMeta.verifyFailures).toBeDefined();
     expect(lastMeta.verifyFailures!.length).toBeGreaterThan(0);
-    expect(lastMeta.verifyFailures![0].ruleType).toBe("requiredFiles");
+    expect(lastMeta.verifyFailures![0].ruleType).toBe("fileContentPattern");
 
     // Now run prompt-injector — should include failures
     const injectorHook = createPromptInjector(config);
@@ -161,8 +162,8 @@ describe("verify-integration", () => {
     } as any))!;
 
     expect(promptResult.systemPrompt!).toContain("PREVIOUS VERIFICATION FAILURES");
-    expect(promptResult.systemPrompt!).toContain("[requiredFiles]");
-    expect(promptResult.systemPrompt!).toContain("missing-file.md");
+    expect(promptResult.systemPrompt!).toContain("[fileContentPattern]");
+    expect(promptResult.systemPrompt!).toContain("NEVER_MATCH");
   });
 
   // Scenario E: loop-breaker detects verifyFailures → loopCount increments → freeze on overflow

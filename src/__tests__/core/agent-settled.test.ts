@@ -63,12 +63,13 @@ describe("createAgentSettled", () => {
     await mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
 
-    // Create a verify.md with requiredFiles that don't exist
+    // Create a verify.md with a fileContentPattern that fails (precheck passes — no requiredFiles)
+    await writeFile(join(stageTmp, "doc.md"), "some content");
     const vrDir = join(stageTmp, "references", "develop_spec");
     await mkdir(vrDir, { recursive: true });
     await writeFile(
       join(vrDir, "verify.md"),
-      "---\nrules:\n  requiredFiles:\n    - \"nonexistent.md\"\n---\nBody\n",
+      "---\nrules:\n  fileContentPattern:\n    - path: \"doc.md\"\n      pattern: \"^NEVER_MATCH$\"\n---\nBody\n",
     );
 
     const config = makeTestConfig({
@@ -100,7 +101,7 @@ describe("createAgentSettled", () => {
     expect(lastMeta.currentStage).toBe("develop"); // still develop, not advanced
     expect(lastMeta.verifyFailures).toBeDefined();
     expect(lastMeta.verifyFailures!.length).toBeGreaterThan(0);
-    expect(lastMeta.verifyFailures![0].ruleType).toBe("requiredFiles");
+    expect(lastMeta.verifyFailures![0].ruleType).toBe("fileContentPattern");
 
     // Should have audit log for verify failure
     const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
@@ -309,16 +310,18 @@ describe("createAgentSettled", () => {
     return stageTmp;
   }
 
-  /** Helper: create a stageTmp with a verify.md that FAILS (required file missing) */
+  /** Helper: create a stageTmp with a verify.md that FAILS via fileContentPattern (precheck passes) */
   async function makeFailingVerifyTmp(prefix: string): Promise<string> {
     const stageTmp = join(tmpdir(), prefix + "-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+    // Create a file that exists (precheck passes — no requiredFiles) but pattern fails
+    await writeFile(join(stageTmp, "doc.md"), "some content");
     const vrDir = join(stageTmp, "references", "spec");
     await mkdir(vrDir, { recursive: true });
     await writeFile(
       join(vrDir, "verify.md"),
-      "---\nrules:\n  requiredFiles:\n    - \"nonexistent.md\"\n---\nBody\n",
+      "---\nrules:\n  fileContentPattern:\n    - path: \"doc.md\"\n      pattern: \"^NEVER_MATCH$\"\n---\nBody\n",
     );
     return stageTmp;
   }
@@ -1260,6 +1263,68 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
     const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_approved");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
+// ── 168 Phase 0: precheckRequiredFiles integration in agent_settled ──────────
+
+describe("168 Phase 0: precheckRequiredFiles in agent_settled hook", () => {
+  it("requiredFiles missing → verify_precheck_deferred audit, no runVerification, verifyAttempts not incremented, no freeze", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-precheck-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create verify.md with requiredFiles that don't exist
+    const vrDir = join(stageTmp, "references", "develop_spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"nonexistent.md\"\n---\nBody\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "develop"
+                ? { require: true, verifyFile: "references/develop_spec/verify.md", mode: "hook" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const meta = makeTestMeta({ currentStage: "develop", verifyAttempts: 0 });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // verifyAttempts must NOT be incremented (precheck deferred)
+    expect(meta.verifyAttempts).toBe(0);
+    // Pipeline should NOT be frozen
+    expect(meta.flowState).toBeUndefined();
+    // Stage should NOT advance
+    expect(meta.currentStage).toBe("develop");
+    // No verifyFailures written (runVerification was NOT called)
+    const verifyUpdates = ctx.metadataUpdates.filter(u => u.verifyFailures);
+    expect(verifyUpdates.length).toBe(0);
+    // Audit should contain verify_precheck_deferred
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_precheck_deferred");
+    expect(logContent).toContain("nonexistent.md");
+    // Should NOT contain auto_verify_fail (full verification was not run)
+    expect(logContent).not.toContain("auto_verify_fail");
 
     await rm(stageTmp, { recursive: true, force: true });
   });

@@ -948,3 +948,40 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     expect(meta.currentStage).toBe("plan");
   });
 });
+
+// ── 168 Phase 0: verifyAttempts reset on stage_advance tool ──────────────────
+
+describe("168 Phase 0: stage_advance tool resets verifyAttempts", () => {
+  it("direct advance resets verifyAttempts to 0", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "clarify", verifyAttempts: 5 });
+    config.stages["clarify"] = { ...config.stages["clarify"], nextStage: "plan" };
+
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("plan");
+    expect(meta.verifyAttempts).toBe(0);
+  });
+
+  it("reviewConclusion=fail (routeConfirmReject) resets verifyAttempts to 0", async () => {
+    const stageTmp = join(tmpdir(), "pi-advancer-reset-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "review", verifyAttempts: 3 });
+    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" };
+
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({ reviewConclusion: "fail" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("fix");
+    expect(meta.verifyAttempts).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

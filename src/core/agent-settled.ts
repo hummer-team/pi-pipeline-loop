@@ -6,7 +6,7 @@
  */
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
-import { runVerification, precheckCompletionMarker } from "./auto-verifier";
+import { runVerification, precheckCompletionMarker, precheckRequiredFiles } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
@@ -152,6 +152,20 @@ export function createAgentSettled(
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
           reason: "smart confirm defers verification+advance to stage_advance tool",
+        });
+        return;
+      }
+
+      // 168 Phase 0: Pre-check required files before running full verification.
+      // If required deliverables are not yet produced, skip verification silently
+      // (no counting, no freezing, no notify — same semantic as completionMarker pending).
+      // Aligns with pipeline-verify.ts L120 and stage-advancer.ts L849 precheck pattern.
+      const precheck = await precheckRequiredFiles(config, meta);
+      if (!precheck.passed) {
+        await writeAuditLog("verify_precheck_deferred", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          missing: precheck.missing.join(", "),
         });
         return;
       }

@@ -150,6 +150,7 @@ export async function applyVerifyPass(
       loopCount: 0,
       currentStepIndex: 0,
       verifyFailures: [],
+      verifyAttempts: 0, // Reset per-stage attempt counter on stage advance (168 Phase 0)
       violations: [],
       advancedThisTurn: undefined, // Clear C2 flag on stage transition
       reviewConclusionDeclared: undefined, // Clear 163 declaration flag on stage transition
