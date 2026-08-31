@@ -6,9 +6,6 @@ model: deepseek/deepseek-v4-flash
 permission:
   edit: allow
   bash: allow 
-skills:
-  - design
-  - plan
 defaultContext: fork
 tools: read, write, edit, bash, grep, find, ls
 defaultReads: .pi/references/sop.md

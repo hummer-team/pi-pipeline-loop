@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { createPromptInjector } from "../../core/prompt-injector";
+import { createPromptInjector, isStageSkillInBase, stripFrontmatter } from "../../core/prompt-injector";
 import { makeTestConfig, makeTestMeta, writePromptYml } from "../helpers";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -1148,5 +1148,45 @@ describe("Phase 1: empty content guard", () => {
       // Always clean up the domain file we created in home directory
       await rm(domainFile, { force: true });
     }
+  });
+});
+
+// ─── Phase 2 (169): isStageSkillInBase regression tests ─────────────────────
+
+describe("isStageSkillInBase (Phase 2 / 169 regression)", () => {
+  it("returns false when base only has <available_skills> directory (not full content)", () => {
+    const base = `Some system prompt.
+<available_skills>
+<skill>
+<name>design</name>
+<description>Solution design skill</description>
+</skill>
+<skill>
+<name>plan</name>
+<description>Planning skill</description>
+</skill>
+</available_skills>`;
+    // Skill content is much longer than just the description
+    const skillContent = `---\nname: design\n---\n# Design SKILL\n` + "x".repeat(250);
+    expect(isStageSkillInBase(base, skillContent, "design")).toBe(false);
+  });
+
+  it("returns true when base contains '# Preloaded Skill: design' marker", () => {
+    const base = `Some prompt\n# Preloaded Skill: design\n# Design content here`;
+    const skillContent = `---\nname: design\n---\n# Design SKILL\n` + "x".repeat(250);
+    expect(isStageSkillInBase(base, skillContent, "design")).toBe(true);
+  });
+
+  it("returns true when base contains skill fingerprint (>=200 char normalized substring)", () => {
+    const skillContent = `---\nname: design\n---\n` + "A".repeat(300);
+    const normalizedFingerprint = stripFrontmatter(skillContent).trim().substring(0, 200);
+    const base = `System prompt containing ${normalizedFingerprint} inline`;
+    expect(isStageSkillInBase(base, skillContent, "design")).toBe(true);
+  });
+
+  it("returns false when base has no marker and no fingerprint match", () => {
+    const base = `Just a plain system prompt with no skill content`;
+    const skillContent = `---\nname: plan\n---\n# Plan SKILL\n` + "y".repeat(250);
+    expect(isStageSkillInBase(base, skillContent, "plan")).toBe(false);
   });
 });
