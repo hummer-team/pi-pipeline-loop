@@ -377,58 +377,32 @@ export function formatFrozenReason(meta: SessionMeta, maxLen = 200): string {
   return result;
 }
 
-// ─── freezeAndPrompt ────────────────────────────────────────────────────────
+// ─── promptDecisionMenu ─────────────────────────────────────────────────────
 
 /**
- * Freezes the pipeline and prompts the user for a decision via TUI select.
- *
- * Idempotent: only transitions from "running" → "blocked" on the first call.
- * Subsequent calls (already blocked) skip the state mutation but still prompt.
+ * Prompts the user with the decision menu via TUI select.
+ * Extracted from freezeAndPrompt so it can be reused by agent-settled
+ * for re-prompting while the pipeline is already frozen (168 Phase 2).
  *
  * Behavior:
- * 1. If flowState is "running" → set flowState="blocked" + blockedReason=reason
- * 2. Write audit `pipeline_blocked` (warn)
- * 3. If UI is available → show decision menu via ctx.ui.select
- *    - User selects → executeDecision
- *    - User cancels (undefined) → write audit `pipeline_decision_cancelled` + notify shortcut hint
- * 4. If no UI → notify + keep blocked (user must use shortcut key)
+ * - Builds decision menu via buildDecisionMenu
+ * - If UI available → shows select → executeDecision on choice / audit + notify on Esc
+ * - If no UI → notify with frozen reason
+ * - If aborted → no prompt
  *
  * @param ctx - FlowStateCtx with session and optional UI
  * @param meta - Current SessionMeta snapshot
- * @param reason - Machine-readable freeze reason (e.g. "loop_overflow")
- * @param config - PipelineConfig for shortcut key and stage lookups
+ * @param config - PipelineConfig for stage lookups
  * @param opts - Optional overrides (ui for external callers)
  */
-export async function freezeAndPrompt(
+export async function promptDecisionMenu(
   ctx: FlowStateCtx,
   meta: SessionMeta,
-  reason: string,
   config: PipelineConfig,
   opts?: { ui?: FlowStateCtx["ui"] },
 ): Promise<void> {
   const ui = opts?.ui ?? ctx.ui;
-
-  // Idempotent: only transition running → blocked, and only perform
-  // audit + menu prompt on the transition moment (not on repeated calls).
-  const currentState = getFlowState(meta);
-  if (currentState !== "running") {
-    // Already frozen/aborted — do not re-freeze, re-audit, or re-prompt.
-    return;
-  }
-
-  ctx.session.updateMeta({
-    flowState: "blocked",
-    blockedReason: reason,
-  });
-
-  // Audit: pipeline blocked (warn level)
-  await safeWriteAuditLog("pipeline_blocked", {
-    pipelineId: meta.pipelineId,
-    stage: meta.currentStage,
-    reason,
-  }, "warn");
-
-  const menu = buildDecisionMenu({ ...meta, flowState: "blocked", blockedReason: reason });
+  const menu = buildDecisionMenu(meta);
   const tuiEnabled = config.output?.pipelineStage !== false;
 
   if (!menu) {
@@ -438,13 +412,14 @@ export async function freezeAndPrompt(
 
   if (ui?.select) {
     try {
+      const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
       const selection = await ui.select(
         `Pipeline blocked: ${reason}. Choose an action:`,
         menu,
       );
 
       if (selection === undefined) {
-        // User pressed Esc — keep blocked, notify about shortcut
+        // User pressed Esc — keep blocked, notify with reason
         await safeWriteAuditLog("pipeline_decision_cancelled", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
@@ -482,4 +457,58 @@ export async function freezeAndPrompt(
       );
     }
   }
+}
+
+// ─── freezeAndPrompt ────────────────────────────────────────────────────────
+
+/**
+ * Freezes the pipeline and prompts the user for a decision via TUI select.
+ *
+ * Idempotent: only transitions from "running" → "blocked" on the first call.
+ * Subsequent calls (already blocked) skip the state mutation but still prompt.
+ *
+ * Behavior:
+ * 1. If flowState is "running" → set flowState="blocked" + blockedReason=reason
+ * 2. Write audit `pipeline_blocked` (warn)
+ * 3. If UI is available → show decision menu via ctx.ui.select
+ *    - User selects → executeDecision
+ *    - User cancels (undefined) → write audit `pipeline_decision_cancelled` + notify shortcut hint
+ * 4. If no UI → notify + keep blocked (user must use shortcut key)
+ *
+ * @param ctx - FlowStateCtx with session and optional UI
+ * @param meta - Current SessionMeta snapshot
+ * @param reason - Machine-readable freeze reason (e.g. "loop_overflow")
+ * @param config - PipelineConfig for shortcut key and stage lookups
+ * @param opts - Optional overrides (ui for external callers)
+ */
+export async function freezeAndPrompt(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  reason: string,
+  config: PipelineConfig,
+  opts?: { ui?: FlowStateCtx["ui"] },
+): Promise<void> {
+  // Idempotent: only transition running → blocked, and only perform
+  // audit + menu prompt on the transition moment (not on repeated calls).
+  const currentState = getFlowState(meta);
+  if (currentState !== "running") {
+    // Already frozen/aborted — do not re-freeze, re-audit, or re-prompt.
+    return;
+  }
+
+  ctx.session.updateMeta({
+    flowState: "blocked",
+    blockedReason: reason,
+  });
+
+  // Audit: pipeline blocked (warn level)
+  await safeWriteAuditLog("pipeline_blocked", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    reason,
+  }, "warn");
+
+  // Delegate to promptDecisionMenu for the UI interaction
+  const frozenMeta = { ...meta, flowState: "blocked" as const, blockedReason: reason };
+  await promptDecisionMenu(ctx, frozenMeta, config, opts);
 }

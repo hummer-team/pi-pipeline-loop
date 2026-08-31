@@ -1331,3 +1331,38 @@ describe("168 Phase 0: precheckRequiredFiles in agent_settled hook", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── 168 Phase 2: agent_settled frozen re-popup ──────────────────────────────
+
+describe("168 Phase 2: agent_settled frozen re-popup", () => {
+  it("frozen agent_settled triggers ui.select (decision menu re-popup)", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-repopup-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta, {
+      selectReturn: undefined, // Esc → stay blocked
+    });
+    // Track ui.select calls
+    const origSelect = ctx.ui.select;
+    ctx.ui.select = async (msg: string, opts: string[]) => {
+      selectCalls++;
+      return origSelect!(msg, opts);
+    };
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // ui.select should have been called (decision menu re-popped up)
+    expect(selectCalls).toBe(1);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

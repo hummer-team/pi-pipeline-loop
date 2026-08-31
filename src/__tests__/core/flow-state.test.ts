@@ -6,6 +6,7 @@ import {
   executeDecision,
   freezeAndPrompt,
   formatFrozenReason,
+  promptDecisionMenu,
 } from "../../core/flow-state";
 import type { FlowStateCtx } from "../../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../../types";
@@ -511,5 +512,71 @@ describe("168 Phase 1: formatFrozenReason", () => {
       verifyFailures: [],
     });
     expect(formatFrozenReason(meta)).toBe("test_reason");
+  });
+});
+
+// ── 168 Phase 2: promptDecisionMenu (re-popup while frozen) ──────────────────
+
+describe("168 Phase 2: promptDecisionMenu", () => {
+  it("can be called when already blocked (re-popup)", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const selectCalls: number[] = [];
+    const notifications: string[] = [];
+    const ctx = makeCtx(meta, {
+      select: async () => {
+        selectCalls.push(1);
+        return "Resume";
+      },
+      notify: (msg: string) => { notifications.push(msg); },
+    });
+    const config = makeTestConfig();
+
+    // First call
+    await promptDecisionMenu(ctx, meta, config);
+    expect(selectCalls.length).toBe(1);
+
+    // Second call (re-popup while still blocked)
+    await promptDecisionMenu(ctx, meta, config);
+    expect(selectCalls.length).toBe(2);
+  });
+
+  it("Esc cancel writes pipeline_decision_cancelled audit + notify with reason (no shortcut)", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      blockedReason: "verify_attempt_overflow",
+    });
+    const notifications: string[] = [];
+    const ctx = makeCtx(meta, {
+      select: async () => undefined, // Esc
+      notify: (msg: string) => { notifications.push(msg); },
+    });
+    const config = makeTestConfig();
+
+    await promptDecisionMenu(ctx, meta, config);
+
+    // Should notify with reason (not shortcut key)
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]).toContain("verify_attempt_overflow");
+    expect(notifications[0]).toContain("decision menu");
+    expect(notifications[0]).not.toContain("ctrl+enter");
+  });
+
+  it("returns aborted without prompting when flowState is aborted", async () => {
+    const meta = makeTestMeta({ flowState: "aborted" });
+    const selectCalls: number[] = [];
+    const ctx = makeCtx(meta, {
+      select: async () => {
+        selectCalls.push(1);
+        return "Resume";
+      },
+    });
+    const config = makeTestConfig();
+
+    await promptDecisionMenu(ctx, meta, config);
+    // No select call (aborted → null menu → return early)
+    expect(selectCalls.length).toBe(0);
   });
 });

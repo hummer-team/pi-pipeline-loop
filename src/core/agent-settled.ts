@@ -12,7 +12,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
-import { isFrozen, formatFrozenReason } from "./flow-state";
+import { isFrozen, formatFrozenReason, promptDecisionMenu } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -63,6 +63,8 @@ export function createAgentSettled(
           stage: meta.currentStage,
         });
         ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
+        // 168 Phase 2: auto re-popup decision menu while frozen
+        await promptDecisionMenu(ctx as unknown as Parameters<typeof promptDecisionMenu>[0], meta, config);
         return;
       }
 
