@@ -212,6 +212,7 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           maxLoops: config.maxLoops || 3,
           flowState: "running",
           stageVisitOrder: ["clarify"],
+          terminalCompact: undefined,
         };
 
         ctx.session.updateMeta(sessionMeta);

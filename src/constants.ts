@@ -63,6 +63,34 @@ export const DEFAULT_CONFIRM_MAX_REJECTIONS = 5;
  */
 export const DEFAULT_CONFIRM_OVERFLOW = "ask" as const;
 
+// ─── Terminal Context Compaction Defaults (Phase 4 / 169) ────────────────────
+
+/**
+ * Whether terminal context compaction is enabled by default.
+ * When true, ctx.compact is invoked once after the pipeline reaches completed.
+ */
+export const DEFAULT_COMPACT_ENABLED = true;
+
+/**
+ * Minimum token count to trigger compaction.
+ * Below this threshold, compaction is skipped (audit-only, no token waste).
+ * Matches the official trigger-compact.ts example value.
+ */
+export const DEFAULT_COMPACT_TOKEN_THRESHOLD = 100_000;
+
+/**
+ * Default custom instructions for terminal context compaction.
+ * Anchors critical context pointers that must survive the lossy compression.
+ */
+export const DEFAULT_COMPACT_INSTRUCTIONS = `Pipeline completed. Preserve the following context pointers verbatim:
+
+1. Terminal state: pipeline reached "completed" stage
+2. stageVisitOrder: the full ordered list of stages visited (including re-visits)
+3. Deliverable paths: all stage summary artifact paths (meta.summaries[].path) and completed.md
+4. Requirement doc: the requirement document pointer (meta.requirementDoc) with all clarification conclusions
+5. Commit pointers: any git commit ids referenced during the pipeline
+6. Keep all the above pointers verbatim — do not summarize or paraphrase file paths, commit ids, or stage names`;
+
 /**
  * Default write whitelist for read-only stages (clarify/plan/review).
  * These stages may only write to documentation directories.

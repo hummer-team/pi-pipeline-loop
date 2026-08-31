@@ -447,6 +447,20 @@ export interface SessionMeta {
    * (stageStartTime changes), the guard naturally allows re-spawn.
    */
   spawnedStages?: Partial<Record<PipelineStage, number>>;
+
+  /**
+   * Terminal context compaction status (Phase 4 / 169).
+   * When this field is present, the pipeline has already attempted (or skipped)
+   * terminal context compaction — no further attempts will be made.
+   * Field existence = consumed (one-shot, regardless of outcome).
+   */
+  terminalCompact?: {
+    outcome: "compacted" | "failed" | "skipped_below_threshold";
+    at: number;
+    tokensBefore?: number;
+    tokensAfter?: number | null;
+    error?: string;
+  };
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
@@ -595,6 +609,20 @@ export interface PipelineConfig {
    * - "terminate": Immediately abort the pipeline with flowState="aborted".
    */
   confirmOverflow?: "ask" | "terminate";
+
+  /**
+   * Terminal context compaction configuration (Phase 4 / 169).
+   * When enabled, triggers ctx.compact once after pipeline reaches completed stage.
+   * Default: { enabled: true, tokenThreshold: 100_000 }.
+   */
+  compact?: {
+    /** Whether terminal compaction is enabled (default true) */
+    enabled?: boolean;
+    /** Minimum token count to trigger compaction (default 100_000) */
+    tokenThreshold?: number;
+    /** Custom instructions for the compaction (overrides DEFAULT_COMPACT_INSTRUCTIONS) */
+    customInstructions?: string;
+  };
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -749,6 +777,19 @@ export interface PipelineJsonConfig {
    * - "terminate": Immediately abort the pipeline with flowState="aborted".
    */
   confirmOverflow?: "ask" | "terminate";
+
+  /**
+   * Terminal context compaction configuration (Phase 4 / 169).
+   * When enabled, triggers ctx.compact once after pipeline reaches completed stage.
+   */
+  compact?: {
+    /** Whether terminal compaction is enabled (default true) */
+    enabled?: boolean;
+    /** Minimum token count to trigger compaction (default 100_000) */
+    tokenThreshold?: number;
+    /** Custom instructions for the compaction (overrides DEFAULT_COMPACT_INSTRUCTIONS) */
+    customInstructions?: string;
+  };
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────

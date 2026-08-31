@@ -296,6 +296,8 @@ function buildRestartMeta(
     terminateReason: undefined,
     // Phase 4 (162): reset confirm rejection counter on restart
     confirmRejections: undefined,
+    // Phase 4 (169): clear terminal compaction flag on restart
+    terminalCompact: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -360,6 +362,8 @@ function buildStartMeta(
     terminateReason: undefined,
     // Phase 4 (162): reset confirm rejection counter on start
     confirmRejections: undefined,
+    // Phase 4 (169): clear terminal compaction flag on start
+    terminalCompact: undefined,
   };
   return { pipelineId, newMeta };
 }

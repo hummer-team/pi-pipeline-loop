@@ -22,6 +22,7 @@ import {
   routeReviewFailAuto,
 } from "./stage-advancer";
 import { parseReviewConclusion } from "../utils/review-conclusion";
+import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -55,6 +56,14 @@ export function createAgentSettled(
       });
 
       ui.notify(ctx, `Agent settled in "${meta.currentStage}" stage`);
+
+      // Phase 4 (169) W1: Terminal compaction check — BEFORE frozen and advancedThisTurn
+      // short-circuits, so that T1 settle (carrying advancedThisTurn=true) still triggers compact.
+      // The helper internally guards against non-completed, already-consumed, and busy states.
+      await maybeCompactOnPipelineCompleted(
+        { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
+        config,
+      );
 
       // 1b. Frozen short-circuit: skip verification when pipeline is frozen
       if (isFrozen(meta)) {
@@ -244,6 +253,17 @@ export function createAgentSettled(
             ...(reviewDefaultReject !== undefined ? { defaultReject: reviewDefaultReject } : {}),
           });
           if (gate.result === "handled") {
+            // Phase 4 (169) W2: After confirm gate handled, re-read meta and check if completed.
+            // Covers T2 (hook path with no subsequent settle) — same dispatch, idle-safe.
+            if (gate.action === "advanced" || gate.action === "routed") {
+              const postGateMeta = ctx.session.getMeta() as SessionMeta;
+              if (postGateMeta.currentStage === "completed") {
+                await maybeCompactOnPipelineCompleted(
+                  { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
+                  config,
+                );
+              }
+            }
             // advanced / routed / pending / aborted — all handled by confirm gate, skip autoAdvance
             return;
           }

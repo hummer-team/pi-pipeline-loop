@@ -101,6 +101,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
       json.confirmOverflow === "ask" || json.confirmOverflow === "terminate"
         ? json.confirmOverflow
         : undefined,
+    compact: parseCompactConfig(json.compact),
   };
 }
 
@@ -374,6 +375,55 @@ function parseConfirmOverflow(raw: unknown): "ask" | "terminate" {
 }
 
 /**
+ * Parses and validates the terminal context compaction configuration from JSON config.
+ * Follows the same pattern as confirmOverflow parsing (typeof validation, warn on invalid).
+ * Invalid fields are ignored and fall back to defaults.
+ */
+function parseCompactConfig(raw: unknown): { enabled?: boolean; tokenThreshold?: number; customInstructions?: string } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    console.warn(
+      `[pi-pipeline] Invalid compact config — expected object, got ${typeof raw}`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const result: { enabled?: boolean; tokenThreshold?: number; customInstructions?: string } = {};
+
+  if (obj.enabled !== undefined) {
+    if (typeof obj.enabled === "boolean") {
+      result.enabled = obj.enabled;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid compact.enabled "${String(obj.enabled)}" — expected boolean, ignoring`,
+      );
+    }
+  }
+
+  if (obj.tokenThreshold !== undefined) {
+    if (typeof obj.tokenThreshold === "number" && obj.tokenThreshold > 0) {
+      result.tokenThreshold = obj.tokenThreshold;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid compact.tokenThreshold "${String(obj.tokenThreshold)}" — expected positive number, ignoring`,
+      );
+    }
+  }
+
+  if (obj.customInstructions !== undefined) {
+    if (typeof obj.customInstructions === "string") {
+      result.customInstructions = obj.customInstructions;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid compact.customInstructions — expected string, ignoring`,
+      );
+    }
+  }
+
+  return result;
+}
+
+/**
  * Parses and validates allowedWritePaths from JSON stage config.
  * Must be string[] (each entry is a path prefix or "**").
  * Invalid types are logged as warnings and ignored (returns undefined).
@@ -575,5 +625,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     maxConfirmRejections:
       json.maxConfirmRejections ?? DEFAULT_CONFIRM_MAX_REJECTIONS,
     confirmOverflow: parseConfirmOverflow(json.confirmOverflow),
+    compact: json.compact,
   };
 }

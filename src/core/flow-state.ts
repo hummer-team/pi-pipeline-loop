@@ -15,12 +15,14 @@
 
 import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 
 // ─── Context Interface ──────────────────────────────────────────────────────
 
 /**
  * Minimal context interface required by flow-state helpers.
  * Compatible with RuntimeCtx and test mock contexts.
+ * Phase 4 (169): _ctx added for terminal compact wiring (W3).
  */
 export interface FlowStateCtx {
   session: {
@@ -31,6 +33,12 @@ export interface FlowStateCtx {
     select?: (message: string, options: string[]) => Promise<string | undefined>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     notify?: (msg: string, ...args: any[]) => void;
+  };
+  /** @internal ExtensionContext for terminal compact (W3 wiring). Optional for backward compat. */
+  _ctx?: {
+    isIdle?: () => boolean;
+    compact?: (opts: { customInstructions: string; onComplete: (r: unknown) => void; onError: (e: Error) => void }) => void;
+    getContextUsage?: () => { tokens: number | null } | undefined;
   };
 }
 
@@ -211,6 +219,16 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
       });
 
+      // Phase 4 (169) W3: When skip targets completed, trigger terminal compaction.
+      // The helper's internal isIdle guard handles the shortcut-key scenario.
+      if (toStage === "completed" && ctx._ctx) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await maybeCompactOnPipelineCompleted(
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx as any },
+          config,
+        );
+      }
+
       return { success: true, message: `Skipped "${prevStage}", advanced to "${toStage}".` };
     }
 
@@ -276,6 +294,8 @@ export async function executeDecision(
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
+        // Phase 4 (169): clear terminal compaction flag on restart
+        terminalCompact: undefined,
         // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
 
