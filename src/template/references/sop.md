@@ -1,41 +1,40 @@
-## 代码、架构原则
-1. **新功能或BUG修复：必须先思考并做phase规划，不确定或不清晰的功能、问题你要提出问题，得到我反馈，方案review同意后才开始编写代码**
-2. **必须：** 每个phase实现完成后，需要:
-    - 运行项目构建命令（以项目 AGENTS.md 定义为准）必须通过，有问题必须修复后再继续
-3. **单元测试**:
-    - 新功能，bug 修改必须有对应单元测试覆盖
-    - 在宣布完成前运行项目测试命令验证你的代码并且需要通过
-4. **最小干预原则**：聚焦问题做局部修改，严禁大面积重构或删除无关的有效代码
-5. **健壮性要求**：增强代码鲁棒性效应，确保无语法错误、无类型错误、无空指针异常
-6. **自动权限**：默认允许在终端执行项目构建工具的 Read-only（检查）和 Build（验证）操作（以项目 AGENTS.md 为准）
-7. **代码规范要求**：
-    - **代码注释、日志一律使用 英文**
-    - **整体代码符合项目技术栈最佳实践，且注释清晰**
-8. **命名规范**：新建目录或者文件必须使用有业务含义的名称且符合命名规范，禁止使用无意义的名称如 `temp`、`test2` 等。
+## Code & Architecture Principles
+1. **New features or bug fixes**: Phase planning must be completed first. For unclear requirements or issues, raise questions and wait for my feedback. Code‑writing can only start after the solution passes review and approval.
+2. **Mandatory**: After each phase implementation:
+    - Run the project build command (defined in `AGENTS.md`). Build must pass; fix failures before proceeding.
+3. **Unit‑Testing**:
+    - New features and bug fixes must be covered by corresponding unit tests.
+    - Run project test commands for validation before marking completion; all tests must pass.
+4. **Minimum‑Intervention Principle**: Make localized changes targeting the problem. Large‑scale refactoring or deletion of unrelated valid code is prohibited.
+5. **Robustness Requirement**: Improve code robustness. Ensure no syntax errors, type errors or null‑pointer exceptions.
+6. **Auto‑Permissions**: Read‑only inspection and build‑verification terminal commands for project build tools are allowed by default (subject to `AGENTS.md`).
+7. **Coding Standards**:
+    - All code comments and logs shall be written in English.
+    - Code shall follow industry best practices of the tech stack with clear comments.
+8. **Naming Convention**: New directories and files shall use business‑meaningful names following naming standards. Meaningless names such as `temp`, `test2` are forbidden.
 
-## 输出要求
-1. **必须：** 输出要简洁(禁止输出跟问题、功能不相关的内容)，但推理要彻底
-2. 交互语言：修改，实现功能后总结使用中文，思考过程可以使用英文。
+## Output Requirements
+1. **Mandatory**: Keep outputs concise (no irrelevant content). Perform thorough reasoning.
+2. **Interaction Language**: Summarize modifications and implementations in Chinese; thinking‑process content may use English.
 
-## 🤖 Subagent 调度 SOP
-
+## 🤖 Sub‑Agent Scheduling SOP
 ```
-需求文档 → design-und → full-und? → design-plan → develop → code-review
-(请求文件)   (追加澄清)    (用户确认)    (输出_plan.md)  (按Phase开发)  (审查报告)
+Requirement Doc → design‑und → full‑und? → design‑plan → develop → code‑review
+(Request File)  (Clarification)  (User Confirm)  (Output _plan.md)  (Phase‑wise Dev)  (Review Report)
 ```
 
-| # | 规则 | 说明 |
+| # | Rule | Description |
 |---|------|------|
-| 1 | **不越权指定输出路径** | Subagent 加载的 SKILL 已定义输出路径，主 Agent 不在 prompt 中指定"写到哪里"或"覆盖哪个文件" |
-| 2 | **不替代阶段判定** | 每阶段进入/退出条件由 SKILL 定义（如 `full-und?`），主 Agent 等待用户信号，不自行跳过 |
-| 3 | **透明转发** | 用户输入（`答`、`full-und?`、反馈）原样传给 Subagent，由其内部 SKILL 决策下一步 |
-| 4 | **信任 SKILL 流程** | Subagent 按 `context: fork` 独立执行，主 Agent 不给低层次实施指令（如具体改哪个文件哪行代码） |
+| 1 | **No Unauthorized Output‑Path Assignment** | Output paths are defined inside the loaded Sub‑Agent skill. The main agent shall not specify file‑write or overwrite targets in prompts. |
+| 2 | **No Self‑Stage‑Judgment** | Entry‑exit conditions for each workflow stage (e.g. `full‑und?`) are defined by the skill. The main agent waits for user signals and shall not skip stages automatically. |
+| 3 | **Transparent Forwarding** | Forward user inputs (replies, `full‑und?`, feedback) to the sub‑agent as‑is. The sub‑agent’s internal skill decides next‑step actions. |
+| 4 | **Trust Skill Workflow** | Sub‑Agent executes independently under `context: fork`. The main agent shall not issue low‑level implementation instructions (e.g. specific files or lines to modify). |
 
-## 🛡️ 作用域边界（Scope Boundaries）
-**禁止行为（Hard Stops）**：
-- 不得新增项目依赖（除非明确批准）
-- 不得重命名/移动已有文件（除非是任务明确要求）
-- 不得修改项目核心配置文件（破坏项目结构）
-- 连续失败 3 次后必须停止并上报阻塞点，禁止第 4 次尝试
-- 不要有奉承的开场白或者结束语
-- 不得迎合用户的观点，而是基于项目事实思考证明
+## 🛡️ Scope Boundaries
+**Hard‑Stop Prohibited Actions**:
+- Adding new project dependencies is forbidden unless explicitly approved.
+- Renaming or relocating existing files is forbidden unless required by the task.
+- Modifying core project configuration files (which break project structure) is forbidden.
+- Stop execution and report blockers after 3 consecutive failures; no 4‑th retry attempt.
+- Avoid complimentary opening or closing remarks.
+- Reason based on project facts and evidence, rather than simply endorsing user opinions.
