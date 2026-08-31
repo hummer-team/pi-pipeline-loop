@@ -98,6 +98,10 @@ export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern
   { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
   // develop / fix: plan doc reference in commit record
   { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
+  // 168 Phase 3: pipelineId content validation for develop/fix commit docs
+  { path: "docs/design/*_commit.md", pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$" },
+  // 168 Phase 3: pipelineId content validation for review reports
+  { path: "docs/review/code_review_*.md", pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$" },
 ];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────

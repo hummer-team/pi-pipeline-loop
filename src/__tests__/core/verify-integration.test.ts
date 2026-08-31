@@ -8,7 +8,7 @@ import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-lo
 import { createAgentSettled } from "../../core/agent-settled";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { createLoopBreaker } from "../../core/loop-breaker";
-import { runVerification, parseFrontmatter } from "../../core/auto-verifier";
+import { runVerification, parseFrontmatter, resolvePlaceholders, applyConcreteStageDocPaths } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta, createMockCtx, createMockRuntimeCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
 
@@ -730,5 +730,131 @@ describe("verify-integration", () => {
       expect(content).toContain("方案");
       expect(content).toContain("答");
     });
+  });
+});
+
+// ── 168 Phase 3: verify glob narrowing + pipelineId integration ─────────────
+
+describe("168 Phase 3: verify glob narrowing + pipelineId integration", () => {
+  it("historical residual commit.md + narrowed glob → develop verify FAIL (prevents false positive)", async () => {
+    // Create a historical commit doc from a different requirementDoc
+    const histDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(histDir, { recursive: true });
+    await fs.writeFile(
+      path.join(histDir, "99_OldPlan_commit.md"),
+      "**plan doc**: `docs/design/99_OldPlan_plan.md`\n",
+    );
+
+    // Set up develop verify rules with narrowing
+    const vrDir = path.join(TMP, ".pi", "references", "develop_spec");
+    await fs.mkdir(vrDir, { recursive: true });
+    await fs.writeFile(
+      path.join(vrDir, "verify.md"),
+      `---
+rules:
+  requiredFiles:
+    - "docs/design/*_commit.md"
+  fileContentPattern:
+    - path: "docs/design/*_commit.md"
+      pattern: "^\\\\*\\\\*plan doc\\\\*\\\\*:"
+---
+Verify develop commit doc.`,
+    );
+
+    const config = makeConfigWithVerify(["develop"]);
+    // Current requirementDoc is different from historical file
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/80_NewReq.md",
+    });
+
+    const result = await runVerification(config, meta, []);
+    // The narrowed glob "docs/design/80_NewReq_*_commit.md" does NOT match
+    // the historical "99_OldPlan_commit.md" → verify should FAIL
+    expect(result.rulePassed).toBe(false);
+  });
+
+  it("commit.md with correct pipelineId in fileContentPattern → PASS", async () => {
+    const histDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(histDir, { recursive: true });
+    const pipelineId = "pipe-test-phase3";
+    // File name must match narrowed glob: docs/design/80_Req_*_commit.md
+    await fs.writeFile(
+      path.join(histDir, "80_Req_dev_commit.md"),
+      `**plan doc**: \`docs/design/80_Req_plan.md\`\n**pipeline**: ${pipelineId}\n`,
+    );
+
+    const vrDir = path.join(TMP, ".pi", "references", "develop_spec");
+    await fs.mkdir(vrDir, { recursive: true });
+    await fs.writeFile(
+      path.join(vrDir, "verify.md"),
+      `---
+rules:
+  requiredFiles:
+    - "docs/design/*_commit.md"
+  fileContentPattern:
+    - path: "docs/design/*_commit.md"
+      pattern: "^\\\\*\\\\*pipeline\\\\*\\\\*:\\\\s*{pipelineId}$"
+---
+Verify pipelineId in commit doc.`,
+    );
+
+    const config = makeConfigWithVerify(["develop"]);
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/80_Req.md",
+      pipelineId,
+    });
+
+    // resolvePlaceholders replaces {pipelineId} in pattern
+    const { parseVerifyFile: pf } = await import("../../core/auto-verifier");
+    const parsed = await pf(path.join(vrDir, "verify.md"));
+    expect(parsed.rules).not.toBeNull();
+    const resolved = resolvePlaceholders(parsed.rules!, meta);
+    const narrowed = await applyConcreteStageDocPaths(resolved, config, meta);
+
+    // The pattern should now contain the real pipelineId
+    expect(narrowed.fileContentPattern![0].pattern).toContain(pipelineId);
+    expect(narrowed.fileContentPattern![0].pattern).not.toContain("{pipelineId}");
+
+    // Full verify should pass
+    const result = await runVerification(config, meta, []);
+    expect(result.rulePassed).toBe(true);
+  });
+
+  it("commit.md WITHOUT pipelineId → FAIL when fileContentPattern requires it", async () => {
+    const histDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(histDir, { recursive: true });
+    // File name matches narrowed glob but content lacks pipelineId
+    await fs.writeFile(
+      path.join(histDir, "80_Req_dev_commit.md"),
+      "**plan doc**: `docs/design/80_Req_plan.md`\n",
+    );
+
+    const vrDir = path.join(TMP, ".pi", "references", "develop_spec");
+    await fs.mkdir(vrDir, { recursive: true });
+    await fs.writeFile(
+      path.join(vrDir, "verify.md"),
+      `---
+rules:
+  requiredFiles:
+    - "docs/design/*_commit.md"
+  fileContentPattern:
+    - path: "docs/design/*_commit.md"
+      pattern: "^\\\\*\\\\*pipeline\\\\*\\\\*:\\\\s*{pipelineId}$"
+---
+Verify pipelineId in commit doc.`,
+    );
+
+    const config = makeConfigWithVerify(["develop"]);
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/80_Req.md",
+      pipelineId: "pipe-test-phase3",
+    });
+
+    const result = await runVerification(config, meta, []);
+    // File exists but doesn't match pipelineId pattern → FAIL
+    expect(result.rulePassed).toBe(false);
   });
 });

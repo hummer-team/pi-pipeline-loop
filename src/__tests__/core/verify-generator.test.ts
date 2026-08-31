@@ -1439,13 +1439,18 @@ describe("verify-generator", () => {
   // ── Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list ──────────
 
   describe("Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list", () => {
-    it("white-list contains all 7 expected template entries (6 + bilingual plan marker + relaxed review pattern)", () => {
-      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(7);
+    it("white-list contains all 9 expected template entries (6 base + bilingual plan marker + relaxed review pattern + 2 pipelineId patterns)", () => {
+      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(9);
       const paths = TEMPLATE_BUILTIN_CONTENT_PATTERNS.map(e => e.path);
       expect(paths).toContain("{requirementDoc}");
       expect(paths).toContain("docs/design/*_plan.md");
       expect(paths).toContain("docs/review/code_review_*.md");
       expect(paths).toContain("docs/design/*_commit.md");
+      // 168 Phase 3: pipelineId patterns present in white-list
+      const pipelinePatterns = TEMPLATE_BUILTIN_CONTENT_PATTERNS.filter(
+        e => e.pattern.includes("{pipelineId}"),
+      );
+      expect(pipelinePatterns).toHaveLength(2);
     });
 
     it("hasCustom=false when existing rules contain only template plan doc pattern (develop)", () => {
@@ -1479,6 +1484,38 @@ describe("verify-generator", () => {
             pattern:
               "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))",
           },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    // 168 Phase 3: pipelineId patterns in whitelist → hasCustom=false
+    it("hasCustom=false when existing rules contain pipelineId content patterns (168 Phase 3)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/design/*_commit.md"],
+        fileContentPattern: [
+          { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
+          { path: "docs/design/*_commit.md", pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$" },
+        ],
+      };
+      const pluginItems = [
+        { type: "command" as const, target: "bun run build" },
+      ];
+      const result = diffAndMergeRules(existing, pluginItems);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    it("hasCustom=false for review pipelineId content pattern (168 Phase 3)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        requiredFiles: ["docs/review/code_review_*.md"],
+        fileContentPattern: [
+          { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
+          { path: "docs/review/code_review_*.md", pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$" },
         ],
       };
       const result = diffAndMergeRules(existing, []);

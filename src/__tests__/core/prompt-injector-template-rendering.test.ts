@@ -981,4 +981,45 @@ describe("Phase 0 (146): stage_deliverables injection + fallback English", () =>
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });
   });
+
+  // ── 168 Phase 3: {pipelineId} replacement in stage deliverables ─────────────
+
+  it("168 Phase 3: replaces {pipelineId} placeholder in stage deliverables with real pipelineId", async () => {
+    const TMP = join(tmpdir(), "pi-pi-p3-pipelineid-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+
+    const refDir = join(TMP, ".pi", "references");
+    await mkdir(refDir, { recursive: true });
+    const ymlContent = [
+      "develop: |",
+      "  {{pipeline_status}}",
+      "  ---",
+      "  {{stage_deliverables}}",
+      "stage_deliverable_develop: |",
+      "  - commit doc must contain **pipeline**: {pipelineId}",
+      "  - path: docs/design/*_commit.md",
+    ].join("\n");
+    await writeFile(join(refDir, "pipeline-stage-prompt.yml"), ymlContent);
+
+    const pipelineId = "pipe-phase3-test-xyz";
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => "base prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx as any)) as any;
+
+    // The rendered output should contain the real pipelineId, not the literal placeholder
+    expect(result.systemPrompt!).toContain("STAGE DELIVERABLES (PLUGIN)");
+    expect(result.systemPrompt!).toContain(pipelineId);
+    expect(result.systemPrompt!).not.toContain("{pipelineId}");
+
+    resetPromptConfigCache();
+    await rm(TMP, { recursive: true, force: true });
+  });
 });

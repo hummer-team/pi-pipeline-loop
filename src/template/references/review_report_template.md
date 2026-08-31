@@ -1,6 +1,8 @@
 ## Review 报告格式模板
 
 ```
+**pipeline**: <当前 pipeline 的 pipelineId，从会话元数据获取>
+
 # Summary
 - <plan文件路径>
 - <简明扼要总结review范围>

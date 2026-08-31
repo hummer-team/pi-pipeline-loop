@@ -16,6 +16,8 @@ import {
   planDocHasConfirmMarker,
   applyConcreteStageDocPaths,
   diagnoseVerifyConfig,
+  isCommitDocGlob,
+  isReviewDocGlob,
 } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -1681,7 +1683,7 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
     ]);
   });
 
-  it("returns original rules unchanged for non-plan stages", async () => {
+  it("returns rules with plan-doc globs preserved for develop stage (only commit-doc globs are narrowed)", async () => {
     const config = makeTestConfig({ projectRoot: tmpDir });
     const meta = makeTestMeta({ currentStage: "develop", requirementDoc: "docs/design/77_Config.md" });
 
@@ -1696,8 +1698,11 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
 
-    // Non-plan stage: rules returned as-is (identity)
-    expect(result).toBe(rules);
+    // Develop stage only narrows *_commit.md globs; *_plan.md globs pass through unchanged
+    expect(result.requiredFiles).toEqual(["docs/design/*_plan.md"]);
+    expect(result.fileContentPattern).toEqual([
+      { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+    ]);
   });
 });
 
@@ -1806,5 +1811,138 @@ describe("runVerification — 148 Phase 2 skipped on config error", () => {
     const result = await runVerification(config, meta, []);
     expect(result.skipped).toBeUndefined();
     expect(result.rulePassed).toBe(true);
+  });
+});
+
+// ── 168 Phase 3: resolvePlaceholders {pipelineId} + applyConcreteStageDocPaths narrowing ──
+
+describe("168 Phase 3: resolvePlaceholders {pipelineId} replacement", () => {
+  it("replaces {pipelineId} in requiredFiles paths", () => {
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/*_{pipelineId}_commit.md"],
+    };
+    const meta = makeTestMeta({ pipelineId: "pipe-abc123" });
+    const resolved = resolvePlaceholders(rules, meta);
+    expect(resolved.requiredFiles).toEqual(["docs/design/*_pipe-abc123_commit.md"]);
+  });
+
+  it("replaces {pipelineId} in fileContentPattern path AND pattern fields", () => {
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      fileContentPattern: [
+        {
+          path: "docs/design/*_commit.md",
+          pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$",
+        },
+      ],
+    };
+    const meta = makeTestMeta({ pipelineId: "pipe-xyz789" });
+    const resolved = resolvePlaceholders(rules, meta);
+    expect(resolved.fileContentPattern![0].path).toBe("docs/design/*_commit.md");
+    expect(resolved.fileContentPattern![0].pattern).toBe("^\\*\\*pipeline\\*\\*:\\s*pipe-xyz789$");
+  });
+
+  it("preserves {pipelineId} placeholder when pipelineId is missing", () => {
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      fileContentPattern: [
+        {
+          path: "docs/design/*_commit.md",
+          pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$",
+        },
+      ],
+    };
+    const meta = makeTestMeta({ pipelineId: "" });
+    const resolved = resolvePlaceholders(rules, meta);
+    // Placeholder preserved (not replaced with empty string)
+    expect(resolved.fileContentPattern![0].pattern).toBe("^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$");
+  });
+});
+
+describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)", () => {
+  it("develop stage narrows *_commit.md glob to requirementDoc basename", async () => {
+    const config = makeTestConfig({ projectRoot: "/tmp/test" });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/80_Fix.md",
+    });
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/*_commit.md"],
+      fileContentPattern: [
+        { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
+      ],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+
+    // Glob narrowed to requirementDoc basename
+    expect(result.requiredFiles).toEqual(["docs/design/80_Fix_*_commit.md"]);
+    expect(result.fileContentPattern![0].path).toBe("docs/design/80_Fix_*_commit.md");
+  });
+
+  it("fix stage narrows *_commit.md glob identically to develop", async () => {
+    const config = makeTestConfig({ projectRoot: "/tmp/test" });
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      requirementDoc: "docs/design/99_Bug.md",
+    });
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/*_commit.md"],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+    expect(result.requiredFiles).toEqual(["docs/design/99_Bug_*_commit.md"]);
+  });
+
+  it("review stage narrows code_review_* glob to requirementDoc basename", async () => {
+    const config = makeTestConfig({ projectRoot: "/tmp/test" });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      requirementDoc: "docs/design/50_Feat.md",
+    });
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/review/code_review_*.md"],
+      fileContentPattern: [
+        { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
+      ],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+
+    expect(result.requiredFiles).toEqual(["docs/review/code_review_50_Feat*.md"]);
+    expect(result.fileContentPattern![0].path).toBe("docs/review/code_review_50_Feat*.md");
+  });
+
+  it("narrowed glob does NOT match historical files from different requirementDoc", () => {
+    // Verify the narrowed glob pattern doesn't match a historical file
+    expect(isCommitDocGlob("docs/design/80_Fix_*_commit.md")).toBe(false);
+    expect(isReviewDocGlob("docs/review/code_review_50_Feat*.md")).toBe(false);
+  });
+
+  it("preserves original glob when requirementDoc is empty", async () => {
+    const config = makeTestConfig({ projectRoot: "/tmp/test" });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "",
+    });
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/design/*_commit.md"],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+    // No narrowing: original glob preserved
+    expect(result.requiredFiles).toEqual(["docs/design/*_commit.md"]);
   });
 });

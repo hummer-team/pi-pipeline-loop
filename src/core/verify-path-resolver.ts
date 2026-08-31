@@ -6,11 +6,13 @@
  * plan-doc resolution and placeholder substitution from orchestration.
  *
  * Exports:
- * - resolvePlaceholders: replace {requirementDoc} in rule paths
+ * - resolvePlaceholders: replace {requirementDoc} and {pipelineId} in rule paths/patterns
  * - resolvePlanDocPath: derive plan doc path from requirementDoc
  * - planDocHasConfirmMarker: check for confirmation header
- * - applyConcreteStageDocPaths: replace glob patterns with concrete paths
+ * - applyConcreteStageDocPaths: replace glob patterns with concrete paths (plan/develop/fix/review)
  * - isPlanDocGlob: detect plan doc glob patterns
+ * - isCommitDocGlob: detect commit doc glob patterns
+ * - isReviewDocGlob: detect review doc glob patterns
  */
 
 import fs from "node:fs/promises";
@@ -20,22 +22,35 @@ import type { VerifyRules, FileContentRule } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
 
 /**
- * Replaces `{requirementDoc}` placeholders in rule paths with the actual
- * requirement document path from session metadata.
+ * Replaces `{requirementDoc}` and `{pipelineId}` placeholders in rule paths
+ * and fileContentPattern patterns with actual values from session metadata.
  *
  * When `meta.requirementDoc` is unset (undefined or empty string), placeholders
  * are preserved as-is (not replaced with empty string). This prevents downstream
  * EISDIR errors from `path.join(projectRoot, "")` resolving to the project root.
+ * Same guard applies to `meta.pipelineId`.
+ *
+ * 168 Phase 3: `{pipelineId}` replacement added for both path and pattern fields,
+ * enabling fileContentPattern to validate pipeline-specific content markers.
  *
  * @param rules - Parsed verification rules
- * @param meta - Session metadata (may contain requirementDoc)
+ * @param meta - Session metadata (may contain requirementDoc and pipelineId)
  * @returns A new VerifyRules object with placeholders resolved
  */
 export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): VerifyRules {
   const reqDoc = meta.requirementDoc;
+  const pipelineId = meta.pipelineId;
+
   // When requirementDoc is unset, preserve the placeholder as-is (L2-A fix)
-  const replace = (s: string): string =>
+  const replaceReqDoc = (s: string): string =>
     reqDoc ? s.replace(/\{requirementDoc\}/g, reqDoc) : s;
+
+  // When pipelineId is unset, preserve the placeholder as-is (same guard)
+  const replacePipelineId = (s: string): string =>
+    pipelineId ? s.replace(/\{pipelineId\}/g, pipelineId) : s;
+
+  // Compose both replacements (order-independent since placeholders are distinct)
+  const replace = (s: string): string => replacePipelineId(replaceReqDoc(s));
 
   const resolved: VerifyRules = { ...rules };
 
@@ -46,6 +61,8 @@ export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): Veri
     resolved.fileContentPattern = resolved.fileContentPattern.map((rule) => ({
       ...rule,
       path: replace(rule.path),
+      // 168 Phase 3: also replace {pipelineId} in the pattern field
+      pattern: replace(rule.pattern),
     }));
   }
 
@@ -122,11 +139,16 @@ export async function planDocHasConfirmMarker(planDocPath: string): Promise<bool
 }
 
 /**
- * Replaces glob patterns like `docs/design/*_plan.md` in rule paths with the
- * concrete plan document path resolved from requirementDoc.
+ * Replaces glob patterns in rule paths with concrete paths narrowed to
+ * the current requirementDoc basename.
  *
- * Only applies when currentStage === "plan". If resolvePlanDocPath fails,
- * the glob pattern is preserved as-is (fallback behavior).
+ * 168 Phase 3: Extended beyond "plan" stage to cover develop/fix/review.
+ * - plan: `docs/design/*_plan.md` → concrete plan doc path (via resolvePlanDocPath)
+ * - develop/fix: `docs/design/*_commit.md` → `docs/design/{reqBase}_*_commit.md`
+ * - review: `docs/review/code_review_*.md` → `docs/review/code_review_{reqBase}*.md`
+ *
+ * When `meta.requirementDoc` is empty, globs are preserved as-is (fallback).
+ * When concrete resolution fails, the original glob is preserved (fallback).
  *
  * @param rules - Parsed verification rules (after resolvePlaceholders)
  * @param config - Pipeline configuration
@@ -137,28 +159,66 @@ export async function applyConcreteStageDocPaths(
   config: PipelineConfig,
   meta: SessionMeta,
 ): Promise<VerifyRules> {
-  if (meta.currentStage !== "plan") return rules;
+  const reqDoc = meta.requirementDoc;
+  // Guard: when requirementDoc is missing, return rules unchanged
+  if (!reqDoc) return rules;
 
-  const planDocPath = await resolvePlanDocPath(config, meta);
-  if (!planDocPath) return rules;
+  const reqBase = path.basename(reqDoc, ".md");
+  if (!reqBase) return rules;
 
-  // Compute relative path from projectRoot for rule comparison
-  const relPlanDoc = path.relative(config.projectRoot, planDocPath);
-
+  const stage = meta.currentStage;
   const result: VerifyRules = { ...rules };
 
-  // Replace glob in requiredFiles
+  // Determine the concrete glob pattern for the current stage
+  let concreteGlob: string | null = null;
+
+  if (stage === "plan") {
+    // Plan stage: resolve to concrete plan doc path via mtime fallback
+    const planDocPath = await resolvePlanDocPath(config, meta);
+    if (planDocPath) {
+      const relPlanDoc = path.relative(config.projectRoot, planDocPath);
+      return replaceGlobInRules(result, isPlanDocGlob, relPlanDoc);
+    }
+    return rules; // fallback: preserve original globs
+  }
+
+  if (stage === "develop" || stage === "fix") {
+    // Narrow commit doc glob to requirementDoc basename
+    concreteGlob = `docs/design/${reqBase}_*_commit.md`;
+    return replaceGlobInRules(result, isCommitDocGlob, concreteGlob);
+  }
+
+  if (stage === "review") {
+    // Narrow review doc glob to requirementDoc basename
+    concreteGlob = `docs/review/code_review_${reqBase}*.md`;
+    return replaceGlobInRules(result, isReviewDocGlob, concreteGlob);
+  }
+
+  // Other stages (clarify, awaiting_human, completed): no narrowing
+  return rules;
+}
+
+/**
+ * Replaces paths matching a glob detector with a concrete path in both
+ * requiredFiles and fileContentPattern rules.
+ */
+function replaceGlobInRules(
+  rules: VerifyRules,
+  isMatch: (pattern: string) => boolean,
+  concretePath: string,
+): VerifyRules {
+  const result: VerifyRules = { ...rules };
+
   if (result.requiredFiles) {
     result.requiredFiles = result.requiredFiles.map((p) =>
-      isPlanDocGlob(p) ? relPlanDoc : p,
+      isMatch(p) ? concretePath : p,
     );
   }
 
-  // Replace glob in fileContentPattern paths
   if (result.fileContentPattern) {
     result.fileContentPattern = result.fileContentPattern.map((rule) => ({
       ...rule,
-      path: isPlanDocGlob(rule.path) ? relPlanDoc : rule.path,
+      path: isMatch(rule.path) ? concretePath : rule.path,
     }));
   }
 
@@ -170,4 +230,20 @@ export async function applyConcreteStageDocPaths(
  */
 export function isPlanDocGlob(pattern: string): boolean {
   return pattern === "docs/design/*_plan.md" || pattern === "docs\\design\\*_plan.md";
+}
+
+/**
+ * Checks whether a path pattern matches the commit doc glob `docs/design/*_commit.md`.
+ * 168 Phase 3: Used by applyConcreteStageDocPaths to narrow develop/fix globs.
+ */
+export function isCommitDocGlob(pattern: string): boolean {
+  return pattern === "docs/design/*_commit.md" || pattern === "docs\\design\\*_commit.md";
+}
+
+/**
+ * Checks whether a path pattern matches the review doc glob `docs/review/code_review_*.md`.
+ * 168 Phase 3: Used by applyConcreteStageDocPaths to narrow review globs.
+ */
+export function isReviewDocGlob(pattern: string): boolean {
+  return pattern === "docs/review/code_review_*.md" || pattern === "docs\\review\\code_review_*.md";
 }

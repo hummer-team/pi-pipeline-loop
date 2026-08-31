@@ -802,6 +802,10 @@ async function buildStageExecutor(
  * Reads from yml `stage_deliverable_{stage}` key and wraps with a header.
  * Returns null when the key is missing/empty (paragraph auto-removed by renderStageTemplate).
  *
+ * 168 Phase 3: Replaces `{pipelineId}` placeholder in the rendered output with
+ * the actual pipelineId from session metadata, so the model sees real values
+ * rather than literal placeholder strings.
+ *
  * @param config - Pipeline configuration (for projectRoot to load yml)
  * @param meta - Current session metadata
  * @returns Rendered deliverables segment string, or null if not applicable
@@ -818,5 +822,9 @@ async function buildStageDeliverables(
     return null;
   }
 
-  return `# STAGE DELIVERABLES (PLUGIN)\n${value.trim()}`;
+  // 168 Phase 3: substitute {pipelineId} so the model sees real pipelineId
+  const pipelineId = meta.pipelineId ?? "";
+  const rendered = value.trim().replaceAll("{pipelineId}", pipelineId);
+
+  return `# STAGE DELIVERABLES (PLUGIN)\n${rendered}`;
 }

@@ -655,6 +655,8 @@ export {
   planDocHasConfirmMarker,
   applyConcreteStageDocPaths,
   isPlanDocGlob,
+  isCommitDocGlob,
+  isReviewDocGlob,
 } from "./verify-path-resolver";
 
 export {
