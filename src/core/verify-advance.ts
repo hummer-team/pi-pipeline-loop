@@ -13,6 +13,7 @@ import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } fr
 import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
+import { recordStageVisit } from "../utils/stage-visit";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -142,8 +143,14 @@ export async function applyVerifyPass(
   opts: ApplyVerifyPassOpts,
 ): Promise<VerifyPassReturn | void> {
   if (nextStage) {
+    // Record stage visit via shared helper before updateMeta (DRY with handoff,
+    // stage-advancer, routeConfirmReject). Max cycles from meta with default 3.
+    const maxCycles = meta.maxLoopCycles ?? 3;
+    const visitResult = recordStageVisit(meta, nextStage, maxCycles);
+
     // Advance to next stage — pass only the delta to avoid overwriting concurrent writes
     ctx.session.updateMeta({
+      ...visitResult.patch,
       previousStage: stageName,
       currentStage: nextStage,
       stageStartTime: Date.now(),

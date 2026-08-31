@@ -28,6 +28,7 @@ import { computeStringHash } from "../utils/hash";
 import { isFrozen, formatFrozenReason } from "./flow-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import type { RuntimeCtx } from "./runtime-ctx";
+import { toProjectRelative } from "../utils/path-display";
 
 /**
  * Builds Part 1: Context Reference.
@@ -451,12 +452,14 @@ function buildStageWriteScope(
  * Phase 4 (139): Injected when the pipeline reaches completed stage,
  * summarizing pipelineId, final stage, artifact files, and loop cycles.
  *
- * @param _config - Pipeline configuration (for projectRoot)
+ * Phase 0 (169): Deliverable paths are displayed as project-relative for readability.
+ *
+ * @param config - Pipeline configuration (for projectRoot)
  * @param meta - Current session metadata
  * @returns Summary text for the completed stage prompt
  */
 function buildCompletedSummary(
-  _config: PipelineConfig,
+  config: PipelineConfig,
   meta: SessionMeta,
 ): string {
   const lines: string[] = [];
@@ -466,10 +469,10 @@ function buildCompletedSummary(
   lines.push(`- **endStage**: ${meta.previousStage ?? "completed"}`);
   lines.push(`- **loopCycle**: ${meta.loopCycleCount ?? 0}`);
 
-  // List artifact files from summaries
+  // List artifact files from summaries — display as project-relative paths
   const artifactFiles = Object.entries(meta.summaries)
     .filter(([, s]) => s.status === "valid")
-    .map(([stage, s]) => `- **${stage}**: ${s.path}`);
+    .map(([stage, s]) => `- **${stage}**: ${toProjectRelative(config.projectRoot, s.path)}`);
   if (artifactFiles.length > 0) {
     lines.push("- **Deliverable File**:");
     lines.push(...artifactFiles);

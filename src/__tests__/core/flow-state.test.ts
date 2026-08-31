@@ -7,6 +7,8 @@ import {
   freezeAndPrompt,
   formatFrozenReason,
   promptDecisionMenu,
+  isTerminalCompleted,
+  markPipelineAborted,
 } from "../../core/flow-state";
 import type { FlowStateCtx } from "../../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../../types";
@@ -588,5 +590,52 @@ describe("168 Phase 2: promptDecisionMenu", () => {
     await promptDecisionMenu(ctx, meta, config);
     // No select call (aborted → null menu → return early)
     expect(selectCalls.length).toBe(0);
+  });
+});
+
+// ─── isTerminalCompleted ──────────────────────────────────────────────────────
+
+describe("isTerminalCompleted", () => {
+  it("returns true when currentStage is completed", () => {
+    const meta = makeTestMeta({ currentStage: "completed" });
+    expect(isTerminalCompleted(meta)).toBe(true);
+  });
+
+  it("returns false when currentStage is not completed", () => {
+    expect(isTerminalCompleted(makeTestMeta({ currentStage: "develop" }))).toBe(false);
+    expect(isTerminalCompleted(makeTestMeta({ currentStage: "clarify" }))).toBe(false);
+    expect(isTerminalCompleted(makeTestMeta({ currentStage: "review" }))).toBe(false);
+  });
+
+  it("returns false when meta is undefined", () => {
+    expect(isTerminalCompleted(undefined)).toBe(false);
+  });
+});
+
+// ─── markPipelineAborted terminal guard ──────────────────────────────────────
+
+describe("markPipelineAborted terminal guard", () => {
+  it("skips flowState/terminateReason when pipeline is completed", async () => {
+    const meta = makeTestMeta({ currentStage: "completed", flowState: "running" });
+    const ctx = makeCtx(meta);
+
+    await markPipelineAborted(ctx, "session_quit");
+
+    // flowState should NOT be overwritten to "aborted"
+    expect(meta.flowState).toBe("running");
+    expect(meta.terminateReason).toBeUndefined();
+    // No updateMeta call should have set flowState
+    const abortUpdate = ctx.updates.find(u => u.flowState === "aborted");
+    expect(abortUpdate).toBeUndefined();
+  });
+
+  it("writes flowState=aborted when pipeline is NOT completed", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+    const ctx = makeCtx(meta);
+
+    await markPipelineAborted(ctx, "session_quit");
+
+    expect(meta.flowState).toBe("aborted");
+    expect(meta.terminateReason).toBe("session_quit");
   });
 });

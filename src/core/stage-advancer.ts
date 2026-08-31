@@ -32,6 +32,7 @@ import { checkStageSummaryHash } from "../utils/summary-hash";
 import { DEFAULT_CONFIRM_MAX_REJECTIONS } from "../constants";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
+import { recordStageVisit } from "../utils/stage-visit";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -333,8 +334,15 @@ async function routeConfirmReject(
     }
   }
 
-  // Update meta with routing + rejection count
+  // Record stage visit via shared helper (reject routing is a legitimate cycle,
+  // cycle count semantics match handoff)
+  const freshMetaForVisit = (ctx.session as { getMeta?: () => SessionMeta }).getMeta?.() ?? meta;
+  const maxCycles = freshMetaForVisit.maxLoopCycles ?? config.maxLoopCycles ?? 3;
+  const visitResult = recordStageVisit(freshMetaForVisit, toStage, maxCycles);
+
+  // Update meta with routing + rejection count + visit patch
   ctx.session.updateMeta({
+    ...visitResult.patch,
     previousStage: fromStage,
     currentStage: toStage,
     stageStartTime: Date.now(),
@@ -989,12 +997,33 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
 
       // (e) Advance to target stage
+      // Record stage visit via shared helper (DRY with handoff, routeConfirmReject, verify-advance)
+      const advanceTarget = resolvedTarget ?? "completed";
+      const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
+      const visitResult = recordStageVisit(meta, advanceTarget, maxCycles);
+
+      if (!visitResult.ok) {
+        // Max loop cycles reached — freeze and return error (aligned with handoff)
+        ctx.session.updateMeta(visitResult.patch);
+        await import("./flow-state").then(({ freezeAndPrompt }) =>
+          freezeAndPrompt(ctx, meta, "max_loop_cycles", config),
+        );
+        return {
+          success: false,
+          message:
+            `Max loop cycles (${maxCycles}) reached. ` +
+            `Pipeline cannot cycle back to "${advanceTarget}". ` +
+            `Pipeline frozen. Use the decision menu to continue.`,
+        };
+      }
+
       // C2: Set advancedThisTurn flag to prevent agent_settled from triggering redundant verification
       // Pass only the delta (not a full snapshot) to avoid overwriting concurrent
       // writes from shared source during async operations (e.g., runVerification).
       ctx.session.updateMeta({
+        ...visitResult.patch,
         previousStage: currentStage,
-        currentStage: resolvedTarget ?? "completed",
+        currentStage: advanceTarget,
         stageStartTime: Date.now(),
         loopCount: 0,
         currentStepIndex: 0,

@@ -284,7 +284,7 @@ function buildRestartMeta(
     // Without these explicit clears, stale fields from the previous pipeline would
     // persist and risk pipeline-handoff cycle-detection misfires / stale contextFiles.
     previousStage: undefined,
-    stageVisitOrder: undefined,
+    stageVisitOrder: ["clarify"],
     contextFiles: undefined,
     violations: [],
     advancedThisTurn: undefined,
@@ -326,7 +326,7 @@ function buildStartMeta(
     ? undefined
     : resolvePreviousStage(config, startStage);
   const stageVisitOrder = startStage === "clarify"
-    ? undefined
+    ? ["clarify"] as PipelineStage[]
     : buildResumeVisitOrder(config, startStage);
 
   const newMeta: SessionMeta = {
@@ -820,6 +820,16 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
       // ── Branch: existing pipeline state ──────────────────────────────────
       if (meta?.currentStage && meta.pipelineId) {
+        // Completed check must precede running/blocked check: when currentStage is
+        // "completed" and flowState is "running" (the permanent post-completion state),
+        // we must return the "already completed" message rather than "already running".
+        if (meta.currentStage === "completed") {
+          return {
+            success: false,
+            error: "Pipeline already completed. Use /pipeline-start <file> to start a new pipeline.",
+          };
+        }
+
         const flowState = getFlowState(meta);
 
         // Running or blocked → reject with decision menu hint (unchanged across all modes)
@@ -835,14 +845,6 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         // Aborted → mode-specific handling
         if (flowState === "aborted") {
           return handleAbortedWithMode(ctx, meta, file, ui, config, mode);
-        }
-
-        // Completed → error (unchanged)
-        if (meta.currentStage === "completed") {
-          return {
-            success: false,
-            error: "Pipeline already completed. Use /pipeline-start <file> to start a new pipeline.",
-          };
         }
 
         // awaiting_human → error with decision menu hint (unchanged)

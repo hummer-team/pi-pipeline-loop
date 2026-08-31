@@ -313,6 +313,20 @@ export async function executeDecision(
   }
 }
 
+// ─── isTerminalCompleted ────────────────────────────────────────────────────
+
+/**
+ * Returns true when the pipeline has reached the completed terminal state.
+ * Used as a central guard to protect completed pipelines from being overwritten
+ * by abort/reset logic (e.g. session_shutdown quit/new, session_start stale recovery).
+ *
+ * @param meta - Current session metadata (may be undefined)
+ * @returns true if currentStage === "completed"
+ */
+export function isTerminalCompleted(meta: SessionMeta | undefined): boolean {
+  return meta?.currentStage === "completed";
+}
+
 // ─── markPipelineAborted ────────────────────────────────────────────────────
 
 /**
@@ -324,11 +338,24 @@ export async function executeDecision(
  * Convention: only mutates flowState and terminateReason; preserves pipelineId,
  * currentStage, summaries, domain, requirementDoc for audit and restart hint.
  *
+ * Terminal guard: when the pipeline is already completed, this function skips
+ * the flowState/terminateReason mutation and writes a skip audit instead,
+ * preventing the completed terminal state from being overwritten.
+ *
  * @param ctx - FlowStateCtx with session access
  * @param reason - Machine-readable abort reason (e.g. "session_quit", "stale_startup")
  */
 export async function markPipelineAborted(ctx: FlowStateCtx, reason: string): Promise<void> {
   const meta = ctx.session.getMeta();
+
+  // Terminal guard: completed pipelines must not be overwritten
+  if (isTerminalCompleted(meta)) {
+    await safeWriteAuditLog("pipeline_abort_skipped_completed", {
+      pipelineId: meta?.pipelineId ?? "unknown",
+      reason,
+    });
+    return;
+  }
 
   ctx.session.updateMeta({
     flowState: "aborted",

@@ -18,6 +18,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { PipelineConfig, Tool, SessionMeta, SummaryMeta } from "../types";
 import { safeWriteStageAudit } from "../utils/auditLog";
+import { toProjectRelative } from "../utils/path-display";
 
 /**
  * Dynamically import estimateTokens from pi-coding-agent SDK.
@@ -245,13 +246,17 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         summaryPath,
       });
 
+      // Phase 0 (169): display path as project-relative for readability
+      const summaryRelPath = toProjectRelative(projectRoot, summaryPath);
+
       return {
         success: true,
         summaryPath,
+        summaryRelPath,
         hash: summaryMeta.hash,
         version,
         estimatedTokens,
-        message: "Summary saved. Human validation required before handoff.",
+        message: `Summary saved at ${summaryRelPath}. Human validation required before handoff.`,
       };
     },
   };

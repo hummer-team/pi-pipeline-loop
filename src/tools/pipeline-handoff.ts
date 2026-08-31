@@ -10,6 +10,8 @@ import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { freezeAndPrompt } from "../core/flow-state";
 import { checkStageSummaryHash } from "../utils/summary-hash";
+import { recordStageVisit } from "../utils/stage-visit";
+import { toProjectRelative } from "../utils/path-display";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -90,34 +92,26 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         return { error: `Unknown stage: "${nextStage}"` };
       }
 
-      // Cycle detection: if nextStage has been visited before, it's a loop
-      const visitOrder = meta.stageVisitOrder || [];
-      if (visitOrder.includes(nextStage)) {
-        const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
-        const cycleCount = (meta.loopCycleCount || 0) + 1;
-        if (cycleCount >= maxCycles) {
-          // Freeze pipeline and prompt for user decision
-          await freezeAndPrompt(ctx, meta, "max_loop_cycles", config);
+      // Cycle detection: unified via recordStageVisit helper (DRY with stage-advancer,
+      // routeConfirmReject, verify-advance). Preserves original handoff semantics.
+      const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
+      const visitResult = recordStageVisit(meta, nextStage, maxCycles);
 
-          return {
-            error:
-              `Max loop cycles (${maxCycles}) reached. ` +
-              `Pipeline cannot cycle back to "${nextStage}". ` +
-              `Pipeline frozen. Use the decision menu to continue.`,
-          };
-        }
-        // Pass only the delta to avoid overwriting concurrent shared source writes
-        ctx.session.updateMeta({
-          loopCycleCount: cycleCount,
-          stageVisitOrder: [...visitOrder, nextStage],
-        });
-      } else {
-        const newVisitOrder = [...visitOrder, nextStage];
-        ctx.session.updateMeta({
-          loopCycleCount: 0,
-          stageVisitOrder: newVisitOrder,
-        });
+      if (!visitResult.ok) {
+        // Max loop cycles reached — freeze pipeline and prompt for user decision
+        ctx.session.updateMeta(visitResult.patch);
+        await freezeAndPrompt(ctx, meta, "max_loop_cycles", config);
+
+        return {
+          error:
+            `Max loop cycles (${maxCycles}) reached. ` +
+            `Pipeline cannot cycle back to "${nextStage}". ` +
+            `Pipeline frozen. Use the decision menu to continue.`,
+        };
       }
+
+      // Merge visit patch (loopCycleCount + stageVisitOrder) into updateMeta
+      ctx.session.updateMeta(visitResult.patch);
 
       // Get updated metadata for the actual stage transition
       const updatedMeta = ctx.session.getMeta() as SessionMeta;
@@ -158,7 +152,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
 
       return {
         success: true,
-        message: `Switched to "${nextStage}". Loaded summary: ${currentSummary.path}`,
+        message: `Switched to "${nextStage}". Loaded summary: ${toProjectRelative(config.projectRoot, currentSummary.path)}`,
       };
     },
   };

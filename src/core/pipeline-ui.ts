@@ -6,6 +6,7 @@
  */
 
 import type { PipelineConfig } from "../types";
+import { toProjectRelative } from "../utils/path-display";
 
 /** Status bar key for pipeline stage display */
 export const STAGE_STATUS_KEY = "pipeline-stage";
@@ -176,9 +177,10 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
       if (!enabled) return;
       const baseMsg = formatStage(config, ctx, to);
       // Bug 3.1: show deliverable path from the previous stage when available
+      // Phase 0 (169): display as project-relative path for readability
       const deliverablePath = readDeliverablePath(ctx, from);
       const msg = deliverablePath
-        ? `${baseMsg} ← deliverable: ${deliverablePath}`
+        ? `${baseMsg} ← deliverable: ${toProjectRelative(config.projectRoot, deliverablePath)}`
         : baseMsg;
       ctx?.ui?.notify?.(msg);
       ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);

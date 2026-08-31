@@ -735,8 +735,9 @@ describe("createPipelineStartCommand", () => {
       expect(updatedMeta.currentStage).toBe("clarify");
 
       // RC3 — old stage-chain fields must be cleared (undefined, not stale values)
+      // Phase 0 (169): stageVisitOrder now initialized to ["clarify"] on new start
       expect(updatedMeta.previousStage).toBeUndefined();
-      expect(updatedMeta.stageVisitOrder).toBeUndefined();
+      expect(updatedMeta.stageVisitOrder).toEqual(["clarify"]);
       expect(updatedMeta.contextFiles).toBeUndefined();
       expect(updatedMeta.violations).toEqual([]);
       expect(updatedMeta.advancedThisTurn).toBeUndefined();

@@ -12,7 +12,7 @@ import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
-import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason } from "./flow-state";
+import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 
@@ -211,6 +211,7 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           currentStepIndex: 0,
           maxLoops: config.maxLoops || 3,
           flowState: "running",
+          stageVisitOrder: ["clarify"],
         };
 
         ctx.session.updateMeta(sessionMeta);
@@ -239,7 +240,7 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         // reset to aborted — covers SIGKILL / crash / terminal force-kill paths where
         // session_shutdown never fires.
         const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
-        if (reason === "startup" && getFlowState(meta) !== "aborted") {
+        if (reason === "startup" && getFlowState(meta) !== "aborted" && !isTerminalCompleted(meta)) {
           await markPipelineAborted(ctx, "stale_startup");
 
           await writeAuditLog("pipeline_stale_reset", {

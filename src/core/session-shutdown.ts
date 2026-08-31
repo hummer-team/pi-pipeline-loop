@@ -7,6 +7,10 @@
  * session_start stale recovery) so that subsequent /pipeline-start enters the restart
  * branch instead of hitting "already running" error.
  *
+ * Terminal guard: when the pipeline is already completed, markPipelineAborted
+ * (called internally) skips the flowState/terminateReason overwrite — completed
+ * is a terminal state that must not be degraded to aborted on shutdown.
+ *
  * On reason "resume", "fork", or "reload": does NOT reset (in-process session switch
  * or extension reload — user may continue).
  */
