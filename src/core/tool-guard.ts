@@ -37,11 +37,11 @@ import {
   toProjectRelative,
   type ProtectState,
 } from "../utils/protect";
-import { ALLOWED_WRITE_ALL, DEFAULT_DECISION_SHORTCUT } from "../constants";
+import { ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
-import { isFrozen, getFlowState } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { checkGitAdd, checkGitCommit, type GitCheckResult } from "../utils/git-protect";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
@@ -399,8 +399,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         } else if (meta.currentStage === "awaiting_human") {
           reason = "Pipeline frozen. Contact the user to resume the pipeline";
         } else {
-          const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
-          reason = `Pipeline frozen. Press ${shortcutKey} to open the decision menu`;
+          reason = `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed`;
         }
         return {
           block: true,

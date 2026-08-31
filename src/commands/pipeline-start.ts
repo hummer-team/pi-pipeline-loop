@@ -12,12 +12,11 @@ import path from "node:path";
 import type { PipelineConfig, PipelineStage, Command, SessionMeta, StartStageMode } from "../types";
 import {
   DEFAULT_VERIFY_FILE,
-  DEFAULT_DECISION_SHORTCUT,
   resolveStagePath,
   RESUMABLE_STAGES,
 } from "../constants";
 import { safeWriteAuditLog, safeWriteStageAudit } from "../utils/auditLog";
-import { getFlowState } from "../core/flow-state";
+import { getFlowState, formatFrozenReason } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { buildStageSequence } from "../utils/stage-sequence";
 import {
@@ -796,10 +795,9 @@ async function handleAbortedPipeline(
 
   // --- Frozen stage: awaiting_human → require decision menu ---
   if (meta.currentStage === "awaiting_human") {
-    const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
     return {
       success: false,
-      error: `Pipeline is at awaiting_human stage. Press ${shortcutKey} to open the decision menu.`,
+      error: `Pipeline is at awaiting_human stage. Open the decision menu to proceed.`,
     };
   }
 
@@ -870,14 +868,13 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       if (meta?.currentStage && meta.pipelineId) {
         const flowState = getFlowState(meta);
 
-        // Running or blocked → reject with shortcut hint (unchanged across all modes)
+        // Running or blocked → reject with decision menu hint (unchanged across all modes)
         if (flowState === "running" || flowState === "blocked") {
-          const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
           return {
             success: false,
             error:
               `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}" (${flowState}). ` +
-              `Press ${shortcutKey} to open the decision menu to handle it.`,
+              `Open the decision menu to proceed.`,
           };
         }
 
@@ -896,10 +893,9 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
         // awaiting_human → error with decision menu hint (unchanged)
         if (meta.currentStage === "awaiting_human") {
-          const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
           return {
             success: false,
-            error: `Pipeline is at awaiting_human stage. Press ${shortcutKey} to open the decision menu.`,
+            error: `Pipeline is at awaiting_human stage. Open the decision menu to proceed.`,
           };
         }
       }

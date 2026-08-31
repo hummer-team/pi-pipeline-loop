@@ -297,7 +297,7 @@ describe("createPromptInjector", () => {
   });
 
   describe("frozen state hint", () => {
-    it("injects FROZEN hint when pipeline is blocked", async () => {
+    it("injects FROZEN hint when pipeline is blocked (with reason, no shortcut)", async () => {
       const config = makeTestConfig();
       const meta = makeTestMeta({ flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = { session: { getMeta: () => meta } };
@@ -307,10 +307,12 @@ describe("createPromptInjector", () => {
 
       expect(result.systemPrompt!).toContain("FROZEN");
       expect(result.systemPrompt!).toContain("loop_overflow");
-      expect(result.systemPrompt!).toContain("ctrl+enter");
+      expect(result.systemPrompt!).toContain("decision menu");
+      // Should NOT contain shortcut key
+      expect(result.systemPrompt!).not.toContain("ctrl+enter");
     });
 
-    it("injects FROZEN hint with custom shortcut key", async () => {
+    it("injects FROZEN hint with blockedReason, no shortcut key", async () => {
       const config = makeTestConfig({ decisionShortcutKey: "alt+x" });
       const meta = makeTestMeta({ flowState: "blocked", blockedReason: "verify_fail" });
       const ctx = { session: { getMeta: () => meta } };
@@ -319,7 +321,9 @@ describe("createPromptInjector", () => {
       const result = (await hook.handler(ctx as any))!;
 
       expect(result.systemPrompt!).toContain("FROZEN");
-      expect(result.systemPrompt!).toContain("alt+x");
+      expect(result.systemPrompt!).toContain("verify_fail");
+      // Should NOT contain shortcut key
+      expect(result.systemPrompt!).not.toContain("alt+x");
     });
 
     it("does not inject FROZEN hint when pipeline is running", async () => {

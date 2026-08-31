@@ -21,11 +21,11 @@ import path from "node:path";
 import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, DEFAULT_DECISION_SHORTCUT } from "../constants";
+import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
-import { isFrozen } from "./flow-state";
+import { isFrozen, formatFrozenReason } from "./flow-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import type { RuntimeCtx } from "./runtime-ctx";
 
@@ -314,10 +314,9 @@ function buildPipelineStatus(config: PipelineConfig, meta: SessionMeta): string 
 
   // Inject frozen state hint to prevent agent from spinning on blocked tools
   if (isFrozen(meta)) {
-    const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
-    const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
+    const reason = formatFrozenReason(meta);
     parts.push(
-      `- Pipeline Status: FROZEN (blocked: ${reason}) — Use the TUI decision menu to proceed (shortcut: ${shortcutKey})`,
+      `- Pipeline Status: FROZEN (blocked: ${reason}) — Open the decision menu to proceed`,
     );
   }
 

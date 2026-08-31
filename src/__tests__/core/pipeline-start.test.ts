@@ -277,7 +277,7 @@ describe("createPipelineStartCommand", () => {
     expect(updatedMeta.blockedReason).toBeUndefined();
   });
 
-  it("rejects when pipeline is blocked with shortcut key hint", async () => {
+  it("rejects when pipeline is blocked with decision menu hint (no shortcut key)", async () => {
     await fs.writeFile(docPath, "content", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "alt+f" });
     const meta = makeTestMeta({ flowState: "blocked" });
@@ -287,8 +287,9 @@ describe("createPipelineStartCommand", () => {
     const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("alt+f");
     expect(result.error).toContain("decision menu");
+    // Should NOT contain shortcut key
+    expect(result.error).not.toContain("alt+f");
   });
 
   it("handles empty file content", async () => {
@@ -777,7 +778,7 @@ describe("createPipelineStartCommand", () => {
     });
 
     // Case 5: aborted + awaiting_human → error with decision menu hint
-    it("aborted + awaiting_human → returns error with decision menu hint", async () => {
+    it("aborted + awaiting_human → returns error with decision menu hint (no shortcut key)", async () => {
       const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "ctrl+x" });
       const meta = makeTestMeta({
         currentStage: "awaiting_human",
@@ -798,7 +799,8 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("awaiting_human");
       expect(result.error).toContain("decision menu");
-      expect(result.error).toContain("ctrl+x");
+      // Should NOT contain shortcut key
+      expect(result.error).not.toContain("ctrl+x");
       expect(updatedMeta).toBeNull();
     });
 

@@ -15,7 +15,6 @@
 
 import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
-import { DEFAULT_DECISION_SHORTCUT } from "../constants";
 
 // ─── Context Interface ──────────────────────────────────────────────────────
 
@@ -343,6 +342,41 @@ export async function markPipelineAborted(ctx: FlowStateCtx, reason: string): Pr
   });
 }
 
+// ─── formatFrozenReason ──────────────────────────────────────────────────────
+
+/**
+ * Formats a human-readable frozen reason string from SessionMeta.
+ * Combines blockedReason/terminateReason with the first 2 verifyFailures
+ * (formatted as "[ruleType] detail") for diagnostic context.
+ *
+ * Truncates to maxLen characters and appends "…" when exceeded.
+ *
+ * @param meta - Current session metadata
+ * @param maxLen - Maximum output length (default 200)
+ * @returns Formatted reason string
+ */
+export function formatFrozenReason(meta: SessionMeta, maxLen = 200): string {
+  const baseReason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
+
+  const failures = meta.verifyFailures ?? [];
+  const failureParts: string[] = [];
+  for (let i = 0; i < Math.min(failures.length, 2); i++) {
+    const f = failures[i];
+    failureParts.push(`[${f.ruleType}] ${f.detail}`);
+  }
+
+  let result = baseReason;
+  if (failureParts.length > 0) {
+    result = `${baseReason} (${failureParts.join("; ")})`;
+  }
+
+  if (result.length > maxLen) {
+    result = result.slice(0, maxLen) + "…";
+  }
+
+  return result;
+}
+
 // ─── freezeAndPrompt ────────────────────────────────────────────────────────
 
 /**
@@ -394,7 +428,6 @@ export async function freezeAndPrompt(
     reason,
   }, "warn");
 
-  const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
   const menu = buildDecisionMenu({ ...meta, flowState: "blocked", blockedReason: reason });
   const tuiEnabled = config.output?.pipelineStage !== false;
 
@@ -418,8 +451,9 @@ export async function freezeAndPrompt(
         });
 
         if (tuiEnabled) {
+          const freshMeta = ctx.session.getMeta() ?? meta;
           ui.notify?.(
-            `Pipeline frozen. Press ${shortcutKey} to open the decision menu.`,
+            `Pipeline frozen: ${formatFrozenReason(freshMeta)}. Open the decision menu to proceed.`,
           );
         }
         return;
@@ -442,8 +476,9 @@ export async function freezeAndPrompt(
   } else {
     // No UI available — notify via available channel (gated by pipelineStage)
     if (tuiEnabled) {
+      const frozenMeta = ctx.session.getMeta() ?? meta;
       ui?.notify?.(
-        `Pipeline frozen: ${reason}. Press ${shortcutKey} to open the decision menu.`,
+        `Pipeline frozen: ${formatFrozenReason(frozenMeta)}. Open the decision menu to proceed.`,
       );
     }
   }

@@ -5,6 +5,7 @@ import {
   buildDecisionMenu,
   executeDecision,
   freezeAndPrompt,
+  formatFrozenReason,
 } from "../../core/flow-state";
 import type { FlowStateCtx } from "../../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../../types";
@@ -378,7 +379,7 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("aborted");
   });
 
-  it("with UI select: user presses Esc → stays blocked + notify shortcut", async () => {
+  it("with UI select: user presses Esc → stays blocked + notify reason (no shortcut)", async () => {
     const meta = makeTestMeta({ flowState: "running" });
     const notifications: string[] = [];
     const ctx = makeCtx(meta, {
@@ -391,10 +392,13 @@ describe("freezeAndPrompt", () => {
 
     expect(meta.flowState).toBe("blocked");
     expect(notifications.length).toBe(1);
-    expect(notifications[0]).toContain("ctrl+enter");
+    expect(notifications[0]).toContain("verify_fail");
+    expect(notifications[0]).toContain("decision menu");
+    // Should NOT contain shortcut key
+    expect(notifications[0]).not.toContain("ctrl+enter");
   });
 
-  it("without UI: keeps blocked, no crash", async () => {
+  it("without UI: keeps blocked, no crash, notify includes reason", async () => {
     const meta = makeTestMeta({ flowState: "running" });
     const notifications: string[] = [];
     const ctx = makeCtx(meta, {
@@ -407,7 +411,7 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("blocked");
     expect(notifications.length).toBe(1);
     expect(notifications[0]).toContain("max_loop_cycles");
-    expect(notifications[0]).toContain("ctrl+enter");
+    expect(notifications[0]).toContain("decision menu");
   });
 
   it("without any UI: no crash, stays blocked", async () => {
@@ -420,7 +424,7 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("blocked");
   });
 
-  it("uses custom shortcut key from config", async () => {
+  it("frozen message includes blockedReason, not shortcut key", async () => {
     const meta = makeTestMeta({ flowState: "running" });
     const notifications: string[] = [];
     const ctx = makeCtx(meta, {
@@ -430,7 +434,8 @@ describe("freezeAndPrompt", () => {
 
     await freezeAndPrompt(ctx, meta, "test_reason", config);
 
-    expect(notifications[0]).toContain("alt+f");
+    expect(notifications[0]).toContain("test_reason");
+    expect(notifications[0]).not.toContain("alt+f");
   });
 
   it("opts.ui overrides ctx.ui for select", async () => {
@@ -453,5 +458,58 @@ describe("freezeAndPrompt", () => {
 
     expect(ctxUiSelectCalled.length).toBe(0);
     expect(optsUiSelectCalled.length).toBe(1);
+  });
+});
+
+// ── 168 Phase 1: formatFrozenReason ──────────────────────────────────────────
+
+describe("168 Phase 1: formatFrozenReason", () => {
+  it("returns blockedReason when present", () => {
+    const meta = makeTestMeta({ blockedReason: "loop_overflow" });
+    expect(formatFrozenReason(meta)).toBe("loop_overflow");
+  });
+
+  it("falls back to terminateReason when blockedReason is absent", () => {
+    const meta = makeTestMeta({ terminateReason: "user_abort" });
+    expect(formatFrozenReason(meta)).toBe("user_abort");
+  });
+
+  it("returns 'unknown' when neither reason is present", () => {
+    const meta = makeTestMeta({});
+    expect(formatFrozenReason(meta)).toBe("unknown");
+  });
+
+  it("appends first 2 verifyFailures", () => {
+    const meta = makeTestMeta({
+      blockedReason: "verify_attempt_overflow",
+      verifyFailures: [
+        { ruleType: "requiredFiles", detail: "Missing: output.md", timestamp: 1 },
+        { ruleType: "fileContentPattern", detail: "pattern not found", timestamp: 2 },
+        { ruleType: "keywords", detail: "Missing: kw1", timestamp: 3 },
+      ],
+    });
+    const result = formatFrozenReason(meta);
+    expect(result).toContain("verify_attempt_overflow");
+    expect(result).toContain("[requiredFiles] Missing: output.md");
+    expect(result).toContain("[fileContentPattern] pattern not found");
+    // Should only include first 2 failures
+    expect(result).not.toContain("[keywords]");
+  });
+
+  it("truncates to maxLen with ellipsis", () => {
+    const meta = makeTestMeta({
+      blockedReason: "a".repeat(300),
+    });
+    const result = formatFrozenReason(meta, 50);
+    expect(result.length).toBe(51); // 50 chars + "…"
+    expect(result).toEndWith("…");
+  });
+
+  it("handles empty verifyFailures array", () => {
+    const meta = makeTestMeta({
+      blockedReason: "test_reason",
+      verifyFailures: [],
+    });
+    expect(formatFrozenReason(meta)).toBe("test_reason");
   });
 });

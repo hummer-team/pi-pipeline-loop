@@ -168,8 +168,8 @@ describe("createAgentSettled", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 
-  // Regression: frozen short-circuit uses custom shortcut key in notify
-  it("frozen short-circuit notify renders custom shortcut key", async () => {
+  // Regression: frozen short-circuit uses blockedReason in notify (no shortcut key)
+  it("frozen short-circuit notify includes blockedReason", async () => {
     const stageTmp = join(tmpdir(), "pi-agent-settled-frozen-notify-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
@@ -189,8 +189,10 @@ describe("createAgentSettled", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    // Should render the custom shortcut key in the notification
-    expect(ctx.notifications.some(n => n.includes("alt+f"))).toBe(true);
+    // Should include blockedReason in the notification
+    expect(ctx.notifications.some(n => n.includes("loop_overflow"))).toBe(true);
+    // Should NOT include shortcut key
+    expect(ctx.notifications.some(n => n.includes("alt+f"))).toBe(false);
 
     await rm(stageTmp, { recursive: true, force: true });
   });

@@ -12,8 +12,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
-import { isFrozen } from "./flow-state";
-import { DEFAULT_DECISION_SHORTCUT } from "../constants";
+import { isFrozen, formatFrozenReason } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -63,8 +62,7 @@ export function createAgentSettled(
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
         });
-        const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
-        ui.notify(ctx, `Pipeline frozen. Press ${shortcutKey} to open the decision menu.`);
+        ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
         return;
       }
 

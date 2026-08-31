@@ -136,7 +136,7 @@ describe("createSessionStarter", () => {
       expect(ctx.updates.length).toBe(0);
     });
 
-    it("notifies with shortcut key when resuming a frozen pipeline", async () => {
+    it("notifies with blockedReason when resuming a frozen pipeline (no shortcut key)", async () => {
       const notifications: string[] = [];
       const config = makeTestConfig({ decisionShortcutKey: "ctrl+shift+d" });
       const meta = makeTestMeta({
@@ -155,7 +155,9 @@ describe("createSessionStarter", () => {
 
       expect(notifications.length).toBe(1);
       expect(notifications[0]).toContain("blocked");
-      expect(notifications[0]).toContain("ctrl+shift+d");
+      expect(notifications[0]).toContain("loop_overflow");
+      // Should NOT contain shortcut key
+      expect(notifications[0]).not.toContain("ctrl+shift+d");
     });
   });
 
