@@ -117,6 +117,21 @@ function formatStage(config: PipelineConfig, ctx: any, stage: string): string {
 }
 
 /**
+ * Reads the deliverable path from the previous stage's summary metadata.
+ * Returns null if the path is not available.
+ *
+ * @param ctx - Runtime context with session state
+ * @param from - Previous stage name
+ * @returns Deliverable path or null
+ */
+function readDeliverablePath(ctx: any, from: string): string | null {
+  const summaries = ctx?.session?.getMeta?.()?.summaries as
+    | Record<string, { path?: string }>
+    | undefined;
+  return summaries?.[from]?.path ?? null;
+}
+
+/**
  * Creates a PipelineUI instance gated by config.output.pipelineStage.
  * When enabled, outputs via ctx.ui.notify() and ctx.ui.setStatus().
  * When disabled (default), all methods are silent no-ops.
@@ -159,7 +174,12 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
 
     transition(ctx: any, from: string, to: string): void {
       if (!enabled) return;
-      const msg = formatStage(config, ctx, to);
+      const baseMsg = formatStage(config, ctx, to);
+      // Bug 3.1: show deliverable path from the previous stage when available
+      const deliverablePath = readDeliverablePath(ctx, from);
+      const msg = deliverablePath
+        ? `${baseMsg} ← deliverable: ${deliverablePath}`
+        : baseMsg;
       ctx?.ui?.notify?.(msg);
       ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
     },

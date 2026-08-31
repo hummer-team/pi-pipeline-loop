@@ -31,9 +31,13 @@ import type { RuntimeCtx } from "./runtime-ctx";
 
 /**
  * Builds Part 1: Context Reference.
- * Includes the previous stage's validated summary, any context files
- * associated with the current stage, and (for clarify stage) the requirement
- * document path for the agent to read via the read tool (D2).
+ * Includes the previous stage's summary (both "valid" and "pending" status),
+ * any context files associated with the current stage, and (for clarify stage)
+ * the requirement document path for the agent to read via the read tool (D2).
+ *
+ * Bug 3.1 fix: "pending" summaries are also included so the review stage
+ * can access the develop deliverable even when the summary has not yet been
+ * validated (e.g., during the first review cycle).
  *
  * @param config - Pipeline configuration (for projectRoot)
  * @param meta - Current session metadata
@@ -56,8 +60,8 @@ function buildContextReference(
     filesToReadSet.add(reqDocPath);
   }
 
-  // Include previous stage's validated summary
-  if (prevSummary && prevSummary.status === "valid") {
+  // Include previous stage's summary (valid or pending — Bug 3.1 fix)
+  if (prevSummary && (prevSummary.status === "pending" || prevSummary.status === "valid")) {
     filesToReadSet.add(prevSummary.path);
   }
 

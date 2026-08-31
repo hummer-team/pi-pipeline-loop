@@ -633,6 +633,67 @@ describe("createPromptInjector", () => {
     });
   });
 
+  // ─── Bug 3.1: pending summary path inclusion ─────────────────────
+  describe("pending summary path inclusion (Bug 3.1)", () => {
+    it("pending summary path is included in context_reference", async () => {
+      const config = makeTestConfig({ projectRoot: "/my/project" });
+      const devPath = "/my/project/.pi/audit/pipe-1/develop.md";
+      const meta = makeTestMeta({
+        currentStage: "review",
+        previousStage: "develop",
+        summaries: {
+          develop: { path: devPath, hash: "abc", status: "pending" },
+        },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx as any))!;
+
+      // Pending summary path should be included (Bug 3.1 fix)
+      expect(result.systemPrompt!).toContain("REQUIRED CONTEXT FILES");
+      expect(result.systemPrompt!).toContain(devPath);
+    });
+
+    it("invalid summary path is excluded from context_reference", async () => {
+      const config = makeTestConfig({ projectRoot: "/my/project" });
+      const devPath = "/my/project/.pi/audit/pipe-1/develop.md";
+      const meta = makeTestMeta({
+        currentStage: "review",
+        previousStage: "develop",
+        summaries: {
+          develop: { path: devPath, hash: "abc", status: "invalid" },
+        },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx as any))!;
+
+      // Invalid summary path should NOT be included
+      expect(result.systemPrompt!).not.toContain("REQUIRED CONTEXT FILES");
+    });
+
+    it("valid summary path still included (regression)", async () => {
+      const config = makeTestConfig({ projectRoot: "/my/project" });
+      const planPath = "/my/project/.pi/audit/pipe-1/plan.md";
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        previousStage: "plan",
+        summaries: {
+          plan: { path: planPath, hash: "xyz", status: "valid" },
+        },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx as any))!;
+
+      expect(result.systemPrompt!).toContain("REQUIRED CONTEXT FILES");
+      expect(result.systemPrompt!).toContain(planPath);
+    });
+  });
+
   describe("commitIds hint in develop/fix stage executor (143 Phase 3)", () => {
     it("develop stage executor prompt includes commitIds requirement", async () => {
       const config = makeTestConfig();

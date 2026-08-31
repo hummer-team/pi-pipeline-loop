@@ -87,6 +87,73 @@ describe("createPipelineUI", () => {
       expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "Pipeline → plan" }]);
     });
 
+    // Bug 3.1: deliverable path in transition output
+    it("transition with deliverable path → includes '← deliverable: <path>'", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const notifications: string[] = [];
+      const statusCalls: { key: string; text: string | undefined }[] = [];
+      const deliverablePath = ".pi/audit/pipe-123/develop.md";
+      const ctx = {
+        ui: {
+          notify: (msg: string) => { notifications.push(msg); },
+          setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
+        },
+        session: {
+          getMeta: () => makeTestMeta({
+            pipelineId: "pipe-123",
+            summaries: { develop: { path: deliverablePath, hash: "abc", status: "valid" } },
+          }),
+        },
+      };
+
+      ui.transition(ctx, "develop", "review");
+
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("← deliverable:");
+      expect(notifications[0]).toContain(deliverablePath);
+      expect(statusCalls[0].text).toContain("← deliverable:");
+    });
+
+    it("transition without deliverable path → standard format", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const notifications: string[] = [];
+      const statusCalls: { key: string; text: string | undefined }[] = [];
+      const ctx = {
+        ui: {
+          notify: (msg: string) => { notifications.push(msg); },
+          setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
+        },
+        session: {
+          getMeta: () => makeTestMeta({ pipelineId: "pipe-456", summaries: {} }),
+        },
+      };
+
+      ui.transition(ctx, "plan", "develop");
+
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).not.toContain("← deliverable:");
+    });
+
+    it("transition when output.pipelineStage=false → silent (no deliverable)", () => {
+      const config = makeTestConfig({ output: { pipelineStage: false } });
+      const ui = createPipelineUI(config);
+      const notifications: string[] = [];
+      const ctx = {
+        ui: { notify: (msg: string) => { notifications.push(msg); }, setStatus: () => {} },
+        session: {
+          getMeta: () => makeTestMeta({
+            summaries: { develop: { path: "some/path.md", hash: "abc", status: "valid" } },
+          }),
+        },
+      };
+
+      ui.transition(ctx, "develop", "review");
+
+      expect(notifications.length).toBe(0);
+    });
+
     it("fail produces 'Pipeline → {stage} ⚠ {reason}' + setStatus", () => {
       const config = makeTestConfig({ output: { pipelineStage: true } });
       const ui = createPipelineUI(config);
