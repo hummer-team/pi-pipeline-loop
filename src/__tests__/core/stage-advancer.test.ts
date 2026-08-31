@@ -1299,3 +1299,156 @@ describe("Reaudit: routeConfirmReject wake suppression + C2 clear + maxLoopCycle
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── Reaudit r2: tool-path C2 inheritance + LOW aborted-message disambiguation ─
+//
+// Medium: stage_advance tool path must clear advancedThisTurn BEFORE spawn (aligned
+// with routeConfirmReject Minor 2 fix), and re-set it on spawn failure (wake guard).
+// LOW: the gate "aborted" action is now produced by both confirm_overflow (flowState
+// "aborted") and maxLoopCycles freeze (flowState "blocked"); the tool must return a
+// distinct message per source.
+
+describe("Reaudit r2: tool-path C2 inheritance + aborted-message disambiguation", () => {
+  /** Helper: create config with a real agent file for the target stage (spawn succeeds) */
+  async function setupToolSpawnTest(stageTmp: string, agentFileName: string) {
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const agentDir = join(stageTmp, "agents");
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, agentFileName),
+      `---\nname: ${agentFileName.replace(".md", "")}\n---\n# Agent\n`,
+    );
+
+    const baseConfig = makeTestConfig({ projectRoot: stageTmp });
+    return baseConfig;
+  }
+
+  it("Medium: tool-path spawn success → advancedThisTurn cleared (subagent JOIN won't inherit C2)", async () => {
+    const stageTmp = join(tmpdir(), "pi-r2-tool-c2-clear-" + Date.now());
+    const baseConfig = await setupToolSpawnTest(stageTmp, "review-agent.md");
+    const config = {
+      ...baseConfig,
+      stages: {
+        ...baseConfig.stages,
+        review: { ...baseConfig.stages.review, agentPath: "agents/review-agent.md" },
+      },
+    };
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-r2-tool-c2-001",
+      requirementDoc: "docs/design/Req.md",
+    });
+
+    const ctx = {
+      ...createCtx(meta),
+      ui: { notify: () => {}, transition: () => {} },
+      pi: { sendUserMessage: () => {} },
+    };
+
+    const tool = createStageAdvancer(config);
+    await tool.execute({}, ctx as any);
+
+    // Spawn succeeded via fallback → advancedThisTurn must remain cleared (undefined).
+    // The subagent JOIN reads meta at spawn time, which is after the clear; the flag
+    // is NOT re-set because spawn succeeded. Subagent's first settle runs verification.
+    expect(meta.currentStage).toBe("review");
+    expect(meta.advancedThisTurn).toBeUndefined();
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("Medium: tool-path spawn fails → advancedThisTurn re-set (wake guard preserved)", async () => {
+    const stageTmp = join(tmpdir(), "pi-r2-tool-c2-restore-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // No agent file for review → resolveAgentMention returns null → spawn fails
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-r2-tool-c2-002",
+      requirementDoc: "docs/design/Req.md",
+    });
+
+    const ctx = {
+      ...createCtx(meta),
+      ui: { notify: () => {}, transition: () => {} },
+      pi: { sendUserMessage: () => {} },
+    };
+
+    const tool = createStageAdvancer(config);
+    await tool.execute({}, ctx as any);
+
+    // Spawn failed entirely → advancedThisTurn re-set to true to guard the parent
+    // session's wake-triggered settle (aligned with routeConfirmReject failure path).
+    expect(meta.currentStage).toBe("review");
+    expect(meta.advancedThisTurn).toBe(true);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("LOW: gate 'aborted' from maxLoopCycles freeze returns loop-cycle message (flowState=blocked)", async () => {
+    const stageTmp = join(tmpdir(), "pi-r2-low-loop-msg-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Plan stage with manual confirm (so gate is entered) + verify require (so gate path is reached)
+    const baseConfig = makeTestConfig({ projectRoot: stageTmp });
+    const config = {
+      ...baseConfig,
+      stages: {
+        ...baseConfig.stages,
+        plan: {
+          ...baseConfig.stages.plan,
+          // Manual confirm mode so maybeHandleConfirmGate runs
+          confirm: { mode: "manual" as const },
+          // Verify require to enter the confirm-gate code path
+          verify: { require: true, rules: [] },
+          allowedWritePaths: ["docs/", "doc/", "documentation/"],
+        },
+      },
+    };
+
+    // Plan → clarify is the reject target; set stageVisitOrder so recordStageVisit
+    // fails on the next cycle back to clarify (maxLoopCycles=1, cycle count already at 1)
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      pipelineId: "pipe-r2-low-loop-001",
+      maxLoopCycles: 1,
+      loopCycleCount: 1,
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "plan"],
+      confirmRejections: 0,
+    });
+
+    // Mock select to return "Reject & Rework" (plan reject target is clarify)
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<typeof meta>) => Object.assign(meta, patch),
+      },
+      ui: {
+        notify: () => {},
+        transition: () => {},
+        select: async () => "Reject & Rework (back to clarify)",
+      },
+      pi: { sendUserMessage: () => {} },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+    };
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as { success: boolean; message: string };
+
+    // Gate returned "aborted" via routeConfirmReject→maxLoopCycles→flowState=blocked
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("Max loop cycles");
+    expect(result.message).not.toContain("confirm rejection limit");
+    expect(meta.flowState).toBe("blocked");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

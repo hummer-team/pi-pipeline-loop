@@ -1010,9 +1010,16 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
               };
             }
             if (gate.action === "aborted") {
+              // Distinguish abort source: maybeHandleConfirmGate returns "aborted" for both
+              // confirm_overflow (flowState="aborted") and maxLoopCycles freeze (flowState="blocked"
+              // via freezeAndPrompt in routeConfirmReject). Use fresh meta to pick the right message.
+              const abortedMeta = ctx.session.getMeta() as SessionMeta;
+              const isMaxLoopCycles = abortedMeta.flowState === "blocked";
               return {
                 success: false,
-                message: "Pipeline aborted: confirm rejection limit reached.",
+                message: isMaxLoopCycles
+                  ? "Max loop cycles reached — stage visit would exceed loop limit. Pipeline frozen."
+                  : "Pipeline aborted: confirm rejection limit reached.",
               };
             }
             // pending
@@ -1070,7 +1077,12 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         };
       }
 
-      // C2: Set advancedThisTurn flag to prevent agent_settled from triggering redundant verification
+      // C2: Clear advancedThisTurn (set undefined) BEFORE spawn so the subagent's JOIN
+      // does not inherit the flag. If the subagent inherited advancedThisTurn=true, its
+      // first settle would be eaten by C2 (agent-settled.ts:90-99), stalling the pipeline.
+      // Same pattern as routeConfirmReject (line ~378) — see reaudit Minor 2 fix.
+      // If spawn fails entirely, the flag is re-set after spawn returns (see below) to
+      // preserve the parent-session wake settle guard.
       // Pass only the delta (not a full snapshot) to avoid overwriting concurrent
       // writes from shared source during async operations (e.g., runVerification).
       ctx.session.updateMeta({
@@ -1084,7 +1096,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         verifyAttempts: 0, // Reset per-stage attempt counter on stage advance (168 Phase 0)
         verifyConfigError: undefined,
         violations: [],
-        advancedThisTurn: true,
+        advancedThisTurn: undefined,
       });
 
       if (resolvedTarget === null || resolvedTarget === "completed") {
@@ -1117,9 +1129,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       ui.transition(ctx, currentStage, resolvedTarget);
 
-      // Phase 1 (169): Spawn subagent for the target stage after transition
+      // Phase 1 (169): Spawn subagent for the target stage after transition.
+      // freshMetaForSpawn reads AFTER the clear above, so the subagent JOIN sees
+      // advancedThisTurn=undefined (C2 safe — see reaudit Minor 2 alignment).
       const freshMetaForSpawn = ctx.session.getMeta() as SessionMeta;
-      await spawnStageSubagent(
+      const toolSpawnResult = await spawnStageSubagent(
         (ctx as { pi?: unknown }).pi,
         config,
         resolvedTarget,
@@ -1129,6 +1143,15 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           session: ctx.session,
         },
       );
+
+      // Tool-path C2 guard (aligned with routeConfirmReject, line ~416-418):
+      // If the full spawn chain failed (no RPC, no fallback), re-set advancedThisTurn=true
+      // so the parent session's wake-triggered settle is still guarded by C2. When spawn
+      // succeeds, the flag stays cleared — subagent JOIN inherits undefined, its first
+      // settle runs verification normally.
+      if (!toolSpawnResult.spawned && !toolSpawnResult.fallback) {
+        ctx.session.updateMeta({ advancedThisTurn: true });
+      }
 
       return {
         success: true,
