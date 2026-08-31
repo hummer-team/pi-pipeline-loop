@@ -27,6 +27,7 @@ import {
   writeResidueGateStatus,
 } from "../core/template-residue-check";
 import { registerSession } from "../utils/session-registry";
+import { pingSubagents, spawnClarifySubagent, watchSubagentLifecycle } from "../utils/subagent-rpc";
 
 /**
  * Writes the persistent TUI status bar showing current pipeline stage.
@@ -607,7 +608,7 @@ async function startNewPipeline(
   // Phase 2 (144): Auto-launch clarify subagent for fresh/spec→clarify
   // Only for clarify start (not resume — round state is in document)
   if (startStage === "clarify") {
-    maybeAutoLaunchClarify(ctx, config, ui, newMeta, file);
+    await maybeAutoLaunchClarify(ctx, config, ui, newMeta, file);
   }
 
   // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
@@ -672,28 +673,26 @@ function resolveAgentMention(
 }
 
 /**
- * Auto-launches the clarify subagent via pi.sendUserMessage.
+ * Auto-launches the clarify subagent via pi-subagents RPC spawn.
  *
- * Injects `@<agentName> <requirementDoc> 1` with expandPromptTemplates: true.
+ * Flow: resolve agentName → ping → spawn → success audit; any failure → fallback to
+ * pi.sendUserMessage + TUI notify + fallback audit.
+ *
  * Only called for fresh/spec→clarify (NOT resume, to avoid resetting round state).
  *
- * Degradation:
- * - No agentPath → notify fallback, does not block success
- * - No pi.sendUserMessage → notify + audit, does not throw
- *
- * @param ctx - pi extension context (uses ctx.pi.sendUserMessage)
+ * @param ctx - pi extension context (uses ctx.pi.events + ctx.pi.sendUserMessage)
  * @param config - Pipeline configuration
  * @param ui - PipelineUI instance for notify
  * @param meta - Newly initialized session metadata
  * @param file - The requirement doc file path
  */
-function maybeAutoLaunchClarify(
+async function maybeAutoLaunchClarify(
   ctx: any,
   config: PipelineConfig,
   ui: ReturnType<typeof createPipelineUI>,
   meta: SessionMeta,
   file: string,
-): void {
+): Promise<void> {
   const agentName = resolveAgentMention(config, "clarify");
 
   if (!agentName) {
@@ -703,35 +702,51 @@ function maybeAutoLaunchClarify(
   }
 
   const message = `@${agentName} ${file} 1`;
+  const prompt = `${file} 1`;
 
+  // Try RPC path if pi.events is available
+  if (ctx?.pi?.events) {
+    const pinged = await pingSubagents(ctx.pi, 500);
+    if (pinged) {
+      const spawnResult = await spawnClarifySubagent(ctx.pi, {
+        agentName,
+        prompt,
+        description: `Clarify: ${file}`,
+      });
+
+      if (spawnResult.ok) {
+        // RPC success: audit + watch lifecycle, no manual @ hint needed
+        await safeWriteAuditLog("pipeline_start_launch_rpc", {
+          agentName,
+          requirementDoc: file,
+          pipelineId: meta.pipelineId,
+          subagentId: spawnResult.id,
+          stage: "clarify",
+        });
+        watchSubagentLifecycle(ctx.pi, spawnResult.id, () => { /* best-effort */ });
+        return;
+      }
+      // Spawn failed → fall through to sendUserMessage fallback
+    }
+    // Ping timeout or spawn failure → fall through
+  }
+
+  // Fallback: sendUserMessage + TUI notification + audit
   if (typeof ctx?.pi?.sendUserMessage === "function") {
     try {
       ctx.pi.sendUserMessage(message, { expandPromptTemplates: true });
-      // Fire-and-forget audit (do not await to avoid blocking)
-      safeWriteAuditLog("pipeline_start_launch", {
-        agentName,
-        requirementDoc: file,
-        pipelineId: meta.pipelineId,
-        stage: "clarify",
-      }).catch(() => { /* audit failure is non-fatal */ });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      safeWriteAuditLog("pipeline_start_launch_error", {
-        agentName,
-        error: errMsg,
-        pipelineId: meta.pipelineId,
-      }, "error").catch(() => { /* audit failure is non-fatal */ });
-      ui.notify(ctx, `Failed to auto-launch clarify: ${errMsg}. Run @${agentName} ${file} 1 manually.`);
+    } catch {
+      // sendUserMessage failure is non-fatal; fall through to notify
     }
-  } else {
-    // No pi.sendUserMessage available → notify fallback
-    safeWriteAuditLog("pipeline_start_launch_skipped", {
-      agentName,
-      reason: "no_sendUserMessage",
-      pipelineId: meta.pipelineId,
-    }).catch(() => { /* audit failure is non-fatal */ });
-    ui.notify(ctx, `Next: run @${agentName} ${file} 1`);
   }
+
+  ui.notify(ctx, `Next: run ${message} manually if not auto-started.`);
+  await safeWriteAuditLog("pipeline_start_launch_fallback", {
+    agentName,
+    requirementDoc: file,
+    pipelineId: meta.pipelineId,
+    stage: "clarify",
+  });
 }
 
 /**
