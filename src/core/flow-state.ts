@@ -371,7 +371,10 @@ export function formatFrozenReason(meta: SessionMeta, maxLen = 200): string {
   }
 
   if (result.length > maxLen) {
-    result = result.slice(0, maxLen) + "…";
+    // Respect maxLen as hard upper bound: slice to (maxLen-1) + "…" gives total = maxLen.
+    // Use Array.from to avoid splitting multi-byte characters.
+    const chars = Array.from(result);
+    result = chars.slice(0, maxLen - 1).join("") + "…";
   }
 
   return result;
@@ -465,20 +468,20 @@ export async function promptDecisionMenu(
  * Freezes the pipeline and prompts the user for a decision via TUI select.
  *
  * Idempotent: only transitions from "running" → "blocked" on the first call.
- * Subsequent calls (already blocked) skip the state mutation but still prompt.
+ * Subsequent calls (already blocked) skip the state mutation and do NOT
+ * re-prompt — callers who want to re-trigger the menu while frozen should
+ * invoke `promptDecisionMenu` directly.
  *
  * Behavior:
- * 1. If flowState is "running" → set flowState="blocked" + blockedReason=reason
- * 2. Write audit `pipeline_blocked` (warn)
- * 3. If UI is available → show decision menu via ctx.ui.select
- *    - User selects → executeDecision
- *    - User cancels (undefined) → write audit `pipeline_decision_cancelled` + notify shortcut hint
- * 4. If no UI → notify + keep blocked (user must use shortcut key)
+ * 1. If flowState is already blocked → return early (idempotent)
+ * 2. If flowState is "running" → set flowState="blocked" + blockedReason=reason
+ * 3. Write audit `pipeline_blocked` (warn)
+ * 4. Delegate to `promptDecisionMenu` for the actual UI interaction
  *
  * @param ctx - FlowStateCtx with session and optional UI
  * @param meta - Current SessionMeta snapshot
  * @param reason - Machine-readable freeze reason (e.g. "loop_overflow")
- * @param config - PipelineConfig for shortcut key and stage lookups
+ * @param config - PipelineConfig for stage lookups
  * @param opts - Optional overrides (ui for external callers)
  */
 export async function freezeAndPrompt(

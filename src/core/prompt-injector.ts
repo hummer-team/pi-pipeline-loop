@@ -290,9 +290,9 @@ async function buildLoopStatus(
 /**
  * Builds Part 5: Pipeline Status.
  * Shows pipeline ID, current stage, domain info, and summary validation status.
- * When pipeline is frozen, includes freeze reason and shortcut key hint.
+ * When pipeline is frozen, includes freeze reason and decision menu prompt.
  *
- * @param config - Pipeline configuration (for shortcut key)
+ * @param config - Pipeline configuration
  * @param meta - Current session metadata
  * @returns Prompt section string
  */

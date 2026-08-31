@@ -228,17 +228,33 @@ export async function spawnClarifySubagent(
  * Watches for subagent lifecycle events (completed/failed).
  * Best-effort: logs outcomes via audit, never throws.
  *
+ * Includes a defensive timeout that auto-unregisters listeners after `timeoutMs`
+ * to prevent unbounded accumulation across repeated spawns (defaults to 30min).
+ *
  * @param pi - Extension API with events bus
  * @param requestId - The spawn request ID to correlate
  * @param onEvent - Callback for lifecycle events
+ * @param opts - Optional timeout guard (timeoutMs defaults to LIFECYCLE_LISTENER_TIMEOUT_MS)
  * @returns Cleanup function to unregister listeners
  */
 export function watchSubagentLifecycle(
   pi: unknown,
   requestId: string,
   onEvent: (event: "completed" | "failed", payload: unknown) => void,
+  opts?: { timeoutMs?: number },
 ): () => void {
   if (!hasEventBus(pi)) return () => {};
+
+  let cleanedUp = false;
+  const cleanupFn = (): void => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    clearTimeout(timeoutHandle);
+    if (pi.events.off) {
+      pi.events.off("subagents:completed", completedHandler);
+      pi.events.off("subagents:failed", failedHandler);
+    }
+  };
 
   const completedHandler = (payload: unknown): void => {
     const env = payload as Record<string, unknown> | undefined;
@@ -247,6 +263,7 @@ export function watchSubagentLifecycle(
       safeWriteAuditLog("subagent_lifecycle", {
         requestId, event: "completed",
       }).catch(() => {});
+      cleanupFn();
     }
   };
 
@@ -257,22 +274,36 @@ export function watchSubagentLifecycle(
       safeWriteAuditLog("subagent_lifecycle", {
         requestId, event: "failed",
       }, "warn").catch(() => {});
+      cleanupFn();
     }
   };
 
   pi.events.on("subagents:completed", completedHandler);
   pi.events.on("subagents:failed", failedHandler);
 
+  // Defensive timeout: auto-unregister listeners if no terminal event arrives.
+  // Prevents accumulation of zombie handlers across repeated spawns.
+  const timeoutMs = opts?.timeoutMs ?? LIFECYCLE_LISTENER_TIMEOUT_MS;
+  const timeoutHandle = setTimeout(() => {
+    safeWriteAuditLog("subagent_lifecycle_timeout", {
+      requestId, timeoutMs: String(timeoutMs),
+    }, "info").catch(() => {});
+    cleanupFn();
+  }, timeoutMs);
+
   // Return cleanup function
-  return () => {
-    if (pi.events.off) {
-      pi.events.off("subagents:completed", completedHandler);
-      pi.events.off("subagents:failed", failedHandler);
-    }
-  };
+  return cleanupFn;
 }
 
 // ─── Stage Subagent Spawn (168 Phase 4) ──────────────────────────────────────
+
+/**
+ * Defensive timeout for lifecycle listener auto-cleanup.
+ * If a subagent neither completes nor fails within this window, the listener
+ * is unregistered to prevent unbounded accumulation across repeated spawns.
+ * Default: 30 minutes.
+ */
+const LIFECYCLE_LISTENER_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Resolves the agent name for a given stage from its agentPath configuration.
@@ -396,7 +427,7 @@ export async function spawnStageSubagent(
     return { spawned: false, fallback: false };
   }
 
-  const prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId}`;
+  const prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}`;
   const description = `${stage}: ${meta.requirementDoc ?? ""}`;
 
   // 3. RPC path: ping → spawn → success
@@ -416,13 +447,19 @@ export async function spawnStageSubagent(
           agentName,
           subagentId: spawnResult.id,
         });
-        // Watch lifecycle (self-unregistering)
+        // Watch lifecycle (self-unregistering) with timeout guard to prevent leak
         const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
           cleanup();
-        });
+        }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
         return { spawned: true, fallback: false };
       }
-      // Spawn failed → fall through to sendUserMessage fallback
+      // Spawn rejected/failed → log failure reason before falling back
+      await safeWriteAuditLog("stage_spawn_rpc_failed", {
+        pipelineId: meta.pipelineId,
+        stage,
+        agentName,
+        error: spawnResult.error,
+      }, "warn");
     }
     // Ping timeout or spawn failure → fall through
   }

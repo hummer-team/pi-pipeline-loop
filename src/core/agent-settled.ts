@@ -64,7 +64,9 @@ export function createAgentSettled(
         });
         ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
         // 168 Phase 2: auto re-popup decision menu while frozen
-        await promptDecisionMenu(ctx as unknown as Parameters<typeof promptDecisionMenu>[0], meta, config);
+        // RuntimeCtx and FlowStateCtx are structurally compatible (session + ui),
+        // so a single structural adapter is sufficient (matches verify-advance.ts style).
+        await promptDecisionMenu({ session: ctx.session, ui: ctx.ui } as Parameters<typeof promptDecisionMenu>[0], meta, config);
         return;
       }
 
@@ -167,6 +169,10 @@ export function createAgentSettled(
           stage: meta.currentStage,
           missing: precheck.missing.join(", "),
         });
+        // Lightweight hint via ui.notify — does NOT count, freeze, or wake;
+        // only surfaces to the in-turn context so the model knows why verification
+        // was skipped and is nudged to produce the missing deliverable first.
+        ui.notify(ctx, `Required deliverables not yet produced (${precheck.missing.join(", ")}). Please generate them before the pipeline can verify this stage.`);
         return;
       }
 

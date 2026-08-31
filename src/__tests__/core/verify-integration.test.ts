@@ -11,6 +11,7 @@ import { createLoopBreaker } from "../../core/loop-breaker";
 import { runVerification, parseFrontmatter, resolvePlaceholders, applyConcreteStageDocPaths } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta, createMockCtx, createMockRuntimeCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
+import type { SessionMeta } from "../../types";
 
 let TMP: string;
 
@@ -856,5 +857,97 @@ Verify pipelineId in commit doc.`,
     const result = await runVerification(config, meta, []);
     // File exists but doesn't match pipelineId pattern → FAIL
     expect(result.rulePassed).toBe(false);
+  });
+});
+
+// ── 168 Phase 4: routeReviewFailAuto → fix spawn integration ───────────────
+
+describe("168 Phase 4: routeReviewFailAuto triggers fix spawn", () => {
+  let TMP: string;
+
+  beforeEach(async () => {
+    TMP = path.join(tmpdir(), "pi-rrfa-" + Date.now());
+    await fs.mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+  });
+
+  afterEach(async () => {
+    await fs.rm(TMP, { recursive: true, force: true });
+  });
+
+  it("routeReviewFailAuto routes review → fix and triggers fix spawn (fallback path)", async () => {
+    // Create fix agent file so resolveAgentMention succeeds
+    const agentDir = path.join(TMP, "agents");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(agentDir, "fix-agent.md"),
+      "---\nname: fix-agent\n---\n# Fix Agent\n",
+    );
+
+    const baseConfig = makeTestConfig({ projectRoot: TMP });
+    const config = {
+      ...baseConfig,
+      stages: {
+        ...baseConfig.stages,
+        fix: {
+          ...baseConfig.stages.fix,
+          agentPath: "agents/fix-agent.md",
+        },
+      },
+    };
+
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-rrfa-001",
+      requirementDoc: "docs/design/Test.md",
+    });
+
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const transitions: string[] = [];
+    const ctx = {
+      session: {
+        updateMeta: (patch: Partial<SessionMeta>) => Object.assign(meta, patch),
+      },
+      ui: {
+        notify: () => {},
+        transition: (_ctx: unknown, from: string, to: string) => {
+          transitions.push(`${from}->${to}`);
+        },
+      },
+      pi: {
+        sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+          sentMessages.push({ msg, opts });
+        },
+      },
+    };
+
+    const ui = {
+      notify: () => {},
+      transition: (_ctx: unknown, from: string, to: string) => {
+        transitions.push(`${from}->${to}`);
+      },
+    };
+
+    const { routeReviewFailAuto } = await import("../../core/stage-advancer");
+    await routeReviewFailAuto(config as any, ctx as any, meta, ui as any, {
+      reason: "review report parsed as fail (auto)",
+    });
+
+    // Stage should advance to fix in meta
+    expect(meta.currentStage).toBe("fix");
+
+    // UI transition should be invoked
+    expect(transitions).toContain("review->fix");
+
+    // Wake message via sendUserMessage with deliverAs:"followUp"
+    const wakeMessages = sentMessages.filter(m => m.msg.includes("review"));
+    expect(wakeMessages.length).toBeGreaterThanOrEqual(1);
+    expect(wakeMessages[0].opts).toEqual({ deliverAs: "followUp" });
+
+    // Fix spawn triggered via fallback (no event bus)
+    const spawnCalls = sentMessages.filter(m => m.msg.includes("@fix-agent"));
+    expect(spawnCalls.length).toBe(1);
+    expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
+    expect(spawnCalls[0].msg).toContain("pipe-rrfa-001");
   });
 });

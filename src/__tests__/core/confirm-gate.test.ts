@@ -697,7 +697,7 @@ describe("Phase 3 (Bug 4): confirm gate defaultReject reordering", () => {
 // ── 168 Phase 4: confirm gate + auto-spawn integration ─────────────────────
 
 describe("168 Phase 4: confirm gate spawn behavior", () => {
-  it("plan approve → develop: confirm gate completes without error (spawnStageSubagent is non-blocking)", async () => {
+  it("plan approve → develop: confirm gate triggers spawnStageSubagent with develop stage (real agent file)", async () => {
     const stageTmp = path.join(tmpdir(), "pi-cg-spawn-" + Date.now());
     await fs.mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
@@ -708,13 +708,40 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
     const planDoc = path.join(planDir, "Test_plan.md");
     await fs.writeFile(planDoc, "# Test Plan\n");
 
-    const config = makeTestConfig({ projectRoot: stageTmp });
+    // Create real agent file for develop stage so resolveAgentMention succeeds
+    const agentDir = path.join(stageTmp, "agents");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(agentDir, "dev-agent.md"),
+      "---\nname: develop-agent\n---\n# Dev Agent\n",
+    );
+
+    const baseConfig = makeTestConfig({ projectRoot: stageTmp });
+    const config = {
+      ...baseConfig,
+      stages: {
+        ...baseConfig.stages,
+        plan: {
+          ...baseConfig.stages.plan,
+          allowedWritePaths: ["docs/", "doc/", "documentation/"],
+          confirm: { mode: "manual" },
+        },
+        develop: {
+          ...baseConfig.stages.develop,
+          agentPath: "agents/dev-agent.md",
+        },
+      },
+    } as PipelineConfig;
+
     const meta = makeTestMeta({
       currentStage: "plan",
       requirementDoc: "docs/design/Test.md",
+      pipelineId: "pipe-spawn-integ-001",
     });
 
-    let selectCalled = false;
+    // Track events emitted through pi mock (fallback path uses sendUserMessage)
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const selectCalls: string[] = [];
     const ctx = {
       session: {
         getMeta: () => meta,
@@ -725,12 +752,14 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
         transition: () => {},
         clearStage: () => {},
         select: async (_msg: string, _opts: string[]) => {
-          selectCalled = true;
+          selectCalls.push(_msg);
           return "Approve & Advance";
         },
       },
       pi: {
-        sendUserMessage: (_msg: string, _opts?: Record<string, unknown>) => {},
+        sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+          sentMessages.push({ msg, opts });
+        },
       },
     };
 
@@ -739,10 +768,109 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
       mode: "manual",
     });
 
-    // Should have called select (manual mode)
-    expect(selectCalled).toBe(true);
-    // Gate should handle (approve → advance)
+    // Gate should handle + advance to develop
     expect(result.result).toBe("handled");
+    if ("toStage" in result) {
+      expect(result.toStage).toBe("develop");
+    }
+    // Stage should actually advance in meta
+    expect(meta.currentStage).toBe("develop");
+
+    // Verify select was called (manual mode)
+    expect(selectCalls.length).toBe(1);
+
+    // Since no event bus is on the pi mock, spawnStageSubagent should fall back to
+    // sendUserMessage with deliverAs:"followUp". Verify the spawn invocation.
+    const spawnCalls = sentMessages.filter(m => m.msg.includes("@develop-agent"));
+    expect(spawnCalls.length).toBe(1);
+    expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
+    expect(spawnCalls[0].msg).toContain("develop");
+    expect(spawnCalls[0].msg).toContain("pipe-spawn-integ-001");
+
+    await fs.rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("review Reject & Send to Fix → route to fix stage and trigger fix spawn (real agent file)", async () => {
+    const stageTmp = path.join(tmpdir(), "pi-cg-rej-fix-" + Date.now());
+    await fs.mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Create review doc so marker pre-check doesn't block
+    const reviewDir = path.join(stageTmp, "docs", "review");
+    await fs.mkdir(reviewDir, { recursive: true });
+    const reviewDoc = path.join(reviewDir, "code_review_Test.md");
+    await fs.writeFile(reviewDoc, "# Review\n结论：需要修改\n");
+
+    // Create real agent file for fix stage
+    const agentDir = path.join(stageTmp, "agents");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(
+      path.join(agentDir, "fix-agent.md"),
+      "---\nname: fix-agent\n---\n# Fix Agent\n",
+    );
+
+    const baseConfig = makeTestConfig({ projectRoot: stageTmp });
+    const config = {
+      ...baseConfig,
+      stages: {
+        ...baseConfig.stages,
+        review: {
+          ...baseConfig.stages.review,
+          allowedWritePaths: ["docs/", "doc/", "documentation/"],
+          confirm: { mode: "manual" },
+        },
+        fix: {
+          ...baseConfig.stages.fix,
+          agentPath: "agents/fix-agent.md",
+        },
+      },
+    } as PipelineConfig;
+
+    const meta = makeTestMeta({
+      currentStage: "review",
+      requirementDoc: "docs/design/Test.md",
+      pipelineId: "pipe-rej-fix-001",
+    });
+
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => Object.assign(meta, patch),
+      },
+      ui: {
+        notify: () => {},
+        transition: () => {},
+        clearStage: () => {},
+        select: async (_msg: string, _opts: string[]) => {
+          return "Reject & Send to Fix";
+        },
+      },
+      pi: {
+        sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+          sentMessages.push({ msg, opts });
+        },
+      },
+    };
+
+    const ui = { notify: () => {}, transition: () => {} };
+    const result = await maybeHandleConfirmGate(config, ctx as any, meta, ui as any, {
+      mode: "manual",
+      defaultReject: true, // review stage default to reject ordering
+    });
+
+    // Gate should handle + route to fix
+    expect(result.result).toBe("handled");
+    if ("toStage" in result) {
+      expect(result.toStage).toBe("fix");
+    }
+    // Stage should advance to fix in meta
+    expect(meta.currentStage).toBe("fix");
+
+    // Verify fix spawn triggered via fallback (no event bus)
+    const spawnCalls = sentMessages.filter(m => m.msg.includes("@fix-agent"));
+    expect(spawnCalls.length).toBe(1);
+    expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
 
     await fs.rm(stageTmp, { recursive: true, force: true });
   });

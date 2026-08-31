@@ -23,6 +23,7 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { resetPromptConfigCache } from "../../core/prompt-config";
 import { DEFAULT_VERIFY_PROMPT } from "../../constants";
+import type { SessionMeta } from "../../types";
 
 let TMP: string;
 
@@ -1061,6 +1062,61 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
     const result = await runVerification(config, meta, []);
     expect(result.rulePassed).toBe(true);
     expect(result.structuredResult?.passed).toBe(true);
+  });
+
+  it("returns explicit failure when pipelineId is unset (symmetric with requirementDoc guard)", async () => {
+    const vrPath = path.join(TMP, "references", "dev_spec", "verify.md");
+    await fs.mkdir(path.dirname(vrPath), { recursive: true });
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  fileContentPattern:\n" +
+        '    - path: "docs/design/*_commit.md"\n' +
+        '      pattern: "^\\\\*\\\\*pipeline\\\\*\\\\*:\\\\s*{pipelineId}$"\n' +
+        "---\n" +
+        "Verify pipelineId.\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify:
+                s === "develop"
+                  ? { require: true, verifyFile: "references/dev_spec/verify.md" }
+                  : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    // meta WITH requirementDoc but WITHOUT pipelineId
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/req.md",
+    });
+    // Strip pipelineId from meta to simulate missing
+    delete (meta as Partial<SessionMeta>).pipelineId;
+
+    const result = await runVerification(config, meta, []);
+
+    expect(result.rulePassed).toBe(false);
+    expect(result.structuredResult).toBeDefined();
+    expect(result.structuredResult!.passed).toBe(false);
+    // Failure detail should mention pipelineId unset with remediation hint
+    const detail = result.structuredResult!.failures[0].detail;
+    expect(detail).toContain("pipelineId not set");
+    expect(detail).toContain("/pipeline-start");
   });
 });
 

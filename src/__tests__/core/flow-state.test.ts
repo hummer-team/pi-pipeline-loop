@@ -497,12 +497,22 @@ describe("168 Phase 1: formatFrozenReason", () => {
     expect(result).not.toContain("[keywords]");
   });
 
-  it("truncates to maxLen with ellipsis", () => {
+  it("truncates to maxLen with ellipsis (maxLen is hard upper bound)", () => {
     const meta = makeTestMeta({
       blockedReason: "a".repeat(300),
     });
     const result = formatFrozenReason(meta, 50);
-    expect(result.length).toBe(51); // 50 chars + "…"
+    expect(result.length).toBe(50); // hard upper bound: (maxLen-1) chars + "…"
+    expect(result).toEndWith("…");
+  });
+
+  it("handles multi-byte characters without splitting (maxLen hard upper bound)", () => {
+    // Chinese characters are 3 bytes each but 1 JS char unit — Array.from handles surrogate pairs
+    const meta = makeTestMeta({
+      blockedReason: "日本語テスト".repeat(20), // 60 chars, all multi-byte
+    });
+    const result = formatFrozenReason(meta, 10);
+    expect(result.length).toBeLessThanOrEqual(10); // hard upper bound preserved
     expect(result).toEndWith("…");
   });
 

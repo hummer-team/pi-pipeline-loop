@@ -467,6 +467,32 @@ export async function runVerification(
     };
   }
 
+  // Detect unresolved {pipelineId} placeholder — symmetric guard with requirementDoc.
+  // When pipelineId is missing, the verify rule pattern would otherwise fail with
+  // a cryptic "pattern not found" error instead of a clear remediation message.
+  const unresolvedPipelineId = /\{pipelineId\}/;
+  const unresolvedPipelineIdRuleType =
+    (resolvedRules.requiredFiles?.some(p => unresolvedPipelineId.test(p)) ? "requiredFiles" : null) ??
+    (resolvedRules.fileContentPattern?.some(r => unresolvedPipelineId.test(r.path) || unresolvedPipelineId.test(r.pattern)) ? "fileContentPattern" : null);
+  if (unresolvedPipelineIdRuleType) {
+    const structuredResult: StructuredVerifyResult = {
+      passed: false,
+      failures: [{
+        ruleType: unresolvedPipelineIdRuleType,
+        detail: `pipelineId not set, cannot resolve {pipelineId} verify rule. Run /pipeline-start to initialize a pipeline and generate pipelineId`,
+      }],
+    };
+    const verifyResult: VerifyResult = { structured: structuredResult, overallPassed: false };
+    return {
+      rulePassed: false,
+      ruleMissing: [],
+      needsModelVerify: true,
+      modelPrompt: effectivePrompt,
+      structuredResult,
+      verifyResult,
+    };
+  }
+
   // Check if any structured (non-keyword) rules are defined
   const hasStructuredRules =
     (resolvedRules.requiredFiles && resolvedRules.requiredFiles.length > 0) ||
