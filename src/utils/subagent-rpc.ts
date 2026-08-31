@@ -72,30 +72,44 @@ export async function pingSubagents(
     const timer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        // Clean up the reply-channel listener on timeout to avoid leak
+        if (pi.events.off) {
+          pi.events.off(replyChannel, replyHandler);
+        }
         resolve(false);
       }
     }, timeoutMs);
 
-    try {
-      pi.events.on(replyChannel, (payload: unknown) => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timer);
+    const replyHandler = (payload: unknown): void => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      // Self-unregister after first reply to avoid leak on reply channel
+      if (pi.events.off) {
+        pi.events.off(replyChannel, replyHandler);
+      }
 
-        // Envelope-tolerant: accept {success:true} or {success:true,data:{version:2}}
-        const env = payload as Record<string, unknown> | undefined;
-        if (env && (env as Record<string, unknown>).success === true) {
-          resolve(true);
-        } else {
-          resolve(false);
-        }
-      });
+      // Envelope-tolerant: accept {success:true} or {success:true,data:{version:2}}
+      const env = payload as Record<string, unknown> | undefined;
+      if (env && (env as Record<string, unknown>).success === true) {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    };
+
+    try {
+      pi.events.on(replyChannel, replyHandler);
 
       pi.events.emit("subagents:rpc:ping", { requestId });
     } catch (err) {
       if (!resolved) {
         resolved = true;
         clearTimeout(timer);
+        // Clean up the reply-channel listener on error to avoid leak
+        if (pi.events.off) {
+          pi.events.off(replyChannel, replyHandler);
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         safeWriteAuditLog("subagent_rpc", {
           action: "ping", outcome: "error", error: errMsg,
@@ -134,6 +148,10 @@ export async function spawnClarifySubagent(
     const timer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        // Clean up the reply-channel listener on timeout to avoid leak
+        if (pi.events.off) {
+          pi.events.off(replyChannel, replyHandler);
+        }
         safeWriteAuditLog("subagent_rpc", {
           action: "spawn", outcome: "timeout", requestId, agentName: req.agentName,
         }, "warn").catch(() => {});
@@ -141,34 +159,40 @@ export async function spawnClarifySubagent(
       }
     }, SPAWN_TIMEOUT_MS);
 
-    try {
-      pi.events.on(replyChannel, (payload: unknown) => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timer);
+    const replyHandler = (payload: unknown): void => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      // Self-unregister after first reply to avoid leak on reply channel
+      if (pi.events.off) {
+        pi.events.off(replyChannel, replyHandler);
+      }
 
-        const env = payload as Record<string, unknown> | undefined;
-        if (!env) {
-          resolve({ ok: false, error: "empty_reply" });
-          return;
-        }
+      const env = payload as Record<string, unknown> | undefined;
+      if (!env) {
+        resolve({ ok: false, error: "empty_reply" });
+        return;
+      }
 
-        if (env.success === true) {
-          // Extract id from {success:true, data:{id:"..."}}
-          const data = env.data as Record<string, unknown> | undefined;
-          const id = data?.id as string | undefined;
-          if (id) {
-            resolve({ ok: true, id });
-          } else {
-            resolve({ ok: false, error: "missing_id_in_reply" });
-          }
-        } else if (env.success === false) {
-          const error = (env.error as string) || "spawn_rejected";
-          resolve({ ok: false, error });
+      if (env.success === true) {
+        // Extract id from {success:true, data:{id:"..."}}
+        const data = env.data as Record<string, unknown> | undefined;
+        const id = data?.id as string | undefined;
+        if (id) {
+          resolve({ ok: true, id });
         } else {
-          resolve({ ok: false, error: "unexpected_envelope" });
+          resolve({ ok: false, error: "missing_id_in_reply" });
         }
-      });
+      } else if (env.success === false) {
+        const error = (env.error as string) || "spawn_rejected";
+        resolve({ ok: false, error });
+      } else {
+        resolve({ ok: false, error: "unexpected_envelope" });
+      }
+    };
+
+    try {
+      pi.events.on(replyChannel, replyHandler);
 
       pi.events.emit("subagents:rpc:spawn", {
         requestId,
@@ -183,6 +207,10 @@ export async function spawnClarifySubagent(
       if (!resolved) {
         resolved = true;
         clearTimeout(timer);
+        // Clean up the reply-channel listener on error to avoid leak
+        if (pi.events.off) {
+          pi.events.off(replyChannel, replyHandler);
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         safeWriteAuditLog("subagent_rpc", {
           action: "spawn", outcome: "error", error: errMsg,

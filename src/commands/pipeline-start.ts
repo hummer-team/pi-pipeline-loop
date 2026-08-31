@@ -723,7 +723,11 @@ async function maybeAutoLaunchClarify(
           subagentId: spawnResult.id,
           stage: "clarify",
         });
-        watchSubagentLifecycle(ctx.pi, spawnResult.id, () => { /* best-effort */ });
+        // Hold the cleanup function and self-unregister after lifecycle event
+        // (or on failure) to avoid listener leak on shared channels.
+        const cleanup = watchSubagentLifecycle(ctx.pi, spawnResult.id, () => {
+          cleanup();
+        });
         return;
       }
       // Spawn failed → fall through to sendUserMessage fallback
@@ -741,11 +745,12 @@ async function maybeAutoLaunchClarify(
   }
 
   ui.notify(ctx, `Next: run ${message} manually if not auto-started.`);
-  await safeWriteAuditLog("pipeline_start_launch_fallback", {
+  await safeWriteAuditLog("pipeline_start_launch", {
     agentName,
     requirementDoc: file,
     pipelineId: meta.pipelineId,
     stage: "clarify",
+    fallback: "true",
   });
 }
 

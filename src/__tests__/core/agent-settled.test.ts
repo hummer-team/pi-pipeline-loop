@@ -1163,3 +1163,104 @@ describe("Phase 1 (163): review_declaration_missing audit", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ─── Bug 4: manual mode review decision chain ───────────────────────────────
+
+describe("Bug 4: agent-settled manual mode review decision chain", () => {
+  /** Helper: build review-stage config with manual confirm mode */
+  function makeReviewManualConfig(stageTmp: string) {
+    return makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "review"
+                ? { require: true, verifyFile: "references/spec/verify.md", mode: "hook" as const }
+                : undefined,
+              ...(s === "review" ? { confirm: { mode: "manual" as const }, allowedWritePaths: ["docs/"] } : {}),
+            },
+          ],
+        ),
+      ) as any,
+    });
+  }
+
+  async function setupVerifyAndReport(stageTmp: string, reportContent: string) {
+    // verify.md that passes
+    const vrDir = join(stageTmp, "references", "spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nBody\n",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+
+    // Write review report
+    const reviewDir = join(stageTmp, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_test.md"), reportContent, "utf-8");
+  }
+
+  it("manual mode: report fail → select shows Reject first → user picks Reject → confirmRejections+1 → route fix", async () => {
+    const stageTmp = join(tmpdir(), "pi-manual-reject-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeReviewManualConfig(stageTmp);
+    await setupVerifyAndReport(stageTmp,
+      "# Review\n### 问题 1\n- 等级：Blocker\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
+
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+    // User picks "Reject & Send to Fix" (which is first due to defaultReject=true)
+    const ctx = createMockCtx(meta, { selectReturn: "Reject & Send to Fix" });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should route to fix stage
+    expect(meta.currentStage).toBe("fix");
+    // confirmRejections should be incremented to 1
+    expect(meta.confirmRejections).toBe(1);
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    // Should have confirm rejection audit
+    expect(logContent).toContain("confirm_rejected");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("manual mode: report fail → select shows Reject first → user picks Approve → completed, confirmRejections cleared", async () => {
+    const stageTmp = join(tmpdir(), "pi-manual-approve-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeReviewManualConfig(stageTmp);
+    await setupVerifyAndReport(stageTmp,
+      "# Review\n### 问题 1\n- 等级：Blocker\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
+
+    const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+    // User picks "Approve & Complete" (despite Reject being first)
+    const ctx = createMockCtx(meta, { selectReturn: "Approve & Complete" });
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should advance to completed
+    expect(meta.currentStage).toBe("completed");
+    // confirmRejections should be cleared (approve resets counter)
+    expect(meta.confirmRejections).toBeUndefined();
+
+    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("confirm_approved");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

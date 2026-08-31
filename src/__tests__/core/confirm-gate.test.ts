@@ -605,3 +605,91 @@ describe("Phase 3 (162): confirm marker allowedWritePaths enforcement", () => {
     }
   });
 });
+
+describe("Phase 3 (Bug 4): confirm gate defaultReject reordering", () => {
+  it("review stage + defaultReject=true → select options show Reject first", async () => {
+    const stageTmp = path.join(tmpdir(), "pi-cg-defaultreject-" + Date.now());
+    await fs.mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const base = makeTestConfig({ projectRoot: stageTmp });
+    const reviewStage = {
+      ...base.stages.review,
+      confirm: { mode: "manual" as const },
+    };
+    const config = {
+      ...base,
+      stages: { ...base.stages, review: reviewStage as typeof base.stages.review },
+    };
+
+    // Create a review report doc path (needed by writeConfirmMarker allowedWritePaths)
+    const docsDir = path.join(stageTmp, "docs", "review");
+    await fs.mkdir(docsDir, { recursive: true });
+    const reviewPath = path.join(docsDir, "code_review_test.md");
+    await fs.writeFile(reviewPath, "# Review\n", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "review", requirementDoc: "docs/design/77_Config.md" });
+    // Capture the select call to verify option ordering
+    let capturedOptions: string[] = [];
+    const ctx = createMockCtx(meta);
+    (ctx.ui as any).select = async (_msg: string, options: string[]) => {
+      capturedOptions = [...options];
+      return "Approve & Complete";
+    };
+
+    const ui = { notify: () => {}, transition: () => {} };
+    await maybeHandleConfirmGate(config, ctx, meta, ui as any, {
+      mode: "manual",
+      defaultReject: true,
+    });
+
+    // With defaultReject=true, Reject option should be first
+    expect(capturedOptions.length).toBe(2);
+    expect(capturedOptions[0]).toContain("Reject");
+    expect(capturedOptions[1]).toContain("Approve");
+
+    await fs.rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("review stage + defaultReject=false → select options show Approve first", async () => {
+    const stageTmp = path.join(tmpdir(), "pi-cg-no-defaultreject-" + Date.now());
+    await fs.mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const base = makeTestConfig({ projectRoot: stageTmp });
+    const reviewStage = {
+      ...base.stages.review,
+      confirm: { mode: "manual" as const },
+    };
+    const config = {
+      ...base,
+      stages: { ...base.stages, review: reviewStage as typeof base.stages.review },
+    };
+
+    const docsDir = path.join(stageTmp, "docs", "review");
+    await fs.mkdir(docsDir, { recursive: true });
+    const reviewPath = path.join(docsDir, "code_review_test.md");
+    await fs.writeFile(reviewPath, "# Review\n", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "review", requirementDoc: "docs/design/77_Config.md" });
+    let capturedOptions: string[] = [];
+    const ctx = createMockCtx(meta);
+    (ctx.ui as any).select = async (_msg: string, options: string[]) => {
+      capturedOptions = [...options];
+      return "Approve & Complete";
+    };
+
+    const ui = { notify: () => {}, transition: () => {} };
+    await maybeHandleConfirmGate(config, ctx, meta, ui as any, {
+      mode: "manual",
+      defaultReject: false,
+    });
+
+    // Without defaultReject, Approve option should be first
+    expect(capturedOptions.length).toBe(2);
+    expect(capturedOptions[0]).toContain("Approve");
+    expect(capturedOptions[1]).toContain("Reject");
+
+    await fs.rm(stageTmp, { recursive: true, force: true });
+  });
+});

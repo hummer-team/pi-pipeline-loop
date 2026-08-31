@@ -4,8 +4,9 @@
  *
  * Extracts the verdict (pass/fail) from the latest code review report in
  * `docs/review/code_review_*.md`. Priority:
- * 1. Blocker/High/Medium section with open items → fail
- * 2. Conclusion line `结论[:：](通过|不通过)` → verdict from line
+ * 1. Blocker/High/Medium open items → fail (matches `- 等级：Blocker`,
+ *    `- [ ] Blocker`, `## Blocker`, `NOT PASS` formats)
+ * 2. Conclusion line `結論[:：](通过|不通过)` → verdict from line
  * 3. No conclusion line → fail + warn (conservative)
  * 4. No report file → null (caller treats as fail + warn)
  *
@@ -63,8 +64,9 @@ export async function findLatestReviewReport(projectRoot: string): Promise<strin
 /**
  * Checks if a line contains an open blocker/high/medium item.
  * Matches patterns like:
- * - `- [ ] Blocker:` / `- [ ] High:` / `- [ ] Medium:`
- * - `## Blocker` / `## High` / `## Medium`
+ * - `- [ ] Blocker:` / `- [ ] High:` / `- [ ] Medium:` (checkbox format)
+ * - `## Blocker` / `## High` / `## Medium` (section header format)
+ * - `- 等级：Blocker` / `- 等级: High` / `- 等级：Medium` (real report format)
  * - `NOT PASS` (case-insensitive)
  */
 function hasOpenIssueLine(line: string): boolean {
@@ -75,6 +77,8 @@ function hasOpenIssueLine(line: string): boolean {
   }
   // Section header with severity keyword
   if (/^##\s+(blocker|high|medium)/i.test(trimmed)) return true;
+  // Real report format: `- 等级：Blocker` / `- 等级: High` / `- 等级：Medium`
+  if (/^-\s*等级\s*[:：]\s*(blocker|high|medium)/i.test(trimmed)) return true;
   // Explicit "NOT PASS" marker
   if (/not\s+pass/i.test(trimmed)) return true;
   return false;

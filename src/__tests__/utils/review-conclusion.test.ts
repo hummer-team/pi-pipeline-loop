@@ -142,4 +142,44 @@ describe("parseReviewConclusion", () => {
     expect(result!.source).toBe("blocker-section");
     await rm(TMP, { recursive: true, force: true });
   });
+
+  it("detects real report format '- 等级：Blocker' → fail (source: blocker-section)", async () => {
+    const TMP = join(tmpdir(), "pi-rc-realformat-blocker-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_1.md"),
+      "# Summary\n\n## Review发现以下问题\n### 问题 1\n- 问题: src/utils/foo.ts:45-50 code bug\n- 等级：Blocker\n- 符合规划：否\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
+
+    const result = await parseReviewConclusion(TMP);
+    expect(result).not.toBeNull();
+    expect(result!.verdict).toBe("fail");
+    expect(result!.source).toBe("blocker-section");
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("detects real report format '- 等级：High' → fail (contradicts '結論：通过')", async () => {
+    const TMP = join(tmpdir(), "pi-rc-realformat-high-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_1.md"),
+      "# Summary\n\n## Review发现以下问题\n### 问题 1\n- 问题: some issue\n- 等级：High\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
+
+    const result = await parseReviewConclusion(TMP);
+    expect(result!.verdict).toBe("fail");
+    expect(result!.source).toBe("blocker-section");
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("detects real report format '- 等级：Medium' → fail (contradicts '結論：通过')", async () => {
+    const TMP = join(tmpdir(), "pi-rc-realformat-medium-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_1.md"),
+      "# Summary\n\n### 问题 1\n- 等级: Medium\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
+
+    const result = await parseReviewConclusion(TMP);
+    expect(result!.verdict).toBe("fail");
+    expect(result!.source).toBe("blocker-section");
+    await rm(TMP, { recursive: true, force: true });
+  });
 });

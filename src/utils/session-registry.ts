@@ -43,6 +43,7 @@ export function resolveRegistryPath(config: PipelineConfig): string {
 /**
  * Reads and parses the session registry from disk.
  * Returns an empty map on any read/parse failure (fail-open).
+ * Emits a warn audit log on corrupt JSON so callers have observability.
  *
  * @param registryPath - Absolute path to the registry file
  * @returns Parsed registry map, or empty map on failure
@@ -54,9 +55,24 @@ async function readRegistry(registryPath: string): Promise<RegistryMap> {
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as RegistryMap;
     }
+    // Non-object JSON (array, string, etc.) — treat as corrupt
+    await safeWriteAuditLog(
+      "session_registry_corrupt",
+      { registryPath, reason: "non_object_json" },
+      "warn",
+    );
     return {};
-  } catch {
-    // File missing, unreadable, or corrupt JSON → fail-open
+  } catch (err) {
+    // File missing → silent fail-open (expected for first run)
+    // JSON parse error → warn (actual corruption worth observing)
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes("JSON") || /Unexpected token/i.test(errMsg) || /position \d+/i.test(errMsg)) {
+      await safeWriteAuditLog(
+        "session_registry_corrupt",
+        { registryPath, error: errMsg },
+        "warn",
+      );
+    }
     return {};
   }
 }

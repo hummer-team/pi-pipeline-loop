@@ -73,12 +73,12 @@ export async function checkGitAdd(
   projectRoot: string,
   execFn?: ExecFn
 ): Promise<GitCheckResult> {
-  // Fail-open: if no execFn, warn instead of block
+  // Fail-open: if no execFn, degrade to warn (audit as error per plan)
   if (!execFn) {
     await safeWriteAuditLog(
       "git_protect",
-      { check: "add", outcome: "warn", reason: "execFn not available", command },
-      "warn"
+      { check: "add", outcome: "degrade", reason: "execFn not available", command },
+      "error"
     );
     return { block: false, warn: "Cannot verify 'git add' safety (execFn not available)." };
   }
@@ -109,14 +109,14 @@ export async function checkGitAdd(
       }
     }
 
-    // Non-zero exit → degrade to warn (not a positive block)
+    // Non-zero exit → degrade to warn (audit as error per plan)
     if (result.code !== 0) {
       const stderrLower = result.stderr.toLowerCase();
       if (stderrLower.includes("ignored") || stderrLower.includes("did not match")) {
         await safeWriteAuditLog(
           "git_protect",
-          { check: "add", outcome: "warn", reason: "git rejected", stderr: result.stderr.trim(), command },
-          "warn"
+          { check: "add", outcome: "degrade", reason: "git rejected", stderr: result.stderr.trim(), command },
+          "error"
         );
         return {
           block: false,
@@ -125,17 +125,17 @@ export async function checkGitAdd(
       }
       await safeWriteAuditLog(
         "git_protect",
-        { check: "add", outcome: "warn", reason: `exit ${result.code}`, command },
-        "warn"
+        { check: "add", outcome: "degrade", reason: `exit ${result.code}`, command },
+        "error"
       );
       return { block: false, warn: `'git add --dry-run' failed (exit ${result.code}).` };
     }
   } catch (err) {
-    // Exec exception → degrade to warn
+    // Exec exception → degrade to warn (audit as error per plan)
     const errMsg = err instanceof Error ? err.message : String(err);
     await safeWriteAuditLog(
       "git_protect",
-      { check: "add", outcome: "warn", reason: "exec error", error: errMsg, command, projectRoot },
+      { check: "add", outcome: "degrade", reason: "exec error", error: errMsg, command, projectRoot },
       "error"
     );
     return { block: false, warn: "Cannot verify 'git add' safety (execution error)." };
@@ -164,12 +164,12 @@ export async function checkGitCommit(
   projectRoot: string,
   execFn?: ExecFn
 ): Promise<GitCheckResult> {
-  // Fail-open: if no execFn, warn instead of block
+  // Fail-open: if no execFn, degrade to warn (audit as error per plan)
   if (!execFn) {
     await safeWriteAuditLog(
       "git_protect",
-      { check: "commit", outcome: "warn", reason: "execFn not available", command },
-      "warn"
+      { check: "commit", outcome: "degrade", reason: "execFn not available", command },
+      "error"
     );
     return { block: false, warn: "Cannot verify 'git commit' safety (execFn not available)." };
   }
@@ -180,8 +180,8 @@ export async function checkGitCommit(
     if (stagedResult.code !== 0) {
       await safeWriteAuditLog(
         "git_protect",
-        { check: "commit", outcome: "warn", reason: `diff --cached exit ${stagedResult.code}`, command },
-        "warn"
+        { check: "commit", outcome: "degrade", reason: `diff --cached exit ${stagedResult.code}`, command },
+        "error"
       );
       return { block: false, warn: `'git diff --cached' failed (exit ${stagedResult.code}).` };
     }
@@ -210,14 +210,21 @@ export async function checkGitCommit(
             };
           }
         }
+      } else {
+        // Unstaged diff failed — degrade to warn (audit as error per plan)
+        await safeWriteAuditLog(
+          "git_protect",
+          { check: "commit", outcome: "degrade", reason: `diff --name-only exit ${unstagedResult.code}`, command },
+          "error"
+        );
       }
     }
   } catch (err) {
-    // Exec exception → degrade to warn
+    // Exec exception → degrade to warn (audit as error per plan)
     const errMsg = err instanceof Error ? err.message : String(err);
     await safeWriteAuditLog(
       "git_protect",
-      { check: "commit", outcome: "warn", reason: "exec error", error: errMsg, command, projectRoot },
+      { check: "commit", outcome: "degrade", reason: "exec error", error: errMsg, command, projectRoot },
       "error"
     );
     return { block: false, warn: "Cannot verify 'git commit' safety (execution error)." };

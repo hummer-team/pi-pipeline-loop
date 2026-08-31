@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand, collectStagesFrom, buildResumeVisitOrder } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { initAuditLog } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import { buildStageSequence } from "../../utils/stage-sequence";
 import type { PipelineStage } from "../../types";
 
@@ -260,5 +260,222 @@ describe("Phase 4 (162): pipeline-start confirmRejections reset", () => {
     // After start, confirmRejections should be reset to undefined
     const updatedMeta = ctx.session.getMeta();
     expect(updatedMeta.confirmRejections).toBeUndefined();
+  });
+});
+
+// ─── Phase 2: maybeAutoLaunchClarify RPC success/fallback chain ─────────────
+
+/** Helper: create a mock pi.events bus with programmable responses */
+function makeMockEventBus(opts: {
+  pingReply?: Record<string, unknown> | null;
+  spawnReply?: Record<string, unknown> | null;
+  /** If true, emit ping reply synchronously when ping is emitted */
+  emitPingReply?: boolean;
+  /** If true, emit spawn reply synchronously when spawn is emitted */
+  emitSpawnReply?: boolean;
+} = {}) {
+  const listeners = new Map<string, Array<(payload: unknown) => void>>();
+  const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+
+  const bus = {
+    emit(event: string, payload: Record<string, unknown>) {
+      emitted.push({ event, payload });
+      // Simulate reply channel responses
+      if (opts.emitPingReply && event === "subagents:rpc:ping" && opts.pingReply !== null) {
+        const replyChannel = `subagents:rpc:ping:reply:${payload.requestId}`;
+        const handlers = listeners.get(replyChannel);
+        if (handlers) {
+          for (const h of handlers) h(opts.pingReply ?? { success: true });
+        }
+      }
+      if (opts.emitSpawnReply && event === "subagents:rpc:spawn" && opts.spawnReply !== null) {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        const handlers = listeners.get(replyChannel);
+        if (handlers) {
+          for (const h of handlers) h(opts.spawnReply ?? { success: true, data: { id: "subagent-001" } });
+        }
+      }
+    },
+    on(event: string, handler: (payload: unknown) => void) {
+      const existing = listeners.get(event) ?? [];
+      existing.push(handler);
+      listeners.set(event, existing);
+    },
+    off(event: string, handler: (payload: unknown) => void) {
+      const existing = listeners.get(event);
+      if (existing) {
+        const idx = existing.indexOf(handler);
+        if (idx >= 0) existing.splice(idx, 1);
+      }
+    },
+    _listeners: listeners,
+    _emitted: emitted,
+  };
+  return bus;
+}
+
+describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
+  /** Helper: scaffold agent file with frontmatter name at the path the config expects */
+  async function scaffoldAgentWithName(): Promise<void> {
+    // Default config has agentPath: "./agents/test-agent.md"
+    const agentsDir = path.join(TMP, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(agentsDir, "test-agent.md"),
+      "---\nname: clarify-agent\n---\n# Clarify agent\n",
+      "utf-8",
+    );
+  }
+
+  it("RPC success: ping ok + spawn ok → audit pipeline_start_launch_rpc, no fallback audit", async () => {
+    await scaffoldMinimalPi();
+    await scaffoldAgentWithName();
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "78_RPC.md"), "# Requirement\n", "utf-8");
+
+    const bus = makeMockEventBus({
+      pingReply: { success: true },
+      spawnReply: { success: true, data: { id: "subagent-001" } },
+      emitPingReply: true,
+      emitSpawnReply: true,
+    });
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+    const sendSpy: string[] = [];
+    (ctx as any).pi = { events: bus, sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/78_RPC.md" }, ctx as any);
+
+    // sendUserMessage should NOT be called on RPC success
+    expect(sendSpy.length).toBe(0);
+
+    // Audit log should contain pipeline_start_launch_rpc
+    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await fs.readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("pipeline_start_launch_rpc");
+    // No fallback launch event
+    const lines = auditContent.trim().split("\n");
+    const launchFallbackLines = lines.filter(l => l.includes("pipeline_start_launch") && l.includes("fallback=true"));
+    expect(launchFallbackLines.length).toBe(0);
+  });
+
+  it("fallback: ping timeout (no reply) → sendUserMessage + audit pipeline_start_launch", async () => {
+    await scaffoldMinimalPi();
+    await scaffoldAgentWithName();
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "78_RPC.md"), "# Requirement\n", "utf-8");
+
+    // Bus that never replies to ping → ping times out
+    const bus = makeMockEventBus({ emitPingReply: false, emitSpawnReply: false });
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+    const sendSpy: string[] = [];
+    (ctx as any).pi = { events: bus, sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/78_RPC.md" }, ctx as any);
+
+    // sendUserMessage SHOULD be called on fallback
+    expect(sendSpy.length).toBe(1);
+    expect(sendSpy[0]).toContain("@");
+
+    // Audit log should contain pipeline_start_launch with fallback=true
+    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await fs.readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("pipeline_start_launch");
+    expect(auditContent).toContain("fallback=true");
+  });
+
+  it("fallback: spawn returns {success:false} → sendUserMessage + audit pipeline_start_launch", async () => {
+    await scaffoldMinimalPi();
+    await scaffoldAgentWithName();
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "78_RPC.md"), "# Requirement\n", "utf-8");
+
+    const bus = makeMockEventBus({
+      pingReply: { success: true },
+      spawnReply: { success: false, error: "spawn_rejected" },
+      emitPingReply: true,
+      emitSpawnReply: true,
+    });
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+    const sendSpy: string[] = [];
+    (ctx as any).pi = { events: bus, sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/78_RPC.md" }, ctx as any);
+
+    // sendUserMessage SHOULD be called on spawn failure
+    expect(sendSpy.length).toBe(1);
+
+    // Audit log should contain pipeline_start_launch with fallback=true
+    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await fs.readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("pipeline_start_launch");
+    expect(auditContent).toContain("fallback=true");
+  });
+
+  it("fallback: no pi.events → sendUserMessage + audit pipeline_start_launch", async () => {
+    await scaffoldMinimalPi();
+    await scaffoldAgentWithName();
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "78_RPC.md"), "# Requirement\n", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+    const sendSpy: string[] = [];
+    // No pi.events at all
+    (ctx as any).pi = { sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/78_RPC.md" }, ctx as any);
+
+    expect(sendSpy.length).toBe(1);
+
+    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await fs.readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("pipeline_start_launch");
+    expect(auditContent).toContain("fallback=true");
+  });
+
+  it("no agentPath → notify fallback (no RPC, no sendUserMessage)", async () => {
+    await scaffoldMinimalPi();
+    // Make the agent file unreadable by deleting it → resolveAgentMention → null
+    const agentsDir = path.join(TMP, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+    // Don't create the test-agent.md file so resolveAgentMention returns null
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "78_RPC.md"), "# Requirement\n", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+    const notifications: string[] = [];
+    ctx.ui.notify = (msg: string) => { notifications.push(msg); };
+    const sendSpy: string[] = [];
+    (ctx as any).pi = { events: makeMockEventBus(), sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/78_RPC.md" }, ctx as any);
+
+    // No sendUserMessage (no agentName resolved → notify path)
+    expect(sendSpy.length).toBe(0);
+    // Should have a notify message
+    expect(notifications.some(n => n.includes("@feat-design-plan-agent") || n.includes("Next"))).toBe(true);
   });
 });

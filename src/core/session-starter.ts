@@ -184,6 +184,14 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           const joined = await handleSubagentJoin(config, ctx, ui, parentSession, sessionFile);
           if (joined) return; // JOIN succeeded — skip new pipeline creation
           // JOIN failed (registry miss / meta read fail) — fall through to new pipeline
+        } else if (isSubagent && !parentSession) {
+          // Only secondary/fork signal matched but no parentSession available for lookup.
+          // Audit warn so the missing-registry path is observable (plan Phase 1).
+          await safeWriteAuditLog(
+            "session_join_missing_registry",
+            { reason: "subagent_signal_without_parent_session" },
+            "warn",
+          );
         }
 
         // ── New pipeline: initialize metadata ──────────────────────────
