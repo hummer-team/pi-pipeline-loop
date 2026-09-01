@@ -40,13 +40,16 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const meta = ctx.session.getMeta() as SessionMeta;
 
+      // Phase 3 (170) ①: attach shutdown reason (quit/new/resume/fork/reload)
+      // for traceability — distinguishes trigger sources in post-mortem analysis.
+      const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
       await writeAuditLog("session_shutdown", {
         pipelineId: meta.pipelineId,
         finalStage: meta.currentStage,
+        ...(reason ? { reason: String(reason) } : {}),
       });
 
       // Reset flowState only on quit/new — resume/fork/reload preserve user intent
-      const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
       if (reason === "quit" || reason === "new") {
         await markPipelineAborted(ctx, "session_quit");
       }

@@ -25,7 +25,7 @@ import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
-import { isFrozen, formatFrozenReason } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason } from "./flow-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { toProjectRelative } from "../utils/path-display";
@@ -449,6 +449,41 @@ function buildStageWriteScope(
 }
 
 /**
+ * Phase 3 (170) ⑤: Builds the PIPELINE STATE section for frozen pipelines.
+ *
+ * Injected into the prompt when `isFrozen(meta)` is true. Provides:
+ * - One-line state summary (flowState + frozenReason)
+ * - Exit guidance: blocked → decision menu; aborted → /pipeline-start
+ *
+ * @param config - Pipeline configuration (for projectRoot / requirementDoc)
+ * @param meta - Current session metadata
+ * @returns Prompt section string, or null if pipeline is not frozen
+ */
+function buildPipelineStateSection(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): string | null {
+  if (!isFrozen(meta)) return null;
+
+  const flowState = getFlowState(meta);
+  const frozenReason = formatFrozenReason(meta);
+  const lines: string[] = [
+    `# PIPELINE STATE`,
+    `- State: ${flowState}`,
+    `- Reason: ${frozenReason}`,
+  ];
+
+  if (flowState === "aborted") {
+    const docHint = meta.requirementDoc ?? "<requirement-doc>";
+    lines.push(`- Action: Run \`/pipeline-start ${docHint}\` to resume or restart.`);
+  } else {
+    lines.push(`- Action: Open the decision menu (shortcut or /pipeline-quit) to proceed.`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
  * Builds the completed stage summary prompt.
  * Phase 4 (139): Injected when the pipeline reaches completed stage,
  * summarizing pipelineId, final stage, artifact files, and loop cycles.
@@ -542,9 +577,15 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         completedSummary = buildCompletedSummary(config, meta);
       }
 
+      // Phase 3 (170) ⑤: inject PIPELINE STATE section for frozen pipelines
+      const pipelineStateSection = buildPipelineStateSection(config, meta);
+      const pipelineStateSuffix = pipelineStateSection
+        ? "\n\n---\n\n" + pipelineStateSection
+        : "";
+
       const pluginPromptFull = completedSummary
-        ? pluginPrompt + "\n\n---\n\n" + completedSummary
-        : pluginPrompt;
+        ? pluginPrompt + "\n\n---\n\n" + completedSummary + pipelineStateSuffix
+        : pluginPrompt + pipelineStateSuffix;
 
       const systemPrompt = base
         ? base + "\n\n---\n\n" + pluginPromptFull

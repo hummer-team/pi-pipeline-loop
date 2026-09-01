@@ -381,6 +381,16 @@ export async function markPipelineAborted(ctx: FlowStateCtx, reason: string): Pr
     return;
   }
 
+  // Phase 3 (170) ⑦: Idempotent abort — skip when already aborted with the same reason.
+  // Eliminates duplicate audits from parent+child double-trigger and repeated quit events.
+  if (meta && getFlowState(meta) === "aborted" && meta.terminateReason === reason) {
+    await safeWriteAuditLog("pipeline_abort_skipped_idempotent", {
+      pipelineId: meta.pipelineId ?? "unknown",
+      reason,
+    });
+    return;
+  }
+
   ctx.session.updateMeta({
     flowState: "aborted",
     terminateReason: reason,

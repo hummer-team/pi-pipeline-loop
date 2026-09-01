@@ -292,7 +292,15 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           // Skip isFrozen/notify to avoid misleading "Pipeline blocked" message.
         } else if (isFrozen(meta)) {
           // ── Resumed session: notify if frozen ─────────────────────
-          ui.notify(ctx, `Pipeline blocked: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
+          // Phase 3 (170) ④: distinct text for aborted (exit: /pipeline-start) vs
+          // blocked (exit: decision menu). Resume reason gets one-shot notify.
+          const flowState = getFlowState(meta);
+          if (flowState === "aborted") {
+            const docHint = meta.requirementDoc ?? "<requirement-doc>";
+            ui.notify(ctx, `Pipeline aborted. Run /pipeline-start ${docHint} to resume or restart.`);
+          } else {
+            ui.notify(ctx, `Pipeline blocked: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
+          }
         }
       }
     },

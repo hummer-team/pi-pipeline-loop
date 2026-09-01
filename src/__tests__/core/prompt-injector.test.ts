@@ -1190,3 +1190,115 @@ describe("isStageSkillInBase (Phase 2 / 169 regression)", () => {
     expect(isStageSkillInBase(base, skillContent, "plan")).toBe(false);
   });
 });
+
+// ─── Phase 3 (170) ⑤: PIPELINE STATE section injection ────────────────────
+
+describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
+  });
+
+  it("frozen pipeline (aborted) → prompt contains PIPELINE STATE with /pipeline-start hint", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-state-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Test Skill\nContent", "utf-8");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "aborted",
+      terminateReason: "session_quit",
+      requirementDoc: "docs/design/spec.md",
+    });
+
+    // Build a mock ctx with getSystemPrompt
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      toolCall: { name: "read", arguments: {} },
+      result: undefined,
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    const prompt = (result as any)?.systemPrompt ?? "";
+    expect(prompt).toContain("# PIPELINE STATE");
+    expect(prompt).toContain("aborted");
+    expect(prompt).toContain("/pipeline-start docs/design/spec.md");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("frozen pipeline (blocked) → prompt contains PIPELINE STATE with decision menu hint", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-blocked-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Test Skill\nContent", "utf-8");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      toolCall: { name: "read", arguments: {} },
+      result: undefined,
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    const prompt = (result as any)?.systemPrompt ?? "";
+    expect(prompt).toContain("# PIPELINE STATE");
+    expect(prompt).toContain("blocked");
+    expect(prompt).toContain("decision menu");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("non-frozen pipeline → no PIPELINE STATE section", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-running-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Test Skill\nContent", "utf-8");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      toolCall: { name: "read", arguments: {} },
+      result: undefined,
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    const prompt = (result as any)?.systemPrompt ?? "";
+    expect(prompt).not.toContain("# PIPELINE STATE");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

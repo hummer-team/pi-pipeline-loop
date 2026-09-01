@@ -638,6 +638,39 @@ describe("markPipelineAborted terminal guard", () => {
     expect(meta.flowState).toBe("aborted");
     expect(meta.terminateReason).toBe("session_quit");
   });
+
+  // Phase 3 (170) ⑦: idempotent abort — same reason twice → only 1 audit
+  it("Phase 3 (170): second abort with same reason is idempotent (skip)", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+    const ctx = makeCtx(meta);
+
+    await markPipelineAborted(ctx, "session_quit");
+    expect(meta.flowState).toBe("aborted");
+    expect(meta.terminateReason).toBe("session_quit");
+
+    // Second call with same reason — should skip mutation and audit skip
+    const updateCountBefore = ctx.updates.length;
+    await markPipelineAborted(ctx, "session_quit");
+
+    // No additional updateMeta call for flowState=aborted
+    const newAbortedUpdates = ctx.updates.slice(updateCountBefore).filter(u => u.flowState === "aborted");
+    expect(newAbortedUpdates.length).toBe(0);
+    // State should remain unchanged
+    expect(meta.flowState).toBe("aborted");
+    expect(meta.terminateReason).toBe("session_quit");
+  });
+
+  it("Phase 3 (170): abort with different reason still writes (non-idempotent)", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+    const ctx = makeCtx(meta);
+
+    await markPipelineAborted(ctx, "session_quit");
+    expect(meta.terminateReason).toBe("session_quit");
+
+    // Different reason → should overwrite
+    await markPipelineAborted(ctx, "stale_startup");
+    expect(meta.terminateReason).toBe("stale_startup");
+  });
 });
 
 // ── Phase 4 (169) P1: W3 terminal compact wiring in executeDecision skip ──────

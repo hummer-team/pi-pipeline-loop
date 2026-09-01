@@ -43,6 +43,7 @@ import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse"
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState, formatFrozenReason } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { checkGitAdd, checkGitCommit, type GitCheckResult } from "../utils/git-protect";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
@@ -400,6 +401,18 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           reason = "Pipeline frozen. Contact the user to resume the pipeline";
         } else {
           reason = `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed`;
+        }
+        // Phase 3 (170) ③: throttle audit for frozen rejection (60s window per pipelineId+tool+flowState)
+        // Prevents audit flooding when the agent repeatedly hits frozen state.
+        const throttleKey = `frozen:${meta.pipelineId}:${toolName}:${fs}`;
+        if (shouldEmitWithinWindow(throttleKey, 60_000)) {
+          await safeWriteAuditLog("tool_rejected_frozen", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            tool: toolName,
+            flowState: fs,
+            reason: formatFrozenReason(meta),
+          });
         }
         return {
           block: true,

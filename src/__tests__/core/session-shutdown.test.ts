@@ -192,4 +192,46 @@ describe("createSessionShutdown", () => {
       expect(meta.flowState).toBe("running");
     });
   });
+
+  // ─── Phase 3 (170) ①: session_shutdown audit includes reason ─────────────
+
+  describe("Phase 3 (170): session_shutdown audit reason field", () => {
+    it("shutdown audit includes reason when event.reason is present", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-reason-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = createMockCtx(meta, { event: { reason: "quit" } });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const shutdownLine = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("reason=quit"));
+      expect(shutdownLine).toBeDefined();
+      expect(shutdownLine).toContain("reason=quit");
+    });
+
+    it("shutdown audit omits reason when event.reason is absent (backward compat)", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-noreason-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({ currentStage: "plan" });
+      const ctx = createMockCtx(meta); // No event
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const shutdownLines = content.trim().split("\n").filter((l: string) => l.includes("session_shutdown"));
+      const lastLine = shutdownLines[shutdownLines.length - 1];
+      expect(lastLine).not.toContain("reason=");
+    });
+  });
 });
