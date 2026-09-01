@@ -18,6 +18,7 @@ design/udf.md
 design/udf_3.md
 prompts/
 *.md
+!AGENTS.md
 !src/template/**/*.md
 AGENTS_bak
 .opencode
