@@ -76,12 +76,31 @@ describe("parseRequirementDocPath", () => {
     expect(captured).toContain("docs/design/v2.md");
   });
 
-  it("reports candidates via callback but still returns null on ambiguity", () => {
-    const text = "Check docs/a.md or docs/b.md";
-    let reported: string[] = [];
-    const result = parseRequirementDocPath(text, (paths) => { reported = [...paths]; });
+  it("reports candidates via callback and returns first for same-dir non-version files", () => {
+    // Same directory but filenames are NOT version-like → take first (not ambiguous)
+    const text = "Check docs/spec.md or docs/notes.md";
+    let callbackInvoked = false;
+    const result = parseRequirementDocPath(text, () => { callbackInvoked = true; });
+    expect(result).toBe("docs/spec.md");
+    // Candidates callback should NOT be invoked (no version ambiguity)
+    expect(callbackInvoked).toBe(false);
+  });
+
+  it("returns null for same-dir version-like filenames (v1/v2 ambiguity)", () => {
+    const text = "Compare docs/design/v1.md with docs/design/v2.md";
+    let captured: string[] | undefined;
+    const result = parseRequirementDocPath(text, (paths) => { captured = paths; });
     expect(result).toBeNull();
-    expect(reported).toEqual(["docs/a.md", "docs/b.md"]);
+    expect(captured).toBeDefined();
+    expect(captured!.length).toBe(2);
+    expect(captured).toContain("docs/design/v1.md");
+    expect(captured).toContain("docs/design/v2.md");
+  });
+
+  it("returns null for same-dir _1/_2 suffix filenames (version ambiguity)", () => {
+    const text = "Check docs/design/spec_1.md and docs/design/spec_2.md";
+    const result = parseRequirementDocPath(text);
+    expect(result).toBeNull();
   });
 
   it("returns the single match without invoking candidates callback", () => {

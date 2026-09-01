@@ -10,7 +10,6 @@
     "ask":true,
     "allow": []
   },
-  "guard": { "blockedTools": [] },
   "audit": { "promptSnapshot": "full" },
   "init": { "conflictCheck": "model" },
   "stages": {
@@ -18,7 +17,8 @@
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
       "skillPath": "design/SKILL.md",
       "nextStage": "plan",
-      "verify": { "require": true, "completionMarker": "## 模型确认" }
+      "verify": { "require": true, "completionMarker": "## 模型确认" },
+      "guard": { "blockedTools": [] }
     },
     "plan": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",

@@ -42,6 +42,7 @@ export const READ_ONLY_BASH_COMMANDS: ReadonlySet<string> = new Set([
   "grep", "egrep", "fgrep", "rg",
   "cat", "head", "tail", "less", "more",
   "wc", "find", "ls", "file", "diff", "stat",
+  "sed", "awk",
 ]);
 
 /**
@@ -159,12 +160,13 @@ export function extractBashFileTargets(command: string): BashTarget[] {
 
   // Phase 4 (170): detect read-only command as the first token.
   // When the FIRST token is a read-only command, skip FILE_ARG_COMMANDS
-  // extraction for THAT token only. Subsequent FILE_ARG_COMMANDS (e.g. `tee`
-  // after `cat | tee`) are still extracted — the read-only exemption applies
-  // to the command itself, not to downstream pipe components.
+  // extraction for that command's arguments. Pipe-aware decoupling:
+  // - No pipe: all tokens are arguments to the first (read-only) command → skip all
+  // - With pipe: tokens after "|" are pipe components → extract their FILE_ARG targets
   // Shell redirects (>, >>) are still detected independently below.
   const firstToken = tokens.length > 0 ? tokens[0] : "";
   const firstTokenIsReadOnly = READ_ONLY_BASH_COMMANDS.has(firstToken);
+  const hasPipe = tokens.includes("|");
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -197,11 +199,14 @@ export function extractBashFileTargets(command: string): BashTarget[] {
     }
 
     // Check for file-argument commands.
-    // Phase 4 (170): when the first token is read-only, only skip extraction
-    // for the first token itself. Subsequent FILE_ARG_COMMANDS (e.g. `tee`
-    // in `cat x | tee output.txt`) must still be detected to prevent write
-    // protection escape.
-    const skipFileArg = firstTokenIsReadOnly && i === 0;
+    // Phase 4 (170): pipe-aware read-only decoupling.
+    // When the first token is read-only:
+    //   - No pipe: all tokens are the read-only command's args → skip extraction
+    //   - With pipe: tokens immediately after "|" are pipe components whose
+    //     FILE_ARG targets must still be extracted (escape protection)
+    const isPipeComponent = hasPipe && i > 0 && tokens[i - 1] === "|";
+    const skipFileArg = firstTokenIsReadOnly && !hasPipe ? true
+      : firstTokenIsReadOnly && !isPipeComponent;
     if (!skipFileArg && FILE_ARG_COMMANDS.has(token)) {
       // Collect all non-flag arguments
       const fileArgs: string[] = [];

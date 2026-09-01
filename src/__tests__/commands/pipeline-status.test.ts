@@ -1,6 +1,9 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createPipelineStatusCommand } from "../../commands/pipeline-status";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+import { mkdir, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 function createCtx(meta: any) {
   return {
@@ -9,6 +12,17 @@ function createCtx(meta: any) {
 }
 
 describe("createPipelineStatusCommand", () => {
+  let TMP: string;
+
+  beforeEach(async () => {
+    TMP = join(tmpdir(), "pi-status-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    await mkdir(TMP, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(TMP, { recursive: true, force: true });
+  });
+
   it("creates a command named 'pipeline-status'", () => {
     const cmd = createPipelineStatusCommand(makeTestConfig());
     expect(cmd.name).toBe("pipeline-status");
@@ -109,5 +123,28 @@ describe("createPipelineStatusCommand", () => {
     // Should still return success with drift line
     expect(result.success).toBe(true);
     expect(result.content).toContain("Template drift:");
+  });
+
+  it("lists drifted filenames when drift is detected", async () => {
+    // Create a drifted deployed copy in the temp directory
+    const deployedRefsDir = join(TMP, ".pi", "references");
+    await mkdir(deployedRefsDir, { recursive: true });
+    await writeFile(
+      join(deployedRefsDir, "pipeline-stage-prompt.yml"),
+      "# Deliberately drifted content\n",
+      "utf-8",
+    );
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta();
+    const ctx = createCtx(meta);
+
+    const cmd = createPipelineStatusCommand(config);
+    const result = (await (cmd.execute as any)({}, ctx)) as any;
+
+    expect(result.success).toBe(true);
+    // Drift line should contain non-zero count and the drifted asset name
+    expect(result.content).toMatch(/Template drift: [1-9]\d* file\(s\)/);
+    expect(result.content).toContain("pipeline-stage-prompt.yml");
   });
 });

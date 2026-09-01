@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { checkTemplateDrift } from "../../utils/template-drift";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -81,5 +81,34 @@ describe("checkTemplateDrift (Phase 6 / 170)", () => {
     // Non-existent path → should return empty, not throw
     const drifts = await checkTemplateDrift("/nonexistent/path/that/does/not/exist");
     expect(drifts).toEqual([]);
+  });
+
+  it("returns empty array when deployed content matches repo source (same hash, no drift)", async () => {
+    // Construct a real "no drift" scenario: read the actual repo source file
+    // and deploy an identical copy to the temp directory.
+    // The repo template dir is resolved from __dirname → src/template/ (during Bun test).
+    const repoTemplateDir = join(__dirname, "..", "..", "template");
+    const assetToCopy = "references/pipeline-stage-prompt.yml";
+    const sourcePath = join(repoTemplateDir, assetToCopy);
+
+    // Read actual repo source content
+    let sourceContent: string;
+    try {
+      sourceContent = await readFile(sourcePath, "utf-8");
+    } catch {
+      // If template file doesn't exist in test env, skip meaningfully
+      return;
+    }
+
+    // Deploy identical copy to temp directory
+    const deployedRefsDir = join(TMP, ".pi", "references");
+    await mkdir(deployedRefsDir, { recursive: true });
+    await writeFile(join(deployedRefsDir, "pipeline-stage-prompt.yml"), sourceContent, "utf-8");
+
+    const drifts = await checkTemplateDrift(TMP);
+
+    // The deployed file matches the repo source → should NOT appear in drift list
+    const driftedAsset = drifts.find(d => d.asset === assetToCopy);
+    expect(driftedAsset).toBeUndefined();
   });
 });

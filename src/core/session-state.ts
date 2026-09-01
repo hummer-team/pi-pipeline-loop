@@ -287,9 +287,10 @@ export interface RunHealthResult {
 /**
  * Phase 5 (170): Extract metadata from the last assistant message in the branch.
  *
- * Returns `stopReason` and `errorMessage` from the last assistant message
- * (if any). This is a parallel structure to `extractAssistantMessages` that
- * exposes per-message metadata without changing the existing string[] signature.
+ * Returns `stopReason`, `errorMessage`, and the message `id` from the last
+ * assistant message (if any). This is a parallel structure to
+ * `extractAssistantMessages` that exposes per-message metadata without changing
+ * the existing string[] signature.
  *
  * The higher-level `detectLastRunHealth` consumes this data to classify the
  * run into truncated/failed_transient/clean.
@@ -297,11 +298,12 @@ export interface RunHealthResult {
  * Fail-open: returns null on any extraction error.
  *
  * @param ctx - Extension context with session manager
- * @returns Object with stopReason/errorMessage, or null if no assistant message found
+ * @returns Object with stopReason/errorMessage/messageId, or null if no assistant message found
  */
 export function extractLastAssistantMeta(ctx: ExtensionContext): {
   stopReason?: string;
   errorMessage?: string;
+  messageId?: string;
 } | null {
   try {
     const entries = ctx.sessionManager.getBranch();
@@ -311,6 +313,7 @@ export function extractLastAssistantMeta(ctx: ExtensionContext): {
 
       const msgEntry = entry as {
         type: "message";
+        id?: string;
         message: { role: string; stopReason?: string; errorMessage?: string };
       };
       if (msgEntry.message.role !== "assistant") continue;
@@ -318,6 +321,7 @@ export function extractLastAssistantMeta(ctx: ExtensionContext): {
       return {
         stopReason: msgEntry.message.stopReason,
         errorMessage: msgEntry.message.errorMessage,
+        messageId: msgEntry.id,
       };
     }
     return null;
@@ -331,10 +335,12 @@ export function extractLastAssistantMeta(ctx: ExtensionContext): {
 /**
  * Phase 5 (170): Detects the health status of the last assistant run.
  *
- * Scans the session branch for the last assistant message and checks its
- * `stopReason` field (when available from the SDK). This is a single shared
- * implementation consumed by both agent_settled (audit) and prompt_injector
- * (next-turn warning injection) — DRY principle.
+ * Consumes `extractLastAssistantMeta` as the single scan implementation (DRY).
+ * Classifies the run into truncated/failed_transient/clean based on the
+ * `stopReason` field (when available from the SDK).
+ *
+ * This is a single shared implementation consumed by both agent_settled (audit)
+ * and prompt_injector (next-turn warning injection) — DRY principle.
  *
  * Fail-open: returns "clean" on any extraction error.
  *
@@ -342,59 +348,24 @@ export function extractLastAssistantMeta(ctx: ExtensionContext): {
  * @returns RunHealthResult with kind and optional messageId
  */
 export function detectLastRunHealth(ctx: ExtensionContext): RunHealthResult {
-  try {
-    const entries = ctx.sessionManager.getBranch();
-    let lastAssistant: {
-      id?: string;
-      stopReason?: string;
-      errorMessage?: string;
-    } | null = null;
+  const meta = extractLastAssistantMeta(ctx);
 
-    // Scan backwards for the last assistant message
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i];
-      if (entry.type !== "message") continue;
-
-      const msgEntry = entry as {
-        type: "message";
-        message: {
-          role: string;
-          stopReason?: string;
-          errorMessage?: string;
-        };
-        id?: string;
-      };
-      if (msgEntry.message.role !== "assistant") continue;
-
-      lastAssistant = {
-        id: msgEntry.id,
-        stopReason: msgEntry.message.stopReason,
-        errorMessage: msgEntry.message.errorMessage,
-      };
-      break;
-    }
-
-    if (!lastAssistant) {
-      return { kind: "clean" };
-    }
-
-    if (lastAssistant.stopReason === "length") {
-      return { kind: "truncated", messageId: lastAssistant.id };
-    }
-
-    if (
-      (lastAssistant.stopReason === "error" || lastAssistant.stopReason === "aborted") &&
-      lastAssistant.errorMessage
-    ) {
-      return { kind: "failed_transient", messageId: lastAssistant.id };
-    }
-
-    return { kind: "clean", messageId: lastAssistant.id };
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    safeWriteAuditLog("session_state_error", { operation: "detectLastRunHealth", error: errMsg }, "error");
+  if (!meta) {
     return { kind: "clean" };
   }
+
+  if (meta.stopReason === "length") {
+    return { kind: "truncated", messageId: meta.messageId };
+  }
+
+  if (
+    (meta.stopReason === "error" || meta.stopReason === "aborted") &&
+    meta.errorMessage
+  ) {
+    return { kind: "failed_transient", messageId: meta.messageId };
+  }
+
+  return { kind: "clean", messageId: meta.messageId };
 }
 
 /**

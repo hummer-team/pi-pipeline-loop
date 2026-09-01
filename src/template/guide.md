@@ -139,7 +139,7 @@ bun add @earendil-works/pi-pipeline
   - `gitignore`：是否解析 `.gitignore` 动态保护（默认 true）
   - `paths`：追加硬编码保护路径（与内置 `.pi/`、`AGENTS.md`、`.git/` 合并）
   - `allow`：仅放开 gitignore 动态保护的**编辑**权限（git add/commit 仍拦截）
-- `guard`：Stage 级策略工具拦截配置（Phase 2 / 170，默认关）
+- `guard`：Stage 级策略工具拦截配置（Phase 2 / 170，默认关），配置在 `stages.{stage}.guard` 下（非顶层）
   - `blockedTools`：可选，字符串数组。当 `stages.{stage}.guard.blockedTools` 包含当前工具名时，直接 block（不计入 violations）。默认空数组 `[]`（不拦截任何工具）
   - 典型用法：`"blockedTools": ["ask_user_question"]` 在 clarify 阶段硬拦交互式工具，强制模型通过需求文档收集答复
 
@@ -163,9 +163,6 @@ bun add @earendil-works/pi-pipeline
     "paths": ["dist/"],              // 追加硬编码保护（与内置 .pi/、AGENTS.md、.git/ 合并）
     "allow": ["docs/design/", "src/template/"]  // 仅放开编辑；git add/commit 仍拦截
   },
-  "guard": {
-    "blockedTools": []                // Stage 级策略工具拦截（可选，默认空数组）
-  },
   "decisionShortcutKey": "ctrl+enter",  // TUI 中决策确认快捷键（默认 ctrl+enter）
   // ── 阶段配置 ──
   "stages": {
@@ -174,6 +171,9 @@ bun add @earendil-works/pi-pipeline
       "skillPath": "design/SKILL.md",  // skill 文件路径（相对于 .pi/skills/）
       "nextStage": "plan",
       "allowedWritePaths": ["docs/", "doc/", "documentation/"],  // 默认：仅文档目录
+      "guard": {
+        "blockedTools": []              // Stage 级策略工具拦截（可选，默认空数组）
+      },
       "verify": {
         "require": true,               // 启用 hook 自动验证
         "verifyFile": "verify.md",     // 验证文件名（默认 verify.md）

@@ -276,6 +276,42 @@ describe("extractBashFileTargets", () => {
       const targets = extractBashFileTargets("cat file.txt");
       expect(targets).toEqual([]);
     });
+
+    it("grep -rn tee src/ → no targets (tee is grep pattern, not a command)", () => {
+      // Pipe-aware regression fix: when first token is read-only and there's
+      // no pipe, ALL tokens are the read-only command's arguments — including
+      // tokens that happen to match FILE_ARG_COMMANDS names.
+      const targets = extractBashFileTargets("grep -rn tee src/");
+      expect(targets).toEqual([]);
+    });
+
+    it("grep -rn tee .pi/config.json → no targets (read-only command args)", () => {
+      // Same regression: grep is read-only, no pipe → all args skipped
+      const targets = extractBashFileTargets("grep -rn tee .pi/config.json");
+      expect(targets).toEqual([]);
+    });
+
+    it("head -5 tee bar.txt → no targets (head is read-only, no pipe)", () => {
+      const targets = extractBashFileTargets("head -5 tee bar.txt");
+      expect(targets).toEqual([]);
+    });
+
+    it("ls | grep rm src/ → no targets (grep is not FILE_ARG_COMMAND)", () => {
+      // ls is read-only, pipe present, but grep is not in FILE_ARG_COMMANDS
+      // so no extraction occurs regardless of pipe semantics
+      const targets = extractBashFileTargets("ls | grep rm src/");
+      expect(targets).toEqual([]);
+    });
+
+    it("sed pattern file → no targets (sed is read-only without -i redirect)", () => {
+      const targets = extractBashFileTargets("sed 's/foo/bar/g' src/file.txt");
+      expect(targets).toEqual([]);
+    });
+
+    it("awk pattern file → no targets (awk is read-only without redirect)", () => {
+      const targets = extractBashFileTargets("awk '{print $1}' data.csv");
+      expect(targets).toEqual([]);
+    });
   });
 });
 

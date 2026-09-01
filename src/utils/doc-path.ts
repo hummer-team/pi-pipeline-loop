@@ -8,6 +8,26 @@
  */
 
 /**
+ * Checks if a filename looks like a version variant.
+ *
+ * Matches patterns such as:
+ * - `v1.md`, `v2.md`, `v10.md`
+ * - `spec_1.md`, `spec_2.md` (trailing underscore+digit before extension)
+ * - `round1.md`, `round2.md` (trailing digit before extension)
+ *
+ * @param filename - The filename (without directory) to check
+ * @returns true if the filename has version-like morphology
+ */
+function isVersionLikeFilename(filename: string): boolean {
+  // v1, v2, v10, etc. (possibly with surrounding text)
+  if (/^v\d+\.\w+$/.test(filename)) return true;
+  // Ends with _N or N before extension: spec_1.md, round2.md
+  if (/[_]\d+\.\w+$/.test(filename)) return true;
+  if (/\d+\.\w+$/.test(filename)) return true;
+  return false;
+}
+
+/**
  * Extract the first requirement document path from free-form text.
  *
  * Matches tokens shaped like relative docs-path or absolute Markdown paths.
@@ -20,6 +40,8 @@
  *   (e.g. `docs/design/v1.md` + `docs/design/v2.md`) → `null` (ambiguous —
  *   caller should NOT guess); `candidates` callback receives the full list
  *   so the caller can log/audit them for diagnostics.
+ * - 2+ matches, same directory but NOT version-like (e.g. `spec.md` +
+ *   `notes.md`) → first match (take-first; not a version ambiguity).
  * - 2+ matches, different directories → first match (take-first heuristic;
  *   the user likely mentioned multiple docs, the first is the primary target).
  *
@@ -57,18 +79,25 @@ export function parseRequirementDocPath(
     return matches[0];
   }
 
-  // Multiple matches: distinguish same-directory version ambiguity from general multi-path.
-  // Same-directory heuristic: all matches share the same directory → ambiguous (return null).
-  // Otherwise: take first match (user likely mentioned multiple docs, first is the target).
+  // Multiple matches: check for version-like ambiguity in same directory.
+  // Only return null (ambiguous) when ALL matches share the same directory
+  // AND all filenames look like version variants (v1/v2, _1/_2, etc.).
+  // Otherwise: take first match (user likely mentioned multiple docs).
   const dirs = new Set(matches.map(p => p.replace(/\/[^/]*$/, "")));
   if (dirs.size === 1) {
-    // Same directory, different files → version-like ambiguity, don't guess
-    if (candidates) {
-      candidates(matches);
+    // Same directory — check if all filenames are version-like
+    const filenames = matches.map(p => p.replace(/^.*\//, ""));
+    const allVersionLike = filenames.every(f => isVersionLikeFilename(f));
+    if (allVersionLike) {
+      // Version ambiguity: don't guess, return null with candidates
+      if (candidates) {
+        candidates(matches);
+      }
+      return null;
     }
-    return null;
+    // Same directory but not version-like → take first (not ambiguous)
   }
 
-  // Different directories → take first
+  // Different directories, or same directory without version ambiguity → take first
   return matches[0];
 }
