@@ -6,6 +6,7 @@
 
 import type { PipelineConfig, Command, SessionMeta, PipelineStage } from "../types";
 import { PROTECTED_PATHS } from "../constants";
+import { checkTemplateDrift } from "../utils/template-drift";
 
 /**
  * Creates the `/pipeline-status` command.
@@ -32,6 +33,18 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
       const stageConfig = config.stages[meta.currentStage as PipelineStage];
       const currentSummary = meta.summaries[meta.currentStage as PipelineStage];
 
+      // Phase 6 (170): Check template drift and append to status output
+      let driftLine = "- Template drift: 0 file(s)";
+      try {
+        const drifts = await checkTemplateDrift(config.projectRoot);
+        if (drifts.length > 0) {
+          const names = drifts.map(d => d.asset).join(", ");
+          driftLine = `- Template drift: ${drifts.length} file(s) [${names}]`;
+        }
+      } catch {
+        // Fail-open: drift check failure should not break status display
+      }
+
       const content =
         `# Pipeline Status\n` +
         `- ID: ${meta.pipelineId}\n` +
@@ -40,7 +53,8 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         `- Domain: ${meta.domain.id}@${meta.domain.version}\n` +
         `- Summary Status: ${currentSummary?.status || "Missing"} (Path: ${currentSummary?.path || "N/A"})\n` +
         `- Loop: ${meta.loopCount}/${meta.maxLoops} (Step: ${meta.currentStepIndex})\n` +
-        `- Protected: ${PROTECTED_PATHS.join(", ")}`;
+        `- Protected: ${PROTECTED_PATHS.join(", ")}\n` +
+        driftLine;
 
       return { success: true, content };
     },

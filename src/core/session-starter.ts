@@ -18,6 +18,22 @@ import { registerSession, lookupParentPipeline } from "../utils/session-registry
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText } from "./session-state";
 import { execSync } from "node:child_process";
+import { checkTemplateDrift } from "../utils/template-drift";
+
+// ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
+
+/**
+ * Module-level flag ensuring the drift check runs at most once per process.
+ * The check fires on the first session_start and never again.
+ */
+let _driftCheckDone = false;
+
+/**
+ * Test-only reset hook for the drift-check flag.
+ */
+export function __resetDriftCheckFlag(): void {
+  _driftCheckDone = false;
+}
 
 // ─── Plugin version stamp (Phase 5 / 170) ─────────────────────────────────────
 
@@ -242,6 +258,26 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const projectRoot = config.projectRoot;
       const meta = ctx.session.getMeta() as SessionMeta;
+
+      // Phase 6 (170): One-shot template drift check per process.
+      // Fires on the first session_start only. Fail-open: never blocks session start.
+      if (!_driftCheckDone) {
+        _driftCheckDone = true;
+        try {
+          const drifts = await checkTemplateDrift(projectRoot);
+          for (const d of drifts) {
+            await safeWriteAuditLog("template_drift", {
+              asset: d.asset,
+              deployedHash: d.deployedHash.substring(0, 12),
+              repoHash: d.repoHash.substring(0, 12),
+            }, "warn");
+          }
+        } catch (err) {
+          // Fail-open: drift check must never block session start
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await safeWriteAuditLog("template_drift_error", { error: errMsg }, "warn");
+        }
+      }
 
       // Preload prompt-config cache (failure silently returns {} — never blocks session start)
       await loadPromptConfig(projectRoot);
