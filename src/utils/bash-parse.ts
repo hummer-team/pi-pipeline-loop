@@ -30,6 +30,21 @@ const FILE_ARG_COMMANDS = new Set(["rm", "mv", "cp", "touch", "tee"]);
 const REDIRECT_OPS = [">>", ">|", ">"];
 
 /**
+ * Phase 4 (170): Read-only bash commands whose arguments should NOT be treated
+ * as file-modification targets. These commands read files but never write them
+ * (unless combined with a shell redirect like `grep … > output.txt`).
+ *
+ * When the first token of a segment matches this set, `extractBashFileTargets`
+ * skips the FILE_ARG_COMMANDS extraction but still detects shell redirects
+ * (which are the only legitimate write path for these commands).
+ */
+export const READ_ONLY_BASH_COMMANDS: ReadonlySet<string> = new Set([
+  "grep", "egrep", "fgrep", "rg",
+  "cat", "head", "tail", "less", "more",
+  "wc", "find", "ls", "file", "diff", "stat",
+]);
+
+/**
  * Pattern for fd-to-fd redirection (e.g., 2>&1, 1>&2, >&2).
  * These are NOT file write targets — they just copy one fd to another.
  */
@@ -81,7 +96,57 @@ function isFlag(token: string): boolean {
 }
 
 /**
+ * Phase 4 (170): Finds the first redirect operator in a token, respecting
+ * shell quoting. Returns -1 when no unquoted redirect operator is found.
+ *
+ * This prevents patterns like `grep "foo>bar"` from being misidentified as
+ * a redirect — the `>` inside the quoted string is a literal character, not
+ * a shell redirect operator.
+ *
+ * @param token - The token to scan (may contain embedded quotes)
+ * @returns Index of the first unquoted redirect operator, or -1
+ */
+function findUnquotedRedirect(token: string): { index: number; opLength: number } | null {
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < token.length; i++) {
+    const ch = token[i];
+
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < token.length) {
+        i++; // Skip escaped character
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+
+    // Not inside quotes
+    if (ch === "'") { inSingle = true; continue; }
+    if (ch === '"') { inDouble = true; continue; }
+
+    // Check for redirect operators (longest first)
+    for (const op of REDIRECT_OPS) {
+      if (token.startsWith(op, i)) {
+        return { index: i, opLength: op.length };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extracts file modification targets from a bash command.
+ *
+ * Phase 4 (170): Read-only commands (grep, cat, ls, etc.) skip FILE_ARG_COMMANDS
+ * extraction. Redirect detection is quote-aware: `>` inside quoted strings is
+ * treated as a literal character, not a redirect operator.
  *
  * @param command - The bash command string
  * @returns Array of file targets with their kind (redirect or file-arg)
@@ -92,6 +157,13 @@ export function extractBashFileTargets(command: string): BashTarget[] {
   // Tokenize the command (simple split on whitespace, handles quoted strings)
   const tokens = tokenize(command);
 
+  // Phase 4 (170): detect read-only command as the first token.
+  // When the segment starts with a read-only command, skip FILE_ARG_COMMANDS
+  // extraction for ALL tokens in the segment (the command itself doesn't write).
+  // Shell redirects (>, >>) are still detected independently below.
+  const firstToken = tokens.length > 0 ? tokens[0] : "";
+  const isReadOnlySegment = READ_ONLY_BASH_COMMANDS.has(firstToken);
+
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
 
@@ -101,37 +173,29 @@ export function extractBashFileTargets(command: string): BashTarget[] {
       continue;
     }
 
-    // Check for redirection operators (possibly attached to token)
-    // Skip tokens that are fully quoted (they are literal arguments, not redirects)
-    if (!token.startsWith("'") && !token.startsWith('"')) {
-      for (const op of REDIRECT_OPS) {
-        const opIndex = token.indexOf(op);
-        if (opIndex !== -1) {
-          // Redirect found
-          const afterOp = token.slice(opIndex + op.length);
-          if (afterOp) {
-            // Target is attached: >file
-            const target = stripQuotes(afterOp);
-            // Skip /dev/* device paths — they are not real file write targets
-            if (!isDevPath(target)) {
-              targets.push({ kind: "redirect", target });
-            }
-          } else if (i + 1 < tokens.length) {
-            // Target is next token: > file
-            const target = stripQuotes(tokens[i + 1]);
-            // Skip /dev/* device paths
-            if (!isDevPath(target)) {
-              targets.push({ kind: "redirect", target });
-            }
-            i++; // Skip next token
-          }
-          break; // Only process first redirect operator in this token
+    // Phase 4 (170): Quote-aware redirect detection.
+    // Find the first unquoted `>`, `>>`, or `>|` in the token.
+    const redirectHit = findUnquotedRedirect(token);
+    if (redirectHit) {
+      const afterOp = token.slice(redirectHit.index + redirectHit.opLength);
+      if (afterOp) {
+        // Target is attached: >file
+        const target = stripQuotes(afterOp);
+        if (!isDevPath(target)) {
+          targets.push({ kind: "redirect", target });
         }
+      } else if (i + 1 < tokens.length) {
+        // Target is next token: > file
+        const target = stripQuotes(tokens[i + 1]);
+        if (!isDevPath(target)) {
+          targets.push({ kind: "redirect", target });
+        }
+        i++; // Skip next token
       }
     }
 
-    // Check for file-argument commands
-    if (FILE_ARG_COMMANDS.has(token)) {
+    // Check for file-argument commands (skip when read-only segment — Phase 4 / 170)
+    if (!isReadOnlySegment && FILE_ARG_COMMANDS.has(token)) {
       // Collect all non-flag arguments
       const fileArgs: string[] = [];
       let j = i + 1;

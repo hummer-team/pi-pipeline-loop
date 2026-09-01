@@ -210,6 +210,52 @@ describe("extractBashFileTargets", () => {
       expect(targets).toEqual([{ kind: "redirect", target: "out.txt" }]);
     });
   });
+
+  // ─── Phase 4 (170): read-only command exemption + quote-aware redirects ──
+
+  describe("Phase 4 (170): read-only command exemption", () => {
+    it("grep with Java signature pattern (contains >) → no targets", () => {
+      // Reproduces the 20:22:22 false positive: grep pattern contains ">" inside quotes
+      const targets = extractBashFileTargets('grep -r "findByEmail(@Param(\\"email\\")" src/');
+      expect(targets).toEqual([]);
+    });
+
+    it("grep with redirect → only redirect target detected", () => {
+      const targets = extractBashFileTargets("grep pattern src/ > results.txt");
+      expect(targets).toEqual([{ kind: "redirect", target: "results.txt" }]);
+    });
+
+    it("cat with redirect → only redirect target (not cat's file arg)", () => {
+      const targets = extractBashFileTargets("cat file.txt > output.txt");
+      // cat is read-only, so "file.txt" (cat's arg) should NOT appear as target
+      // Only the redirect "output.txt" should be extracted
+      expect(targets).toEqual([{ kind: "redirect", target: "output.txt" }]);
+    });
+
+    it("rm (file-arg command) → file-arg target extracted", () => {
+      const targets = extractBashFileTargets("rm docs/x.md");
+      expect(targets.length).toBe(1);
+      expect(targets[0].kind).toBe("file-arg");
+      expect(targets[0].target).toBe("docs/x.md");
+    });
+
+    it("> inside double-quoted string → not treated as redirect", () => {
+      const targets = extractBashFileTargets('echo "a > b"');
+      expect(targets).toEqual([]);
+    });
+
+    it("> inside single-quoted string → not treated as redirect", () => {
+      const targets = extractBashFileTargets("echo 'a > b'");
+      expect(targets).toEqual([]);
+    });
+
+    it("cat with redirect to src/ → still blocks (escape protection)", () => {
+      const targets = extractBashFileTargets("cat x > src/Main.java");
+      expect(targets.length).toBe(1);
+      expect(targets[0].kind).toBe("redirect");
+      expect(targets[0].target).toBe("src/Main.java");
+    });
+  });
 });
 
 describe("splitShellSegments", () => {
