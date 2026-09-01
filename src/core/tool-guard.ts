@@ -407,6 +407,23 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         };
       }
 
+      // 3b. Phase 2 (170): Policy tool blocklist — opt-in per-stage guard.
+      // When stageConfig.guard.blockedTools contains the current toolName,
+      // block with a policy-specific reason. NOT counted as a violation
+      // (does not contribute to circuit-breaker).
+      const blockedTools = stageConfig.guard?.blockedTools;
+      if (blockedTools && blockedTools.length > 0 && blockedTools.includes(toolName)) {
+        await safeWriteAuditLog("tool_blocked_by_policy", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          tool: toolName,
+        });
+        return {
+          block: true,
+          reason: `Tool '${toolName}' is blocked for answer collection in stage '${meta.currentStage}'. Relay questions and wait for answers in the requirement document.`,
+        };
+      }
+
       // 4. File write protection for write/edit tools
       if (toolName === "write" || toolName === "edit") {
         const filePath = (args.file_path || args.path) as string;

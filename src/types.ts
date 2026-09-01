@@ -200,6 +200,12 @@ export interface StageConfig {
 
   /** Optional post-verify confirmation gate configuration (default: { mode: "auto" }) */
   confirm?: ConfirmConfig;
+
+  /**
+   * Phase 2 (170): Resolved per-stage tool policy blocklist.
+   * Mirrors StageJsonConfig.guard after JSON config loading/validation.
+   */
+  guard?: { blockedTools?: string[] };
 }
 
 // ─── Summary Metadata ────────────────────────────────────────────────────────
@@ -701,6 +707,14 @@ export interface StageJsonConfig {
 
   /** Optional post-verify confirmation gate configuration */
   confirm?: ConfirmJsonConfig;
+
+  /**
+   * Phase 2 (170): Per-stage tool policy blocklist.
+   * Tools listed here are hard-blocked by tool-guard with a policy-specific reason.
+   * Blocks are NOT counted as violations (do not contribute to circuit-breaker).
+   * When absent or empty, behaviour is unchanged (zero impact on existing configs).
+   */
+  guard?: { blockedTools?: string[] };
 }
 
 /**

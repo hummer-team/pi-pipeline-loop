@@ -1162,4 +1162,57 @@ describe("confirm config (Phase 1 — 162)", () => {
       expect(result.confirmOverflow).toBe("ask");
     });
   });
+
+  // ─── Phase 2 (170): guard config parsing ──────────────────────────────────
+
+  describe("guard config (Phase 2 / 170)", () => {
+    it("guard absent → guard field is undefined on resolved stage", async () => {
+      await writeJson({ stages: { clarify: {} } });
+      const json = loadJsonConfig(jsonPath);
+      const result = resolvePipelineConfig(json);
+      expect(result.stages.clarify.guard).toBeUndefined();
+    });
+
+    it("guard with valid blockedTools → parsed as string array", async () => {
+      const obj = {
+        stages: {
+          clarify: { guard: { blockedTools: ["ask_user_question", "bash"] } },
+        },
+      };
+      await writeJson(obj);
+      const result = resolvePipelineConfig(loadJsonConfig(jsonPath));
+      expect(result.stages.clarify.guard).toEqual({ blockedTools: ["ask_user_question", "bash"] });
+    });
+
+    it("guard with empty blockedTools → empty array (zero behavior change)", async () => {
+      const obj = { stages: { clarify: { guard: { blockedTools: [] } } } };
+      await writeJson(obj);
+      const result = resolvePipelineConfig(loadJsonConfig(jsonPath));
+      expect(result.stages.clarify.guard).toEqual({ blockedTools: [] });
+    });
+
+    it("guard with non-string entries → non-strings silently dropped", async () => {
+      const obj = {
+        stages: { clarify: { guard: { blockedTools: ["ask_user_question", 42, null, ""] } } },
+      };
+      await writeJson(obj);
+      const result = resolvePipelineConfig(loadJsonConfig(jsonPath));
+      // Only valid non-empty strings survive
+      expect(result.stages.clarify.guard).toEqual({ blockedTools: ["ask_user_question"] });
+    });
+
+    it("guard with non-array blockedTools → treated as empty array", async () => {
+      const obj = { stages: { clarify: { guard: { blockedTools: "not_an_array" } } } };
+      await writeJson(obj);
+      const result = resolvePipelineConfig(loadJsonConfig(jsonPath));
+      expect(result.stages.clarify.guard).toEqual({ blockedTools: [] });
+    });
+
+    it("guard with non-object value → guard is undefined", async () => {
+      const obj = { stages: { clarify: { guard: "invalid" } } };
+      await writeJson(obj);
+      const result = resolvePipelineConfig(loadJsonConfig(jsonPath));
+      expect(result.stages.clarify.guard).toBeUndefined();
+    });
+  });
 });

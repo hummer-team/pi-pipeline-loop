@@ -358,6 +358,47 @@ function parseConfirmConfig(raw: unknown): ConfirmConfig | undefined {
 }
 
 /**
+ * Phase 2 (170): Parses and validates a per-stage guard configuration from JSON config.
+ *
+ * Expected shape: `{ blockedTools?: string[] }`.
+ * - `blockedTools` must be an array of strings. Non-string entries are logged as warn
+ *   and silently dropped (fail-open for individual items, strict for the array itself).
+ * - When the entire guard object is not an object, warns and returns undefined.
+ * - When blockedTools is absent or empty, returns `{ blockedTools: [] }` (explicit empty).
+ */
+function parseGuardConfig(raw: unknown): { blockedTools: string[] } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid guard config — expected object, got ${Array.isArray(raw) ? "array" : typeof raw}`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const tools: string[] = [];
+
+  if (obj.blockedTools !== undefined) {
+    if (!Array.isArray(obj.blockedTools)) {
+      console.warn(
+        `[pi-pipeline] Invalid guard.blockedTools — expected string array, got ${typeof obj.blockedTools}, ignoring`,
+      );
+    } else {
+      for (const item of obj.blockedTools) {
+        if (typeof item === "string" && item.length > 0) {
+          tools.push(item);
+        } else {
+          console.warn(
+            `[pi-pipeline] Invalid guard.blockedTools entry "${String(item)}" — expected non-empty string, skipping`,
+          );
+        }
+      }
+    }
+  }
+
+  return { blockedTools: tools };
+}
+
+/**
  * Parses and validates the top-level confirmOverflow value from JSON config.
  * Must be one of "ask" or "terminate".
  * Invalid values log a warning and fall back to "ask".
@@ -546,6 +587,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
           }
         : undefined,
       confirm: parseConfirmConfig(jsonStage.confirm),
+      guard: parseGuardConfig(jsonStage.guard),
     };
   }
 

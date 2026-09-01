@@ -2309,4 +2309,154 @@ describe("createToolGuard", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  // ─── Phase 2 (170): policy tool blocklist ──────────────────────────────────
+
+  describe("Phase 2 (170): policy tool blocklist (guard.blockedTools)", () => {
+    it("guard not configured → zero behavior change (all tools pass)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "ask_user_question", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // No block — guard not configured
+      expect(result).toBeUndefined();
+    });
+
+    it("guard with empty blockedTools → zero behavior change", async () => {
+      const config = makeTestConfig({
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: (a[i + 1] ?? null) as import("../../types").PipelineStage | null,
+                requireDomain: false,
+                guard: { blockedTools: [] },
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "ask_user_question", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+    });
+
+    it("guard blocks a matching tool with policy-specific reason", async () => {
+      const TMP = join(tmpdir(), "pi-tg-policy-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: (a[i + 1] ?? null) as import("../../types").PipelineStage | null,
+                requireDomain: false,
+                guard: s === "clarify" ? { blockedTools: ["ask_user_question"] } : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "ask_user_question", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Block with policy-specific reason
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("blocked for answer collection");
+      expect((result as any).reason).toContain("clarify");
+
+      // Audit should contain tool_blocked_by_policy
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("tool_blocked_by_policy");
+      expect(logContent).toContain("ask_user_question");
+
+      // Violation count should NOT increase (policy blocks are not violations)
+      expect(meta.violations?.length ?? 0).toBe(0);
+
+      await rm(TMP, { recursive: true, force: true });
+      // Reset audit dir path to avoid pollution of subsequent tests
+      __resetAuditDirPath();
+    });
+
+    it("guard blocks tool on configured stage only (other stages unaffected)", async () => {
+      const config = makeTestConfig({
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: (a[i + 1] ?? null) as import("../../types").PipelineStage | null,
+                requireDomain: false,
+                guard: s === "clarify" ? { blockedTools: ["ask_user_question"] } : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+
+      // On develop stage — same tool, but guard is not configured for this stage
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "ask_user_question", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Should NOT be blocked (develop stage has no guard)
+      expect(result).toBeUndefined();
+    });
+
+    it("guard does not block non-listed tools", async () => {
+      const config = makeTestConfig({
+        stages: Object.fromEntries(
+          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+            (s, i, a) => [
+              s,
+              {
+                agentPath: "a.md",
+                skillPath: "s.md",
+                nextStage: (a[i + 1] ?? null) as import("../../types").PipelineStage | null,
+                requireDomain: false,
+                guard: s === "clarify" ? { blockedTools: ["ask_user_question"] } : undefined,
+              },
+            ],
+          ),
+        ) as any,
+      });
+
+      // read tool should not be blocked even though guard is configured
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "read", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+    });
+  });
 });
