@@ -455,6 +455,14 @@ export interface SessionMeta {
   spawnedStages?: Partial<Record<PipelineStage, number>>;
 
   /**
+   * Phase 5 (170): Message ID of the last truncated-run audit emission.
+   * Used for deduplication: when the same truncated message is processed multiple
+   * times (e.g. repeated agent_settled calls), only the first emission is recorded.
+   * Absent/undefined = no truncated run has been audited yet.
+   */
+  lastTruncatedAuditMsgId?: string;
+
+  /**
    * Phase 1 (170): Unix timestamp (ms) of the last "unbound requirementDoc" notification.
    * Used by agent-settled throttle logic to avoid flooding the user with repeated
    * hints when the completion marker cannot be checked because requirementDoc

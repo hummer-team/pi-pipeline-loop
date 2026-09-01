@@ -17,6 +17,44 @@ import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText } from "./session-state";
+import { execSync } from "node:child_process";
+
+// ─── Plugin version stamp (Phase 5 / 170) ─────────────────────────────────────
+
+/**
+ * Lazily resolved plugin version string: `{packageVersion}+{shortGitHash}`.
+ * Cached at module level (process-scoped). Falls back to `"unknown"` on failure.
+ */
+let _pluginVersionStamp: string | null = null;
+
+/**
+ * Returns the plugin version stamp: `"{version}+{shortHash}"`.
+ * Reads package.json version + git rev-parse --short HEAD.
+ * Both values are cached after first resolution (process-scoped).
+ * Fail-open: returns "unknown" on any error.
+ */
+function getPluginVersionStamp(): string {
+  if (_pluginVersionStamp !== null) return _pluginVersionStamp;
+  try {
+    // Read version from package.json (relative to this compiled file)
+    const pkgPath = path.resolve(__dirname, "..", "..", "package.json");
+    const pkgRaw = JSON.parse(require("node:fs").readFileSync(pkgPath, "utf-8")) as { version?: string };
+    const version = pkgRaw.version ?? "0.0.0";
+
+    // Short git hash (fail-open if not in a git repo)
+    let shortHash = "unknown";
+    try {
+      shortHash = execSync("git rev-parse --short HEAD", { encoding: "utf-8", timeout: 2000 }).trim();
+    } catch {
+      // Not a git repo or git not available — use "unknown"
+    }
+
+    _pluginVersionStamp = `${version}+${shortHash}`;
+  } catch {
+    _pluginVersionStamp = "unknown";
+  }
+  return _pluginVersionStamp;
+}
 
 /**
  * Attempts to load a DomainConfig from a domain.md file.
@@ -264,9 +302,11 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         }
 
         // Write session_start audit log
+        // Phase 5 (170): attach plugin version stamp for deployment traceability
         await writeAuditLog("session_start", {
           pipelineId,
           stage: "clarify",
+          pluginVersion: getPluginVersionStamp(),
         });
 
         // NOTE: model management removed (Q4-A) — model is managed by user via /model command.

@@ -11,7 +11,7 @@ import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
-import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
+import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
 import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
@@ -94,6 +94,35 @@ export function createAgentSettled(
           config,
         );
         return;
+      }
+
+      // Phase 5 (170): Detect and audit run truncation / transient failure.
+      // Single shared implementation (detectLastRunHealth) consumed here for audit
+      // and by prompt_injector for next-turn warning injection (DRY).
+      try {
+        const health = detectLastRunHealth(ctx._ctx as Parameters<typeof detectLastRunHealth>[0]);
+        if (health.kind === "truncated" && health.messageId && health.messageId !== meta.lastTruncatedAuditMsgId) {
+          await writeAuditLog("run_truncated", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            messageId: health.messageId,
+          }, "warn");
+          ctx.session.updateMeta({ lastTruncatedAuditMsgId: health.messageId });
+        } else if (health.kind === "failed_transient" && health.messageId) {
+          await writeAuditLog("run_failed_transient", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            messageId: health.messageId,
+          }, "warn");
+        }
+      } catch (err) {
+        // Fail-open: truncation detection must never block the settle flow
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await writeAuditLog("run_health_detect_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: errMsg,
+        }, "warn");
       }
 
       // C2: Idempotent guard — skip verification if stage_advance already ran this turn

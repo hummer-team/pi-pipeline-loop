@@ -26,6 +26,7 @@ import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
 import { isFrozen, getFlowState, formatFrozenReason } from "./flow-state";
+import { detectLastRunHealth } from "./session-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { toProjectRelative } from "../utils/path-display";
@@ -449,6 +450,34 @@ function buildStageWriteScope(
 }
 
 /**
+ * Phase 5 (170): Builds the RUN TRUNCATION WARNING section.
+ *
+ * Injected when the last assistant run was truncated (stopReason === "length").
+ * Warns the agent to check document integrity and retry with smaller chunks.
+ *
+ * @param ctx - Runtime context for session branch access
+ * @returns Prompt section string, or null if no truncation detected
+ */
+function buildTruncationWarning(ctx: RuntimeCtx): string | null {
+  try {
+    const health = detectLastRunHealth(ctx._ctx as Parameters<typeof detectLastRunHealth>[0]);
+    if (health.kind !== "truncated") return null;
+
+    return [
+      `# RUN TRUNCATION WARNING`,
+      `Your previous response was truncated by the model output limit.`,
+      `Before continuing:`,
+      `1. Check the requirement document for incomplete sections at the tail.`,
+      `2. Break remaining content into smaller chunks (≤2KB each) and write incrementally.`,
+      `3. Do NOT retry the same large payload — it will be truncated again.`,
+      `4. If tool call parameters were cut mid-argument, reconstruct them from scratch.`,
+    ].join("\n");
+  } catch {
+    return null; // Fail-open
+  }
+}
+
+/**
  * Phase 3 (170) ⑤: Builds the PIPELINE STATE section for frozen pipelines.
  *
  * Injected into the prompt when `isFrozen(meta)` is true. Provides:
@@ -583,9 +612,15 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         ? "\n\n---\n\n" + pipelineStateSection
         : "";
 
+      // Phase 5 (170): inject RUN TRUNCATION WARNING for truncated runs
+      const truncationWarning = buildTruncationWarning(ctx);
+      const truncationSuffix = truncationWarning
+        ? "\n\n---\n\n" + truncationWarning
+        : "";
+
       const pluginPromptFull = completedSummary
-        ? pluginPrompt + "\n\n---\n\n" + completedSummary + pipelineStateSuffix
-        : pluginPrompt + pipelineStateSuffix;
+        ? pluginPrompt + "\n\n---\n\n" + completedSummary + pipelineStateSuffix + truncationSuffix
+        : pluginPrompt + pipelineStateSuffix + truncationSuffix;
 
       const systemPrompt = base
         ? base + "\n\n---\n\n" + pluginPromptFull

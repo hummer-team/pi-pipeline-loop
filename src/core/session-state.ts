@@ -264,6 +264,96 @@ export function extractAssistantMessages(ctx: ExtensionContext): string[] {
 }
 
 /**
+ * Phase 5 (170): Health status of the last assistant run.
+ *
+ * - "truncated": The last assistant message was cut off by the model's output
+ *   token limit (stopReason === "length"). The agent likely needs to retry in
+ *   smaller chunks.
+ * - "failed_transient": The last run ended with an error or was aborted
+ *   (stopReason in ["error", "aborted"]) with an errorMessage present.
+ * - "clean": Normal completion or no assistant messages yet.
+ */
+export type RunHealthKind = "truncated" | "failed_transient" | "clean";
+
+/**
+ * Phase 5 (170): Result of the last-run health check.
+ */
+export interface RunHealthResult {
+  kind: RunHealthKind;
+  /** ID of the last assistant message (for dedup in audit) */
+  messageId?: string;
+}
+
+/**
+ * Phase 5 (170): Detects the health status of the last assistant run.
+ *
+ * Scans the session branch for the last assistant message and checks its
+ * `stopReason` field (when available from the SDK). This is a single shared
+ * implementation consumed by both agent_settled (audit) and prompt_injector
+ * (next-turn warning injection) — DRY principle.
+ *
+ * Fail-open: returns "clean" on any extraction error.
+ *
+ * @param ctx - Extension context with session manager
+ * @returns RunHealthResult with kind and optional messageId
+ */
+export function detectLastRunHealth(ctx: ExtensionContext): RunHealthResult {
+  try {
+    const entries = ctx.sessionManager.getBranch();
+    let lastAssistant: {
+      id?: string;
+      stopReason?: string;
+      errorMessage?: string;
+    } | null = null;
+
+    // Scan backwards for the last assistant message
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.type !== "message") continue;
+
+      const msgEntry = entry as {
+        type: "message";
+        message: {
+          role: string;
+          stopReason?: string;
+          errorMessage?: string;
+        };
+        id?: string;
+      };
+      if (msgEntry.message.role !== "assistant") continue;
+
+      lastAssistant = {
+        id: msgEntry.id,
+        stopReason: msgEntry.message.stopReason,
+        errorMessage: msgEntry.message.errorMessage,
+      };
+      break;
+    }
+
+    if (!lastAssistant) {
+      return { kind: "clean" };
+    }
+
+    if (lastAssistant.stopReason === "length") {
+      return { kind: "truncated", messageId: lastAssistant.id };
+    }
+
+    if (
+      (lastAssistant.stopReason === "error" || lastAssistant.stopReason === "aborted") &&
+      lastAssistant.errorMessage
+    ) {
+      return { kind: "failed_transient", messageId: lastAssistant.id };
+    }
+
+    return { kind: "clean", messageId: lastAssistant.id };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    safeWriteAuditLog("session_state_error", { operation: "detectLastRunHealth", error: errMsg }, "error");
+    return { kind: "clean" };
+  }
+}
+
+/**
  * Extract the text content of the first user-role message from the session branch.
  *
  * Used by Phase 1 (170) JOIN auto-bind to parse requirement doc paths from the
