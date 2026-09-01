@@ -55,7 +55,17 @@ describe("parseRequirementDocPath", () => {
 
   // ─── Multiple matches (ambiguity) ──────────────────────────────────────────
 
-  it("returns null when multiple doc paths are found (ambiguous)", () => {
+  it("returns first path when multiple doc paths in different directories (take-first)", () => {
+    // Multi-path in different directories → take first (user mentioned multiple docs)
+    const text = "Start with docs/design/spec.md and then check docs/review/notes.md";
+    let captured: string[] | undefined;
+    const result = parseRequirementDocPath(text, (paths) => { captured = paths; });
+    expect(result).toBe("docs/design/spec.md");
+    // Candidates callback should NOT be invoked for take-first
+    expect(captured).toBeUndefined();
+  });
+
+  it("returns null when multiple doc paths in same directory (version ambiguity)", () => {
     const text = "Compare docs/design/v1.md with docs/design/v2.md";
     let captured: string[] | undefined;
     const result = parseRequirementDocPath(text, (paths) => { captured = paths; });

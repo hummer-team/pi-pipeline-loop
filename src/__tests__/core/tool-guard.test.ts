@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import type { ExecFn } from "../../types";
 
 describe("createToolGuard", () => {
@@ -2510,6 +2511,66 @@ describe("createToolGuard", () => {
 
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();
+    });
+  });
+
+  // ─── Phase 3 (170): Frozen audit throttle tests ──
+
+  describe("Phase 3 (170): frozen audit throttle", () => {
+    it("tool_rejected_frozen audit fires once within throttle window, suppressed on repeat", async () => {
+      const TMP = join(tmpdir(), "pi-tg-throttle-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
+
+      const hook = createToolGuard(config);
+
+      // First call → should emit audit
+      await hook.handler(ctx as any);
+      // Second call (same tool+flowState) within window → suppressed
+      await hook.handler(ctx as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const occurrences = logContent.split("tool_rejected_frozen").length - 1;
+      expect(occurrences).toBe(1); // Only one audit within window
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("tool_rejected_frozen audit can fire again for different tool (different throttle key)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-throttle2-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+
+      // First call with "write" tool
+      const ctx1 = createMockCtx(meta);
+      ctx1.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
+      const hook = createToolGuard(config);
+      await hook.handler(ctx1 as any);
+
+      // Second call with "bash" tool → different key → should emit
+      const ctx2 = createMockCtx(meta);
+      ctx2.toolCall = { name: "bash", arguments: { command: "ls" } };
+      await hook.handler(ctx2 as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const occurrences = logContent.split("tool_rejected_frozen").length - 1;
+      expect(occurrences).toBe(2); // Two audits for different tools
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
     });
   });
 });

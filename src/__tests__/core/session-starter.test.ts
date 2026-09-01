@@ -667,4 +667,30 @@ describe("createSessionStarter", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  // ─── Phase 5 (170): pluginVersion stamp in session_start audit ──
+
+  describe("Phase 5 (170): pluginVersion stamp", () => {
+    it("session_start audit contains pluginVersion field", async () => {
+      const TMP = join(tmpdir(), "pi-ss-version-" + Date.now());
+      const domainDir = join(TMP, ".pi", "domains");
+      await mkdir(domainDir, { recursive: true });
+      await writeFile(join(domainDir, "domain.md"), "---\nid: general\nversion: latest\n---\n# Domain");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const ctx = createCtx({});
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("session_start");
+      expect(logContent).toContain("pluginVersion");
+      // pluginVersion should not be empty — at minimum "unknown" on failure
+      expect(logContent).toMatch(/pluginVersion.*0\.\d+\.\d+|pluginVersion.*unknown/);
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
 });

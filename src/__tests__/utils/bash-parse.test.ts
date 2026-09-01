@@ -255,6 +255,27 @@ describe("extractBashFileTargets", () => {
       expect(targets[0].kind).toBe("redirect");
       expect(targets[0].target).toBe("src/Main.java");
     });
+
+    it("cat x | tee src/Main.java → tee write target detected (escape protection fix)", () => {
+      // Phase 4 (170) regression fix: read-only first token must NOT suppress
+      // FILE_ARG_COMMANDS extraction for subsequent tokens in the segment.
+      // `tee` is in FILE_ARG_COMMANDS and must produce a write target even
+      // when preceded by a read-only command like `cat`.
+      const targets = extractBashFileTargets("cat x | tee src/Main.java");
+      expect(targets.length).toBeGreaterThanOrEqual(1);
+      expect(targets).toContainEqual({ kind: "file-arg", target: "src/Main.java" });
+    });
+
+    it("grep pattern | tee output.log → tee target detected", () => {
+      const targets = extractBashFileTargets("grep pattern src/ | tee results.txt");
+      expect(targets).toContainEqual({ kind: "file-arg", target: "results.txt" });
+    });
+
+    it("cat file.txt → no targets (read-only first token skips cat's own args)", () => {
+      // cat is read-only, so its file argument should NOT appear
+      const targets = extractBashFileTargets("cat file.txt");
+      expect(targets).toEqual([]);
+    });
   });
 });
 

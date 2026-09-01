@@ -83,4 +83,31 @@ describe("createPipelineStatusCommand", () => {
     expect(result.content).toContain("Summary Status: valid");
     expect(result.content).toContain("/tmp/dev.md");
   });
+
+  // ─── Phase 6 (170): Template drift regression tests ──
+
+  it("shows Template drift line with 0 files when no .pi/ directory (no drift)", async () => {
+    // Use a non-existent projectRoot → drift check returns empty → "0 file(s)"
+    const config = makeTestConfig({ projectRoot: "/nonexistent/path/no-drift" });
+    const meta = makeTestMeta();
+    const ctx = createCtx(meta);
+
+    const cmd = createPipelineStatusCommand(config);
+    const result = (await (cmd.execute as any)({}, ctx)) as any;
+
+    expect(result.content).toContain("Template drift: 0 file(s)");
+  });
+
+  it("does not crash when drift check fails (fail-open)", async () => {
+    const config = makeTestConfig({ projectRoot: "/invalid/root/xyz" });
+    const meta = makeTestMeta();
+    const ctx = createCtx(meta);
+
+    const cmd = createPipelineStatusCommand(config);
+    const result = (await (cmd.execute as any)({}, ctx)) as any;
+
+    // Should still return success with drift line
+    expect(result.success).toBe(true);
+    expect(result.content).toContain("Template drift:");
+  });
 });

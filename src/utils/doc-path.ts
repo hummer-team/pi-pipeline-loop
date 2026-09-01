@@ -16,9 +16,12 @@
  * Return semantics:
  * - 0 matches → `null`
  * - 1 match   → the matched path
- * - 2+ matches → `null` (ambiguous — caller should NOT guess);
- *                 when `candidates` callback is provided it receives the full list
- *                 so the caller can log/audit them for diagnostics.
+ * - 2+ matches, same directory with version-like filenames
+ *   (e.g. `docs/design/v1.md` + `docs/design/v2.md`) → `null` (ambiguous —
+ *   caller should NOT guess); `candidates` callback receives the full list
+ *   so the caller can log/audit them for diagnostics.
+ * - 2+ matches, different directories → first match (take-first heuristic;
+ *   the user likely mentioned multiple docs, the first is the primary target).
  *
  * @param rawText  - Text to scan (typically a user message)
  * @param candidates - Optional callback receiving the full candidate list on ambiguity
@@ -54,9 +57,18 @@ export function parseRequirementDocPath(
     return matches[0];
   }
 
-  // Ambiguous: report candidates for audit, return null (no guessing)
-  if (candidates) {
-    candidates(matches);
+  // Multiple matches: distinguish same-directory version ambiguity from general multi-path.
+  // Same-directory heuristic: all matches share the same directory → ambiguous (return null).
+  // Otherwise: take first match (user likely mentioned multiple docs, first is the target).
+  const dirs = new Set(matches.map(p => p.replace(/\/[^/]*$/, "")));
+  if (dirs.size === 1) {
+    // Same directory, different files → version-like ambiguity, don't guess
+    if (candidates) {
+      candidates(matches);
+    }
+    return null;
   }
-  return null;
+
+  // Different directories → take first
+  return matches[0];
 }

@@ -1301,4 +1301,82 @@ describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
 
     await rm(TMP, { recursive: true, force: true });
   });
+
+  // ─── Phase 5 (170): RUN TRUNCATION WARNING injection ──
+
+  it("truncated last run → injects RUN TRUNCATION WARNING section", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-trunc-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Test Skill\nContent", "utf-8");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+
+    // Simulate a truncated last assistant message
+    const truncatedEntries = [
+      {
+        type: "message",
+        id: "msg-trunc-001",
+        message: { role: "assistant", content: "partial output...", stopReason: "length" },
+      },
+    ];
+
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      toolCall: { name: "read", arguments: {} },
+      result: undefined,
+      _ctx: { sessionManager: { getBranch: () => truncatedEntries, getEntries: () => truncatedEntries } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    const prompt = (result as any)?.systemPrompt ?? "";
+    expect(prompt).toContain("# RUN TRUNCATION WARNING");
+    expect(prompt).toContain("truncated");
+    expect(prompt).toContain("smaller chunks");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("clean last run → no RUN TRUNCATION WARNING section", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-clean-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Test Skill\nContent", "utf-8");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+
+    // Normal end_turn message
+    const cleanEntries = [
+      {
+        type: "message",
+        id: "msg-clean-001",
+        message: { role: "assistant", content: "complete output", stopReason: "end_turn" },
+      },
+    ];
+
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      toolCall: { name: "read", arguments: {} },
+      result: undefined,
+      _ctx: { sessionManager: { getBranch: () => cleanEntries, getEntries: () => cleanEntries } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    const prompt = (result as any)?.systemPrompt ?? "";
+    expect(prompt).not.toContain("# RUN TRUNCATION WARNING");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
 });

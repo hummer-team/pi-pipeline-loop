@@ -37,7 +37,7 @@ import {
   toProjectRelative,
   type ProtectState,
 } from "../utils/protect";
-import { ALLOWED_WRITE_ALL } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
@@ -405,7 +405,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         // Phase 3 (170) ③: throttle audit for frozen rejection (60s window per pipelineId+tool+flowState)
         // Prevents audit flooding when the agent repeatedly hits frozen state.
         const throttleKey = `frozen:${meta.pipelineId}:${toolName}:${fs}`;
-        if (shouldEmitWithinWindow(throttleKey, 60_000)) {
+        if (shouldEmitWithinWindow(throttleKey, AUDIT_THROTTLE_WINDOW_MS)) {
           await safeWriteAuditLog("tool_rejected_frozen", {
             pipelineId: meta.pipelineId,
             stage: meta.currentStage,

@@ -1697,4 +1697,55 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
 
     await rm(stageTmp, { recursive: true, force: true });
   });
+
+  // ─── Phase 3 (170): aborted/blocked notify text branches ──
+
+  it("aborted flowState → notify contains 'Pipeline aborted' with /pipeline-start guidance", async () => {
+    const stageTmp = join(tmpdir(), "pi-as-aborted-msg-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "aborted",
+      requirementDoc: "docs/design/82_Feat.md",
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Aborted branch: should notify with /pipeline-start and the doc path
+    const abortedNotify = ctx.notifications.find(n => n.includes("Pipeline aborted"));
+    expect(abortedNotify).toBeDefined();
+    expect(abortedNotify).toContain("/pipeline-start");
+    expect(abortedNotify).toContain("docs/design/82_Feat.md");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("blocked flowState → notify contains 'Pipeline frozen' with decision menu hint", async () => {
+    const stageTmp = join(tmpdir(), "pi-as-blocked-msg-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Blocked branch: should notify with frozen reason and decision menu hint
+    const frozenNotify = ctx.notifications.find(n => n.includes("Pipeline frozen"));
+    expect(frozenNotify).toBeDefined();
+    expect(frozenNotify).toContain("decision menu");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
 });

@@ -285,6 +285,50 @@ export interface RunHealthResult {
 }
 
 /**
+ * Phase 5 (170): Extract metadata from the last assistant message in the branch.
+ *
+ * Returns `stopReason` and `errorMessage` from the last assistant message
+ * (if any). This is a parallel structure to `extractAssistantMessages` that
+ * exposes per-message metadata without changing the existing string[] signature.
+ *
+ * The higher-level `detectLastRunHealth` consumes this data to classify the
+ * run into truncated/failed_transient/clean.
+ *
+ * Fail-open: returns null on any extraction error.
+ *
+ * @param ctx - Extension context with session manager
+ * @returns Object with stopReason/errorMessage, or null if no assistant message found
+ */
+export function extractLastAssistantMeta(ctx: ExtensionContext): {
+  stopReason?: string;
+  errorMessage?: string;
+} | null {
+  try {
+    const entries = ctx.sessionManager.getBranch();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.type !== "message") continue;
+
+      const msgEntry = entry as {
+        type: "message";
+        message: { role: string; stopReason?: string; errorMessage?: string };
+      };
+      if (msgEntry.message.role !== "assistant") continue;
+
+      return {
+        stopReason: msgEntry.message.stopReason,
+        errorMessage: msgEntry.message.errorMessage,
+      };
+    }
+    return null;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    safeWriteAuditLog("session_state_error", { operation: "extractLastAssistantMeta", error: errMsg }, "error");
+    return null;
+  }
+}
+
+/**
  * Phase 5 (170): Detects the health status of the last assistant run.
  *
  * Scans the session branch for the last assistant message and checks its

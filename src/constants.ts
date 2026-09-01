@@ -63,6 +63,16 @@ export const DEFAULT_CONFIRM_MAX_REJECTIONS = 5;
  */
 export const DEFAULT_CONFIRM_OVERFLOW = "ask" as const;
 
+// ─── Audit Throttle Window (Phase 3 / 170) ──────────────────────────────────
+
+/**
+ * Default throttle window for frozen/abort audit deduplication (milliseconds).
+ * Same pipelineId+tool+flowState combination emits at most one audit entry
+ * within this window to prevent log flooding.
+ * Referenced by tool-guard.ts (frozen rejection) and agent-settled.ts (unbound notify).
+ */
+export const AUDIT_THROTTLE_WINDOW_MS = 60_000;
+
 // ─── Terminal Context Compaction Defaults (Phase 4 / 169) ────────────────────
 
 /**

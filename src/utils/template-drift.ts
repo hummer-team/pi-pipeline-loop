@@ -36,13 +36,19 @@ export interface DriftEntry {
  * These are the critical assets that must stay in sync between the plugin
  * source templates and the deployed `.pi/` directory.
  *
- * Agent definitions (SKILL.md files) are intentionally excluded — they often
- * contain user customizations (model/thinking params) and should not trigger
- * drift alerts.
+ * Phase 6 (170): Skills (SKILL.md files) are included — the 09-01 incident
+ * root cause was a drifted `.pi/skills/design/SKILL.md` (08-30 old version).
+ * Agent definitions (`.pi/agents/*.md`) are intentionally excluded — they
+ * often contain user customizations (model/thinking params).
  */
 const DRIFT_CHECK_ASSETS: string[] = [
   "references/pipeline-stage-prompt.yml",
   "references/clarify_template.md",
+  "skills/design/SKILL.md",
+  "skills/plan/SKILL.md",
+  "skills/develop/SKILL.md",
+  "skills/review/SKILL.md",
+  "skills/fix/SKILL.md",
 ];
 
 /**

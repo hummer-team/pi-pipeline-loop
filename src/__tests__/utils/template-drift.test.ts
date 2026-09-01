@@ -22,13 +22,11 @@ describe("checkTemplateDrift (Phase 6 / 170)", () => {
     expect(drifts).toEqual([]);
   });
 
-  it("returns empty array when deployed hashes match repo hashes", async () => {
-    // This test verifies the "no drift" path.
-    // Since we can't easily mock the repo source, we verify that when both
-    // deployed and repo are missing, no drift is reported (graceful empty).
+  it("returns empty array when deployed copies are all missing (graceful empty)", async () => {
+    // .pi/ exists but no deployed copies → empty (not crash)
+    await mkdir(join(TMP, ".pi"), { recursive: true });
     const drifts = await checkTemplateDrift(TMP);
     expect(Array.isArray(drifts)).toBe(true);
-    // With no deployed copies, nothing to compare → empty
     expect(drifts.length).toBe(0);
   });
 
@@ -57,6 +55,26 @@ describe("checkTemplateDrift (Phase 6 / 170)", () => {
       expect(d.repoHash).toMatch(/^[0-9a-f]{64}$/);
       expect(d.deployedHash).not.toBe(d.repoHash);
     }
+  });
+
+  it("includes skills in drift check assets (incident root cause)", async () => {
+    // Phase 6 (170) fix: .pi/skills/*/SKILL.md must be included in drift detection
+    // Create a drifted deployed skill file
+    const deployedSkillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(deployedSkillDir, { recursive: true });
+    await writeFile(
+      join(deployedSkillDir, "SKILL.md"),
+      "# Old SKILL.md content from a previous version\n",
+      "utf-8",
+    );
+
+    const drifts = await checkTemplateDrift(TMP);
+
+    // Should detect drift for the skill file
+    const skillDrift = drifts.find(d => d.asset.includes("skills"));
+    expect(skillDrift).toBeDefined();
+    expect(skillDrift!.asset).toContain("design/SKILL.md");
+    expect(skillDrift!.deployedHash).not.toBe(skillDrift!.repoHash);
   });
 
   it("fail-open: handles corrupt projectRoot gracefully", async () => {

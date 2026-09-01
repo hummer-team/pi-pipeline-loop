@@ -158,11 +158,13 @@ export function extractBashFileTargets(command: string): BashTarget[] {
   const tokens = tokenize(command);
 
   // Phase 4 (170): detect read-only command as the first token.
-  // When the segment starts with a read-only command, skip FILE_ARG_COMMANDS
-  // extraction for ALL tokens in the segment (the command itself doesn't write).
+  // When the FIRST token is a read-only command, skip FILE_ARG_COMMANDS
+  // extraction for THAT token only. Subsequent FILE_ARG_COMMANDS (e.g. `tee`
+  // after `cat | tee`) are still extracted — the read-only exemption applies
+  // to the command itself, not to downstream pipe components.
   // Shell redirects (>, >>) are still detected independently below.
   const firstToken = tokens.length > 0 ? tokens[0] : "";
-  const isReadOnlySegment = READ_ONLY_BASH_COMMANDS.has(firstToken);
+  const firstTokenIsReadOnly = READ_ONLY_BASH_COMMANDS.has(firstToken);
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -194,8 +196,13 @@ export function extractBashFileTargets(command: string): BashTarget[] {
       }
     }
 
-    // Check for file-argument commands (skip when read-only segment — Phase 4 / 170)
-    if (!isReadOnlySegment && FILE_ARG_COMMANDS.has(token)) {
+    // Check for file-argument commands.
+    // Phase 4 (170): when the first token is read-only, only skip extraction
+    // for the first token itself. Subsequent FILE_ARG_COMMANDS (e.g. `tee`
+    // in `cat x | tee output.txt`) must still be detected to prevent write
+    // protection escape.
+    const skipFileArg = firstTokenIsReadOnly && i === 0;
+    if (!skipFileArg && FILE_ARG_COMMANDS.has(token)) {
       // Collect all non-flag arguments
       const fileArgs: string[] = [];
       let j = i + 1;

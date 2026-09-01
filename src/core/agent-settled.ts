@@ -24,6 +24,7 @@ import {
 import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp } from "../utils/audit-throttle";
+import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -246,7 +247,7 @@ export function createAgentSettled(
             marker,
           });
           // Throttled notification: avoid flooding on repeated settles within the same stage visit
-          if (shouldNotifyAndStamp(meta, "lastUnboundNotifiedAt", 60_000)) {
+          if (shouldNotifyAndStamp(meta, "lastUnboundNotifiedAt", AUDIT_THROTTLE_WINDOW_MS)) {
             ctx.session.updateMeta({ lastUnboundNotifiedAt: Date.now() });
             ui.notify(ctx, `Requirement document not bound. Run /pipeline-start <requirement-doc> to bind and resume.`);
           }
