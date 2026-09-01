@@ -23,6 +23,7 @@ import {
 } from "./stage-advancer";
 import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
+import { shouldNotifyAndStamp } from "../utils/audit-throttle";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -193,15 +194,31 @@ export function createAgentSettled(
 
       // CompletionMarker precheck: if configured, verify the marker has been
       // written to the requirement doc before running verification.
-      // When marker is not found: skip verification, do NOT advance, do NOT
-      // increment verifyAttempts (prevents freeze loop on interactive stages).
+      // Phase 1 (170): Distinguish "doc unbound" from "doc bound but marker not yet written".
+      // - Unbound: audit `verify_completion_marker_unbound` + throttled ui.notify with escape hatch.
+      // - Bound but pending: maintain existing silent semantics (168 decision).
       const marker = stageConfig.verify.completionMarker;
       if (marker && !await precheckCompletionMarker(meta, marker, config.projectRoot)) {
-        await writeAuditLog("verify_completion_marker_pending", {
-          pipelineId: meta.pipelineId,
-          stage: meta.currentStage,
-          marker,
-        });
+        if (!meta.requirementDoc) {
+          // Requirement doc not bound — surface the root cause to the user
+          await writeAuditLog("verify_completion_marker_unbound", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            marker,
+          });
+          // Throttled notification: avoid flooding on repeated settles within the same stage visit
+          if (shouldNotifyAndStamp(meta, "lastUnboundNotifiedAt", 60_000)) {
+            ctx.session.updateMeta({ lastUnboundNotifiedAt: Date.now() });
+            ui.notify(ctx, `Requirement document not bound. Run /pipeline-start <requirement-doc> to bind and resume.`);
+          }
+        } else {
+          // Doc is bound but marker not yet written — silent skip (existing semantics)
+          await writeAuditLog("verify_completion_marker_pending", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            marker,
+          });
+        }
         return;
       }
 

@@ -15,6 +15,8 @@ import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
+import { parseRequirementDocPath } from "../utils/doc-path";
+import { extractFirstUserMessageText } from "./session-state";
 
 /**
  * Attempts to load a DomainConfig from a domain.md file.
@@ -142,6 +144,39 @@ async function handleSubagentJoin(
     pipelineId: parentPipelineId,
     stage: parentMeta.currentStage,
   });
+
+  // Phase 1 (170): Auto-bind requirementDoc from the subagent's first user message
+  // when the parent meta has no requirementDoc bound. This covers the @mention
+  // start path where the user invokes the agent with a doc path but has not yet
+  // run /pipeline-start explicitly.
+  if (!parentMeta.requirementDoc) {
+    try {
+      const firstUserMsg = extractFirstUserMessageText(ctx._ctx as Parameters<typeof extractFirstUserMessageText>[0]);
+      const parsedPath = parseRequirementDocPath(firstUserMsg, (candidates) => {
+        // Ambiguous: audit all candidates for diagnostics
+        safeWriteAuditLog("requirement_doc_ambiguous", {
+          pipelineId: parentPipelineId,
+          candidates: candidates.join(", "),
+        }, "warn");
+      });
+      if (parsedPath) {
+        ctx.session.updateMeta({ requirementDoc: parsedPath });
+        await safeWriteAuditLog("requirement_doc_bound", {
+          pipelineId: parentPipelineId,
+          stage: parentMeta.currentStage,
+          requirementDoc: parsedPath,
+          source: "subagent_join",
+        });
+      }
+    } catch (err) {
+      // Fail-open: auto-bind must never block JOIN
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await safeWriteAuditLog("requirement_doc_bind_error", {
+        pipelineId: parentPipelineId,
+        error: errMsg,
+      }, "warn");
+    }
+  }
 
   ui.stageEntry(ctx, parentMeta.currentStage);
   return true;

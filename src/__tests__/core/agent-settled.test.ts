@@ -5,7 +5,7 @@ import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
-import type { PipelineStage } from "../../types";
+import type { PipelineStage, SessionMeta } from "../../types";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-" + Date.now());
 
@@ -1542,6 +1542,158 @@ describe("Nit 3 (reaudit): agent-settled auto mode + fail report → route fix v
     expect(logContent).toContain("review_auto_route_fix");
     // Must NOT have confirm_rejected (no counting)
     expect(logContent).not.toContain("confirm_rejected");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
+// ─── Phase 1 (170): unbound requirementDoc gate ──────────────────────────────
+
+describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
+  const unboundTmp = join(tmpdir(), "pi-unbound-" + Date.now());
+
+  it("no requirementDoc + marker pending → verify_completion_marker_unbound + throttled notify", async () => {
+    const stageTmp = join(unboundTmp, "unbound-notify");
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "clarify"
+                ? { require: true, verifyFile: "verify.md", completionMarker: "## 模型确认" }
+                : undefined,
+            },
+          ],
+        ),
+      ) as unknown as Record<PipelineStage, import("../../types").StageConfig>,
+    });
+
+    // Meta has NO requirementDoc — the root cause condition
+    const meta: SessionMeta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: undefined,
+      verifyAttempts: 0,
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as unknown as Parameters<typeof hook.handler>[0]);
+
+    // Audit should contain verify_completion_marker_unbound (NOT verify_completion_marker_pending)
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_completion_marker_unbound");
+    expect(logContent).not.toContain("verify_completion_marker_pending");
+
+    // Notify should fire once with escape-hatch guidance
+    expect(ctx.notifications.some(n => n.includes("Requirement document not bound"))).toBe(true);
+    // lastUnboundNotifiedAt should have been stamped
+    expect(meta.lastUnboundNotifiedAt).toBeDefined();
+    expect(typeof meta.lastUnboundNotifiedAt).toBe("number");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("unbound throttle: second settle within window → no additional notify", async () => {
+    const stageTmp = join(unboundTmp, "unbound-throttle");
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "clarify"
+                ? { require: true, verifyFile: "verify.md", completionMarker: "## 模型确认" }
+                : undefined,
+            },
+          ],
+        ),
+      ) as unknown as Record<PipelineStage, import("../../types").StageConfig>,
+    });
+
+    // Pre-stamp lastUnboundNotifiedAt to simulate a recent notification
+    const meta: SessionMeta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: undefined,
+      lastUnboundNotifiedAt: Date.now(), // Within throttle window
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as unknown as Parameters<typeof hook.handler>[0]);
+
+    // Audit should still contain the unbound event (always written)
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_completion_marker_unbound");
+
+    // But no new notification should fire (throttled)
+    expect(ctx.notifications.filter(n => n.includes("Requirement document not bound")).length).toBe(0);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("doc bound + marker pending → verify_completion_marker_pending (regression)", async () => {
+    const stageTmp = join(unboundTmp, "bound-pending");
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Write requirement doc WITHOUT the marker
+    await writeFile(join(stageTmp, "req.md"), "# Requirements\nNo marker yet\n", "utf-8");
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "clarify"
+                ? { require: true, verifyFile: "verify.md", completionMarker: "## 模型确认" }
+                : undefined,
+            },
+          ],
+        ),
+      ) as unknown as Record<PipelineStage, import("../../types").StageConfig>,
+    });
+
+    // Meta HAS requirementDoc bound — marker just not written yet
+    const meta: SessionMeta = makeTestMeta({
+      currentStage: "clarify",
+      requirementDoc: "req.md",
+      verifyAttempts: 0,
+    });
+    const ctx = createMockCtx(meta);
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as unknown as Parameters<typeof hook.handler>[0]);
+
+    // Should use the OLD event name (pending, not unbound)
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("verify_completion_marker_pending");
+    expect(logContent).not.toContain("verify_completion_marker_unbound");
+
+    // No notification for the bound-but-pending case
+    expect(ctx.notifications.filter(n => n.includes("Requirement document not bound")).length).toBe(0);
 
     await rm(stageTmp, { recursive: true, force: true });
   });

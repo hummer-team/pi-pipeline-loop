@@ -264,6 +264,51 @@ export function extractAssistantMessages(ctx: ExtensionContext): string[] {
 }
 
 /**
+ * Extract the text content of the first user-role message from the session branch.
+ *
+ * Used by Phase 1 (170) JOIN auto-bind to parse requirement doc paths from the
+ * subagent's first user message (which typically contains the @mention prompt
+ * including the document path).
+ *
+ * Content extraction mirrors extractAssistantMessages:
+ * - string content → used directly
+ * - array content → concatenates parts where type === "text"
+ *
+ * Returns empty string when no user message is found or on extraction failure.
+ */
+export function extractFirstUserMessageText(ctx: ExtensionContext): string {
+  try {
+    const entries = ctx.sessionManager.getBranch();
+
+    for (const entry of entries) {
+      if (entry.type !== "message") continue;
+
+      const msgEntry = entry as { type: "message"; message: { role: string; content?: unknown } };
+      if (msgEntry.message.role !== "user") continue;
+
+      const content = msgEntry.message.content;
+      if (typeof content === "string") {
+        return content;
+      }
+      if (Array.isArray(content)) {
+        const textParts = content
+          .filter((part: { type?: string }) => part.type === "text")
+          .map((part: { text?: string }) => part.text ?? "");
+        if (textParts.length > 0) {
+          return textParts.join("");
+        }
+      }
+    }
+
+    return "";
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    safeWriteAuditLog("session_state_error", { operation: "extractFirstUserMessageText", error: errMsg }, "error");
+    return "";
+  }
+}
+
+/**
  * A single tool call record extracted from the session branch.
  * Used by selfVerifySkip to determine whether the model has already
  * successfully executed a given command during the current stage.

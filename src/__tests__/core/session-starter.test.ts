@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { createSessionStarter } from "../../core/session-starter";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { writeFile, mkdir, readFile } from "node:fs/promises";
+import { writeFile, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
@@ -514,6 +514,157 @@ describe("createSessionStarter", () => {
       await hook.handler(ctx as any);
 
       expect(meta.advancedThisTurn).toBe(true);
+    });
+
+    // ─── Phase 1 (170): JOIN auto-bind requirementDoc ──────────────────────
+
+    /** Create a JOIN ctx with user messages in the session branch */
+    function createJoinCtxWithMessages(meta: Record<string, unknown>, opts: {
+      parentSession?: string;
+      sessionFile?: string;
+      userMessages?: Array<{ role: string; content: string }>;
+    }) {
+      const updates: any[] = [];
+      return {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => {
+            updates.push(m);
+            Object.assign(meta, m);
+          },
+        },
+        updates,
+        ui: { notify: () => {}, setStatus: () => {} },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => (opts.userMessages ?? []).map(m => ({
+              type: "message",
+              message: { role: m.role, content: m.content },
+            })),
+            getEntries: () => [],
+            getHeader: opts.parentSession ? () => ({ parentSession: opts.parentSession }) : () => ({}),
+            getSessionName: () => "clarify-agent#aabb1122",
+            getSessionFile: opts.sessionFile ? () => opts.sessionFile! : () => "",
+          },
+        },
+      };
+    }
+
+    it("JOIN: first user message contains doc path → auto-binds requirementDoc", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-autobind-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-autobind-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "clarify",
+        pipelineId: "pipe-autobind-parent",
+        requirementDoc: undefined, // No doc bound in parent
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-autobind-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "autobind-parent-session", "pipe-autobind-parent");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtxWithMessages(meta, {
+        parentSession: "autobind-parent-session",
+        sessionFile: "autobind-child-session",
+        userMessages: [
+          { role: "user", content: "@agent docs/design/82_Feat.md 1 答" },
+        ],
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // requirementDoc should have been auto-bound
+      expect(meta.requirementDoc).toBe("docs/design/82_Feat.md");
+
+      // Audit should contain requirement_doc_bound
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("requirement_doc_bound");
+      expect(content).toContain("subagent_join");
+      expect(content).toContain("docs/design/82_Feat.md");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("JOIN: no doc path in first message → no auto-bind", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-nobind-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-nobind-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "clarify",
+        pipelineId: "pipe-nobind-parent",
+        requirementDoc: undefined,
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-nobind-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "nobind-parent-session", "pipe-nobind-parent");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtxWithMessages(meta, {
+        parentSession: "nobind-parent-session",
+        sessionFile: "nobind-child-session",
+        userMessages: [
+          { role: "user", content: "Please analyze the requirements" },
+        ],
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // requirementDoc should remain undefined
+      expect(meta.requirementDoc).toBeUndefined();
+
+      // Audit should NOT contain requirement_doc_bound
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).not.toContain("requirement_doc_bound");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("JOIN: requirementDoc already bound → no re-bind attempt", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-alreadybound-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-alreadybound-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "clarify",
+        pipelineId: "pipe-alreadybound-parent",
+        requirementDoc: "docs/existing/spec.md", // Already bound
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-alreadybound-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "alreadybound-parent-session", "pipe-alreadybound-parent");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createJoinCtxWithMessages(meta, {
+        parentSession: "alreadybound-parent-session",
+        sessionFile: "alreadybound-child-session",
+        userMessages: [
+          { role: "user", content: "@agent docs/design/other.md 1" },
+        ],
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // requirementDoc should remain the original value (not overwritten)
+      expect(meta.requirementDoc).toBe("docs/existing/spec.md");
+
+      await rm(TMP, { recursive: true, force: true });
     });
   });
 });

@@ -449,6 +449,14 @@ export interface SessionMeta {
   spawnedStages?: Partial<Record<PipelineStage, number>>;
 
   /**
+   * Phase 1 (170): Unix timestamp (ms) of the last "unbound requirementDoc" notification.
+   * Used by agent-settled throttle logic to avoid flooding the user with repeated
+   * hints when the completion marker cannot be checked because requirementDoc
+   * has not been bound. Absent/undefined = never notified.
+   */
+  lastUnboundNotifiedAt?: number;
+
+  /**
    * Terminal context compaction status (Phase 4 / 169).
    * When this field is present, the pipeline has already attempted (or skipped)
    * terminal context compaction — no further attempts will be made.
