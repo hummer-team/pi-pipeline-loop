@@ -41,7 +41,7 @@ import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
-import { isFrozen, getFlowState, formatFrozenReason } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { checkGitAdd, checkGitCommit, type GitCheckResult } from "../utils/git-protect";
@@ -396,7 +396,9 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         const fs = getFlowState(meta);
         let reason: string;
         if (fs === "aborted") {
-          reason = "Pipeline aborted. Start a new pipeline with /pipeline-start";
+          // Phase 1 (171): use shared abort text function for consistency across
+          // markPipelineAborted notify / tool-guard rejection / resume notify (3 points, 1 source)
+          reason = formatAbortedNotifyText(meta.currentStage, meta.terminateReason ?? "session_quit", meta.requirementDoc);
         } else if (meta.currentStage === "awaiting_human") {
           reason = "Pipeline frozen. Contact the user to resume the pipeline";
         } else {

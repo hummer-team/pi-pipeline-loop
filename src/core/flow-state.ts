@@ -321,12 +321,17 @@ export async function executeDecision(
         terminateReason: "user_abort",
       });
 
+      // Phase 1 (171) C14: enriched audit with terminateReason, nextStage, nextAction
+      // (Menu Abort = user-initiated, no notify needed — command layer echoes result)
       await safeWriteAuditLog("pipeline_decision", {
         pipelineId: meta.pipelineId,
         decision,
         fromStage,
         toStage: "aborted",
         reason: meta.blockedReason ?? "",
+        terminateReason: "user_abort",
+        nextStage: "null",
+        nextAction: "pipeline terminated by user choice",
       });
 
       return { success: true, message: "Pipeline aborted. Use /pipeline-start to begin a new run." };
@@ -351,7 +356,43 @@ export function isTerminalCompleted(meta: SessionMeta | undefined): boolean {
   return meta?.currentStage === "completed";
 }
 
+// ─── formatAbortedNotifyText ────────────────────────────────────────────────
+
+/**
+ * Builds the user-visible notification text for an aborted pipeline.
+ * Shared across markPipelineAborted (notify on transition), tool-guard
+ * (frozen rejection reason for aborted state), and session-starter
+ * (resume notify). Ensures text consistency across all abort-related outputs.
+ *
+ * @param currentStage - The stage at which the pipeline was aborted
+ * @param reason - Machine-readable abort reason (e.g. "session_quit")
+ * @param requirementDoc - Bound requirement doc path (or undefined)
+ */
+export function formatAbortedNotifyText(
+  currentStage: string,
+  reason: string,
+  requirementDoc?: string,
+): string {
+  const docHint = requirementDoc ?? "<requirement-doc>";
+  return `Pipeline aborted at "${currentStage}" (${reason}). Run /pipeline-start ${docHint} to resume.`;
+}
+
 // ─── markPipelineAborted ────────────────────────────────────────────────────
+
+/**
+ * Optional parameters for markPipelineAborted.
+ * Phase 1 (171): C14-C16 frozen audit integrity.
+ */
+export interface MarkAbortedOpts {
+  /** Trigger identity fields for audit (which session/event caused the abort) */
+  trigger?: {
+    sessionFile?: string;
+    isSubagent?: boolean;
+    eventReason?: string;
+  };
+  /** Pipeline config for nextStage computation (information field) */
+  config?: PipelineConfig;
+}
 
 /**
  * Resets the pipeline flowState to "aborted" and writes an audit log.
@@ -366,10 +407,19 @@ export function isTerminalCompleted(meta: SessionMeta | undefined): boolean {
  * the flowState/terminateReason mutation and writes a skip audit instead,
  * preventing the completed terminal state from being overwritten.
  *
+ * Phase 1 (171): Enriched audit with nextStage/nextAction/trigger fields.
+ * On real transition (not idempotent skip or completed guard), emits ui.notify
+ * with stage/reason/resume hint (C16).
+ *
  * @param ctx - FlowStateCtx with session access
  * @param reason - Machine-readable abort reason (e.g. "session_quit", "stale_startup")
+ * @param opts - Optional trigger identity and config for audit enrichment
  */
-export async function markPipelineAborted(ctx: FlowStateCtx, reason: string): Promise<void> {
+export async function markPipelineAborted(
+  ctx: FlowStateCtx,
+  reason: string,
+  opts?: MarkAbortedOpts,
+): Promise<void> {
   const meta = ctx.session.getMeta();
 
   // Terminal guard: completed pipelines must not be overwritten
@@ -391,16 +441,39 @@ export async function markPipelineAborted(ctx: FlowStateCtx, reason: string): Pr
     return;
   }
 
+  // Phase 1 (171): compute nextStage (information field, does NOT advance) and nextAction
+  const stage = meta?.currentStage ?? "unknown";
+  const nextStage = opts?.config?.stages[meta?.currentStage as PipelineStage]?.nextStage ?? null;
+  const docHint = meta?.requirementDoc ?? "<requirement-doc>";
+  const nextAction = `run /pipeline-start ${docHint} to resume at "${stage}"`;
+
   ctx.session.updateMeta({
     flowState: "aborted",
     terminateReason: reason,
   });
 
-  await safeWriteAuditLog("pipeline_session_aborted", {
+  // Enriched audit with full frozen-transition fields (C14-C15)
+  const auditFields: Record<string, string> = {
     pipelineId: meta?.pipelineId ?? "unknown",
-    currentStage: meta?.currentStage ?? "unknown",
+    stage,
+    currentStage: stage,
+    nextStage: nextStage ?? "null",
+    nextAction,
     reason,
-  });
+  };
+
+  // Trigger identity (only include when present — fail-open)
+  if (opts?.trigger) {
+    if (opts.trigger.sessionFile) auditFields.triggerSessionFile = opts.trigger.sessionFile;
+    if (opts.trigger.isSubagent !== undefined) auditFields.triggerIsSubagent = String(opts.trigger.isSubagent);
+    if (opts.trigger.eventReason) auditFields.triggerEventReason = opts.trigger.eventReason;
+  }
+
+  await safeWriteAuditLog("pipeline_session_aborted", auditFields);
+
+  // Phase 1 (171) C16: notify user on real abort transition (not skip/guard)
+  const notifyText = formatAbortedNotifyText(stage, reason, meta?.requirementDoc);
+  ctx.ui?.notify?.(notifyText);
 }
 
 // ─── formatFrozenReason ──────────────────────────────────────────────────────
@@ -566,10 +639,14 @@ export async function freezeAndPrompt(
   });
 
   // Audit: pipeline blocked (warn level)
+  // Phase 1 (171) C14: enriched with nextStage (information field) and nextAction
+  const blockedNextStage = config.stages[meta.currentStage]?.nextStage ?? null;
   await safeWriteAuditLog("pipeline_blocked", {
     pipelineId: meta.pipelineId,
     stage: meta.currentStage,
     reason,
+    nextStage: blockedNextStage ?? "null",
+    nextAction: "open the decision menu",
   }, "warn");
 
   // Delegate to promptDecisionMenu for the UI interaction

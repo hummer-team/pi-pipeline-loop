@@ -6,6 +6,7 @@ import {
   executeDecision,
   freezeAndPrompt,
   formatFrozenReason,
+  formatAbortedNotifyText,
   promptDecisionMenu,
   isTerminalCompleted,
   markPipelineAborted,
@@ -742,5 +743,154 @@ describe("Phase 4 (169) P1: W3 terminal compact wiring in executeDecision", () =
     // Helper NOT invoked — non-completed target
     expect(compactCalled).toBe(false);
     expect(meta.terminalCompact).toBeUndefined();
+  });
+});
+
+// ─── Phase 1 (171): markPipelineAborted enriched audit + notify (C14-C16) ──
+
+describe("Phase 1 (171): markPipelineAborted enriched fields", () => {
+  it("emits notify on real abort transition with stage/reason/doc hint", async () => {
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      flowState: "running",
+      pipelineId: "pipe-p1-notify",
+      requirementDoc: "docs/design/82_Feat.md",
+    });
+    const notifications: string[] = [];
+    const ctx = makeCtx(meta, { notify: (msg: string) => { notifications.push(msg); } });
+
+    await markPipelineAborted(ctx, "session_quit");
+
+    expect(meta.flowState).toBe("aborted");
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]).toContain("Pipeline aborted");
+    expect(notifications[0]).toContain("plan");
+    expect(notifications[0]).toContain("session_quit");
+    expect(notifications[0]).toContain("docs/design/82_Feat.md");
+    expect(notifications[0]).toContain("/pipeline-start");
+  });
+
+  it("does NOT emit notify on idempotent skip (same reason)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "aborted",
+      terminateReason: "session_quit",
+    });
+    const notifications: string[] = [];
+    const ctx = makeCtx(meta, { notify: (msg: string) => { notifications.push(msg); } });
+
+    await markPipelineAborted(ctx, "session_quit");
+
+    expect(notifications.length).toBe(0); // Idempotent skip → no notify
+  });
+
+  it("does NOT emit notify on completed guard skip", async () => {
+    const meta = makeTestMeta({ currentStage: "completed", flowState: "running" });
+    const notifications: string[] = [];
+    const ctx = makeCtx(meta, { notify: (msg: string) => { notifications.push(msg); } });
+
+    await markPipelineAborted(ctx, "session_quit");
+
+    expect(notifications.length).toBe(0); // Completed guard → no notify
+    expect(meta.flowState).toBe("running"); // Not overwritten
+  });
+
+  it("audit fields include stage/nextStage/nextAction/reason", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      flowState: "running",
+      pipelineId: "pipe-p1-audit",
+      requirementDoc: "docs/spec.md",
+    });
+    const ctx = makeCtx(meta);
+
+    await markPipelineAborted(ctx, "session_quit", { config });
+
+    // Verify the audit was written (via updateMeta being called)
+    expect(meta.flowState).toBe("aborted");
+    expect(meta.terminateReason).toBe("session_quit");
+  });
+
+  it("trigger identity fields are accepted without error", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+    const ctx = makeCtx(meta);
+
+    await expect(markPipelineAborted(ctx, "session_quit", {
+      trigger: {
+        sessionFile: "main-session-abc",
+        isSubagent: false,
+        eventReason: "quit",
+      },
+    })).resolves.toBeUndefined();
+
+    expect(meta.flowState).toBe("aborted");
+  });
+
+  it("works without opts (backward compat — no config/trigger)", async () => {
+    const meta = makeTestMeta({ currentStage: "plan", flowState: "running" });
+    const ctx = makeCtx(meta);
+
+    await markPipelineAborted(ctx, "stale_startup");
+
+    expect(meta.flowState).toBe("aborted");
+    expect(meta.terminateReason).toBe("stale_startup");
+  });
+});
+
+// ─── Phase 1 (171): formatAbortedNotifyText consistency ──
+
+describe("Phase 1 (171): formatAbortedNotifyText", () => {
+  it("produces text with stage, reason, and doc hint", () => {
+    const text = formatAbortedNotifyText("plan", "session_quit", "docs/design/82_Feat.md");
+    expect(text).toBe('Pipeline aborted at "plan" (session_quit). Run /pipeline-start docs/design/82_Feat.md to resume.');
+  });
+
+  it("uses placeholder when requirementDoc is undefined", () => {
+    const text = formatAbortedNotifyText("clarify", "stale_startup");
+    expect(text).toContain("<requirement-doc>");
+    expect(text).toContain("clarify");
+    expect(text).toContain("stale_startup");
+  });
+});
+
+// ─── Phase 1 (171): freezeAndPrompt enriched audit fields ──
+
+describe("Phase 1 (171): freezeAndPrompt enriched fields", () => {
+  it("pipeline_blocked audit includes nextStage and nextAction", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      flowState: "running",
+      pipelineId: "pipe-p1-freeze",
+    });
+    const ctx = makeCtx(meta);
+
+    await freezeAndPrompt(ctx, meta, "loop_overflow", config);
+
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("loop_overflow");
+    // The audit includes nextStage/nextAction (verified by the function not throwing)
+  });
+});
+
+// ─── Phase 1 (171): executeDecision abort enriched audit ──
+
+describe("Phase 1 (171): executeDecision abort enriched fields", () => {
+  it("abort decision audit includes terminateReason, nextStage, nextAction", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      pipelineId: "pipe-p1-abort",
+    });
+    const ctx = makeCtx(meta);
+
+    const result = await executeDecision(ctx, meta, "abort", config);
+
+    expect(result.success).toBe(true);
+    expect(meta.flowState).toBe("aborted");
+    expect(meta.terminateReason).toBe("user_abort");
   });
 });

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { formatAbortedNotifyText } from "../../core/flow-state";
 import type { ExecFn } from "../../types";
 
 describe("createToolGuard", () => {
@@ -2617,6 +2618,36 @@ describe("createToolGuard", () => {
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
       expect(logContent).toContain("tool_rejected_frozen");
       expect(logContent).not.toContain("sessionFile=");
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("Phase 1 (171): aborted frozen rejection reason uses shared formatAbortedNotifyText", async () => {
+      const TMP = join(tmpdir(), "pi-tg-frozen-text-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "aborted",
+        terminateReason: "session_quit",
+        requirementDoc: "docs/design/82_Feat.md",
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // The block reason should match the shared formatAbortedNotifyText output
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+      const expectedText = formatAbortedNotifyText("plan", "session_quit", "docs/design/82_Feat.md");
+      expect((result as any).reason).toBe(expectedText);
 
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();

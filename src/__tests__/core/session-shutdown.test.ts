@@ -327,4 +327,172 @@ describe("createSessionShutdown", () => {
       expect(line).toBeDefined();
     });
   });
+
+  // ─── Phase 1 (171): child quit skip + owner quit enriched ──
+
+  describe("Phase 1 (171): child quit skip and owner quit enrich", () => {
+    it("child session quit → zero abort + session_shutdown_skipped audit + no clearStage", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-child-quit-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+        pipelineId: "pipe-child-quit",
+      });
+      const ctx = createMockCtx(meta, {
+        sessionHeader: { parentSession: "parent-session" },
+        sessionName: "plan-agent#aabb1122",
+        sessionFile: "child-session-1",
+        event: { reason: "quit" },
+      });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      // flowState should NOT be changed to aborted (child quit is skipped)
+      expect(meta.flowState).toBe("running");
+      expect(meta.terminateReason).not.toBe("session_quit");
+
+      // Audit should contain session_shutdown_skipped
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("session_shutdown_skipped");
+      expect(content).toContain("isSubagent=true");
+      // Should NOT contain pipeline_session_aborted (no abort for child)
+      expect(content).not.toContain("pipeline_session_aborted");
+    });
+
+    it("owner session quit → aborted with full audit fields + notify", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-owner-quit-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const notifications: string[] = [];
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "running",
+        pipelineId: "pipe-owner-quit",
+        requirementDoc: "docs/design/82_Feat.md",
+      });
+      const ctx = createMockCtx(meta, {
+        sessionFile: "main-session-xyz",
+        event: { reason: "quit" },
+      });
+      // Override notify to capture
+      (ctx.ui as any).notify = (msg: string) => { notifications.push(msg); };
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      // Owner quit → abort
+      expect(meta.flowState).toBe("aborted");
+      expect(meta.terminateReason).toBe("session_quit");
+
+      // Notify was emitted exactly once
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("Pipeline aborted");
+      expect(notifications[0]).toContain("plan");
+      expect(notifications[0]).toContain("session_quit");
+
+      // Audit has enriched fields
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("pipeline_session_aborted");
+      expect(content).toContain("stage=plan");
+      expect(content).toContain("nextStage=");
+      expect(content).toContain("nextAction=");
+      expect(content).toContain("triggerSessionFile=main-session-xyz");
+      expect(content).toContain("triggerIsSubagent=false");
+    });
+
+    it("detection degradation: no sessionManager → conservative owner path (abort)", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-degrade-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+        pipelineId: "pipe-degrade",
+      });
+      // No sessionManager → createMockCtx without sessionFile/header
+      const ctx = createMockCtx(meta, { event: { reason: "quit" } });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      // Conservative: should abort (owner path)
+      expect(meta.flowState).toBe("aborted");
+      expect(meta.terminateReason).toBe("session_quit");
+    });
+
+    it("same meta: child quit then owner quit → only owner triggers abort", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-seq-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+        pipelineId: "pipe-seq",
+      });
+
+      // First: child quit
+      const childCtx = createMockCtx(meta, {
+        sessionHeader: { parentSession: "parent" },
+        sessionName: "agent#aabb1122",
+        sessionFile: "child",
+        event: { reason: "quit" },
+      });
+      const hook = createSessionShutdown(config);
+      await hook.handler(childCtx as any);
+      expect(meta.flowState).toBe("running"); // Child skip → no change
+
+      // Then: owner quit
+      const ownerCtx = createMockCtx(meta, {
+        sessionFile: "main-session",
+        event: { reason: "quit" },
+      });
+      (ownerCtx.ui as any).notify = () => {}; // Suppress notify
+      await hook.handler(ownerCtx as any);
+      expect(meta.flowState).toBe("aborted"); // Owner triggers abort
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("session_shutdown_skipped"); // Child skip recorded
+      expect(content).toContain("pipeline_session_aborted"); // Owner abort recorded
+    });
+
+    it("child session 'new' reason → also skipped (not just quit)", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-child-new-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        flowState: "running",
+        pipelineId: "pipe-child-new",
+      });
+      const ctx = createMockCtx(meta, {
+        sessionHeader: { parentSession: "parent-session" },
+        sessionFile: "child-new-session",
+        event: { reason: "new" },
+      });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      expect(meta.flowState).toBe("running"); // No abort for child 'new'
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("session_shutdown_skipped");
+    });
+  });
 });

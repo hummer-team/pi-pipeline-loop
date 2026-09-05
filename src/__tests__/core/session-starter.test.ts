@@ -212,7 +212,7 @@ describe("createSessionStarter", () => {
       expect(content).toContain("pipelineId=pipe-stale-1");
     });
 
-    it("does NOT notify 'Pipeline blocked' after stale startup reset (aborted is not blocked)", async () => {
+    it("Phase 1 (171) C16: stale startup reset emits correct aborted notify (not misleading blocked)", async () => {
       const notifications: string[] = [];
       await mkdir(TMP_STALE, { recursive: true });
       const config = makeTestConfig({ projectRoot: TMP_STALE });
@@ -227,17 +227,20 @@ describe("createSessionStarter", () => {
       const ctx = {
         ...baseCtx,
         event: { reason: "startup" },
-        ui: { notify: (_ctx: unknown, msg: string) => { notifications.push(msg); } },
+        ui: { notify: (msg: string) => { notifications.push(msg); } },
       };
 
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      // Reset sets flowState to "aborted" — must NOT trigger the frozen/blocked
-      // notification (isFrozen("aborted")===true but the correct action is
-      // /pipeline-start, not the decision shortcut).
+      // Phase 1 (171) C16: stale_startup abort now emits correct aborted notify
+      // (reversal of 170 Phase 3 "silent" decision — correct text via shared function)
       expect(meta.flowState).toBe("aborted");
-      expect(notifications.length).toBe(0);
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("Pipeline aborted");
+      expect(notifications[0]).toContain("stale_startup");
+      expect(notifications[0]).toContain("develop");
+      expect(notifications[0]).toContain("/pipeline-start");
     });
 
     it("does NOT reset when flowState is already 'aborted' on reason='startup'", async () => {

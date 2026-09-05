@@ -19,6 +19,8 @@ import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText } from "./session-state";
 import { execSync } from "node:child_process";
 import { checkTemplateDrift } from "../utils/template-drift";
+import { detectSessionRole } from "./session-role";
+import { formatAbortedNotifyText } from "./flow-state";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -132,10 +134,8 @@ async function loadDomainFromFile(domainFilePath: string): Promise<DomainConfig>
 /**
  * Detects subagent/fork session signals from the runtime context.
  *
- * Signal detection:
- * - Primary: getHeader()?.parentSession exists (SDK-provided parent reference)
- * - Secondary: getSessionName() matches subagent pattern `^[a-z0-9-]+#[0-9a-f]{8}$`
- * - Fork: event.reason === "fork"
+ * Delegates to the shared detectSessionRole helper (Phase 1 / 171).
+ * Returns the fields consumed by session-starter's JOIN detection logic.
  *
  * @param ctx - Runtime context with session manager access
  * @returns Object with parentSession file and detection flags
@@ -145,19 +145,9 @@ function detectSubagentSession(ctx: RuntimeCtx): {
   isSubagent: boolean;
   isFork: boolean;
 } {
-  const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
-    | { getHeader?: () => Record<string, unknown> | undefined; getSessionName?: () => string; getSessionFile?: () => string }
-    | undefined;
-
-  const parentSession = (sm?.getHeader?.() as Record<string, unknown> | undefined)?.parentSession as string | undefined;
-  const sessionName = sm?.getSessionName?.() ?? "";
+  const role = detectSessionRole(ctx);
   const isFork = (ctx.event as Record<string, unknown> | undefined)?.reason === "fork";
-
-  // Subagent pattern: lowercase name + # + 8 hex chars (e.g., "code-review-agent#a1b2c3d4")
-  const SUBAGENT_NAME_PATTERN = /^[a-z0-9-]+#[0-9a-f]{8}$/;
-  const isSubagent = !!parentSession || SUBAGENT_NAME_PATTERN.test(sessionName) || isFork;
-
-  return { parentSession, isSubagent, isFork };
+  return { parentSession: role.parentSession, isSubagent: role.isChild, isFork };
 }
 
 /**
@@ -393,16 +383,26 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         // session_shutdown never fires.
         const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
         if (reason === "startup" && getFlowState(meta) !== "aborted" && !isTerminalCompleted(meta)) {
-          await markPipelineAborted(ctx, "stale_startup");
+          // Phase 1 (171) C16: pass trigger + config for enriched audit + notify.
+          // Intentional revision of 170 Phase 3 "silent after reset" decision:
+          // The stale_startup abort now emits a correct aborted notify (not misleading blocked).
+          const { sessionFile } = detectSessionRole(ctx);
+          await markPipelineAborted(ctx, "stale_startup", {
+            trigger: {
+              sessionFile: sessionFile || undefined,
+              isSubagent: false,
+              eventReason: "startup",
+            },
+            config,
+          });
 
           await writeAuditLog("pipeline_stale_reset", {
             pipelineId: meta.pipelineId,
             stage: meta.currentStage,
           });
 
-          // After reset, flowState is "aborted" — isFrozen("aborted") === true but
-          // the correct user action is /pipeline-start, NOT the decision shortcut.
-          // Skip isFrozen/notify to avoid misleading "Pipeline blocked" message.
+          // markPipelineAborted already emitted the correct notify (C16).
+          // No additional notify needed here.
         } else if (isFrozen(meta)) {
           // ── Resumed session: notify if frozen ─────────────────────
           // Phase 3 (170) ④: distinct text for aborted (exit: /pipeline-start) vs

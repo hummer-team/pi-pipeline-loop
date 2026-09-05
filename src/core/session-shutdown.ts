@@ -3,9 +3,11 @@
  * Factory for the `session_shutdown` hook.
  * Logs an audit entry and cleans up temporary resources on session teardown.
  *
- * On reason "quit" or "new": resets flowState to "aborted" (double-insurance with
- * session_start stale recovery) so that subsequent /pipeline-start enters the restart
- * branch instead of hitting "already running" error.
+ * Phase 1 (171): Role-aware shutdown.
+ * - Child/subagent sessions: audit session_shutdown_skipped{isSubagent:true}, return.
+ *   Subagent panel close/view detach must NOT abort the parent pipeline.
+ * - Owner session: maintains 170 semantics (quit/new → markPipelineAborted).
+ * - Detection degradation (no sessionManager/header): conservative owner path (no worse).
  *
  * Terminal guard: when the pipeline is already completed, markPipelineAborted
  * (called internally) skips the flowState/terminateReason overwrite — completed
@@ -17,41 +19,10 @@
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
-import { writeAuditLog } from "../utils/auditLog";
+import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { markPipelineAborted } from "./flow-state";
-
-/**
- * Reads session identity fields from the runtime context.
- *
- * Extracts sessionFile from sessionManager.getSessionFile() and detects
- * whether the session is a subagent via header.parentSession (primary signal),
- * session name pattern, or fork reason (secondary signals).
- *
- * Detection退化 (no sessionManager/header) → isSubagent=false (conservative).
- *
- * @param ctx - Runtime context with session manager access
- * @returns Session identity fields for audit enrichment
- */
-function readSessionIdentity(ctx: RuntimeCtx): {
-  sessionFile: string;
-  isSubagent: boolean;
-} {
-  const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
-    | { getHeader?: () => Record<string, unknown> | undefined; getSessionName?: () => string; getSessionFile?: () => string }
-    | undefined;
-
-  const sessionFile = sm?.getSessionFile?.() ?? "";
-  const parentSession = (sm?.getHeader?.() as Record<string, unknown> | undefined)?.parentSession as string | undefined;
-  const sessionName = sm?.getSessionName?.() ?? "";
-  const eventReason = (ctx.event as Record<string, unknown> | undefined)?.reason;
-
-  // Subagent pattern: lowercase name + # + 8 hex chars (e.g., "code-review-agent#a1b2c3d4")
-  const SUBAGENT_NAME_PATTERN = /^[a-z0-9-]+#[0-9a-f]{8}$/;
-  const isSubagent = !!parentSession || SUBAGENT_NAME_PATTERN.test(sessionName) || eventReason === "fork";
-
-  return { sessionFile, isSubagent };
-}
+import { detectSessionRole } from "./session-role";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -60,8 +31,8 @@ function readSessionIdentity(ctx: RuntimeCtx): {
  * - timestamp, pipelineId, action: "session_shutdown", finalStage
  * - sessionFile, isSubagent (Phase 0 / 171: session identity for traceability)
  *
- * When event.reason is "quit" or "new", resets flowState to "aborted" via
- * markPipelineAborted so that the next startup does not see stale "running".
+ * Phase 1 (171): Child/subagent quit → skip abort, audit skipped.
+ * Owner quit/new → markPipelineAborted with trigger fields (C14-C15).
  *
  * @param config - The pipeline configuration
  * @returns A Hook object for the "session_shutdown" event
@@ -73,27 +44,49 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const meta = ctx.session.getMeta() as SessionMeta;
 
-      // Phase 0 (171): session identity fields for traceability.
-      // Distinguishes main session vs subagent shutdown in post-mortem analysis.
-      const { sessionFile, isSubagent } = readSessionIdentity(ctx);
+      // Phase 0 (171): session identity fields for traceability
+      const { isChild, sessionFile, parentSession } = detectSessionRole(ctx);
 
       // Phase 3 (170) ①: attach shutdown reason (quit/new/resume/fork/reload)
-      // for traceability — distinguishes trigger sources in post-mortem analysis.
       const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
       await writeAuditLog("session_shutdown", {
         pipelineId: meta.pipelineId,
         finalStage: meta.currentStage,
         ...(reason ? { reason: String(reason) } : {}),
         ...(sessionFile ? { sessionFile } : {}),
-        ...(isSubagent ? { isSubagent: "true" } : {}),
+        ...(isChild ? { isSubagent: "true" } : {}),
       });
 
-      // Reset flowState only on quit/new — resume/fork/reload preserve user intent
-      if (reason === "quit" || reason === "new") {
-        await markPipelineAborted(ctx, "session_quit");
+      // Phase 1 (171): Child/subagent quit must NOT abort the parent pipeline.
+      // Subagent panel close / view detach / completed-recycle trigger session_shutdown(quit)
+      // but should not freeze the shared pipeline meta.json.
+      if ((reason === "quit" || reason === "new") && isChild) {
+        await safeWriteAuditLog("session_shutdown_skipped", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          isSubagent: "true",
+          reason: String(reason),
+          ...(sessionFile ? { sessionFile } : {}),
+          ...(parentSession ? { parentSession } : {}),
+        });
+        // Do NOT call markPipelineAborted or clearStage for child sessions
+        return;
       }
 
-      // Clear status bar on session shutdown
+      // Owner session: reset flowState on quit/new — resume/fork/reload preserve user intent
+      if (reason === "quit" || reason === "new") {
+        // Phase 1 (171): pass trigger identity + config for enriched audit (C14-C15)
+        await markPipelineAborted(ctx, "session_quit", {
+          trigger: {
+            sessionFile: sessionFile || undefined,
+            isSubagent: false,
+            eventReason: String(reason),
+          },
+          config,
+        });
+      }
+
+      // Clear status bar on session shutdown (owner only — child returned above)
       ui.clearStage(ctx);
     },
   };
