@@ -443,7 +443,9 @@ export function buildResumeVisitOrder(
  * @param config - Pipeline configuration
  * @returns New SessionMeta with preserved pipelineId and rebuilt stage chain fields
  */
-function buildResumeMeta(
+// review#2: export buildResumeMeta so review tests can assert its behavior
+// directly (activeSpawns clearing on resume) without going through full command execute.
+export function buildResumeMeta(
   meta: SessionMeta,
   config: PipelineConfig,
 ): SessionMeta {
@@ -574,9 +576,19 @@ async function dispatchAfterResume(
   // plan/develop/review/fix: spawn stage subagent via existing helper
   // Phase 3 (171) High B: append user focus for non-clarify stages when forwardArgs present
   const extraArgs = forwardArgs?.trim() ? `\n\nUser focus: ${forwardArgs.trim()}` : undefined;
+  // review#2 M3: pass session handle so spawnStageSubagent can write activeSpawns entry
+  // (writeGuard + lifecycle cleanup) on resume-dispatch path; without it, aborted→resume→spawn
+  // leaves activeSpawns blind to the in-run probe and the "await…勿重复" clause never injects.
+  const session = ctx?.session
+    ? {
+        getMeta: () => ctx.session.getMeta?.() as SessionMeta | undefined,
+        updateMeta: (patch: Partial<SessionMeta>) => ctx.session.updateMeta?.(patch),
+      }
+    : undefined;
   const result = await spawnStageSubagent(ctx?.pi, config, stage, meta, {
     ui: { notify: (msg: string) => ui.notify(ctx, msg) },
     extraArgs,
+    session,
   });
 
   if (result.spawned) {
