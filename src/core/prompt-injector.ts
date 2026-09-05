@@ -874,6 +874,15 @@ async function buildStageExecutor(
     lines.push(`**Context**: context_arg filled by main thread from document artifacts`);
   }
 
+  // Phase 4 (171): inject active-spawn wait clause when auto-spawn is in progress.
+  // Prevents the main agent from spawning duplicates or self-executing the deliverable.
+  const activeSpawn = meta.activeSpawns?.[meta.currentStage];
+  const spawnedThisVisit = meta.spawnedStages?.[meta.currentStage] === meta.stageStartTime;
+  if (activeSpawn || spawnedThisVisit) {
+    lines.push("");
+    lines.push(`**⚠ Active spawn**: An auto-spawned \`${executor.subagent_type}\` is already executing this stage. Await its completion notification; do NOT spawn a duplicate, and do NOT self-execute its deliverable in the main thread.`);
+  }
+
   return lines.join("\n");
 }
 

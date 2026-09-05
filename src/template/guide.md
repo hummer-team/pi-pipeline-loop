@@ -676,6 +676,18 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 
 每个事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
 
+### 7.10 @mention 改写边界说明（agentMentions 模式）
+
+当 pi-subagents 扩展配置为 `"agentMentions": "model"`（默认值）时，用户通过 `@agent <text>` 手动启动**未在跑的 agent**，pi-subagents 会将当前会话克隆到 off-screen 会话，由 clone 的模型自行撰写 `Agent(subagent_type, prompt)` 调用——即 **mention prompt 会被模型改写**（参见 pi-subagents README §Starting a new agent）。
+
+**已知边界**：
+- `agentMentions: "model"` 仅在"启动未在跑的 agent"时代笔；对运行中/已完成 agent 的 messaging/resume 两模式均为原文直传。
+- 若需要原文保真（如流水线场景传递 `full-und?` 等精确参数），建议：
+  - 将 `.pi/subagents.json` 的 `agentMentions` 改为 `"direct"`（原文直传，无代笔）
+  - 或走 `/pipeline-start <doc> <args>` 转发通道（插件保证参数原样透传）
+
+**插件行为保证**：插件自身发起的 spawn（`stage_advance` → `spawnStageSubagent`）走 RPC 事件总线通道，不受 `agentMentions` 配置影响，参数始终保真。
+
 ---
 
 ## 8. 常见问题与恢复

@@ -360,13 +360,14 @@ function parseConfirmConfig(raw: unknown): ConfirmConfig | undefined {
 /**
  * Phase 2 (170): Parses and validates a per-stage guard configuration from JSON config.
  *
- * Expected shape: `{ blockedTools?: string[] }`.
+ * Expected shape: `{ blockedTools?: string[], suppressDuplicateSpawn?: boolean }`.
  * - `blockedTools` must be an array of strings. Non-string entries are logged as warn
  *   and silently dropped (fail-open for individual items, strict for the array itself).
+ * - `suppressDuplicateSpawn` must be a boolean. Non-boolean values are logged and ignored.
  * - When the entire guard object is not an object, warns and returns undefined.
  * - When blockedTools is absent or empty, returns `{ blockedTools: [] }` (explicit empty).
  */
-function parseGuardConfig(raw: unknown): { blockedTools: string[] } | undefined {
+function parseGuardConfig(raw: unknown): { blockedTools: string[]; suppressDuplicateSpawn?: boolean } | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "object" || Array.isArray(raw)) {
     console.warn(
@@ -395,7 +396,20 @@ function parseGuardConfig(raw: unknown): { blockedTools: string[] } | undefined 
     }
   }
 
-  return { blockedTools: tools };
+  const result: { blockedTools: string[]; suppressDuplicateSpawn?: boolean } = { blockedTools: tools };
+
+  // Phase 4 (171): parse suppressDuplicateSpawn opt-in flag
+  if (obj.suppressDuplicateSpawn !== undefined) {
+    if (typeof obj.suppressDuplicateSpawn === "boolean") {
+      result.suppressDuplicateSpawn = obj.suppressDuplicateSpawn;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid guard.suppressDuplicateSpawn — expected boolean, got ${typeof obj.suppressDuplicateSpawn}, ignoring`,
+      );
+    }
+  }
+
+  return result;
 }
 
 /**

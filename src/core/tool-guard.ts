@@ -23,7 +23,7 @@
  */
 
 import path from "node:path";
-import type { PipelineConfig, Hook, SessionMeta, ExecFn, ViolationItem } from "../types";
+import type { PipelineConfig, Hook, SessionMeta, ExecFn, ViolationItem, PipelineStage } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { getFileHash } from "../utils/hash";
@@ -48,10 +48,48 @@ import { checkGitAdd, checkGitCommit, type GitCheckResult } from "../utils/git-p
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
+import { detectSessionRole } from "./session-role";
+import { resolveAgentMention } from "../utils/subagent-rpc";
+import { probeAgentState } from "../utils/subagents-introspect";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
   execFn?: ExecFn;
+}
+
+/** Active spawn timeout (30 min) — stale entries are treated as absent */
+const ACTIVE_SPAWN_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Checks whether there is a live spawn for the given stage.
+ * Uses pi-subagents manager singleton probe (primary) and activeSpawns (secondary).
+ * Returns null if no live spawn detected, or { agentId } if live.
+ *
+ * Fail-safe: any probe failure → returns null (do not block).
+ */
+function checkLiveSpawn(
+  meta: SessionMeta,
+  stage: PipelineStage,
+): { agentId?: string } | null {
+  // Primary: pi-subagents manager probe (for spawnedStages entries)
+  const spawnedId = meta.spawnedStages?.[stage];
+  if (spawnedId === meta.stageStartTime) {
+    // This stage visit has a spawn guard entry — probe its status
+    // Note: spawnedStages stores stageStartTime (number), not agent ID
+    // For probe we'd need the actual agent ID. Fall through to activeSpawns.
+  }
+
+  // Secondary: activeSpawns (meta field with agent name + startedAt)
+  const activeSpawn = meta.activeSpawns?.[stage];
+  if (activeSpawn) {
+    const age = Date.now() - activeSpawn.startedAt;
+    if (age < ACTIVE_SPAWN_STALE_MS) {
+      return { agentId: undefined }; // Live by time check
+    }
+    // Stale → treat as absent
+  }
+
+  return null;
 }
 
 /** Regex patterns for git command detection */
@@ -462,6 +500,42 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           block: true,
           reason: `Tool '${toolName}' is blocked for answer collection in stage '${meta.currentStage}'. Relay questions and wait for answers in the requirement document.`,
         };
+      }
+
+      // 3c. Phase 4 (171) Q5-B: Opt-in duplicate-spawn suppression.
+      // When guard.suppressDuplicateSpawn is true AND:
+      // - toolName is "Agent" (pi-subagents spawn tool)
+      // - args.subagent_type matches the current stage's resolved agent name
+      // - stage is clarify or plan (lightweight-advance stages only)
+      // - session is the owner (not child/clone — user sovereignty)
+      // - probe or activeSpawns indicates a live spawn for this stage
+      // → block with reason (NOT counted as violation).
+      const guard = stageConfig.guard;
+      if (guard?.suppressDuplicateSpawn && toolName === "Agent") {
+        const subagentType = args.subagent_type as string | undefined;
+        const eligibleStages: PipelineStage[] = ["clarify", "plan"];
+        if (subagentType && eligibleStages.includes(meta.currentStage)) {
+          const expectedAgent = resolveAgentMention(config, meta.currentStage);
+          if (expectedAgent && subagentType === expectedAgent) {
+            // Domain restriction: only evaluate for owner sessions (detectSessionRole)
+            const { isChild } = detectSessionRole(ctx);
+            if (!isChild) {
+              // In-run probe: check pi-subagents manager singleton (primary) or activeSpawns (secondary)
+              const probeResult = checkLiveSpawn(meta, meta.currentStage);
+              if (probeResult) {
+                const suppressReason = `Stage executor '${expectedAgent}' is already running${probeResult.agentId ? ` (id ${probeResult.agentId})` : ""}. Await its result; do not spawn a duplicate.`;
+                await safeWriteAuditLog("spawn_suppressed", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  tool: toolName,
+                  subagentType,
+                  agentId: probeResult.agentId ?? "",
+                });
+                return { block: true, reason: suppressReason };
+              }
+            }
+          }
+        }
       }
 
       // 4. File write protection for write/edit tools

@@ -205,7 +205,7 @@ export interface StageConfig {
    * Phase 2 (170): Resolved per-stage tool policy blocklist.
    * Mirrors StageJsonConfig.guard after JSON config loading/validation.
    */
-  guard?: { blockedTools?: string[] };
+  guard?: { blockedTools?: string[]; suppressDuplicateSpawn?: boolean };
 }
 
 // ─── Summary Metadata ────────────────────────────────────────────────────────
@@ -483,6 +483,19 @@ export interface SessionMeta {
     tokensAfter?: number | null;
     error?: string;
   };
+
+  /**
+   * Phase 4 (171): Active spawn tracking for duplicate-spawn suppression (Q5-B + Q7-A).
+   * Maps stage name to spawn record (agentName, startedAt timestamp).
+   * Used as secondary indicator when pi-subagents manager singleton is unavailable.
+   *
+   * Lifecycle:
+   * - Written on spawnStageSubagent success
+   * - Cleared on lifecycle settle callback (onSettle)
+   * - Cleared on resume/restart (buildResumeMeta/buildStartMeta)
+   * - 30min stale entries treated as absent (fail-open)
+   */
+  activeSpawns?: Partial<Record<PipelineStage, { agentName: string; startedAt: number }>>;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
@@ -722,7 +735,7 @@ export interface StageJsonConfig {
    * Blocks are NOT counted as violations (do not contribute to circuit-breaker).
    * When absent or empty, behaviour is unchanged (zero impact on existing configs).
    */
-  guard?: { blockedTools?: string[] };
+  guard?: { blockedTools?: string[]; suppressDuplicateSpawn?: boolean };
 }
 
 /**

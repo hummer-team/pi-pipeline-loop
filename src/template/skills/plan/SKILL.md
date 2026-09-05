@@ -50,3 +50,7 @@ userInvocable: false
 
 ### 6. not commit design and plan docs
 1. 设计、规划文档 local 存储，不需要 commit
+
+### 7. Checkpoint discipline (crash-resilient output)
+- Create the deliverable file early (skeleton with section headers), then append content in ≤2KB chunks.
+- Never accumulate the full result for a single final write — at any crash point, the sunk cost is at most the last unwritten chunk.

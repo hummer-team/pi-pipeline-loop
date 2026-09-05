@@ -31,7 +31,8 @@
       "agentPath": ".pi/agents/develop-agent.md",
       "skillPath": "develop/SKILL.md",
       "nextStage": "review",
-      "verify": { "require": true, "selfVerifySkip": true }
+      "verify": { "require": true, "selfVerifySkip": true },
+      "guard": { "suppressDuplicateSpawn": false }
     },
     "review": {
       "agentPath": ".pi/agents/code-review-agent.md",
