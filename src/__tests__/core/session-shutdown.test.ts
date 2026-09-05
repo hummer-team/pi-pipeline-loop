@@ -234,4 +234,97 @@ describe("createSessionShutdown", () => {
       expect(lastLine).not.toContain("reason=");
     });
   });
+
+  // ─── Phase 0 (171): session identity fields (sessionFile, isSubagent) ─────
+
+  describe("Phase 0 (171): session identity audit fields", () => {
+    it("shutdown audit includes sessionFile when available", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-sessfile-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({ currentStage: "develop" });
+      const ctx = createMockCtx(meta, {
+        sessionFile: "main-session-abc",
+        event: { reason: "quit" },
+      });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const shutdownLine = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("sessionFile="));
+      expect(shutdownLine).toBeDefined();
+      expect(shutdownLine).toContain("sessionFile=main-session-abc");
+    });
+
+    it("shutdown audit includes isSubagent=true when parentSession header exists", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-subagent-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({ currentStage: "clarify" });
+      const ctx = createMockCtx(meta, {
+        sessionHeader: { parentSession: "parent-session-file" },
+        sessionName: "clarify-agent#aabb1122",
+        sessionFile: "child-session-xyz",
+        event: { reason: "quit" },
+      });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const shutdownLine = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("isSubagent="));
+      expect(shutdownLine).toBeDefined();
+      expect(shutdownLine).toContain("isSubagent=true");
+      expect(shutdownLine).toContain("sessionFile=child-session-xyz");
+    });
+
+    it("shutdown audit omits sessionFile/isSubagent when not available (backward compat)", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-no-identity-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({ currentStage: "plan" });
+      const ctx = createMockCtx(meta); // No sessionFile, no header
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const shutdownLines = content.trim().split("\n").filter((l: string) => l.includes("session_shutdown"));
+      const lastLine = shutdownLines[shutdownLines.length - 1];
+      expect(lastLine).not.toContain("sessionFile=");
+      expect(lastLine).not.toContain("isSubagent=");
+    });
+
+    it("shutdown audit detects subagent by session name pattern alone", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-namepattern-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({ currentStage: "plan" });
+      const ctx = createMockCtx(meta, {
+        sessionName: "plan-agent#deadbeef",
+        sessionFile: "subagent-session",
+        event: { reason: "quit" },
+      });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const line = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("isSubagent=true"));
+      expect(line).toBeDefined();
+    });
+  });
 });

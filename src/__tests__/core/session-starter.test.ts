@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { createSessionStarter } from "../../core/session-starter";
+import { createSessionStarter, __resetPluginVersionStamp } from "../../core/session-starter";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { writeFile, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -689,6 +689,271 @@ describe("createSessionStarter", () => {
       expect(logContent).toContain("pluginVersion");
       // pluginVersion should not be empty — at minimum "unknown" on failure
       expect(logContent).toMatch(/pluginVersion.*0\.\d+\.\d+|pluginVersion.*unknown/);
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
+  // ─── Phase 0 (171): session identity + aborted-parent warn + bind miss ──
+
+  describe("Phase 0 (171): session identity and observability", () => {
+    /** Create a ctx with sessionManager mock for sessionFile tests */
+    function createCtxWithSessionFile(meta: Record<string, unknown>, opts: {
+      sessionFile?: string;
+      sessionHeader?: Record<string, unknown>;
+      sessionName?: string;
+    }) {
+      const updates: any[] = [];
+      return {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => {
+            updates.push(m);
+            Object.assign(meta, m);
+          },
+        },
+        updates,
+        ui: { notify: () => {}, setStatus: () => {} },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => [],
+            getEntries: () => [],
+            getHeader: opts.sessionHeader ? () => opts.sessionHeader! : () => ({}),
+            getSessionName: opts.sessionName ? () => opts.sessionName! : () => "",
+            getSessionFile: opts.sessionFile ? () => opts.sessionFile! : undefined,
+          },
+        },
+      };
+    }
+
+    it("session_start audit includes sessionFile for new pipelines", async () => {
+      const TMP = join(tmpdir(), "pi-ss-sf-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const ctx = createCtxWithSessionFile({}, { sessionFile: "main-session-file-123" });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const startLine = content.trim().split("\n").find((l: string) => l.includes("session_start") && l.includes("sessionFile="));
+      expect(startLine).toBeDefined();
+      expect(startLine).toContain("sessionFile=main-session-file-123");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("session_start audit omits sessionFile when not available (backward compat)", async () => {
+      const TMP = join(tmpdir(), "pi-ss-nosf-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const ctx = createCtxWithSessionFile({}, {}); // No sessionFile
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      const startLines = content.trim().split("\n").filter((l: string) => l.includes("session_start"));
+      const firstLine = startLines[0];
+      expect(firstLine).not.toContain("sessionFile=");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    /** Create a JOIN ctx for Phase 0 tests */
+    function createPhase0JoinCtx(meta: Record<string, unknown>, opts: {
+      parentSession?: string;
+      sessionFile?: string;
+    }) {
+      const updates: any[] = [];
+      return {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => {
+            updates.push(m);
+            Object.assign(meta, m);
+          },
+        },
+        updates,
+        ui: { notify: () => {}, setStatus: () => {} },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => [],
+            getEntries: () => [],
+            getHeader: opts.parentSession ? () => ({ parentSession: opts.parentSession }) : () => ({}),
+            getSessionName: () => "test-agent#aabb1122",
+            getSessionFile: opts.sessionFile ? () => opts.sessionFile! : () => "",
+          },
+        },
+      };
+    }
+
+    /** Create a JOIN ctx with user messages for Phase 0 bind-miss tests */
+    function createPhase0JoinCtxWithMessages(meta: Record<string, unknown>, opts: {
+      parentSession?: string;
+      sessionFile?: string;
+      userMessages?: Array<{ role: string; content: string }>;
+    }) {
+      const updates: any[] = [];
+      return {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => {
+            updates.push(m);
+            Object.assign(meta, m);
+          },
+        },
+        updates,
+        ui: { notify: () => {}, setStatus: () => {} },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => (opts.userMessages ?? []).map(m => ({
+              type: "message",
+              message: { role: m.role, content: m.content },
+            })),
+            getEntries: () => [],
+            getHeader: opts.parentSession ? () => ({ parentSession: opts.parentSession }) : () => ({}),
+            getSessionName: () => "clarify-agent#ccdd3344",
+            getSessionFile: opts.sessionFile ? () => opts.sessionFile! : () => "",
+          },
+        },
+      };
+    }
+
+    it("JOIN with aborted parent emits session_join_aborted_parent warn", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-aborted-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-aborted-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "plan",
+        pipelineId: "pipe-aborted-parent",
+        flowState: "aborted",
+        terminateReason: "session_quit",
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-aborted-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "aborted-parent-session", "pipe-aborted-parent");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createPhase0JoinCtx(meta, {
+        parentSession: "aborted-parent-session",
+        sessionFile: "zombie-child-session",
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("session_join_aborted_parent");
+      expect(content).toContain("pipelineId=pipe-aborted-parent");
+      expect(content).toContain("zombie-child-session");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("JOIN with running parent does NOT emit session_join_aborted_parent", async () => {
+      const TMP = join(tmpdir(), "pi-ss-join-running-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-running-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-running-parent",
+        flowState: "running",
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-running-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "running-parent-session", "pipe-running-parent");
+
+      const meta: Record<string, unknown> = {};
+      const ctx = createPhase0JoinCtx(meta, {
+        parentSession: "running-parent-session",
+        sessionFile: "normal-child",
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).not.toContain("session_join_aborted_parent");
+      // But session_join_parent should still be present
+      expect(content).toContain("session_join_parent");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("bind miss: first user message without doc path emits requirement_doc_bind_missed", async () => {
+      const TMP = join(tmpdir(), "pi-ss-bind-miss-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit", "pipe-bindmiss-parent"), { recursive: true });
+      const parentMeta = makeTestMeta({
+        currentStage: "clarify",
+        pipelineId: "pipe-bindmiss-parent",
+        requirementDoc: undefined,
+      });
+      await writeFile(
+        join(TMP, ".pi", "audit", "pipe-bindmiss-parent", "meta.json"),
+        JSON.stringify(parentMeta),
+      );
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      await registerSession(config, "bindmiss-parent-session", "pipe-bindmiss-parent");
+
+      const meta: Record<string, unknown> = {};
+      // First user message has no .md path — bind miss expected
+      const ctx = createPhase0JoinCtxWithMessages(meta, {
+        parentSession: "bindmiss-parent-session",
+        sessionFile: "bindmiss-child",
+        userMessages: [
+          { role: "user", content: "Please help me with this task" },
+        ],
+      });
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+      expect(content).toContain("requirement_doc_bind_missed");
+      expect(content).toContain("pipelineId=pipe-bindmiss-parent");
+      expect(content).toContain("firstMsgChars=");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("plugin version stamp format is version+hash or version+unknown", async () => {
+      __resetPluginVersionStamp();
+      const TMP = join(tmpdir(), "pi-ss-stamp-" + Date.now());
+      const domainDir = join(TMP, ".pi", "domains");
+      await mkdir(domainDir, { recursive: true });
+      await writeFile(join(domainDir, "domain.md"), "---\nid: general\nversion: latest\n---\n# Domain");
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const ctx = createCtx({});
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      // Verify pluginVersion follows format: digits.digits.digits+shortHash or digits.digits.digits+unknown
+      const match = logContent.match(/pluginVersion=(\d+\.\d+\.\d+\+[a-f0-9]+|\d+\.\d+\.\d+\+unknown)/);
+      expect(match).not.toBeNull();
 
       await rm(TMP, { recursive: true, force: true });
     });

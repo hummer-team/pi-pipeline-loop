@@ -48,19 +48,25 @@ let _pluginVersionStamp: string | null = null;
  * Reads package.json version + git rev-parse --short HEAD.
  * Both values are cached after first resolution (process-scoped).
  * Fail-open: returns "unknown" on any error.
+ *
+ * Phase 0 (171): git execSync uses the package.json directory as cwd
+ * so the hash always reflects the plugin repository, not the process CWD
+ * (which may be a consumer/test project).
  */
 function getPluginVersionStamp(): string {
   if (_pluginVersionStamp !== null) return _pluginVersionStamp;
   try {
     // Read version from package.json (relative to this compiled file)
-    const pkgPath = path.resolve(__dirname, "..", "..", "package.json");
+    const pkgDir = path.resolve(__dirname, "..", "..");
+    const pkgPath = path.join(pkgDir, "package.json");
     const pkgRaw = JSON.parse(require("node:fs").readFileSync(pkgPath, "utf-8")) as { version?: string };
     const version = pkgRaw.version ?? "0.0.0";
 
-    // Short git hash (fail-open if not in a git repo)
+    // Short git hash — cwd set to pkgDir so hash belongs to the plugin repo,
+    // not the process CWD (which may be a consumer project).
     let shortHash = "unknown";
     try {
-      shortHash = execSync("git rev-parse --short HEAD", { encoding: "utf-8", timeout: 2000 }).trim();
+      shortHash = execSync("git rev-parse --short HEAD", { encoding: "utf-8", timeout: 2000, cwd: pkgDir }).trim();
     } catch {
       // Not a git repo or git not available — use "unknown"
     }
@@ -70,6 +76,14 @@ function getPluginVersionStamp(): string {
     _pluginVersionStamp = "unknown";
   }
   return _pluginVersionStamp;
+}
+
+/**
+ * Test-only reset for the plugin version stamp cache.
+ * Allows tests to re-resolve the stamp after environment changes.
+ */
+export function __resetPluginVersionStamp(): void {
+  _pluginVersionStamp = null;
 }
 
 /**
@@ -192,12 +206,23 @@ async function handleSubagentJoin(
   // Register this session too (supports nested subagents)
   await registerSession(config, sessionFile, parentPipelineId);
 
-  // Audit JOIN event
+  // Audit JOIN event (Phase 0/171: enriched with flowState for zombie-resurrection traceability)
   await safeWriteAuditLog("session_join_parent", {
     sessionFile,
     pipelineId: parentPipelineId,
     stage: parentMeta.currentStage,
+    flowState: getFlowState(parentMeta),
   });
+
+  // Phase 0 (171): warn when JOIN target parent is already aborted.
+  // Indicates a zombie subagent joining a dead pipeline — useful for post-mortem attribution.
+  if (getFlowState(parentMeta) === "aborted") {
+    await safeWriteAuditLog("session_join_aborted_parent", {
+      sessionFile,
+      pipelineId: parentPipelineId,
+      stage: parentMeta.currentStage,
+    }, "warn");
+  }
 
   // Phase 1 (170): Auto-bind requirementDoc from the subagent's first user message
   // when the parent meta has no requirementDoc bound. This covers the @mention
@@ -221,6 +246,16 @@ async function handleSubagentJoin(
           requirementDoc: parsedPath,
           source: "subagent_join",
         });
+      } else {
+        // Phase 0 (171): make bind-miss observable (was previously silent).
+        // Indicates the first user message existed but contained no parseable doc path.
+        const msgForMiss = extractFirstUserMessageText(ctx._ctx as Parameters<typeof extractFirstUserMessageText>[0]);
+        if (msgForMiss && msgForMiss.trim().length > 0) {
+          await safeWriteAuditLog("requirement_doc_bind_missed", {
+            pipelineId: parentPipelineId,
+            firstMsgChars: msgForMiss.substring(0, 80),
+          }, "warn");
+        }
       }
     } catch (err) {
       // Fail-open: auto-bind must never block JOIN
@@ -339,10 +374,12 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
 
         // Write session_start audit log
         // Phase 5 (170): attach plugin version stamp for deployment traceability
+        // Phase 0 (171): attach sessionFile for session identity traceability
         await writeAuditLog("session_start", {
           pipelineId,
           stage: "clarify",
           pluginVersion: getPluginVersionStamp(),
+          ...(sessionFile ? { sessionFile } : {}),
         });
 
         // NOTE: model management removed (Q4-A) — model is managed by user via /model command.

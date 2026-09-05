@@ -404,6 +404,10 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         }
         // Phase 3 (170) ③: throttle audit for frozen rejection (60s window per pipelineId+tool+flowState)
         // Prevents audit flooding when the agent repeatedly hits frozen state.
+        // Phase 0 (171): attach sessionFile to distinguish main vs zombie-subagent rejection streams.
+        const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
+          | { getSessionFile?: () => string } | undefined;
+        const sessionFile = sm?.getSessionFile?.() ?? "";
         const throttleKey = `frozen:${meta.pipelineId}:${toolName}:${fs}`;
         if (shouldEmitWithinWindow(throttleKey, AUDIT_THROTTLE_WINDOW_MS)) {
           await safeWriteAuditLog("tool_rejected_frozen", {
@@ -412,6 +416,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             tool: toolName,
             flowState: fs,
             reason: formatFrozenReason(meta),
+            ...(sessionFile ? { sessionFile } : {}),
           });
         }
         return {

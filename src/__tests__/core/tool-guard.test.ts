@@ -2573,4 +2573,54 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
     });
   });
+
+  // ─── Phase 0 (171): Frozen rejection audit includes sessionFile ──
+
+  describe("Phase 0 (171): frozen rejection sessionFile field", () => {
+    it("tool_rejected_frozen audit includes sessionFile when available", async () => {
+      const TMP = join(tmpdir(), "pi-tg-frozen-sf-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      const ctx = createMockCtx(meta, { sessionFile: "zombie-subagent-session" });
+      ctx.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("tool_rejected_frozen");
+      expect(logContent).toContain("sessionFile=zombie-subagent-session");
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("tool_rejected_frozen audit omits sessionFile when not available", async () => {
+      const TMP = join(tmpdir(), "pi-tg-frozen-nosf-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      const ctx = createMockCtx(meta); // No sessionFile
+      ctx.toolCall = { name: "read", arguments: { path: "src/x.ts" } };
+
+      const hook = createToolGuard(config);
+      await hook.handler(ctx as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("tool_rejected_frozen");
+      expect(logContent).not.toContain("sessionFile=");
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+  });
 });
