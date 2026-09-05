@@ -54,9 +54,15 @@ function makeFlowCtx(
 // ─── High A: activeSpawns lifecycle and probe integration ─────────────────────
 
 describe("High A: activeSpawns lifecycle", () => {
-  it("buildResumeMeta clears activeSpawns on resume (review#2: real behavior test)", () => {
-    // review#2 High: directly exercise buildResumeMeta to assert activeSpawns clearing.
-    // The previous version of this test never called buildResumeMeta (empty assertion).
+  // review#3 H3 fix: rewrite to go through updateMeta merge semantics.
+  // The previous version asserted newMeta.activeSpawns directly, which was structurally
+  // empty (buildResumeMeta constructs a fresh object without spreading old values, so
+  // activeSpawns is always absent regardless of whether the clearing implementation exists).
+  // By routing through updateMeta merge, we simulate the real flow: old meta has
+  // activeSpawns → buildResumeMeta output is applied via updateMeta → merged result must
+  // not carry stale activeSpawns. Removing `activeSpawns: undefined` from buildResumeMeta
+  // → the merge preserves old activeSpawns → test turns red.
+  it("buildResumeMeta clears activeSpawns on resume (review#3: via updateMeta merge)", () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({
       currentStage: "plan",
@@ -67,14 +73,41 @@ describe("High A: activeSpawns lifecycle", () => {
       },
       spawnedStages: { plan: Date.now() },
     });
+    // Simulate the real flow: buildResumeMeta → updateMeta (merge semantics)
+    const ctx = makeFlowCtx(meta);
     const newMeta = buildResumeMeta(meta, config);
-    // Both transient spawn-tracking fields must be cleared on resume
-    expect(newMeta.activeSpawns).toBeUndefined();
-    expect(newMeta.spawnedStages).toBeUndefined();
+    ctx.session.updateMeta(newMeta);
+    // After merge, both transient spawn-tracking fields must be cleared
+    const mergedMeta = ctx.session.getMeta()!;
+    expect(mergedMeta.activeSpawns).toBeUndefined();
+    expect(mergedMeta.spawnedStages).toBeUndefined();
     // Preserved fields remain intact
-    expect(newMeta.pipelineId).toBe(meta.pipelineId);
-    expect(newMeta.requirementDoc).toBe(meta.requirementDoc);
-    expect(newMeta.flowState).toBe("running");
+    expect(mergedMeta.pipelineId).toBe(meta.pipelineId);
+    expect(mergedMeta.requirementDoc).toBe(meta.requirementDoc);
+    expect(mergedMeta.flowState).toBe("running");
+  });
+
+  // review#3 H3 edge case: when the original meta has NO activeSpawns,
+  // the updateMeta merge must not accidentally introduce one. This tests
+  // the symmetric property: clearing works both ways (removes stale entries
+  // and doesn't create phantom ones).
+  it("buildResumeMeta via updateMeta merge does not introduce phantom activeSpawns", () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "aborted",
+      // No activeSpawns, no spawnedStages
+    });
+    const ctx = makeFlowCtx(meta);
+    const newMeta = buildResumeMeta(meta, config);
+    ctx.session.updateMeta(newMeta);
+    const mergedMeta = ctx.session.getMeta()!;
+    // Must remain undefined (not accidentally introduced)
+    expect(mergedMeta.activeSpawns).toBeUndefined();
+    expect(mergedMeta.spawnedStages).toBeUndefined();
+    // But other fields are correctly rebuilt
+    expect(mergedMeta.flowState).toBe("running");
+    expect(mergedMeta.pipelineId).toBe(meta.pipelineId);
   });
 
   it("SPAWN_TOOL_NAMES contains Agent", () => {

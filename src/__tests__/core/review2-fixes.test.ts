@@ -5,23 +5,22 @@
  * Coverage matrix:
  * - High / Matrix D: adopt 三态 (running/blocked reject, aborted adopt, no-candidate fresh)
  * - High / Matrix E: activeSpawns lifecycle (spawn write + lifecycle clear + probe→3c)
- * - M2: forwardArgs passthrough on 4 residual branches (diff-doc / fresh-ask / menu-new / menu-spec)
- * - M3: dispatchAfterResume session passthrough → activeSpawns written on resume-spawn
  * - M4: settle-retry binding on unbound+resolvable; silent on unbound+unresolvable
- * - Low: fallback spawn does not write activeSpawns entry (no agentId → no false positive)
+ *
+ * review#3 M4 dedup: M2/M3/Low-fallback duplicates removed (now in dedicated files:
+ * review2-m2-forward-args.test.ts, review2-m3-resume-session.test.ts,
+ * review2-low-fallback-and-consistency.test.ts).
  *
  * Each test asserts a real behavior; removing the corresponding implementation must turn
  * the test red (no empty/typeof assertions).
  */
 
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import {
   createPipelineStartCommand,
-  buildResumeMeta,
 } from "../../commands/pipeline-start";
 import { createAgentSettled } from "../../core/agent-settled";
 import { createToolGuard } from "../../core/tool-guard";
@@ -443,200 +442,6 @@ describe("Matrix E: activeSpawns lifecycle", () => {
   });
 });
 
-// ─── M2: forwardArgs passthrough on residual branches ────────────────────────
-//
-// Phase 3 Q3-A: explicit forwardArgs are passed through unconditionally.
-// Review#2 M2 identified 4 branches where startNewPipeline / handleAskMenu
-// calls were missing the forwardArgs argument.
-
-describe("M2: forwardArgs passthrough on residual branches", () => {
-  let TMP: string;
-
-  beforeEach(async () => {
-    TMP = path.join(
-      os.tmpdir(),
-      `pi-r2-forward-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    );
-    await fsp.mkdir(TMP, { recursive: true });
-    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
-    __resetMemoryThrottle();
-  });
-
-  afterEach(async () => {
-    await fsp.rm(TMP, { recursive: true, force: true });
-    __resetAuditDirPath();
-  });
-
-  it("M2a: aborted + different doc + forwardArgs → new pipeline clarify receives forwardArgs", async () => {
-    // Write both old and new docs
-    await fsp.mkdir(path.join(TMP, "docs"), { recursive: true });
-    await fsp.writeFile(path.join(TMP, "docs", "old.md"), "# Old\n", "utf-8");
-    await fsp.writeFile(path.join(TMP, "docs", "new.md"), "# New\n", "utf-8");
-
-    const config = makeTestConfig({ projectRoot: TMP, startStageMode: "auto" });
-    const cmd = createPipelineStartCommand(config);
-
-    // Existing aborted pipeline for a different doc
-    const meta = makeTestMeta({
-      currentStage: "plan",
-      flowState: "aborted",
-      requirementDoc: "docs/old.md",
-    });
-    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
-
-    // Execute with a NEW doc + forwardArgs
-    const result: any = await cmd.execute(
-      { file: "docs/new.md", forwardArgs: "focus-on-X" },
-      ctx as any,
-    );
-
-    // Different doc → goes to startNewPipeline with forwardArgs
-    expect(result.success).toBe(true);
-    expect(result.currentStage).toBe("clarify");
-    // meta.requirementDoc must reflect the new doc (not silently stuck on old)
-    expect(ctx.session.getMeta().requirementDoc).toBe("docs/new.md");
-  });
-
-  it("M2b: fresh + mode=ask + forwardArgs → ask menu receives forwardArgs", async () => {
-    await fsp.mkdir(path.join(TMP, "docs"), { recursive: true });
-    await fsp.writeFile(path.join(TMP, "docs", "feature.md"), "# Feature\n", "utf-8");
-
-    // Mode=ask with select returning "New pipeline"
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      startStageMode: "ask",
-    });
-    const cmd = createPipelineStartCommand(config);
-    const freshMeta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    const ctx = createMockCtx(freshMeta, {
-      sessionFile: "main-session",
-      selectReturn: "New pipeline",
-      confirmReturn: true,
-    });
-
-    const result: any = await cmd.execute(
-      { file: "docs/feature.md", forwardArgs: "full-und?" },
-      ctx as any,
-    );
-
-    // After "New pipeline" selection, startNewPipeline is invoked with forwardArgs.
-    // The success path confirms the ask menu forwarded the arg correctly.
-    expect(result.success).toBe(true);
-    expect(result.currentStage).toBe("clarify");
-  });
-
-  it("M2c: ask menu 'Spec stage' + forwardArgs → startNewPipeline receives forwardArgs", async () => {
-    await fsp.mkdir(path.join(TMP, "docs"), { recursive: true });
-    await fsp.writeFile(path.join(TMP, "docs", "feature.md"), "# Feature\n", "utf-8");
-
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      startStageMode: "ask",
-    });
-    const cmd = createPipelineStartCommand(config);
-    const freshMeta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
-    const ctx = createMockCtx(freshMeta, {
-      sessionFile: "main-session",
-      selectReturn: "Spec stage",
-      confirmReturn: true,
-    });
-    // Second select returns "Start at: develop"
-    const origSelect = ctx.ui.select;
-    let selectCalls = 0;
-    ctx.ui.select = async (_msg: string, opts: string[]) => {
-      selectCalls++;
-      if (selectCalls === 1) return "Spec stage";
-      if (selectCalls === 2) return "Start at: develop";
-      return origSelect?.(_msg, opts);
-    };
-
-    const result: any = await cmd.execute(
-      { file: "docs/feature.md", forwardArgs: "focus-on-review" },
-      ctx as any,
-    );
-
-    // Spec stage 'develop' → startNewPipeline with forwardArgs forwarded
-    expect(result.success).toBe(true);
-    // The starting stage should be develop (from the second select)
-    expect(result.currentStage).toBe("develop");
-  });
-});
-
-// ─── M3: dispatchAfterResume writes activeSpawns ─────────────────────────────
-//
-// Phase 4 (171) M3: aborted→resume→dispatch must write activeSpawns entry so
-// the in-run probe and "await…" clause have something to observe.
-
-describe("M3: dispatchAfterResume session passthrough", () => {
-  let TMP: string;
-
-  beforeEach(async () => {
-    TMP = path.join(
-      os.tmpdir(),
-      `pi-r2-dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    );
-    await fsp.mkdir(TMP, { recursive: true });
-    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
-    __resetMemoryThrottle();
-  });
-
-  afterEach(async () => {
-    await fsp.rm(TMP, { recursive: true, force: true });
-    __resetAuditDirPath();
-  });
-
-  it("resume of non-clarify stage clears stale activeSpawns via buildResumeMeta", () => {
-    // Direct assertion: buildResumeMeta clears activeSpawns from the old run,
-    // so the resumed run starts with a clean slate before dispatch re-writes it.
-    const config = makeTestConfig();
-    const meta = makeTestMeta({
-      currentStage: "plan",
-      flowState: "aborted",
-      activeSpawns: {
-        plan: {
-          agentName: "feat-design-plan-agent",
-          agentId: "stale-id",
-          startedAt: Date.now() - 60_000,
-        },
-      },
-    });
-    const newMeta = buildResumeMeta(meta, config);
-    expect(newMeta.activeSpawns).toBeUndefined();
-    // The dispatch path will re-populate activeSpawns via spawnStageSubagent
-    // when session is passed (covered by M3-session-passthrough test).
-  });
-
-  it("resume with mode=confirm: aborted plan pipeline resumes with pipelineId preserved", async () => {
-    await fsp.mkdir(path.join(TMP, "docs"), { recursive: true });
-    await fsp.writeFile(path.join(TMP, "docs", "req.md"), "# Req\n", "utf-8");
-
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      startStageMode: "confirm",
-    });
-    const cmd = createPipelineStartCommand(config);
-    const originalId = "pipe-confirm-resume-001";
-    const meta = makeTestMeta({
-      pipelineId: originalId,
-      currentStage: "plan",
-      flowState: "aborted",
-      requirementDoc: "docs/req.md",
-    });
-    const ctx = createMockCtx(meta, {
-      sessionFile: "main-session",
-      confirmReturn: true,
-    });
-
-    const result: any = await cmd.execute({ file: "" }, ctx as any);
-
-    expect(result.success).toBe(true);
-    expect(result.pipelineId).toBe(originalId);
-    expect(ctx.session.getMeta().flowState).toBe("running");
-    // activeSpawns cleared on resume (stale entries don't leak)
-    expect(ctx.session.getMeta().activeSpawns).toBeUndefined();
-  });
-});
-
 // ─── M4: settle-retry binding ────────────────────────────────────────────────
 //
 // agent-settled.ts:243-292 settle-retry: on completionMarker unbound +
@@ -757,82 +562,5 @@ describe("M4: settle-retry binding", () => {
     const auditContent = await fsp.readFile(auditPath, "utf-8");
     expect(auditContent).toContain("verify_completion_marker_unbound");
     expect(auditContent).not.toContain("settle_retry");
-  });
-});
-
-// ─── Low: fallback spawn does not write activeSpawns ─────────────────────────
-//
-// Review#2 Low: when fallback channel (sendUserMessage) is used, the spawn
-// returns no agentId. writeGuard must NOT write an activeSpawns entry (would
-// cause a 30min false-positive block via time-based check). spawnedStages guard
-// is still written (idempotency preserved).
-
-describe("Low: fallback spawn skips activeSpawns write", () => {
-  let TMP: string;
-
-  beforeEach(async () => {
-    TMP = path.join(
-      os.tmpdir(),
-      `pi-r2-fallback-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    );
-    await fsp.mkdir(TMP, { recursive: true });
-    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
-    __resetMemoryThrottle();
-  });
-
-  afterEach(async () => {
-    await fsp.rm(TMP, { recursive: true, force: true });
-    __resetAuditDirPath();
-  });
-
-  it("fallback spawn writes spawnedStages but NOT activeSpawns (no agentId)", async () => {
-    await writeAgentFile(TMP, ".pi/agents/fix-agent.md", "fix-agent");
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      stages: {
-        ...makeTestConfig().stages,
-        fix: {
-          agentPath: ".pi/agents/fix-agent.md",
-          skillPath: "fix/SKILL.md",
-          nextStage: "develop",
-          requireDomain: false,
-        },
-      },
-    } as any);
-    const meta = makeTestMeta({
-      currentStage: "fix",
-      pipelineId: "pipe-fallback",
-      stageStartTime: Date.now(),
-    });
-
-    // pi with only sendUserMessage (no event bus) → fallback path
-    const sentMessages: string[] = [];
-    const mockPi = {
-      sendUserMessage: (msg: string) => {
-        sentMessages.push(msg);
-      },
-    };
-
-    const sessionMeta = { ...meta };
-    const session = {
-      getMeta: () => sessionMeta,
-      updateMeta: (patch: Partial<SessionMeta>) => {
-        Object.assign(sessionMeta, patch);
-        return sessionMeta;
-      },
-    };
-
-    const result = await spawnStageSubagent(mockPi as any, config, "fix", meta, {
-      ui: { notify: () => {} },
-      session,
-    });
-
-    expect(result.spawned).toBe(true);
-    expect(result.fallback).toBe(true);
-    expect(sentMessages.length).toBe(1);
-    // spawnedStages guard written (idempotency preserved)
-    expect(sessionMeta.spawnedStages?.fix).toBe(meta.stageStartTime);
-    // activeSpawns NOT written (no agentId → no false-positive block window)
-    expect(sessionMeta.activeSpawns).toBeUndefined();
   });
 });

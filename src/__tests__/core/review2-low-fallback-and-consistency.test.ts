@@ -14,12 +14,13 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { spawnStageSubagent } from "../../utils/subagent-rpc";
 import { probeAgentState } from "../../utils/subagents-introspect";
-import { createToolGuard } from "../../core/tool-guard";
+import { createPromptInjector } from "../../core/prompt-injector";
 import { formatAbortedNotifyText } from "../../core/flow-state";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { makeTestConfig, makeTestMeta } from "../helpers";
 import type { SessionMeta } from "../../types";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { resetPromptConfigCache } from "../../core/prompt-config";
 
 const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
@@ -115,25 +116,31 @@ describe("Low: prompt-injector probe=unknown consistency", () => {
     await fsp.mkdir(TMP, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: TMP }));
     __resetMemoryThrottle();
+    resetPromptConfigCache();
   });
 
   afterEach(async () => {
     delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
     await fsp.rm(TMP, { recursive: true, force: true });
     __resetAuditDirPath();
+    resetPromptConfigCache();
   });
 
-  it("probe=unknown + <30min → time-window block (aligned with tool-guard)", async () => {
+  // review#3 M4 fix: this test now exercises the prompt-injector's buildStageExecutor
+  // probe=unknown degradation branch (822a503). The previous version tested tool-guard
+  // instead, which was a misnamed duplicate of E4. This test calls createPromptInjector
+  // handler and asserts the system prompt contains the "Active spawn" note when
+  // probe=unknown + <30min (time-window degradation). Removing the probe=unknown branch
+  // from prompt-injector → isLive stays false → no active spawn note → test turns red.
+  it("probe=unknown + <30min → prompt-injector injects Active spawn note (time-window degradation)", async () => {
     // Manager singleton absent → probeAgentState returns "unknown"
     expect(probeAgentState("subagent-unknown-low")).toBe("unknown");
 
     const config = makeTestConfig({ projectRoot: TMP });
-    config.stages["plan"] = {
-      ...config.stages["plan"],
-      guard: { suppressDuplicateSpawn: true },
-    };
-    await writeAgentFile(TMP, config.stages["plan"].agentPath!, "feat-design-plan-agent");
+    const agentPath = config.stages["plan"].agentPath!;
+    await writeAgentFile(TMP, agentPath, "feat-design-plan-agent");
 
+    // Meta with activeSpawns for plan stage (recent spawn, < 30min)
     const meta = makeTestMeta({
       currentStage: "plan",
       flowState: "running",
@@ -145,15 +152,20 @@ describe("Low: prompt-injector probe=unknown consistency", () => {
         },
       },
     });
-    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
-    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "feat-design-plan-agent" } };
+    const ctx = { session: { getMeta: () => meta } };
 
-    const hook = createToolGuard(config);
-    const result: any = await hook.handler(ctx as any);
+    // Exercise the prompt-injector hook (not tool-guard)
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx as any))!;
 
-    // Unknown + fresh → tool-guard time-window says live → block
-    expect(result).toBeDefined();
-    expect(result.block).toBe(true);
+    // The system prompt must contain the Active spawn note.
+    // This proves that prompt-injector's buildStageExecutor correctly degrades
+    // probe=unknown to the 30-min time-window check (aligned with tool-guard).
+    // Removing the `else if (probe === "unknown")` branch from prompt-injector →
+    // isLive stays false → no "Active spawn" note → test turns red.
+    expect(result.systemPrompt).toBeDefined();
+    expect(result.systemPrompt).toContain("Active spawn");
+    expect(result.systemPrompt).toContain("feat-design-plan-agent");
   });
 });
 
