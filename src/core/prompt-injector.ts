@@ -840,6 +840,9 @@ async function buildStageExecutor(
 
   // Phase 4 (171) High A: compute active-spawn note (shared by yml and fallback paths).
   // Gated by probe=live to avoid "zombie clause" when the spawn has already settled.
+  // review#2 Low: on probe=unknown (manager singleton absent), fall back to the same
+  // 30-min time-window check used by tool-guard's checkLiveSpawn, so hard-block and
+  // clause-injection stay consistent (no "block but don't warn" asymmetry).
   const activeSpawn = meta.activeSpawns?.[meta.currentStage];
   let activeSpawnNote = "";
   if (activeSpawn) {
@@ -847,7 +850,14 @@ async function buildStageExecutor(
     if (activeSpawn.agentId) {
       // Primary: probe manager singleton
       const probe = probeAgentState(activeSpawn.agentId);
-      isLive = probe === "live";
+      if (probe === "live") {
+        isLive = true;
+      } else if (probe === "unknown") {
+        // Manager singleton absent → degrade to time-based check (aligned with tool-guard)
+        const age = Date.now() - activeSpawn.startedAt;
+        isLive = age < 30 * 60 * 1000;
+      }
+      // probe === "settled" → isLive stays false
     } else {
       // Fallback: time-based check (no agentId recorded, e.g. fallback spawn)
       const age = Date.now() - activeSpawn.startedAt;

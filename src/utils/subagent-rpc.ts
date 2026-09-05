@@ -481,12 +481,18 @@ export async function spawnStageSubagent(
         ...(currentMeta.spawnedStages ?? {}),
         [stage]: currentMeta.stageStartTime,
       },
-      // Phase 4 (171) High A: write activeSpawns entry for in-run probe
-      activeSpawns: {
+    };
+    // Phase 4 (171) High A: write activeSpawns entry for in-run probe.
+    // review#2 Low: only write when we have a recorded agentId; fallback channel
+    // (sendUserMessage) has no agentId — writing an entry without agentId would
+    // hang in activeSpawns up to 30min (no lifecycle listener on fallback) and
+    // cause false-positive blocks via the time-based check.
+    if (subagentId) {
+      patch.activeSpawns = {
         ...(currentMeta.activeSpawns ?? {}),
         [stage]: { agentName, agentId: subagentId, startedAt: Date.now() },
-      },
-    };
+      };
+    }
     opts.session.updateMeta(patch);
   };
 
