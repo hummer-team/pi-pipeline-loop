@@ -904,7 +904,8 @@ async function handleAbortedPipeline(
   // files are re-checked, and maybeAutoLaunchClarify is invoked (fixes Medium #1).
   if (meta.requirementDoc) {
     // Different doc: prefer user's new file; defensive fallback to existing doc
-    return startNewPipeline(ctx, config, ui, file || meta.requirementDoc, "clarify", meta);
+    // review#2 M2: forwardArgs passthrough preserved across doc-switch branch
+    return startNewPipeline(ctx, config, ui, file || meta.requirementDoc, "clarify", meta, forwardArgs);
   }
 
   // No existing requirementDoc — use new file via unified path
@@ -914,7 +915,8 @@ async function handleAbortedPipeline(
       error: "run /pipeline-start <doc_file> start pipeline loop",
     };
   }
-  return startNewPipeline(ctx, config, ui, file, "clarify", meta);
+  // review#2 M2: forwardArgs passthrough preserved on the no-reqDoc + new-file branch
+  return startNewPipeline(ctx, config, ui, file, "clarify", meta, forwardArgs);
 }
 
 export function createPipelineStartCommand(config: PipelineConfig): Command {
@@ -1058,7 +1060,8 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
       // Fresh start with file → mode-specific handling
       if (mode === "ask") {
-        return handleAskMenu(ctx, config, ui, file, undefined);
+        // review#2 M2: forward existing meta + forwardArgs to ask menu on fresh-start path
+        return handleAskMenu(ctx, config, ui, file, meta, forwardArgs);
       }
 
       // auto/confirm fresh start: both go to clarify directly
@@ -1211,7 +1214,8 @@ async function handleAskMenu(
     if (!file) {
       return { success: false, error: "run /pipeline-start <doc_file> start pipeline loop" };
     }
-    return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta);
+    // review#2 M2: forwardArgs passthrough on ask-menu "New pipeline" branch
+    return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta, forwardArgs);
   }
 
   // ── Spec stage ──
@@ -1242,7 +1246,8 @@ async function handleAskMenu(
     if (!file) {
       return { success: false, error: "run /pipeline-start <doc_file> start pipeline loop" };
     }
-    return startNewPipeline(ctx, config, ui, file, selectedStage, existingMeta);
+    // review#2 M2: forwardArgs passthrough on ask-menu "Spec stage" branch
+    return startNewPipeline(ctx, config, ui, file, selectedStage, existingMeta, forwardArgs);
   }
 
   // ── Cancel ──
