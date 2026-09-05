@@ -25,14 +25,14 @@
       "skillPath": "plan/SKILL.md",
       "nextStage": "develop",
       "verify": { "require": true },
-      "confirm": { "mode": "manual" }
+      "confirm": { "mode": "manual" },
+      "guard": { "suppressDuplicateSpawn": false }
     },
     "develop": {
       "agentPath": ".pi/agents/develop-agent.md",
       "skillPath": "develop/SKILL.md",
       "nextStage": "review",
-      "verify": { "require": true, "selfVerifySkip": true },
-      "guard": { "suppressDuplicateSpawn": false }
+      "verify": { "require": true, "selfVerifySkip": true }
     },
     "review": {
       "agentPath": ".pi/agents/code-review-agent.md",

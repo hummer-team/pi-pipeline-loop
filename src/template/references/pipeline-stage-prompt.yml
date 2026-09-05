@@ -213,6 +213,8 @@ stage_executor_plan: |
   This stage uses `{subagent_type}` (lightweight advance mode).
   **Scheduling**: User @`{subagent_type}` in chat; main thread receives `nextStage: develop` and calls stage_advance.
   **Context**: {context_arg}
+  **Checkpoint**: Do NOT call `stage_advance` until the plan document is complete and user-confirmed.
+  {active_spawn_note}
 
 stage_executor_develop: |
   ## Stage Executor Scheduling
@@ -220,6 +222,8 @@ stage_executor_develop: |
   **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
+  **Checkpoint**: Build + tests must pass before `stage_advance` with `nextStage: review`.
+  {active_spawn_note}
 
 stage_executor_review: |
   ## Stage Executor Scheduling
@@ -227,6 +231,8 @@ stage_executor_review: |
   **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
+  **Checkpoint**: Review report must contain a verdict line before `stage_advance`.
+  {active_spawn_note}
 
 stage_executor_fix: |
   ## Stage Executor Scheduling
@@ -234,6 +240,8 @@ stage_executor_fix: |
   **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
+  **Checkpoint**: Build + tests must pass before `stage_advance` with `nextStage: review`.
+  {active_spawn_note}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Per-stage Plugin Default Deliverables (5 keys) — Phase 0 (146)

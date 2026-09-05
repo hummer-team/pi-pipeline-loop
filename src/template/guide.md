@@ -676,7 +676,24 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 
 每个事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
 
-### 7.10 @mention 改写边界说明（agentMentions 模式）
+### 7.10 guard 可选键说明
+
+各阶段配置支持以下 `guard` 可选键：
+
+| 键 | 类型 | 生效阶段 | 说明 |
+|----|------|---------|------|
+| `blockedTools` | `string[]` | 所有阶段 | 拦截指定工具调用（如 `["bash"]` 拦截 bash），用于答案收集阶段防止信息泄露 |
+| `suppressDuplicateSpawn` | `boolean` | 仅 clarify/plan | 启用后，当同名 stage executor agent 已在运行时，拦截重复的 `Agent` 工具调用并提示等待结果。需要配合 pi-subagents manager 单例探测或 activeSpawns 记录使用 |
+
+示例（plan 阶段启用防重复 spawn）：
+
+```json
+"plan": {
+  "guard": { "suppressDuplicateSpawn": true }
+}
+```
+
+### 7.11 @mention 改写边界说明（agentMentions 模式）
 
 当 pi-subagents 扩展配置为 `"agentMentions": "model"`（默认值）时，用户通过 `@agent <text>` 手动启动**未在跑的 agent**，pi-subagents 会将当前会话克隆到 off-screen 会话，由 clone 的模型自行撰写 `Agent(subagent_type, prompt)` 调用——即 **mention prompt 会被模型改写**（参见 pi-subagents README §Starting a new agent）。
 
