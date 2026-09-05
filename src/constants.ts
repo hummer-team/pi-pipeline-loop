@@ -73,6 +73,28 @@ export const DEFAULT_CONFIRM_OVERFLOW = "ask" as const;
  */
 export const AUDIT_THROTTLE_WINDOW_MS = 60_000;
 
+// ─── Frozen Aborted Exempt Tools (Phase 2 / 171) ─────────────────────────────
+
+/**
+ * Tools exempt from the frozen-state block when flowState === "aborted".
+ * These are read-only probe tools that enable self-rescue in the zombie state
+ * (no decision menu available for aborted pipelines).
+ *
+ * Only生效 for aborted state — blocked/awaiting_human maintain full block
+ * (those states have the decision menu as escape hatch).
+ *
+ * - pipeline_state: read-only meta snapshot (safe — no write side effects)
+ * - get_subagent_result: reads back subagent result text (external tool, read-only)
+ *
+ * NOTE: `read` is intentionally NOT included (Q2-B decision). Aborted after Phase 1
+ * only occurs on owner exit / stale_startup / user_abort — process death means
+ * transcript is on disk and recoverable after resume.
+ */
+export const FROZEN_ABORT_EXEMPT_TOOLS: readonly string[] = [
+  "pipeline_state",
+  "get_subagent_result",
+] as const;
+
 // ─── Terminal Context Compaction Defaults (Phase 4 / 169) ────────────────────
 
 /**

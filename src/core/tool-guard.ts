@@ -37,7 +37,7 @@ import {
   toProjectRelative,
   type ProtectState,
 } from "../utils/protect";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
@@ -394,6 +394,26 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       // 3. Freeze state check (unified via isFrozen)
       if (isFrozen(meta)) {
         const fs = getFlowState(meta);
+
+        // Phase 2 (171) Q2-B: aborted-state exemption for read-only probe tools.
+        // pipeline_state and get_subagent_result are safe (no write side effects) and
+        // enable self-rescue in the zombie state where no decision menu is available.
+        // Only生效 for aborted — blocked/awaiting_human maintain full block.
+        if (fs === "aborted" && FROZEN_ABORT_EXEMPT_TOOLS.includes(toolName)) {
+          // Throttled audit for frozen probe (same 60s window pattern as rejection)
+          const probeThrottleKey = `frozen-probe:${meta.pipelineId}:${toolName}`;
+          if (shouldEmitWithinWindow(probeThrottleKey, AUDIT_THROTTLE_WINDOW_MS)) {
+            await safeWriteAuditLog("tool_allowed_frozen_probe", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+              tool: toolName,
+              flowState: fs,
+            });
+          }
+          // Allow the tool call (return undefined = no block)
+          return undefined;
+        }
+
         let reason: string;
         if (fs === "aborted") {
           // Phase 1 (171): use shared abort text function for consistency across

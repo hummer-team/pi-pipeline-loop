@@ -2654,4 +2654,159 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
     });
   });
+
+  // ─── Phase 2 (171): Aborted-state read-only probe exemption (Q2-B) ──
+
+  describe("Phase 2 (171): aborted-state exempt probe tools", () => {
+    it("aborted + pipeline_state → allow (return undefined) + probe audit", async () => {
+      const TMP = join(tmpdir(), "pi-tg-exempt-ps-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "pipeline_state", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Allow (undefined = no block)
+      expect(result).toBeUndefined();
+
+      // Probe audit emitted
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("tool_allowed_frozen_probe");
+      expect(logContent).toContain("tool=pipeline_state");
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("aborted + get_subagent_result → allow + probe audit", async () => {
+      const TMP = join(tmpdir(), "pi-tg-exempt-gsr-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "plan", flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "get_subagent_result", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("tool_allowed_frozen_probe");
+      expect(logContent).toContain("tool=get_subagent_result");
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("aborted + write → still block (not in exempt list)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-exempt-write-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("aborted + read → still block (read not in exempt list per Q2-B)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-exempt-read-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "read", arguments: { path: "src/x.ts" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("aborted");
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("blocked + pipeline_state → still block (exemption only for aborted)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-exempt-blocked-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "pipeline_state", arguments: {} };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // Blocked → full block (no exemption)
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("frozen");
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+
+    it("probe audit is throttled (only 1 within window)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-exempt-throttle-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "pipeline_state", arguments: {} };
+
+      const hook = createToolGuard(config);
+
+      // Call twice within window
+      await hook.handler(ctx as any);
+      await hook.handler(ctx as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const occurrences = logContent.split("tool_allowed_frozen_probe").length - 1;
+      expect(occurrences).toBe(1); // Throttled to 1
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+      __resetMemoryThrottle();
+    });
+  });
 });
