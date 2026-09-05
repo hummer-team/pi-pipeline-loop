@@ -80,7 +80,7 @@ export const AUDIT_THROTTLE_WINDOW_MS = 60_000;
  * These are read-only probe tools that enable self-rescue in the zombie state
  * (no decision menu available for aborted pipelines).
  *
- * Only生效 for aborted state — blocked/awaiting_human maintain full block
+ * Only effective for aborted state — blocked/awaiting_human maintain full block
  * (those states have the decision menu as escape hatch).
  *
  * - pipeline_state: read-only meta snapshot (safe — no write side effects)
@@ -94,6 +94,15 @@ export const FROZEN_ABORT_EXEMPT_TOOLS: readonly string[] = [
   "pipeline_state",
   "get_subagent_result",
 ] as const;
+
+// ─── Spawn Tool Names (Phase 4 / 171) ────────────────────────────────────────
+
+/**
+ * Tool names used by pi-subagents to spawn subagents.
+ * Centralized here so tool-guard and other modules can reference a single source
+ * instead of hardcoding "Agent" strings.
+ */
+export const SPAWN_TOOL_NAMES: readonly string[] = ["Agent"] as const;
 
 // ─── Terminal Context Compaction Defaults (Phase 4 / 169) ────────────────────
 

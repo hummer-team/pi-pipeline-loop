@@ -321,6 +321,10 @@ export async function executeDecision(
         terminateReason: "user_abort",
       });
 
+      // Phase 1 (171) C14/C15: abort decision nextStage derived from config chain
+      // (consistent with markPipelineAborted and freezeAndPrompt)
+      const abortNextStage = config.stages[fromStage]?.nextStage ?? null;
+      const abortDocHint = meta.requirementDoc ?? "<requirement-doc>";
       // Phase 1 (171) C14: enriched audit with terminateReason, nextStage, nextAction
       // (Menu Abort = user-initiated, no notify needed — command layer echoes result)
       await safeWriteAuditLog("pipeline_decision", {
@@ -330,8 +334,8 @@ export async function executeDecision(
         toStage: "aborted",
         reason: meta.blockedReason ?? "",
         terminateReason: "user_abort",
-        nextStage: "null",
-        nextAction: "pipeline terminated by user choice",
+        nextStage: abortNextStage ?? "null",
+        nextAction: `run /pipeline-start ${abortDocHint} to resume at "${fromStage}"`,
       });
 
       return { success: true, message: "Pipeline aborted. Use /pipeline-start to begin a new run." };

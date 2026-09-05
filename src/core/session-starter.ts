@@ -409,8 +409,11 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           // blocked (exit: decision menu). Resume reason gets one-shot notify.
           const flowState = getFlowState(meta);
           if (flowState === "aborted") {
-            const docHint = meta.requirementDoc ?? "<requirement-doc>";
-            ui.notify(ctx, `Pipeline aborted. Run /pipeline-start ${docHint} to resume or restart.`);
+            ui.notify(ctx, formatAbortedNotifyText(
+              meta.currentStage,
+              meta.terminateReason ?? "session_quit",
+              meta.requirementDoc,
+            ));
           } else {
             ui.notify(ctx, `Pipeline blocked: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
           }

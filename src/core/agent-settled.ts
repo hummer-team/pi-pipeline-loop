@@ -12,7 +12,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
-import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -81,8 +81,11 @@ export function createAgentSettled(
         });
         // Phase 3 (170) ④: distinct notify text for aborted vs blocked
         if (flowState === "aborted") {
-          const docHint = meta.requirementDoc ?? "<requirement-doc>";
-          ui.notify(ctx, `Pipeline aborted. Run /pipeline-start ${docHint} to resume or restart.`);
+          ui.notify(ctx, formatAbortedNotifyText(
+            meta.currentStage,
+            meta.terminateReason ?? "session_quit",
+            meta.requirementDoc,
+          ));
         } else {
           ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
         }

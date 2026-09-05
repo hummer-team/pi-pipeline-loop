@@ -55,8 +55,7 @@ export function deriveClarifyForwardArgs(docText: string): ClarifyForwardResult 
   const latestRound = Math.max(...rounds);
 
   // Extract the text block for the latest round (from its heading to end of doc)
-  const roundHeadingRegex = new RegExp(`^#\\\\s*第\\\\s*${latestRound}\\\\s*轮澄清.*$`, "gm");
-  // Simpler: find the position of the latest round heading and extract from there
+  // Find the position of the latest round heading and extract from there
   const headingPattern = new RegExp(`#\\s*第\\s*${latestRound}\\s*轮澄清`, "gm");
   const headingMatch = headingPattern.exec(docText);
   if (!headingMatch) {
