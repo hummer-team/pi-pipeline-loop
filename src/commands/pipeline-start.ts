@@ -26,7 +26,9 @@ import {
   writeResidueGateStatus,
 } from "../core/template-residue-check";
 import { registerSession } from "../utils/session-registry";
-import { pingSubagents, spawnClarifySubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
+import { pingSubagents, spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
+import { scanAuditFlows } from "../utils/doc-flow-index";
+import { deriveClarifyForwardArgs } from "../utils/clarify-args";
 
 /**
  * Writes the persistent TUI status bar showing current pipeline stage.
@@ -505,6 +507,7 @@ async function resumePipeline(
   ui: ReturnType<typeof createPipelineUI>,
   file: string,
   reason: string,
+  forwardArgs?: string,
 ): Promise<{ success: boolean; message?: string; pipelineId?: string; currentStage?: PipelineStage }> {
   const newMeta = buildResumeMeta(meta, config);
   ctx?.session?.updateMeta?.(newMeta);
@@ -523,12 +526,60 @@ async function resumePipeline(
     requirementDoc: newMeta.requirementDoc ?? "",
   });
 
+  // Phase 3 (171): dispatch after resume — stage-aware subagent relay
+  const doc = newMeta.requirementDoc ?? file;
+  if (doc) {
+    await dispatchAfterResume(ctx, config, ui, newMeta, doc, forwardArgs);
+  }
+
   return {
     success: true,
     message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
     pipelineId: newMeta.pipelineId,
     currentStage: newMeta.currentStage,
   };
+}
+
+/**
+ * Phase 3 (171): stage-aware dispatch after pipeline resume.
+ *
+ * For the resumed stage, spawn the appropriate subagent:
+ * - clarify: derive/forward args like maybeAutoLaunchClarify
+ * - plan/develop/review/fix: spawn the stage subagent directly
+ *
+ * User forwardArgs are transparently passed through when non-empty.
+ */
+async function dispatchAfterResume(
+  ctx: any,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  meta: SessionMeta,
+  doc: string,
+  forwardArgs?: string,
+): Promise<void> {
+  const stage = meta.currentStage;
+
+  if (stage === "clarify") {
+    await maybeAutoLaunchClarify(ctx, config, ui, meta, doc, forwardArgs);
+    return;
+  }
+
+  // plan/develop/review/fix: spawn stage subagent via existing helper
+  const result = await spawnStageSubagent(ctx?.pi, config, stage, meta, {
+    ui: { notify: (msg: string) => ui.notify(ctx, msg) },
+  });
+
+  if (result.spawned) {
+    await safeWriteAuditLog("pipeline_resume_dispatch", {
+      stage,
+      requirementDoc: doc,
+      pipelineId: meta.pipelineId,
+      forwardArgs: forwardArgs ? "yes" : "no",
+    });
+  } else if (!result.fallback) {
+    // Not spawned and no fallback (e.g. non-spawnable stage) → notify
+    ui.notify(ctx, `Pipeline resumed at "${stage}". Run the ${stage} agent to continue.`);
+  }
 }
 
 /**
@@ -554,6 +605,7 @@ async function startNewPipeline(
   file: string,
   startStage: PipelineStage = "clarify",
   existingMeta?: SessionMeta,
+  forwardArgs?: string,
 ): Promise<{
   success: boolean;
   message?: string;
@@ -617,13 +669,12 @@ async function startNewPipeline(
     ? `Pipeline restarted as "${pipelineId}" at stage "${startStage}".`
     : `Pipeline "${pipelineId}" started with document: ${file}.`;
   const messageSuffix = startStage === "clarify"
-    ? ` Next: run @feat-design-plan-agent ${file} 1 to start requirement clarification`
+    ? ` Next: run @feat-design-plan-agent ${file} ${forwardArgs || "1"} to start requirement clarification`
     : "";
 
-  // Phase 2 (144): Auto-launch clarify subagent for fresh/spec→clarify
-  // Only for clarify start (not resume — round state is in document)
+  // Phase 2 (144) + Phase 3 (171): Auto-launch clarify subagent with forwardArgs passthrough
   if (startStage === "clarify") {
-    await maybeAutoLaunchClarify(ctx, config, ui, newMeta, file);
+    await maybeAutoLaunchClarify(ctx, config, ui, newMeta, file, forwardArgs);
   }
 
   // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
@@ -644,16 +695,22 @@ async function startNewPipeline(
 /**
  * Auto-launches the clarify subagent via pi-subagents RPC spawn.
  *
+ * Phase 3 (171): Accepts optional user-supplied forwardArgs (transparent passthrough).
+ * When forwardArgs is empty, derives from document text via deriveClarifyForwardArgs.
+ *
+ * Derivation outcomes:
+ * - "1" / "full-und?" → spawn clarify subagent with `${file} ${derivedArgs}`
+ * - "await-answer" / "confirmed" → do not spawn, notify user guidance
+ *
  * Flow: resolve agentName → ping → spawn → success audit; any failure → fallback to
  * pi.sendUserMessage + TUI notify + fallback audit.
- *
- * Only called for fresh/spec→clarify (NOT resume, to avoid resetting round state).
  *
  * @param ctx - pi extension context (uses ctx.pi.events + ctx.pi.sendUserMessage)
  * @param config - Pipeline configuration
  * @param ui - PipelineUI instance for notify
  * @param meta - Newly initialized session metadata
  * @param file - The requirement doc file path
+ * @param forwardArgs - User-supplied forward args (overrides derivation when non-empty)
  */
 async function maybeAutoLaunchClarify(
   ctx: any,
@@ -661,17 +718,67 @@ async function maybeAutoLaunchClarify(
   ui: ReturnType<typeof createPipelineUI>,
   meta: SessionMeta,
   file: string,
+  forwardArgs?: string,
 ): Promise<void> {
   const agentName = resolveAgentMention(config, "clarify");
 
-  if (!agentName) {
-    // No agentPath configured → notify fallback
-    ui.notify(ctx, `Next: run @feat-design-plan-agent ${file} 1`);
+  // Phase 3 (171): determine effective args (explicit > derived)
+  let effectiveArgs: string;
+  let skipSpawn = false;
+  let skipMessage = "";
+
+  if (forwardArgs && forwardArgs.trim()) {
+    // Explicit user args → transparent passthrough (Q3-A)
+    effectiveArgs = forwardArgs.trim();
+  } else {
+    // Derive from document text
+    try {
+      const docPath = path.resolve(config.projectRoot, file);
+      const docText = fs.readFileSync(docPath, "utf-8");
+      const derived = deriveClarifyForwardArgs(docText);
+      switch (derived.kind) {
+        case "fresh":
+          effectiveArgs = "1";
+          break;
+        case "full-und?":
+          effectiveArgs = "full-und?";
+          break;
+        case "await-answer":
+          skipSpawn = true;
+          skipMessage = `Round ${derived.round} has no answers yet. Answer in the 第 ${derived.round} 轮澄清 答 fields, then re-mention @agent ${file} ${derived.round} 答.`;
+          effectiveArgs = "";
+          break;
+        case "confirmed":
+          skipSpawn = true;
+          skipMessage = `Round ${derived.round} clarification confirmed. Awaiting marker verification.`;
+          effectiveArgs = "";
+          break;
+      }
+    } catch {
+      // Fail-open: file read error → fallback to "1"
+      effectiveArgs = "1";
+    }
+  }
+
+  if (skipSpawn) {
+    ui.notify(ctx, skipMessage);
+    await safeWriteAuditLog("pipeline_start_launch_skipped", {
+      requirementDoc: file,
+      pipelineId: meta.pipelineId,
+      stage: "clarify",
+      reason: skipMessage.substring(0, 80),
+    });
     return;
   }
 
-  const message = `@${agentName} ${file} 1`;
-  const prompt = `${file} 1`;
+  if (!agentName) {
+    // No agentPath configured → notify fallback
+    ui.notify(ctx, `Next: run @feat-design-plan-agent ${file} ${effectiveArgs}`);
+    return;
+  }
+
+  const message = `@${agentName} ${file} ${effectiveArgs}`;
+  const prompt = `${file} ${effectiveArgs}`;
 
   // Try RPC path if pi.events is available
   if (ctx?.pi?.events) {
@@ -806,6 +913,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       "injects it into the clarify stage. Without a file, initializes the state machine only.",
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
       const file = (args.file as string) || "";
+      const forwardArgs = (args.forwardArgs as string) || "";
       const ui = createPipelineUI(config);
       const mode: StartStageMode = config.startStageMode ?? "auto";
 
@@ -860,7 +968,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
         // Aborted → mode-specific handling
         if (flowState === "aborted") {
-          return handleAbortedWithMode(ctx, meta, file, ui, config, mode);
+          return handleAbortedWithMode(ctx, meta, file, ui, config, mode, forwardArgs);
         }
 
         // awaiting_human → error with decision menu hint (unchanged)
@@ -881,13 +989,57 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         };
       }
 
+      // Phase 3 (171) Q4-A: scan auditDir for adoptable non-terminal flows before fresh start.
+      // If the current session has no usable pipeline but an aborted flow exists for the same doc,
+      // adopt it (pipelineId preserved) instead of creating a new one.
+      if (mode === "auto") {
+        try {
+          const candidates = await scanAuditFlows(config.projectRoot, config.auditDir || ".pi/audit", file);
+          if (candidates.length > 0) {
+            const top = candidates[0];
+            // Running/blocked in another session → reject (no double-start)
+            if (top.flowState === "running" || top.flowState === "blocked") {
+              return {
+                success: false,
+                error: `Pipeline "${top.pipelineId}" is already ${top.flowState} at stage "${top.stage}" in another session. Open the decision menu there.`,
+              };
+            }
+            // Aborted → adopt + resume (pipelineId preserved)
+            if (top.flowState === "aborted") {
+              const adoptedMeta: SessionMeta = {
+                currentStage: top.stage,
+                stageStartTime: Date.now(),
+                pipelineId: top.pipelineId,
+                domain: { id: "general", version: "latest", skillPath: "" },
+                summaries: {},
+                loopCount: 0,
+                currentStepIndex: 0,
+                maxLoops: config.maxLoops || 3,
+                flowState: "aborted",
+                requirementDoc: top.requirementDoc,
+              };
+              await safeWriteAuditLog("pipeline_start_adopted", {
+                mode: "adopt",
+                fromStage: top.stage,
+                requirementDoc: top.requirementDoc ?? "",
+                sourceFile: file,
+                adoptedPipelineId: top.pipelineId,
+              });
+              return resumePipeline(ctx, adoptedMeta, config, ui, file, "pipeline_start_adopted", forwardArgs);
+            }
+          }
+        } catch {
+          // Fail-open: scan error does not block fresh start
+        }
+      }
+
       // Fresh start with file → mode-specific handling
       if (mode === "ask") {
         return handleAskMenu(ctx, config, ui, file, undefined);
       }
 
       // auto/confirm fresh start: both go to clarify directly
-      return startNewPipeline(ctx, config, ui, file, "clarify", meta);
+      return startNewPipeline(ctx, config, ui, file, "clarify", meta, forwardArgs);
     },
   };
 }
@@ -905,6 +1057,7 @@ async function handleAbortedWithMode(
   ui: ReturnType<typeof createPipelineUI>,
   config: PipelineConfig,
   mode: StartStageMode,
+  forwardArgs?: string,
 ): Promise<unknown> {
   const resumable = RESUMABLE_STAGES.includes(meta.currentStage);
   const sameDoc = !!file && !!meta.requirementDoc && file === meta.requirementDoc;

@@ -25,8 +25,23 @@ export function parseCommandArgs(
   switch (commandName) {
     case "pipeline-init":
       return { sub: args.trim() };
-    case "pipeline-start":
-      return { file: args.trim() };
+    case "pipeline-start": {
+      // Phase 3 (171): split first token (file) from rest (forwardArgs).
+      // /pipeline-start docs/design/82_Feat.md full-und?
+      //   → { file: "docs/design/82_Feat.md", forwardArgs: "full-und?", raw: "..." }
+      // Empty/whitespace-only → file="" forwardArgs="" (backward compat).
+      const trimmed = args.trim();
+      if (!trimmed) {
+        return { file: "", forwardArgs: "", raw: args };
+      }
+      const firstSpace = trimmed.search(/\s/);
+      if (firstSpace === -1) {
+        return { file: trimmed, forwardArgs: "", raw: args };
+      }
+      const file = trimmed.substring(0, firstSpace);
+      const forwardArgs = trimmed.substring(firstSpace + 1).trim();
+      return { file, forwardArgs, raw: args };
+    }
     case "pipeline-status":
       return {};
     case "pipeline-quit":

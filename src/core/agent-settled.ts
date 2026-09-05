@@ -25,6 +25,8 @@ import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { parseRequirementDocPath } from "../utils/doc-path";
+import { extractFirstUserMessageText } from "./session-state";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -240,16 +242,43 @@ export function createAgentSettled(
       const marker = stageConfig.verify.completionMarker;
       if (marker && !await precheckCompletionMarker(meta, marker, config.projectRoot)) {
         if (!meta.requirementDoc) {
-          // Requirement doc not bound — surface the root cause to the user
-          await writeAuditLog("verify_completion_marker_unbound", {
-            pipelineId: meta.pipelineId,
-            stage: meta.currentStage,
-            marker,
-          });
-          // Throttled notification: avoid flooding on repeated settles within the same stage visit
-          if (shouldNotifyAndStamp(meta, "lastUnboundNotifiedAt", AUDIT_THROTTLE_WINDOW_MS)) {
-            ctx.session.updateMeta({ lastUnboundNotifiedAt: Date.now() });
-            ui.notify(ctx, `Requirement document not bound. Run /pipeline-start <requirement-doc> to bind and resume.`);
+          // Phase 3 (171): settle-retry binding — at settle time, first user message
+          // must be on disk. Try to extract and bind the requirement doc path.
+          // This recovers from JOIN bind-miss (Phase 0 audit) without user intervention.
+          try {
+            const firstUserMsg = extractFirstUserMessageText(ctx._ctx as Parameters<typeof extractFirstUserMessageText>[0]);
+            const parsedPath = parseRequirementDocPath(firstUserMsg);
+            if (parsedPath) {
+              ctx.session.updateMeta({ requirementDoc: parsedPath });
+              await writeAuditLog("requirement_doc_bound", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                requirementDoc: parsedPath,
+                source: "settle_retry",
+              });
+              // Doc now bound — continue to marker check below (do not return)
+              // Fall through to the normal verification flow
+            } else {
+              // Still no doc — audit + notify as before
+              await writeAuditLog("verify_completion_marker_unbound", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                marker,
+              });
+              if (shouldNotifyAndStamp(meta, "lastUnboundNotifiedAt", AUDIT_THROTTLE_WINDOW_MS)) {
+                ctx.session.updateMeta({ lastUnboundNotifiedAt: Date.now() });
+                ui.notify(ctx, `Requirement document not bound. Run /pipeline-start <requirement-doc> to bind and resume.`);
+              }
+              return;
+            }
+          } catch {
+            // Fail-open: binding error must not block settle
+            await writeAuditLog("verify_completion_marker_unbound", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+              marker,
+            });
+            return;
           }
         } else {
           // Doc is bound but marker not yet written — silent skip (existing semantics)

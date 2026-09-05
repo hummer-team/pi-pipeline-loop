@@ -25,22 +25,57 @@ const UNDERSCORE_VARIANTS: string[] = ["pipeline_start", "pipeline_status"];
 
 describe("parseCommandArgs", () => {
   // ─── Core regression: the 136 bug ────────────────────────────────────────
-  it("returns { file } for pipeline-start with a doc path (136_E2E_Bug regression)", () => {
+  it("returns { file, forwardArgs, raw } for pipeline-start with a doc path (136_E2E_Bug regression)", () => {
     const result = parseCommandArgs("pipeline-start", "docs/design/76_E2E_Feat.md");
-    expect(result).toEqual({ file: "docs/design/76_E2E_Feat.md" });
+    expect(result).toEqual({ file: "docs/design/76_E2E_Feat.md", forwardArgs: "", raw: "docs/design/76_E2E_Feat.md" });
     // Critical: file MUST NOT be undefined — that was the bug.
     expect(result.file).toBeDefined();
     expect(typeof result.file).toBe("string");
-    expect(result.raw).toBeUndefined();
   });
 
-  it("returns { file: '' } for pipeline-start with empty args", () => {
-    expect(parseCommandArgs("pipeline-start", "")).toEqual({ file: "" });
+  it("returns { file: '', forwardArgs: '' } for pipeline-start with empty args", () => {
+    expect(parseCommandArgs("pipeline-start", "")).toEqual({ file: "", forwardArgs: "", raw: "" });
   });
 
   it("trims whitespace around file argument", () => {
     expect(parseCommandArgs("pipeline-start", "  docs/req.md  ")).toEqual({
       file: "docs/req.md",
+      forwardArgs: "",
+      raw: "  docs/req.md  ",
+    });
+  });
+
+  // ─── Phase 3 (171): pipeline-start tail parameter split ──
+
+  it("Phase 3 (171): pipeline-start splits file from forwardArgs (simple)", () => {
+    expect(parseCommandArgs("pipeline-start", "docs/design/82_Feat.md 1")).toEqual({
+      file: "docs/design/82_Feat.md",
+      forwardArgs: "1",
+      raw: "docs/design/82_Feat.md 1",
+    });
+  });
+
+  it("Phase 3 (171): pipeline-start splits file from forwardArgs (full-und?)", () => {
+    expect(parseCommandArgs("pipeline-start", "docs/design/82_Feat.md full-und?")).toEqual({
+      file: "docs/design/82_Feat.md",
+      forwardArgs: "full-und?",
+      raw: "docs/design/82_Feat.md full-und?",
+    });
+  });
+
+  it("Phase 3 (171): pipeline-start splits file from forwardArgs (1 答)", () => {
+    expect(parseCommandArgs("pipeline-start", "docs/design/82_Feat.md 1 答")).toEqual({
+      file: "docs/design/82_Feat.md",
+      forwardArgs: "1 答",
+      raw: "docs/design/82_Feat.md 1 答",
+    });
+  });
+
+  it("Phase 3 (171): pipeline-start with multiple spaces preserves forwardArgs", () => {
+    expect(parseCommandArgs("pipeline-start", "docs/spec.md   full-und?  ")).toEqual({
+      file: "docs/spec.md",
+      forwardArgs: "full-und?",
+      raw: "docs/spec.md   full-und?  ",
     });
   });
 
@@ -77,9 +112,17 @@ describe("parseCommandArgs", () => {
   for (const cmdName of REGISTERED_COMMAND_NAMES) {
     it(`drift guard: '${cmdName}' has an explicit case (not default branch)`, () => {
       const result = parseCommandArgs(cmdName, "sentinel-value");
-      // If this command were routed to default, result would contain { raw: ... }.
-      // All four registered commands have explicit cases that never emit `raw`.
-      expect(result.raw).toBeUndefined();
+      // pipeline-start has a "raw" field but all other explicit cases don't.
+      // The key property is that the command has an explicit case (produces `file`
+      // or `sub`) rather than falling to default (only produces `raw`).
+      if (cmdName === "pipeline-start") {
+        expect(result.file).toBeDefined();
+      } else if (cmdName === "pipeline-init") {
+        expect(result.sub).toBeDefined();
+      } else {
+        // pipeline-status / pipeline-quit: explicit case returns {}, default returns {raw}
+        expect(result.raw).toBeUndefined();
+      }
     });
   }
 
