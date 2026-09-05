@@ -37,7 +37,7 @@ import {
   toProjectRelative,
   type ProtectState,
 } from "../utils/protect";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
@@ -66,25 +66,37 @@ const ACTIVE_SPAWN_STALE_MS = 30 * 60 * 1000;
  * Returns null if no live spawn detected, or { agentId } if live.
  *
  * Fail-safe: any probe failure → returns null (do not block).
+ *
+ * Decision flow:
+ * 1. If activeSpawns has an entry for this stage with a recorded agentId,
+ *    probe it via probeAgentState (manager singleton).
+ *    - "live" → return { agentId }
+ *    - "settled" → do not block
+ *    - "unknown" → fall through to activeSpawns time check
+ * 2. Fallback: activeSpawns time-based check (< 30min → live).
  */
 function checkLiveSpawn(
   meta: SessionMeta,
   stage: PipelineStage,
 ): { agentId?: string } | null {
-  // Primary: pi-subagents manager probe (for spawnedStages entries)
-  const spawnedId = meta.spawnedStages?.[stage];
-  if (spawnedId === meta.stageStartTime) {
-    // This stage visit has a spawn guard entry — probe its status
-    // Note: spawnedStages stores stageStartTime (number), not agent ID
-    // For probe we'd need the actual agent ID. Fall through to activeSpawns.
-  }
-
-  // Secondary: activeSpawns (meta field with agent name + startedAt)
   const activeSpawn = meta.activeSpawns?.[stage];
   if (activeSpawn) {
+    // Primary: probe via manager singleton if we have a recorded agentId
+    if (activeSpawn.agentId) {
+      const probeResult = probeAgentState(activeSpawn.agentId);
+      if (probeResult === "live") {
+        return { agentId: activeSpawn.agentId };
+      }
+      if (probeResult === "settled") {
+        return null; // Settled → do not block
+      }
+      // "unknown" → fall through to activeSpawns time check
+    }
+
+    // Secondary: time-based check (30min staleness threshold)
     const age = Date.now() - activeSpawn.startedAt;
     if (age < ACTIVE_SPAWN_STALE_MS) {
-      return { agentId: undefined }; // Live by time check
+      return { agentId: activeSpawn.agentId };
     }
     // Stale → treat as absent
   }
@@ -436,7 +448,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         // Phase 2 (171) Q2-B: aborted-state exemption for read-only probe tools.
         // pipeline_state and get_subagent_result are safe (no write side effects) and
         // enable self-rescue in the zombie state where no decision menu is available.
-        // Only生效 for aborted — blocked/awaiting_human maintain full block.
+        // Only effective for aborted — blocked/awaiting_human maintain full block.
         if (fs === "aborted" && FROZEN_ABORT_EXEMPT_TOOLS.includes(toolName)) {
           // Throttled audit for frozen probe (same 60s window pattern as rejection)
           const probeThrottleKey = `frozen-probe:${meta.pipelineId}:${toolName}`;
@@ -511,7 +523,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       // - probe or activeSpawns indicates a live spawn for this stage
       // → block with reason (NOT counted as violation).
       const guard = stageConfig.guard;
-      if (guard?.suppressDuplicateSpawn && toolName === "Agent") {
+      if (guard?.suppressDuplicateSpawn && SPAWN_TOOL_NAMES.includes(toolName)) {
         const subagentType = args.subagent_type as string | undefined;
         const eligibleStages: PipelineStage[] = ["clarify", "plan"];
         if (subagentType && eligibleStages.includes(meta.currentStage)) {

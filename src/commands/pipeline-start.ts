@@ -305,6 +305,8 @@ function buildRestartMeta(
     // would retain the previous pipeline's guard keys (harmless in practice because
     // stageStartTime is reset, but leaves stale data in meta.json).
     spawnedStages: undefined,
+    // Phase 4 (171) High A: clear activeSpawns on restart to prevent stale spawn records
+    activeSpawns: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -374,6 +376,8 @@ function buildStartMeta(
     // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages on new pipeline start
     // to prevent cross-pipeline guard key residue via updateMeta spread merge.
     spawnedStages: undefined,
+    // Phase 4 (171) High A: clear activeSpawns on new pipeline start
+    activeSpawns: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -474,6 +478,9 @@ function buildResumeMeta(
     // resumed run's idempotency guard starts fresh. stageStartTime is reset below,
     // so stale guard keys would not mis-fire, but they leave residual data in meta.json.
     spawnedStages: undefined,
+    // Phase 4 (171) High A: clear activeSpawns on resume so stale spawn records
+    // from the previous run do not cause false-positive duplicate-spawn blocks.
+    activeSpawns: undefined,
 
     // Cleared terminal / blocked state
     blockedReason: undefined,
@@ -565,8 +572,11 @@ async function dispatchAfterResume(
   }
 
   // plan/develop/review/fix: spawn stage subagent via existing helper
+  // Phase 3 (171) High B: append user focus for non-clarify stages when forwardArgs present
+  const extraArgs = forwardArgs?.trim() ? `\n\nUser focus: ${forwardArgs.trim()}` : undefined;
   const result = await spawnStageSubagent(ctx?.pi, config, stage, meta, {
     ui: { notify: (msg: string) => ui.notify(ctx, msg) },
+    extraArgs,
   });
 
   if (result.spawned) {
@@ -575,6 +585,7 @@ async function dispatchAfterResume(
       requirementDoc: doc,
       pipelineId: meta.pipelineId,
       forwardArgs: forwardArgs ? "yes" : "no",
+      ...(forwardArgs?.trim() ? { forwardArgsContent: forwardArgs.trim().substring(0, 120) } : {}),
     });
   } else if (!result.fallback) {
     // Not spawned and no fallback (e.g. non-spawnable stage) → notify
@@ -852,6 +863,7 @@ async function handleAbortedPipeline(
   file: string,
   ui: ReturnType<typeof createPipelineUI>,
   config: PipelineConfig,
+  forwardArgs?: string,
 ): Promise<{ success: boolean; message?: string; error?: string; pipelineId?: string; currentStage?: PipelineStage }> {
   const resumable = RESUMABLE_STAGES.includes(meta.currentStage);
   const sameDoc = !!file && !!meta.requirementDoc && file === meta.requirementDoc;
@@ -859,7 +871,7 @@ async function handleAbortedPipeline(
 
   // --- Resume branch ---
   if (resumeEligible) {
-    return resumePipeline(ctx, meta, config, ui, file, "pipeline_start_resume");
+    return resumePipeline(ctx, meta, config, ui, file, "pipeline_start_resume", forwardArgs);
   }
 
   // --- Terminal stage: completed → require fresh start ---
@@ -996,16 +1008,21 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         try {
           const candidates = await scanAuditFlows(config.projectRoot, config.auditDir || ".pi/audit", file);
           if (candidates.length > 0) {
-            const top = candidates[0];
-            // Running/blocked in another session → reject (no double-start)
-            if (top.flowState === "running" || top.flowState === "blocked") {
+            // Phase 3 (171) M1: scan ALL candidates for running/blocked before adopting.
+            // scanAuditFlows returns non-terminal flows sorted by stageStartTime desc.
+            // If any candidate is running/blocked (in another session), reject — no double-start.
+            const activeCandidate = candidates.find(
+              c => c.flowState === "running" || c.flowState === "blocked"
+            );
+            if (activeCandidate) {
               return {
                 success: false,
-                error: `Pipeline "${top.pipelineId}" is already ${top.flowState} at stage "${top.stage}" in another session. Open the decision menu there.`,
+                error: `Pipeline "${activeCandidate.pipelineId}" is already ${activeCandidate.flowState} at stage "${activeCandidate.stage}" in another session. Open the decision menu there.`,
               };
             }
-            // Aborted → adopt + resume (pipelineId preserved)
-            if (top.flowState === "aborted") {
+            // All candidates are aborted → adopt the most recent one
+            const top = candidates.find(c => c.flowState === "aborted");
+            if (top) {
               const adoptedMeta: SessionMeta = {
                 currentStage: top.stage,
                 stageStartTime: Date.now(),
@@ -1025,6 +1042,12 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
                 sourceFile: file,
                 adoptedPipelineId: top.pipelineId,
               });
+              // Phase 3 (171) M2: register session → adopted pipelineId so subagent JOINs
+              // find the correct mapping (mirrors startNewPipeline registerSession call)
+              const adoptedSessionFile = ctx?._ctx?.sessionManager?.getSessionFile?.() as string | undefined;
+              if (adoptedSessionFile) {
+                await registerSession(config, adoptedSessionFile, top.pipelineId);
+              }
               return resumePipeline(ctx, adoptedMeta, config, ui, file, "pipeline_start_adopted", forwardArgs);
             }
           }
@@ -1065,7 +1088,7 @@ async function handleAbortedWithMode(
 
   // ── auto mode: existing 142 matrix unchanged ──
   if (mode === "auto") {
-    return handleAbortedPipeline(ctx, meta, file, ui, config);
+    return handleAbortedPipeline(ctx, meta, file, ui, config, forwardArgs);
   }
 
   // ── confirm mode ──
@@ -1074,28 +1097,28 @@ async function handleAbortedWithMode(
       // A3: if ui.confirm is unavailable → fall back to auto behavior + notify
       if (typeof ctx?.ui?.confirm !== "function") {
         ctx?.ui?.notify?.("TUI confirm unavailable — falling back to auto mode");
-        return handleAbortedPipeline(ctx, meta, file, ui, config);
+        return handleAbortedPipeline(ctx, meta, file, ui, config, forwardArgs);
       }
       const confirmed = await ctx.ui.confirm(
         `Resume at "${meta.currentStage}"? [Confirm / Cancel]`,
       );
       if (confirmed) {
-        return resumePipeline(ctx, meta, config, ui, file, "pipeline_start_confirm_resume");
+        return resumePipeline(ctx, meta, config, ui, file, "pipeline_start_confirm_resume", forwardArgs);
       }
       // Cancelled → no meta change
       return { success: false, error: "Pipeline start cancelled." };
     }
     // Not resume-eligible → same as auto (new pipeline or error)
-    return handleAbortedPipeline(ctx, meta, file, ui, config);
+    return handleAbortedPipeline(ctx, meta, file, ui, config, forwardArgs);
   }
 
   // ── ask mode ──
   if (mode === "ask") {
-    return handleAskMenu(ctx, config, ui, file || meta.requirementDoc || "", meta);
+    return handleAskMenu(ctx, config, ui, file || meta.requirementDoc || "", meta, forwardArgs);
   }
 
   // Fallback (should never reach)
-  return handleAbortedPipeline(ctx, meta, file, ui, config);
+  return handleAbortedPipeline(ctx, meta, file, ui, config, forwardArgs);
 }
 
 /**
@@ -1125,14 +1148,15 @@ async function handleAskMenu(
   ui: ReturnType<typeof createPipelineUI>,
   file: string,
   existingMeta: SessionMeta | undefined,
+  forwardArgs?: string,
 ): Promise<unknown> {
   // A3: no TUI → degrade to auto + notify
   if (typeof ctx?.ui?.select !== "function") {
     ctx?.ui?.notify?.("TUI select unavailable — falling back to auto mode");
     if (existingMeta && getFlowState(existingMeta) === "aborted") {
-      return handleAbortedPipeline(ctx, existingMeta, file, ui, config);
+      return handleAbortedPipeline(ctx, existingMeta, file, ui, config, forwardArgs);
     }
-    return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta);
+    return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta, forwardArgs);
   }
 
   // Resume eligibility must mirror auto mode's resumeEligible logic
@@ -1167,7 +1191,7 @@ async function handleAskMenu(
     if (!existingMeta) {
       return { success: false, error: "No pipeline to resume." };
     }
-    return resumePipeline(ctx, existingMeta, config, ui, file, "pipeline_start_ask_resume");
+    return resumePipeline(ctx, existingMeta, config, ui, file, "pipeline_start_ask_resume", forwardArgs);
   }
 
   // ── New pipeline ──

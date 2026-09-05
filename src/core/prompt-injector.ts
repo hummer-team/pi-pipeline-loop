@@ -26,6 +26,7 @@ import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
 import { isFrozen, getFlowState, formatFrozenReason } from "./flow-state";
+import { probeAgentState } from "../utils/subagents-introspect";
 import { detectLastRunHealth } from "./session-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import type { RuntimeCtx } from "./runtime-ctx";
@@ -837,6 +838,26 @@ async function buildStageExecutor(
     return null;
   }
 
+  // Phase 4 (171) High A: compute active-spawn note (shared by yml and fallback paths).
+  // Gated by probe=live to avoid "zombie clause" when the spawn has already settled.
+  const activeSpawn = meta.activeSpawns?.[meta.currentStage];
+  let activeSpawnNote = "";
+  if (activeSpawn) {
+    let isLive = false;
+    if (activeSpawn.agentId) {
+      // Primary: probe manager singleton
+      const probe = probeAgentState(activeSpawn.agentId);
+      isLive = probe === "live";
+    } else {
+      // Fallback: time-based check (no agentId recorded, e.g. fallback spawn)
+      const age = Date.now() - activeSpawn.startedAt;
+      isLive = age < 30 * 60 * 1000; // 30min staleness threshold
+    }
+    if (isLive) {
+      activeSpawnNote = `\n**⚠ Active spawn**: An auto-spawned \`${executor.subagent_type}\` is already executing this stage. Await its completion notification; do NOT spawn a duplicate, and do NOT self-execute its deliverable in the main thread.`;
+    }
+  }
+
   // Try to load per-stage executor text from yml `stage_executor_{stage}` key
   const ymlKey = `stage_executor_${meta.currentStage}`;
   const promptConfig = await loadPromptConfig(config.projectRoot);
@@ -846,7 +867,8 @@ async function buildStageExecutor(
     // Fill placeholders from yml template
     return ymlTemplate
       .replaceAll("{subagent_type}", executor.subagent_type)
-      .replaceAll("{context_arg}", `<document path filled by main thread, e.g. _plan.md>`);
+      .replaceAll("{context_arg}", `<document path filled by main thread, e.g. _plan.md>`)
+      .replaceAll("{active_spawn_note}", activeSpawnNote);
   }
 
   // Fallback: hardcoded English default text (when yml key is missing/empty)
@@ -874,13 +896,9 @@ async function buildStageExecutor(
     lines.push(`**Context**: context_arg filled by main thread from document artifacts`);
   }
 
-  // Phase 4 (171): inject active-spawn wait clause when auto-spawn is in progress.
-  // Prevents the main agent from spawning duplicates or self-executing the deliverable.
-  const activeSpawn = meta.activeSpawns?.[meta.currentStage];
-  const spawnedThisVisit = meta.spawnedStages?.[meta.currentStage] === meta.stageStartTime;
-  if (activeSpawn || spawnedThisVisit) {
-    lines.push("");
-    lines.push(`**⚠ Active spawn**: An auto-spawned \`${executor.subagent_type}\` is already executing this stage. Await its completion notification; do NOT spawn a duplicate, and do NOT self-execute its deliverable in the main thread.`);
+  // Append active-spawn note (probe=live gated) to fallback path
+  if (activeSpawnNote) {
+    lines.push(activeSpawnNote);
   }
 
   return lines.join("\n");

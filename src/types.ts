@@ -490,12 +490,12 @@ export interface SessionMeta {
    * Used as secondary indicator when pi-subagents manager singleton is unavailable.
    *
    * Lifecycle:
-   * - Written on spawnStageSubagent success
+   * - Written on spawnStageSubagent success (with agentId from RPC reply)
    * - Cleared on lifecycle settle callback (onSettle)
-   * - Cleared on resume/restart (buildResumeMeta/buildStartMeta)
+   * - Cleared on resume/restart (buildResumeMeta/buildStartMeta/buildRestartMeta)
    * - 30min stale entries treated as absent (fail-open)
    */
-  activeSpawns?: Partial<Record<PipelineStage, { agentName: string; startedAt: number }>>;
+  activeSpawns?: Partial<Record<PipelineStage, { agentName: string; agentId?: string; startedAt: number }>>;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

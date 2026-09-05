@@ -430,7 +430,7 @@ export async function spawnStageSubagent(
   config: PipelineConfig,
   stage: PipelineStage,
   meta: SessionMeta,
-  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession },
+  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; extraArgs?: string },
 ): Promise<{ spawned: boolean; fallback: boolean }> {
   // 1. Non-spawnable stage → skip silently
   if (!isSpawnableStage(config, stage)) {
@@ -464,20 +464,40 @@ export async function spawnStageSubagent(
 
   // Phase 1 (169): spawn prompt includes requirementDoc pointer for context passing
   const reqDocHint = meta.requirementDoc ?? "(unset)";
-  const prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}. Requirement doc: ${reqDocHint} — read it first (contains clarification conclusions)`;
+  let prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}. Requirement doc: ${reqDocHint} — read it first (contains clarification conclusions)`;
+  // Phase 3 (171) High B: append extraArgs (User focus) when provided by caller
+  if (opts?.extraArgs) {
+    prompt += opts.extraArgs;
+  }
   const description = `${stage}: ${meta.requirementDoc ?? ""}`;
 
-  /** Helper to write the idempotency guard after successful spawn */
-  const writeGuard = async (): Promise<void> => {
+  /** Helper to write the idempotency guard + activeSpawns entry after successful spawn */
+  const writeGuard = async (subagentId?: string): Promise<void> => {
     if (!opts?.session) return;
     const currentMeta = opts.session.getMeta();
     if (!currentMeta) return;
-    opts.session.updateMeta({
+    const patch: Partial<SessionMeta> = {
       spawnedStages: {
         ...(currentMeta.spawnedStages ?? {}),
         [stage]: currentMeta.stageStartTime,
       },
-    });
+      // Phase 4 (171) High A: write activeSpawns entry for in-run probe
+      activeSpawns: {
+        ...(currentMeta.activeSpawns ?? {}),
+        [stage]: { agentName, agentId: subagentId, startedAt: Date.now() },
+      },
+    };
+    opts.session.updateMeta(patch);
+  };
+
+  /** Helper to clear activeSpawns entry on lifecycle settle */
+  const clearActiveSpawn = (): void => {
+    if (!opts?.session) return;
+    const currentMeta = opts.session.getMeta();
+    if (!currentMeta?.activeSpawns?.[stage]) return;
+    const cleared = { ...currentMeta.activeSpawns };
+    delete cleared[stage];
+    opts.session.updateMeta({ activeSpawns: cleared });
   };
 
   // 4. RPC path: ping → spawn → success
@@ -497,11 +517,13 @@ export async function spawnStageSubagent(
           agentName,
           subagentId: spawnResult.id,
         });
-        // Watch lifecycle (self-unregistering) with timeout guard to prevent leak
+        // Watch lifecycle (self-unregistering) with timeout guard to prevent leak.
+        // On settle: clear activeSpawns entry so duplicate-spawn guard does not misfire.
         const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
+          clearActiveSpawn();
           cleanup();
         }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
-        await writeGuard();
+        await writeGuard(spawnResult.id);
         return { spawned: true, fallback: false };
       }
       // Spawn rejected/failed → log failure reason before falling back
