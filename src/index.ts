@@ -38,6 +38,7 @@ import { createPipelineStatusCommand } from "./commands/pipeline-status";
 import { createPipelineStartCommand } from "./commands/pipeline-start";
 import { createPipelineInitCommand } from "./commands/pipeline-init";
 import { createPipelineQuitCommand } from "./commands/pipeline-quit";
+import { createPipelineResumeCommand } from "./commands/pipeline-resume";
 
 // Agent settled and session shutdown lifecycle hooks
 import { createAgentSettled } from "./core/agent-settled";
@@ -178,6 +179,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createPipelineStartCommand(config),
       createPipelineInitCommand(config),
       createPipelineQuitCommand(config),
+      createPipelineResumeCommand(config),
     ];
     for (const cmd of commands) {
       pi.registerCommand(cmd.name, {

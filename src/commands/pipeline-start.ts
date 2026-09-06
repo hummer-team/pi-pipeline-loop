@@ -558,7 +558,7 @@ async function resumePipeline(
  *
  * User forwardArgs are transparently passed through when non-empty.
  */
-async function dispatchAfterResume(
+export async function dispatchAfterResume(
   ctx: any,
   config: PipelineConfig,
   ui: ReturnType<typeof createPipelineUI>,

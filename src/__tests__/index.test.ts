@@ -52,7 +52,7 @@ describe("createPipeline", () => {
     expect(registeredCommands).toContain("pipeline-start");
     expect(registeredCommands).toContain("pipeline-init");
     expect(registeredCommands).toContain("pipeline-quit");
-    expect(registeredCommands.length).toBe(4);
+    expect(registeredCommands.length).toBe(5);
   });
 
   it("passes correct tool metadata during registration", async () => {
@@ -149,7 +149,7 @@ describe("default export", () => {
     expect(registeredTools).toContain("stage_advance");
     expect(registeredTools).toContain("pipeline_handoff");
 
-    expect(registeredCommands.length).toBe(4);
+    expect(registeredCommands.length).toBe(5);
     expect(registeredCommands).toContain("pipeline-status");
     expect(registeredCommands).toContain("pipeline-start");
     expect(registeredCommands).toContain("pipeline-init");
