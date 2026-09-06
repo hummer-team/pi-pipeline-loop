@@ -810,7 +810,7 @@ async function maybeAutoLaunchClarify(
       const spawnResult = await spawnClarifySubagent(ctx.pi, {
         agentName,
         prompt,
-        description: `Clarify: ${file}`,
+        description: `Clarify: ${file} ${effectiveArgs}`.trim(),
       });
 
       if (spawnResult.ok) {

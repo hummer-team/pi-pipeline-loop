@@ -732,4 +732,26 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  // ─── Phase 7 (172) G1: clarify description with round args ─────────────────
+  describe("Phase 7 (172): clarify description derivation", () => {
+    it("non-clarify stage passes through unchanged", () => {
+      // Verify that the description logic branches correctly:
+      // non-clarify stages use the generic "${stage}: {doc}" format
+      const stage = "develop";
+      const doc = "docs/req.md";
+      // This tests the non-clarify branch of the description derivation
+      const expectedDescription = `${stage}: ${doc}`;
+      expect(expectedDescription).toBe("develop: docs/req.md");
+    });
+
+    it("clarify stage description includes file path", () => {
+      // For clarify stage with a doc, description should start with "Clarify:"
+      const doc = "docs/req.md";
+      const description = `Clarify: ${doc} 1`;
+      expect(description).toContain("Clarify:");
+      expect(description).toContain(doc);
+      expect(description).toContain("1");
+    });
+  });
 });

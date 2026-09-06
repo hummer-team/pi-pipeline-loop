@@ -894,6 +894,8 @@ async function buildStageExecutor(
     lines.push(`**Return protocol**: On \`full-und?\` confirmation, write the \`## 模型确认\` marker to the requirement document and STOP. Do NOT call \`stage_advance\` — the \`agent_settled\` hook auto-verifies (completionMarker) and advances to \`plan\`.`);
     // Phase 2 (172) G2: triage guidance for owner session
     lines.push(`**Triage**: If the user asks an unrelated question (not @mention with doc path or round args), answer briefly and do NOT touch pipeline state. Only pipeline-turn messages (containing verification results, stage routing, or @agent doc args) trigger verification.`);
+    // Phase 7 (172) G1: fresh-spawn guidance for clarify re-launch
+    lines.push(`**Re-launch**: When the user mentions \`@${executor.subagent_type} {file} {args}\` during clarify, spawn a **new task** with \`description = Clarify: {file} {args}\` — do NOT resume the previous task. Each round gets its own task title reflecting the round number.`);
   } else if (executor.mode === "task-invocation") {
     lines.push(`This stage is executed by sub-agent: \`${executor.subagent_type}\``);
     lines.push("");
