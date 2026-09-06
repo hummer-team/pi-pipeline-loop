@@ -206,6 +206,15 @@ export interface StageConfig {
    * Mirrors StageJsonConfig.guard after JSON config loading/validation.
    */
   guard?: { blockedTools?: string[]; suppressDuplicateSpawn?: boolean };
+
+  /**
+   * Phase 0 (172): Per-stage protection overrides.
+   * Currently only `gitModify` takes effect at stage level (git-native write policy).
+   * Other ProtectConfig sub-fields (gitignore, paths, allow, ask) are NOT applied
+   * at stage level — they remain global-only to avoid misconfiguration surprises.
+   * Resolution: stages[stage].protect?.gitModify ?? config.protect?.gitModify ?? matrix default.
+   */
+  protect?: Pick<ProtectConfig, "gitModify">;
 }
 
 // ─── Summary Metadata ────────────────────────────────────────────────────────
@@ -536,6 +545,22 @@ export interface ProtectConfig {
    * trigger a 3-choice dialog: follow plugin default / allow this edit / allow for session.
    */
   ask?: boolean;
+
+  /**
+   * Per-stage or global policy for git-native write operations (add, commit, merge, etc.).
+   * - "allow": Git write subcommands are permitted in this stage (subject to blacklist).
+   * - "block": Git write subcommands are hard-blocked regardless of protect.ask.
+   *
+   * Resolution order (3-tier):
+   *   stages[stage].protect?.gitModify ?? config.protect?.gitModify ?? matrix default
+   * Matrix default: clarify/plan/review/completed/awaiting_human = "block"; develop/fix = "allow".
+   *
+   * NOTE: This field controls git-native operations ONLY. It does NOT interact with
+   * protect.ask (file edit dialog) or the hardcoded/gitalias write-target protection chain.
+   * Dangerous subcommands (filter-branch, reset --hard, push --force, etc.) are always
+   * rejected regardless of this setting (see GIT_FORBIDDEN_PATTERNS in tool-guard).
+   */
+  gitModify?: "allow" | "block";
 }
 
 // ─── Pipeline Configuration ──────────────────────────────────────────────────
@@ -736,6 +761,13 @@ export interface StageJsonConfig {
    * When absent or empty, behaviour is unchanged (zero impact on existing configs).
    */
   guard?: { blockedTools?: string[]; suppressDuplicateSpawn?: boolean };
+
+  /**
+   * Phase 0 (172): Per-stage protection overrides (JSON config).
+   * Only `gitModify` sub-field is effective at stage level.
+   * Other ProtectConfig sub-fields are ignored at stage level.
+   */
+  protect?: { gitModify?: "allow" | "block" };
 }
 
 /**

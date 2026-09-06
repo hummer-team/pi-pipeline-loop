@@ -484,6 +484,71 @@ describe("protect config", () => {
     const result = resolvePipelineConfig(json);
     expect(result.protect!.ask).toBe(true);
   });
+
+  // ─── Phase 0 / 172: protect.gitModify ───────────────────────────────────
+  it("loadJsonConfig parses protect.gitModify: 'allow'", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { gitModify: "allow" },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.gitModify).toBe("allow");
+  });
+
+  it("loadJsonConfig parses protect.gitModify: 'block'", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { gitModify: "block" },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.gitModify).toBe("block");
+  });
+
+  it("loadJsonConfig ignores invalid protect.gitModify", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { gitModify: "maybe" },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.gitModify).toBeUndefined();
+  });
+
+  it("loadJsonConfig parses stage-level protect with gitModify", async () => {
+    await writeJson({
+      stages: {
+        clarify: { protect: { gitModify: "allow" } },
+        develop: { protect: { gitModify: "block" } },
+      },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.stages.clarify!.protect!.gitModify).toBe("allow");
+    expect(result.stages.develop!.protect!.gitModify).toBe("block");
+  });
+
+  it("loadJsonConfig stage-level protect: missing field is undefined", async () => {
+    await writeJson({
+      stages: { clarify: { protect: {} } },
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.stages.clarify!.protect!.gitModify).toBeUndefined();
+  });
+
+  it("resolvePipelineConfig stage-level protect: invalid gitModify value ignored", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: { protect: { gitModify: "nope" as any } } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.protect).toBeDefined();
+    expect(result.stages.clarify.protect!.gitModify).toBeUndefined();
+  });
+
+  it("resolvePipelineConfig stage-level protect: non-object ignored", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: { protect: "invalid" as any } },
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.stages.clarify.protect).toBeUndefined();
+  });
 });
 
 describe("maxVerifyAttempts config", () => {

@@ -8,6 +8,8 @@ import {
   isPathProtectedForModify,
   isPathProtectedForGit,
   toProjectRelative,
+  resolveGitModifyPolicy,
+  GIT_MODIFY_DEFAULT_MATRIX,
   type ProtectState,
 } from "../../utils/protect";
 import { ALLOWED_WRITE_ALL } from "../../constants";
@@ -280,5 +282,107 @@ describe("toProjectRelative", () => {
   it("returns null for parent directory reference", () => {
     const result = toProjectRelative("/project", "/project/../other");
     expect(result).toBeNull();
+  });
+});
+
+// ─── Phase 0 / 172: resolveGitModifyPolicy ───────────────────────────────────
+
+describe("GIT_MODIFY_DEFAULT_MATRIX", () => {
+  it("has 'block' for read-only stages", () => {
+    expect(GIT_MODIFY_DEFAULT_MATRIX.clarify).toBe("block");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.plan).toBe("block");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.review).toBe("block");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.completed).toBe("block");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.awaiting_human).toBe("block");
+  });
+
+  it("has 'allow' for implementation stages", () => {
+    expect(GIT_MODIFY_DEFAULT_MATRIX.develop).toBe("allow");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.fix).toBe("allow");
+  });
+});
+
+describe("resolveGitModifyPolicy", () => {
+  it("returns matrix default when no overrides (develop=allow, clarify=block)", () => {
+    const config = makeTestConfig();
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("allow");
+    expect(resolveGitModifyPolicy(config, null, "fix")).toBe("allow");
+    expect(resolveGitModifyPolicy(config, null, "clarify")).toBe("block");
+    expect(resolveGitModifyPolicy(config, null, "plan")).toBe("block");
+    expect(resolveGitModifyPolicy(config, null, "review")).toBe("block");
+  });
+
+  it("global override takes priority over matrix", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "block" },
+    });
+    // develop matrix default is "allow", but global override is "block"
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("block");
+    expect(resolveGitModifyPolicy(config, null, "clarify")).toBe("block");
+  });
+
+  it("global allow overrides matrix block", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "allow" },
+    });
+    expect(resolveGitModifyPolicy(config, null, "clarify")).toBe("allow");
+    expect(resolveGitModifyPolicy(config, null, "review")).toBe("allow");
+  });
+
+  it("stage override takes priority over global and matrix", () => {
+    // Global is "block", but stage-level develop override is "allow"
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "block" },
+    });
+    // Patch stage-level protect for develop
+    config.stages.develop.protect = { gitModify: "allow" };
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("allow");
+    // Other stages still use global "block"
+    expect(resolveGitModifyPolicy(config, null, "clarify")).toBe("block");
+  });
+
+  it("stage override 'block' overrides global 'allow'", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "allow" },
+    });
+    config.stages.clarify.protect = { gitModify: "block" };
+    expect(resolveGitModifyPolicy(config, null, "clarify")).toBe("block");
+    // develop falls through to global "allow"
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("allow");
+  });
+
+  it("stage without protect field falls through to global", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "allow" },
+    });
+    // develop has no stage-level protect
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("allow");
+  });
+
+  it("stage protect without gitModify falls through to global", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "block" },
+    });
+    // Stage has protect object but no gitModify field
+    config.stages.develop.protect = {};
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("block");
+  });
+
+  it("unknown stage falls back to 'block' (fail-safe)", () => {
+    const config = makeTestConfig();
+    // Cast to bypass type narrowing — simulate unknown stage name
+    expect(resolveGitModifyPolicy(config, null, "unknown_stage" as any)).toBe("block");
+  });
+
+  it("no stage argument with no global override returns 'block'", () => {
+    const config = makeTestConfig();
+    expect(resolveGitModifyPolicy(config, null)).toBe("block");
+  });
+
+  it("no stage argument with global override returns global value", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "allow" },
+    });
+    expect(resolveGitModifyPolicy(config, null)).toBe("allow");
   });
 });

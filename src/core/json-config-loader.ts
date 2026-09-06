@@ -284,6 +284,46 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
     }
   }
 
+  // Parse gitModify enum (Phase 0 / 172)
+  if (obj.gitModify !== undefined) {
+    if (obj.gitModify === "allow" || obj.gitModify === "block") {
+      result.gitModify = obj.gitModify;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.gitModify "${String(obj.gitModify)}" — expected "allow"|"block", ignoring`,
+      );
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Parses per-stage protect overrides from JSON stage config.
+ * Only `gitModify` sub-field is effective at stage level (Phase 0 / 172).
+ * Returns undefined when input is missing or not an object.
+ */
+function parseStageProtectConfig(raw: unknown): { gitModify?: "allow" | "block" } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid stage protect config — expected object, got ${Array.isArray(raw) ? "array" : typeof raw}`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const result: { gitModify?: "allow" | "block" } = {};
+
+  if (obj.gitModify !== undefined) {
+    if (obj.gitModify === "allow" || obj.gitModify === "block") {
+      result.gitModify = obj.gitModify;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid stage protect.gitModify "${String(obj.gitModify)}" — expected "allow"|"block", ignoring`,
+      );
+    }
+  }
+
   return result;
 }
 
@@ -602,6 +642,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
         : undefined,
       confirm: parseConfirmConfig(jsonStage.confirm),
       guard: parseGuardConfig(jsonStage.guard),
+      protect: parseStageProtectConfig(jsonStage.protect),
     };
   }
 

@@ -5,7 +5,7 @@
  */
 
 import * as path from "node:path";
-import type { PipelineConfig, ProtectConfig } from "../types";
+import type { PipelineConfig, PipelineStage, ProtectConfig } from "../types";
 import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { type GitignoreInfo, isGitignored } from "./gitignore";
 
@@ -216,4 +216,63 @@ export function toProjectRelative(
     return null;
   }
   return rel;
+}
+
+// ─── Git Modify Policy (Phase 0 / 172) ─────────────────────────────────────
+
+/**
+ * Built-in default git-modify policy per stage.
+ * Read-only stages (clarify/plan/review) and terminal states (completed/awaiting_human)
+ * block git-native writes by default; implementation stages (develop/fix) allow them.
+ *
+ * Unknown stage names fall back to "block" (fail-safe).
+ */
+export const GIT_MODIFY_DEFAULT_MATRIX: Readonly<Partial<Record<PipelineStage, "allow" | "block">>> = {
+  clarify: "block",
+  plan: "block",
+  develop: "allow",
+  review: "block",
+  fix: "allow",
+  awaiting_human: "block",
+  completed: "block",
+} as const;
+
+/**
+ * Resolves the effective git-modify policy for a given stage using a 3-tier chain:
+ *
+ *   1. stages[stage].protect?.gitModify  (stage-level override)
+ *   2. config.protect?.gitModify         (global override)
+ *   3. GIT_MODIFY_DEFAULT_MATRIX[stage]  (built-in matrix; unknown stage → "block")
+ *
+ * This pure function has no side effects and does not consult gitignore or protect.ask.
+ *
+ * @param config - Full pipeline configuration (used for global protect.gitModify)
+ * @param _gitignore - Unused parameter, kept for API symmetry with resolveProtectConfig
+ * @param stage - The pipeline stage to resolve for
+ * @returns "allow" or "block"
+ */
+export function resolveGitModifyPolicy(
+  config: PipelineConfig,
+  _gitignore?: GitignoreInfo | null,
+  stage?: PipelineStage,
+): "allow" | "block" {
+  // Tier 1: stage-level override
+  if (stage) {
+    const stageProtect = config.stages?.[stage]?.protect;
+    if (stageProtect?.gitModify !== undefined) {
+      return stageProtect.gitModify;
+    }
+  }
+
+  // Tier 2: global override
+  const globalGitModify = config.protect?.gitModify;
+  if (globalGitModify !== undefined) {
+    return globalGitModify;
+  }
+
+  // Tier 3: built-in matrix (unknown stage → "block")
+  if (stage && stage in GIT_MODIFY_DEFAULT_MATRIX) {
+    return GIT_MODIFY_DEFAULT_MATRIX[stage]!;
+  }
+  return "block";
 }

@@ -7,8 +7,9 @@
   "confirmOverflow": "ask",
   "protect": {
     "gitignore": true,
-    "ask":true,
-    "allow": []
+    "ask": true,
+    "allow": [],
+    "gitModify": "allow"
   },
   "audit": { "promptSnapshot": "full" },
   "init": { "conflictCheck": "model" },

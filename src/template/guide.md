@@ -139,6 +139,8 @@ bun add @earendil-works/pi-pipeline
   - `gitignore`：是否解析 `.gitignore` 动态保护（默认 true）
   - `paths`：追加硬编码保护路径（与内置 `.pi/`、`AGENTS.md`、`.git/` 合并）
   - `allow`：仅放开 gitignore 动态保护的**编辑**权限（git add/commit 仍拦截）
+  - `gitModify`：全局 git 写操作策略（`"allow"` | `"block"`）。控制 git 原生写子命令（add/commit/merge 等）在各阶段是否允许。三级解析链：`stages.{stage}.protect.gitModify > protect.gitModify > 内置矩阵默认`。内置矩阵：clarify/plan/review/completed/awaiting_human = `"block"`；develop/fix = `"allow"`。危险子命令（filter-branch、reset --hard、push --force 等）恒拒，不受此配置影响
+  - `stages.{stage}.protect.gitModify`：阶段级覆盖（仅 `gitModify` 子字段生效，其他 ProtectConfig 子字段在阶段级无效）
 - `guard`：Stage 级策略工具拦截配置（Phase 2 / 170，默认关），配置在 `stages.{stage}.guard` 下（非顶层）
   - `blockedTools`：可选，字符串数组。当 `stages.{stage}.guard.blockedTools` 包含当前工具名时，直接 block（不计入 violations）。默认空数组 `[]`（不拦截任何工具）
   - 典型用法：`"blockedTools": ["ask_user_question"]` 在 clarify 阶段硬拦交互式工具，强制模型通过需求文档收集答复
@@ -161,7 +163,8 @@ bun add @earendil-works/pi-pipeline
   "protect": {
     "gitignore": true,               // 默认 true：解析 .gitignore 动态保护
     "paths": ["dist/"],              // 追加硬编码保护（与内置 .pi/、AGENTS.md、.git/ 合并）
-    "allow": ["docs/design/", "src/template/"]  // 仅放开编辑；git add/commit 仍拦截
+    "allow": ["docs/design/", "src/template/"],  // 仅放开编辑；git add/commit 仍拦截
+    "gitModify": "allow"             // 全局 git 写策略（三级链第 2 级；矩阵默认：develop/fix=allow, 其余=block）
   },
   "decisionShortcutKey": "ctrl+enter",  // TUI 中决策确认快捷键（默认 ctrl+enter）
   // ── 阶段配置 ──
