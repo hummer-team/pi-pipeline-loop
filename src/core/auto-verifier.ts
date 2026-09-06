@@ -628,13 +628,45 @@ export async function precheckRequiredFiles(
 }
 
 /**
+ * Escapes a string for use in a RegExp pattern.
+ * Replaces all special regex characters with their escaped forms.
+ */
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Checks whether a line at the given index is inside a fenced code block.
+ * Lightweight scan: toggles inCode state on ``` fences encountered before
+ * the target line. Does not distinguish language-tagged fences.
+ *
+ * @param content - Full file content
+ * @param lineIndex - Character offset of the line to check
+ * @returns true if the line is inside a fenced code block
+ */
+function isInsideFencedCodeBlock(content: string, lineIndex: number): boolean {
+  // Scan from start to lineIndex, counting ``` occurrences
+  const before = content.substring(0, lineIndex);
+  const fenceMatches = before.match(/^```/gm);
+  // Odd number of fences = inside a code block
+  return (fenceMatches?.length ?? 0) % 2 === 1;
+}
+
+/**
  * Prechecks whether the interactive completion marker has been written
- * to the requirement document. Returns true if the marker is found.
+ * to the requirement document. Returns true if the marker is found as a
+ * **line-start heading** (anchored to `^` in multiline mode) and is NOT
+ * inside a fenced code block.
+ *
+ * This fixes the 88_Feat accident where inline backtick references to the
+ * marker (e.g., `` `## 模型确认` ``) triggered a false positive via
+ * `content.includes(marker)`.
  *
  * Returns false (treated as "not yet complete") when:
  * - requirementDoc is not set in session meta
  * - The file cannot be read (missing, permission error, etc.)
- * - The marker string is not found in the file content
+ * - The marker is not found at any line start
+ * - The marker is only found inside a fenced code block
  *
  * @param meta - Current session metadata
  * @param marker - The completion marker text to search for
@@ -655,9 +687,63 @@ export async function precheckCompletionMarker(
 
   try {
     const content = await fs.readFile(docPath, "utf-8");
-    return content.includes(marker);
+    // Build regex: escape marker, anchor to line start, multiline flag
+    const escapedMarker = escapeRegExp(marker);
+    const regex = new RegExp(`^${escapedMarker}`, "mg");
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(content)) !== null) {
+      // If this match is outside a fenced code block, marker is present
+      if (!isInsideFencedCodeBlock(content, match.index)) {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Prechecks whether the clarify stage is in "await-answer" state.
+ * Only effective for the clarify stage; returns { awaiting: false } for all other stages.
+ *
+ * Reads the requirement document and reuses deriveClarifyForwardArgs to determine
+ * whether the latest round is waiting for a user answer. If so, verification
+ * should be deferred (the user needs to write the answer in the document first).
+ *
+ * @param config - Pipeline configuration (used for projectRoot)
+ * @param meta - Current session metadata
+ * @returns Object with awaiting flag and optional round number
+ */
+export async function precheckClarifyAwaitAnswer(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<{ awaiting: boolean; round?: number }> {
+  // Only effective for clarify stage
+  if (meta.currentStage !== "clarify") {
+    return { awaiting: false };
+  }
+
+  if (!meta.requirementDoc) {
+    return { awaiting: false };
+  }
+
+  const docPath = path.isAbsolute(meta.requirementDoc)
+    ? meta.requirementDoc
+    : path.join(config.projectRoot, meta.requirementDoc);
+
+  try {
+    const content = await fs.readFile(docPath, "utf-8");
+    // Lazy import to avoid circular dependency at module level
+    const { deriveClarifyForwardArgs } = await import("../utils/clarify-args");
+    const result = deriveClarifyForwardArgs(content);
+    if (result.kind === "await-answer") {
+      return { awaiting: true, round: result.round };
+    }
+    return { awaiting: false };
+  } catch {
+    // Fail-open: if we can't read the doc, don't defer (proceed to verify)
+    return { awaiting: false };
   }
 }
 

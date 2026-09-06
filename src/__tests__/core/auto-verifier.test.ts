@@ -12,6 +12,7 @@ import {
   precheckRequiredFiles,
   parseVerifiedCommands,
   precheckCompletionMarker,
+  precheckClarifyAwaitAnswer,
   resolvePlanDocPath,
   planDocHasConfirmMarker,
   applyConcreteStageDocPaths,
@@ -1495,6 +1496,132 @@ describe("Phase 3 (140): precheckCompletionMarker", () => {
     const meta = makeTestMeta({ requirementDoc: absPath });
     const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
     expect(result).toBe(true);
+  });
+
+  // ─── Phase 1 (172): anchored marker matching ─────────────────────────────
+  it("returns false when marker appears only inline (backtick reference)", async () => {
+    // The 88_Feat accident: inline `## 模型确认` in prose should NOT trigger gate
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "# Requirements\nSome content with `## 模型确认` referenced inline\n",
+      "utf-8",
+    );
+    const meta = makeTestMeta({ requirementDoc: "req.md" });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(false);
+  });
+
+  it("returns false when marker appears only inside fenced code block", async () => {
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "# Requirements\n```markdown\n## 模型确认\n```\n",
+      "utf-8",
+    );
+    const meta = makeTestMeta({ requirementDoc: "req.md" });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(false);
+  });
+
+  it("returns true when marker is at line start outside code block", async () => {
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "# Requirements\n```markdown\n## 模型确认\n```\n## 模型确认\n",
+      "utf-8",
+    );
+    const meta = makeTestMeta({ requirementDoc: "req.md" });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(true);
+  });
+
+  it("returns false when inline reference but no line-start occurrence", async () => {
+    // Marker text appears mid-line but never at line start
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "The marker is ## 模型确认 but not at line start\n",
+      "utf-8",
+    );
+    const meta = makeTestMeta({ requirementDoc: "req.md" });
+    const result = await precheckCompletionMarker(meta, "## 模型确认", tmpDir);
+    expect(result).toBe(false);
+  });
+});
+
+// ─── Phase 1 (172): precheckClarifyAwaitAnswer ─────────────────────────────────
+describe("Phase 1 (172): precheckClarifyAwaitAnswer", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = path.join(tmpdir(), "pi-await-" + Date.now());
+    await fs.mkdir(tmpDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns awaiting=false for non-clarify stages", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "develop", requirementDoc: "req.md" });
+    await fs.writeFile(path.join(tmpDir, "req.md"), "# 第 1 轮澄清\n问题：xxx\n", "utf-8");
+    const result = await precheckClarifyAwaitAnswer(config, meta);
+    expect(result.awaiting).toBe(false);
+  });
+
+  it("returns awaiting=false when requirementDoc is not set", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: undefined });
+    const result = await precheckClarifyAwaitAnswer(config, meta);
+    expect(result.awaiting).toBe(false);
+  });
+
+  it("returns awaiting=true when latest round has no answer (await-answer)", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
+    // Round heading but no answer marker
+    await fs.writeFile(path.join(tmpDir, "req.md"), "# 第 1 轮澄清\n问题：xxx\n", "utf-8");
+    const result = await precheckClarifyAwaitAnswer(config, meta);
+    expect(result.awaiting).toBe(true);
+    expect(result.round).toBe(1);
+  });
+
+  it("returns awaiting=false when latest round has answer", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
+    await fs.writeFile(path.join(tmpDir, "req.md"), "# 第 1 轮澄清\n问题：xxx\n答：yyy\n", "utf-8");
+    const result = await precheckClarifyAwaitAnswer(config, meta);
+    expect(result.awaiting).toBe(false);
+  });
+
+  it("returns awaiting=false when latest round has confirmation marker", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "# 第 1 轮澄清\n问题：xxx\n答：yyy\n## 模型确认\n",
+      "utf-8",
+    );
+    const result = await precheckClarifyAwaitAnswer(config, meta);
+    expect(result.awaiting).toBe(false);
+  });
+
+  it("returns awaiting=false when doc file cannot be read (fail-open)", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "nonexistent.md" });
+    const result = await precheckClarifyAwaitAnswer(config, meta);
+    expect(result.awaiting).toBe(false);
+  });
+
+  it("returns awaiting=true for latest round (round 2) with no answer", async () => {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "# 第 1 轮澄清\n问题：xxx\n答：yyy\n# 第 2 轮澄清\n新问题：zzz\n",
+      "utf-8",
+    );
+    const result = await precheckClarifyAwaitAnswer(config, meta);
+    expect(result.awaiting).toBe(true);
+    expect(result.round).toBe(2);
   });
 });
 

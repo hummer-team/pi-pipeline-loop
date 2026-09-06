@@ -6,7 +6,7 @@
  */
 
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from "../types";
-import { runVerification, precheckRequiredFiles } from "../core/auto-verifier";
+import { runVerification, precheckRequiredFiles, precheckClarifyAwaitAnswer } from "../core/auto-verifier";
 import type { RunVerificationOptions } from "../core/auto-verifier";
 import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
 import { createPipelineUI } from "../core/pipeline-ui";
@@ -127,6 +127,31 @@ export function createPipelineVerify(
           precheck: true,
           missing: precheck.missing,
         };
+      }
+
+      // Phase 1 (172) G3: await-answer defer for clarify stage (tool mode consistency).
+      // Same semantics as agent-settled: if awaiting user answer, return guidance without failure.
+      if (stageName === "clarify") {
+        try {
+          const awaitCheck = await precheckClarifyAwaitAnswer(config, { ...meta, currentStage: stageName });
+          if (awaitCheck.awaiting) {
+            await safeWriteAuditLog("verify_await_answer_deferred", {
+              pipelineId: meta.pipelineId,
+              stage: stageName,
+              round: String(awaitCheck.round ?? 0),
+              source: "tool",
+            });
+            return {
+              success: false,
+              passed: false,
+              deferred: true,
+              message: `Clarify round ${awaitCheck.round} is awaiting your answer. Please write your answer in the requirement document first.`,
+              round: awaitCheck.round,
+            };
+          }
+        } catch {
+          // Fail-open: defer check failure must not block verification
+        }
       }
 
       const vr = await runVerification(

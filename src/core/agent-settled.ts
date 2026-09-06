@@ -6,7 +6,7 @@
  */
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
-import { runVerification, precheckCompletionMarker, precheckRequiredFiles } from "./auto-verifier";
+import { runVerification, precheckCompletionMarker, precheckRequiredFiles, precheckClarifyAwaitAnswer } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
@@ -235,6 +235,28 @@ export function createAgentSettled(
         // was skipped and is nudged to produce the missing deliverable first.
         ui.notify(ctx, `Required deliverables not yet produced (${precheck.missing.join(", ")}). Please generate them before the pipeline can verify this stage.`);
         return;
+      }
+
+      // Phase 1 (172) G3: await-answer defer for clarify stage.
+      // If the latest clarification round is waiting for a user answer, defer verification
+      // entirely — no counting, no freezing, no wake. This prevents the 88_Feat accident
+      // where the model settles before the user has written the answer, triggering
+      // auto_verify_fail cascading to verify_attempt_overflow freeze.
+      if (meta.currentStage === "clarify") {
+        try {
+          const awaitCheck = await precheckClarifyAwaitAnswer(config, meta);
+          if (awaitCheck.awaiting) {
+            await writeAuditLog("verify_await_answer_deferred", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+              round: String(awaitCheck.round ?? 0),
+            });
+            ui.notify(ctx, `Clarify round ${awaitCheck.round} is awaiting your answer. Please write your answer in the requirement document (答：...) then re-mention @agent {file} ${awaitCheck.round} 答.`);
+            return;
+          }
+        } catch {
+          // Fail-open: defer check failure must not block the settle flow
+        }
       }
 
       // CompletionMarker precheck: if configured, verify the marker has been
