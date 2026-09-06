@@ -433,4 +433,94 @@ describe("createLoopBreaker", () => {
       expect(ctx.statusCalls).toEqual([]);
     });
   });
+
+  // ─── Phase 3 (172): consecutive-fail reset + isTestCommand tightening ─────────
+  describe("Phase 3 (172): consecutive-fail semantics", () => {
+    it("test success resets loopCount to 0", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 2, maxLoops: 3 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "bun test" } };
+      ctx.result = { exitCode: 0 };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      expect(ctx.metadataUpdates.length).toBe(1);
+      expect(ctx.metadataUpdates[0].loopCount).toBe(0);
+    });
+
+    it("test success when loopCount=0 does not write unnecessary audit", async () => {
+      const config = makeTestConfig();
+      await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "bun test" } };
+      ctx.result = { exitCode: 0 };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      // No metadata update (no reset needed)
+      expect(ctx.metadataUpdates.length).toBe(0);
+    });
+
+    it("2 fail → 1 success → 2 fail does NOT freeze", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0, maxLoops: 3 });
+      const hook = createLoopBreaker(config);
+
+      // Fail 1
+      const ctx1 = createMockCtx(meta);
+      ctx1.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx1.result = { exitCode: 1 };
+      await hook.handler(ctx1 as any);
+      expect(meta.loopCount).toBe(1);
+
+      // Fail 2
+      const ctx2 = createMockCtx(meta);
+      ctx2.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx2.result = { exitCode: 1 };
+      await hook.handler(ctx2 as any);
+      expect(meta.loopCount).toBe(2);
+
+      // Success → reset
+      const ctx3 = createMockCtx(meta);
+      ctx3.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx3.result = { exitCode: 0 };
+      await hook.handler(ctx3 as any);
+      expect(meta.loopCount).toBe(0);
+
+      // Fail again × 2 → still not frozen
+      const ctx4 = createMockCtx(meta);
+      ctx4.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx4.result = { exitCode: 1 };
+      await hook.handler(ctx4 as any);
+      expect(meta.loopCount).toBe(1);
+
+      const ctx5 = createMockCtx(meta);
+      ctx5.toolCall = { name: "bash", arguments: { command: "npm test" } };
+      ctx5.result = { exitCode: 1 };
+      await hook.handler(ctx5 as any);
+      expect(meta.loopCount).toBe(2);
+      // Not frozen (below maxLoops=3)
+      expect(meta.flowState).toBeUndefined();
+    });
+
+    it("3 consecutive failures freeze the pipeline", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0, maxLoops: 3 });
+      const hook = createLoopBreaker(config);
+
+      for (let i = 0; i < 3; i++) {
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: "npm test" } };
+        ctx.result = { exitCode: 1 };
+        await hook.handler(ctx as any);
+      }
+
+      expect(meta.flowState).toBe("blocked");
+    });
+  });
 });
