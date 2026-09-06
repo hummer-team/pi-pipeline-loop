@@ -2807,4 +2807,112 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
     });
   });
+
+  // ─── Fix #1 (172 review): .git/*.lock self-rescue in develop vs clarify ─────
+  describe("Fix #1 (172 review): .git/*.lock self-rescue", () => {
+    it("develop stage: rm -f .git/index.lock → allowed (gitPolicy=allow)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-gitlock-develop-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -f .git/index.lock" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // develop stage has gitPolicy=allow → .git/*.lock targets exempted
+      expect(result).toBeUndefined();
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+    });
+
+    it("clarify stage: rm -f .git/index.lock → blocked (gitPolicy=block)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-gitlock-clarify-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -f .git/index.lock" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // clarify stage has gitPolicy=block → .git/ is hardcoded protected → blocked
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+    });
+
+    it("develop stage: rm -f .git/config → still blocked (only .git/*.lock exempted)", async () => {
+      const TMP = join(tmpdir(), "pi-tg-gitconfig-develop-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      // .git/config is NOT a *.lock file → should still be protected
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -f .git/config" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+
+      await rm(TMP, { recursive: true, force: true });
+      __resetAuditDirPath();
+    });
+  });
+
+  // ─── Fix #3 (172 review): fail-closed git subcommand classification ──────────
+  describe("Fix #3 (172 review): fail-closed git subcommand classification", () => {
+    it("clarify stage: git config user.name x → blocked (not in readonly set)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git config user.name test" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // git config is not in GIT_READONLY_SUBCOMMANDS → treated as write → blocked in clarify
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+    });
+
+    it("clarify stage: git mv old new → blocked (not in readonly set)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git mv src/a.ts src/b.ts" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeDefined();
+      expect((result as any).block).toBe(true);
+    });
+
+    it("clarify stage: git status → allowed (in readonly set)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git status" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      // git status is in GIT_READONLY_SUBCOMMANDS → not write → passes through
+      expect(result).toBeUndefined();
+    });
+  });
 });

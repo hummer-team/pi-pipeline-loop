@@ -143,6 +143,7 @@ export function labelToDecision(label: string): PipelineDecision | undefined {
  * @param meta - Current SessionMeta snapshot
  * @param decision - The decision to execute
  * @param config - PipelineConfig for stage lookups
+ * @param opts - Optional overrides (source tag for audit differentiation)
  * @returns Result object with success flag and message
  */
 export async function executeDecision(
@@ -150,6 +151,7 @@ export async function executeDecision(
   meta: SessionMeta,
   decision: PipelineDecision,
   config: PipelineConfig,
+  opts?: { source?: string },
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
 
@@ -177,6 +179,7 @@ export async function executeDecision(
         fromStage,
         toStage,
         reason: meta.blockedReason ?? "",
+        ...(opts?.source ? { source: opts.source } : {}),
       });
 
       return { success: true, message: `Pipeline resumed at stage "${toStage}".` };
@@ -591,6 +594,8 @@ export async function promptDecisionMenu(
         }
 
         // User pressed Esc — keep blocked, notify with reason
+        // Fix #5b: Esc (active cancel) stops the retry scheduler per plan P6 task 2.
+        clearDecisionTimer(meta.pipelineId);
         await safeWriteAuditLog("pipeline_decision_cancelled", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
@@ -765,5 +770,10 @@ export async function freezeAndPrompt(
 
   // Delegate to promptDecisionMenu for the UI interaction
   const frozenMeta = { ...meta, flowState: "blocked" as const, blockedReason: reason };
+  // Fix #5a: arm the retry scheduler at freeze time per plan P6 task 2.
+  // "freezeAndPrompt 冻结成功 → scheduleDecisionRetry". The scheduler ensures
+  // the decision menu re-appears even if the initial select was silently dismissed
+  // without triggering the interrupt detection path.
+  scheduleDecisionRetry(ctx, frozenMeta, config);
   await promptDecisionMenu(ctx, frozenMeta, config, opts);
 }

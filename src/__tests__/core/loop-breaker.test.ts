@@ -81,7 +81,7 @@ describe("createLoopBreaker", () => {
 
     it("detects various test runners via isTestCommand", async () => {
       const config = makeTestConfig();
-      const testCommands = ["bun test", "jest --coverage", "vitest run", "pytest", "mocha test/"];
+      const testCommands = ["bun test", "jest --coverage", "vitest run", "pytest", "mocha test/", "mvn test"];
       for (const cmd of testCommands) {
         const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
         const ctx = createMockCtx(meta);
@@ -93,6 +93,42 @@ describe("createLoopBreaker", () => {
 
         expect(ctx.metadataUpdates.length).toBeGreaterThan(0);
         expect(ctx.metadataUpdates[0].loopCount).toBe(1);
+      }
+    });
+
+    it("detects node --test as a test command", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "node --test src/test.ts" } };
+      ctx.result = { exitCode: 1 };
+
+      const hook = createLoopBreaker(config);
+      await hook.handler(ctx as any);
+
+      expect(ctx.metadataUpdates.length).toBe(1);
+      expect(ctx.metadataUpdates[0].loopCount).toBe(1);
+    });
+
+    it("does NOT count non-test commands as test commands (false matrix)", async () => {
+      const config = makeTestConfig();
+      const nonTestCommands = [
+        "git log --grep=test",
+        "tail test.md",
+        "grep -r test src/",
+        "git commit -m 'test fix'",
+      ];
+      for (const cmd of nonTestCommands) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
+
+        const hook = createLoopBreaker(config);
+        await hook.handler(ctx as any);
+
+        // Non-test commands should not trigger loop counting
+        expect(ctx.metadataUpdates.length).toBe(0);
       }
     });
   });

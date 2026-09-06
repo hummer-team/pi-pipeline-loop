@@ -247,8 +247,9 @@ export function normalizeSegmentBaseCmd(segment: string): string {
 }
 
 /**
- * Git subcommands that modify repository state (write operations).
- * Non-exhaustive but covers common dangerous operations.
+ * Git subcommands that are known to modify repository state (write operations).
+ * Retained as documentation; isGitWriteCommand now uses fail-closed classification
+ * (anything NOT in GIT_READONLY_SUBCOMMANDS is treated as write).
  */
 export const GIT_WRITE_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "add", "commit", "merge", "rebase", "cherry-pick", "stash",
@@ -257,11 +258,15 @@ export const GIT_WRITE_SUBCOMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Git subcommands that are read-only (no repository state modification).
+ * Git subcommands that are confirmed read-only (no repository state modification).
+ * Fail-closed: any git subcommand NOT in this set is treated as a write operation.
+ *
+ * NOTE: `config` and `reflog` are intentionally excluded — both have write forms
+ * (`git config user.name x` writes `.git/config`; `git reflog expire` modifies reflog).
  */
 export const GIT_READONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "status", "log", "diff", "show", "blame", "rev-parse",
-  "config", "ls-files", "ls-remote", "describe", "reflog",
+  "ls-files", "ls-remote", "describe",
 ]);
 
 /**
@@ -287,10 +292,14 @@ export const GIT_FORBIDDEN_PATTERNS: ReadonlyArray<RegExp> = [
 
 /**
  * Determines whether a git segment is a write operation.
- * Strips rtk prefix, extracts the git subcommand, and checks against the write set.
+ * Uses fail-closed classification: any git subcommand NOT in the confirmed
+ * read-only set is treated as a write operation. This prevents unknown
+ * state-modifying subcommands (config, mv, rm, revert, apply, am, submodule,
+ * update-index, update-ref, symbolic-ref, notes, replace, etc.) from
+ * bypassing the stage git policy.
  *
  * @param segment - Raw shell segment (may include rtk prefix)
- * @returns true if the segment is a git write subcommand
+ * @returns true if the segment is a git write subcommand (fail-closed)
  */
 export function isGitWriteCommand(segment: string): boolean {
   const normalized = normalizeSegmentBaseCmd(segment);
@@ -299,7 +308,8 @@ export function isGitWriteCommand(segment: string): boolean {
   // tokens[0] = "git", tokens[1] = subcommand
   const subcmd = tokens[1];
   if (!subcmd) return false;
-  return GIT_WRITE_SUBCOMMANDS.has(subcmd);
+  // Fail-closed: NOT in read-only set → treat as write
+  return !GIT_READONLY_SUBCOMMANDS.has(subcmd);
 }
 
 /**

@@ -63,19 +63,11 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
 
       // Blocked or awaiting_human: execute resume decision
       try {
-        const result = await executeDecision(ctx, meta, "resume", config);
+        const result = await executeDecision(ctx, meta, "resume", config, { source: "command" });
 
         if (!result.success) {
           return { error: `Resume failed: ${result.message}` };
         }
-
-        // Audit the decision with source=command
-        await safeWriteAuditLog("pipeline_decision", {
-          pipelineId: meta.pipelineId,
-          stage: meta.currentStage,
-          decision: "resume",
-          source: "command",
-        });
 
         ui.notify(ctx, `Pipeline resumed at stage "${meta.currentStage}". ${result.message}`);
 

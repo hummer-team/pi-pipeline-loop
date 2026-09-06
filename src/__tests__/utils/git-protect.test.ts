@@ -257,6 +257,18 @@ describe("isGitWriteCommand", () => {
     expect(isGitWriteCommand("npm test")).toBe(false);
   });
 
+  it("fail-closed: unknown subcommands treated as write (not in readonly set)", () => {
+    // config has write forms (git config user.name x) → treated as write
+    expect(isGitWriteCommand("git config user.name test")).toBe(true);
+    // mv/rm modify working tree → treated as write
+    expect(isGitWriteCommand("git mv old new")).toBe(true);
+    expect(isGitWriteCommand("git rm file.txt")).toBe(true);
+    // apply/am modify state → treated as write
+    expect(isGitWriteCommand("git apply patch.diff")).toBe(true);
+    // submodule → treated as write
+    expect(isGitWriteCommand("git submodule update")).toBe(true);
+  });
+
   it("rejects bare 'git' without subcommand", () => {
     expect(isGitWriteCommand("git")).toBe(false);
   });
@@ -274,6 +286,11 @@ describe("isGitReadonlyCommand", () => {
   it("rejects write subcommands", () => {
     expect(isGitReadonlyCommand("git add .")).toBe(false);
     expect(isGitReadonlyCommand("git commit -m 'msg'")).toBe(false);
+  });
+
+  it("rejects config and reflog (have write forms)", () => {
+    expect(isGitReadonlyCommand("git config user.name x")).toBe(false);
+    expect(isGitReadonlyCommand("git reflog expire")).toBe(false);
   });
 });
 

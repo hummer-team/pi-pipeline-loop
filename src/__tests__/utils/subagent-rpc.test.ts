@@ -735,23 +735,109 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
 
   // ─── Phase 7 (172) G1: clarify description with round args ─────────────────
   describe("Phase 7 (172): clarify description derivation", () => {
-    it("non-clarify stage passes through unchanged", () => {
-      // Verify that the description logic branches correctly:
-      // non-clarify stages use the generic "${stage}: {doc}" format
-      const stage = "develop";
-      const doc = "docs/req.md";
-      // This tests the non-clarify branch of the description derivation
-      const expectedDescription = `${stage}: ${doc}`;
-      expect(expectedDescription).toBe("develop: docs/req.md");
+    // Note: clarify is NOT in isSpawnableStage, so spawnStageSubagent returns early
+    // for clarify. The description derivation for clarify uses deriveClarifyForwardArgs.
+    // We test the helper directly for the four states, and test the description format
+    // for spawnable stages through spawnStageSubagent.
+
+    it("deriveClarifyForwardArgs: fresh doc → kind='fresh'", async () => {
+      const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
+      const result = deriveClarifyForwardArgs("# Requirement\n\nSome content\n");
+      expect(result.kind).toBe("fresh");
     });
 
-    it("clarify stage description includes file path", () => {
-      // For clarify stage with a doc, description should start with "Clarify:"
-      const doc = "docs/req.md";
-      const description = `Clarify: ${doc} 1`;
-      expect(description).toContain("Clarify:");
-      expect(description).toContain(doc);
-      expect(description).toContain("1");
+    it("deriveClarifyForwardArgs: await-answer (round 2, no 答) → kind='await-answer', round=2", async () => {
+      const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
+      const doc = "# Requirement\n\n# 第 2 轮澄清\n\n问题1：xxx\n";
+      const result = deriveClarifyForwardArgs(doc);
+      expect(result.kind).toBe("await-answer");
+      if (result.kind === "await-answer") {
+        expect(result.round).toBe(2);
+      }
+    });
+
+    it("deriveClarifyForwardArgs: confirmed (round 2, has 模型确认) → kind='confirmed', round=2", async () => {
+      const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
+      const doc = "# Requirement\n\n# 第 2 轮澄清\n\n问题1：xxx\n**答**：yyy\n\n## 模型确认\n\n确认内容\n";
+      const result = deriveClarifyForwardArgs(doc);
+      expect(result.kind).toBe("confirmed");
+      if (result.kind === "confirmed") {
+        expect(result.round).toBe(2);
+      }
+    });
+
+    it("deriveClarifyForwardArgs: full-und? (round 2, has 答 but no 模型确认) → kind='full-und?'", async () => {
+      const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
+      const doc = "# Requirement\n\n# 第 2 轮澄清\n\n问题1：xxx\n**答**：yyy\n";
+      const result = deriveClarifyForwardArgs(doc);
+      expect(result.kind).toBe("full-und?");
+    });
+
+    it("spawnStageSubagent for develop → description = '{stage}: {doc}' (non-clarify format)", async () => {
+      const tmpDir = path.join(tmpdir(), "pi-p7-non-clarify-" + Date.now());
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const agentDir = path.join(tmpDir, "agents");
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(agentDir, "dev-agent.md"),
+        "---\nname: develop-agent\n---\n# Dev Agent\n",
+      );
+
+      const config = makeTestConfig({
+        projectRoot: tmpDir,
+        stages: {
+          ...makeTestConfig().stages,
+          develop: {
+            agentPath: "agents/dev-agent.md",
+            skillPath: "develop/SKILL.md",
+            nextStage: "review",
+            requireDomain: false,
+          },
+        },
+      } as any);
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-p7-non-clarify",
+        requirementDoc: "docs/req.md",
+      });
+
+      const bus = createMockEventBus();
+      const origEmit = bus.emit.bind(bus);
+      let spawnPayload: Record<string, unknown> | undefined;
+      bus.emit = (event: string, payload: Record<string, unknown>) => {
+        origEmit(event, payload);
+        if (event === "subagents:rpc:ping") {
+          const replyChannel = `subagents:rpc:ping:reply:${payload.requestId}`;
+          setTimeout(() => bus.trigger(replyChannel, { success: true }), 5);
+        } else if (event === "subagents:rpc:spawn") {
+          spawnPayload = payload;
+          const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+          setTimeout(() => bus.trigger(replyChannel, {
+            success: true,
+            data: { id: "subagent-p7-nc" },
+          }), 5);
+        }
+      };
+
+      const mockPi = {
+        events: bus,
+        sendUserMessage: (_msg: string) => {},
+      };
+
+      const session = {
+        getMeta: () => meta,
+        updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+      };
+
+      await spawnStageSubagent(mockPi, config, "develop", meta, {
+        ui: { notify: () => {} },
+        session: session as any,
+      });
+
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+
+      const description = (spawnPayload?.options as Record<string, unknown>)?.description as string | undefined;
+      expect(description).toBe("develop: docs/req.md");
     });
   });
 });

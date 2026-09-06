@@ -206,7 +206,10 @@ stage_executor_clarify: |
   This stage is executed by the user-invoked agent: `{subagent_type}`
   **Scheduling**: User @`{subagent_type}` in chat with the requirement document path.
   **Return protocol**: On `full-und?` confirmation, write the `## 模型确认` marker to the requirement document and STOP. Do NOT call `stage_advance` — the `agent_settled` hook auto-verifies (completionMarker) and advances to `plan`.
+  **Triage**: If the user asks an unrelated question (not @mention with doc path or round args), answer briefly and do NOT touch pipeline state. Only pipeline-turn messages (containing verification results, stage routing, or @agent doc args) trigger verification.
+  **Re-launch**: When the user mentions `@{subagent_type} {file} {args}` during clarify, spawn a **new task** with `description = Clarify: {file} {args}` — do NOT resume the previous task. Each round gets its own task title reflecting the round number.
   **Parent wait discipline**: After relaying the clarification questions to the user, STOP and WAIT. Do NOT collect answers interactively (e.g. via `ask_user_question`). The sole answer channel is the `**答**` fields of the requirement document. The user drives the next round by re-mentioning the agent with the document path.
+  {active_spawn_note}
 
 stage_executor_plan: |
   ## Stage Executor Scheduling

@@ -178,6 +178,18 @@ function checkStageWriteBlock(
 import { askProtectDecision } from "../utils/protect-ask";
 
 /**
+ * Checks whether a relative path is a `.git/*.lock` file (e.g. `.git/index.lock`).
+ * Used for the self-rescue exemption: lock files under `.git/` may be removed
+ * in stages with gitPolicy="allow" (develop/fix) to recover from stale locks.
+ *
+ * @param relPath - Project-relative path
+ * @returns true if the path matches `.git/<name>.lock`
+ */
+function isGitLockFile(relPath: string): boolean {
+  return /^\.git\/[^/]+\.lock$/.test(relPath);
+}
+
+/**
  * Checks a single non-git bash segment for file-modification targets
  * against the protection chain: session allowance → stage whitelist →
  * global protection (hardcoded → allow → gitignore).
@@ -190,6 +202,11 @@ import { askProtectDecision } from "../utils/protect-ask";
  * @param ctx - Runtime context (for TUI ask dialogs)
  * @param trackViolation - Violation recorder
  * @param ui - Pipeline UI for notifications
+ * @param opts - Optional behavior modifiers
+ * @param opts.skipGitDirTargets - When true, targets under `.git/` are skipped
+ *   (used for git-native write commands in allow stages — `.git/` writes are expected)
+ * @param opts.allowGitLockFiles - When true, `.git/*.lock` targets bypass hardcoded
+ *   protection (used for non-git self-rescue commands like `rm -f .git/index.lock`)
  * @returns Block result if a target is denied, undefined if all targets pass
  */
 async function checkBashFileTargets(
@@ -199,8 +216,9 @@ async function checkBashFileTargets(
   meta: SessionMeta,
   config: PipelineConfig,
   ctx: RuntimeCtx,
-  trackViolation: (item: Omit<ViolationItem, "timestamp">) => Promise<void>,
+  trackViolation: (item: Omit<ViolationItem, "timestamp">) => void,
   ui: ReturnType<typeof createPipelineUI>,
+  opts?: { skipGitDirTargets?: boolean; allowGitLockFiles?: boolean },
 ): Promise<{ block: true; reason: string } | undefined> {
   const targets = extractBashFileTargets(segment);
   const sessionPaths = meta.sessionAllowedWritePaths || [];
@@ -212,6 +230,14 @@ async function checkBashFileTargets(
     const relPath = toProjectRelative(config.projectRoot, absTarget);
 
     if (relPath) {
+      // Fix #2: git-native write in allow stage → skip .git/** targets only.
+      // Non-.git/** working tree targets still go through the full protection chain.
+      if (opts?.skipGitDirTargets && relPath.startsWith(".git/")) continue;
+
+      // Fix #1: `.git/*.lock` self-rescue exemption for non-git commands in allow stages.
+      // Allows `rm -f .git/index.lock` etc. when gitPolicy="allow" (develop/fix).
+      if (opts?.allowGitLockFiles && isGitLockFile(relPath)) continue;
+
       // Session allowance early bypass
       if (sessionPaths.includes(relPath)) continue;
 
@@ -468,10 +494,17 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               continue; // Skip the checkBashFileTargets for git commit segments
             }
 
-            // Phase 4 (172): git native write in allow stage → skip .git/** target check
-            // (git native writes to .git/ are expected, e.g., rm -f .git/index.lock)
+              // Phase 4 (172) fix #2: git native write in allow stage → only exempt .git/** targets.
+            // Non-.git/** working tree targets (gitignore-protected, .pi/**, etc.) still go
+            // through checkBashFileTargets per plan P4 task 2.
             if (isWrite && gitPolicy === "allow") {
-              continue; // Git native write in allow stage: exempt from .git/** file target check
+              if (!bashFileState) bashFileState = await getProtectState();
+              const blockResult = await checkBashFileTargets(
+                segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
+                { skipGitDirTargets: true },
+              );
+              if (blockResult) return blockResult;
+              continue;
             }
 
             // Git read-only commands: pass through without file target check
@@ -480,9 +513,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           }
 
           // Non-git segment: check bash file-modification targets
+          // Fix #1: pass allowGitLockFiles when gitPolicy="allow" so that
+          // `rm -f .git/index.lock` self-rescue works in develop/fix stages.
           if (!bashFileState) bashFileState = await getProtectState();
           const blockResult = await checkBashFileTargets(
             segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
+            { allowGitLockFiles: gitPolicy === "allow" },
           );
           if (blockResult) return blockResult;
         }
