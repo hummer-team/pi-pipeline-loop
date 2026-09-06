@@ -32,11 +32,12 @@ async function ensureDir(dirPath: string): Promise<void> {
 
 /**
  * Known test runner executables that indicate a test command when invoked directly.
- * Also includes build tools with a "test" lifecycle phase (mvn test, gradle test).
+ * These tools are ALWAYS test commands regardless of arguments.
+ * NOTE: mvn is intentionally NOT here — `mvn compile`/`mvn clean` are not tests.
+ * mvn is handled by Rule 5 (structural: first token + "test" subcommand).
  */
 const TEST_RUNNER_EXECUTABLES = new Set([
   "jest", "vitest", "pytest", "pytest3", "rspec", "mocha", "ava", "playwright",
-  "mvn",
 ]);
 
 /**
@@ -53,12 +54,13 @@ const PACKAGE_MANAGERS = new Set([
  * from paths, messages, or grep patterns containing "test".
  *
  * Detection rules per segment (after stripping `rtk ` prefix):
- * 1. First token is a known test runner (jest, vitest, pytest, mvn, etc.) → test
+ * 1. First token is a known test runner (jest, vitest, pytest, etc.) → test
  * 2. First token is a package manager (npm, pnpm, bun, etc.) AND
  *    remaining args contain "test" subcommand or "--test" flag → test
  * 3. First token is "node" with "--test" flag → test (Node.js built-in runner)
  * 4. First token is "make" with second token "test" → test
- * 5. Otherwise → not a test command
+ * 5. First token is "mvn"/"gradle" with "test"/"-Dtest"/"--tests" in args → test
+ * 6. Otherwise → not a test command
  *
  * @param command - The bash command string to check
  * @returns true if the command appears to be a test command
@@ -103,6 +105,17 @@ function isTestCommand(command: string): boolean {
     // Rule 4: "make test" style (first token is "make", second is "test")
     if (firstToken === "make" && tokens[1] === "test") {
       return true;
+    }
+
+    // Rule 5: "mvn test" / "gradle test" — build tools with test lifecycle phase.
+    // Only matches when "test" (or Maven-specific test flags) appears in args.
+    // `mvn compile`, `mvn clean`, `mvn install -DskipTests` → NOT test commands.
+    if (firstToken === "mvn" || firstToken === "gradle") {
+      const rest = tokens.slice(1);
+      if (rest.includes("test") || rest.includes("test-compile")
+        || rest.some(t => t === "-Dtest" || t.startsWith("-Dtest=") || t === "--tests")) {
+        return true;
+      }
     }
   }
   return false;

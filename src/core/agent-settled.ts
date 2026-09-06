@@ -12,7 +12,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
-import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -94,11 +94,19 @@ export function createAgentSettled(
         // triggered from the frozen menu can invoke terminal compaction. Without
         // _ctx, the skip→completed path in flow-state.ts:224 early-returns
         // (short-cut key entry remains unaffected — it passes _ctx directly).
-        await promptDecisionMenu(
+        // Fix #1: if prompt returns "interrupted" (streaming dismiss), arm retry scheduler.
+        const promptOutcome = await promptDecisionMenu(
           { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof promptDecisionMenu>[0],
           meta,
           config,
         );
+        if (promptOutcome === "interrupted") {
+          scheduleDecisionRetry(
+            { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof promptDecisionMenu>[0],
+            meta,
+            config,
+          );
+        }
         return;
       }
 

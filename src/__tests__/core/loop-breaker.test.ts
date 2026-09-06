@@ -96,6 +96,45 @@ describe("createLoopBreaker", () => {
       }
     });
 
+    it("does NOT count mvn compile/clean/install as test commands (structural detection)", async () => {
+      const config = makeTestConfig();
+      const nonTestMvnCommands = [
+        "mvn compile",
+        "mvn clean",
+        "mvn install -DskipTests",
+        "mvn package",
+      ];
+      for (const cmd of nonTestMvnCommands) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
+
+        const hook = createLoopBreaker(config);
+        await hook.handler(ctx as any);
+
+        // mvn without test subcommand should NOT trigger loop counting
+        expect(ctx.metadataUpdates.length).toBe(0);
+      }
+    });
+
+    it("detects mvn test and mvn -Dtest=... as test commands", async () => {
+      const config = makeTestConfig();
+      const testCommands = ["mvn test", "mvn -Dtest=MyTest test", "mvn verify -Dtest=Foo"];
+      for (const cmd of testCommands) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
+
+        const hook = createLoopBreaker(config);
+        await hook.handler(ctx as any);
+
+        expect(ctx.metadataUpdates.length).toBeGreaterThan(0);
+        expect(ctx.metadataUpdates[0].loopCount).toBe(1);
+      }
+    });
+
     it("detects node --test as a test command", async () => {
       const config = makeTestConfig();
       const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });

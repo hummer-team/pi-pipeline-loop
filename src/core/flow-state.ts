@@ -553,19 +553,21 @@ export function formatDecisionMenuHint(config: PipelineConfig): string {
   return `Open the decision menu (press ${key}) to proceed.`;
 }
 
+export type PromptDecisionOutcome = "cancelled" | "interrupted" | "decided" | "no-menu";
+
 export async function promptDecisionMenu(
   ctx: FlowStateCtx,
   meta: SessionMeta,
   config: PipelineConfig,
   opts?: { ui?: FlowStateCtx["ui"] },
-): Promise<void> {
+): Promise<PromptDecisionOutcome> {
   const ui = opts?.ui ?? ctx.ui;
   const menu = buildDecisionMenu(meta);
   const tuiEnabled = config.output?.pipelineStage !== false;
 
   if (!menu) {
     // aborted → do not prompt
-    return;
+    return "no-menu";
   }
 
   if (ui?.select) {
@@ -588,13 +590,11 @@ export async function promptDecisionMenu(
             stage: meta.currentStage,
             elapsedMs: String(elapsed),
           });
-          // Schedule a retry with backoff — the menu will re-appear after streaming settles
-          scheduleDecisionRetry(ctx, meta, config);
-          return;
+          return "interrupted";
         }
 
         // User pressed Esc — keep blocked, notify with reason
-        // Fix #5b: Esc (active cancel) stops the retry scheduler per plan P6 task 2.
+        // Fix: Esc (active cancel) stops the retry scheduler per plan P6 task 2.
         clearDecisionTimer(meta.pipelineId);
         await safeWriteAuditLog("pipeline_decision_cancelled", {
           pipelineId: meta.pipelineId,
@@ -607,7 +607,7 @@ export async function promptDecisionMenu(
             `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint(config)}`,
           );
         }
-        return;
+        return "cancelled";
       }
 
       const decision = labelToDecision(selection);
@@ -616,6 +616,7 @@ export async function promptDecisionMenu(
         const freshMeta = ctx.session.getMeta() ?? meta;
         await executeDecision(ctx, freshMeta, decision, config);
       }
+      return "decided";
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       await safeWriteAuditLog("pipeline_decision_error", {
@@ -623,6 +624,7 @@ export async function promptDecisionMenu(
         stage: meta.currentStage,
         error: errMsg,
       }, "error");
+      return "no-menu";
     }
   } else {
     // No UI available — notify via available channel (gated by pipelineStage)
@@ -632,6 +634,7 @@ export async function promptDecisionMenu(
         `Pipeline frozen: ${formatFrozenReason(frozenMeta)} ${formatDecisionMenuHint(config)}`,
       );
     }
+    return "no-menu";
   }
 }
 
@@ -682,7 +685,13 @@ export function scheduleDecisionRetry(
     }
 
     // Re-prompt (single in-flight select, no stacking)
-    await promptDecisionMenu(ctx, freshMeta, config);
+    const outcome = await promptDecisionMenu(ctx, freshMeta, config);
+
+    // Fix: cancelled (user Esc) or decided (user chose action) → stop retry loop.
+    // Only interrupted (streaming dismiss) continues the retry cycle.
+    if (outcome === "cancelled" || outcome === "decided") {
+      return;
+    }
 
     // If still frozen after prompt, schedule next retry
     const postMeta = ctx.session.getMeta() as SessionMeta | undefined;
@@ -770,10 +779,13 @@ export async function freezeAndPrompt(
 
   // Delegate to promptDecisionMenu for the UI interaction
   const frozenMeta = { ...meta, flowState: "blocked" as const, blockedReason: reason };
-  // Fix #5a: arm the retry scheduler at freeze time per plan P6 task 2.
-  // "freezeAndPrompt 冻结成功 → scheduleDecisionRetry". The scheduler ensures
-  // the decision menu re-appears even if the initial select was silently dismissed
-  // without triggering the interrupt detection path.
-  scheduleDecisionRetry(ctx, frozenMeta, config);
-  await promptDecisionMenu(ctx, frozenMeta, config, opts);
+  // Fix: do NOT pre-schedule timer here — it would fire during the awaited first
+  // prompt, creating a concurrent second select (stacking violation per review #1b).
+  // Instead, if the first prompt returns "interrupted" (streaming dismiss < 1500ms),
+  // arm the retry scheduler AFTER the prompt returns. This prevents stacking while
+  // still ensuring the menu re-appears after streaming settles.
+  const outcome = await promptDecisionMenu(ctx, frozenMeta, config, opts);
+  if (outcome === "interrupted") {
+    scheduleDecisionRetry(ctx, frozenMeta, config);
+  }
 }

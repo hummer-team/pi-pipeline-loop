@@ -469,32 +469,12 @@ export async function spawnStageSubagent(
   if (opts?.extraArgs) {
     prompt += opts.extraArgs;
   }
-  // Phase 7 (172) G1: clarify stage description includes round args derived from doc
-  let description: string;
-  if (stage === "clarify" && meta.requirementDoc) {
-    try {
-      const fsPromises = await import("node:fs/promises");
-      const docPath = path.isAbsolute(meta.requirementDoc)
-        ? meta.requirementDoc
-        : path.join(config.projectRoot, meta.requirementDoc);
-      const docContent = await fsPromises.readFile(docPath, "utf-8");
-      const { deriveClarifyForwardArgs } = await import("./clarify-args");
-      const derived = deriveClarifyForwardArgs(docContent);
-      let argsSuffix = "";
-      switch (derived.kind) {
-        case "fresh": argsSuffix = " 1"; break;
-        case "await-answer": argsSuffix = ` ${derived.round} 答`; break;
-        case "full-und?": argsSuffix = " full-und?"; break;
-        case "confirmed": argsSuffix = ` ${derived.round} 答`; break;
-      }
-      description = `Clarify: ${meta.requirementDoc}${argsSuffix}`;
-    } catch {
-      // Fail-open: file read error → no suffix
-      description = `Clarify: ${meta.requirementDoc}`;
-    }
-  } else {
-    description = `${stage}: ${meta.requirementDoc ?? ""}`;
-  }
+  // Phase 7 (172) G1: description for spawn RPC.
+  // Note: clarify stage description derivation happens in pipeline-start.ts
+  // (maybeAutoLaunchClarify → spawnClarifySubagent with explicit description).
+  // This path only handles spawnable stages (plan/develop/review/fix) via
+  // spawnStageSubagent — clarify is NOT in isSpawnableStage (L436 early return).
+  const description = `${stage}: ${meta.requirementDoc ?? ""}`;
 
   /** Helper to write the idempotency guard + activeSpawns entry after successful spawn */
   const writeGuard = async (subagentId?: string): Promise<void> => {

@@ -105,4 +105,74 @@ describe("createPipelineResumeCommand", () => {
 
     await rm(TMP, { recursive: true, force: true });
   });
+
+  it("blocked + no active spawns → dispatch is attempted (notify confirms resume + stage dispatch)", async () => {
+    const TMP = join(tmpdir(), "pi-resume-dispatch-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      // No activeSpawns → should attempt dispatch
+      activeSpawns: {},
+    });
+    const ctx = createMockCtx(meta);
+    const notifications: string[] = [];
+    (ctx as any).ui = { notify: (msg: string) => notifications.push(msg), setStatus: () => {} };
+    const cmd = createPipelineResumeCommand(config);
+    const result = await cmd.execute({}, ctx as any);
+
+    expect((result as any).error).toBeUndefined();
+    // Resume notify should include stage info
+    expect(notifications.some(n => n.includes("resumed"))).toBe(true);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("blocked + live agent probe → dispatch skipped (no duplicate spawn)", async () => {
+    const TMP = join(tmpdir(), "pi-resume-live-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      activeSpawns: {
+        develop: { agentName: "develop-agent", agentId: "agent-live-001", startedAt: Date.now() },
+      },
+    });
+    const ctx = createMockCtx(meta);
+    const notifications: string[] = [];
+    (ctx as any).ui = { notify: (msg: string) => notifications.push(msg), setStatus: () => {} };
+
+    // Mock the pi-subagents manager singleton to return "live" for our agent
+    const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+    const origManager = (globalThis as any)[MANAGER_SYMBOL];
+    (globalThis as any)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => id === "agent-live-001" ? { status: "running" } : undefined,
+    };
+
+    try {
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      expect((result as any).error).toBeUndefined();
+      // Should notify that agent is already running and skip duplicate spawn
+      expect(notifications.some(n => n.includes("already running"))).toBe(true);
+    } finally {
+      // Restore original manager
+      if (origManager !== undefined) {
+        (globalThis as any)[MANAGER_SYMBOL] = origManager;
+      } else {
+        delete (globalThis as any)[MANAGER_SYMBOL];
+      }
+    }
+
+    await rm(TMP, { recursive: true, force: true });
+  });
 });
