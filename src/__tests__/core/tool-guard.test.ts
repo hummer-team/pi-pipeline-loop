@@ -2755,7 +2755,7 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
     });
 
-    it("blocked + pipeline_state → still block (exemption only for aborted)", async () => {
+    it("blocked + pipeline_state → allowed (Phase 4/172: exemption extended to blocked)", async () => {
       const TMP = join(tmpdir(), "pi-tg-exempt-blocked-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: TMP }));
@@ -2773,10 +2773,8 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      // Blocked → full block (no exemption)
-      expect(result).toBeDefined();
-      expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("frozen");
+      // Phase 4 (172) G6a: blocked state now exempts probe tools (same as aborted)
+      expect(result).toBeUndefined();
 
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();

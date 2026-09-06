@@ -1,5 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { checkGitAdd, checkGitCommit, hasGitCommitAllFlag } from "../../utils/git-protect";
+import {
+  checkGitAdd, checkGitCommit, hasGitCommitAllFlag,
+  normalizeSegmentBaseCmd, isGitWriteCommand, isGitReadonlyCommand, isGitForbidden,
+} from "../../utils/git-protect";
 import type { ProtectState } from "../../utils/protect";
 import type { ExecFn } from "../../types";
 
@@ -205,5 +208,108 @@ describe("checkGitCommit", () => {
     const result = await checkGitCommit("git commit -m 'msg'", state, "/tmp");
     expect(result.block).toBe(false);
     expect(result.warn).toBeDefined();
+  });
+});
+
+// ─── Phase 4 (172): git command classification ───────────────────────────────
+
+describe("normalizeSegmentBaseCmd", () => {
+  it("strips rtk prefix", () => {
+    expect(normalizeSegmentBaseCmd("rtk git add .")).toBe("git add .");
+    expect(normalizeSegmentBaseCmd("rtk git status")).toBe("git status");
+  });
+
+  it("preserves non-rtk segments", () => {
+    expect(normalizeSegmentBaseCmd("git add .")).toBe("git add .");
+    expect(normalizeSegmentBaseCmd("echo hello")).toBe("echo hello");
+  });
+
+  it("trims whitespace", () => {
+    expect(normalizeSegmentBaseCmd("  git add .  ")).toBe("git add .");
+  });
+});
+
+describe("isGitWriteCommand", () => {
+  it("identifies write subcommands", () => {
+    expect(isGitWriteCommand("git add .")).toBe(true);
+    expect(isGitWriteCommand("git commit -m 'msg'")).toBe(true);
+    expect(isGitWriteCommand("git merge main")).toBe(true);
+    expect(isGitWriteCommand("git rebase -i HEAD~3")).toBe(true);
+    expect(isGitWriteCommand("git checkout -b feature")).toBe(true);
+    expect(isGitWriteCommand("git reset HEAD~1")).toBe(true);
+    expect(isGitWriteCommand("git push origin main")).toBe(true);
+  });
+
+  it("identifies write with rtk prefix", () => {
+    expect(isGitWriteCommand("rtk git add .")).toBe(true);
+    expect(isGitWriteCommand("rtk git commit -m 'msg'")).toBe(true);
+  });
+
+  it("rejects read-only subcommands", () => {
+    expect(isGitWriteCommand("git status")).toBe(false);
+    expect(isGitWriteCommand("git log --oneline")).toBe(false);
+    expect(isGitWriteCommand("git diff HEAD")).toBe(false);
+    expect(isGitWriteCommand("git show HEAD")).toBe(false);
+  });
+
+  it("rejects non-git commands", () => {
+    expect(isGitWriteCommand("echo hello")).toBe(false);
+    expect(isGitWriteCommand("npm test")).toBe(false);
+  });
+
+  it("rejects bare 'git' without subcommand", () => {
+    expect(isGitWriteCommand("git")).toBe(false);
+  });
+});
+
+describe("isGitReadonlyCommand", () => {
+  it("identifies read-only subcommands", () => {
+    expect(isGitReadonlyCommand("git status")).toBe(true);
+    expect(isGitReadonlyCommand("git log")).toBe(true);
+    expect(isGitReadonlyCommand("git diff")).toBe(true);
+    expect(isGitReadonlyCommand("git show")).toBe(true);
+    expect(isGitReadonlyCommand("git blame file.ts")).toBe(true);
+  });
+
+  it("rejects write subcommands", () => {
+    expect(isGitReadonlyCommand("git add .")).toBe(false);
+    expect(isGitReadonlyCommand("git commit -m 'msg'")).toBe(false);
+  });
+});
+
+describe("isGitForbidden", () => {
+  it("matches filter-branch", () => {
+    expect(isGitForbidden("git filter-branch --all")).toBe(true);
+  });
+
+  it("matches reset --hard", () => {
+    expect(isGitForbidden("git reset --hard HEAD")).toBe(true);
+  });
+
+  it("matches clean -f variants", () => {
+    expect(isGitForbidden("git clean -fd")).toBe(true);
+    expect(isGitForbidden("git clean -fdx")).toBe(true);
+    expect(isGitForbidden("git clean -f")).toBe(true);
+  });
+
+  it("matches worktree remove", () => {
+    expect(isGitForbidden("git worktree remove /tmp/wt")).toBe(true);
+  });
+
+  it("matches push --force", () => {
+    expect(isGitForbidden("git push --force origin main")).toBe(true);
+    expect(isGitForbidden("git push -f origin main")).toBe(true);
+  });
+
+  it("allows safe commands", () => {
+    expect(isGitForbidden("git add .")).toBe(false);
+    expect(isGitForbidden("git commit -m 'msg'")).toBe(false);
+    expect(isGitForbidden("git push origin main")).toBe(false);
+    expect(isGitForbidden("git status")).toBe(false);
+  });
+
+  it("matches with rtk prefix", () => {
+    expect(isGitForbidden("rtk git reset --hard HEAD")).toBe(true);
+    expect(isGitForbidden("rtk git push -f origin main")).toBe(true);
   });
 });

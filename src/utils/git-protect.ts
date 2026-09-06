@@ -232,3 +232,99 @@ export async function checkGitCommit(
 
   return { block: false };
 }
+
+// ─── Phase 4 (172): Git write subcommand classification + blacklist ──────────
+
+/**
+ * Strips the `rtk ` prefix from a shell segment (RTK rewriting observed in production).
+ * Returns the segment with leading `rtk ` removed, trimmed.
+ *
+ * @param segment - Raw shell segment string
+ * @returns Normalized segment with rtk prefix stripped
+ */
+export function normalizeSegmentBaseCmd(segment: string): string {
+  return segment.trim().replace(/^rtk\s+/, "");
+}
+
+/**
+ * Git subcommands that modify repository state (write operations).
+ * Non-exhaustive but covers common dangerous operations.
+ */
+export const GIT_WRITE_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "add", "commit", "merge", "rebase", "cherry-pick", "stash",
+  "checkout", "switch", "reset", "restore", "clean", "gc",
+  "prune", "worktag", "tag", "branch", "remote", "fetch", "pull", "push",
+]);
+
+/**
+ * Git subcommands that are read-only (no repository state modification).
+ */
+export const GIT_READONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "status", "log", "diff", "show", "blame", "rev-parse",
+  "config", "ls-files", "ls-remote", "describe", "reflog",
+]);
+
+/**
+ * Hard blacklist patterns for git subcommands.
+ * These are ALWAYS rejected, even in stages with gitModify="allow".
+ * Matched against the normalized segment string (after rtk prefix strip).
+ *
+ * Patterns use RegExp to catch flag combinations:
+ * - filter-branch: history rewriting
+ * - reset --hard: destructive reset
+ * - clean -f/-fd/-fdx: force file removal
+ * - worktree remove: worktree destruction
+ * - push --force/-f: force push
+ */
+export const GIT_FORBIDDEN_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bgit\s+filter-branch\b/,
+  /\bgit\s+reset\s+--hard\b/,
+  /\bgit\s+clean\s+-[fF]/,
+  /\bgit\s+worktree\s+remove\b/,
+  /\bgit\s+push\s+.*--force\b/,
+  /\bgit\s+push\s+-[a-zA-Z]*[fF]/,
+] as const;
+
+/**
+ * Determines whether a git segment is a write operation.
+ * Strips rtk prefix, extracts the git subcommand, and checks against the write set.
+ *
+ * @param segment - Raw shell segment (may include rtk prefix)
+ * @returns true if the segment is a git write subcommand
+ */
+export function isGitWriteCommand(segment: string): boolean {
+  const normalized = normalizeSegmentBaseCmd(segment);
+  if (!normalized.startsWith("git ")) return false;
+  const tokens = normalized.split(/\s+/);
+  // tokens[0] = "git", tokens[1] = subcommand
+  const subcmd = tokens[1];
+  if (!subcmd) return false;
+  return GIT_WRITE_SUBCOMMANDS.has(subcmd);
+}
+
+/**
+ * Determines whether a git segment is a read-only command.
+ *
+ * @param segment - Raw shell segment (may include rtk prefix)
+ * @returns true if the segment is a git read-only subcommand
+ */
+export function isGitReadonlyCommand(segment: string): boolean {
+  const normalized = normalizeSegmentBaseCmd(segment);
+  if (!normalized.startsWith("git ")) return false;
+  const tokens = normalized.split(/\s+/);
+  const subcmd = tokens[1];
+  if (!subcmd) return false;
+  return GIT_READONLY_SUBCOMMANDS.has(subcmd);
+}
+
+/**
+ * Checks whether a git segment matches any forbidden pattern.
+ * Matched against the full normalized segment string.
+ *
+ * @param segment - Raw shell segment (may include rtk prefix)
+ * @returns true if the segment matches a forbidden pattern
+ */
+export function isGitForbidden(segment: string): boolean {
+  const normalized = normalizeSegmentBaseCmd(segment);
+  return GIT_FORBIDDEN_PATTERNS.some((pattern) => pattern.test(normalized));
+}

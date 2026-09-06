@@ -44,7 +44,8 @@ import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
-import { checkGitAdd, checkGitCommit, type GitCheckResult } from "../utils/git-protect";
+import { checkGitAdd, checkGitCommit, isGitWriteCommand, isGitForbidden, type GitCheckResult } from "../utils/git-protect";
+import { resolveGitModifyPolicy } from "../utils/protect";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
@@ -390,47 +391,100 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         }
 
         // ── SEGMENT-LEVEL PROTECTION (Bug 2: split compound commands) ──
+        // Phase 4 (172): per-stage git modify policy + hard blacklist + .git exemption.
         const segments = splitShellSegments(command);
         const warnings: string[] = [];
         let bashFileState: ProtectState | undefined;
+        const currentStage = meta.currentStage;
+        const gitPolicy = resolveGitModifyPolicy(config, null, currentStage);
 
         for (const segment of segments) {
-          if (GIT_ADD_PATTERN.test(segment)) {
-            const gitState = await getProtectStateForGit();
-            const result = await checkGitAdd(segment, gitState, config.projectRoot, execFn);
-            if (result.block) {
+          const trimmedSegment = segment.trim();
+
+          // Phase 4 (172): Check if segment is a git command (after rtk normalization)
+          const isGitCmd = /^rtk\s+git\s/.test(trimmedSegment) || trimmedSegment.startsWith("git ");
+
+          if (isGitCmd) {
+            // Hard blacklist: ALWAYS reject, even in allow stages
+            if (isGitForbidden(segment)) {
+              const reason = `FORBIDDEN: git command matches forbidden pattern in stage '${currentStage}' (stage git policy=${gitPolicy}).`;
+              await trackViolation({
+                type: "bash_destructive",
+                tool: "bash",
+                detail: reason,
+                suggestion: `Forbidden git operations: filter-branch, reset --hard, clean -f, worktree remove, push --force.`,
+              });
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
+
+            const isWrite = isGitWriteCommand(segment);
+
+            if (isWrite && gitPolicy === "block") {
+              // Block policy: hard-block git write commands (no ask popup per Phase 4 Q2-A)
+              const reason = `FORBIDDEN: git write command blocked in stage '${currentStage}' (stage git policy=block).`;
               await trackViolation({
                 type: "git_protected",
                 tool: "bash",
-                detail: result.reason!,
-                suggestion: `git add cannot stage protected paths (.pi/, .git/, gitignore).`,
+                detail: reason,
+                suggestion: `Git write operations are not allowed in the '${currentStage}' stage.`,
               });
-              ui.notify(ctx, result.reason!);
-              return { block: true, reason: result.reason! };
+              ui.notify(ctx, reason);
+              return { block: true, reason };
             }
-            if (result.warn) warnings.push(result.warn);
-          } else if (GIT_COMMIT_PATTERN.test(segment)) {
-            const gitState = await getProtectStateForGit();
-            const result = await checkGitCommit(segment, gitState, config.projectRoot, execFn);
-            if (result.block) {
-              await trackViolation({
-                type: "git_protected",
-                tool: "bash",
-                detail: result.reason!,
-                suggestion: `git commit cannot include protected paths (.pi/, .git/, gitignore).`,
-              });
-              ui.notify(ctx, result.reason!);
-              return { block: true, reason: result.reason! };
+
+            // git add / git commit content validation (always runs for these specific commands)
+            if (GIT_ADD_PATTERN.test(segment)) {
+              const gitState = await getProtectStateForGit();
+              const result = await checkGitAdd(segment, gitState, config.projectRoot, execFn);
+              if (result.block) {
+                await trackViolation({
+                  type: "git_protected",
+                  tool: "bash",
+                  detail: result.reason!,
+                  suggestion: `git add cannot stage protected paths (.pi/, .git/, gitignore).`,
+                });
+                ui.notify(ctx, result.reason!);
+                return { block: true, reason: result.reason! };
+              }
+              if (result.warn) warnings.push(result.warn);
+              continue; // Skip the checkBashFileTargets for git add segments
             }
-            if (result.warn) warnings.push(result.warn);
-          } else {
-            // Non-git segment: check bash file-modification targets
-            if (!bashFileState) bashFileState = await getProtectState();
-            const blockResult = await checkBashFileTargets(
-              segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
-            );
-            if (blockResult) return blockResult;
+
+            if (GIT_COMMIT_PATTERN.test(segment)) {
+              const gitState = await getProtectStateForGit();
+              const result = await checkGitCommit(segment, gitState, config.projectRoot, execFn);
+              if (result.block) {
+                await trackViolation({
+                  type: "git_protected",
+                  tool: "bash",
+                  detail: result.reason!,
+                  suggestion: `git commit cannot include protected paths (.pi/, .git/, gitignore).`,
+                });
+                ui.notify(ctx, result.reason!);
+                return { block: true, reason: result.reason! };
+              }
+              if (result.warn) warnings.push(result.warn);
+              continue; // Skip the checkBashFileTargets for git commit segments
+            }
+
+            // Phase 4 (172): git native write in allow stage → skip .git/** target check
+            // (git native writes to .git/ are expected, e.g., rm -f .git/index.lock)
+            if (isWrite && gitPolicy === "allow") {
+              continue; // Git native write in allow stage: exempt from .git/** file target check
+            }
+
+            // Git read-only commands: pass through without file target check
+            // (git status, git log, etc. don't write to working tree)
+            continue;
           }
+
+          // Non-git segment: check bash file-modification targets
+          if (!bashFileState) bashFileState = await getProtectState();
+          const blockResult = await checkBashFileTargets(
+            segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
+          );
+          if (blockResult) return blockResult;
         }
 
         // Aggregate warnings (non-blocking, not counted as violations)
@@ -445,11 +499,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       if (isFrozen(meta)) {
         const fs = getFlowState(meta);
 
-        // Phase 2 (171) Q2-B: aborted-state exemption for read-only probe tools.
-        // pipeline_state and get_subagent_result are safe (no write side effects) and
-        // enable self-rescue in the zombie state where no decision menu is available.
-        // Only effective for aborted — blocked/awaiting_human maintain full block.
-        if (fs === "aborted" && FROZEN_ABORT_EXEMPT_TOOLS.includes(toolName)) {
+        // Phase 2 (171) Q2-B + Phase 4 (172) G6a: aborted/blocked-state exemption for
+        // read-only probe tools. pipeline_state and get_subagent_result are safe (no write
+        // side effects) and enable self-rescue / state inspection in frozen states.
+        // Effective for both aborted and blocked — awaiting_human maintains full block.
+        if ((fs === "aborted" || fs === "blocked") && FROZEN_ABORT_EXEMPT_TOOLS.includes(toolName)) {
           // Throttled audit for frozen probe (same 60s window pattern as rejection)
           const probeThrottleKey = `frozen-probe:${meta.pipelineId}:${toolName}`;
           if (shouldEmitWithinWindow(probeThrottleKey, AUDIT_THROTTLE_WINDOW_MS)) {
