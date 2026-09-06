@@ -414,6 +414,52 @@ export function extractFirstUserMessageText(ctx: ExtensionContext): string {
 }
 
 /**
+ * Extracts the text content of the LAST user message in the session branch.
+ * Mirrors extractFirstUserMessageText traversal but iterates in reverse.
+ * Used by Phase 2 (172) agent_settled gate to determine whether the current
+ * settle turn originates from a pipeline-orchestrated interaction.
+ *
+ * Handles:
+ * - string content → returned as-is
+ * - array content → concatenates parts where type === "text"
+ *
+ * Returns empty string when no user message is found or on extraction failure.
+ */
+export function extractLastUserMessageText(ctx: ExtensionContext): string {
+  try {
+    const entries = ctx.sessionManager.getBranch();
+
+    // Iterate in reverse to find the last user message
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.type !== "message") continue;
+
+      const msgEntry = entry as { type: "message"; message: { role: string; content?: unknown } };
+      if (msgEntry.message.role !== "user") continue;
+
+      const content = msgEntry.message.content;
+      if (typeof content === "string") {
+        return content;
+      }
+      if (Array.isArray(content)) {
+        const textParts = content
+          .filter((part: { type?: string }) => part.type === "text")
+          .map((part: { text?: string }) => part.text ?? "");
+        if (textParts.length > 0) {
+          return textParts.join("");
+        }
+      }
+    }
+
+    return "";
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    safeWriteAuditLog("session_state_error", { operation: "extractLastUserMessageText", error: errMsg }, "error");
+    return "";
+  }
+}
+
+/**
  * A single tool call record extracted from the session branch.
  * Used by selfVerifySkip to determine whether the model has already
  * successfully executed a given command during the current stage.

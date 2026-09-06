@@ -1749,3 +1749,84 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ── Phase 2 (172): pipeline-turn source gate ──────────────────────────────────
+
+describe("Phase 2 (172): pipeline-turn source gate", () => {
+  it("non-pipeline chat message → agent_settled_non_pipeline_turn audit, no verify", async () => {
+    const config = makeTestConfig();
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop", verifyAttempts: 0 });
+    const ctx = createMockCtx(meta);
+    // Set the last user message to a pure chat message (no pipeline signature)
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "What is the weather today?" } },
+    ];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should audit non-pipeline turn
+    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("agent_settled_non_pipeline_turn");
+    // verifyAttempts must NOT have been incremented
+    expect(meta.verifyAttempts).toBe(0);
+  });
+
+  it("pipeline wake prefix → verification proceeds", async () => {
+    const config = makeTestConfig();
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: 'Verification failed for "develop": build error.' } },
+    ];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Should NOT audit non-pipeline turn (verification proceeds)
+    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
+  });
+
+  it("@mention with round args → verification proceeds", async () => {
+    const config = makeTestConfig();
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createMockCtx(meta);
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "@feat-design-plan-agent docs/req.md 2 答" } },
+    ];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
+  });
+
+  it("empty user messages → fail-open (treated as pipeline turn)", async () => {
+    const config = makeTestConfig();
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    // No user messages in the branch
+    (ctx._ctx.sessionManager as any).getBranch = () => [];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    // Empty → fail-open → NOT filtered as non-pipeline
+    expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
+  });
+});

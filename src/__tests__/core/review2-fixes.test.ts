@@ -529,8 +529,8 @@ describe("M4: settle-retry binding", () => {
 
     const config = buildSettleConfig(TMP);
     const { ctx, meta } = buildSettleCtx({
-      // First user message contains a parseable doc path
-      firstUserMessage: `Please implement ${docPath}`,
+      // Phase 2 (172): Use @mention format to pass the pipeline-turn gate
+      firstUserMessage: `@feat-design-plan-agent ${docPath} 1`,
     });
 
     const hook = createAgentSettled(config);
@@ -549,7 +549,8 @@ describe("M4: settle-retry binding", () => {
     // No requirement doc on disk (so marker check fails and settle-retry path is entered)
     const config = buildSettleConfig(TMP);
     const { ctx, meta } = buildSettleCtx({
-      firstUserMessage: "Please implement the feature", // No parseable doc path
+      // Phase 2 (172): Use pipeline wake prefix to pass the gate, but no parseable doc path
+      firstUserMessage: "Verification failed for \"clarify\": no deliverables yet.",
     });
 
     const hook = createAgentSettled(config);

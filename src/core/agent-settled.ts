@@ -24,9 +24,9 @@ import {
 import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp } from "../utils/audit-throttle";
-import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { AUDIT_THROTTLE_WINDOW_MS, PIPELINE_TURN_SIGNATURES } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
-import { extractFirstUserMessageText } from "./session-state";
+import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -100,6 +100,39 @@ export function createAgentSettled(
           config,
         );
         return;
+      }
+
+      // Phase 2 (172) G2: Pipeline-turn source gate.
+      // Pure chat settle (non-pipeline user turn) must NOT trigger verify/wake/counting/freeze.
+      // Checks the last user message against known pipeline turn signatures.
+      // Fail-open: extraction failure or empty message → treat as pipeline turn (conservative).
+      try {
+        const lastUserMsg = extractLastUserMessageText(ctx._ctx as Parameters<typeof extractLastUserMessageText>[0]);
+        if (lastUserMsg.length > 0) {
+          const isPipelineTurn = PIPELINE_TURN_SIGNATURES.some((sig) => {
+            if (typeof sig === "string") {
+              return lastUserMsg.startsWith(sig);
+            }
+            return sig.test(lastUserMsg);
+          });
+          if (!isPipelineTurn) {
+            await writeAuditLog("agent_settled_non_pipeline_turn", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+              messagePreview: lastUserMsg.substring(0, 100),
+            });
+            return;
+          }
+        }
+        // Empty message or extraction failure → fail-open (treat as pipeline turn)
+      } catch (err) {
+        // Fail-open: gate error must not block settle flow
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await writeAuditLog("agent_settled_gate_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: errMsg,
+        }, "warn");
       }
 
       // Phase 5 (170): Detect and audit run truncation / transient failure.

@@ -95,6 +95,46 @@ export const FROZEN_ABORT_EXEMPT_TOOLS: readonly string[] = [
   "get_subagent_result",
 ] as const;
 
+// ─── Pipeline Turn Signatures (Phase 2 / 172) ─────────────────────────────────
+
+/**
+ * Centralized list of message prefixes/patterns that identify a user turn as
+ * pipeline-orchestrated (as opposed to a pure chat interaction).
+ *
+ * MAINTENANCE NOTE: When new sendUserMessage wake messages or @mention patterns
+ * are added to the codebase, they MUST be registered here to avoid the settle
+ * gate (agent_settled) silently skipping verification for pipeline turns.
+ *
+ * Each entry is either:
+ * - A string prefix (message starts with this text → pipeline turn)
+ * - A RegExp pattern (message matches this pattern → pipeline turn)
+ *
+ * Strings are checked via `msg.startsWith(prefix)`.
+ * RegExps are checked via `regex.test(msg)`.
+ */
+export const PIPELINE_TURN_SIGNATURES: ReadonlyArray<string | RegExp> = [
+  // verify-advance wake: "Verification failed for "{stage}": ..."
+  // Source: core/verify-advance.ts L354/366/387
+  "Verification failed for \"",
+
+  // stage-advancer route wake: "Stage "{from}" {reason}. Routing to "{to}" ..."
+  // Source: core/stage-advancer.ts L422
+  "Stage \"",
+
+  // verify-advance stage completion wake: "Pipeline advanced from {from} to {to}. ..."
+  // Source: core/verify-advance.ts L472
+  "Pipeline advanced from ",
+
+  // subagent-rpc spawn prompt prefix: "Begin the {stage} stage work now. ..."
+  // Source: utils/subagent-rpc.ts L467
+  "Begin the ",
+
+  // @mention pattern: "@agent-name file [args]" where args include round indicators
+  // Matches: "@feat-design-plan-agent docs/req.md 1", "@agent file 2 答", "@agent file full-und?"
+  // Source: commands/pipeline-start.ts L803, user-initiated @mentions
+  /^@\S+\s+\S+.*(\d+\s*答|full-und\?|\s\d+$)/,
+] as const;
+
 // ─── Spawn Tool Names (Phase 4 / 171) ────────────────────────────────────────
 
 /**
