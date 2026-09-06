@@ -17,6 +17,7 @@ import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../t
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
+import { DEFAULT_DECISION_SHORTCUT, DECISION_DISMISS_INTERRUPT_MS } from "../constants";
 
 // ─── Context Interface ──────────────────────────────────────────────────────
 
@@ -536,6 +537,19 @@ export function formatFrozenReason(meta: SessionMeta, maxLen = 200): string {
  * @param config - PipelineConfig for stage lookups
  * @param opts - Optional overrides (ui for external callers)
  */
+/**
+ * Formats a hint message for the decision menu shortcut key.
+ * Uses the configured `decisionShortcutKey` or falls back to DEFAULT_DECISION_SHORTCUT.
+ * Single source for all three consumers: frozen notify, prompt-injector, and pipeline_blocked audit.
+ *
+ * @param config - Pipeline configuration
+ * @returns Human-readable hint string like "Open the decision menu (press ctrl+enter) to proceed"
+ */
+export function formatDecisionMenuHint(config: PipelineConfig): string {
+  const key = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
+  return `Open the decision menu (press ${key}) to proceed.`;
+}
+
 export async function promptDecisionMenu(
   ctx: FlowStateCtx,
   meta: SessionMeta,
@@ -554,12 +568,28 @@ export async function promptDecisionMenu(
   if (ui?.select) {
     try {
       const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
+      const attemptAt = Date.now();
       const selection = await ui.select(
         `Pipeline blocked: ${reason}. Choose an action:`,
         menu,
       );
 
       if (selection === undefined) {
+        const elapsed = Date.now() - attemptAt;
+
+        // Phase 6 (172) G5: interrupt detection — if select resolved very quickly,
+        // it was likely dismissed by streaming output (system interrupt), not user Esc.
+        if (elapsed < DECISION_DISMISS_INTERRUPT_MS) {
+          await safeWriteAuditLog("pipeline_decision_interrupted", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            elapsedMs: String(elapsed),
+          });
+          // Schedule a retry with backoff — the menu will re-appear after streaming settles
+          scheduleDecisionRetry(ctx, meta, config);
+          return;
+        }
+
         // User pressed Esc — keep blocked, notify with reason
         await safeWriteAuditLog("pipeline_decision_cancelled", {
           pipelineId: meta.pipelineId,
@@ -569,7 +599,7 @@ export async function promptDecisionMenu(
         if (tuiEnabled) {
           const freshMeta = ctx.session.getMeta() ?? meta;
           ui.notify?.(
-            `Pipeline frozen: ${formatFrozenReason(freshMeta)}. Open the decision menu to proceed.`,
+            `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint(config)}`,
           );
         }
         return;
@@ -594,10 +624,90 @@ export async function promptDecisionMenu(
     if (tuiEnabled) {
       const frozenMeta = ctx.session.getMeta() ?? meta;
       ui?.notify?.(
-        `Pipeline frozen: ${formatFrozenReason(frozenMeta)}. Open the decision menu to proceed.`,
+        `Pipeline frozen: ${formatFrozenReason(frozenMeta)} ${formatDecisionMenuHint(config)}`,
       );
     }
   }
+}
+
+// ─── Phase 6 (172) G5: Decision retry scheduler ──────────────────────────────
+
+/**
+ * Module-level timer registry for decision menu retry scheduling.
+ * Maps pipelineId to its active retry timer. Single implementation point
+ * prevents double-scheduling and enables cleanup on shutdown.
+ */
+const decisionRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Base delay for the first retry (ms). Subsequent retries use exponential backoff. */
+const RETRY_BASE_DELAY_MS = 5000;
+/** Maximum delay cap for exponential backoff (ms). */
+const RETRY_MAX_DELAY_MS = 60000;
+/** Backoff multiplier for each retry. */
+const RETRY_BACKOFF_FACTOR = 2;
+
+/**
+ * Schedules an exponential-backoff retry for the decision menu when the pipeline
+ * remains frozen after an interrupted select. Only one timer per pipelineId at a time.
+ *
+ * @param ctx - FlowStateCtx for re-prompting
+ * @param meta - Current SessionMeta
+ * @param config - Pipeline configuration
+ * @param attempt - Current attempt number (for backoff calculation)
+ */
+export function scheduleDecisionRetry(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  config: PipelineConfig,
+  attempt: number = 1,
+): void {
+  const pipelineId = meta.pipelineId;
+  // Clear existing timer for this pipeline (prevent stacking)
+  clearDecisionTimer(pipelineId);
+
+  const delay = Math.min(RETRY_BASE_DELAY_MS * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_MS);
+
+  const timer = setTimeout(async () => {
+    decisionRetryTimers.delete(pipelineId);
+
+    // Re-read meta: if no longer frozen, self-clean
+    const freshMeta = ctx.session.getMeta() as SessionMeta | undefined;
+    if (!freshMeta || !isFrozen(freshMeta)) {
+      return;
+    }
+
+    // Re-prompt (single in-flight select, no stacking)
+    await promptDecisionMenu(ctx, freshMeta, config);
+
+    // If still frozen after prompt, schedule next retry
+    const postMeta = ctx.session.getMeta() as SessionMeta | undefined;
+    if (postMeta && isFrozen(postMeta)) {
+      scheduleDecisionRetry(ctx, postMeta, config, attempt + 1);
+    }
+  }, delay);
+
+  decisionRetryTimers.set(pipelineId, timer);
+}
+
+/**
+ * Clears the decision retry timer for a specific pipeline.
+ */
+export function clearDecisionTimer(pipelineId: string): void {
+  const timer = decisionRetryTimers.get(pipelineId);
+  if (timer) {
+    clearTimeout(timer);
+    decisionRetryTimers.delete(pipelineId);
+  }
+}
+
+/**
+ * Clears all decision retry timers. Called on session shutdown to prevent leaks.
+ */
+export function clearAllDecisionTimers(): void {
+  for (const [id, timer] of decisionRetryTimers) {
+    clearTimeout(timer);
+  }
+  decisionRetryTimers.clear();
 }
 
 // ─── freezeAndPrompt ────────────────────────────────────────────────────────
@@ -650,7 +760,7 @@ export async function freezeAndPrompt(
     stage: meta.currentStage,
     reason,
     nextStage: blockedNextStage ?? "null",
-    nextAction: "open the decision menu",
+    nextAction: formatDecisionMenuHint(config),
   }, "warn");
 
   // Delegate to promptDecisionMenu for the UI interaction

@@ -308,11 +308,11 @@ describe("createPromptInjector", () => {
       expect(result.systemPrompt!).toContain("FROZEN");
       expect(result.systemPrompt!).toContain("loop_overflow");
       expect(result.systemPrompt!).toContain("decision menu");
-      // Should NOT contain shortcut key
-      expect(result.systemPrompt!).not.toContain("ctrl+enter");
+      // Phase 6 (172) G5: should contain configured shortcut key
+      expect(result.systemPrompt!).toContain("ctrl+enter");
     });
 
-    it("injects FROZEN hint with blockedReason, no shortcut key", async () => {
+    it("injects FROZEN hint with configured shortcut key", async () => {
       const config = makeTestConfig({ decisionShortcutKey: "alt+x" });
       const meta = makeTestMeta({ flowState: "blocked", blockedReason: "verify_fail" });
       const ctx = { session: { getMeta: () => meta } };
@@ -322,8 +322,8 @@ describe("createPromptInjector", () => {
 
       expect(result.systemPrompt!).toContain("FROZEN");
       expect(result.systemPrompt!).toContain("verify_fail");
-      // Should NOT contain shortcut key
-      expect(result.systemPrompt!).not.toContain("alt+x");
+      // Phase 6 (172) G5: should contain configured shortcut key
+      expect(result.systemPrompt!).toContain("alt+x");
     });
 
     it("does not inject FROZEN hint when pipeline is running", async () => {

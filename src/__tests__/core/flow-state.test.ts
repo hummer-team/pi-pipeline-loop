@@ -383,11 +383,15 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("aborted");
   });
 
-  it("with UI select: user presses Esc → stays blocked + notify reason (no shortcut)", async () => {
+  it("with UI select: user presses Esc (delayed) → stays blocked + notify with shortcut", async () => {
     const meta = makeTestMeta({ flowState: "running" });
     const notifications: string[] = [];
     const ctx = makeCtx(meta, {
-      select: async () => undefined, // Esc
+      // Simulate Esc after 2 seconds (above DECISION_DISMISS_INTERRUPT_MS=1500 threshold)
+      select: async () => {
+        await new Promise(r => setTimeout(r, 2000));
+        return undefined;
+      },
       notify: (msg: string) => { notifications.push(msg); },
     });
     const config = makeTestConfig();
@@ -397,9 +401,7 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("blocked");
     expect(notifications.length).toBe(1);
     expect(notifications[0]).toContain("verify_fail");
-    expect(notifications[0]).toContain("decision menu");
-    // Should NOT contain shortcut key
-    expect(notifications[0]).not.toContain("ctrl+enter");
+    expect(notifications[0]).toContain("ctrl+enter");
   });
 
   it("without UI: keeps blocked, no crash, notify includes reason", async () => {
@@ -439,7 +441,8 @@ describe("freezeAndPrompt", () => {
     await freezeAndPrompt(ctx, meta, "test_reason", config);
 
     expect(notifications[0]).toContain("test_reason");
-    expect(notifications[0]).not.toContain("alt+f");
+    // Phase 6 (172) G5: should contain configured shortcut key
+    expect(notifications[0]).toContain("alt+f");
   });
 
   it("opts.ui overrides ctx.ui for select", async () => {
@@ -556,25 +559,28 @@ describe("168 Phase 2: promptDecisionMenu", () => {
     expect(selectCalls.length).toBe(2);
   });
 
-  it("Esc cancel writes pipeline_decision_cancelled audit + notify with reason (no shortcut)", async () => {
+  it("Esc cancel (delayed) writes pipeline_decision_cancelled audit + notify with shortcut", async () => {
     const meta = makeTestMeta({
       flowState: "blocked",
       blockedReason: "verify_attempt_overflow",
     });
     const notifications: string[] = [];
     const ctx = makeCtx(meta, {
-      select: async () => undefined, // Esc
+      // Simulate Esc after 2 seconds (above DECISION_DISMISS_INTERRUPT_MS=1500 threshold)
+      select: async () => {
+        await new Promise(r => setTimeout(r, 2000));
+        return undefined;
+      },
       notify: (msg: string) => { notifications.push(msg); },
     });
     const config = makeTestConfig();
 
     await promptDecisionMenu(ctx, meta, config);
 
-    // Should notify with reason (not shortcut key)
+    // Phase 6 (172) G5: should notify with configured shortcut key
     expect(notifications.length).toBe(1);
     expect(notifications[0]).toContain("verify_attempt_overflow");
-    expect(notifications[0]).toContain("decision menu");
-    expect(notifications[0]).not.toContain("ctrl+enter");
+    expect(notifications[0]).toContain("ctrl+enter");
   });
 
   it("returns aborted without prompting when flowState is aborted", async () => {

@@ -18,6 +18,7 @@
  */
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
+import { clearAllDecisionTimers } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
@@ -53,9 +54,12 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
         pipelineId: meta.pipelineId,
         finalStage: meta.currentStage,
         ...(reason ? { reason: String(reason) } : {}),
-        ...(sessionFile ? { sessionFile } : {}),
+        ...(sessionFile ? { sessionFile: sessionFile } : {}),
         ...(isChild ? { isSubagent: "true" } : {}),
       });
+
+      // Phase 6 (172) G5: clear all decision retry timers on shutdown (prevent leaks)
+      clearAllDecisionTimers();
 
       // Phase 1 (171): Child/subagent quit must NOT abort the parent pipeline.
       // Subagent panel close / view detach / completed-recycle trigger session_shutdown(quit)

@@ -25,7 +25,7 @@ import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
-import { isFrozen, getFlowState, formatFrozenReason } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, formatDecisionMenuHint } from "./flow-state";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { detectLastRunHealth } from "./session-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
@@ -320,7 +320,7 @@ function buildPipelineStatus(config: PipelineConfig, meta: SessionMeta): string 
   if (isFrozen(meta)) {
     const reason = formatFrozenReason(meta);
     parts.push(
-      `- Pipeline Status: FROZEN (blocked: ${reason}) — Open the decision menu to proceed`,
+      `- Pipeline Status: FROZEN (blocked: ${reason}) — ${formatDecisionMenuHint(config)}`,
     );
   }
 
@@ -507,7 +507,7 @@ function buildPipelineStateSection(
     const docHint = meta.requirementDoc ?? "<requirement-doc>";
     lines.push(`- Action: Run \`/pipeline-start ${docHint}\` to resume or restart.`);
   } else {
-    lines.push(`- Action: Open the decision menu (shortcut or /pipeline-quit) to proceed.`);
+    lines.push(`- Action: ${formatDecisionMenuHint(config)} Alternatively, run /pipeline-quit to abort.`);
   }
 
   return lines.join("\n");

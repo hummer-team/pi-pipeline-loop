@@ -95,6 +95,17 @@ export const FROZEN_ABORT_EXEMPT_TOOLS: readonly string[] = [
   "get_subagent_result",
 ] as const;
 
+// ─── Decision Menu Interrupt Threshold (Phase 6 / 172) ──────────────────────
+
+/**
+ * Maximum elapsed time (ms) for a ui.select to resolve with undefined that is
+ * classified as a "system interrupt" rather than a "user cancel".
+ * When the select resolves in less than this time with undefined, we assume
+ * the pi TUI dismissed it due to streaming output (not user pressing Esc).
+ * Default: 1500ms.
+ */
+export const DECISION_DISMISS_INTERRUPT_MS = 1500;
+
 // ─── Pipeline Turn Signatures (Phase 2 / 172) ─────────────────────────────────
 
 /**

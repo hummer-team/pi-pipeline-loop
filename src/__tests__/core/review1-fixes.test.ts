@@ -295,7 +295,7 @@ describe("High C: flow-state C14/C15 audit field assertions", () => {
 
     // C15: nextStage should be config chain (clarify → plan)
     expect(blockedLine).toContain("nextStage=plan");
-    expect(blockedLine).toContain("nextAction=open the decision menu");
+    expect(blockedLine).toContain("nextAction=Open the decision menu (press ctrl+enter) to proceed.");
   });
 });
 
