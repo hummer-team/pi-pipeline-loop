@@ -18,6 +18,7 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
 import { DEFAULT_DECISION_SHORTCUT, DECISION_DISMISS_INTERRUPT_MS } from "../constants";
+import { registerSession } from "../utils/session-registry";
 
 // ─── Context Interface ──────────────────────────────────────────────────────
 
@@ -285,6 +286,13 @@ export async function executeDecision(
 
     case "restart": {
       const newPipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // Phase 0 (173) C1: capture old pipelineId BEFORE updateMeta. Test mocks
+      // mutate `meta` in place via Object.assign, so reading meta.pipelineId
+      // after updateMeta would yield newPipelineId. Production updateMeta
+      // (session-state) returns a fresh merged object and does not mutate the
+      // input, but we normalize on the safe capture-before-mutation form so
+      // clearDecisionTimer always targets the superseded pipeline.
+      const oldPipelineId = meta.pipelineId;
 
       ctx.session.updateMeta({
         pipelineId: newPipelineId,
@@ -315,6 +323,32 @@ export async function executeDecision(
         newPipelineId,
         reason: meta.blockedReason ?? "",
       });
+
+      // ─── Phase 0 (173) C1: restart rebind + stale timer cleanup ──────────
+      // V5/V7 root fix — executeDecision is the ONLY channel that swaps
+      // pipelineId without rebinding the session registry or clearing the
+      // decision retry timer. All other pipelineId-changing sites already
+      // handle this correctly:
+      //   - /pipeline-start fresh      → pipeline-start.ts:679 registerSession
+      //   - /pipeline-start adopt      → pipeline-start.ts:1063 registerSession
+      //   - resume/skip/rollback/abort → no pipelineId swap, no rebind needed
+      // Failure to rebind caused the 22:20:19 accident: new pipeline runs but
+      // the owner session's registry entry still points at the superseded
+      // (frozen) pipeline, so subagent JOINs resolve to the frozen flow and
+      // every tool call is blocked. Failure to clear the timer caused orphaned
+      // retries to keep firing against the old pipelineId (V7).
+      clearDecisionTimer(oldPipelineId);
+      // FlowStateCtx._ctx is a minimal TerminalCompactCtx subset (no sessionManager
+      // typed); at runtime, when invoked from the plugin hooks, it IS the full
+      // RuntimeCtx ExtensionContext which carries sessionManager. Mirror the
+      // established cast pattern from tool-guard.ts:570-572 / session-starter.ts:315.
+      const sm = ((ctx._ctx as unknown) as Record<string, unknown> | undefined)?.sessionManager as
+        | { getSessionFile?: () => string } | undefined;
+      const sessionFile = sm?.getSessionFile?.() ?? "";
+      if (sessionFile) {
+        await registerSession(config, sessionFile, newPipelineId);
+      }
+      // ─── end Phase 0 (173) C1 ────────────────────────────────────────────
 
       return { success: true, message: `Pipeline restarted as "${newPipelineId}" at stage "clarify".` };
     }
@@ -722,6 +756,24 @@ export function clearAllDecisionTimers(): void {
     clearTimeout(timer);
   }
   decisionRetryTimers.clear();
+}
+
+/**
+ * Test-only helper: returns the number of active decision retry timers.
+ * Used by restart-rebind.test.ts to verify that executeDecision("restart")
+ * clears the stale timer for the superseded pipeline (V7 mutation self-check).
+ * @internal
+ */
+export function __decisionTimerCount(): number {
+  return decisionRetryTimers.size;
+}
+
+/**
+ * Test-only helper: returns whether a timer exists for the given pipelineId.
+ * @internal
+ */
+export function __hasDecisionTimer(pipelineId: string): boolean {
+  return decisionRetryTimers.has(pipelineId);
 }
 
 // ─── freezeAndPrompt ────────────────────────────────────────────────────────
