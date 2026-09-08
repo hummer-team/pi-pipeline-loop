@@ -43,7 +43,21 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
   return {
     event: "session_shutdown",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — identity audit line only (no pipelineId field)
+      // Phase 6 (172) G5: clear all decision retry timers on shutdown (prevent leaks)
+      clearAllDecisionTimers();
+      if (!meta?.pipelineId) {
+        // No meta at all — write minimal identity audit and return
+        const { isChild, sessionFile } = detectSessionRole(ctx);
+        await writeAuditLog("session_shutdown", {
+          pipelineId: "unknown",
+          finalStage: "unknown",
+          ...(sessionFile ? { sessionFile } : {}),
+          ...(isChild ? { isSubagent: "true" } : {}),
+        });
+        return;
+      }
 
       // Phase 0 (171): session identity fields for traceability
       const { isChild, sessionFile, parentSession } = detectSessionRole(ctx);
@@ -57,9 +71,6 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
         ...(sessionFile ? { sessionFile: sessionFile } : {}),
         ...(isChild ? { isSubagent: "true" } : {}),
       });
-
-      // Phase 6 (172) G5: clear all decision retry timers on shutdown (prevent leaks)
-      clearAllDecisionTimers();
 
       // Phase 1 (171): Child/subagent quit must NOT abort the parent pipeline.
       // Subagent panel close / view detach / completed-recycle trigger session_shutdown(quit)

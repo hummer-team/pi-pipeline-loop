@@ -82,7 +82,11 @@ export function createPipelineVerify(
         return { error: "No session context available" };
       }
 
-      const meta = sessionCtx.session.getMeta() as SessionMeta;
+      const meta = sessionCtx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — guidance message
+      if (!meta?.pipelineId) {
+        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+      }
       const stageName = (args.stage as PipelineStage) || meta.currentStage;
       const stageConfig = config.stages[stageName];
 

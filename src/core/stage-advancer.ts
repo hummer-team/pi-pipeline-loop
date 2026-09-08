@@ -816,7 +816,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — guidance message
+      if (!meta?.pipelineId) {
+        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+      }
       const currentStage: PipelineStage = meta.currentStage;
 
       // Phase 4 (143): Hash integrity check — if current stage has a summary

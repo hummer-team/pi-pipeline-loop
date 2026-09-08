@@ -363,7 +363,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
   return {
     event: "tool_call",
     handler: async (ctx: RuntimeCtx): Promise<ToolCallEventResult | void> => {
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — return undefined (full pass-through)
+      if (!rawMeta?.pipelineId) return undefined;
+      // After the guard, meta is guaranteed non-null (pipelineId exists)
+      const meta: SessionMeta = rawMeta;
       const stageConfig = config.stages[meta.currentStage];
       // tool_call events always populate toolCall (buildRuntimeCtx guarantees it)
       const { name: toolName, arguments: args } = ctx.toolCall!;

@@ -29,7 +29,11 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         return { error: "No session context available" };
       }
 
-      const meta: SessionMeta = ctx.session.getMeta();
+      const meta: SessionMeta | undefined = ctx.session.getMeta();
+      // Phase 2a (173) C6: no-meta guard — dormant output
+      if (!meta?.pipelineId) {
+        return { success: true, content: "No active pipeline. Run /pipeline-start <doc>." };
+      }
       const stageConfig = config.stages[meta.currentStage as PipelineStage];
       const currentSummary = meta.summaries[meta.currentStage as PipelineStage];
 

@@ -51,7 +51,9 @@ export function createAgentSettled(
   return {
     event: "agent_settled",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — short-circuit (no audit, no notify, no verify)
+      if (!meta?.pipelineId) return;
 
       // 1. Write audit log
       await writeAuditLog("agent_settled", {

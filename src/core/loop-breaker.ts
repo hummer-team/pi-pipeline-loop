@@ -148,7 +148,9 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
   return {
     event: "tool_result",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — return (zero counting)
+      if (!meta?.pipelineId) return;
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
       // tool_result events always populate toolCall (buildRuntimeCtx guarantees it)

@@ -207,7 +207,11 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         handler: async (ctx: ExtensionContext) => {
           const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
           const meta = rctx.session.getMeta();
-          if (!meta) return;
+          // Phase 2a (173) C6: no-meta guard — guidance notify
+          if (!meta?.pipelineId) {
+            ctx.ui.notify("No active pipeline. Run /pipeline-start <doc>.");
+            return;
+          }
 
           const menu = buildDecisionMenu(meta);
           if (!menu) {

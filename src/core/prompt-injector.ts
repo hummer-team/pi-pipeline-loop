@@ -567,7 +567,9 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
   return {
     event: "before_agent_start",
     handler: async (ctx: RuntimeCtx): Promise<BeforeAgentStartEventResult | void> => {
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — return undefined (zero injection, zero snapshot)
+      if (!meta?.pipelineId) return undefined;
       const stageConfig = config.stages[meta.currentStage];
 
       // Extract base system prompt EARLY (before buildDynamicValues)

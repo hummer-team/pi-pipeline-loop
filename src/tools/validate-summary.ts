@@ -53,7 +53,11 @@ export function createValidateSummary(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — guidance message
+      if (!meta?.pipelineId) {
+        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+      }
       const stage = args.stage as string;
       const isApproved = args.isApproved as boolean;
       const comment = (args.comment as string) ?? "";

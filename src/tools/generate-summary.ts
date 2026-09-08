@@ -139,7 +139,11 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta;
+      const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2a (173) C6: no-meta guard — guidance message
+      if (!meta?.pipelineId) {
+        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+      }
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
       const stage = meta.currentStage;
