@@ -176,8 +176,8 @@ describe("createSessionStarter", () => {
       expect(notifications.length).toBe(1);
       expect(notifications[0]).toContain("blocked");
       expect(notifications[0]).toContain("loop_overflow");
-      // Should NOT contain shortcut key
-      expect(notifications[0]).not.toContain("ctrl+shift+d");
+      // Phase 1 (173) C10③: frozen text now uses formatDecisionMenuHint with configured key
+      expect(notifications[0]).toContain("ctrl+shift+d");
     });
   });
 

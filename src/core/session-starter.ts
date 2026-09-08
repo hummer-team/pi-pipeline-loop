@@ -12,7 +12,7 @@ import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
-import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted } from "./flow-state";
+import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 import { parseRequirementDocPath } from "../utils/doc-path";
@@ -415,7 +415,7 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
               meta.requirementDoc,
             ));
           } else {
-            ui.notify(ctx, `Pipeline blocked: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
+            ui.notify(ctx, `Pipeline blocked: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`);
           }
         }
       }

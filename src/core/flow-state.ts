@@ -19,6 +19,26 @@ import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
 import { DEFAULT_DECISION_SHORTCUT, DECISION_DISMISS_INTERRUPT_MS } from "../constants";
 import { registerSession } from "../utils/session-registry";
+import { detectSessionRole } from "./session-role";
+import type { RuntimeCtx } from "./runtime-ctx";
+
+// ─── Role Detection Helper ──────────────────────────────────────────────────
+
+/**
+ * Phase 1 (173) C7: Build a minimal RuntimeCtx-like shape from FlowStateCtx
+ * for session-role detection. FlowStateCtx._ctx is typed as a TerminalCompactCtx
+ * subset but at runtime carries the full ExtensionContext (sessionManager etc.).
+ *
+ * The event field is not available in FlowStateCtx; fork detection is not
+ * relevant for the decision-menu gate (fork is a session_start concept).
+ *
+ * Degradation: when _ctx or sessionManager is unavailable, detectSessionRole
+ * returns isChild=false (conservative — treats as owner), matching the
+ * established convention in session-role.ts:14-15.
+ */
+function buildRoleCtxForGate(ctx: FlowStateCtx): RuntimeCtx {
+  return { _ctx: ctx._ctx } as unknown as RuntimeCtx;
+}
 
 // ─── Context Interface ──────────────────────────────────────────────────────
 
@@ -593,7 +613,7 @@ export async function promptDecisionMenu(
   ctx: FlowStateCtx,
   meta: SessionMeta,
   config: PipelineConfig,
-  opts?: { ui?: FlowStateCtx["ui"] },
+  opts?: { ui?: FlowStateCtx["ui"]; source?: string },
 ): Promise<PromptDecisionOutcome> {
   const ui = opts?.ui ?? ctx.ui;
   const menu = buildDecisionMenu(meta);
@@ -602,6 +622,24 @@ export async function promptDecisionMenu(
   if (!menu) {
     // aborted → do not prompt
     return "no-menu";
+  }
+
+  // Phase 1 (173) C7: Owner-only menu gate.
+  // Child sessions must not present the decision menu — the owner side is
+  // responsible for rendering (via settle re-popup, shortcut, replay, or start).
+  // Detection degradation: missing _ctx/sessionManager → treat as owner (conservative).
+  try {
+    const { isChild } = detectSessionRole(buildRoleCtxForGate(ctx));
+    if (isChild) {
+      await safeWriteAuditLog("pipeline_menu_suppressed_child", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        ...(opts?.source ? { source: opts.source } : {}),
+      });
+      return "no-menu";
+    }
+  } catch {
+    // Fail-open: role detection error → treat as owner (conservative, same as session-role.ts:14-15)
   }
 
   if (ui?.select) {
@@ -712,9 +750,17 @@ export function scheduleDecisionRetry(
   const timer = setTimeout(async () => {
     decisionRetryTimers.delete(pipelineId);
 
-    // Re-read meta: if no longer frozen, self-clean
+    // Re-read meta: self-destruct on any of three conditions:
+    // 1. No meta at all (session cleared)
+    // 2. No longer frozen (user or another channel resolved the block)
+    // 3. Pipeline ID changed (restart swapped the flow — orphaned timer from old flow)
+    //    This is the Phase 1 (173) C7 self-destruct guard that prevents the ×24
+    //    retry storm (V4): after restart the old timer keeps firing against the
+    //    superseded pipelineId, but the current session now belongs to a new flow.
     const freshMeta = ctx.session.getMeta() as SessionMeta | undefined;
-    if (!freshMeta || !isFrozen(freshMeta)) {
+    if (!freshMeta || !isFrozen(freshMeta) || freshMeta.pipelineId !== pipelineId) {
+      // Ownership mismatch or flow resolved — ensure timer is cleaned up
+      clearDecisionTimer(pipelineId);
       return;
     }
 
@@ -813,6 +859,21 @@ export async function freezeAndPrompt(
     return;
   }
 
+  // Phase 1 (173) C7: Detect session role before freezing.
+  // Child sessions still freeze (the blocked state is a fact) but do NOT
+  // present the menu or schedule retries — the owner side is responsible
+  // for rendering the decision menu (via settle re-popup, shortcut, replay,
+  // or /pipeline-start). Degradation: missing _ctx → treat as owner.
+  let hostRole: "owner" | "child" = "owner";
+  try {
+    const { isChild } = detectSessionRole(buildRoleCtxForGate(ctx));
+    if (isChild) {
+      hostRole = "child";
+    }
+  } catch {
+    // Fail-open: role detection error → treat as owner (conservative)
+  }
+
   ctx.session.updateMeta({
     flowState: "blocked",
     blockedReason: reason,
@@ -820,6 +881,7 @@ export async function freezeAndPrompt(
 
   // Audit: pipeline blocked (warn level)
   // Phase 1 (171) C14: enriched with nextStage (information field) and nextAction
+  // Phase 1 (173) C7: hostRole field for attribution (owner vs child)
   const blockedNextStage = config.stages[meta.currentStage]?.nextStage ?? null;
   await safeWriteAuditLog("pipeline_blocked", {
     pipelineId: meta.pipelineId,
@@ -827,7 +889,14 @@ export async function freezeAndPrompt(
     reason,
     nextStage: blockedNextStage ?? "null",
     nextAction: formatDecisionMenuHint(config),
+    hostRole,
   }, "warn");
+
+  // Phase 1 (173) C7: Child sessions skip menu prompt and retry scheduling.
+  // The freeze state is recorded (owner will see it on next settle/shortcut/replay).
+  if (hostRole === "child") {
+    return;
+  }
 
   // Delegate to promptDecisionMenu for the UI interaction
   const frozenMeta = { ...meta, flowState: "blocked" as const, blockedReason: reason };

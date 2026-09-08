@@ -12,7 +12,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
-import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry, formatDecisionMenuHint } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -87,7 +87,7 @@ export function createAgentSettled(
             meta.requirementDoc,
           ));
         } else {
-          ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed.`);
+          ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`);
         }
         // 168 Phase 2: auto re-popup decision menu while frozen
         // Phase 4 (169) P2-5 fix: pass `_ctx` so W3 skip→completed decisions

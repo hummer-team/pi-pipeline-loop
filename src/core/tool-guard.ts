@@ -41,7 +41,7 @@ import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS,
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
-import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText, formatDecisionMenuHint } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { checkGitAdd, checkGitCommit, isGitWriteCommand, isGitForbidden, type GitCheckResult } from "../utils/git-protect";
@@ -562,7 +562,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         } else if (meta.currentStage === "awaiting_human") {
           reason = "Pipeline frozen. Contact the user to resume the pipeline";
         } else {
-          reason = `Pipeline frozen: ${formatFrozenReason(meta)}. Open the decision menu to proceed`;
+          reason = `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`;
         }
         // Phase 3 (170) ③: throttle audit for frozen rejection (60s window per pipelineId+tool+flowState)
         // Prevents audit flooding when the agent repeatedly hits frozen state.

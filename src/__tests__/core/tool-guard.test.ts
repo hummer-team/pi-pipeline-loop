@@ -77,8 +77,8 @@ describe("createToolGuard", () => {
       expect((result as any).block).toBe(true);
       expect((result as any).reason).toContain("loop_overflow");
       expect((result as any).reason).toContain("decision menu");
-      // Should NOT contain shortcut key
-      expect((result as any).reason).not.toContain("alt+f");
+      // Phase 1 (173) C10③: frozen text now uses formatDecisionMenuHint with configured key
+      expect((result as any).reason).toContain("alt+f");
     });
   });
 
