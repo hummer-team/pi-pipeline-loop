@@ -16,7 +16,7 @@ import {
   RESUMABLE_STAGES,
 } from "../constants";
 import { safeWriteAuditLog, safeWriteStageAudit } from "../utils/auditLog";
-import { getFlowState, formatFrozenReason } from "../core/flow-state";
+import { getFlowState, formatFrozenReason, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { buildStageSequence } from "../utils/stage-sequence";
 import {
@@ -667,6 +667,8 @@ async function startNewPipeline(
   // Detect if this is a restart (existing meta was aborted) for message wording
   // Must check BEFORE updateMeta which mutates the existingMeta object in-place
   const isRestart = existingMeta && getFlowState(existingMeta) === "aborted";
+  // Phase 2b (173) D2: detect completed wake-up for superseded message
+  const isCompletedWake = existingMeta?.currentStage === "completed";
 
   // Step 3: Build meta and initialize
   const { pipelineId, newMeta } = buildStartMeta(existingMeta, config, file, startStage);
@@ -691,6 +693,10 @@ async function startNewPipeline(
   const messagePrefix = isRestart
     ? `Pipeline restarted as "${pipelineId}" at stage "${startStage}".`
     : `Pipeline "${pipelineId}" started with document: ${file}.`;
+  // Phase 2b (173) D2: completed wake-up superseded message
+  const supersededSuffix = isCompletedWake
+    ? ` Previous pipeline at "completed" superseded by new run.`
+    : "";
   const messageSuffix = startStage === "clarify"
     ? ` Next: run @feat-design-plan-agent ${file} ${forwardArgs || "1"} to start requirement clarification`
     : "";
@@ -708,7 +714,7 @@ async function startNewPipeline(
 
   return {
     success: true,
-    message: messagePrefix + messageSuffix,
+    message: messagePrefix + supersededSuffix + messageSuffix,
     pipelineId,
     currentStage: startStage,
     requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),
@@ -973,8 +979,8 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         } else {
           const flowState = getFlowState(meta);
 
-          // Running or blocked → reject with decision menu hint (unchanged across all modes)
-          if (flowState === "running" || flowState === "blocked") {
+          // Running → reject with decision menu hint (prevent double-start)
+          if (flowState === "running") {
             return {
               success: false,
               error:
@@ -983,16 +989,50 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             };
           }
 
+          // Phase 3 (173) C10①: blocked → owner就地 promptDecisionMenu (source="command").
+          // No-UI degradation: hint text with configured shortcut key.
+          if (flowState === "blocked") {
+            if (typeof ctx?.ui?.select === "function") {
+              const menuOutcome = await promptDecisionMenu(
+                { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
+                meta,
+                config,
+                { source: "command" },
+              );
+              return {
+                success: menuOutcome === "decided",
+                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline frozen. ${formatDecisionMenuHint(config)}`,
+              };
+            }
+            return {
+              success: false,
+              error: `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ${formatDecisionMenuHint(config)}`,
+            };
+          }
+
           // Aborted → mode-specific handling
           if (flowState === "aborted") {
             return handleAbortedWithMode(ctx, meta, file, ui, config, mode, forwardArgs);
           }
 
-          // awaiting_human → error with decision menu hint (unchanged)
+          // Phase 3 (173) C10①: awaiting_human → owner就地 promptDecisionMenu (source="command").
+          // No-UI degradation: hint text with configured shortcut key.
           if (meta.currentStage === "awaiting_human") {
+            if (typeof ctx?.ui?.select === "function") {
+              const menuOutcome = await promptDecisionMenu(
+                { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
+                meta,
+                config,
+                { source: "command" },
+              );
+              return {
+                success: menuOutcome === "decided",
+                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline awaiting human input. ${formatDecisionMenuHint(config)}`,
+              };
+            }
             return {
               success: false,
-              error: `Pipeline is at awaiting_human stage. Open the decision menu to proceed.`,
+              error: `Pipeline is at awaiting_human stage. ${formatDecisionMenuHint(config)}`,
             };
           }
         }

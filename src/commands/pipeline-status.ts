@@ -39,13 +39,17 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
       const stageConfig = config.stages[meta.currentStage as PipelineStage];
       const currentSummary = meta.summaries[meta.currentStage as PipelineStage];
 
-      // Phase 6 (170): Check template drift and append to status output
+      // Phase 6 (170) + Phase 5 (173) C14: Check template drift and append to status output
       let driftLine = "- Template drift: 0 file(s)";
       try {
         const drifts = await checkTemplateDrift(config.projectRoot);
         if (drifts.length > 0) {
           const names = drifts.map(d => d.asset).join(", ");
           driftLine = `- Template drift: ${drifts.length} file(s) [${names}]`;
+          // Phase 5 (173) C14: guide.md drift gets a specific hint
+          if (drifts.some(d => d.asset === "guide.md")) {
+            driftLine += " — re-run /pipeline-init to overwrite";
+          }
         }
       } catch {
         // Fail-open: drift check failure should not break status display

@@ -248,10 +248,13 @@ async function checkBashFileTargets(
         if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
           const outcome = await askProtectDecision(ctx, meta, relPath, config);
           if (outcome.decision === "block") {
-            await trackViolation({
-              type: "write_protected", tool: "bash", detail: stageCheck.reason,
-              suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-            });
+            // Phase 4 (173) C11: dismissed action does NOT count as violation
+            if (outcome.action !== "dismissed") {
+              await trackViolation({
+                type: "write_protected", tool: "bash", detail: stageCheck.reason,
+                suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+              });
+            }
             ui.notify(ctx, stageCheck.reason);
             return { block: true, reason: stageCheck.reason };
           }
@@ -272,7 +275,10 @@ async function checkBashFileTargets(
             const outcome = await askProtectDecision(ctx, meta, relPath, config);
             if (outcome.decision === "block") {
               const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
-              await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.` });
+              // Phase 4 (173) C11: dismissed action does NOT count as violation
+              if (outcome.action !== "dismissed") {
+                await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.` });
+              }
               ui.notify(ctx, reason);
               return { block: true, reason };
             }
@@ -368,15 +374,22 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       // Phase 2b (173) C3: dormant guard — full pass-through (🔴-1)
       // Default (DORMANT_KEEP_PROTECTION=false): ALL checks bypassed
       // Switch=true: only silencing side bypassed; protection chain remains
+      // When KEEP_PROTECTION=true: skip stage whitelist and frozen intercept,
+      // fall through directly to protection chain (protect/gitignore/blacklist).
+      const dormantKeepProtection = !!(rawMeta && isDormant(rawMeta) && DORMANT_KEEP_PROTECTION);
       if (rawMeta && isDormant(rawMeta)) {
         if (!DORMANT_KEEP_PROTECTION) return undefined;
         // DORMANT_KEEP_PROTECTION=true: fall through to protection chain only
-        // (stage whitelist, frozen intercept, protect, gitignore, blacklist)
-        // Skip: stage whitelist and frozen sections — those are pipeline-aware
+        // Implementation: stage whitelist and frozen sections are skipped below
       }
       if (!rawMeta?.pipelineId) return undefined;
       const meta: SessionMeta = rawMeta;
-      const stageConfig = config.stages[meta.currentStage];
+      // Phase 2b (173) C3 fix: when dormant with KEEP_PROTECTION, disable stage whitelist
+      // by treating allowedWritePaths as undefined (full mode). This ensures dormant
+      // sessions bypass stage-aware checks while keeping the global protection chain.
+      const stageConfig = dormantKeepProtection
+        ? { ...config.stages[meta.currentStage], allowedWritePaths: undefined }
+        : config.stages[meta.currentStage];
       // tool_call events always populate toolCall (buildRuntimeCtx guarantees it)
       const { name: toolName, arguments: args } = ctx.toolCall!;
 
@@ -405,12 +418,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               const outcome = await askCommandDecision(ctx, meta, command, config);
               if (outcome.decision === "block") {
                 const reason = buildBlockedReason(command);
-                await trackViolation({
-                  type: "bash_destructive",
-                  tool: "bash",
-                  detail: reason,
-                  suggestion: `Use protect.ask dialog to allow, or avoid dangerous commands.`,
-                });
+                // Phase 4 (173) C11: dismissed action does NOT count as violation
+                if (outcome.action !== "dismissed") {
+                  await trackViolation({
+                    type: "bash_destructive",
+                    tool: "bash",
+                    detail: reason,
+                    suggestion: `Use protect.ask dialog to allow, or avoid dangerous commands.`,
+                  });
+                }
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
@@ -544,7 +560,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       }
 
       // 3. Freeze state check (unified via isFrozen)
-      if (isFrozen(meta)) {
+      // Phase 2b (173) C3 fix: dormant with KEEP_PROTECTION skips frozen intercept
+      if (isFrozen(meta) && !dormantKeepProtection) {
         const fs = getFlowState(meta);
 
         // Phase 2 (171) Q2-B + Phase 4 (172) G6a: aborted/blocked-state exemption for
@@ -679,12 +696,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
                 const outcome = await askProtectDecision(ctx, meta, relPath, config);
                 if (outcome.decision === "block") {
-                  await trackViolation({
-                    type: "write_protected",
-                    tool: toolName,
-                    detail: stageCheck.reason,
-                    suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-                  });
+                  // Phase 4 (173) C11: dismissed action does NOT count as violation
+                  if (outcome.action !== "dismissed") {
+                    await trackViolation({
+                      type: "write_protected",
+                      tool: toolName,
+                      detail: stageCheck.reason,
+                      suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                    });
+                  }
                   ui.notify(ctx, stageCheck.reason);
                   return { block: true, reason: stageCheck.reason };
                 }
@@ -708,12 +728,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   const outcome = await askProtectDecision(ctx, meta, relPath, config);
                   if (outcome.decision === "block") {
                     const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
-                    await trackViolation({
-                      type: "write_protected",
-                      tool: toolName,
-                      detail: reason,
-                      suggestion: `Hardcoded protected: .pi/, .git/.`,
-                    });
+                    // Phase 4 (173) C11: dismissed action does NOT count as violation
+                    if (outcome.action !== "dismissed") {
+                      await trackViolation({
+                        type: "write_protected",
+                        tool: toolName,
+                        detail: reason,
+                        suggestion: `Hardcoded protected: .pi/, .git/.`,
+                      });
+                    }
                     ui.notify(ctx, reason);
                     return { block: true, reason };
                   }
@@ -740,12 +763,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                       const outcome = await askProtectDecision(ctx, meta, relPath, config);
                       if (outcome.decision === "block") {
                         const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
-                        await trackViolation({
-                          type: "write_protected",
-                          tool: toolName,
-                          detail: reason,
-                          suggestion: `Gitignore protected. Use protect.allow to exempt specific paths.`,
-                        });
+                        // Phase 4 (173) C11: dismissed action does NOT count as violation
+                        if (outcome.action !== "dismissed") {
+                          await trackViolation({
+                            type: "write_protected",
+                            tool: toolName,
+                            detail: reason,
+                            suggestion: `Gitignore protected. Use protect.allow to exempt specific paths.`,
+                          });
+                        }
                         ui.notify(ctx, reason);
                         return { block: true, reason };
                       }

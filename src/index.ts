@@ -9,7 +9,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_DECISION_SHORTCUT } from "./constants";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
-import { buildDecisionMenu, executeDecision, labelToDecision } from "./core/flow-state";
+import { buildDecisionMenu, executeDecision, labelToDecision, promptDecisionMenu } from "./core/flow-state";
 import type { PipelineDecision } from "./core/flow-state";
 import { isDormant } from "./core/dormancy";
 import { safeWriteAuditLog } from "./utils/auditLog";
@@ -246,8 +246,21 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
                 // Re-read meta after UI delay to get fresh state
                 const freshMeta = rctx.session.getMeta();
                 if (freshMeta) {
-                  // Phase 3 (173) C10④: source tag for audit traceability
-                  await executeDecision(rctx, freshMeta, decision, config, { source: "shortcut" });
+                  // Phase 3 (173) C9 fix: choose_stage requires secondary menu.
+                  // Route through promptDecisionMenu which handles the stage selection
+                  // internally (including inference chain and targetStage passing).
+                  // Other decisions go through executeDecision directly.
+                  if (decision === "choose_stage") {
+                    await promptDecisionMenu(
+                      { session: rctx.session, ui: rctx.ui, _ctx: (rctx as any)._ctx },
+                      freshMeta,
+                      config,
+                      { source: "shortcut" },
+                    );
+                  } else {
+                    // Phase 3 (173) C10④: source tag for audit traceability
+                    await executeDecision(rctx, freshMeta, decision, config, { source: "shortcut" });
+                  }
                 }
               }
             } catch (err) {

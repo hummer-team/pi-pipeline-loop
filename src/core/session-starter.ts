@@ -290,6 +290,10 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
               repoHash: d.repoHash.substring(0, 12),
             }, "warn");
           }
+          // Phase 5 (173) C14: notify user when guide.md has drifted
+          if (drifts.some(d => d.asset === "guide.md")) {
+            ui.notify(ctx, "guide.md is outdated — re-run /pipeline-init to overwrite.");
+          }
         } catch (err) {
           // Fail-open: drift check must never block session start
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -362,7 +366,8 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           // (startup, reload, resume, new). Owner-only (child gated by P1).
           // Direct await: consistent with agent-settled.ts:98 pattern (U4 conclusion).
           if (!isChild) {
-            const inferred = inferResumeStage(meta, config);
+            const inferenceResult = inferResumeStage(meta, config);
+            const inferred = inferenceResult.stage;
             if (inferred) {
               ui.notify(ctx,
                 `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ` +

@@ -4,7 +4,7 @@
 
 - Build: `bun run build` (runs `tsc`, outputs CommonJS to `dist/`)
 - Typecheck: `bun run typecheck` (runs `tsc --noEmit`)
-- Test: `bun run test` (runs `bun test`, 1589 tests across 60 files)
+- Test: `bun run test` (runs `bun test`, 1964 tests across 80 files)
 
 ## Architecture
 
@@ -14,9 +14,9 @@ This is `@earendil-works/pi-pipeline`, a plugin for the **pi agent** SDK. It exp
 
 | Module | Files | Count |
 |--------|-------|-------|
-| **Hooks** (7) | `session-starter`, `prompt-injector`, `tool-guard`, `loop-breaker`, `agent-settled`, `session-shutdown`, `session-ender` | All in `src/core/` |
-| **Tools** (6) | `stage-advancer`, `loop-checker`, `pipeline-state` (core) + `generate-summary`, `validate-summary`, `pipeline-handoff` (tools) | Mixed `src/core/` + `src/tools/` |
-| **Commands** (1) | `pipeline-status` | `src/commands/` |
+| **Hooks** (6) | `session-starter`, `prompt-injector`, `tool-guard`, `loop-breaker`, `agent-settled`, `session-shutdown` | All in `src/core/` |
+| **Tools** (6+1) | `stage-advancer`, `loop-checker`, `pipeline-state` (core) + `generate-summary`, `validate-summary`, `pipeline-handoff` (tools) + `pipeline-verify` (conditional) | Mixed `src/core/` + `src/tools/` |
+| **Commands** (5) | `pipeline-status`, `pipeline-start`, `pipeline-init`, `pipeline-quit`, `pipeline-resume` | `src/commands/` |
 
 
 ## Gotchas

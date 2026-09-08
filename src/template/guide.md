@@ -745,6 +745,23 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
   ```
 - 注意：`allow` 仅放开编辑权限，git add/commit 仍会拦截
 
+**典型案例：docs 被业务 .gitignore 覆盖**
+
+当业务 `.gitignore` 包含 `docs/**` 时，`docs/` 下的文件会被 gitignore 保护机制拦截。
+正确做法是将 `docs/` 加入 `protect.allow`（前缀匹配豁免 gitignore）：
+```jsonc
+"protect": {
+  "allow": ["docs/"]
+}
+```
+此时 Agent 可以编辑 `docs/` 下的文件，但 `git add docs/**` 仍被 git 保护拦截（符合 `.gitignore` 不入库的原意）。
+
+**⚠️ 反例警示：不要用 allowedWritePaths 作为豁免通道**
+
+`stages.*.allowedWritePaths` 是 stage 写入白名单，不是保护豁免通道。
+给 develop 配置 `allowedWritePaths: ["docs/"]` 会导致 develop 阶段只能写 `docs/`，无法写 `src/` 等业务代码。
+正确做法：`allowedWritePaths` 控制"该阶段允许写什么路径"，`protect.allow` 控制"哪些路径从 gitignore 保护中豁免"。
+
 ### 8.4 破坏性命令被拦截
 
 **现象**：Agent 尝试执行危险命令（如 `sudo`、`rm -rf /`、`mkfs` 等）时被拦截。

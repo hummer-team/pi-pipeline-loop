@@ -174,7 +174,7 @@ export async function executeDecision(
   meta: SessionMeta,
   decision: PipelineDecision,
   config: PipelineConfig,
-  opts?: { source?: string; targetStage?: PipelineStage },
+  opts?: { source?: string; targetStage?: PipelineStage; basis?: string },
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
 
@@ -460,8 +460,9 @@ export async function executeDecision(
       // Preserve sessionAllowedWritePaths/Commands (same freeze event, continued run)
       ctx.session.updateMeta({ ...clearFields, ...summariesPatch });
 
-      // Infer basis for audit
-      const basis = opts?.source === "replay" ? "replay_inference" : "user_choice";
+      // Infer basis for audit — prefer the inference basis from the caller
+      // (currentStage / stageVisitOrder / summaries / none), fall back to source-based heuristic
+      const basis = opts?.basis ?? (opts?.source === "replay" ? "replay_inference" : "user_choice");
 
       await safeWriteAuditLog("pipeline_decision", {
         pipelineId: meta.pipelineId,
@@ -667,32 +668,32 @@ export function formatFrozenReason(meta: SessionMeta, maxLen = 200): string {
  * Infers the most likely resume stage from frozen pipeline metadata.
  *
  * Inference chain (first match wins):
- * 1. currentStage (if awaiting_human → use previousStage)
- * 2. stageVisitOrder last entry
- * 3. Highest valid summary's nextStage (via config chain)
- * 4. null (no inference possible — caller should prompt user)
+ * 1. currentStage (if awaiting_human → use previousStage) — basis: "currentStage"
+ * 2. stageVisitOrder last entry — basis: "stageVisitOrder"
+ * 3. Highest valid summary's nextStage (via config chain) — basis: "summaries"
+ * 4. null (no inference possible — caller should prompt user) — basis: "none"
  *
  * @param meta - Current session metadata
  * @param config - Pipeline configuration for stage chain lookup
- * @returns Inferred stage name, or null if no inference possible
+ * @returns Object with inferred stage (or null) and the inference basis
  */
 export function inferResumeStage(
   meta: SessionMeta,
   config: PipelineConfig,
-): PipelineStage | null {
+): { stage: PipelineStage | null; basis: string } {
   // 1. currentStage (awaiting_human → previousStage)
   if (meta.currentStage === "awaiting_human" && meta.previousStage) {
-    return meta.previousStage;
+    return { stage: meta.previousStage, basis: "currentStage" };
   }
   if (meta.currentStage && meta.currentStage !== "awaiting_human" && meta.currentStage !== "completed") {
-    return meta.currentStage;
+    return { stage: meta.currentStage, basis: "currentStage" };
   }
 
   // 2. stageVisitOrder last entry
   if (meta.stageVisitOrder && meta.stageVisitOrder.length > 0) {
     const last = meta.stageVisitOrder[meta.stageVisitOrder.length - 1];
     if (last && last !== "completed") {
-      return last;
+      return { stage: last, basis: "stageVisitOrder" };
     }
   }
 
@@ -710,11 +711,11 @@ export function inferResumeStage(
     }
   }
   if (highestValidStage && config.stages[highestValidStage]?.nextStage) {
-    return config.stages[highestValidStage].nextStage;
+    return { stage: config.stages[highestValidStage].nextStage, basis: "summaries" };
   }
 
   // 4. No inference possible
-  return null;
+  return { stage: null, basis: "none" };
 }
 
 // ─── promptDecisionMenu ─────────────────────────────────────────────────────
@@ -830,7 +831,9 @@ export async function promptDecisionMenu(
 
         // Phase 3 (173) C9: choose_stage → secondary menu
         if (decision === "choose_stage") {
-          const inferred = inferResumeStage(freshMeta, config);
+          const inferenceResult = inferResumeStage(freshMeta, config);
+          const inferred = inferenceResult.stage;
+          const inferenceBasis = inferenceResult.basis;
           const stageChoices: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
 
           // Build secondary menu items with inferred stage first (if available)
@@ -855,7 +858,19 @@ export async function promptDecisionMenu(
           );
 
           if (stageSelection === undefined) {
-            // User cancelled secondary menu — return to frozen state (no change)
+            // Phase 3 (173) C10④ fix: secondary menu Esc audit + notify
+            // Consistent with primary Esc path (pipeline_decision_cancelled)
+            clearDecisionTimer(freshMeta.pipelineId);
+            await safeWriteAuditLog("pipeline_decision_cancelled", {
+              pipelineId: freshMeta.pipelineId,
+              stage: freshMeta.currentStage,
+              context: "choose_stage_secondary",
+            });
+            if (tuiEnabled) {
+              ui.notify?.(
+                `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint(config)}`,
+              );
+            }
             return "cancelled";
           }
 
@@ -866,6 +881,7 @@ export async function promptDecisionMenu(
             await executeDecision(ctx, freshMeta, "choose_stage", config, {
               source: opts?.source,
               targetStage,
+              basis: inferenceBasis,
             });
           }
           return "decided";

@@ -281,15 +281,22 @@ describe("createPipelineStartCommand", () => {
     await fs.writeFile(docPath, "content", "utf-8");
     const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "alt+f" });
     const meta = makeTestMeta({ flowState: "blocked" });
-    const ctx = createMockCtx(meta);
+    // Use a ctx without ui.select to test the no-UI degradation path
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => { Object.assign(meta, m); },
+      },
+    };
 
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
 
     expect(result.success).toBe(false);
+    // Phase 3 (173) C10①: blocked state now returns frozen hint with decision menu key
     expect(result.error).toContain("decision menu");
-    // Should NOT contain shortcut key
-    expect(result.error).not.toContain("alt+f");
+    // The hint includes the configured shortcut key
+    expect(result.error).toContain("alt+f");
   });
 
   it("handles empty file content", async () => {
