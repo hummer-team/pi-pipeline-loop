@@ -246,8 +246,8 @@ async function checkBashFileTargets(
       const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
       if (stageCheck.status === "block") {
         if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
-          const decision = await askProtectDecision(ctx, meta, relPath);
-          if (decision === "block") {
+          const outcome = await askProtectDecision(ctx, meta, relPath, config);
+          if (outcome.decision === "block") {
             await trackViolation({
               type: "write_protected", tool: "bash", detail: stageCheck.reason,
               suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
@@ -269,8 +269,8 @@ async function checkBashFileTargets(
       if (stageCheck.status !== "allow-whitelist") {
         if (isPathProtectedForModify(relPath, state)) {
           if (config.protect?.ask === true) {
-            const decision = await askProtectDecision(ctx, meta, relPath);
-            if (decision === "block") {
+            const outcome = await askProtectDecision(ctx, meta, relPath, config);
+            if (outcome.decision === "block") {
               const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
               await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.` });
               ui.notify(ctx, reason);
@@ -402,8 +402,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const sessionCommands = meta.sessionAllowedCommands || [];
           if (!sessionCommands.includes(command)) {
             if (config.protect?.ask === true) {
-              const decision = await askCommandDecision(ctx, meta, command);
-              if (decision === "block") {
+              const outcome = await askCommandDecision(ctx, meta, command, config);
+              if (outcome.decision === "block") {
                 const reason = buildBlockedReason(command);
                 await trackViolation({
                   type: "bash_destructive",
@@ -677,8 +677,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // Phase 1: if protect.ask=true AND path is protected, surface ask dialog.
               // This lets users override a stage-whitelist rejection for protected paths.
               if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
-                const decision = await askProtectDecision(ctx, meta, relPath);
-                if (decision === "block") {
+                const outcome = await askProtectDecision(ctx, meta, relPath, config);
+                if (outcome.decision === "block") {
                   await trackViolation({
                     type: "write_protected",
                     tool: toolName,
@@ -705,8 +705,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // Hardcoded protection (allow cannot exempt)
               if (isHardcodedProtected(relPath, state.hardcoded)) {
                 if (config.protect?.ask === true) {
-                  const decision = await askProtectDecision(ctx, meta, relPath);
-                  if (decision === "block") {
+                  const outcome = await askProtectDecision(ctx, meta, relPath, config);
+                  if (outcome.decision === "block") {
                     const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
                     await trackViolation({
                       type: "write_protected",
@@ -737,8 +737,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   // Check gitignore protection
                   if (isGitignored(state.gitignore, relPath)) {
                     if (config.protect?.ask === true) {
-                      const decision = await askProtectDecision(ctx, meta, relPath);
-                      if (decision === "block") {
+                      const outcome = await askProtectDecision(ctx, meta, relPath, config);
+                      if (outcome.decision === "block") {
                         const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
                         await trackViolation({
                           type: "write_protected",

@@ -2,24 +2,94 @@
  * @module protect-ask
  * Shared TUI 3-choice dialogs for protection decisions (protect.ask=true).
  *
- * Extracted from tool-guard.ts so that pipeline-init verify merge writes can
- * reuse the same decision flow when overwriting an existing verify.md.
+ * Phase 4 (173) C11: Tri-state outcome classification.
+ * - "dismissed": Fast dismiss (< 1500ms) — streaming output auto-dismiss, NOT a violation.
+ * - "canceled": User Esc (≥ 1500ms) — genuine user cancel, counts as violation.
+ * - "denied": User selected "Follow plugin default" — explicit deny, counts as violation.
+ *
+ * dismissCount accumulates across asks. When >= DEFAULT_MAX_DISMISS_COUNT (5),
+ * triggers freezeAndPrompt("dismiss_overflow") on the owner side.
  *
  * Two decision flows:
  * 1. askProtectDecision — for protected-path edit decisions
  * 2. askCommandDecision — for destructive command decisions
  *
  * Options:
- * - "Follow plugin default rules (default)" → block
+ * - "Follow plugin default rules (default)" → block (denied)
  * - "Allow this edit/command only" → allow (one-shot)
  * - "Allow for this session" → allow + add to session-level allowlist
  *
- * Esc / undefined / no UI → treated as default (block).
- * Every outcome (including Esc) is audit-logged.
+ * Esc / undefined / no UI → treated as dismissed or canceled based on elapsed time.
+ * Every outcome is audit-logged with elapsedMs and hostRole fields.
  */
 
-import type { SessionMeta } from "../types";
+import type { SessionMeta, PipelineConfig } from "../types";
 import { safeWriteAuditLog, encodeAuditValue } from "./auditLog";
+import { PROTECT_ASK_DISMISS_MS, DEFAULT_MAX_DISMISS_COUNT } from "../constants";
+import { freezeAndPrompt } from "../core/flow-state";
+
+/**
+ * Tri-state outcome for protect-ask decisions.
+ * - decision: "allow" or "block" (backward-compatible)
+ * - action: "dismissed" | "canceled" | "denied" | "allow_once" | "allow_session"
+ */
+export interface ProtectAskOutcome {
+  decision: "allow" | "block";
+  action: "dismissed" | "canceled" | "denied" | "allow_once" | "allow_session";
+}
+
+/**
+ * Classify the ask outcome based on selection and elapsed time.
+ * - undefined + fast → dismissed (no violation, increment dismissCount)
+ * - undefined + slow → canceled (violation)
+ * - options[0] → denied (violation)
+ * - options[1] → allow_once
+ * - options[2] → allow_session
+ */
+function classifyOutcome(
+  selection: string | undefined,
+  elapsed: number,
+  options: string[],
+): { action: ProtectAskOutcome["action"]; decision: "allow" | "block" } {
+  if (selection === undefined) {
+    // Fast dismiss → streaming output auto-dismiss (not user Esc)
+    if (elapsed < PROTECT_ASK_DISMISS_MS) {
+      return { action: "dismissed", decision: "block" };
+    }
+    // Slow dismiss → user Esc (genuine cancel)
+    return { action: "canceled", decision: "block" };
+  }
+  if (selection === options[0]) {
+    return { action: "denied", decision: "block" };
+  }
+  if (selection === options[1]) {
+    return { action: "allow_once", decision: "allow" };
+  }
+  if (selection === options[2]) {
+    return { action: "allow_session", decision: "allow" };
+  }
+  // Unknown selection → treat as canceled
+  return { action: "canceled", decision: "block" };
+}
+
+/**
+ * Handle dismissCount increment and overflow guardrail.
+ * Called when action is "dismissed". If dismissCount >= threshold, triggers freeze.
+ */
+async function handleDismissOverflow(
+  ctx: any,
+  meta: SessionMeta,
+  config: PipelineConfig,
+): Promise<void> {
+  const currentCount = (meta.dismissCount ?? 0) + 1;
+  ctx.session.updateMeta({ dismissCount: currentCount });
+
+  if (currentCount >= DEFAULT_MAX_DISMISS_COUNT) {
+    // Trigger freeze on owner side (P1 gate ensures child → owner presentation)
+    const freshMeta = ctx.session.getMeta() ?? meta;
+    await freezeAndPrompt(ctx, freshMeta, "dismiss_overflow", config);
+  }
+}
 
 /**
  * Prompt the user with a 3-choice dialog for a protected-path decision.
@@ -27,13 +97,15 @@ import { safeWriteAuditLog, encodeAuditValue } from "./auditLog";
  * @param ctx - Runtime context (must expose `ui.select` and `session.updateMeta`)
  * @param meta - Current session metadata
  * @param relPath - Relative path of the protected file (for display + audit)
- * @returns "allow" to continue the operation, "block" to reject it
+ * @param config - Pipeline configuration (for dismiss_overflow freeze)
+ * @returns ProtectAskOutcome with decision and action
  */
 export async function askProtectDecision(
   ctx: any,
   meta: SessionMeta,
   relPath: string,
-): Promise<"allow" | "block"> {
+  config: PipelineConfig,
+): Promise<ProtectAskOutcome> {
   const options = [
     "Follow plugin default rules (default)",
     "Allow this edit only",
@@ -41,48 +113,37 @@ export async function askProtectDecision(
   ];
 
   let selection: string | undefined;
+  const attemptAt = Date.now();
   try {
     if (typeof ctx?.ui?.select === "function") {
       selection = await ctx.ui.select(`Protected file edit: ${relPath}`, options);
     }
   } catch (err) {
     // Log diagnostic info on select failure, then fall through to canceled/block (fail-safe).
-    // Style consistent with checkGitAdd / checkGitCommit catch blocks.
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[protect-ask] askProtectDecision select error: relPath="${relPath}", error=${errMsg}`);
     selection = undefined;
   }
+  const elapsed = Date.now() - attemptAt;
 
   // Encode file path for audit (| → %7C, = → %3D)
   const encodedFile = encodeAuditValue(relPath);
 
-  let action: string;
-  let decision: "allow" | "block";
+  const { action, decision } = classifyOutcome(selection, elapsed, options);
 
-  if (selection === undefined) {
-    // Esc or no UI → treat as canceled (default = block)
-    action = "canceled";
-    decision = "block";
-  } else if (selection === options[0]) {
-    action = "follow_default";
-    decision = "block";
-  } else if (selection === options[1]) {
-    action = "allow_once";
-    decision = "allow";
-  } else if (selection === options[2]) {
-    action = "allow_session";
-    decision = "allow";
-    // Add to sessionAllowedWritePaths (precise relative path)
+  // Handle allow_session: add to sessionAllowedWritePaths
+  if (action === "allow_session") {
     const existing = meta.sessionAllowedWritePaths || [];
     if (!existing.includes(relPath)) {
       ctx.session.updateMeta({
         sessionAllowedWritePaths: [...existing, relPath],
       });
     }
-  } else {
-    // Unknown selection → treat as canceled (default = block)
-    action = "canceled";
-    decision = "block";
+  }
+
+  // Handle dismissed: increment dismissCount and check overflow
+  if (action === "dismissed") {
+    await handleDismissOverflow(ctx, meta, config);
   }
 
   await safeWriteAuditLog("pipeline_protect_ask", {
@@ -90,9 +151,10 @@ export async function askProtectDecision(
     stage: meta.currentStage,
     action,
     file: encodedFile,
+    elapsedMs: String(elapsed),
   });
 
-  return decision;
+  return { decision, action };
 }
 
 /**
@@ -101,13 +163,15 @@ export async function askProtectDecision(
  * @param ctx - Runtime context (must expose `ui.select` and `session.updateMeta`)
  * @param meta - Current session metadata
  * @param command - The destructive command (for display + audit)
- * @returns "allow" to continue the operation, "block" to reject it
+ * @param config - Pipeline configuration (for dismiss_overflow freeze)
+ * @returns ProtectAskOutcome with decision and action
  */
 export async function askCommandDecision(
   ctx: any,
   meta: SessionMeta,
   command: string,
-): Promise<"allow" | "block"> {
+  config: PipelineConfig,
+): Promise<ProtectAskOutcome> {
   const options = [
     "Follow default rules (block, default)",
     "Allow this command once",
@@ -115,6 +179,7 @@ export async function askCommandDecision(
   ];
 
   let selection: string | undefined;
+  const attemptAt = Date.now();
   try {
     if (typeof ctx?.ui?.select === "function") {
       // Truncate long commands for display
@@ -126,37 +191,26 @@ export async function askCommandDecision(
     console.error(`[protect-ask] askCommandDecision select error: command="${command}", error=${errMsg}`);
     selection = undefined;
   }
+  const elapsed = Date.now() - attemptAt;
 
   // Encode command for audit (| → %7C, = → %3D, newlines → space)
   const encodedCmd = encodeAuditValue(command);
 
-  let action: string;
-  let decision: "allow" | "block";
+  const { action, decision } = classifyOutcome(selection, elapsed, options);
 
-  if (selection === undefined) {
-    // Esc or no UI → treat as canceled (default = block)
-    action = "canceled";
-    decision = "block";
-  } else if (selection === options[0]) {
-    action = "follow_default";
-    decision = "block";
-  } else if (selection === options[1]) {
-    action = "allow_once";
-    decision = "allow";
-  } else if (selection === options[2]) {
-    action = "allow_session";
-    decision = "allow";
-    // Add to sessionAllowedCommands
+  // Handle allow_session: add to sessionAllowedCommands
+  if (action === "allow_session") {
     const existing = meta.sessionAllowedCommands || [];
     if (!existing.includes(command)) {
       ctx.session.updateMeta({
         sessionAllowedCommands: [...existing, command],
       });
     }
-  } else {
-    // Unknown selection → treat as canceled (default = block)
-    action = "canceled";
-    decision = "block";
+  }
+
+  // Handle dismissed: increment dismissCount and check overflow
+  if (action === "dismissed") {
+    await handleDismissOverflow(ctx, meta, config);
   }
 
   await safeWriteAuditLog("pipeline_command_ask", {
@@ -164,7 +218,8 @@ export async function askCommandDecision(
     stage: meta.currentStage,
     action,
     command: encodedCmd,
+    elapsedMs: String(elapsed),
   });
 
-  return decision;
+  return { decision, action };
 }

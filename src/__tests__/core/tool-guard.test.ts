@@ -1099,7 +1099,7 @@ describe("createToolGuard", () => {
       "Allow edits for this session",
     ];
 
-    it("ask=true + write hits gitignore → follow_default → block + audit action=follow_default", async () => {
+    it("ask=true + write hits gitignore → denied (follow_default) → block + audit action=denied", async () => {
       const TMP = join(tmpdir(), "pi-tg-ask-gitignore-" + Date.now());
       await mkdir(join(TMP, "docs"), { recursive: true });
       await writeFile(join(TMP, ".gitignore"), "docs\n");
@@ -1121,10 +1121,10 @@ describe("createToolGuard", () => {
       expect((result as any).block).toBe(true);
       expect((result as any).reason).toContain("gitignore protected");
 
-      // Verify audit
+      // Verify audit — Phase 4 (173) C11: follow_default → denied (tri-state)
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
       expect(logContent).toContain("pipeline_protect_ask");
-      expect(logContent).toContain("action=follow_default");
+      expect(logContent).toContain("action=denied");
       expect(logContent).toContain("file=docs/file.md");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -1273,7 +1273,8 @@ describe("createToolGuard", () => {
 
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
       expect(logContent).toContain("action=allow_once");
-      expect(logContent).toContain("action=follow_default");
+      // Phase 4 (173) C11: follow_default → denied (tri-state)
+      expect(logContent).toContain("action=denied");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
 
@@ -1340,7 +1341,7 @@ describe("createToolGuard", () => {
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
 
-    it("Esc / no UI → block + audit action=canceled", async () => {
+    it("Esc fast (< 1500ms) → block + audit action=dismissed (Phase 4/173 C11 tri-state)", async () => {
       const TMP = join(tmpdir(), "pi-tg-ask-esc-" + Date.now());
       await mkdir(join(TMP, "docs"), { recursive: true });
       await writeFile(join(TMP, ".gitignore"), "docs\n");
@@ -1352,7 +1353,7 @@ describe("createToolGuard", () => {
       await initAuditLog(config);
 
       const meta = makeTestMeta();
-      // select returns undefined (Esc)
+      // select returns undefined immediately (fast dismiss, < 1500ms)
       const ctx = createMockCtx(meta, { selectReturn: undefined });
       ctx.toolCall = { name: "write", arguments: { file_path: join(TMP, "docs", "file.md") } };
 
@@ -1361,12 +1362,13 @@ describe("createToolGuard", () => {
 
       expect((result as any).block).toBe(true);
 
+      // Phase 4 (173) C11: fast undefined → dismissed (not canceled)
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-      expect(logContent).toContain("action=canceled");
+      expect(logContent).toContain("action=dismissed");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
 
-    it("ask=true select throws → logged via console.error + fail-safe block + audit action=canceled", async () => {
+    it("ask=true select throws → logged via console.error + fail-safe block + audit action=dismissed (fast)", async () => {
       const TMP = join(tmpdir(), "pi-tg-ask-select-err-" + Date.now());
       await mkdir(join(TMP, "docs"), { recursive: true });
       await writeFile(join(TMP, ".gitignore"), "docs\n");
@@ -1396,15 +1398,15 @@ describe("createToolGuard", () => {
         const hook = createToolGuard(config);
         const result = await hook.handler(ctx as any);
 
-        // Fail-safe: select error → block (same as canceled)
+        // Fail-safe: select error → block
         expect((result as any).block).toBe(true);
 
         // console.error should have been called with diagnostic info
         expect(captured.some(msg => msg.includes("askProtectDecision") && msg.includes("docs/file.md"))).toBe(true);
 
-        // Audit still written with action=canceled
+        // Phase 4 (173) C11: fast error → dismissed (not canceled)
         const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-        expect(logContent).toContain("action=canceled");
+        expect(logContent).toContain("action=dismissed");
       } finally {
         console.error = origError;
       }
@@ -1514,7 +1516,7 @@ describe("createToolGuard", () => {
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
 
-    it("whitelist block + hardcoded protected path (AGENTS.md via protect.paths) + ask=true + Esc → block with whitelist reason", async () => {
+    it("whitelist block + hardcoded protected path (AGENTS.md via protect.paths) + ask=true + Esc fast → block with whitelist reason + action=dismissed", async () => {
       const TMP = join(tmpdir(), "pi-tg-p1-wl-ask-hardcoded-esc-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await writeFile(join(TMP, "AGENTS.md"), "");
@@ -1539,8 +1541,9 @@ describe("createToolGuard", () => {
       expect((result as any).block).toBe(true);
       expect((result as any).reason).toContain("not in allowed write paths");
 
+      // Phase 4 (173) C11: fast undefined → dismissed (not canceled)
       const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-      expect(logContent).toContain("action=canceled");
+      expect(logContent).toContain("action=dismissed");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
 

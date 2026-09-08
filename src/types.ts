@@ -446,6 +446,16 @@ export interface SessionMeta {
   violations?: ViolationItem[];
 
   /**
+   * Phase 4 (173) C11: Count of fast-dismiss ask dialogs (elapsed < 1500ms).
+   * Sub-session streaming output causing 0ms dismiss no longer counts as violation.
+   * When dismissCount >= DEFAULT_MAX_DISMISS_COUNT (5), triggers freezeAndPrompt("dismiss_overflow")
+   * to surface the issue on the owner side (via P1 owner-only menu gate).
+   * NOT cleared on stage transitions (cumulative per pipeline lifecycle).
+   * Cleared on restart (new pipelineId = fresh counter).
+   */
+  dismissCount?: number;
+
+  /**
    * Confirm-rejection counter for the current confirm loop (per stage).
    * Incremented on gate rejection; reset on gate approval, smart non-complex
    * skip, pipeline start/restart/resume, and overflow "Continue". Preserved

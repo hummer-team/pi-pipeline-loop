@@ -106,6 +106,27 @@ export const FROZEN_ABORT_EXEMPT_TOOLS: readonly string[] = [
  */
 export const DECISION_DISMISS_INTERRUPT_MS = 1500;
 
+// ─── Protect-Ask Dismiss Threshold (Phase 4 / 173) ─────────────────────────
+
+/**
+ * Maximum elapsed time (ms) for a protect-ask ui.select to resolve with undefined
+ * that is classified as "dismissed" (streaming output auto-dismiss) rather than
+ * "canceled" (user Esc). When elapsed < this threshold, the dismiss does NOT
+ * count as a violation but increments dismissCount.
+ *
+ * Default: 1500ms (same as DECISION_DISMISS_INTERRUPT_MS for consistency).
+ */
+export const PROTECT_ASK_DISMISS_MS = 1500;
+
+/**
+ * Maximum number of fast-dismiss ask dialogs before triggering freezeAndPrompt.
+ * When dismissCount >= this value, the pipeline freezes with reason "dismiss_overflow"
+ * and the decision menu is presented on the owner side.
+ *
+ * Default: 5.
+ */
+export const DEFAULT_MAX_DISMISS_COUNT = 5;
+
 // ─── Canonical Stage Order (Phase 3 / 173) ──────────────────────────────────
 
 /**

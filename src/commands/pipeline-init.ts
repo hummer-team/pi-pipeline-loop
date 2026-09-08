@@ -485,7 +485,8 @@ async function executeVerifyBranch(
         const relPath = verifyPath.startsWith(config.projectRoot)
           ? verifyPath.slice(config.projectRoot.length + 1)
           : verifyPath;
-        return askProtectDecision(ctx, meta, relPath);
+        const outcome = await askProtectDecision(ctx, meta, relPath, config);
+        return outcome.decision;
       }
     : undefined;
 
