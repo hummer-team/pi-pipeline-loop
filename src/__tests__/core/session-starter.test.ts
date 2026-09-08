@@ -158,7 +158,7 @@ describe("createSessionStarter", () => {
       expect(ctx.updates.length).toBe(0);
     });
 
-    it("notifies with blockedReason when resuming a frozen pipeline (no shortcut key)", async () => {
+    it("Phase 3 (173) C8: frozen pipeline replay — notifies with inference + decision menu hint", async () => {
       const notifications: string[] = [];
       const config = makeTestConfig({ decisionShortcutKey: "ctrl+shift+d" });
       const meta = makeTestMeta({
@@ -175,11 +175,13 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      expect(notifications.length).toBe(1);
-      expect(notifications[0]).toContain("blocked");
-      expect(notifications[0]).toContain("loop_overflow");
+      // C8: Frozen replay notifies with inference info + decision menu hint
+      expect(notifications.length).toBeGreaterThanOrEqual(1);
+      const replayNotify = notifications.find(n => n.includes("frozen") || n.includes("blocked"));
+      expect(replayNotify).toBeDefined();
+      expect(replayNotify).toContain("loop_overflow");
       // Phase 1 (173) C10③: frozen text now uses formatDecisionMenuHint with configured key
-      expect(notifications[0]).toContain("ctrl+shift+d");
+      expect(replayNotify).toContain("ctrl+shift+d");
     });
   });
 

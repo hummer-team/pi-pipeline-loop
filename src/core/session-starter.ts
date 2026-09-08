@@ -11,7 +11,7 @@ import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
-import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint } from "./flow-state";
+import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, promptDecisionMenu, scheduleDecisionRetry } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 import { parseRequirementDocPath } from "../utils/doc-path";
@@ -294,15 +294,16 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         // still run — they are one-shot events with no meta dependency.
         // Wake-up entry: /pipeline-start (fresh/resume/adopt) only.
       } else {
-        // ── Resumed session: stale startup recovery ───────────────────
-        // On process startup (reason="startup"), if flowState is not already "aborted",
-        // reset to aborted — covers SIGKILL / crash / terminal force-kill paths where
-        // session_shutdown never fires.
+        // ── Resumed session: stale startup recovery + frozen replay ────
         const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
-        if (reason === "startup" && getFlowState(meta) !== "aborted" && !isTerminalCompleted(meta)) {
-          // Phase 1 (171) C16: pass trigger + config for enriched audit + notify.
-          // Intentional revision of 170 Phase 3 "silent after reset" decision:
-          // The stale_startup abort now emits a correct aborted notify (not misleading blocked).
+        const flowState = getFlowState(meta);
+        const { isChild } = detectSessionRole(ctx);
+
+        // Phase 3 (173) 🔴-2: Narrow stale_startup to running-only.
+        // Previously (171): any non-aborted non-completed → stale abort.
+        // Now: only running僵尸 → stale. blocked/awaiting_human → replay menu.
+        if (reason === "startup" && flowState === "running" && !isTerminalCompleted(meta)) {
+          // Running zombie after crash/SIGKILL → stale_startup abort
           const { sessionFile } = detectSessionRole(ctx);
           await markPipelineAborted(ctx, "stale_startup", {
             trigger: {
@@ -317,23 +318,42 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             pipelineId: meta.pipelineId,
             stage: meta.currentStage,
           });
-
           // markPipelineAborted already emitted the correct notify (C16).
-          // No additional notify needed here.
-        } else if (isFrozen(meta)) {
-          // ── Resumed session: notify if frozen ─────────────────────
-          // Phase 3 (170) ④: distinct text for aborted (exit: /pipeline-start) vs
-          // blocked (exit: decision menu). Resume reason gets one-shot notify.
-          const flowState = getFlowState(meta);
-          if (flowState === "aborted") {
-            ui.notify(ctx, formatAbortedNotifyText(
-              meta.currentStage,
-              meta.terminateReason ?? "session_quit",
-              meta.requirementDoc,
-            ));
-          } else {
-            ui.notify(ctx, `Pipeline blocked: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`);
+        } else if (isFrozen(meta) && flowState !== "aborted") {
+          // ── Phase 3 (173) C8: Frozen menu replay ────────────────────
+          // blocked/awaiting_human → replay decision menu on all recovery reasons
+          // (startup, reload, resume, new). Owner-only (child gated by P1).
+          // Direct await: consistent with agent-settled.ts:98 pattern (U4 conclusion).
+          if (!isChild) {
+            const inferred = inferResumeStage(meta, config);
+            if (inferred) {
+              ui.notify(ctx,
+                `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ` +
+                `Resuming from "${inferred}" by inference. ${formatDecisionMenuHint(config)}`
+              );
+            }
+            const replayOutcome = await promptDecisionMenu(
+              { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
+              meta,
+              config,
+              { source: reason === "startup" ? "startup" : "replay" },
+            );
+            if (replayOutcome === "interrupted") {
+              scheduleDecisionRetry(
+                { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
+                meta,
+                config,
+              );
+            }
           }
+          // Child sessions: frozen state is visible via registry; owner handles presentation.
+        } else if (flowState === "aborted") {
+          // Aborted → notify with /pipeline-start hint (existing behavior)
+          ui.notify(ctx, formatAbortedNotifyText(
+            meta.currentStage,
+            meta.terminateReason ?? "session_quit",
+            meta.requirementDoc,
+          ));
         }
       }
     },

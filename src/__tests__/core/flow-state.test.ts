@@ -99,7 +99,7 @@ describe("isFrozen", () => {
 // ─── buildDecisionMenu ───────────────────────────────────────────────────────
 
 describe("buildDecisionMenu", () => {
-  it("returns 5 items for blocked state", () => {
+  it("returns 6 items for blocked state (Phase 3/173: +choose_stage)", () => {
     const meta = makeTestMeta({ flowState: "blocked" });
     const menu = buildDecisionMenu(meta);
     expect(menu).toEqual([
@@ -108,14 +108,16 @@ describe("buildDecisionMenu", () => {
       "Rollback",
       "Restart & New",
       "Abort & Exit",
+      "Choose stage…",
     ]);
   });
 
-  it("returns 5 items for awaiting_human stage", () => {
+  it("returns 6 items for awaiting_human stage (Phase 3/173: +choose_stage)", () => {
     const meta = makeTestMeta({ currentStage: "awaiting_human" });
     const menu = buildDecisionMenu(meta);
-    expect(menu).toHaveLength(5);
+    expect(menu).toHaveLength(6);
     expect(menu).toContain("Resume");
+    expect(menu).toContain("Choose stage…");
   });
 
   it("returns 2 items for running state", () => {

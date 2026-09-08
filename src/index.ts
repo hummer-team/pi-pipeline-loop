@@ -246,7 +246,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
                 // Re-read meta after UI delay to get fresh state
                 const freshMeta = rctx.session.getMeta();
                 if (freshMeta) {
-                  await executeDecision(rctx, freshMeta, decision, config);
+                  // Phase 3 (173) C10④: source tag for audit traceability
+                  await executeDecision(rctx, freshMeta, decision, config, { source: "shortcut" });
                 }
               }
             } catch (err) {

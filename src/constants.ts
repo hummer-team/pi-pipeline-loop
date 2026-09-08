@@ -106,6 +106,27 @@ export const FROZEN_ABORT_EXEMPT_TOOLS: readonly string[] = [
  */
 export const DECISION_DISMISS_INTERRUPT_MS = 1500;
 
+// ─── Canonical Stage Order (Phase 3 / 173) ──────────────────────────────────
+
+/**
+ * Canonical ordering of pipeline stages for choose_stage inference and jump semantics.
+ * Used by inferResumeStage() and executeDecision("choose_stage") to determine
+ * forward/backward stage relationships and summary disposition (skipped/invalid).
+ *
+ * Note: review and fix form a cycle (review→fix→review) but are listed linearly
+ * here for ordinal comparison. Jump semantics handle the cycle via config.stages
+ * nextStage chain, not this constant.
+ */
+export const CANONICAL_STAGE_ORDER: readonly string[] = [
+  "clarify",
+  "plan",
+  "develop",
+  "review",
+  "fix",
+  "awaiting_human",
+  "completed",
+] as const;
+
 // ─── Pipeline Turn Signatures (Phase 2 / 172) ─────────────────────────────────
 
 /**

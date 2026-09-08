@@ -17,7 +17,7 @@ import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../t
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
-import { DEFAULT_DECISION_SHORTCUT, DECISION_DISMISS_INTERRUPT_MS } from "../constants";
+import { DEFAULT_DECISION_SHORTCUT, DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER } from "../constants";
 import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
@@ -70,7 +70,7 @@ export interface FlowStateCtx {
 // ─── Decision Types ─────────────────────────────────────────────────────────
 
 /** User decision identifiers for the pipeline decision menu. */
-export type PipelineDecision = "resume" | "skip" | "rollback" | "restart" | "abort";
+export type PipelineDecision = "resume" | "skip" | "rollback" | "restart" | "abort" | "choose_stage";
 
 /** Decision menu labels (English, matching TUI display). */
 const DECISION_LABELS: Record<PipelineDecision, string> = {
@@ -79,6 +79,7 @@ const DECISION_LABELS: Record<PipelineDecision, string> = {
   rollback: "Rollback",
   restart: "Restart & New",
   abort: "Abort & Exit",
+  choose_stage: "Choose stage…",
 };
 
 // ─── getFlowState ───────────────────────────────────────────────────────────
@@ -134,6 +135,7 @@ export function buildDecisionMenu(meta: SessionMeta): string[] | null {
       DECISION_LABELS.rollback,
       DECISION_LABELS.restart,
       DECISION_LABELS.abort,
+      DECISION_LABELS.choose_stage,
     ];
   }
 
@@ -172,7 +174,7 @@ export async function executeDecision(
   meta: SessionMeta,
   decision: PipelineDecision,
   config: PipelineConfig,
-  opts?: { source?: string },
+  opts?: { source?: string; targetStage?: PipelineStage },
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
 
@@ -338,10 +340,12 @@ export async function executeDecision(
       await safeWriteAuditLog("pipeline_decision", {
         pipelineId: meta.pipelineId,
         decision,
-        fromStage: "restart",
+        // Phase 3 (173) C10④: fromStage is the actual frozen stage, not hardcoded "restart"
+        fromStage: fromStage,
         toStage: "clarify",
         newPipelineId,
         reason: meta.blockedReason ?? "",
+        ...(opts?.source ? { source: opts.source } : {}),
       });
 
       // ─── Phase 0 (173) C1: restart rebind + stale timer cleanup ──────────
@@ -397,6 +401,87 @@ export async function executeDecision(
       });
 
       return { success: true, message: "Pipeline aborted. Use /pipeline-start to begin a new run." };
+    }
+
+    case "choose_stage": {
+      if (!isFrozen(meta)) {
+        return { success: false, message: "Cannot choose stage: pipeline is not frozen." };
+      }
+
+      const target = opts?.targetStage;
+      if (!target) {
+        return { success: false, message: "choose_stage requires targetStage option." };
+      }
+
+      const frozenStage = meta.currentStage;
+      const fromIdx = CANONICAL_STAGE_ORDER.indexOf(frozenStage);
+      const toIdx = CANONICAL_STAGE_ORDER.indexOf(target);
+
+      // Clear counters and violations (same as resume/skip/rollback)
+      const clearFields: Partial<SessionMeta> = {
+        flowState: "running",
+        blockedReason: undefined,
+        loopCount: 0,
+        currentStepIndex: 0,
+        verifyAttempts: 0,
+        verifyFailures: [],
+        verifyConfigError: undefined,
+        violations: [],
+        currentStage: target,
+        stageStartTime: Date.now(),
+      };
+
+      // Build summaries patch based on jump direction
+      const summariesPatch: Partial<SessionMeta> = {};
+      if (toIdx > fromIdx && fromIdx >= 0) {
+        // Forward jump: mark skipped stages between frozen and target
+        const skippedSummaries = { ...meta.summaries };
+        for (let i = fromIdx + 1; i < toIdx; i++) {
+          const stageName = CANONICAL_STAGE_ORDER[i] as PipelineStage;
+          if (meta.summaries[stageName]) {
+            skippedSummaries[stageName] = { ...meta.summaries[stageName], status: "skipped" as const };
+          }
+        }
+        summariesPatch.summaries = skippedSummaries;
+      } else if (toIdx < fromIdx && fromIdx >= 0) {
+        // Backward jump: mark target stage as invalid
+        if (meta.summaries[target]) {
+          summariesPatch.summaries = {
+            ...meta.summaries,
+            [target]: { ...meta.summaries[target], status: "invalid" as const },
+          };
+        }
+      }
+
+      // Append target to stageVisitOrder
+      const visitOrder = [...(meta.stageVisitOrder ?? []), target];
+      clearFields.stageVisitOrder = visitOrder;
+
+      // Preserve sessionAllowedWritePaths/Commands (same freeze event, continued run)
+      ctx.session.updateMeta({ ...clearFields, ...summariesPatch });
+
+      // Infer basis for audit
+      const basis = opts?.source === "replay" ? "replay_inference" : "user_choice";
+
+      await safeWriteAuditLog("pipeline_decision", {
+        pipelineId: meta.pipelineId,
+        decision,
+        fromStage: frozenStage,
+        toStage: target,
+        reason: meta.blockedReason ?? "",
+        basis,
+        ...(opts?.source ? { source: opts.source } : {}),
+      });
+
+      // If target is completed, trigger terminal compaction
+      if (target === "completed" && ctx._ctx) {
+        await maybeCompactOnPipelineCompleted(
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
+          config,
+        );
+      }
+
+      return { success: true, message: `Pipeline resumed at stage "${target}" (chosen from "${frozenStage}").` };
     }
 
     default:
@@ -576,6 +661,62 @@ export function formatFrozenReason(meta: SessionMeta, maxLen = 200): string {
   return result;
 }
 
+// ─── inferResumeStage (Phase 3 / 173 C9) ────────────────────────────────────
+
+/**
+ * Infers the most likely resume stage from frozen pipeline metadata.
+ *
+ * Inference chain (first match wins):
+ * 1. currentStage (if awaiting_human → use previousStage)
+ * 2. stageVisitOrder last entry
+ * 3. Highest valid summary's nextStage (via config chain)
+ * 4. null (no inference possible — caller should prompt user)
+ *
+ * @param meta - Current session metadata
+ * @param config - Pipeline configuration for stage chain lookup
+ * @returns Inferred stage name, or null if no inference possible
+ */
+export function inferResumeStage(
+  meta: SessionMeta,
+  config: PipelineConfig,
+): PipelineStage | null {
+  // 1. currentStage (awaiting_human → previousStage)
+  if (meta.currentStage === "awaiting_human" && meta.previousStage) {
+    return meta.previousStage;
+  }
+  if (meta.currentStage && meta.currentStage !== "awaiting_human" && meta.currentStage !== "completed") {
+    return meta.currentStage;
+  }
+
+  // 2. stageVisitOrder last entry
+  if (meta.stageVisitOrder && meta.stageVisitOrder.length > 0) {
+    const last = meta.stageVisitOrder[meta.stageVisitOrder.length - 1];
+    if (last && last !== "completed") {
+      return last;
+    }
+  }
+
+  // 3. Highest valid summary's nextStage
+  const stageOrder = CANONICAL_STAGE_ORDER;
+  let highestValidIdx = -1;
+  let highestValidStage: PipelineStage | null = null;
+  for (const [stageName, summary] of Object.entries(meta.summaries)) {
+    if (summary.status === "valid") {
+      const idx = stageOrder.indexOf(stageName);
+      if (idx > highestValidIdx) {
+        highestValidIdx = idx;
+        highestValidStage = stageName as PipelineStage;
+      }
+    }
+  }
+  if (highestValidStage && config.stages[highestValidStage]?.nextStage) {
+    return config.stages[highestValidStage].nextStage;
+  }
+
+  // 4. No inference possible
+  return null;
+}
+
 // ─── promptDecisionMenu ─────────────────────────────────────────────────────
 
 /**
@@ -686,7 +827,51 @@ export async function promptDecisionMenu(
       if (decision) {
         // Re-read meta after potential UI delay
         const freshMeta = ctx.session.getMeta() ?? meta;
-        await executeDecision(ctx, freshMeta, decision, config);
+
+        // Phase 3 (173) C9: choose_stage → secondary menu
+        if (decision === "choose_stage") {
+          const inferred = inferResumeStage(freshMeta, config);
+          const stageChoices: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
+
+          // Build secondary menu items with inferred stage first (if available)
+          const menuItems: string[] = [];
+          const orderedChoices: PipelineStage[] = [];
+          if (inferred) {
+            menuItems.push(`${inferred} (default)`);
+            orderedChoices.push(inferred);
+          }
+          for (const s of stageChoices) {
+            if (s !== inferred) {
+              menuItems.push(s);
+              orderedChoices.push(s);
+            }
+          }
+
+          const stageSelection = await ui.select!(
+            inferred
+              ? `Choose stage to resume from (inferred: ${inferred}):`
+              : "Choose stage to resume from (cannot infer — select manually):",
+            menuItems,
+          );
+
+          if (stageSelection === undefined) {
+            // User cancelled secondary menu — return to frozen state (no change)
+            return "cancelled";
+          }
+
+          // Find the selected stage
+          const selectedIdx = menuItems.indexOf(stageSelection);
+          const targetStage = orderedChoices[selectedIdx];
+          if (targetStage) {
+            await executeDecision(ctx, freshMeta, "choose_stage", config, {
+              source: opts?.source,
+              targetStage,
+            });
+          }
+          return "decided";
+        }
+
+        await executeDecision(ctx, freshMeta, decision, config, { source: opts?.source });
       }
       return "decided";
     } catch (err) {
