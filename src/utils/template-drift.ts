@@ -40,10 +40,15 @@ export interface DriftEntry {
  * root cause was a drifted `.pi/skills/design/SKILL.md` (08-30 old version).
  * Agent definitions (`.pi/agents/*.md`) are intentionally excluded — they
  * often contain user customizations (model/thinking params).
+ *
+ * Phase 5 (173) C14: guide.md added — always overwritten by /pipeline-init,
+ * so without drift detection, outdated guides silently persist. Users must
+ * re-run /pipeline-init to update; drift warning makes this visible.
  */
 const DRIFT_CHECK_ASSETS: string[] = [
   "references/pipeline-stage-prompt.yml",
   "references/clarify_template.md",
+  "guide.md",
   "skills/design/SKILL.md",
   "skills/plan/SKILL.md",
   "skills/develop/SKILL.md",

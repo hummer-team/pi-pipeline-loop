@@ -371,7 +371,9 @@ describe("M5: pipeline_loop.json guard example in plan stage", () => {
 
     // Plan stage should have the guard example
     expect(content.stages.plan.guard).toBeDefined();
-    expect(content.stages.plan.guard.suppressDuplicateSpawn).toBe(false);
+    // Phase 5 (173) C13: suppressDuplicateSpawn changed to true (was false in 171)
+    // 171 Q5-B + business自发开启 + Q8批准；代码缺省仍关（opt-in），不构成反转
+    expect(content.stages.plan.guard.suppressDuplicateSpawn).toBe(true);
 
     // Develop stage should NOT have suppressDuplicateSpawn (it only works for clarify/plan)
     expect(content.stages.develop.guard).toBeUndefined();

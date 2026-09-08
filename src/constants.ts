@@ -76,12 +76,12 @@ export const AUDIT_THROTTLE_WINDOW_MS = 60_000;
 // ─── Frozen Aborted Exempt Tools (Phase 2 / 171) ─────────────────────────────
 
 /**
- * Tools exempt from the frozen-state block when flowState === "aborted".
+ * Tools exempt from the frozen-state block when flowState === "aborted" or "blocked".
  * These are read-only probe tools that enable self-rescue in the zombie state
  * (no decision menu available for aborted pipelines).
  *
- * Only effective for aborted state — blocked/awaiting_human maintain full block
- * (those states have the decision menu as escape hatch).
+ * Phase 5 (173) E2: Effective for aborted+blocked (172-G6a verified tool-guard.ts:542).
+ * awaiting_human maintains full block (no exemption — decision menu is escape hatch).
  *
  * - pipeline_state: read-only meta snapshot (safe — no write side effects)
  * - get_subagent_result: reads back subagent result text (external tool, read-only)

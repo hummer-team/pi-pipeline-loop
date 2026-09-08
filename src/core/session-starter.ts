@@ -107,6 +107,36 @@ function detectSubagentSession(ctx: RuntimeCtx): {
 }
 
 /**
+ * Phase 5 (173) C15: Infer spawn trigger for subagent JOIN audit.
+ *
+ * @param parentMeta - Parent pipeline metadata
+ * @param _parentPipelineId - Parent pipeline ID (for diagnostics)
+ * @returns "pipeline_auto" if spawn record matches current stage within time window,
+ *          "manual_or_external" otherwise
+ */
+function inferSpawnTrigger(parentMeta: SessionMeta, _parentPipelineId: string): "pipeline_auto" | "manual_or_external" {
+  const currentStage = parentMeta.currentStage;
+  const now = Date.now();
+  const SPAWN_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+  // Check activeSpawns for current stage (has startedAt timestamp)
+  const activeSpawn = parentMeta.activeSpawns?.[currentStage];
+  if (activeSpawn && (now - activeSpawn.startedAt) <= SPAWN_WINDOW_MS) {
+    return "pipeline_auto";
+  }
+
+  // Check spawnedStages for current stage (value is stageStartTime, not an object)
+  // If the stage was spawned during the current visit (stageStartTime matches), it's auto
+  const spawnedStageTime = parentMeta.spawnedStages?.[currentStage];
+  if (spawnedStageTime !== undefined && spawnedStageTime === parentMeta.stageStartTime) {
+    return "pipeline_auto";
+  }
+
+  // No matching spawn record → manual or external trigger
+  return "manual_or_external";
+}
+
+/**
  * Handles JOIN: loads parent pipeline meta and merges into current session.
  * Returns true if JOIN succeeded, false if it fell through to missing-registry path.
  */
@@ -153,11 +183,18 @@ async function handleSubagentJoin(
   await registerSession(config, sessionFile, parentPipelineId);
 
   // Audit JOIN event (Phase 0/171: enriched with flowState for zombie-resurrection traceability)
+  // Phase 5 (173) C15: spawnTrigger field — how was this subagent spawned?
+  // - "pipeline_auto": plugin auto-spawned via stage executor (activeSpawns/spawnedStages match)
+  // - "manual_or_external": user @mention or external tool (no matching spawn record)
+  // Limitation: fallback sendUserMessage @mention is indistinguishable from user typing,
+  // so time-window association is used (registeredAt - startedAt ≤ 5min → auto).
+  const spawnTrigger = inferSpawnTrigger(parentMeta, parentPipelineId);
   await safeWriteAuditLog("session_join_parent", {
     sessionFile,
     pipelineId: parentPipelineId,
     stage: parentMeta.currentStage,
     flowState: getFlowState(parentMeta),
+    spawnTrigger,
   });
 
   // Phase 0 (171): warn when JOIN target parent is already aborted.

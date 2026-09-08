@@ -29,8 +29,9 @@ userInvocable: false
 
 ---
 ## 交付项
-<!-- Template-TODO: 补充项目业务交付项（插件默认交付项如 build/test/commit/pipeline 标记由插件注入段提供） -->
-- **Template-TODO**: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等）
+<!-- Phase 5 (173) C17: Path convention clarification -->
+**路径约定**：Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
+<!-- Template-TODO: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等） -->
 <!-- Template-TODO: 配置项目技术栈 stack（如 frontend_ts / java），develop 按 .pi/references/{stack}_code_spec.md 读取对应规范 -->
 
 ## Checkpoint discipline (crash-resilient output)

@@ -1,15 +1,20 @@
 {
+  "_comment": "EXCLUSION DECLARATION: Keys 'spawnSubagentOnClarify' and 'agentMentions' do NOT exist in this plugin (0 hits in codebase). Do not add them. See guide.md §14 for valid configuration keys.",
   "startStageMode": "auto",
   "llmExtract": true,
   "output": { "pipelineStage": true },
   "decisionShortcutKey": "ctrl+enter",
   "maxConfirmRejections": 5,
   "confirmOverflow": "ask",
+  "auditDir": ".pi/audit",
+  "maxLoops": 3,
+  "maxVerifyAttempts": 3,
   "protect": {
     "gitignore": true,
     "ask": true,
     "allow": [],
-    "gitModify": "allow"
+    "gitModify": "allow",
+    "_comment_allow": "Add paths here to exempt from gitignore protection (prefix match). Example: [\"docs/\"] exempts docs/** from gitignore blocking. NOTE: allowedWritePaths per-stage is NOT the exemption channel — use protect.allow for gitignore exemption."
   },
   "audit": { "promptSnapshot": "full" },
   "init": { "conflictCheck": "model" },
@@ -19,7 +24,7 @@
       "skillPath": "design/SKILL.md",
       "nextStage": "plan",
       "verify": { "require": true, "completionMarker": "## 模型确认" },
-      "guard": { "blockedTools": [] }
+      "guard": { "blockedTools": [], "suppressDuplicateSpawn": true }
     },
     "plan": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
@@ -27,7 +32,7 @@
       "nextStage": "develop",
       "verify": { "require": true },
       "confirm": { "mode": "manual" },
-      "guard": { "suppressDuplicateSpawn": false }
+      "guard": { "suppressDuplicateSpawn": true }
     },
     "develop": {
       "agentPath": ".pi/agents/develop-agent.md",

@@ -73,6 +73,8 @@ userInvocable: false
    - 多轮复验更新同一文件，仅保留最终结论（复验历史由 git 追溯）
    - 多轮复验多新问题则追加到review文档中
 2. 报告格式参考 `@.pi/references/review_report_template.md`
+3. <!-- Phase 5 (173) C17: Path convention clarification -->
+   **路径约定**：Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
 
 ### 8. not commit review doc
 1. 所有 review 相关文档，模板 local 存储不需要 commit

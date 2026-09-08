@@ -1079,3 +1079,191 @@ rmdir .pi/agents/clarify .pi/agents/develop .pi/agents/review .pi/agents/fix
   }
 }
 ```
+
+
+---
+
+## 11. 插件架构总览
+
+### 11.1 模块矩阵（index.ts 注册面）
+
+| 类别 | 数量 | 模块 |
+|---|---|---|
+| Hooks | 6 | session-starter, prompt-injector, tool-guard, loop-breaker, agent-settled, session-shutdown |
+| Tools | 6+1 | pipeline-state, loop-checker, stage-advancer, generate-summary, validate-summary, pipeline-handoff + pipeline-verify（条件注册） |
+| Commands | 5 | pipeline-start, pipeline-quit, pipeline-resume, pipeline-status, pipeline-init |
+| Shortcut | 1 | 决策菜单（默认 ctrl+enter） |
+| 事件监听 | 1 | model_select（只读记录） |
+
+### 11.2 数据流
+
+```
+RuntimeCtx ←→ SessionState (meta.json 共享)
+                  ↓
+            Registry (session-registry.json)
+                  ↓
+            Audit Log (YYYYMMDD_audit.log)
+```
+
+- **RuntimeCtx**: 每次 hook/tool/command 调用时由 buildRuntimeCtx 构造
+- **SessionState**: 基于 meta.json 的共享状态源，所有 hook 通过 ctx.session.getMeta/updateMeta 访问
+- **Registry**: session 到 pipelineId 的映射，子会话 JOIN 时查找父流
+- **Audit Log**: JSONL 格式，按日轮转
+
+---
+
+## 12. Stage 流转与状态机
+
+### 12.1 七阶段 × flowState 二维矩阵
+
+| flowState \ stage | clarify | plan | develop | review | fix | awaiting_human | completed |
+|---|---|---|---|---|---|---|---|
+| running | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+| blocked | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| aborted | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+### 12.2 流转语义
+
+- **正常流转**: clarify → plan → develop → review → completed（fix→review 回环）
+- **Skip**: 跳过当前阶段到 nextStage，当前阶段 summary 标 skipped
+- **Rollback**: 回退到 previousStage，目标阶段 summary 标 invalid
+- **choose_stage (Phase 3/173)**: 跳到任意阶段（二级菜单），推断链默认选中
+- **override**: 通过 stage_advance 强制推进
+
+### 12.3 产物路径矩阵
+
+| 产物类型 | 路径 | 说明 |
+|---|---|---|
+| 需求文档 | `docs/design/*.md` | 用户可见交付物 |
+| 设计简报 | `docs/design/*.md` | clarify 阶段产出 |
+| 计划文档 | `docs/design/*.md` | plan 阶段产出 |
+| 代码实现 | `src/**` | develop 阶段产出 |
+| 审查报告 | `docs/review/*.md` | review 阶段产出 |
+| 修复代码 | `src/**` | fix 阶段产出 |
+| 阶段摘要 | `{auditDir}/{pipelineId}/{stage}.md` | 插件内部产物 |
+| 审计日志 | `{auditDir}/YYYYMMDD_audit.log` | 插件内部产物 |
+
+**路径约定（C17）**：业务交付物一律写入 `docs/design/` 等用户可见路径。`{auditDir}/` 仅存放插件内部产物（summary/audit/registry），不应作为业务交付目录。
+
+---
+
+## 13. 冻结与决策模型
+
+### 13.1 四熔断阈值
+
+| 熔断器 | 阈值 | 触发条件 |
+|---|---|---|
+| maxLoops | 默认 3 | 连续测试失败次数 |
+| maxVerifyAttempts | 默认 3 | 验证失败次数 |
+| DEFAULT_MAX_VIOLATIONS | 3 | 违规拦截次数 |
+| dismissCount (Phase 4/173) | 5 | ask 弹窗快速 dismiss 次数（< 1500ms） |
+
+### 13.2 六项决策菜单
+
+冻结时弹出（owner-only，子会话不弹）：
+
+1. **Resume** — 继续当前阶段
+2. **Skip** — 跳到 nextStage
+3. **Rollback** — 回退到 previousStage
+4. **Restart & New** — 重启新流（新 pipelineId，旧流存档）
+5. **Abort & Exit** — 中止并退出
+6. **Choose stage…** (Phase 3/173) — 二级菜单选任意阶段断点续传
+
+### 13.3 四入口 + 快捷键
+
+| 入口 | 触发方式 | 说明 |
+|---|---|---|
+| 自动弹出 | 熔断触发 | freezeAndPrompt 直接弹 |
+| 快捷键 | ctrl+enter（可配置） | index.ts shortcut |
+| 重放 | session_start (Phase 3/173) | frozen 流 reload/startup 时重放 |
+| /pipeline-start | 命令 | blocked 态就地弹菜单 |
+
+---
+
+## 14. 会话生命周期与静默模型
+
+### 14.1 静默矩阵（Phase 2b/173 🔴-1）
+
+**核心语义**：未 `/pipeline-start` = 插件等同不存在。
+
+| 暴露面 | dormant 行为 |
+|---|---|
+| session_start | 静默（drift/预热保留） |
+| before_agent_start | 零注入零 snapshot |
+| tool_call | 全放行（保护链一并失效 🔴-1） |
+| tool_result | 零计数 |
+| agent_settled | 短路（compact 豁免先行） |
+| session_shutdown | 身份审计 + 清 timer |
+| 7 tools | 引导语 |
+| commands | status 输出"无活跃管道" |
+| shortcut | 引导 notify |
+
+### 14.2 事件表
+
+| 事件 | 行为 |
+|---|---|
+| startup | 仅 running 僵尸 → stale_startup abort |
+| reload | frozen → 重放菜单 |
+| quit | aborted + user_quit → dormant |
+| fork | 新流（不继承父流） |
+| resume | 恢复模型 + frozen notify |
+| new | dormant（不建流） |
+
+### 14.3 子会话 JOIN + spawnTrigger
+
+- JOIN 成功 → 继承父流 meta（shared-source wins）
+- JOIN 失败 → dormant（不代建流）
+- spawnTrigger 审计字段（C15）：`pipeline_auto`（插件自动 spawn）或 `manual_or_external`（用户 @mention / 外部工具）
+
+### 14.4 stale 新语义（Phase 3/173 🔴-2）
+
+- **仅 running 僵尸** → stale_startup abort
+- blocked/awaiting_human → 菜单重放（不再 abort）
+
+### 14.5 迁移说明
+
+**"未 start = 不工作"**：Phase 2b 删除了自动建流（V1 废除）。新开会话不再有 clarify 状态，需显式 `/pipeline-start <doc>` 唤醒。
+
+**🔴-1 残余风险**：dormant 下危险命令仅靠 pi SDK 权限层兜底。用户知情选择。回退单点：`DORMANT_KEEP_PROTECTION = true`（仅恢复保护链，静默面不回退）。
+
+### 14.6 C12 生效方式
+
+配置修改后 `/reload` 即可生效（reload 重建扩展即重读配置，无需重启进程）。
+
+---
+
+## 15. 断点恢复路径汇总
+
+### 15.1 五入口统一图
+
+```
+                    ┌─ 自动弹出（熔断触发）
+                    │
+                    ├─ 快捷键（ctrl+enter）
+                    │
+frozen pipeline ────┼─ 重放（session_start reload/startup）
+                    │
+                    ├─ /pipeline-start（blocked 态就地弹）
+                    │
+                    └─ /pipeline-resume（确定性解冻）
+```
+
+### 15.2 推断链（choose_stage 默认选中）
+
+1. currentStage（awaiting_human → previousStage）
+2. stageVisitOrder 末位
+3. summaries 中最高 valid 段的 nextStage
+4. 全失败 → 不预置默认，提示手动选
+
+### 15.3 summaries 处置规则
+
+- **前进跳段**（如 develop 冻结选 review）：途经段有 summary 者标 skipped
+- **回退跳段**：目标段标 invalid
+- **target=completed**：复用 skip→completed 的 terminal-compact 通道
+
+### 15.4 /pipeline-resume 使用边界
+
+- 仅解冻 blocked/awaiting_human
+- 不唤醒 dormant（completed/aborted/无 meta）
+- completed 唤醒需 `/pipeline-start`（D2）
+
