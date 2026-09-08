@@ -7,8 +7,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import crypto from "node:crypto";
-import type { PipelineConfig, Hook, SessionMeta, DomainConfig } from "../types";
+import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
@@ -86,49 +85,6 @@ function getPluginVersionStamp(): string {
  */
 export function __resetPluginVersionStamp(): void {
   _pluginVersionStamp = null;
-}
-
-/**
- * Attempts to load a DomainConfig from a domain.md file.
- * Expects optional YAML-style frontmatter with `id` and `version` fields.
- * Falls back to the default general domain if the file is missing or unparseable.
- *
- * @param domainFilePath - Absolute path to the domain.md file
- * @returns Parsed DomainConfig or the default fallback
- */
-async function loadDomainFromFile(domainFilePath: string): Promise<DomainConfig> {
-  const defaultDomain: DomainConfig = { id: "general", version: "latest", skillPath: "" };
-
-  try {
-    const content = await fs.readFile(domainFilePath, "utf-8");
-
-    // Attempt to parse YAML-style frontmatter (between --- delimiters)
-    const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (frontmatterMatch) {
-      const frontmatter = frontmatterMatch[1];
-      const idMatch = frontmatter.match(/^id:\s*(.+)$/m);
-      const versionMatch = frontmatter.match(/^version:\s*(.+)$/m);
-
-      if (idMatch) {
-        return {
-          id: idMatch[1].trim(),
-          version: versionMatch ? versionMatch[1].trim() : "latest",
-          skillPath: domainFilePath,
-        };
-      }
-    }
-
-    // No frontmatter found — use filename as domain id
-    const basename = path.basename(domainFilePath, ".md");
-    return {
-      id: basename,
-      version: "latest",
-      skillPath: domainFilePath,
-    };
-  } catch {
-    // File doesn't exist or can't be read — use default
-    return defaultDomain;
-  }
 }
 
 /**
@@ -315,8 +271,8 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             | { getSessionFile?: () => string } | undefined;
           const sessionFile = sm?.getSessionFile?.() ?? "";
           const joined = await handleSubagentJoin(config, ctx, ui, parentSession, sessionFile);
-          if (joined) return; // JOIN succeeded — skip new pipeline creation
-          // JOIN failed (registry miss / meta read fail) — fall through to new pipeline
+          if (joined) return; // JOIN succeeded — child inherits parent pipeline
+          // JOIN failed (registry miss / meta read fail) — fall through to dormant
         } else if (isSubagent && !parentSession) {
           // Only secondary/fork signal matched but no parentSession available for lookup.
           // Audit warn so the missing-registry path is observable (plan Phase 1).
@@ -327,55 +283,16 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           );
         }
 
-        // ── New pipeline: initialize metadata ──────────────────────────
-        const pipelineId = `pipe-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
-
-        // Load domain configuration
-        const domainDir = config.domainDir || ".pi/domains";
-        const domainFilePath = path.join(projectRoot, domainDir, "domain.md");
-        const domain = await loadDomainFromFile(domainFilePath);
-
-        const sessionMeta: SessionMeta = {
-          currentStage: "clarify",
-          stageStartTime: Date.now(),
-          pipelineId,
-          domain,
-          summaries: {},
-          loopCount: 0,
-          currentStepIndex: 0,
-          maxLoops: config.maxLoops || 3,
-          flowState: "running",
-          stageVisitOrder: ["clarify"],
-          terminalCompact: undefined,
-          // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages so the new pipeline's
-          // idempotency guard starts fresh (no residue from a prior run on the same session).
-          spawnedStages: undefined,
-        };
-
-        ctx.session.updateMeta(sessionMeta);
-
-        // Register session → pipeline mapping (fail-open)
-        const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
-          | { getSessionFile?: () => string } | undefined;
-        const sessionFile = sm?.getSessionFile?.() ?? "";
-        if (sessionFile) {
-          await registerSession(config, sessionFile, pipelineId);
-        }
-
-        // Write session_start audit log
-        // Phase 5 (170): attach plugin version stamp for deployment traceability
-        // Phase 0 (171): attach sessionFile for session identity traceability
-        await writeAuditLog("session_start", {
-          pipelineId,
-          stage: "clarify",
-          pluginVersion: getPluginVersionStamp(),
-          ...(sessionFile ? { sessionFile } : {}),
-        });
-
-        // NOTE: model management removed (Q4-A) — model is managed by user via /model command.
-        // Phase 3 will add model_select event hook for read-only recording.
-
-        ui.stageEntry(ctx, "clarify");
+        // Phase 2b (173) C4: V1 auto-pipeline creation REMOVED.
+        // New sessions without an existing pipeline are now DORMANT — the plugin
+        // does not intervene until `/pipeline-start <doc>` is explicitly invoked.
+        // - No pipelineId generated
+        // - No registerSession call
+        // - No session_start audit log for creation
+        // - No ui.stageEntry call
+        // The drift check (L287-305) and prompt-config preload (L307-308) above
+        // still run — they are one-shot events with no meta dependency.
+        // Wake-up entry: /pipeline-start (fresh/resume/adopt) only.
       } else {
         // ── Resumed session: stale startup recovery ───────────────────
         // On process startup (reason="startup"), if flowState is not already "aborted",

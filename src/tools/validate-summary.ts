@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
+import { isDormant } from "../core/dormancy";
 
 /**
  * Creates the `validate_summary` tool.
@@ -53,11 +54,12 @@ export function createValidateSummary(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — guidance message
-      if (!meta?.pipelineId) {
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — guidance message
+      if (!rawMeta || isDormant(rawMeta)) {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
+      const meta: SessionMeta = rawMeta;
       const stage = args.stage as string;
       const isApproved = args.isApproved as boolean;
       const comment = (args.comment as string) ?? "";

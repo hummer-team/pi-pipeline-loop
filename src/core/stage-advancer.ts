@@ -33,6 +33,7 @@ import { DEFAULT_CONFIRM_MAX_REJECTIONS } from "../constants";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { recordStageVisit } from "../utils/stage-visit";
+import { isDormant } from "./dormancy";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -816,11 +817,12 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — guidance message
-      if (!meta?.pipelineId) {
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — guidance message
+      if (!rawMeta || isDormant(rawMeta)) {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
+      const meta: SessionMeta = rawMeta;
       const currentStage: PipelineStage = meta.currentStage;
 
       // Phase 4 (143): Hash integrity check — if current stage has a summary

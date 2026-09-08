@@ -26,6 +26,7 @@ import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
 import { isFrozen, getFlowState, formatFrozenReason, formatDecisionMenuHint } from "./flow-state";
+import { isDormant } from "./dormancy";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { detectLastRunHealth } from "./session-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
@@ -567,9 +568,11 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
   return {
     event: "before_agent_start",
     handler: async (ctx: RuntimeCtx): Promise<BeforeAgentStartEventResult | void> => {
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — return undefined (zero injection, zero snapshot)
-      if (!meta?.pipelineId) return undefined;
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — zero injection, zero snapshot
+      // Covers: no meta, aborted, completed (terminal=silent equivalent)
+      if (!rawMeta || isDormant(rawMeta)) return undefined;
+      const meta: SessionMeta = rawMeta;
       const stageConfig = config.stages[meta.currentStage];
 
       // Extract base system prompt EARLY (before buildDynamicValues)

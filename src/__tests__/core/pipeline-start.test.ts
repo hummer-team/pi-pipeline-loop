@@ -754,8 +754,8 @@ describe("createPipelineStartCommand", () => {
       expect(updatedMeta.terminateReason).toBeUndefined();
     });
 
-    // Case 4: aborted + completed → error, no updateMeta
-    it("aborted + completed → returns error, does NOT call updateMeta", async () => {
+    // Case 4: aborted + completed → Phase 2b (173) D2: completed allows fresh start
+    it("completed → D2: allows fresh start (no error)", async () => {
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta({
         currentStage: "completed",
@@ -771,11 +771,13 @@ describe("createPipelineStartCommand", () => {
       };
 
       const cmd = createPipelineStartCommand(config);
+      // D2: completed no longer returns error — falls through to fresh start
+      // Without a file, it will fail with "run /pipeline-start <doc_file>" error
+      // but NOT with "Pipeline already completed" error
       const result: any = await cmd.execute({ file: "" }, ctx as any);
 
-      expect(result.success).toBe(false);
-      expect(result.error).toContain("completed");
-      expect(updatedMeta).toBeNull();
+      // Should NOT contain "completed" error (D2: completed = dormant, can wake)
+      expect(result.error).not.toContain("already completed");
     });
 
     // Case 5: aborted + awaiting_human → error with decision menu hint

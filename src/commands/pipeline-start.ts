@@ -886,13 +886,10 @@ async function handleAbortedPipeline(
     return resumePipeline(ctx, meta, config, ui, file, "pipeline_start_resume", forwardArgs);
   }
 
-  // --- Terminal stage: completed → require fresh start ---
-  if (meta.currentStage === "completed") {
-    return {
-      success: false,
-      error: "Pipeline already completed. Use /pipeline-start <file> to start a new pipeline.",
-    };
-  }
+  // --- Terminal stage: completed → Phase 2b (173) D2: allow fresh start ---
+  // completed = dormant, can be woken by /pipeline-start with a new pipelineId.
+  // Old meta.json stays on disk as historical audit; new run supersedes it.
+  // Fall through to fresh start logic below (do NOT return error).
 
   // --- Frozen stage: awaiting_human → require decision menu ---
   if (meta.currentStage === "awaiting_human") {
@@ -902,8 +899,8 @@ async function handleAbortedPipeline(
     };
   }
 
-  // --- No requirementDoc && no file → prompt user ---
-  if (!meta.requirementDoc && !file) {
+  // --- No requirementDoc && no file → prompt user (skip for completed → fresh) ---
+  if (!meta.requirementDoc && !file && meta.currentStage !== "completed") {
     return {
       success: false,
       error: "run /pipeline-start <doc_file> start pipeline loop",
@@ -911,24 +908,23 @@ async function handleAbortedPipeline(
   }
 
   // --- Start new pipeline (different file, or no requirementDoc with file provided) ---
-  // Unified path: both the "different doc" and "no requirementDoc + new file"
-  // cases go through startNewPipeline so that the new file is re-read, verify.md
-  // files are re-checked, and maybeAutoLaunchClarify is invoked (fixes Medium #1).
-  if (meta.requirementDoc) {
+  // For completed: always go to fresh start (new pipelineId supersedes old).
+  // For other stages with existing doc: doc-switch branch.
+  if (meta.requirementDoc && meta.currentStage !== "completed") {
     // Different doc: prefer user's new file; defensive fallback to existing doc
     // review#2 M2: forwardArgs passthrough preserved across doc-switch branch
     return startNewPipeline(ctx, config, ui, file || meta.requirementDoc, "clarify", meta, forwardArgs);
   }
 
-  // No existing requirementDoc — use new file via unified path
-  if (!file) {
+  // No existing requirementDoc or completed → use new file via unified path
+  if (!file && meta.currentStage !== "completed") {
     return {
       success: false,
       error: "run /pipeline-start <doc_file> start pipeline loop",
     };
   }
   // review#2 M2: forwardArgs passthrough preserved on the no-reqDoc + new-file branch
-  return startNewPipeline(ctx, config, ui, file, "clarify", meta, forwardArgs);
+  return startNewPipeline(ctx, config, ui, file || meta.requirementDoc || "", "clarify", meta, forwardArgs);
 }
 
 export function createPipelineStartCommand(config: PipelineConfig): Command {
@@ -970,39 +966,35 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
 
       // ── Branch: existing pipeline state ──────────────────────────────────
       if (meta?.currentStage && meta.pipelineId) {
-        // Completed check must precede running/blocked check: when currentStage is
-        // "completed" and flowState is "running" (the permanent post-completion state),
-        // we must return the "already completed" message rather than "already running".
+        // Phase 2b (173) D2: completed → fall through to fresh start (not rejected).
+        // Completed = dormant; /pipeline-start wakes with new pipelineId.
         if (meta.currentStage === "completed") {
-          return {
-            success: false,
-            error: "Pipeline already completed. Use /pipeline-start <file> to start a new pipeline.",
-          };
-        }
+          // Fall through to fresh start below — do NOT return error
+        } else {
+          const flowState = getFlowState(meta);
 
-        const flowState = getFlowState(meta);
+          // Running or blocked → reject with decision menu hint (unchanged across all modes)
+          if (flowState === "running" || flowState === "blocked") {
+            return {
+              success: false,
+              error:
+                `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}" (${flowState}). ` +
+                `Open the decision menu to proceed.`,
+            };
+          }
 
-        // Running or blocked → reject with decision menu hint (unchanged across all modes)
-        if (flowState === "running" || flowState === "blocked") {
-          return {
-            success: false,
-            error:
-              `Pipeline "${meta.pipelineId}" already running at stage "${meta.currentStage}" (${flowState}). ` +
-              `Open the decision menu to proceed.`,
-          };
-        }
+          // Aborted → mode-specific handling
+          if (flowState === "aborted") {
+            return handleAbortedWithMode(ctx, meta, file, ui, config, mode, forwardArgs);
+          }
 
-        // Aborted → mode-specific handling
-        if (flowState === "aborted") {
-          return handleAbortedWithMode(ctx, meta, file, ui, config, mode, forwardArgs);
-        }
-
-        // awaiting_human → error with decision menu hint (unchanged)
-        if (meta.currentStage === "awaiting_human") {
-          return {
-            success: false,
-            error: `Pipeline is at awaiting_human stage. Open the decision menu to proceed.`,
-          };
+          // awaiting_human → error with decision menu hint (unchanged)
+          if (meta.currentStage === "awaiting_human") {
+            return {
+              success: false,
+              error: `Pipeline is at awaiting_human stage. Open the decision menu to proceed.`,
+            };
+          }
         }
       }
 

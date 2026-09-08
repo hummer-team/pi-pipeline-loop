@@ -65,7 +65,7 @@ describe("createStageAdvancer", () => {
     expect(meta.currentStepIndex).toBe(0);
   });
 
-  it("marks pipeline as completed when already completed", async () => {
+  it("Phase 2b (173) C3: completed stage → dormant, guidance message", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "completed" });
 
@@ -73,8 +73,8 @@ describe("createStageAdvancer", () => {
     const tool = createStageAdvancer(config);
     const result = await tool.execute({}, ctx as any);
 
-    expect((result as any).success).toBe(false);
-    expect((result as any).message).toContain("already completed");
+    // Phase 2b (173) C3: completed = dormant → guidance message
+    expect((result as any).message).toContain("No active pipeline");
   });
 
   it("advances last non-null stage to completed", async () => {

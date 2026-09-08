@@ -1204,7 +1204,7 @@ describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
     __resetAuditDirPath();
   });
 
-  it("frozen pipeline (aborted) → prompt contains PIPELINE STATE with /pipeline-start hint", async () => {
+  it("Phase 2b (173) C3: aborted flowState → dormant, zero injection", async () => {
     const TMP = join(tmpdir(), "pi-prompt-state-" + Date.now());
     const skillDir = join(TMP, ".pi", "skills", "test-skill");
     await mkdir(skillDir, { recursive: true });
@@ -1232,10 +1232,8 @@ describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
     const hook = createPromptInjector(config);
     const result = await hook.handler(ctx as any);
 
-    const prompt = (result as any)?.systemPrompt ?? "";
-    expect(prompt).toContain("# PIPELINE STATE");
-    expect(prompt).toContain("aborted");
-    expect(prompt).toContain("/pipeline-start docs/design/spec.md");
+    // Phase 2b (173) C3: aborted = dormant → zero injection (return undefined)
+    expect(result).toBeUndefined();
 
     await rm(TMP, { recursive: true, force: true });
   });

@@ -31,7 +31,11 @@ describe("createSessionStarter", () => {
   });
 
   describe("new session initialization", () => {
-    it("initializes metadata for new pipeline with domain from file", async () => {
+    // Phase 2b (173) C4: V1 auto-pipeline creation REMOVED.
+    // New sessions without existing pipeline are now DORMANT.
+    // These tests verify the dormant behavior: no meta update, no registry, no audit.
+
+    it("new session: no pipeline creation — meta stays empty (dormant)", async () => {
       const TMP = join(tmpdir(), "pi-ss-init-" + Date.now());
       const domainDir = join(TMP, ".pi", "domains");
       await mkdir(domainDir, { recursive: true });
@@ -44,14 +48,11 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      const meta = ctx.updates[0];
-      expect(meta.currentStage).toBe("clarify");
-      expect(meta.pipelineId).toMatch(/^pipe-/);
-      expect(meta.domain.id).toBe("ecommerce");
-      expect(meta.domain.version).toBe("2.0");
+      // C4: No meta update (no pipelineId, no currentStage)
+      expect(ctx.updates.length).toBe(0);
     });
 
-    it("uses default domain when domain file is missing", async () => {
+    it("new session: no domain loading (dormant — no meta to attach domain to)", async () => {
       const TMP = join(tmpdir(), "pi-ss-default-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -62,11 +63,11 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      expect(ctx.updates[0].domain.id).toBe("general");
-      expect(ctx.updates[0].domain.version).toBe("latest");
+      // C4: No meta update at all
+      expect(ctx.updates.length).toBe(0);
     });
 
-    it("uses config.maxLoops for maxLoops if specified", async () => {
+    it("new session: no maxLoops set (dormant — pipeline not created)", async () => {
       const TMP = join(tmpdir(), "pi-ss-maxloops-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -77,13 +78,14 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      expect(ctx.updates[0].maxLoops).toBe(5);
+      // C4: No meta update
+      expect(ctx.updates.length).toBe(0);
     });
 
     // NOTE: model management tests removed (Q4-A) — model is managed by user via /model command.
     // Phase 3 will add model_select event tests.
 
-    it("parses domain from filename when no frontmatter", async () => {
+    it("new session: no domain parsing (dormant — V1 removed)", async () => {
       const TMP = join(tmpdir(), "pi-ss-nofm-" + Date.now());
       const domainDir = join(TMP, ".pi", "domains");
       await mkdir(domainDir, { recursive: true });
@@ -96,10 +98,11 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      expect(ctx.updates[0].domain.id).toBe("domain");
+      // C4: No meta update
+      expect(ctx.updates.length).toBe(0);
     });
 
-    it("writes audit log with session_start action", async () => {
+    it("new session: no session_start audit for creation (V1 removed)", async () => {
       const TMP = join(tmpdir(), "pi-ss-audit-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -110,22 +113,24 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
+      // C4: No session_start audit line for pipeline creation
       const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-      const content = await readFile(logPath, "utf-8");
-      const line = content.trim().split("\n")[0];
-
-      expect(line).toContain(" - [INFO] session_start");
-      expect(line).toContain("pipelineId=");
-      expect(line).toContain("stage=clarify");
-
-      // Verify pipelineId in the log matches the one in metadata
-      const meta = ctx.updates[0];
-      expect(line).toContain(`pipelineId=${meta.pipelineId}`);
+      let content = "";
+      try {
+        content = await readFile(logPath, "utf-8");
+      } catch {
+        // File may not exist if no audit was written
+      }
+      // Should NOT contain session_start with pipelineId (creation audit removed)
+      const hasCreationAudit = content.trim().split("\n").some(
+        (line) => line.includes("session_start") && line.includes("pipelineId=pipe-")
+      );
+      expect(hasCreationAudit).toBe(false);
     });
 
-    // Phase 0 (169) P1: new session must initialize stageVisitOrder to ["clarify"]
-    // and explicitly clear spawnedStages + terminalCompact (no cross-run residue).
-    it("new session initializes stageVisitOrder=['clarify'] and clears transient fields", async () => {
+    // Phase 2b (173) C4: stageVisitOrder initialization no longer happens for new sessions
+    // (no pipeline created). This test verifies the dormant behavior.
+    it("new session: no stageVisitOrder init (dormant — V1 removed)", async () => {
       const TMP = join(tmpdir(), "pi-ss-visit-init-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -136,11 +141,8 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      const meta = ctx.updates[0];
-      expect(meta.stageVisitOrder).toEqual(["clarify"]);
-      // Explicit clears (P2-8): no residue from prior run
-      expect(meta.spawnedStages).toBeUndefined();
-      expect(meta.terminalCompact).toBeUndefined();
+      // C4: No meta update at all
+      expect(ctx.updates.length).toBe(0);
     });
   });
 
@@ -418,7 +420,7 @@ describe("createSessionStarter", () => {
       expect(meta.pipelineId).not.toMatch(/^pipe-\d+-/);
     });
 
-    it("JOIN: parentSession + registry miss → new pipeline + audit warn", async () => {
+    it("JOIN: parentSession + registry miss → dormant (C4: no new pipeline)", async () => {
       const TMP = join(tmpdir(), "pi-ss-join-miss-" + Date.now());
       await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
 
@@ -434,8 +436,9 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      expect(meta.currentStage).toBe("clarify");
-      expect(meta.pipelineId).toMatch(/^pipe-/);
+      // Phase 2b (173) C4: JOIN miss → dormant (no new pipeline created)
+      expect(meta.currentStage).toBeUndefined();
+      expect(meta.pipelineId).toBeUndefined();
 
       const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
       const content = await readFile(logPath, "utf-8");
@@ -473,7 +476,7 @@ describe("createSessionStarter", () => {
       expect(meta.currentStage).toBe("review");
     });
 
-    it("no subagent signal → existing new pipeline behavior", async () => {
+    it("no subagent signal → dormant (C4: no new pipeline)", async () => {
       const TMP = join(tmpdir(), "pi-ss-no-join-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -486,8 +489,9 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      expect(meta.currentStage).toBe("clarify");
-      expect(meta.pipelineId).toMatch(/^pipe-/);
+      // Phase 2b (173) C4: No subagent signal → dormant (no pipeline created)
+      expect(meta.currentStage).toBeUndefined();
+      expect(meta.pipelineId).toBeUndefined();
     });
 
     it("JOIN preserves advancedThisTurn from parent (skip guard timing point 1)", async () => {
@@ -672,9 +676,11 @@ describe("createSessionStarter", () => {
   });
 
   // ─── Phase 5 (170): pluginVersion stamp in session_start audit ──
+  // Phase 2b (173) C4: New sessions no longer create pipelines → no session_start audit.
+  // pluginVersion is still tested via /pipeline-start command tests (pipeline-start.test.ts).
 
-  describe("Phase 5 (170): pluginVersion stamp", () => {
-    it("session_start audit contains pluginVersion field", async () => {
+  describe("Phase 5 (170): pluginVersion stamp (dormant — C4)", () => {
+    it("new session: no session_start audit (V1 removed, pluginVersion tested via /pipeline-start)", async () => {
       const TMP = join(tmpdir(), "pi-ss-version-" + Date.now());
       const domainDir = join(TMP, ".pi", "domains");
       await mkdir(domainDir, { recursive: true });
@@ -687,11 +693,13 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-      expect(logContent).toContain("session_start");
-      expect(logContent).toContain("pluginVersion");
-      // pluginVersion should not be empty — at minimum "unknown" on failure
-      expect(logContent).toMatch(/pluginVersion.*0\.\d+\.\d+|pluginVersion.*unknown/);
+      // C4: No session_start audit for new sessions (dormant)
+      let logContent = "";
+      try {
+        logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      } catch { /* file may not exist */ }
+      const hasCreationAudit = logContent.includes("session_start") && logContent.includes("pluginVersion");
+      expect(hasCreationAudit).toBe(false);
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -729,7 +737,7 @@ describe("createSessionStarter", () => {
       };
     }
 
-    it("session_start audit includes sessionFile for new pipelines", async () => {
+    it("new session: no session_start audit for sessionFile (C4 dormant)", async () => {
       const TMP = join(tmpdir(), "pi-ss-sf-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -740,16 +748,17 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
+      // C4: No session_start audit for new sessions (dormant)
       const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-      const content = await readFile(logPath, "utf-8");
+      let content = "";
+      try { content = await readFile(logPath, "utf-8"); } catch { /* */ }
       const startLine = content.trim().split("\n").find((l: string) => l.includes("session_start") && l.includes("sessionFile="));
-      expect(startLine).toBeDefined();
-      expect(startLine).toContain("sessionFile=main-session-file-123");
+      expect(startLine).toBeUndefined();
 
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("session_start audit omits sessionFile when not available (backward compat)", async () => {
+    it("new session: no session_start audit without sessionFile (C4 dormant)", async () => {
       const TMP = join(tmpdir(), "pi-ss-nosf-" + Date.now());
       await mkdir(TMP, { recursive: true });
 
@@ -760,11 +769,12 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
+      // C4: No session_start audit for new sessions (dormant)
       const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-      const content = await readFile(logPath, "utf-8");
-      const startLines = content.trim().split("\n").filter((l: string) => l.includes("session_start"));
-      const firstLine = startLines[0];
-      expect(firstLine).not.toContain("sessionFile=");
+      let content = "";
+      try { content = await readFile(logPath, "utf-8"); } catch { /* */ }
+      const startLines = content.trim().split("\n").filter((l: string) => l.includes("session_start") && l.includes("pipelineId=pipe-"));
+      expect(startLines.length).toBe(0);
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -939,7 +949,7 @@ describe("createSessionStarter", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("plugin version stamp format is version+hash or version+unknown", async () => {
+    it("plugin version stamp: not written for dormant new sessions (C4)", async () => {
       __resetPluginVersionStamp();
       const TMP = join(tmpdir(), "pi-ss-stamp-" + Date.now());
       const domainDir = join(TMP, ".pi", "domains");
@@ -953,10 +963,13 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-      // Verify pluginVersion follows format: digits.digits.digits+shortHash or digits.digits.digits+unknown
+      // C4: New sessions are dormant → no session_start audit with pluginVersion
+      let logContent = "";
+      try {
+        logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      } catch { /* file may not exist */ }
       const match = logContent.match(/pluginVersion=(\d+\.\d+\.\d+\+[a-f0-9]+|\d+\.\d+\.\d+\+unknown)/);
-      expect(match).not.toBeNull();
+      expect(match).toBeNull();
 
       await rm(TMP, { recursive: true, force: true });
     });

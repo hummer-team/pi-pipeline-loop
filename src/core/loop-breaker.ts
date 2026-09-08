@@ -18,6 +18,7 @@ import type { RuntimeCtx } from "./runtime-ctx";
 import { getFileHash } from "../utils/hash";
 import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
+import { isDormant } from "./dormancy";
 import { freezeAndPrompt } from "./flow-state";
 import { splitShellSegments } from "../utils/bash-parse";
 
@@ -148,9 +149,10 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
   return {
     event: "tool_result",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — return (zero counting)
-      if (!meta?.pipelineId) return;
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — zero counting
+      if (!rawMeta || isDormant(rawMeta)) return;
+      const meta: SessionMeta = rawMeta;
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
       // tool_result events always populate toolCall (buildRuntimeCtx guarantees it)

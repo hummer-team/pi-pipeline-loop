@@ -11,6 +11,7 @@ import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { buildDecisionMenu, executeDecision, labelToDecision } from "./core/flow-state";
 import type { PipelineDecision } from "./core/flow-state";
+import { isDormant } from "./core/dormancy";
 import { safeWriteAuditLog } from "./utils/auditLog";
 import { parseCommandArgs } from "./utils/command-args";
 
@@ -206,12 +207,13 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         description: "Pipeline decision menu",
         handler: async (ctx: ExtensionContext) => {
           const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
-          const meta = rctx.session.getMeta();
-          // Phase 2a (173) C6: no-meta guard — guidance notify
-          if (!meta?.pipelineId) {
+          const rawMeta = rctx.session.getMeta();
+          // Phase 2b (173) C3: dormant guard — guidance notify
+          if (!rawMeta || isDormant(rawMeta)) {
             ctx.ui.notify("No active pipeline. Run /pipeline-start <doc>.");
             return;
           }
+          const meta = rawMeta;
 
           const menu = buildDecisionMenu(meta);
           if (!menu) {

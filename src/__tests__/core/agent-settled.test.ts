@@ -1700,7 +1700,7 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
 
   // ─── Phase 3 (170): aborted/blocked notify text branches ──
 
-  it("aborted flowState → notify contains 'Pipeline aborted' with /pipeline-start guidance", async () => {
+  it("Phase 2b (173) C3: aborted flowState → dormant, no notify (silent short-circuit)", async () => {
     const stageTmp = join(tmpdir(), "pi-as-aborted-msg-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
@@ -1716,11 +1716,9 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    // Aborted branch: should notify with /pipeline-start and the doc path
+    // Phase 2b (173) C3: aborted = dormant → silent short-circuit, no notify
     const abortedNotify = ctx.notifications.find(n => n.includes("Pipeline aborted"));
-    expect(abortedNotify).toBeDefined();
-    expect(abortedNotify).toContain("/pipeline-start");
-    expect(abortedNotify).toContain("docs/design/82_Feat.md");
+    expect(abortedNotify).toBeUndefined();
 
     await rm(stageTmp, { recursive: true, force: true });
   });

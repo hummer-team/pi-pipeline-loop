@@ -13,6 +13,7 @@ import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
 import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry, formatDecisionMenuHint } from "./flow-state";
+import { isDormant } from "./dormancy";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -51,9 +52,22 @@ export function createAgentSettled(
   return {
     event: "agent_settled",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — short-circuit (no audit, no notify, no verify)
-      if (!meta?.pipelineId) return;
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+
+      // Phase 2b (173) C3: Terminal compaction exemption runs BEFORE dormant guard.
+      // Completed (dormant) T1 settle must still trigger compact — the helper's
+      // internal isIdle/consumed guards ensure it fires exactly once.
+      // For aborted dormant, the helper's internal guard self-exempts (no compact needed).
+      await maybeCompactOnPipelineCompleted(
+        { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
+        config,
+      );
+
+      // Phase 2b (173) C3: dormant guard — short-circuit
+      // Covers: no meta, aborted (user_quit/abort/stale_startup), completed
+      // No agent_settled audit, no notify, no frozen block, no verify
+      if (!rawMeta || isDormant(rawMeta)) return;
+      const meta: SessionMeta = rawMeta;
 
       // 1. Write audit log
       await writeAuditLog("agent_settled", {
@@ -62,14 +76,6 @@ export function createAgentSettled(
       });
 
       ui.notify(ctx, `Agent settled in "${meta.currentStage}" stage`);
-
-      // Phase 4 (169) W1: Terminal compaction check — BEFORE frozen and advancedThisTurn
-      // short-circuits, so that T1 settle (carrying advancedThisTurn=true) still triggers compact.
-      // The helper internally guards against non-completed, already-consumed, and busy states.
-      await maybeCompactOnPipelineCompleted(
-        { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
-        config,
-      );
 
       // 1b. Frozen short-circuit: skip verification when pipeline is frozen
       if (isFrozen(meta)) {

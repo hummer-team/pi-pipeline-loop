@@ -24,6 +24,7 @@ import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { markPipelineAborted } from "./flow-state";
 import { detectSessionRole } from "./session-role";
+import { isDormant } from "./dormancy";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -43,21 +44,24 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
   return {
     event: "session_shutdown",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — identity audit line only (no pipelineId field)
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 6 (172) G5: clear all decision retry timers on shutdown (prevent leaks)
       clearAllDecisionTimers();
-      if (!meta?.pipelineId) {
-        // No meta at all — write minimal identity audit and return
+
+      // Phase 2b (173) C3: dormant guard — identity audit + return
+      // Covers: no meta, aborted, completed
+      // No pipeline_session_aborted, no blocked quit→abort channel
+      if (!rawMeta || isDormant(rawMeta)) {
         const { isChild, sessionFile } = detectSessionRole(ctx);
         await writeAuditLog("session_shutdown", {
-          pipelineId: "unknown",
-          finalStage: "unknown",
+          pipelineId: rawMeta?.pipelineId ?? "unknown",
+          finalStage: rawMeta?.currentStage ?? "unknown",
           ...(sessionFile ? { sessionFile } : {}),
           ...(isChild ? { isSubagent: "true" } : {}),
         });
         return;
       }
+      const meta: SessionMeta = rawMeta;
 
       // Phase 0 (171): session identity fields for traceability
       const { isChild, sessionFile, parentSession } = detectSessionRole(ctx);

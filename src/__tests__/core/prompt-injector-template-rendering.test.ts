@@ -724,7 +724,7 @@ describe("Phase 4: stage_executor injection", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 
-  it("injects completed summary when in completed stage", async () => {
+  it("Phase 2b (173) C3: completed stage → dormant, zero injection", async () => {
     const TMP = join(tmpdir(), "pi-pi-p4-completed-" + Date.now());
     await mkdir(TMP, { recursive: true });
 
@@ -747,10 +747,8 @@ describe("Phase 4: stage_executor injection", () => {
     const hook = createPromptInjector(config);
     const result = (await hook.handler(ctx as any)) as any;
 
-    // Should contain completed summary section
-    expect(result.systemPrompt!).toContain("## Pipeline Completed Summary");
-    expect(result.systemPrompt!).toContain("pipe-completed-test");
-    expect(result.systemPrompt!).toContain("**endStage**");
+    // Phase 2b (173) C3: completed = dormant → zero injection (return undefined)
+    expect(result).toBeUndefined();
 
     resetPromptConfigCache();
     await rm(TMP, { recursive: true, force: true });

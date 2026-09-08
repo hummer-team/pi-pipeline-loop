@@ -8,6 +8,7 @@ import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { buildStageSequence } from "../utils/stage-sequence";
 import { safeWriteStageAudit } from "../utils/auditLog";
 import { verifySummaryHash } from "../utils/summary-hash";
+import { isDormant } from "./dormancy";
 
 /**
  * Creates the `pipeline_state` tool.
@@ -35,11 +36,12 @@ export function createPipelineState(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — guidance message
-      if (!meta?.pipelineId) {
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — guidance message
+      if (!rawMeta || isDormant(rawMeta)) {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
+      const meta: SessionMeta = rawMeta;
       const currentStage = meta.currentStage;
       const stageConfig = config.stages[currentStage];
       const nextStage = stageConfig.nextStage;

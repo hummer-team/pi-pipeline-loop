@@ -19,6 +19,7 @@ import crypto from "node:crypto";
 import type { PipelineConfig, Tool, SessionMeta, SummaryMeta } from "../types";
 import { safeWriteStageAudit } from "../utils/auditLog";
 import { toProjectRelative } from "../utils/path-display";
+import { isDormant } from "../core/dormancy";
 
 /**
  * Dynamically import estimateTokens from pi-coding-agent SDK.
@@ -139,11 +140,12 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — guidance message
-      if (!meta?.pipelineId) {
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — guidance message
+      if (!rawMeta || isDormant(rawMeta)) {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
+      const meta: SessionMeta = rawMeta;
       const projectRoot = config.projectRoot;
       const auditDir = config.auditDir || ".pi/audit";
       const stage = meta.currentStage;

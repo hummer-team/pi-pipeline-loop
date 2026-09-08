@@ -13,6 +13,7 @@ import { createPipelineUI } from "../core/pipeline-ui";
 import { extractAssistantMessages } from "../core/session-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
+import { isDormant } from "../core/dormancy";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -82,11 +83,12 @@ export function createPipelineVerify(
         return { error: "No session context available" };
       }
 
-      const meta = sessionCtx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — guidance message
-      if (!meta?.pipelineId) {
+      const rawMeta = sessionCtx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — guidance message
+      if (!rawMeta || isDormant(rawMeta)) {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
+      const meta: SessionMeta = rawMeta;
       const stageName = (args.stage as PipelineStage) || meta.currentStage;
       const stageConfig = config.stages[stageName];
 

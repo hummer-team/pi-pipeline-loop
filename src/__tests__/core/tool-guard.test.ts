@@ -52,7 +52,7 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("decision menu");
     });
 
-    it("blocks all tools when flowState is aborted", async () => {
+    it("aborted flowState: dormant pass-through (C3) — no block", async () => {
       const config = makeTestConfig();
       const meta = makeTestMeta({ flowState: "aborted" });
       const ctx = createMockCtx(meta);
@@ -61,8 +61,8 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("aborted");
+      // Phase 2b (173) C3: aborted = dormant → full pass-through (🔴-1)
+      expect(result).toBeUndefined();
     });
 
     it("includes blockedReason in frozen message (no shortcut key)", async () => {
@@ -2525,7 +2525,8 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
 
       const config = makeTestConfig({ projectRoot: TMP });
-      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      // Use "blocked" instead of "aborted" — aborted is now dormant (pass-through)
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta);
       ctx.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
 
@@ -2552,7 +2553,8 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
 
       const config = makeTestConfig({ projectRoot: TMP });
-      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      // Use "blocked" instead of "aborted" — aborted is now dormant (pass-through)
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "blocked", blockedReason: "loop_overflow" });
 
       // First call with "write" tool
       const ctx1 = createMockCtx(meta);
@@ -2585,7 +2587,8 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
 
       const config = makeTestConfig({ projectRoot: TMP });
-      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      // Use "blocked" instead of "aborted" — aborted is now dormant (pass-through)
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta, { sessionFile: "zombie-subagent-session" });
       ctx.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
 
@@ -2608,7 +2611,8 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
 
       const config = makeTestConfig({ projectRoot: TMP });
-      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      // Use "blocked" instead of "aborted" — aborted is now dormant (pass-through)
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta); // No sessionFile
       ctx.toolCall = { name: "read", arguments: { path: "src/x.ts" } };
 
@@ -2624,7 +2628,7 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
     });
 
-    it("Phase 1 (171): aborted frozen rejection reason uses shared formatAbortedNotifyText", async () => {
+    it("Phase 2b (173) C3: aborted frozen rejection is now dormant pass-through", async () => {
       const TMP = join(tmpdir(), "pi-tg-frozen-text-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: TMP }));
@@ -2643,11 +2647,8 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      // The block reason should match the shared formatAbortedNotifyText output
-      expect(result).toBeDefined();
-      expect((result as any).block).toBe(true);
-      const expectedText = formatAbortedNotifyText("plan", "session_quit", "docs/design/82_Feat.md");
-      expect((result as any).reason).toBe(expectedText);
+      // Phase 2b (173) C3: aborted = dormant → full pass-through (🔴-1)
+      expect(result).toBeUndefined();
 
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();
@@ -2657,8 +2658,10 @@ describe("createToolGuard", () => {
 
   // ─── Phase 2 (171): Aborted-state read-only probe exemption (Q2-B) ──
 
-  describe("Phase 2 (171): aborted-state exempt probe tools", () => {
-    it("aborted + pipeline_state → allow (return undefined) + probe audit", async () => {
+  // ─── Phase 2b (173) C3: Aborted-state is now dormant (full pass-through) ──
+
+  describe("Phase 2b (173) C3: aborted-state dormant pass-through", () => {
+    it("aborted + pipeline_state → dormant pass-through (no probe audit)", async () => {
       const TMP = join(tmpdir(), "pi-tg-exempt-ps-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: TMP }));
@@ -2672,20 +2675,20 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      // Allow (undefined = no block)
+      // Phase 2b (173) C3: aborted = dormant → full pass-through, returns before frozen check
       expect(result).toBeUndefined();
 
-      // Probe audit emitted
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-      expect(logContent).toContain("tool_allowed_frozen_probe");
-      expect(logContent).toContain("tool=pipeline_state");
+      // No probe audit (dormant returns before reaching frozen probe exemption)
+      let logContent = "";
+      try { logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8"); } catch { /* */ }
+      expect(logContent).not.toContain("tool_allowed_frozen_probe");
 
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();
       __resetMemoryThrottle();
     });
 
-    it("aborted + get_subagent_result → allow + probe audit", async () => {
+    it("aborted + get_subagent_result → dormant pass-through", async () => {
       const TMP = join(tmpdir(), "pi-tg-exempt-gsr-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: TMP }));
@@ -2701,16 +2704,12 @@ describe("createToolGuard", () => {
 
       expect(result).toBeUndefined();
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-      expect(logContent).toContain("tool_allowed_frozen_probe");
-      expect(logContent).toContain("tool=get_subagent_result");
-
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();
       __resetMemoryThrottle();
     });
 
-    it("aborted + write → still block (not in exempt list)", async () => {
+    it("aborted + write → dormant pass-through (🔴-1 protection chain bypassed)", async () => {
       const TMP = join(tmpdir(), "pi-tg-exempt-write-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: TMP }));
@@ -2724,15 +2723,15 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      expect(result).toBeDefined();
-      expect((result as any).block).toBe(true);
+      // Phase 2b (173) C3: aborted = dormant → full pass-through (🔴-1)
+      expect(result).toBeUndefined();
 
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();
       __resetMemoryThrottle();
     });
 
-    it("aborted + read → still block (read not in exempt list per Q2-B)", async () => {
+    it("aborted + read → dormant pass-through (🔴-1)", async () => {
       const TMP = join(tmpdir(), "pi-tg-exempt-read-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: TMP }));
@@ -2746,9 +2745,8 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
 
-      expect(result).toBeDefined();
-      expect((result as any).block).toBe(true);
-      expect((result as any).reason).toContain("aborted");
+      // Phase 2b (173) C3: aborted = dormant → full pass-through (🔴-1)
+      expect(result).toBeUndefined();
 
       await rm(TMP, { recursive: true, force: true });
       __resetAuditDirPath();
@@ -2781,14 +2779,15 @@ describe("createToolGuard", () => {
       __resetMemoryThrottle();
     });
 
-    it("probe audit is throttled (only 1 within window)", async () => {
+    it("blocked probe audit is throttled (only 1 within window)", async () => {
       const TMP = join(tmpdir(), "pi-tg-exempt-throttle-" + Date.now());
       await mkdir(TMP, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: TMP }));
       __resetMemoryThrottle();
 
       const config = makeTestConfig({ projectRoot: TMP });
-      const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+      // Use "blocked" instead of "aborted" — aborted is now dormant (pass-through)
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta);
       ctx.toolCall = { name: "pipeline_state", arguments: {} };
 

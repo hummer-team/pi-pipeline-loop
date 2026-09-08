@@ -7,6 +7,7 @@
 import type { PipelineConfig, Command, SessionMeta, PipelineStage } from "../types";
 import { PROTECTED_PATHS } from "../constants";
 import { checkTemplateDrift } from "../utils/template-drift";
+import { isDormant } from "../core/dormancy";
 
 /**
  * Creates the `/pipeline-status` command.
@@ -29,11 +30,12 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         return { error: "No session context available" };
       }
 
-      const meta: SessionMeta | undefined = ctx.session.getMeta();
-      // Phase 2a (173) C6: no-meta guard — dormant output
-      if (!meta?.pipelineId) {
+      const rawMeta: SessionMeta | undefined = ctx.session.getMeta();
+      // Phase 2b (173) C3: dormant guard — dormant output
+      if (!rawMeta || isDormant(rawMeta)) {
         return { success: true, content: "No active pipeline. Run /pipeline-start <doc>." };
       }
+      const meta: SessionMeta = rawMeta;
       const stageConfig = config.stages[meta.currentStage as PipelineStage];
       const currentSummary = meta.summaries[meta.currentStage as PipelineStage];
 

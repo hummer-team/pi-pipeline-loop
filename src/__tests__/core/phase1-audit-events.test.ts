@@ -107,7 +107,7 @@ describe("Phase 1 audit: stage_advance events", () => {
     expect(log).toContain("reason=same_stage");
   });
 
-  it("writes stage_advance_failed when already completed", async () => {
+  it("Phase 2b (173) C3: completed stage → dormant, guidance message", async () => {
     const config = makeTestConfig({ projectRoot: root });
     const meta = makeTestMeta({ currentStage: "completed" });
     const ctx = createCtx(meta);
@@ -115,10 +115,8 @@ describe("Phase 1 audit: stage_advance events", () => {
     const tool = createStageAdvancer(config);
     const result = await tool.execute({}, ctx as any) as any;
 
-    expect(result.success).toBe(false);
-    const log = await readAuditLog(root);
-    expect(log).toContain("stage_advance_failed");
-    expect(log).toContain("reason=already_completed");
+    // Phase 2b (173) C3: completed = dormant → guidance message
+    expect(result.message).toContain("No active pipeline");
   });
 
   it("writes pipeline_completed when advancing to completed", async () => {

@@ -52,6 +52,7 @@ import { askCommandDecision } from "../utils/protect-ask";
 import { detectSessionRole } from "./session-role";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { probeAgentState } from "../utils/subagents-introspect";
+import { isDormant, DORMANT_KEEP_PROTECTION } from "./dormancy";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
@@ -364,9 +365,16 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
     event: "tool_call",
     handler: async (ctx: RuntimeCtx): Promise<ToolCallEventResult | void> => {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — return undefined (full pass-through)
+      // Phase 2b (173) C3: dormant guard — full pass-through (🔴-1)
+      // Default (DORMANT_KEEP_PROTECTION=false): ALL checks bypassed
+      // Switch=true: only silencing side bypassed; protection chain remains
+      if (rawMeta && isDormant(rawMeta)) {
+        if (!DORMANT_KEEP_PROTECTION) return undefined;
+        // DORMANT_KEEP_PROTECTION=true: fall through to protection chain only
+        // (stage whitelist, frozen intercept, protect, gitignore, blacklist)
+        // Skip: stage whitelist and frozen sections — those are pipeline-aware
+      }
       if (!rawMeta?.pipelineId) return undefined;
-      // After the guard, meta is guaranteed non-null (pipelineId exists)
       const meta: SessionMeta = rawMeta;
       const stageConfig = config.stages[meta.currentStage];
       // tool_call events always populate toolCall (buildRuntimeCtx guarantees it)

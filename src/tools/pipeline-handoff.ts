@@ -12,6 +12,7 @@ import { freezeAndPrompt } from "../core/flow-state";
 import { checkStageSummaryHash } from "../utils/summary-hash";
 import { recordStageVisit } from "../utils/stage-visit";
 import { toProjectRelative } from "../utils/path-display";
+import { isDormant } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 
 /**
@@ -57,11 +58,12 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         return { error: "No session context available" };
       }
 
-      const meta = ctx.session.getMeta() as SessionMeta | undefined;
-      // Phase 2a (173) C6: no-meta guard — guidance message
-      if (!meta?.pipelineId) {
+      const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 2b (173) C3: dormant guard — guidance message
+      if (!rawMeta || isDormant(rawMeta)) {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
+      const meta: SessionMeta = rawMeta;
       const currentStage = meta.currentStage;
       const nextStage = args.nextStage as PipelineStage;
       const note = (args.note as string) ?? "";
