@@ -751,15 +751,88 @@ export function formatDecisionMenuHint(config: PipelineConfig): string {
 
 export type PromptDecisionOutcome = "cancelled" | "interrupted" | "decided" | "no-menu";
 
+/**
+ * Phase 3 (173) C9: Secondary stage-selection menu helper.
+ *
+ * Extracted so that shortcut/start/replay/re-popup entries can bypass the
+ * first-level 6-item menu when the user's intent is already "choose stage"
+ * (e.g. shortcut → Choose stage… should go straight to the stage list
+ * instead of re-prompting the entire first-level menu).
+ *
+ * @returns "decided" on successful choose_stage, "cancelled" on Esc
+ */
+async function promptStageSelection(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  config: PipelineConfig,
+  opts: { ui: NonNullable<FlowStateCtx["ui"]>; source: string; tuiEnabled: boolean },
+): Promise<PromptDecisionOutcome> {
+  const { ui, source, tuiEnabled } = opts;
+  const inferenceResult = inferResumeStage(meta, config);
+  const inferred = inferenceResult.stage;
+  const inferenceBasis = inferenceResult.basis;
+  const stageChoices: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
+
+  // Build secondary menu items with inferred stage first (if available)
+  const menuItems: string[] = [];
+  const orderedChoices: PipelineStage[] = [];
+  if (inferred) {
+    menuItems.push(`${inferred} (default)`);
+    orderedChoices.push(inferred);
+  }
+  for (const s of stageChoices) {
+    if (s !== inferred) {
+      menuItems.push(s);
+      orderedChoices.push(s);
+    }
+  }
+
+  const stageSelection = await ui.select!(
+    inferred
+      ? `Choose stage to resume from (inferred: ${inferred}):`
+      : "Choose stage to resume from (cannot infer — select manually):",
+    menuItems,
+  );
+
+  if (stageSelection === undefined) {
+    // Esc in secondary menu: audit + notify, consistent with primary Esc path.
+    clearDecisionTimer(meta.pipelineId);
+    await safeWriteAuditLog("pipeline_decision_cancelled", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      context: "choose_stage_secondary",
+    });
+    if (tuiEnabled) {
+      ui.notify?.(
+        `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`,
+      );
+    }
+    return "cancelled";
+  }
+
+  // Find the selected stage
+  const selectedIdx = menuItems.indexOf(stageSelection);
+  const targetStage = orderedChoices[selectedIdx];
+  if (targetStage) {
+    await executeDecision(ctx, meta, "choose_stage", config, {
+      source,
+      targetStage,
+      basis: inferenceBasis,
+    });
+  }
+  return "decided";
+}
+
 export async function promptDecisionMenu(
   ctx: FlowStateCtx,
   meta: SessionMeta,
   config: PipelineConfig,
-  opts?: { ui?: FlowStateCtx["ui"]; source?: string },
+  opts?: { ui?: FlowStateCtx["ui"]; source?: string; directStageSelect?: boolean },
 ): Promise<PromptDecisionOutcome> {
   const ui = opts?.ui ?? ctx.ui;
   const menu = buildDecisionMenu(meta);
   const tuiEnabled = config.output?.pipelineStage !== false;
+  const source = opts?.source ?? "menu";
 
   if (!menu) {
     // aborted → do not prompt
@@ -786,6 +859,16 @@ export async function promptDecisionMenu(
 
   if (ui?.select) {
     try {
+      // Phase 3 (173) C9 fix (review round 2): directStageSelect bypasses the
+      // first-level 6-item menu and goes straight to the secondary stage list.
+      // Used by shortcut routing when the user already selected "Choose stage…"
+      // from the shortcut — avoids silently discarding the user's intent if
+      // they pick a different top-level item in the re-prompted first menu.
+      if (opts?.directStageSelect) {
+        const freshMeta = ctx.session.getMeta() ?? meta;
+        return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled });
+      }
+
       const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
       const attemptAt = Date.now();
       const selection = await ui.select(
@@ -829,65 +912,12 @@ export async function promptDecisionMenu(
         // Re-read meta after potential UI delay
         const freshMeta = ctx.session.getMeta() ?? meta;
 
-        // Phase 3 (173) C9: choose_stage → secondary menu
+        // Phase 3 (173) C9: choose_stage → secondary menu (via shared helper)
         if (decision === "choose_stage") {
-          const inferenceResult = inferResumeStage(freshMeta, config);
-          const inferred = inferenceResult.stage;
-          const inferenceBasis = inferenceResult.basis;
-          const stageChoices: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
-
-          // Build secondary menu items with inferred stage first (if available)
-          const menuItems: string[] = [];
-          const orderedChoices: PipelineStage[] = [];
-          if (inferred) {
-            menuItems.push(`${inferred} (default)`);
-            orderedChoices.push(inferred);
-          }
-          for (const s of stageChoices) {
-            if (s !== inferred) {
-              menuItems.push(s);
-              orderedChoices.push(s);
-            }
-          }
-
-          const stageSelection = await ui.select!(
-            inferred
-              ? `Choose stage to resume from (inferred: ${inferred}):`
-              : "Choose stage to resume from (cannot infer — select manually):",
-            menuItems,
-          );
-
-          if (stageSelection === undefined) {
-            // Phase 3 (173) C10④ fix: secondary menu Esc audit + notify
-            // Consistent with primary Esc path (pipeline_decision_cancelled)
-            clearDecisionTimer(freshMeta.pipelineId);
-            await safeWriteAuditLog("pipeline_decision_cancelled", {
-              pipelineId: freshMeta.pipelineId,
-              stage: freshMeta.currentStage,
-              context: "choose_stage_secondary",
-            });
-            if (tuiEnabled) {
-              ui.notify?.(
-                `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint(config)}`,
-              );
-            }
-            return "cancelled";
-          }
-
-          // Find the selected stage
-          const selectedIdx = menuItems.indexOf(stageSelection);
-          const targetStage = orderedChoices[selectedIdx];
-          if (targetStage) {
-            await executeDecision(ctx, freshMeta, "choose_stage", config, {
-              source: opts?.source,
-              targetStage,
-              basis: inferenceBasis,
-            });
-          }
-          return "decided";
+          return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled });
         }
 
-        await executeDecision(ctx, freshMeta, decision, config, { source: opts?.source });
+        await executeDecision(ctx, freshMeta, decision, config, { source });
       }
       return "decided";
     } catch (err) {

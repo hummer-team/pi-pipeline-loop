@@ -27,6 +27,7 @@ import type { SessionMeta, PipelineConfig } from "../types";
 import { safeWriteAuditLog, encodeAuditValue } from "./auditLog";
 import { PROTECT_ASK_DISMISS_MS, DEFAULT_MAX_DISMISS_COUNT } from "../constants";
 import { freezeAndPrompt } from "../core/flow-state";
+import { getHostRole } from "../core/dormancy";
 
 /**
  * Tri-state outcome for protect-ask decisions.
@@ -113,18 +114,26 @@ export async function askProtectDecision(
   ];
 
   let selection: string | undefined;
+  // Phase 4 (173) C11: Track whether UI is available for noUi audit tagging.
+  // Per plan Phase 4 §2: no UI / select throws ⇒ classify as dismissed but
+  // do NOT increment dismissCount (environment fact, not user behavior).
+  const hasUi = typeof ctx?.ui?.select === "function";
+  let selectThrew = false;
   const attemptAt = Date.now();
   try {
-    if (typeof ctx?.ui?.select === "function") {
+    if (hasUi) {
       selection = await ctx.ui.select(`Protected file edit: ${relPath}`, options);
     }
   } catch (err) {
-    // Log diagnostic info on select failure, then fall through to canceled/block (fail-safe).
+    // Log diagnostic info on select failure, then fall through to dismissed/block (fail-safe).
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[protect-ask] askProtectDecision select error: relPath="${relPath}", error=${errMsg}`);
     selection = undefined;
+    selectThrew = true;
   }
   const elapsed = Date.now() - attemptAt;
+  // noUi: true when UI is absent OR select threw (environment fact, not user behavior)
+  const noUi = !hasUi || selectThrew;
 
   // Encode file path for audit (| → %7C, = → %3D)
   const encodedFile = encodeAuditValue(relPath);
@@ -141,8 +150,10 @@ export async function askProtectDecision(
     }
   }
 
-  // Handle dismissed: increment dismissCount and check overflow
-  if (action === "dismissed") {
+  // Handle dismissed: increment dismissCount and check overflow ONLY when UI was
+  // actually presented (noUi=false). Per plan Phase 4 §2: no-UI/throw must NOT
+  // accumulate dismissCount — it is an environment fact, not user dismiss behavior.
+  if (action === "dismissed" && !noUi) {
     await handleDismissOverflow(ctx, meta, config);
   }
 
@@ -152,6 +163,8 @@ export async function askProtectDecision(
     action,
     file: encodedFile,
     elapsedMs: String(elapsed),
+    hostRole: getHostRole(ctx),
+    ...(noUi ? { noUi: "true" } : {}),
   });
 
   return { decision, action };
@@ -179,9 +192,12 @@ export async function askCommandDecision(
   ];
 
   let selection: string | undefined;
+  // Phase 4 (173) C11: Track whether UI is available for noUi audit tagging.
+  const hasUi = typeof ctx?.ui?.select === "function";
+  let selectThrew = false;
   const attemptAt = Date.now();
   try {
-    if (typeof ctx?.ui?.select === "function") {
+    if (hasUi) {
       // Truncate long commands for display
       const displayCmd = command.length > 50 ? command.slice(0, 47) + "..." : command;
       selection = await ctx.ui.select(`Destructive command: ${displayCmd}`, options);
@@ -190,8 +206,10 @@ export async function askCommandDecision(
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`[protect-ask] askCommandDecision select error: command="${command}", error=${errMsg}`);
     selection = undefined;
+    selectThrew = true;
   }
   const elapsed = Date.now() - attemptAt;
+  const noUi = !hasUi || selectThrew;
 
   // Encode command for audit (| → %7C, = → %3D, newlines → space)
   const encodedCmd = encodeAuditValue(command);
@@ -208,8 +226,8 @@ export async function askCommandDecision(
     }
   }
 
-  // Handle dismissed: increment dismissCount and check overflow
-  if (action === "dismissed") {
+  // Handle dismissed: skip dismissCount increment when noUi (environment fact).
+  if (action === "dismissed" && !noUi) {
     await handleDismissOverflow(ctx, meta, config);
   }
 
@@ -219,6 +237,8 @@ export async function askCommandDecision(
     action,
     command: encodedCmd,
     elapsedMs: String(elapsed),
+    hostRole: getHostRole(ctx),
+    ...(noUi ? { noUi: "true" } : {}),
   });
 
   return { decision, action };

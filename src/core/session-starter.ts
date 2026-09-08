@@ -368,17 +368,22 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           if (!isChild) {
             const inferenceResult = inferResumeStage(meta, config);
             const inferred = inferenceResult.stage;
+            const inferenceBasis = inferenceResult.basis;
             if (inferred) {
+              // Phase 3 (173) C8: append inference basis in parens per plan §3.1
+              const basisSuffix = inferenceBasis ? ` (${inferenceBasis})` : "";
               ui.notify(ctx,
                 `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ` +
-                `Resuming from "${inferred}" by inference. ${formatDecisionMenuHint(config)}`
+                `Resuming from "${inferred}" by inference${basisSuffix}. ${formatDecisionMenuHint(config)}`
               );
             }
             const replayOutcome = await promptDecisionMenu(
               { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
               meta,
               config,
-              { source: reason === "startup" ? "startup" : "replay" },
+              // Phase 3 (173) C8: plan §3.1 dictates source="replay" for all replay reasons
+              // (including startup); "startup" is not in the plan §3.3-④ source vocabulary.
+              { source: "replay" },
             );
             if (replayOutcome === "interrupted") {
               scheduleDecisionRetry(

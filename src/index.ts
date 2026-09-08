@@ -251,11 +251,16 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
                   // internally (including inference chain and targetStage passing).
                   // Other decisions go through executeDecision directly.
                   if (decision === "choose_stage") {
+                    // Phase 3 (173) C9 review-r2 fix: bypass first-level menu and
+                    // go directly to the secondary stage list. The user already
+                    // expressed "choose stage" intent via the shortcut; re-prompting
+                    // the full first-level menu would risk silent discard of this
+                    // intent if the user picks a different top-level item.
                     await promptDecisionMenu(
                       { session: rctx.session, ui: rctx.ui, _ctx: (rctx as any)._ctx },
                       freshMeta,
                       config,
-                      { source: "shortcut" },
+                      { source: "shortcut", directStageSelect: true },
                     );
                   } else {
                     // Phase 3 (173) C10④: source tag for audit traceability
