@@ -147,7 +147,14 @@ export function stripFrontmatter(content: string): string {
  * Unlike `stripFrontmatter` (lenient, for fingerprint normalization), this
  * function only strips when:
  * 1. Content starts with a `---` line (anchored at string start, no `m` flag).
+ *    The opening `---` tolerates optional trailing whitespace (spaces/tabs)
+ *    before the line break.
  * 2. A closing `---` exists on its own line (trailing whitespace allowed).
+ *
+ * Both LF (`\n`) and CRLF (`\r\n`) line endings are accepted at the opening
+ * delimiter, the closing delimiter, and the line preceding the closing
+ * delimiter. This ensures correct stripping when skill files are checked out
+ * with `core.autocrlf=true` on Windows.
  *
  * If the content does NOT start with `---`, it is returned as-is — even if
  * `---` dividers appear later in the body. This eliminates the risk of
@@ -159,8 +166,10 @@ export function stripFrontmatter(content: string): string {
  */
 export function stripLeadingFrontmatter(content: string): string {
   // Match only at string start: `---` line → body → closing `---` on its own line
-  // No `m` flag ensures `^` anchors to string start, not line start
-  const match = content.match(/^---\n[\s\S]*?\n---[ \t]*\n?/);
+  // No `m` flag ensures `^` anchors to string start, not line start.
+  // Tolerates: optional trailing whitespace on opening `---`, CRLF (`\r\n`)
+  // line endings at all line-break positions.
+  const match = content.match(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/);
   if (match) {
     return content.slice(match[0].length);
   }

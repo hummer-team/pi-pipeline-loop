@@ -1224,6 +1224,25 @@ describe("stripLeadingFrontmatter (D6 / 174)", () => {
     const result = stripLeadingFrontmatter(content);
     expect(result).toBe(content); // Not stripped because content doesn't start with ---
   });
+
+  it("strips frontmatter with CRLF line endings (Windows core.autocrlf scenario)", () => {
+    // CRLF scenario: skill file checked out with core.autocrlf=true on Windows
+    const content = "---\r\nname: design\r\ndescription: test\r\n---\r\n# Design Skill\r\n\r\nBody content.";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe("# Design Skill\r\n\r\nBody content.");
+  });
+
+  it("strips frontmatter when opening --- has trailing whitespace", () => {
+    const content = "--- \nname: plan\n---\n# Plan Skill\n\nContent.";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe("# Plan Skill\n\nContent.");
+  });
+
+  it("strips frontmatter with CRLF and no trailing newline after closing ---", () => {
+    const content = "---\r\nname: design\r\n---";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe("");
+  });
 });
 
 // ─── D6 (174): buildStageSkill integration — frontmatter stripped in injection ─
