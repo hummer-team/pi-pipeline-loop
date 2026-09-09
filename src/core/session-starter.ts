@@ -342,8 +342,14 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
 
         // Phase 3 (173) 🔴-2: Narrow stale_startup to running-only.
         // Previously (171): any non-aborted non-completed → stale abort.
-        // Now: only running僵尸 → stale. blocked/awaiting_human → replay menu.
-        if (reason === "startup" && flowState === "running" && !isTerminalCompleted(meta)) {
+        // round-6 (927740c) established: awaiting_human is a valid frozen form
+        // that can coexist with flowState="running" (stage-advancer does not
+        // write flowState when advancing to awaiting_human). Such frozen forms
+        // must NOT be treated as running zombies — they go to frozen replay.
+        // Now: only running AND not frozen → stale. isFrozen is the authoritative
+        // predicate (blocked/aborted/awaiting_human), shared with the replay
+        // branch at line 363, ensuring stale semantics = "running zombie only".
+        if (reason === "startup" && flowState === "running" && !isFrozen(meta) && !isTerminalCompleted(meta)) {
           // Running zombie after crash/SIGKILL → stale_startup abort
           const { sessionFile } = detectSessionRole(ctx);
           await markPipelineAborted(ctx, "stale_startup", {

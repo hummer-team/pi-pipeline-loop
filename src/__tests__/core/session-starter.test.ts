@@ -307,6 +307,113 @@ describe("createSessionStarter", () => {
       expect(meta.flowState).toBe("aborted");
       expect(meta.terminateReason).toBe("stale_startup");
     });
+
+    // ── round-7 (173-v1) F1: awaiting_human + running/missing flowState ──
+    // These tests pin the fix for session-starter.ts:346 — the !isFrozen(meta)
+    // exclusion ensures awaiting_human frozen forms are NOT treated as running
+    // zombies on startup. They must go to the frozen replay path (C8 menu).
+
+    it("T1: startup + awaiting_human + flowState=running → frozen replay (NOT stale abort)", async () => {
+      const TMP_T1 = join(tmpdir(), "pi-ss-frozen-replay-t1-" + Date.now());
+      await mkdir(TMP_T1, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP_T1 });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "awaiting_human",
+        previousStage: "review",
+        pipelineId: "pipe-frozen-replay-1",
+        flowState: "running",
+      });
+
+      const selectCalls: string[] = [];
+      const notifications: string[] = [];
+      const ctx = {
+        ...createCtx(meta),
+        event: { reason: "startup" },
+        ui: {
+          notify: (msg: string) => { notifications.push(msg); },
+          select: async (_msg: string, _opts: string[]) => {
+            selectCalls.push("called");
+            return "Resume";
+          },
+        },
+      };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // Stale path NOT taken: no abort, no stale_reset audit
+      expect(meta.terminateReason).not.toBe("stale_startup");
+      // After resume decision: flowState stays "running" (executeDecision resume sets it)
+      expect(meta.flowState).toBe("running");
+      // Frozen replay path taken: ui.select called exactly once
+      expect(selectCalls.length).toBe(1);
+      // No "Pipeline aborted" notification (stale path would emit this)
+      const abortedNotify = notifications.find(n => n.includes("Pipeline aborted"));
+      expect(abortedNotify).toBeUndefined();
+
+      // Verify audit file does NOT contain pipeline_stale_reset
+      const logPath = join(TMP_T1, ".pi", "audit", getDateAuditFileName());
+      try {
+        const content = await readFile(logPath, "utf-8");
+        expect(content).not.toContain("pipeline_stale_reset");
+      } catch {
+        // Audit file may not exist if no audit entries were written — that's also valid
+      }
+    });
+
+    it("T2: startup + awaiting_human + flowState missing → frozen replay (NOT stale abort)", async () => {
+      const TMP_T2 = join(tmpdir(), "pi-ss-frozen-replay-t2-" + Date.now());
+      await mkdir(TMP_T2, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP_T2 });
+      await initAuditLog(config);
+
+      // Meta without flowState — mirrors stage-advancer not writing flowState
+      // when advancing to awaiting_human (real-world form)
+      const meta: Record<string, unknown> = { ...makeTestMeta({
+        currentStage: "awaiting_human",
+        previousStage: "review",
+        pipelineId: "pipe-frozen-replay-2",
+      }) };
+      delete meta.flowState;
+
+      const selectCalls: string[] = [];
+      const notifications: string[] = [];
+      const ctx = {
+        ...createCtx(meta as any),
+        event: { reason: "startup" },
+        ui: {
+          notify: (msg: string) => { notifications.push(msg); },
+          select: async (_msg: string, _opts: string[]) => {
+            selectCalls.push("called");
+            return "Resume";
+          },
+        },
+      };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // Stale path NOT taken: terminateReason must not be stale_startup
+      expect(meta.terminateReason).not.toBe("stale_startup");
+      // After resume decision: executeDecision sets flowState to "running"
+      expect(meta.flowState).toBe("running");
+      // Frozen replay path taken: ui.select called exactly once
+      expect(selectCalls.length).toBe(1);
+      // No "Pipeline aborted" notification
+      const abortedNotify = notifications.find(n => n.includes("Pipeline aborted"));
+      expect(abortedNotify).toBeUndefined();
+
+      // Verify audit file does NOT contain pipeline_stale_reset
+      const logPath = join(TMP_T2, ".pi", "audit", getDateAuditFileName());
+      try {
+        const content = await readFile(logPath, "utf-8");
+        expect(content).not.toContain("pipeline_stale_reset");
+      } catch {
+        // Audit file may not exist if no audit entries were written — that's also valid
+      }
+    });
   });
 
   describe("prompt-config cache warmup", () => {
