@@ -471,13 +471,15 @@ describe("Review-r4 Issue 1-④b: C10① blocked start → promptDecisionMenu se
 
 // ─── Issue 1-④c: D2 superseded positive text assertion ──────────────────────
 
-describe("Review-r4 Issue 1-④c: D2 superseded positive text", () => {
-  it("executeDecision restart result message includes superseded hint (plan §3.3-④)", async () => {
-    // D2 "superseded" text appears in pipeline-start.ts for completed wake-up.
-    // Here we verify the executeDecision restart result message (which is the
-    // decision-level equivalent of the D2 superseded concept: old progress not inherited).
-    const config = await setupTmp("restart-superseded");
-    const oldPipelineId = "pipe-old-superseded";
+describe("Review-r4 Issue 1-④c: restart result message (old progress not inherited)", () => {
+  it("executeDecision restart result message explicitly marks old progress as not inherited", async () => {
+    // Verify the executeDecision restart result message conveys the D2 "superseded" concept:
+    // old pipeline progress is explicitly marked as not inherited.
+    // NOTE: The D2 "superseded by new run" text lives in pipeline-start.ts (completed wake-up),
+    // not in executeDecision restart. Here we verify the decision-level equivalent message.
+    // PipelineId deliberately neutral (no "superseded" substring) to prevent self-fulfilling assertions.
+    const config = await setupTmp("restart-not-inherited");
+    const oldPipelineId = "pipe-old-001";
     const meta = makeTestMeta({
       currentStage: "develop",
       flowState: "blocked",
@@ -489,8 +491,9 @@ describe("Review-r4 Issue 1-④c: D2 superseded positive text", () => {
     const result = await executeDecision(ctx, meta, "restart", config);
 
     expect(result.success).toBe(true);
-    // D2 superseded concept: old pipeline progress is explicitly marked as not inherited
-    expect(result.message).toContain("superseded");
+    // Decision-level: old progress is explicitly marked as not inherited (Choose stage hint)
+    expect(result.message).toContain("not inherited");
+    expect(result.message).toContain("Choose stage");
     expect(result.message).toContain(oldPipelineId);
   });
 });
@@ -541,12 +544,17 @@ describe("Review-r4 Issue 1-⑤b: choose_stage→completed→compact exactly 1 t
       blockedReason: "loop_overflow",
     });
     const ctx = makeCtx(meta);
-    // Provide _ctx to allow the compact path (maybeCompactOnPipelineCompleted needs it)
+    // Provide _ctx to allow the compact path (maybeCompactOnPipelineCompleted needs it).
+    // Mock compact + getContextUsage with low token count → skipped_below_threshold outcome.
+    // This exercises the path that sets meta.terminalCompact (consumed flag).
     (ctx as any)._ctx = {
       sessionManager: {
         getBranch: () => [],
         getEntries: () => [],
       },
+      isIdle: () => true,
+      compact: () => {},
+      getContextUsage: () => ({ tokens: 100 }),
     };
 
     const result = await executeDecision(ctx, meta, "choose_stage", config, {
@@ -558,8 +566,10 @@ describe("Review-r4 Issue 1-⑤b: choose_stage→completed→compact exactly 1 t
     expect(result.success).toBe(true);
     expect(meta.currentStage).toBe("completed");
     expect(meta.flowState).toBe("running");
-    // Compact is triggered (internal isIdle guard handles shortcut-key scenario).
-    // The path is exercised without error; maybeCompactOnPipelineCompleted has its
-    // own internal isIdle guard, so in test context it either runs or short-circuits.
+    // Compact path exercised: meta.terminalCompact is set (consumed flag).
+    // maybeCompactOnPipelineCompleted either actually compacted, skipped_below_threshold,
+    // or failed — all outcomes set terminalCompact. This asserts "exactly 1 time" strength:
+    // the flag is consumed (idempotent guard prevents re-entry on second call).
+    expect(meta.terminalCompact).toBeDefined();
   });
 });

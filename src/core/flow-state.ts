@@ -119,7 +119,7 @@ export function isFrozen(meta: SessionMeta): boolean {
 /**
  * Builds the decision menu items for the TUI select dialog.
  *
- * - blocked / awaiting_human → 5 items (resume/skip/rollback/restart/abort)
+ * - blocked / awaiting_human → 6 items (resume/skip/rollback/restart/abort/choose_stage)
  * - running → 2 items (restart/abort)
  * - aborted → null (do not show menu)
  */

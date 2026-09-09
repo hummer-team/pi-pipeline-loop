@@ -787,6 +787,119 @@ describe("createPipelineStartCommand", () => {
       expect(result.error).not.toContain("already completed");
     });
 
+    // Case 4b (review round 5 issue 1): D2 positive assertion — completed wake-up with
+    // valid file actually starts a fresh pipeline and emits "superseded by new run" message.
+    it("completed + valid file → D2: fresh start succeeds with superseded message and new pipelineId", async () => {
+      await fs.writeFile(docPath, "# Fresh Requirement\nDo something new", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const oldPipelineId = "pipe-completed-old-001";
+      const meta = makeTestMeta({
+        currentStage: "completed",
+        flowState: "aborted",
+        pipelineId: oldPipelineId,
+        requirementDoc: "docs/design/old-req.md",
+      });
+      const ctx = createMockRuntimeCtx(meta);
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx);
+
+      // D2: completed wake-up succeeds (not rejected)
+      expect(result.success).toBe(true);
+      // New pipelineId assigned (different from old)
+      expect(result.pipelineId).toMatch(/^pipe-/);
+      expect(result.pipelineId).not.toBe(oldPipelineId);
+      // Superseded message (D2 text from pipeline-start.ts:697-698)
+      expect(result.message).toContain("superseded by new run");
+      // Fresh start at clarify stage
+      expect(result.currentStage).toBe("clarify");
+    });
+
+    // Case 4c (review round 5 issue 2): C10① command layer UI wiring — blocked state
+    // with ui.select available prompts decision menu exactly once and returns success.
+    it("blocked + ui.select available → C10①: prompts decision menu once and returns decided", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+        pipelineId: "pipe-blocked-001",
+      });
+      let selectCalls = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { Object.assign(meta, m); },
+        },
+        ui: {
+          select: async (_message: string, _options: string[]) => {
+            selectCalls++;
+            return "Resume"; // pick first option → resume decision
+          },
+          notify: () => {},
+          setStatus: () => {},
+        },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => [],
+            getEntries: () => [],
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      // C10①: command layer prompts decision menu exactly once via ctx.ui.select
+      expect(selectCalls).toBe(1);
+      // Resume decision succeeded → command returns decided outcome
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("Decision executed");
+    });
+
+    // Case 4d (review round 5 issue 2): awaiting_human + ui.select → prompts menu once
+    it("awaiting_human + ui.select available → C10①: prompts decision menu once and returns decided", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "awaiting_human",
+        previousStage: "develop",
+        flowState: "blocked",
+        blockedReason: "ask_user",
+        pipelineId: "pipe-awaiting-001",
+      });
+      let selectCalls = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { Object.assign(meta, m); },
+        },
+        ui: {
+          select: async (_message: string, _options: string[]) => {
+            selectCalls++;
+            return "Resume";
+          },
+          notify: () => {},
+          setStatus: () => {},
+        },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => [],
+            getEntries: () => [],
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      // C10① awaiting_human branch: same wiring as blocked
+      expect(selectCalls).toBe(1);
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("Decision executed");
+    });
+
     // Case 5: aborted + awaiting_human → error with decision menu hint
     it("aborted + awaiting_human → returns error with decision menu hint (no shortcut key)", async () => {
       const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "ctrl+x" });

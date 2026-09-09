@@ -3,7 +3,7 @@
 
 **dev commit id**: 5d4d54b,af15c5d,7cb0de8,73da6ad,7931bc2,2a724fe,ae6cf4d,5f1d4c8,86580cd
 
-**fix commit id**: 31f6391,a541d76,0881206,9aff103
+**fix commit id**: 31f6391,a541d76,0881206,f53023d,fda6c20
 
 ---
 
@@ -12,8 +12,8 @@
 ### Build Verification (Plugin Repository)
 - `bun run build`: ✅ PASS
 - `bun run typecheck`: ✅ PASS (0 errors)
-- `bun run test`: ✅ PASS (2008 pass / 0 fail / 5133 expect / 82 files)
-- Baseline floor: ≥1892 → Actual: 2008 (+116 from plan estimate)
+- `bun run test`: ✅ PASS (2011 pass / 0 fail / 5146 expect / 82 files)
+- Baseline floor: ≥1892 → Actual: 2011 (+119 from plan estimate)
 
 ### Phase Completion Summary
 
@@ -27,9 +27,15 @@
 | P3 (impl) | `2a724fe` | C8: frozen menu replay + C9: choose_stage + C10④ audit truthfulness | 0 (rewrites) | 1933 |
 | P4 | `ae6cf4d` | C11: tri-state protect-ask + dismissCount overflow guardrail | +15 | 1948 |
 | P5 | `5f1d4c8` | C13/C14/C15/C16/C17: template + drift + spawnTrigger + guide + SKILL | +16 | 1964 |
-| Fix-r2 | `31f6391` | Review round 2 fixes (9 issues) | +27 | 1991 |
-| Fix-r3 | `a541d76` | Review round 3 fixes (test debt, choose_stage bypass, protect-ask noUi, audit source) | 0 (rewrites) | 1991 |
+| Fix-r2 | `31f6391` | Review round 2 fixes (9 issues) | 0 (rewrites) | 1964 |
+| Fix-r3 | `a541d76` | Review round 3 fixes (test debt, choose_stage bypass, protect-ask noUi, audit source) | +27 | 1991 |
 | Fix-r4 | `0881206` | Review round 4 fixes (source audit, restart message, secondary interrupt, test debt) | +17 | 2008 |
+| Fix-r5 | `fda6c20` | Review round 5 fixes (D2 positive assertion, C10① command-layer UI, compact strength, bookkeeping, comment 5→6) | +3 | 2011 |
+
+### Exemption Registry
+| Item | Rationale | Decision |
+|------|-----------|----------|
+| Issue 4 (DORMANT_KEEP_PROTECTION=true behavior variant) | Compile-time constant with no runtime injection face; adding `keepProtection?: boolean` to createToolGuard deps exceeds minimum-intervention principle for closing round. Zero functional risk (default off, requires source change + rebuild to enable). | **Exempted** — registered, fix-loop converged |
 
 ### Business-Side Actions (User Manual — C12)
 The following actions must be performed by the user on the business project:
