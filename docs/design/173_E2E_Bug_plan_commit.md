@@ -1,9 +1,9 @@
 # plan & commit id's
 **plan doc**: `docs/design/173_E2E_Bug_plan.md`
 
-**dev commit id**: 5d4d54b,af15c5d,7cb0de8,73da6ad,7931bc2,2a724fe,ae6cf4d,5f1d4c8,0adbcde
+**dev commit id**: 5d4d54b,af15c5d,7cb0de8,73da6ad,7931bc2,2a724fe,ae6cf4d,5f1d4c8,86580cd
 
-**fix commit id**: 31f6391
+**fix commit id**: 31f6391,a541d76,0881206,9aff103
 
 ---
 
@@ -12,14 +12,14 @@
 ### Build Verification (Plugin Repository)
 - `bun run build`: ✅ PASS
 - `bun run typecheck`: ✅ PASS (0 errors)
-- `bun run test`: ✅ PASS (1964 pass / 0 fail / 5021 expect / 80 files)
-- Baseline floor: ≥1892 → Actual: 1964 (+72 from plan estimate)
+- `bun run test`: ✅ PASS (2008 pass / 0 fail / 5133 expect / 82 files)
+- Baseline floor: ≥1892 → Actual: 2008 (+116 from plan estimate)
 
 ### Phase Completion Summary
 
 | Phase | Commit | Description | Tests Added | Cumulative |
 |-------|--------|-------------|-------------|------------|
-| P0 | `5d4d54b` | C1: restart registry rebind + timer cleanup | +6 | 1907 |
+| P0 | `5d4d54b` | C1: restart registry rebind + timer cleanup | +9 | 1901 |
 | P1 | `af15c5d` | C7: owner-only menu gate + retry self-destruct + C10③ text unification | +10 | 1911 |
 | P2a | `7cb0de8` | C2: dormant predicate + C6: no-meta guards (14 surfaces) | +22 | 1933 |
 | P2b | `73da6ad` | C4: V1 auto-creation removed + C3: dormant matrix activated + D2: completed wake-up | 0 (rewrites) | 1933 |
@@ -27,6 +27,9 @@
 | P3 (impl) | `2a724fe` | C8: frozen menu replay + C9: choose_stage + C10④ audit truthfulness | 0 (rewrites) | 1933 |
 | P4 | `ae6cf4d` | C11: tri-state protect-ask + dismissCount overflow guardrail | +15 | 1948 |
 | P5 | `5f1d4c8` | C13/C14/C15/C16/C17: template + drift + spawnTrigger + guide + SKILL | +16 | 1964 |
+| Fix-r2 | `31f6391` | Review round 2 fixes (9 issues) | +27 | 1991 |
+| Fix-r3 | `a541d76` | Review round 3 fixes (test debt, choose_stage bypass, protect-ask noUi, audit source) | 0 (rewrites) | 1991 |
+| Fix-r4 | `0881206` | Review round 4 fixes (source audit, restart message, secondary interrupt, test debt) | +17 | 2008 |
 
 ### Business-Side Actions (User Manual — C12)
 The following actions must be performed by the user on the business project:
