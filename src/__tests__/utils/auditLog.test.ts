@@ -385,6 +385,58 @@ describe("writePromptSnapshot", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  // ─── D5 (174): prompt_hash dedup ──────────────────────────────────────────
+
+  it("D5: does not duplicate prompt_hash when meta already contains it", async () => {
+    const root = makeTmpRoot("snapshot-hash-dedup");
+    await initAuditLog(makeConfig(root));
+
+    const callerHash = "caller-provided-hash-abc123";
+    await writePromptSnapshot(
+      "prompt_snapshot",
+      { stage: "plan", pipelineId: "pipe-hash", source: "full", prompt_hash: callerHash },
+      "Some prompt content",
+    );
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+
+    // Extract the meta line (first line of the snapshot block)
+    const metaLine = content.split("\n")[0];
+
+    // prompt_hash should appear exactly once
+    const hashOccurrences = (metaLine.match(/prompt_hash=/g) ?? []).length;
+    expect(hashOccurrences).toBe(1);
+
+    // The value should be the caller-provided one, not an auto-computed one
+    expect(metaLine).toContain(`prompt_hash=${callerHash}`);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("D5: auto-appends prompt_hash when meta does not contain it (backward compatible)", async () => {
+    const root = makeTmpRoot("snapshot-hash-auto");
+    await initAuditLog(makeConfig(root));
+
+    await writePromptSnapshot(
+      "prompt_snapshot",
+      { stage: "clarify", pipelineId: "pipe-auto", source: "plugin" },
+      "Plugin prompt content",
+    );
+
+    const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+
+    // Extract the meta line
+    const metaLine = content.split("\n")[0];
+
+    // prompt_hash should appear exactly once (auto-appended)
+    const hashOccurrences = (metaLine.match(/prompt_hash=/g) ?? []).length;
+    expect(hashOccurrences).toBe(1);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("inserts a blank line between snapshot block and next audit event (E7 protocol)", async () => {
     const root = makeTmpRoot("snapshot-blank-sep");
     await initAuditLog(makeConfig(root));

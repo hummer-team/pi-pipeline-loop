@@ -1120,8 +1120,8 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         return {
           success: true,
           message: resolvedTarget === null
-            ? "Pipeline completed — no further stages"
-            : `Advanced from "${currentStage}" to "completed"`,
+            ? "Pipeline completed — no further stages. Next round: run /pipeline-start <doc> in this session, or use /new first for a clean context."
+            : `Advanced from "${currentStage}" to "completed". Next round: run /pipeline-start <doc> in this session, or use /new first for a clean context.`,
           currentStage: "completed",
         };
       }

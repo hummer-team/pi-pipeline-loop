@@ -18,6 +18,8 @@
  *   - prompt_snapshot_base: pi base system prompt only (placeholder when absent)
  *   - prompt_snapshot_plugin: plugin-injected prompt only
  *   All three events carry a prompt_hash metadata field for content identification.
+ *   When meta already contains prompt_hash (e.g., "full" mode callers), the function
+ *   skips the automatic append to avoid duplicate keys in the snapshot line.
  *
  * All snapshot lines are appended to `{auditDir}/YYYYMMDD_audit.log` alongside
  * regular single-line audit events.
@@ -248,14 +250,18 @@ export async function writePromptSnapshot(
   ].join(":");
 
   // Build metadata single-line event (same format as writeAuditLog)
-  // Append prompt_hash (SHA-256) for quick comparison / dedup
+  // D5: Only append prompt_hash if not already present in meta (avoids duplicate keys)
   let metaLine = `${datePart} ${timePart} - [INFO] ${stage}`;
+  let hasPromptHash = false;
   if (message && Object.keys(message).length > 0) {
     for (const [k, v] of Object.entries(message)) {
       metaLine += ` | ${k}=${v}`;
+      if (k === "prompt_hash") hasPromptHash = true;
     }
   }
-  metaLine += ` | prompt_hash=${computeStringHash(prompt)}`;
+  if (!hasPromptHash) {
+    metaLine += ` | prompt_hash=${computeStringHash(prompt)}`;
+  }
 
   // Build the full snapshot block with a real blank line after END
   // to separate from the next audit event (E7 protocol)

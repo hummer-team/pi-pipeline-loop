@@ -88,6 +88,8 @@ describe("createStageAdvancer", () => {
 
     expect((result as any).success).toBe(true);
     expect((result as any).message).toContain("Pipeline completed");
+    // D4 (174): next-round guidance appended
+    expect((result as any).message).toContain("/pipeline-start");
     expect(meta.currentStage).toBe("completed");
   });
 
@@ -106,6 +108,8 @@ describe("createStageAdvancer", () => {
     // clearStage path: message contains "Advanced" (not "Pipeline completed — no further stages")
     expect((result as any).message).toContain("Advanced");
     expect((result as any).message).toContain("completed");
+    // D4 (174): next-round guidance appended
+    expect((result as any).message).toContain("/pipeline-start");
   });
 
   it("resets loopCount and currentStepIndex on advance", async () => {
