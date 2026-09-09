@@ -247,6 +247,8 @@ export async function executeDecision(
         fromStage: prevStage,
         toStage,
         reason: meta.blockedReason ?? "",
+        // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
+        ...(opts?.source ? { source: opts.source } : {}),
       });
 
       // Phase 4 (169) W3: When skip targets completed, trigger terminal compaction.
@@ -301,6 +303,8 @@ export async function executeDecision(
         fromStage: prevStage,
         toStage,
         reason: meta.blockedReason ?? "",
+        // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
+        ...(opts?.source ? { source: opts.source } : {}),
       });
 
       return { success: true, message: `Rolled back from "${prevStage}" to "${toStage}".` };
@@ -374,7 +378,14 @@ export async function executeDecision(
       }
       // ─── end Phase 0 (173) C1 ────────────────────────────────────────────
 
-      return { success: true, message: `Pipeline restarted as "${newPipelineId}" at stage "clarify".` };
+      // Phase 3 (173) §3.3-④: restart result message includes old pipeline id
+      // and hint that previous progress is not inherited (use Choose stage for resume).
+      return {
+        success: true,
+        message:
+          `Pipeline restarted as "${newPipelineId}" at stage "clarify". ` +
+          `Previous pipeline "${oldPipelineId}" progress is not inherited — use Choose stage for resume.`,
+      };
     }
 
     case "abort": {
@@ -398,6 +409,8 @@ export async function executeDecision(
         terminateReason: "user_abort",
         nextStage: abortNextStage ?? "null",
         nextAction: `run /pipeline-start ${abortDocHint} to resume at "${fromStage}"`,
+        // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
+        ...(opts?.source ? { source: opts.source } : {}),
       });
 
       return { success: true, message: "Pipeline aborted. Use /pipeline-start to begin a new run." };
@@ -787,6 +800,7 @@ async function promptStageSelection(
     }
   }
 
+  const attemptAt = Date.now();
   const stageSelection = await ui.select!(
     inferred
       ? `Choose stage to resume from (inferred: ${inferred}):`
@@ -795,7 +809,22 @@ async function promptStageSelection(
   );
 
   if (stageSelection === undefined) {
-    // Esc in secondary menu: audit + notify, consistent with primary Esc path.
+    // Phase 3 (173) §3.2 + 172-G5 precedent: distinguish streaming dismiss (<1500ms)
+    // from real user Esc. Fast dismiss = system interrupt → return "interrupted" so
+    // replay/freezeAndPrompt arm can scheduleDecisionRetry. Slow dismiss = user Esc
+    // → audit cancelled and return "cancelled".
+    const elapsed = Date.now() - attemptAt;
+    if (elapsed < DECISION_DISMISS_INTERRUPT_MS) {
+      await safeWriteAuditLog("pipeline_decision_interrupted", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        elapsedMs: String(elapsed),
+        context: "choose_stage_secondary",
+      });
+      return "interrupted";
+    }
+
+    // User pressed Esc in secondary menu: audit + notify, consistent with primary Esc path.
     clearDecisionTimer(meta.pipelineId);
     await safeWriteAuditLog("pipeline_decision_cancelled", {
       pipelineId: meta.pipelineId,

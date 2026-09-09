@@ -515,7 +515,7 @@ describe("Review-r3 Issue 4: audit source defaults", () => {
 // ─── Issue 1: Secondary menu Esc audit ──────────────────────────────────────
 
 describe("Review-r3 Issue 1: secondary menu Esc audit", () => {
-  it("Esc in secondary choose_stage menu → pipeline_decision_cancelled with context", async () => {
+  it("Esc in secondary choose_stage menu (slow, ≥1500ms) → pipeline_decision_cancelled with context", async () => {
     const config = await setupTmp("esc-secondary");
     const meta = makeTestMeta({
       flowState: "blocked",
@@ -526,7 +526,9 @@ describe("Review-r3 Issue 1: secondary menu Esc audit", () => {
       select: async (_msg, _opts) => {
         callCount++;
         if (callCount === 1) return "Choose stage…"; // first-level choose_stage
-        return undefined; // secondary Esc
+        // Simulate user holding Esc for ≥1500ms (genuine user cancel, not streaming dismiss)
+        await new Promise((r) => setTimeout(r, 1600));
+        return undefined; // secondary Esc (slow)
       },
       notify: () => {},
     });
