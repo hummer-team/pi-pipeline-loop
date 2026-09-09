@@ -3,7 +3,7 @@
 
 **dev commit id**: 5d4d54b,af15c5d,7cb0de8,73da6ad,7931bc2,2a724fe,ae6cf4d,5f1d4c8,86580cd
 
-**fix commit id**: 31f6391,a541d76,0881206,f53023d,fda6c20
+**fix commit id**: 31f6391,a541d76,0881206,f53023d,28eb93f
 
 ---
 
@@ -30,7 +30,7 @@
 | Fix-r2 | `31f6391` | Review round 2 fixes (9 issues) | 0 (rewrites) | 1964 |
 | Fix-r3 | `a541d76` | Review round 3 fixes (test debt, choose_stage bypass, protect-ask noUi, audit source) | +27 | 1991 |
 | Fix-r4 | `0881206` | Review round 4 fixes (source audit, restart message, secondary interrupt, test debt) | +17 | 2008 |
-| Fix-r5 | `fda6c20` | Review round 5 fixes (D2 positive assertion, C10① command-layer UI, compact strength, bookkeeping, comment 5→6) | +3 | 2011 |
+| Fix-r5 | `28eb93f` | Review round 5 fixes (D2 positive assertion, C10① command-layer UI, compact strength, bookkeeping, comment 5→6) | +3 | 2011 |
 
 ### Exemption Registry
 | Item | Rationale | Decision |
