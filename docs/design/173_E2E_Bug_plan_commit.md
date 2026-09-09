@@ -3,7 +3,7 @@
 
 **dev commit id**: 5d4d54b,af15c5d,7cb0de8,73da6ad,7931bc2,2a724fe,ae6cf4d,5f1d4c8,86580cd
 
-**fix commit id**: 31f6391,a541d76,0881206,f53023d,28eb93f
+**fix commit id**: 31f6391,a541d76,0881206,f53023d,28eb93f,927740c
 
 ---
 
@@ -12,8 +12,8 @@
 ### Build Verification (Plugin Repository)
 - `bun run build`: ✅ PASS
 - `bun run typecheck`: ✅ PASS (0 errors)
-- `bun run test`: ✅ PASS (2011 pass / 0 fail / 5146 expect / 82 files)
-- Baseline floor: ≥1892 → Actual: 2011 (+119 from plan estimate)
+- `bun run test`: ✅ PASS (2016 pass / 0 fail / 5153 expect / 82 files)
+- Baseline floor: ≥1892 → Actual: 2016 (+124 from plan estimate)
 
 ### Phase Completion Summary
 
@@ -31,6 +31,7 @@
 | Fix-r3 | `a541d76` | Review round 3 fixes (test debt, choose_stage bypass, protect-ask noUi, audit source) | +27 | 1991 |
 | Fix-r4 | `0881206` | Review round 4 fixes (source audit, restart message, secondary interrupt, test debt) | +17 | 2008 |
 | Fix-r5 | `28eb93f` | Review round 5 fixes (D2 positive assertion, C10① command-layer UI, compact strength, bookkeeping, comment 5→6) | +3 | 2011 |
+| Fix-r6 | `927740c` | Review round 6 fixes (awaiting_human branch order, C6 tool guard tests completion) | +5 | 2016 |
 
 ### Exemption Registry
 | Item | Rationale | Decision |
