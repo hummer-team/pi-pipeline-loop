@@ -3,7 +3,7 @@
 
 **dev commit id**: 5d4d54b,af15c5d,7cb0de8,73da6ad,7931bc2,2a724fe,ae6cf4d,5f1d4c8,86580cd
 
-**fix commit id**: 31f6391,a541d76,0881206,f53023d,28eb93f,927740c
+**fix commit id**: 31f6391,a541d76,0881206,f53023d,28eb93f,927740c,bf3ab63
 
 ---
 
@@ -12,8 +12,8 @@
 ### Build Verification (Plugin Repository)
 - `bun run build`: ✅ PASS
 - `bun run typecheck`: ✅ PASS (0 errors)
-- `bun run test`: ✅ PASS (2016 pass / 0 fail / 5153 expect / 82 files)
-- Baseline floor: ≥1892 → Actual: 2016 (+124 from plan estimate)
+- `bun run test`: ✅ PASS (2018 pass / 0 fail / 5163 expect / 82 files)
+- Baseline floor: ≥1892 → Actual: 2018 (+126 from plan estimate)
 
 ### Phase Completion Summary
 
@@ -32,6 +32,7 @@
 | Fix-r4 | `0881206` | Review round 4 fixes (source audit, restart message, secondary interrupt, test debt) | +17 | 2008 |
 | Fix-r5 | `28eb93f` | Review round 5 fixes (D2 positive assertion, C10① command-layer UI, compact strength, bookkeeping, comment 5→6) | +3 | 2011 |
 | Fix-r6 | `927740c` | Review round 6 fixes (awaiting_human branch order, C6 tool guard tests completion) | +5 | 2016 |
+| Fix-r7 | `bf3ab63` | Review round 7 fixes (stale_startup isFrozen exclusion + regression pins) | +2 | 2018 |
 
 ### Exemption Registry
 | Item | Rationale | Decision |
@@ -55,6 +56,7 @@ The following actions must be performed by the user on the business project:
 | ④ | New session without /pipeline-start | Zero interception, zero notification (dormant silent) | ⏳ Pending | C3 matrix |
 | ⑤ | /pipeline-quit + 3 rounds chat | Zero interception, zero notification | ⏳ Pending | C5 quit silent |
 | ⑥ | C12生效后跨阶段写路径 | develop写src/✓ docs/✓ .pi/✗; clarify写docs/✓ | ⏳ Pending | C12 manual |
+| ⑦ | startup 重启遇 awaiting_human + flowState=running/缺失 | 冻结菜单重放（select=1）、无 stale_reset、flowState 不灭失 | ⏳ Pending | C8 × 173-v1 F1 |
 
 ### 🔴-1 Pre-check Confirmation
 - [ ] User acknowledges: dormant sessions bypass ALL protection chains (protect/gitignore/blacklist)
@@ -64,3 +66,8 @@ The following actions must be performed by the user on the business project:
 ### 🔴-2 Boundary Confirmation
 - [ ] Startup with running zombie → stale_startup abort (171 matrix h unchanged)
 - [ ] Startup with blocked/awaiting_human → frozen menu replay (NOT abort)
+
+### History Surgery Record (173-v1 Phase 0)
+| Original HEAD | Amended HEAD | Action | Details |
+|---------------|-------------|--------|---------|
+| `da1fde1` | `0808cab` | `git rm --cached` 277 out-of-scope docs + `docs/.DS_Store`, then `git commit --amend --no-edit` | Removed 277 erroneously force-added files (204 design + 72 review + .DS_Store) that exceeded the commit message scope. Retained: `code_review_173_E2E_Bug_plan_6.md` (A) + `173_E2E_Bug_plan_commit.md` (M). Working tree files preserved (returned to .gitignore-ignored state). Tree content zero drift (`git diff da1fde1 0808cab` = 0 src changes). Amend authorized by user decision on 173-v1 problem 2 → method A.
