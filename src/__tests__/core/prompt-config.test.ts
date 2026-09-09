@@ -591,6 +591,45 @@ describe("prompt-config", () => {
         expect(result.prompt).toContain("{{stage_skill}}");
       }
     });
+
+    // ─── D7: smart_confirm_guidance placeholder registration ──────────────────
+
+    it("D7: removes paragraph when {{smart_confirm_guidance}} value is null (manual mode)", () => {
+      const template = "{{pipeline_status}}\n---\n{{smart_confirm_guidance}}\n---\n{{stage_write_scope}}\n---\n{{stage_executor}}";
+      const values: Record<string, string | null> = {
+        pipeline_status: "# Pipeline",
+        smart_confirm_guidance: null, // manual mode → no smart confirm → paragraph removed
+        stage_write_scope: "# Write Scope",
+        stage_executor: "# Executor",
+      };
+      const result = renderStageTemplate(template, "plan", values);
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.prompt).toContain("# Pipeline");
+        expect(result.prompt).toContain("# Write Scope");
+        // smart_confirm_guidance paragraph should be removed entirely
+        expect(result.prompt).not.toContain("{{smart_confirm_guidance}}");
+        expect(result.prompt).not.toContain("SMART CONFIRM");
+      }
+    });
+
+    it("D7: replaces {{smart_confirm_guidance}} with string value (smart mode)", () => {
+      const template = "{{pipeline_status}}\n---\n{{smart_confirm_guidance}}\n---\n{{stage_write_scope}}\n---\n{{stage_executor}}";
+      const confirmGuidance = "# SMART CONFIRM PROTOCOL (PLAN)\nAssess the complexity...";
+      const values: Record<string, string | null> = {
+        pipeline_status: "# Pipeline",
+        smart_confirm_guidance: confirmGuidance,
+        stage_write_scope: "# Write Scope",
+        stage_executor: "# Executor",
+      };
+      const result = renderStageTemplate(template, "plan", values);
+      expect(result.status).toBe("ok");
+      if (result.status === "ok") {
+        expect(result.prompt).toContain("SMART CONFIRM PROTOCOL");
+        expect(result.prompt).toContain("Assess the complexity");
+        expect(result.prompt).not.toContain("{{smart_confirm_guidance}}");
+      }
+    });
   });
 
   // ─── Template file structure validation ──────────────────────────────────────

@@ -72,6 +72,7 @@ const KNOWN_PLACEHOLDER_KEYS = [
   "stage_write_scope",
   "stage_executor", // Phase 4 (139): stage executor scheduling
   "stage_deliverables", // Phase 0 (146): plugin default deliverables (optional, not critical)
+  "smart_confirm_guidance", // Phase 5 (162): smart confirm protocol (plan/review smart mode only)
 ];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────

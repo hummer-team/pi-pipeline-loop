@@ -31,7 +31,6 @@ import { probeAgentState } from "../utils/subagents-introspect";
 import { detectLastRunHealth } from "./session-state";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import type { RuntimeCtx } from "./runtime-ctx";
-import { toProjectRelative } from "../utils/path-display";
 
 /**
  * Builds Part 1: Context Reference.
@@ -128,14 +127,44 @@ async function buildDomainSkill(
 }
 
 /**
- * Strips YAML frontmatter from content.
+ * Strips YAML frontmatter from content using a lenient regex.
  * Used for fingerprint normalization in idempotent stage-skill detection.
+ *
+ * WARNING: The `m` flag + non-anchored closing `---` may match `---` dividers
+ * in the body. Use `stripLeadingFrontmatter` for injection output where
+ * correctness matters.
  *
  * @param content - Raw file content potentially containing YAML frontmatter
  * @returns Content with frontmatter removed
  */
 export function stripFrontmatter(content: string): string {
   return content.replace(/^---[\s\S]*?---\s*/m, "");
+}
+
+/**
+ * Strictly strips leading YAML frontmatter from content for injection output.
+ *
+ * Unlike `stripFrontmatter` (lenient, for fingerprint normalization), this
+ * function only strips when:
+ * 1. Content starts with a `---` line (anchored at string start, no `m` flag).
+ * 2. A closing `---` exists on its own line (trailing whitespace allowed).
+ *
+ * If the content does NOT start with `---`, it is returned as-is — even if
+ * `---` dividers appear later in the body. This eliminates the risk of
+ * accidentally deleting body content separated by `---` markdown rules.
+ *
+ * @param content - Raw file content potentially containing YAML frontmatter
+ * @returns Content with leading frontmatter block removed, or original content
+ *          if no leading frontmatter is found
+ */
+export function stripLeadingFrontmatter(content: string): string {
+  // Match only at string start: `---` line → body → closing `---` on its own line
+  // No `m` flag ensures `^` anchors to string start, not line start
+  const match = content.match(/^---\n[\s\S]*?\n---[ \t]*\n?/);
+  if (match) {
+    return content.slice(match[0].length);
+  }
+  return content;
 }
 
 /**
@@ -212,12 +241,21 @@ async function buildStageSkill(
 
     // Idempotent check: if skill already in base, return null to avoid duplication
     // skillName is the first segment of skillPath (e.g. "design/SKILL.md" → "design")
+    // NOTE: pass raw skillContent (with frontmatter) for fingerprint consistency
     const skillName = stageConfig.skillPath.split("/")[0];
     if (isStageSkillInBase(base, skillContent, skillName)) {
       return null;
     }
 
-    return `# STAGE-SPECIFIC RULES (${meta.currentStage.toUpperCase()})\n${skillContent}`;
+    // D6: Strip leading frontmatter before injection to avoid YAML noise in system prompt
+    const strippedContent = stripLeadingFrontmatter(skillContent);
+
+    // Guard: pure frontmatter file → nothing meaningful to inject
+    if (!strippedContent.trim()) {
+      return null;
+    }
+
+    return `# STAGE-SPECIFIC RULES (${meta.currentStage.toUpperCase()})\n${strippedContent}`;
   } catch {
     return null;
   }
@@ -514,39 +552,6 @@ function buildPipelineStateSection(
   return lines.join("\n");
 }
 
-/**
- * Builds the completed stage summary prompt.
- * Phase 4 (139): Injected when the pipeline reaches completed stage,
- * summarizing pipelineId, final stage, artifact files, and loop cycles.
- *
- * Phase 0 (169): Deliverable paths are displayed as project-relative for readability.
- *
- * @param config - Pipeline configuration (for projectRoot)
- * @param meta - Current session metadata
- * @returns Summary text for the completed stage prompt
- */
-function buildCompletedSummary(
-  config: PipelineConfig,
-  meta: SessionMeta,
-): string {
-  const lines: string[] = [];
-  lines.push("## Pipeline Completed Summary");
-  lines.push("");
-  lines.push(`- **pipelineId**: ${meta.pipelineId}`);
-  lines.push(`- **endStage**: ${meta.previousStage ?? "completed"}`);
-  lines.push(`- **loopCycle**: ${meta.loopCycleCount ?? 0}`);
-
-  // List artifact files from summaries — display as project-relative paths
-  const artifactFiles = Object.entries(meta.summaries)
-    .filter(([, s]) => s.status === "valid")
-    .map(([stage, s]) => `- **${stage}**: ${toProjectRelative(config.projectRoot, s.path)}`);
-  if (artifactFiles.length > 0) {
-    lines.push("- **Deliverable File**:");
-    lines.push(...artifactFiles);
-  }
-
-  return lines.join("\n");
-}
 
 /**
  * Creates the `before_agent_start` hook that injects a composed system prompt.
@@ -606,12 +611,6 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         snapshotSource = "default";
       }
 
-      // Phase 4 (139): completed stage summary injection
-      let completedSummary = "";
-      if (meta.currentStage === "completed") {
-        completedSummary = buildCompletedSummary(config, meta);
-      }
-
       // Phase 3 (170) ⑤: inject PIPELINE STATE section for frozen pipelines
       const pipelineStateSection = buildPipelineStateSection(config, meta);
       const pipelineStateSuffix = pipelineStateSection
@@ -624,9 +623,7 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         ? "\n\n---\n\n" + truncationWarning
         : "";
 
-      const pluginPromptFull = completedSummary
-        ? pluginPrompt + "\n\n---\n\n" + completedSummary + pipelineStateSuffix + truncationSuffix
-        : pluginPrompt + pipelineStateSuffix + truncationSuffix;
+      const pluginPromptFull = pluginPrompt + pipelineStateSuffix + truncationSuffix;
 
       const systemPrompt = base
         ? base + "\n\n---\n\n" + pluginPromptFull

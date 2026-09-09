@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { createPromptInjector, isStageSkillInBase, stripFrontmatter } from "../../core/prompt-injector";
+import { createPromptInjector, isStageSkillInBase, stripFrontmatter, stripLeadingFrontmatter } from "../../core/prompt-injector";
 import { makeTestConfig, makeTestMeta, writePromptYml } from "../helpers";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -1188,6 +1188,174 @@ describe("isStageSkillInBase (Phase 2 / 169 regression)", () => {
     const base = `Just a plain system prompt with no skill content`;
     const skillContent = `---\nname: plan\n---\n# Plan SKILL\n` + "y".repeat(250);
     expect(isStageSkillInBase(base, skillContent, "plan")).toBe(false);
+  });
+});
+
+// ─── D6 (174): stripLeadingFrontmatter unit tests ──────────────────────────
+
+describe("stripLeadingFrontmatter (D6 / 174)", () => {
+  it("strips normal YAML frontmatter from the start", () => {
+    const content = "---\nname: design\ndescription: test\n---\n# Design Skill\n\nBody content.";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe("# Design Skill\n\nBody content.");
+  });
+
+  it("preserves body content when no frontmatter but body has >=2 --- dividers", () => {
+    // Core defect scenario: lenient regex would wrongly delete body sections
+    const content = "# Section 1\n\n---\n\n# Section 2\n\n---\n\n# Section 3";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe(content); //一字不删
+  });
+
+  it("returns empty string for pure frontmatter file", () => {
+    const content = "---\nname: design\ndescription: test\n---\n";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe("");
+  });
+
+  it("strips frontmatter when closing --- has trailing whitespace", () => {
+    const content = "---\nname: plan\n---   \n# Plan Skill\n\nContent.";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe("# Plan Skill\n\nContent.");
+  });
+
+  it("returns content as-is when file starts with body and later has --- block", () => {
+    const content = "# My Title\n\nSome body text.\n\n---\nname: not-frontmatter\n---\nMore text.";
+    const result = stripLeadingFrontmatter(content);
+    expect(result).toBe(content); // Not stripped because content doesn't start with ---
+  });
+});
+
+// ─── D6 (174): buildStageSkill integration — frontmatter stripped in injection ─
+
+describe("buildStageSkill frontmatter stripping (D6 / 174)", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
+  });
+
+  it("strips frontmatter from injected skill content (frontmatter not visible in system prompt)", async () => {
+    const TMP = join(tmpdir(), "pi-pi-d6-fm-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(skillDir, { recursive: true });
+    // Skill file with YAML frontmatter
+    const skillContent = "---\nname: design\nuserInvocable: false\n---\n# Design Skill\n\nSkill body content here.";
+    await writeFile(join(skillDir, "SKILL.md"), skillContent);
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "design/SKILL.md",
+    } as any;
+    await initAuditLog(config);
+
+    const base = "You are a helpful assistant.";
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => base,
+    };
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx as any))!;
+
+    // Injection should contain the body content
+    expect(result.systemPrompt!).toContain("STAGE-SPECIFIC RULES (CLARIFY)");
+    expect(result.systemPrompt!).toContain("# Design Skill");
+    expect(result.systemPrompt!).toContain("Skill body content here.");
+    // But NOT the frontmatter fields
+    expect(result.systemPrompt!).not.toContain("name: design");
+    expect(result.systemPrompt!).not.toContain("userInvocable: false");
+    // The raw ---\nname:... block should not appear
+    expect(result.systemPrompt!).not.toContain("---\nname: design");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("preserves skill content as-is when no frontmatter present", async () => {
+    const TMP = join(tmpdir(), "pi-pi-d6-nofm-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "design");
+    await mkdir(skillDir, { recursive: true });
+    const skillContent = "# Design Skill\n\nNo frontmatter here.";
+    await writeFile(join(skillDir, "SKILL.md"), skillContent);
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      skillPath: "design/SKILL.md",
+    } as any;
+    await initAuditLog(config);
+
+    const base = "You are a helpful assistant.";
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => base,
+    };
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx as any))!;
+
+    // Content injected as-is (no frontmatter to strip)
+    expect(result.systemPrompt!).toContain("# Design Skill");
+    expect(result.systemPrompt!).toContain("No frontmatter here.");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});
+
+// ─── D7 (174): end-to-end smart_confirm_guidance placeholder via yml path ──
+
+describe("smart_confirm_guidance E2E (D7 / 174)", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
+  });
+
+  it("yml path + plan stage + manual confirm mode → no literal {{smart_confirm_guidance}} in systemPrompt", async () => {
+    const TMP = join(tmpdir(), "pi-pi-d7-e2e-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+
+    // Write a yml template that contains {{smart_confirm_guidance}} as its own paragraph
+    await writePromptYml(TMP, [
+      "plan: |",
+      "  {{pipeline_status}}",
+      "  ---",
+      "  {{smart_confirm_guidance}}",
+      "  ---",
+      "  {{stage_write_scope}}",
+      "",
+    ].join("\n"));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    // Default confirm mode is not "smart" → buildSmartConfirmGuidance returns null
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      getSystemPrompt: () => "Base prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx as any))!;
+
+    // The literal placeholder should not leak into the system prompt
+    expect(result.systemPrompt!).not.toContain("{{smart_confirm_guidance}}");
+    // Pipeline status and write scope should still be present
+    expect(result.systemPrompt!).toContain("Pipeline Status");
+
+    await rm(TMP, { recursive: true, force: true });
   });
 });
 
