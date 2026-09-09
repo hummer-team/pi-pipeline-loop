@@ -21,6 +21,10 @@ import { createSessionShutdown } from "../../core/session-shutdown";
 import { createPipelineState } from "../../core/pipeline-state";
 import { createLoopChecker } from "../../core/loop-checker";
 import { createSessionStarter } from "../../core/session-starter";
+import { createGenerateSummary } from "../../tools/generate-summary";
+import { createValidateSummary } from "../../tools/validate-summary";
+import { createPipelineHandoff } from "../../tools/pipeline-handoff";
+import { createPipelineVerify } from "../../tools/pipeline-verify";
 import type { SessionMeta, PipelineConfig } from "../../types";
 import type { RuntimeCtx } from "../../core/runtime-ctx";
 import { makeTestConfig, makeTestMeta, createMockRuntimeCtx } from "../helpers";
@@ -159,6 +163,35 @@ describe("Phase 2a (173) C6: no-meta defensive guards", () => {
     const ctx = { session: { getMeta: () => undefined } } as unknown as RuntimeCtx;
     const tool = createLoopChecker(config);
     const result = await tool.execute({ result: "pass" }, ctx);
+    expect((result as Record<string, string>).message).toContain("No active pipeline");
+  });
+
+  // Review round 6 fix: C6 test matrix completion for 4 tools (Phase 2a test point)
+  it("generate-summary tool: returns guidance message when no meta", async () => {
+    const ctx = { session: { getMeta: () => undefined } } as unknown as RuntimeCtx;
+    const tool = createGenerateSummary(config);
+    const result = await tool.execute({}, ctx);
+    expect((result as Record<string, string>).message).toContain("No active pipeline");
+  });
+
+  it("validate-summary tool: returns guidance message when no meta", async () => {
+    const ctx = { session: { getMeta: () => undefined } } as unknown as RuntimeCtx;
+    const tool = createValidateSummary(config);
+    const result = await tool.execute({}, ctx);
+    expect((result as Record<string, string>).message).toContain("No active pipeline");
+  });
+
+  it("pipeline-handoff tool: returns guidance message when no meta", async () => {
+    const ctx = { session: { getMeta: () => undefined } } as unknown as RuntimeCtx;
+    const tool = createPipelineHandoff(config);
+    const result = await tool.execute({}, ctx);
+    expect((result as Record<string, string>).message).toContain("No active pipeline");
+  });
+
+  it("pipeline-verify tool: returns guidance message when no meta", async () => {
+    const ctx = { session: { getMeta: () => undefined } } as unknown as RuntimeCtx;
+    const tool = createPipelineVerify(config);
+    const result = await tool.execute({}, ctx);
     expect((result as Record<string, string>).message).toContain("No active pipeline");
   });
 

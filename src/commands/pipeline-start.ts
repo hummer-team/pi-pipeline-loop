@@ -979,6 +979,37 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
         } else {
           const flowState = getFlowState(meta);
 
+          // Aborted → mode-specific handling (must be checked first, even for awaiting_human stage)
+          if (flowState === "aborted") {
+            return handleAbortedWithMode(ctx, meta, file, ui, config, mode, forwardArgs);
+          }
+
+          // Review round 6 fix: awaiting_human must be checked BEFORE flowState running/blocked.
+          // awaiting_human is a frozen state (isFrozen returns true) regardless of flowState.
+          // stage-advancer transitions to awaiting_human without setting flowState, so
+          // awaiting_human can exist with flowState="running". If we check flowState first,
+          // the "running" branch would reject before reaching awaiting_human.
+          // Reordering ensures awaiting_human always prompts the decision menu.
+          // Note: aborted + awaiting_human is handled above (aborted branch takes precedence).
+          if (meta.currentStage === "awaiting_human") {
+            if (typeof ctx?.ui?.select === "function") {
+              const menuOutcome = await promptDecisionMenu(
+                { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
+                meta,
+                config,
+                { source: "command" },
+              );
+              return {
+                success: menuOutcome === "decided",
+                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline awaiting human input. ${formatDecisionMenuHint(config)}`,
+              };
+            }
+            return {
+              success: false,
+              error: `Pipeline is at awaiting_human stage. ${formatDecisionMenuHint(config)}`,
+            };
+          }
+
           // Running → reject with decision menu hint (prevent double-start)
           if (flowState === "running") {
             return {
@@ -1007,32 +1038,6 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             return {
               success: false,
               error: `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ${formatDecisionMenuHint(config)}`,
-            };
-          }
-
-          // Aborted → mode-specific handling
-          if (flowState === "aborted") {
-            return handleAbortedWithMode(ctx, meta, file, ui, config, mode, forwardArgs);
-          }
-
-          // Phase 3 (173) C10①: awaiting_human → owner就地 promptDecisionMenu (source="command").
-          // No-UI degradation: hint text with configured shortcut key.
-          if (meta.currentStage === "awaiting_human") {
-            if (typeof ctx?.ui?.select === "function") {
-              const menuOutcome = await promptDecisionMenu(
-                { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
-                meta,
-                config,
-                { source: "command" },
-              );
-              return {
-                success: menuOutcome === "decided",
-                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline awaiting human input. ${formatDecisionMenuHint(config)}`,
-              };
-            }
-            return {
-              success: false,
-              error: `Pipeline is at awaiting_human stage. ${formatDecisionMenuHint(config)}`,
             };
           }
         }

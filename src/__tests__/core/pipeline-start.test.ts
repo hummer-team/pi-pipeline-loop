@@ -858,15 +858,18 @@ describe("createPipelineStartCommand", () => {
       expect(result.message).toContain("Decision executed");
     });
 
-    // Case 4d (review round 5 issue 2): awaiting_human + ui.select → prompts menu once
-    it("awaiting_human + ui.select available → C10①: prompts decision menu once and returns decided", async () => {
+    // Case 4d (review round 6 fix): awaiting_human with flowState="running" → prompts menu once
+    // Review round 6 discovered that awaiting_human can exist with flowState="running" 
+    // (stage-advancer transitions to awaiting_human without setting flowState). The old test
+    // used flowState:"blocked" which hit the blocked branch first, not the awaiting_human branch.
+    // This test now uses flowState:"running" to ensure the awaiting_human branch is reached.
+    it("awaiting_human (flowState=running) + ui.select → C10①: prompts decision menu once", async () => {
       await fs.writeFile(docPath, "content", "utf-8");
       const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta({
         currentStage: "awaiting_human",
         previousStage: "develop",
-        flowState: "blocked",
-        blockedReason: "ask_user",
+        flowState: "running",
         pipelineId: "pipe-awaiting-001",
       });
       let selectCalls = 0;
@@ -894,7 +897,49 @@ describe("createPipelineStartCommand", () => {
       const cmd = createPipelineStartCommand(config);
       const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
 
-      // C10① awaiting_human branch: same wiring as blocked
+      // awaiting_human branch must be reached even when flowState="running"
+      expect(selectCalls).toBe(1);
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("Decision executed");
+    });
+
+    // Case 4d-alt: awaiting_human with flowState="blocked" → also prompts menu (existing behavior)
+    it("awaiting_human (flowState=blocked) + ui.select → prompts decision menu once", async () => {
+      await fs.writeFile(docPath, "content", "utf-8");
+      const config = makeTestConfig({ projectRoot: TMP });
+      const meta = makeTestMeta({
+        currentStage: "awaiting_human",
+        previousStage: "develop",
+        flowState: "blocked",
+        blockedReason: "ask_user",
+        pipelineId: "pipe-awaiting-002",
+      });
+      let selectCalls = 0;
+      const ctx = {
+        session: {
+          getMeta: () => meta,
+          updateMeta: (m: any) => { Object.assign(meta, m); },
+        },
+        ui: {
+          select: async (_message: string, _options: string[]) => {
+            selectCalls++;
+            return "Resume";
+          },
+          notify: () => {},
+          setStatus: () => {},
+        },
+        _ctx: {
+          sessionManager: {
+            getBranch: () => [],
+            getEntries: () => [],
+          },
+        },
+      };
+
+      const cmd = createPipelineStartCommand(config);
+      const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+      // awaiting_human with flowState="blocked" also prompts menu
       expect(selectCalls).toBe(1);
       expect(result.success).toBe(true);
       expect(result.message).toContain("Decision executed");
