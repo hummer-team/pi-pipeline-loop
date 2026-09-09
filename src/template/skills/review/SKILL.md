@@ -2,6 +2,7 @@
 name: review
 description: Code‑Review Expert‑Review the implementation against the plan
 userInvocable: false
+disable-model-invocation: true
 ---
 
 ## workflow

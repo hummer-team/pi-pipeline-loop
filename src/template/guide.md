@@ -679,6 +679,16 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 
 每个事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
 
+### 7.9.1 为何全文注入 stage SKILL（设计取舍）
+
+插件在 `before_agent_start` hook 中将 stage SKILL 全文注入到 system prompt（`# STAGE-SPECIFIC RULES ({stage})`），而非依赖 pi 的 `<available_skills>` 渐进披露机制。设计取舍如下：
+
+**确定性优先**：流水线每轮都需要完整的 stage 规则在场，不依赖模型"记得去 read"。渐进披露在长 context 中容易丢失或被跳过，而全文注入保证规则在每轮 system prompt 中必然存在。
+
+**可审计优先**：audit log 的 `prompt_snapshot` 事件记录了每轮完整的 system prompt，可精确复现模型所见内容。如果依赖渐进披露，snapshot 无法记录模型通过 `read` 工具获取的 SKILL 内容，审计链不完整。
+
+**双通道消除**：SKILL 模板 frontmatter 中设置了 `disable-model-invocation: true`，pi 不再将这 5 个 stage SKILL 放入 `<available_skills>` 元数据列表（消除了"诱导模型重复 read 已注入全文"的双通道问题）。注入通道成为模型唯一可见入口。配合 `# Preloaded Skill: {name}` 标记和指纹比对，插件的幂等去重机制确保即使 pi 侧已预加载同一 SKILL，也不会重复注入。
+
 ### 7.10 guard 可选键说明
 
 各阶段配置支持以下 `guard` 可选键：
@@ -707,6 +717,40 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
   - 或走 `/pipeline-start <doc> <args>` 转发通道（插件保证参数原样透传）
 
 **插件行为保证**：插件自身发起的 spawn（`stage_advance` → `spawnStageSubagent`）走 RPC 事件总线通道，不受 `agentMentions` 配置影响，参数始终保真。
+
+### 7.12 SKILL 可见性控制（pi 原生机制）
+
+pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插件本身不做动态过滤（本期决策，Q2-R1）。如需隐藏无关 SKILL，可使用以下 pi 原生方式：
+
+**① frontmatter `disable-model-invocation: true`**（推荐，声明式）
+
+在 SKILL.md 的 YAML frontmatter 中添加此键，pi 将不将其列入 `<available_skills>`，但 `/skill:<name>` 显式调用仍可用。插件的 5 个 stage SKILL 模板默认已配置此项。
+
+**② 启动参数 `--no-skills`**
+
+启动 pi 时传入 `--no-skills`，完全禁用 `<available_skills>` 注入。适用于纯流水线场景（所有规则由插件注入）。
+
+**③ `settings.json` 的 `skills` 数组（glob 过滤）**
+
+在 pi 的 `settings.json` 中配置 `skills` 数组，支持 glob 匹配和 `!`/`+`/`-` 语义。示例（排除无关 SKILL，仅保留流水线 stage SKILL）：
+
+```jsonc
+{
+  "skills": [
+    // 排除特定 SKILL
+    "!ui-ux-pro-max",
+    "!context-mode",
+    // 或仅包含特定目录下的 SKILL
+    ".pi/skills/*"
+  ]
+}
+```
+
+**④ packages 白名单**
+
+通过 pi packages 配置限制 SKILL 加载来源，仅从白名单 package 加载 SKILL。
+
+> 插件不做运行时动态过滤 `<available_skills>`。如需更精细控制，请组合使用上述 pi 原生机制。
 
 ---
 
@@ -1097,6 +1141,16 @@ rmdir .pi/agents/clarify .pi/agents/develop .pi/agents/review .pi/agents/fix
 }
 ```
 
+### 10.3 stage SKILL 模板 frontmatter 同步（disable-model-invocation）
+
+新版本为 5 个 stage SKILL 模板（`design`/`plan`/`develop`/`review`/`fix`）的 frontmatter 新增 `disable-model-invocation: true`，使 pi 不再将这些 SKILL 列入 `<available_skills>` 元数据列表（详见 §7.9.1 设计取舍）。
+
+**影响**：已初始化项目重跑 `/pipeline-init 0` 时，默认 skip 策略不覆盖 `.pi/skills/` 已有文件，因此不会自动同步此变更。
+
+**迁移方式**（二选一）：
+
+1. **强制覆盖**：运行 `/pipeline-init 0` 时选择 "Force overwrite"，全部模板（含 SKILL.md）将被覆盖为最新版本。
+2. **手动补键**：为 `.pi/skills/{design,plan,develop,review,fix}/SKILL.md` 的 frontmatter 各补一行 `disable-model-invocation: true`（放在 `userInvocable: false` 之后、`---` 闭合行之前）。
 
 ---
 

@@ -2,6 +2,7 @@
 name: design
 description: Analyze requirements, clarify questions and design solutions based on the file path and round number input by users
 userInvocable: false
+disable-model-invocation: true
 ---
 
 ## 流程边界

@@ -2,6 +2,7 @@
 name: plan
 description: Solution Planning‑ Generate complete development planning documents based on requirement understanding and clarification results
 userInvocable: false
+disable-model-invocation: true
 ---
 
 ## 流程边界

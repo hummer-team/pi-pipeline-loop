@@ -2,6 +2,7 @@
 name: fix
 description: Fix and optimize based on the review results
 userInvocable: false
+disable-model-invocation: true
 ---
 ## workflow
 1. 检查 `<code review file>` **Blocker**、**High**、**Medium** 的问题

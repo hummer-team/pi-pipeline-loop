@@ -185,3 +185,25 @@ describe("Phase 5 (173) C17: SKILL path convention", () => {
     expect(content).toContain("docs/design/");
   });
 });
+
+// ─── D2 (174): stage SKILL frontmatter regression guard ─────────────────────
+
+describe("D2 (174): stage SKILL frontmatter regression guard", () => {
+  const STAGE_SKILLS = ["design", "plan", "develop", "review", "fix"];
+
+  for (const stage of STAGE_SKILLS) {
+    it(`${stage}/SKILL.md frontmatter contains both disable-model-invocation: true and userInvocable: false`, () => {
+      const skillPath = path.join(__dirname, `../../template/skills/${stage}/SKILL.md`);
+      const content = fs.readFileSync(skillPath, "utf-8");
+
+      // Extract frontmatter block (between first and second ---)
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      expect(fmMatch).not.toBeNull();
+      const frontmatter = fmMatch![1];
+
+      // Both keys must be present
+      expect(frontmatter).toContain("disable-model-invocation: true");
+      expect(frontmatter).toContain("userInvocable: false");
+    });
+  }
+});

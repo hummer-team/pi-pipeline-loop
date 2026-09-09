@@ -2,6 +2,7 @@
 name: develop
 description: Complete phase‑feature development and unit testing according to the plan.
 userInvocable: false
+disable-model-invocation: true
 ---
 
 ## workflow
