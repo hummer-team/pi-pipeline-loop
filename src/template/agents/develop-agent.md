@@ -3,17 +3,11 @@ name: develop-agent
 description: Senior System Development Engineer - Complete feature development and unit testing according to the plan
 # your set model
 model: bailian-token-plan-personal/qwen3.7-plus
-permission:
-  edit: allow
-  bash: allow
-skills:
-  - develop
-defaultContext: fork
+skills: develop
+inherit_context: false
 tools: read, write, edit, bash, grep, find, ls
-defaultReads: .pi/references/sop.md
 thinking: high
-inheritProjectContext: true
-systemPromptMode: append
+prompt_mode: append
 ---
 ## Role
 - **Template-TODO**: 替换为你的项目角色与技术栈描述（示例：资深AI Agent系统架构师，精通 <你的技术栈>）

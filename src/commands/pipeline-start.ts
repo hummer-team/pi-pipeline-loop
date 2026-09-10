@@ -15,7 +15,7 @@ import {
   resolveStagePath,
   RESUMABLE_STAGES,
 } from "../constants";
-import { safeWriteAuditLog, safeWriteStageAudit } from "../utils/auditLog";
+import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { getFlowState, formatFrozenReason, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { buildStageSequence } from "../utils/stage-sequence";
@@ -1102,8 +1102,12 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
               return resumePipeline(ctx, adoptedMeta, config, ui, file, "pipeline_start_adopted", forwardArgs);
             }
           }
-        } catch {
+        } catch (e: unknown) {
           // Fail-open: scan error does not block fresh start
+          safeWriteAuditLog("pipeline_start_scan_error", {
+            mode: "auto",
+            error: e instanceof Error ? e.message : String(e),
+          });
         }
       }
 

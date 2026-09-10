@@ -357,7 +357,7 @@ bun add @earendil-works/pi-pipeline
 ```
 
 - **Spec stage**（ask 模式）：支持从任意 active stage 启动（排除 awaiting_human/completed），自动重建 `previousStage` 和 `stageVisitOrder` 阶段链。
-- **自动注入**（Phase 2）：fresh/spec→clarify 成功后，通过 `pi.sendUserMessage("@<agent名> <file> 1")` 自动进入澄清流程。降级路径：无 pi SDK / 无 agentPath 时 notify 提示，不阻断启动。
+- **自动注入**（Phase 2）：fresh/spec→clarify 成功后，通过 `pi.sendUserMessage("@<agent名> ${file} ${effectiveArgs}")` 自动进入澄清流程。降级路径：无 pi SDK / 无 agentPath 时 notify 提示，不阻断启动。
 - **checkVerifyFiles 起始感知**：仅校验起始 stage 及后续可达 stage 的 verify.md，spec 跳级不会因前置 stage 的 verify.md 缺失而被拦截。
 
 ### 4.2 `{requirementDoc}` 占位符解析规则
@@ -1337,4 +1337,3 @@ frozen pipeline ────┼─ 重放（session_start reload/startup）
 - 仅解冻 blocked/awaiting_human
 - 不唤醒 dormant（completed/aborted/无 meta）
 - completed 唤醒需 `/pipeline-start`（D2）
-
