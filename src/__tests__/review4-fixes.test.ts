@@ -432,10 +432,13 @@ describe("Review-r4 Issue 1-④a: C14 drift hint notify", () => {
     const hook = createSessionStarter(config);
     await hook.handler(ctx as any);
 
-    // C14: when guide.md has drifted, user gets a notify hint
+    // Phase 5 / 175: when ANY assets drift (including guide.md), user gets a notify hint
+    // with count + top 3 asset names + /pipeline-init guidance. guide.md hint appended.
     const guideNotify = notifications.find(n => n.includes("guide.md") && n.includes("/pipeline-init"));
     expect(guideNotify).toBeDefined();
-    expect(guideNotify).toContain("re-run");
+    expect(guideNotify).toMatch(/[Rr]e-run/);
+    expect(guideNotify).toContain("template asset(s) drifted");
+    expect(guideNotify).toContain("guide.md is outdated");
 
     await rm(TMP, { recursive: true, force: true });
   });
