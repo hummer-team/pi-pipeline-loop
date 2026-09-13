@@ -60,53 +60,6 @@ export interface ToolGuardDeps {
   execFn?: ExecFn;
 }
 
-/** Active spawn timeout (30 min) — stale entries are treated as absent */
-const ACTIVE_SPAWN_STALE_MS = 30 * 60 * 1000;
-
-/**
- * Checks whether there is a live spawn for the given stage.
- * Uses pi-subagents manager singleton probe (primary) and activeSpawns (secondary).
- * Returns null if no live spawn detected, or { agentId } if live.
- *
- * Fail-safe: any probe failure → returns null (do not block).
- *
- * Decision flow:
- * 1. If activeSpawns has an entry for this stage with a recorded agentId,
- *    probe it via probeAgentState (manager singleton).
- *    - "live" → return { agentId }
- *    - "settled" → do not block
- *    - "unknown" → fall through to activeSpawns time check
- * 2. Fallback: activeSpawns time-based check (< 30min → live).
- */
-function checkLiveSpawn(
-  meta: SessionMeta,
-  stage: PipelineStage,
-): { agentId?: string } | null {
-  const activeSpawn = meta.activeSpawns?.[stage];
-  if (activeSpawn) {
-    // Primary: probe via manager singleton if we have a recorded agentId
-    if (activeSpawn.agentId) {
-      const probeResult = probeAgentState(activeSpawn.agentId);
-      if (probeResult === "live") {
-        return { agentId: activeSpawn.agentId };
-      }
-      if (probeResult === "settled") {
-        return null; // Settled → do not block
-      }
-      // "unknown" → fall through to activeSpawns time check
-    }
-
-    // Secondary: time-based check (30min staleness threshold)
-    const age = Date.now() - activeSpawn.startedAt;
-    if (age < ACTIVE_SPAWN_STALE_MS) {
-      return { agentId: activeSpawn.agentId };
-    }
-    // Stale → treat as absent
-  }
-
-  return null;
-}
-
 /** Regex patterns for git command detection */
 const GIT_ADD_PATTERN = /^\s*git\s+add\b/;
 const GIT_COMMIT_PATTERN = /^\s*git\s+commit\b/;

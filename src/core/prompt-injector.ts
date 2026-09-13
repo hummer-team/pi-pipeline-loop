@@ -851,9 +851,10 @@ async function buildStageExecutor(
 
   // Phase 4 (171) High A: compute active-spawn note (shared by yml and fallback paths).
   // Gated by probe=live to avoid "zombie clause" when the spawn has already settled.
-  // review#2 Low: on probe=unknown (manager singleton absent), fall back to the same
-  // 30-min time-window check used by tool-guard's checkLiveSpawn, so hard-block and
-  // clause-injection stay consistent (no "block but don't warn" asymmetry).
+  // review#2 Low: on probe=unknown (manager singleton absent), fall back to the
+  // 30-min time-window check for visibility hint purposes (non-blocking).
+  // Note: tool-guard's checkLiveSpawn was removed in Phase 2 / 175 (dead code after
+  // evidence-based refactor); this prompt-injector visibility logic is independent.
   const activeSpawn = meta.activeSpawns?.[meta.currentStage];
   let activeSpawnNote = "";
   if (activeSpawn) {

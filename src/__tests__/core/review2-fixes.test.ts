@@ -309,7 +309,7 @@ describe("Matrix E: activeSpawns lifecycle", () => {
     expect(sessionMeta.spawnedStages?.develop).toBe(meta.stageStartTime);
   });
 
-  it("E2: probe=live → checkLiveSpawn returns entry (3c hard-block trigger)", async () => {
+  it("E2: probe=live → spawn suppression triggers 3c hard-block (evidence-based)", async () => {
     // Inject a live manager singleton
     const manager = { getRecord: (_id: string) => ({ status: "running" }) };
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = manager;
@@ -344,7 +344,7 @@ describe("Matrix E: activeSpawns lifecycle", () => {
     expect(result.reason).toContain("already running");
   });
 
-  it("E3: probe=settled → checkLiveSpawn returns null (no block)", async () => {
+  it("E3: probe=settled → no spawn suppression (evidence-based: no block)", async () => {
     const manager = { getRecord: (_id: string) => ({ status: "completed" }) };
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = manager;
 
