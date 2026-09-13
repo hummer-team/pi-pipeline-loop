@@ -1439,8 +1439,9 @@ describe("verify-generator", () => {
   // ── Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list ──────────
 
   describe("Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list", () => {
-    it("white-list contains all 9 expected template entries (6 base + bilingual plan marker + relaxed review pattern + 2 pipelineId patterns)", () => {
-      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(9);
+    it("white-list contains all 13 expected template entries (base + bilingual clarify lookahead (Phase 0/175) + bilingual plan marker + old+bilingual review verdict + 2 pipelineId patterns)", () => {
+      // Phase 0 / 175: added bilingual clarify lookahead + 3 bilingual review verdict patterns (was 9 → 13)
+      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(13);
       const paths = TEMPLATE_BUILTIN_CONTENT_PATTERNS.map(e => e.path);
       expect(paths).toContain("{requirementDoc}");
       expect(paths).toContain("docs/design/*_plan.md");
@@ -1596,6 +1597,55 @@ describe("verify-generator", () => {
         requiredFiles: ["docs/review/code_review_*.md"],
         fileContentPattern: [
           { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    // ── Phase 0 / 175: bilingual + bold tolerant patterns in whitelist ────
+
+    it("hasCustom=false when existing rules contain bilingual clarify lookahead (Phase 0 / 175)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        fileContentPattern: [
+          { path: "{requirementDoc}", pattern: "full-und\\? 理解确认：是" },
+          {
+            path: "{requirementDoc}",
+            pattern: "(?<![\\s\\S])(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^- \\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]))(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^[ \\t]*(?:答\\s*[:：]|\\*{2}答\\*{2}|Answer\\s*:)))",
+          },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    it("hasCustom=false when existing rules contain bilingual review verdict patterns (Phase 0 / 175)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        fileContentPattern: [
+          { path: "docs/review/code_review_*.md", pattern: "结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}" },
+          { path: "docs/review/code_review_*.md", pattern: "Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}" },
+          { path: "docs/review/code_review_*.md", pattern: "Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2}" },
+        ],
+      };
+      const result = diffAndMergeRules(existing, []);
+      expect(result.hasCustom).toBe(false);
+    });
+
+    it("old clarify lookahead pattern still recognized as non-custom (backward compat)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        fileContentPattern: [
+          { path: "{requirementDoc}", pattern: "full-und\\? 理解确认：是" },
+          {
+            path: "{requirementDoc}",
+            pattern:
+              "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))",
+          },
         ],
       };
       const result = diffAndMergeRules(existing, []);

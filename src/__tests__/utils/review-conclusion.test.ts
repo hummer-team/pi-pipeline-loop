@@ -182,4 +182,105 @@ describe("parseReviewConclusion", () => {
     expect(result!.source).toBe("blocker-section");
     await rm(TMP, { recursive: true, force: true });
   });
+
+  // ── Phase 0 / 175: bilingual + bold/italic tolerant verdict ─────────────
+
+  describe("Phase 0 / 175: bilingual + bold/italic tolerant verdict", () => {
+    it("detects `结论：**通过**` with bold markup → pass", async () => {
+      const TMP = join(tmpdir(), "pi-rc-bold-pass-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\n结论：**通过**\n");
+      const result = await parseReviewConclusion(TMP);
+      expect(result!.verdict).toBe("pass");
+      expect(result!.source).toBe("conclusion-line");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("detects `结论：_不通过_` with italic markup → fail", async () => {
+      const TMP = join(tmpdir(), "pi-rc-italic-fail-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\n结论：_不通过_\n");
+      const result = await parseReviewConclusion(TMP);
+      expect(result!.verdict).toBe("fail");
+      expect(result!.source).toBe("conclusion-line");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("detects `结论:通过` with half-width colon → pass", async () => {
+      const TMP = join(tmpdir(), "pi-rc-half-colon-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\n结论:通过\n");
+      const result = await parseReviewConclusion(TMP);
+      expect(result!.verdict).toBe("pass");
+      expect(result!.source).toBe("conclusion-line");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("detects `Verdict: PASS` (English) → pass", async () => {
+      const TMP = join(tmpdir(), "pi-rc-verdict-en-pass-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\nVerdict: PASS\n");
+      const result = await parseReviewConclusion(TMP);
+      expect(result!.verdict).toBe("pass");
+      expect(result!.source).toBe("conclusion-line");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("detects `Verdict: FAIL` (English) → fail", async () => {
+      const TMP = join(tmpdir(), "pi-rc-verdict-en-fail-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\nVerdict: FAIL\n");
+      const result = await parseReviewConclusion(TMP);
+      expect(result!.verdict).toBe("fail");
+      expect(result!.source).toBe("conclusion-line");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("detects `Verdict: **PASS**` with bold → pass", async () => {
+      const TMP = join(tmpdir(), "pi-rc-verdict-bold-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\nVerdict: **PASS**\n");
+      const result = await parseReviewConclusion(TMP);
+      expect(result!.verdict).toBe("pass");
+      expect(result!.source).toBe("conclusion-line");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("detects `Conclusion: **fail**` with bold → fail", async () => {
+      const TMP = join(tmpdir(), "pi-rc-conclusion-bold-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\nConclusion: **fail**\n");
+      const result = await parseReviewConclusion(TMP);
+      expect(result!.verdict).toBe("fail");
+      expect(result!.source).toBe("conclusion-line");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("does NOT misjudge `结论：待定` (pending) — returns missing fail", async () => {
+      const TMP = join(tmpdir(), "pi-rc-pending-" + Date.now());
+      const reviewDir = join(TMP, "docs", "review");
+      await mkdir(reviewDir, { recursive: true });
+      await writeFile(join(reviewDir, "code_review_1.md"),
+        "# Review\n\n结论：待定\n");
+      const result = await parseReviewConclusion(TMP);
+      // 待定 should NOT match pass or fail — conservative fallback to missing
+      expect(result!.verdict).toBe("fail");
+      expect(result!.source).toBe("missing");
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
 });

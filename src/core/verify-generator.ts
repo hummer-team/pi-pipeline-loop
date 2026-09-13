@@ -77,16 +77,20 @@ export type VerifyGenerateResult = {
 export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern: string }[] = [
   // clarify: existing full-und confirmation check
   { path: "{requirementDoc}", pattern: "full-und\\? 理解确认：是" },
-  // clarify: conditional lookahead for clarification structure (148)
-  // The pattern checks that if a clarify section exists, it must contain both
-  // a plan option (with optional bold markdown `**方案 X`, tolerates no-space
-  // form `- 方案A`) and an answer (tolerates indented `  答：...` and half-width
-  // colon `答:`). The negative lookahead is scoped to AFTER the clarify header
-  // to prevent body content before the header from masking missing structure
-  // (M2 fix). Must stay byte-identical with clarify_spec/verify.md template.
+  // clarify: conditional lookahead for clarification structure (148, Chinese-only legacy)
+  // Kept for backward compat — existing verify.md files with this pattern are not treated as custom.
   {
     path: "{requirementDoc}",
     pattern: "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))",
+  },
+  // clarify: bilingual + bold-tolerant lookahead (Phase 0 / 175)
+  // Round heading: Chinese `# 第 N 轮澄清` OR English `# Round N` (#{1,2} prevents h3+ false positives).
+  // Option line: `方案` / `Option` / `Plan` (with bold tolerance `\\*{0,2}`).
+  // Answer field: `答：`/`答:`/`**答**`/`Answer:` (tolerates indentation and half-width colon).
+  // Must stay byte-identical with clarify_spec/verify.md template default pattern.
+  {
+    path: "{requirementDoc}",
+    pattern: "(?<![\\s\\S])(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^- \\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]))(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^[ \\t]*(?:答\\s*[:：]|\\*{2}答\\*{2}|Answer\\s*:)))",
   },
   // plan: user confirmation marker (bilingual — old + new patterns both whitelisted
   // so existing projects' verify.md stays mergeable under init 1, 148 compat)
@@ -96,6 +100,12 @@ export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern
   { path: "docs/review/code_review_*.md", pattern: "结论：通过" },
   // review: either conclusion accepted (163 — verdict is declared via stage_advance, verify only checks existence)
   { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
+  // review: bilingual + bold/italic tolerant verdict (Phase 0 / 175)
+  { path: "docs/review/code_review_*.md", pattern: "结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}" },
+  // review: English "Verdict: PASS/FAIL" (Phase 0 / 175)
+  { path: "docs/review/code_review_*.md", pattern: "Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}" },
+  // review: English "Conclusion: pass/fail" (Phase 0 / 175)
+  { path: "docs/review/code_review_*.md", pattern: "Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2}" },
   // develop / fix: plan doc reference in commit record
   { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
   // 168 Phase 3: pipelineId content validation for develop/fix commit docs

@@ -6,15 +6,20 @@
  * `docs/review/code_review_*.md`. Priority:
  * 1. Blocker/High/Medium open items → fail (matches `- 等级：Blocker`,
  *    `- [ ] Blocker`, `## Blocker`, `NOT PASS` formats)
- * 2. Conclusion line `結論[:：](通过|不通过)` → verdict from line
+ * 2. Conclusion/Verdict line (bilingual, bold/italic tolerant, Phase 0 / 175) → verdict from line
+ *    - Chinese: `结论：(通过|不通过)` with optional `**`/`_` markup
+ *    - English: `Verdict: (PASS|FAIL)` or `Conclusion: (pass|fail)`
  * 3. No conclusion line → fail + warn (conservative)
  * 4. No report file → null (caller treats as fail + warn)
  *
  * Pure parsing, no side effects.
+ *
+ * Verdict patterns sourced from CONTRACT_TOKENS single source of truth (src/constants.ts).
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { CONTRACT_TOKENS } from "../constants";
 
 /**
  * Verdict result from review report parsing.
@@ -84,20 +89,48 @@ function hasOpenIssueLine(line: string): boolean {
   return false;
 }
 
+// ── Verdict regex from CONTRACT_TOKENS (bilingual, bold/italic tolerant) ──
+
+/** Chinese verdict: `结论：通过`/`结论：**不通过**` etc. — extracts pass/fail from group 1 */
+const VERDICT_ZH_RE = new RegExp(CONTRACT_TOKENS.VERDICT_ZH);
+/** English "Verdict: PASS/FAIL" — extracts from group 1 */
+const VERDICT_EN_VERDICT_RE = new RegExp(CONTRACT_TOKENS.VERDICT_EN_VERDICT, "i");
+/** English "Conclusion: pass/fail" — extracts from group 1 */
+const VERDICT_EN_CONCLUSION_RE = new RegExp(CONTRACT_TOKENS.VERDICT_EN_CONCLUSION, "i");
+
 /**
- * Extracts verdict from a conclusion line.
+ * Extracts verdict from a conclusion line (bilingual, bold/italic tolerant).
+ *
  * Matches patterns like:
- * - `结论：通过` / `结论:通过` / `结论：不通过` / `结论: 不通过`
- * - `Conclusion: pass` / `Conclusion: fail`
+ * - `结论：通过` / `结论：**通过**` / `结论：_不通过_` / `结论:通过`
+ * - `Verdict: PASS` / `Verdict: FAIL` / `Verdict: **PASS**`
+ * - `Conclusion: pass` / `Conclusion: fail` / `Conclusion: **pass**`
+ *
+ * Does NOT match `待定` or other non-committal terms (red-green: removing
+ * verdict patterns would fail tests for valid conclusions).
  */
 function parseConclusionLine(line: string): "pass" | "fail" | null {
   const trimmed = line.trim();
-  // Chinese: 结论[:：](不通过|通过)
-  if (/结论\s*[:：]\s*不通过/.test(trimmed)) return "fail";
-  if (/结论\s*[:：]\s*通过/.test(trimmed)) return "pass";
-  // English: Conclusion[:：](fail|pass)
-  if (/conclusion\s*[:：]\s*fail/i.test(trimmed)) return "fail";
-  if (/conclusion\s*[:：]\s*pass/i.test(trimmed)) return "pass";
+
+  // Chinese: 结论[:：] (不通过|通过) with optional bold/italic markup
+  let m = VERDICT_ZH_RE.exec(trimmed);
+  if (m) {
+    // Group 1 = "不通过" | "通过"
+    return m[1] === "不通过" ? "fail" : "pass";
+  }
+
+  // English "Verdict: PASS|FAIL"
+  m = VERDICT_EN_VERDICT_RE.exec(trimmed);
+  if (m) {
+    return m[1].toUpperCase() === "FAIL" ? "fail" : "pass";
+  }
+
+  // English "Conclusion: pass|fail"
+  m = VERDICT_EN_CONCLUSION_RE.exec(trimmed);
+  if (m) {
+    return m[1].toLowerCase() === "fail" ? "fail" : "pass";
+  }
+
   return null;
 }
 
