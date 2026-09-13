@@ -496,4 +496,119 @@ describe("createSessionShutdown", () => {
       expect(content).toContain("session_shutdown_skipped");
     });
   });
+
+  // ─── Phase 4 / 175 (R1Q1A): merged double-write + 10min throttle ──────────
+
+  describe("Phase 4 / 175 (R1Q1A): child quit merged double-write", () => {
+    it("child quit writes SINGLE session_shutdown_skipped (not two separate events)", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-merged-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-merged",
+      });
+      const ctx = createMockCtx(meta, {
+        sessionHeader: { parentSession: "parent" },
+        sessionFile: "child-file",
+        event: { reason: "quit" },
+      });
+
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+
+      // Should have EXACTLY ONE session_shutdown_skipped line
+      const skippedLines = content.split("\n").filter(l => l.includes("session_shutdown_skipped"));
+      expect(skippedLines.length).toBe(1);
+
+      // Merged line should have union of fields
+      const line = skippedLines[0];
+      expect(line).toContain("pipelineId=pipe-merged");
+      expect(line).toContain("stage=develop");
+      expect(line).toContain("finalStage=develop");
+      expect(line).toContain("reason=quit");
+      expect(line).toContain("isSubagent=true");
+      expect(line).toContain("sessionFile=child-file");
+      expect(line).toContain("parentSession=parent");
+
+      // Should NOT have a separate session_shutdown line (no double-write)
+      const plainShutdownLines = content.split("\n").filter(l =>
+        l.includes(" - [INFO] session_shutdown ") || l.includes(" - [INFO] session_shutdown\n")
+      );
+      expect(plainShutdownLines.length).toBe(0);
+    });
+  });
+
+  describe("Phase 4 / 175 (R1Q1A): 10min no-reason throttle", () => {
+    it("no-reason events with same sessionFile are throttled after first", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-throttle-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      // Reset throttle state to ensure clean test
+      const { __resetMemoryThrottle } = await import("../../utils/audit-throttle");
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        pipelineId: "pipe-throttle",
+      });
+
+      // First shutdown: no reason, with sessionFile → should write
+      const ctx1 = createMockCtx(meta, {
+        sessionFile: "throttled-session",
+      });
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx1 as any);
+
+      // Second shutdown: no reason, same sessionFile → should be throttled (not written)
+      const ctx2 = createMockCtx(meta, {
+        sessionFile: "throttled-session",
+      });
+      await hook.handler(ctx2 as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+
+      // Only ONE session_shutdown line (the second was throttled)
+      const shutdownLines = content.split("\n").filter(l => l.includes("session_shutdown"));
+      expect(shutdownLines.length).toBe(1);
+    });
+
+    it("events WITH reason are NOT throttled", async () => {
+      const phaseTmp = join(tmpdir(), "pi-sd-reason-nothrottle-" + Date.now());
+      await mkdir(phaseTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
+
+      const { __resetMemoryThrottle } = await import("../../utils/audit-throttle");
+      __resetMemoryThrottle();
+
+      const config = makeTestConfig({ projectRoot: phaseTmp });
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        pipelineId: "pipe-nothrottle",
+      });
+
+      // Two shutdowns with reason="resume" → both should write
+      const ctx1 = createMockCtx(meta, { sessionFile: "same-session", event: { reason: "resume" } });
+      const hook = createSessionShutdown(config);
+      await hook.handler(ctx1 as any);
+
+      const ctx2 = createMockCtx(meta, { sessionFile: "same-session", event: { reason: "resume" } });
+      await hook.handler(ctx2 as any);
+
+      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const content = await readFile(logPath, "utf-8");
+
+      // Both events should be written
+      const shutdownLines = content.split("\n").filter(l => l.includes("session_shutdown") && l.includes("reason=resume"));
+      expect(shutdownLines.length).toBe(2);
+    });
+  });
 });

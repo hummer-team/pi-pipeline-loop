@@ -73,26 +73,47 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
       // Phase 3 (170) ①: attach shutdown reason (quit/new/resume/fork/reload)
       // Phase 4 / 175 (R1Q1A): reason missing → "none" for consistency
       const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
-      await writeAuditLog("session_shutdown", {
-        pipelineId: meta.pipelineId,
-        finalStage: meta.currentStage,
-        reason: reason ? String(reason) : "none",
-        ...(sessionFile ? { sessionFile: sessionFile } : {}),
-        ...(isChild ? { isSubagent: "true" } : {}),
-      });
+      const reasonStr = reason ? String(reason) : "none";
+
+      // Phase 4 / 175 (R1Q1A): child quit (quit/new) → single merged audit entry
+      // "session_shutdown_skipped" with field union (no double-write).
+      // For all other cases: write "session_shutdown" with 10min throttle for
+      // no-reason events per sessionFile (noise reduction per plan).
+      const isChildQuit = (reason === "quit" || reason === "new") && isChild;
+
+      if (isChildQuit) {
+        // Merged single entry: union of session_shutdown + session_shutdown_skipped fields
+        await writeAuditLog("session_shutdown_skipped", {
+          pipelineId: meta.pipelineId,
+          finalStage: meta.currentStage,
+          stage: meta.currentStage,
+          reason: reasonStr,
+          isSubagent: "true",
+          ...(sessionFile ? { sessionFile } : {}),
+          ...(parentSession ? { parentSession } : {}),
+        });
+      } else {
+        // Phase 4 / 175 (R1Q1A): throttle no-reason events per sessionFile (10min).
+        // Throttle only applies when sessionFile is present (per spec: "同 sessionFile").
+        // When sessionFile is absent, always write (no throttle key available).
+        const noReason = reasonStr === "none";
+        const throttleKey = sessionFile ? `session_shutdown_no_reason:${sessionFile}` : null;
+        const throttled = noReason && throttleKey && !shouldEmitWithinWindow(throttleKey, 10 * 60 * 1000);
+        if (!throttled) {
+          await writeAuditLog("session_shutdown", {
+            pipelineId: meta.pipelineId,
+            finalStage: meta.currentStage,
+            reason: reasonStr,
+            ...(sessionFile ? { sessionFile } : {}),
+            ...(isChild ? { isSubagent: "true" } : {}),
+          });
+        }
+      }
 
       // Phase 1 (171): Child/subagent quit must NOT abort the parent pipeline.
       // Subagent panel close / view detach / completed-recycle trigger session_shutdown(quit)
       // but should not freeze the shared pipeline meta.json.
-      if ((reason === "quit" || reason === "new") && isChild) {
-        await safeWriteAuditLog("session_shutdown_skipped", {
-          pipelineId: meta.pipelineId,
-          stage: meta.currentStage,
-          isSubagent: "true",
-          reason: String(reason),
-          ...(sessionFile ? { sessionFile } : {}),
-          ...(parentSession ? { parentSession } : {}),
-        });
+      if (isChildQuit) {
 
         // Phase 4 / 175 (R3Q2A): state-aware cleanup channel for child shutdown.
         // Read-only judgment + clear spawn records ONLY. NEVER changes currentStage/flowState/summaries.
