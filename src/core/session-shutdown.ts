@@ -25,6 +25,9 @@ import { createPipelineUI } from "./pipeline-ui";
 import { markPipelineAborted } from "./flow-state";
 import { detectSessionRole } from "./session-role";
 import { isDormant } from "./dormancy";
+import { probeAgentState } from "../utils/subagents-introspect";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
+import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -67,11 +70,12 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
       const { isChild, sessionFile, parentSession } = detectSessionRole(ctx);
 
       // Phase 3 (170) ①: attach shutdown reason (quit/new/resume/fork/reload)
+      // Phase 4 / 175 (R1Q1A): reason missing → "none" for consistency
       const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
       await writeAuditLog("session_shutdown", {
         pipelineId: meta.pipelineId,
         finalStage: meta.currentStage,
-        ...(reason ? { reason: String(reason) } : {}),
+        reason: reason ? String(reason) : "none",
         ...(sessionFile ? { sessionFile: sessionFile } : {}),
         ...(isChild ? { isSubagent: "true" } : {}),
       });
@@ -88,6 +92,55 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
           ...(sessionFile ? { sessionFile } : {}),
           ...(parentSession ? { parentSession } : {}),
         });
+
+        // Phase 4 / 175 (R3Q2A): state-aware cleanup channel for child shutdown.
+        // Read-only judgment + clear spawn records ONLY. NEVER changes currentStage/flowState/summaries.
+        const stage = meta.currentStage;
+        const activeSpawn = meta.activeSpawns?.[stage];
+        const stageCompleted = !!meta.summaries?.[stage]?.path;
+
+        if (activeSpawn) {
+          if (stageCompleted) {
+            // Stage completed → idempotent cleanup of spawn records
+            const clearedSpawns = { ...meta.activeSpawns };
+            delete clearedSpawns[stage];
+            const clearedSpawned = { ...meta.spawnedStages };
+            delete clearedSpawned[stage];
+            ctx.session.updateMeta({ activeSpawns: clearedSpawns, spawnedStages: clearedSpawned });
+          } else if (activeSpawn.agentId || activeSpawn.agentName) {
+            // Stage not completed + spawn record exists → check probe
+            const agentKey = activeSpawn.agentId ?? activeSpawn.agentName!;
+            const probe = probeAgentState(agentKey);
+
+            if (probe === "settled") {
+              // Agent settled before stage completion → clear record + notify (throttled)
+              const clearedSpawns = { ...meta.activeSpawns };
+              delete clearedSpawns[stage];
+              ctx.session.updateMeta({ activeSpawns: clearedSpawns });
+
+              const throttleKey = `child_shutdown_notify:${sessionFile ?? meta.pipelineId}:${stage}`;
+              if (shouldEmitWithinWindow(throttleKey, AUDIT_THROTTLE_WINDOW_MS)) {
+                ui.notify(ctx, `Stage executor for "${stage}" exited before stage completion. Run /pipeline-resume or open the decision menu.`);
+              }
+              await safeWriteAuditLog("child_shutdown_settled", {
+                pipelineId: meta.pipelineId,
+                stage,
+                agentKey,
+                ...(sessionFile ? { sessionFile } : {}),
+              });
+            } else if (probe === "unknown") {
+              // Probe unavailable → audit only, fail-open (no record clear, no state change)
+              await safeWriteAuditLog("child_shutdown_probe_unavailable", {
+                pipelineId: meta.pipelineId,
+                stage,
+                agentKey,
+                ...(sessionFile ? { sessionFile } : {}),
+              });
+            }
+            // probe === "live" → agent still running, do nothing (let lifecycle handle it)
+          }
+        }
+
         // Do NOT call markPipelineAborted or clearStage for child sessions
         return;
       }

@@ -1083,4 +1083,45 @@ describe("createSessionStarter", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  // ── Phase 4 / 175: stale_startup !isChild gate ──────────────────────────
+
+  describe("Phase 4 / 175: stale_startup !isChild gate", () => {
+    it("child session startup does NOT produce pipeline_session_aborted (G1 regression)", async () => {
+      const TMP = join(tmpdir(), "pi-stale-child-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // Simulate a child session with running pipeline (zombie)
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "running",
+        pipelineId: "pipe-child-test",
+      });
+      const ctx = createCtx(meta);
+      // Simulate child session via header
+      (ctx as any)._ctx = {
+        sessionManager: {
+          getHeader: () => ({ parentSession: "parent-001" }),
+          getEntries: () => [],
+          getBranch: () => [],
+          getSessionFile: () => "child-session-file",
+        },
+      };
+      (ctx as any).event = { reason: "startup" };
+
+      const hook = createSessionStarter(config);
+      await hook.handler(ctx as any);
+
+      // Child should NOT trigger pipeline_session_aborted / flowState change
+      // The flowState should remain "running" (no abort)
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      // Should have stale_suspect audit instead of pipeline_session_aborted
+      expect(logContent).toContain("stale_suspect");
+      expect(logContent).not.toContain("stale_startup");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
 });

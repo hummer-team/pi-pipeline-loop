@@ -215,7 +215,8 @@ describe("createSessionShutdown", () => {
       expect(shutdownLine).toContain("reason=quit");
     });
 
-    it("shutdown audit omits reason when event.reason is absent (backward compat)", async () => {
+    // Phase 4 / 175 (R1Q1A): reason missing → "none" for consistency
+    it("shutdown audit writes reason=none when event.reason is absent (Phase 4 / 175)", async () => {
       const phaseTmp = join(tmpdir(), "pi-sd-noreason-" + Date.now());
       await mkdir(phaseTmp, { recursive: true });
       await initAuditLog(makeTestConfig({ projectRoot: phaseTmp }));
@@ -231,7 +232,7 @@ describe("createSessionShutdown", () => {
       const content = await readFile(logPath, "utf-8");
       const shutdownLines = content.trim().split("\n").filter((l: string) => l.includes("session_shutdown"));
       const lastLine = shutdownLines[shutdownLines.length - 1];
-      expect(lastLine).not.toContain("reason=");
+      expect(lastLine).toContain("reason=none");
     });
   });
 

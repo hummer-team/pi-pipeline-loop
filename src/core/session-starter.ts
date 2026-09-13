@@ -21,6 +21,8 @@ import { checkTemplateDrift } from "../utils/template-drift";
 import { detectSessionRole } from "./session-role";
 import { formatAbortedNotifyText } from "./flow-state";
 import { staleConfigNotice } from "../utils/config-staleness";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
+import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -349,32 +351,42 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           }
         }
 
-        // Phase 3 (173) 🔴-2: Narrow stale_startup to running-only.
-        // Previously (171): any non-aborted non-completed → stale abort.
-        // round-6 (927740c) established: awaiting_human is a valid frozen form
-        // that can coexist with flowState="running" (stage-advancer does not
-        // write flowState when advancing to awaiting_human). Such frozen forms
-        // must NOT be treated as running zombies — they go to frozen replay.
-        // Now: only running AND not frozen → stale. isFrozen is the authoritative
-        // predicate (blocked/aborted/awaiting_human), shared with the replay
-        // branch at line 363, ensuring stale semantics = "running zombie only".
+        // Phase 3 (173) 🔴-2 + Phase 4 / 175 (R3Q2A/R2Q1A): stale_startup gate.
+        // Owner-only: child sessions do NOT trigger stale_startup abort (G1 fix).
+        // For child + running: emit stale_suspect audit (throttled) instead.
+        // trigger.isSubagent reflects actual detection (replaces hardcoded false).
         if (reason === "startup" && flowState === "running" && !isFrozen(meta) && !isTerminalCompleted(meta)) {
-          // Running zombie after crash/SIGKILL → stale_startup abort
-          const { sessionFile } = detectSessionRole(ctx);
-          await markPipelineAborted(ctx, "stale_startup", {
-            trigger: {
-              sessionFile: sessionFile || undefined,
-              isSubagent: false,
-              eventReason: "startup",
-            },
-            config,
-          });
+          if (!isChild) {
+            // Owner session: running zombie after crash/SIGKILL → stale_startup abort
+            const { sessionFile } = detectSessionRole(ctx);
+            await markPipelineAborted(ctx, "stale_startup", {
+              trigger: {
+                sessionFile: sessionFile || undefined,
+                isSubagent: false,
+                eventReason: "startup",
+              },
+              config,
+            });
 
-          await writeAuditLog("pipeline_stale_reset", {
-            pipelineId: meta.pipelineId,
-            stage: meta.currentStage,
-          });
-          // markPipelineAborted already emitted the correct notify (C16).
+            await writeAuditLog("pipeline_stale_reset", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+            });
+            // markPipelineAborted already emitted the correct notify (C16).
+          } else {
+            // Child session: running → stale_suspect audit (throttled, no abort)
+            const { sessionFile } = detectSessionRole(ctx);
+            const throttleKey = `stale_suspect:${sessionFile ?? "unknown"}`;
+            if (shouldEmitWithinWindow(throttleKey, AUDIT_THROTTLE_WINDOW_MS)) {
+              await safeWriteAuditLog("stale_suspect", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                sessionFile: sessionFile ?? "unknown",
+                isSubagent: "true",
+                eventReason: "startup",
+              });
+            }
+          }
         } else if (isFrozen(meta) && flowState !== "aborted") {
           // ── Phase 3 (173) C8: Frozen menu replay ────────────────────
           // blocked/awaiting_human → replay decision menu on all recovery reasons
