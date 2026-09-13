@@ -1337,3 +1337,47 @@ frozen pipeline ────┼─ 重放（session_start reload/startup）
 - 仅解冻 blocked/awaiting_human
 - 不唤醒 dormant（completed/aborted/无 meta）
 - completed 唤醒需 `/pipeline-start`（D2）
+
+---
+
+## 16. Verify Failure Feedback Channel vs Violations Breaker
+
+The pipeline distinguishes two categories of failures, each with its own escalation path:
+
+### 16.1 Format Verification Failures (verify_fail_wake)
+
+Format failures occur when the stage deliverable doesn't meet structural requirements:
+- `requiredFiles`: expected files not found
+- `fileContentPattern`: file content doesn't match expected patterns
+- `requiredCommands`: build/test commands fail
+- `keywords`: expected keywords not found in output
+
+**Escalation path:**
+1. First failure → `verify_fail_wake` — model is woken via `sendUserMessage` with failure details
+2. Repeated failures → `verifyAttempts` counter increments
+3. Cap reached (`maxVerifyAttempts`, default 3) → `verify_attempt_overflow` freeze + decision menu
+
+**Key behavior:** Format failures do NOT count as violations. They are handled through the verify feedback loop, allowing the model to self-correct without triggering the behavioral violation breaker.
+
+### 16.2 Behavioral Violations (violation_overflow)
+
+Behavioral violations occur when the model attempts prohibited actions:
+- `git_protected`: git write commands in protected stages
+- `write_protected`: file writes outside stage whitelist
+- `bash_destructive`: destructive shell commands
+- `frozen`: tool calls when pipeline is frozen
+
+**Escalation path:**
+1. Each violation → `recordViolation` appends to `meta.violations`
+2. Cap reached (`DEFAULT_MAX_VIOLATIONS=3`) → `violation_overflow` freeze + decision menu
+
+**Key behavior:** Behavioral violations are counted separately from format failures. The violation breaker enforces safety boundaries that the model cannot self-correct from.
+
+### 16.3 Summary
+
+| Category | Counter | Cap | Freeze Reason | Recovery |
+|----------|---------|-----|---------------|----------|
+| Format failures | `verifyAttempts` | `maxVerifyAttempts` (default 3) | `verify_attempt_overflow` | Decision menu |
+| Behavioral violations | `meta.violations.length` | `DEFAULT_MAX_VIOLATIONS` (3) | `violation_overflow` | Decision menu |
+
+The two counters are independent — format failures do not increment violations, and behavioral violations do not increment verifyAttempts.
