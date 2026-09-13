@@ -474,8 +474,13 @@ export function diffAndMergeRules(
   // Phase 2 / 176: any `groups:` declaration is treated as custom — this both
   // protects user-authored group schemas and keeps re-running init on the new
   // v6 templates idempotent (the built-in white-list was retired).
+  // Additionally, any flat `fileContentPattern` is treated as custom to protect
+  // legacy user-authored content patterns from silent data loss during init merge.
+  // (Phase 4 / 176 fix: flat custom fileContentPattern was previously dropped
+  // because buildMergedVerifyContent does not carry fileContentPattern.)
   const hasCustom =
     (existing.groups?.length ?? 0) > 0 ||
+    (existing.fileContentPattern?.length ?? 0) > 0 ||
     (existing.requiredCommands ?? []).some(c => c.expectOutput !== undefined) ||
     // keywords with mode="and" when expected set has no keyword rules
     (existing.mode === "and" && expectedItems.filter(i => i.type === "keyword").length === 0);

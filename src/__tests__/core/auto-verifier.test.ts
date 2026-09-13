@@ -1387,6 +1387,126 @@ describe("precheckRequiredFiles", () => {
     expect(result.passed).toBe(false);
     expect(result.missing).toContain("nonexistent/*.md");
   });
+
+  // Phase 4 / 176 fix: v6 templates use groups with requiredFile nodes.
+  // The precheck must traverse groups to find requiredFile entries.
+  it("returns passed=false when v6 groups template requiredFile is missing", async () => {
+    const vrPath = path.join(TMP, "verify-v6.md");
+    await fs.writeFile(
+      vrPath,
+      [
+        "---",
+        "rules:",
+        '  path: "docs/review/code_review_*.md"',
+        "  groups:",
+        "    - name: review-report-ready",
+        "      ruleMode: and",
+        "      rules:",
+        "        - type: requiredFile",
+        "        - type: fileContentPattern",
+        '          patterns: ["conclusion"]',
+        "---",
+        "Body\n",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        review: {
+          agentPath: "a.md",
+          skillPath: "s.md",
+          nextStage: "fix",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify-v6.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "review" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(false);
+    expect(result.missing.length).toBeGreaterThan(0);
+  });
+
+  it("returns passed=true when v6 groups template requiredFile exists", async () => {
+    await fs.mkdir(path.join(TMP, "docs", "review"), { recursive: true });
+    await fs.writeFile(path.join(TMP, "docs", "review", "code_review_test.md"), "conclusion: pass");
+
+    const vrPath = path.join(TMP, "verify-v6-exists.md");
+    await fs.writeFile(
+      vrPath,
+      [
+        "---",
+        "rules:",
+        '  path: "docs/review/code_review_*.md"',
+        "  groups:",
+        "    - name: review-report-ready",
+        "      ruleMode: and",
+        "      rules:",
+        "        - type: requiredFile",
+        "        - type: fileContentPattern",
+        '          patterns: ["conclusion"]',
+        "---",
+        "Body\n",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        review: {
+          agentPath: "a.md",
+          skillPath: "s.md",
+          nextStage: "fix",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify-v6-exists.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "review" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("returns passed=true when groups have no requiredFile nodes", async () => {
+    const vrPath = path.join(TMP, "verify-v6-norf.md");
+    await fs.writeFile(
+      vrPath,
+      [
+        "---",
+        "rules:",
+        "  groups:",
+        "    - name: content-only",
+        "      ruleMode: and",
+        "      rules:",
+        "        - type: fileContentPattern",
+        '          patterns: ["some content"]',
+        "---",
+        "Body\n",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        develop: {
+          agentPath: "a.md",
+          skillPath: "s.md",
+          nextStage: "review",
+          requireDomain: false,
+          verify: { require: true, verifyFile: "verify-v6-norf.md" },
+        },
+      } as any,
+    });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const result = await precheckRequiredFiles(config, meta);
+    expect(result.passed).toBe(true);
+    expect(result.missing).toEqual([]);
+  });
 });
 
 describe("Phase 6 (139): VERIFIED_COMMANDS selfVerifySkip", () => {

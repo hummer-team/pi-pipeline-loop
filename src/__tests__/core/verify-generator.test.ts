@@ -1467,7 +1467,10 @@ describe("verify-generator", () => {
       expect(result.merged).toEqual([]);
     });
 
-    it("hasCustom=false when existing rules contain only template plan doc pattern (develop)", () => {
+    // Phase 4 / 176 fix: flat fileContentPattern is protected to prevent silent
+    // data loss during init merge. Any existing flat fileContentPattern (whether
+    // template or user-authored) triggers hasCustom=true.
+    it("hasCustom=true when existing rules contain flat fileContentPattern (data-loss protection)", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1482,12 +1485,11 @@ describe("verify-generator", () => {
         { type: "git" as const, target: "git commit" },
       ];
       const result = diffAndMergeRules(existing, pluginItems);
-      expect(result.hasCustom).toBe(false);
-      // Plugin items should still be merged
-      expect(result.merged.length).toBeGreaterThan(0);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("hasCustom=false when existing rules contain only template clarify lookahead pattern", () => {
+    it("hasCustom=true when existing rules contain flat clarify lookahead pattern", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1501,11 +1503,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    // 168 Phase 3: pipelineId patterns in whitelist → hasCustom=false
-    it("hasCustom=false when existing rules contain pipelineId content patterns (168 Phase 3)", () => {
+    it("hasCustom=true when existing rules contain flat pipelineId content patterns", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1519,10 +1521,11 @@ describe("verify-generator", () => {
         { type: "command" as const, target: "bun run build" },
       ];
       const result = diffAndMergeRules(existing, pluginItems);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("hasCustom=false for review pipelineId content pattern (168 Phase 3)", () => {
+    it("hasCustom=true for review flat pipelineId content pattern", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1533,10 +1536,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("flat custom fileContentPattern no longer blocks merge (white-list retired, Phase 2 / 176)", () => {
+    it("flat custom fileContentPattern blocks merge (data-loss protection, Phase 4 / 176 fix)", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1547,12 +1551,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, [{ type: "command" as const, target: "bun run build" }]);
-      expect(result.hasCustom).toBe(false);
-      expect(result.merged).toHaveLength(1);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    // Phase 2 (162): bilingual plan marker pattern in whitelist
-    it("hasCustom=false when existing rules contain only bilingual plan marker pattern", () => {
+    it("hasCustom=true when existing rules contain flat bilingual plan marker pattern", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1562,10 +1565,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("hasCustom=false when existing rules contain legacy plan marker pattern (init 1 backward compat)", () => {
+    it("hasCustom=true when existing rules contain flat legacy plan marker pattern", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1575,11 +1579,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    // Phase 1 (163): relaxed review conclusion pattern in whitelist
-    it("hasCustom=false when existing rules contain old review conclusion pattern (结论：通过)", () => {
+    it("hasCustom=true when existing rules contain flat old review conclusion pattern", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1589,10 +1593,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("hasCustom=false when existing rules contain new review conclusion pattern (结论：(通过|不通过))", () => {
+    it("hasCustom=true when existing rules contain flat new review conclusion pattern", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1602,12 +1607,13 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    // ── Phase 0 / 175: bilingual + bold tolerant patterns in whitelist ────
+    // ── Phase 0 / 175: bilingual + bold tolerant patterns protected ────
 
-    it("hasCustom=false when existing rules contain bilingual clarify lookahead (Phase 0 / 175)", () => {
+    it("hasCustom=true when existing rules contain flat bilingual clarify lookahead", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1620,10 +1626,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("hasCustom=false when existing rules contain bilingual review verdict patterns (Phase 0 / 175)", () => {
+    it("hasCustom=true when existing rules contain flat bilingual review verdict patterns", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1634,10 +1641,11 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("old clarify lookahead pattern still recognized as non-custom (backward compat)", () => {
+    it("hasCustom=true for old clarify lookahead pattern (flat protection)", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1651,10 +1659,14 @@ describe("verify-generator", () => {
         ],
       };
       const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(false);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
-    it("init 1 merge regression: develop template with plan doc pattern still merges plugin defaults", async () => {
+    // Phase 4 / 176 fix: flat fileContentPattern in existing verify.md is protected.
+    // When a legacy flat verify.md has fileContentPattern, re-init will NOT merge
+    // plugin items — the file is preserved as-is (exists_custom protection).
+    it("init merge regression: flat fileContentPattern verify.md is protected (exists_custom)", async () => {
       resetPromptConfigCache();
       const ymlContent = [
         "stage_deliverable_develop: |",
@@ -1676,7 +1688,7 @@ describe("verify-generator", () => {
         "- Template-TODO: add business deliverables here",
       ].join("\n");
 
-      // Pre-create verify.md with template plan doc pattern (simulating first init)
+      // Pre-create verify.md with flat fileContentPattern (simulating legacy template)
       const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
       await fs.mkdir(verifyDir, { recursive: true });
       const templateVerify = [
@@ -1715,11 +1727,9 @@ describe("verify-generator", () => {
 
       const results = await generateVerifyFiles(config, { stage: "develop" });
       expect(results.length).toBe(1);
-      // Should NOT be "skipped" with "exists_custom" — white-list allows merge
-      expect(results[0].status).not.toBe("skipped");
-      // Should be "merged" with plugin items
-      expect(results[0].status).toBe("merged");
-      expect(results[0].pluginCount).toBeGreaterThan(0);
+      // Flat fileContentPattern triggers exists_custom protection
+      expect(results[0].status).toBe("skipped");
+      expect(results[0].reason).toBe("exists_custom");
     });
   });
 });

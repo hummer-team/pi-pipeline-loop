@@ -646,8 +646,8 @@ export async function precheckRequiredFiles(
   // Parse verify.md to extract requiredFiles rules
   const { rules } = await parseVerifyFile(verifyPath);
 
-  // No rules or no requiredFiles → precheck passes
-  if (!rules || !rules.requiredFiles || rules.requiredFiles.length === 0) {
+  // No rules → precheck passes
+  if (!rules) {
     return { passed: true, missing: [] };
   }
 
@@ -657,14 +657,39 @@ export async function precheckRequiredFiles(
 
   // Replace plan doc glob with concrete path (only for plan stage)
   resolvedRules = await applyConcreteStageDocPaths(resolvedRules, config, meta);
-  
-  // Safety check: resolvePlaceholders preserves requiredFiles array structure
-  if (!resolvedRules.requiredFiles || resolvedRules.requiredFiles.length === 0) {
+
+  // Collect required file paths from both flat requiredFiles and groups.
+  // Phase 0/176 fix: v6 templates place requiredFile nodes inside groups,
+  // inheriting the file-level `path` when the node has no explicit path.
+  const allRequiredPaths: string[] = [];
+
+  // Flat requiredFiles (legacy templates)
+  if (resolvedRules.requiredFiles && resolvedRules.requiredFiles.length > 0) {
+    allRequiredPaths.push(...resolvedRules.requiredFiles);
+  }
+
+  // Groups-based requiredFile nodes (v6 templates)
+  if (resolvedRules.groups) {
+    for (const group of resolvedRules.groups) {
+      for (const node of group.rules) {
+        if (node.type === "requiredFile") {
+          // Node path inherits from file-level rules.path when absent
+          const effectivePath = node.path ?? resolvedRules.path;
+          if (effectivePath) {
+            allRequiredPaths.push(effectivePath);
+          }
+        }
+      }
+    }
+  }
+
+  // No required files found → precheck passes
+  if (allRequiredPaths.length === 0) {
     return { passed: true, missing: [] };
   }
 
   // Check if required files exist
-  const result = await verifyRequiredFiles(resolvedRules.requiredFiles, config.projectRoot);
+  const result = await verifyRequiredFiles(allRequiredPaths, config.projectRoot);
 
   if (result.passed) {
     return { passed: true, missing: [] };
@@ -675,7 +700,7 @@ export async function precheckRequiredFiles(
   const missingMatch = result.detail.match(/Missing files:\s*(.+)/);
   const missing = missingMatch
     ? missingMatch[1].split(",").map(s => s.trim())
-    : resolvedRules.requiredFiles;
+    : allRequiredPaths;
 
   return { passed: false, missing };
 }
@@ -790,8 +815,9 @@ export async function precheckClarifyAwaitAnswer(
 
     // Phase 2 / 176: load runtime anchors from the deployed verify.md. When the
     // roundHeading anchor is unavailable, fail-open (do not defer) and audit.
+    // Non-roundHeading issues are logged for audit but do NOT trigger fail-open.
     const { anchors, issues } = await loadVerifyContractAnchors(config, "clarify");
-    if (issues.length > 0 || !anchors.roundHeading) {
+    if (!anchors.roundHeading) {
       await safeWriteAuditLog("contract_anchor_unavailable", {
         pipelineId: meta.pipelineId,
         stage: "clarify",
@@ -799,6 +825,14 @@ export async function precheckClarifyAwaitAnswer(
         issues: issues.join("; "),
       }, "error");
       return { awaiting: false };
+    }
+    // Log non-roundHeading issues for audit without changing behavior
+    if (issues.length > 0) {
+      await safeWriteAuditLog("contract_anchor_issues", {
+        pipelineId: meta.pipelineId,
+        stage: "clarify",
+        issues: issues.join("; "),
+      }, "warn");
     }
 
     // Lazy import to avoid circular dependency at module level

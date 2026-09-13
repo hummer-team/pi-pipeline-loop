@@ -776,8 +776,9 @@ async function maybeAutoLaunchClarify(
 
       // Phase 2 / 176: load runtime anchors from the deployed verify.md.
       // Missing roundHeading → fail-open fresh(1) + throttled notify + error audit.
+      // Non-roundHeading issues are logged for audit but do NOT trigger fresh fallback.
       const { anchors, issues } = await loadVerifyContractAnchors(config, "clarify");
-      if (issues.length > 0 || !anchors.roundHeading) {
+      if (!anchors.roundHeading) {
         await safeWriteAuditLog("contract_anchor_unavailable", {
           requirementDoc: file,
           pipelineId: meta.pipelineId,
@@ -791,6 +792,15 @@ async function maybeAutoLaunchClarify(
         effectiveArgs = "1";
         argsSource = "derived";
       } else {
+        // Log non-roundHeading issues for audit without changing behavior
+        if (issues.length > 0) {
+          await safeWriteAuditLog("contract_anchor_issues", {
+            requirementDoc: file,
+            pipelineId: meta.pipelineId,
+            stage: "clarify",
+            issues: issues.join("; "),
+          }, "warn");
+        }
         const derived = deriveClarifyForwardArgs(docText, anchors);
         switch (derived.kind) {
         case "fresh":
