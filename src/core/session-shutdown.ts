@@ -28,6 +28,7 @@ import { isDormant } from "./dormancy";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { clearActiveSpawnRecord, clearStageSpawnRecords } from "../utils/spawn-cleanup";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -101,12 +102,8 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
 
         if (activeSpawn) {
           if (stageCompleted) {
-            // Stage completed → idempotent cleanup of spawn records
-            const clearedSpawns = { ...meta.activeSpawns };
-            delete clearedSpawns[stage];
-            const clearedSpawned = { ...meta.spawnedStages };
-            delete clearedSpawned[stage];
-            ctx.session.updateMeta({ activeSpawns: clearedSpawns, spawnedStages: clearedSpawned });
+            // Stage completed → idempotent cleanup of spawn records (shared helper, DRY)
+            clearStageSpawnRecords(ctx.session, stage);
           } else if (activeSpawn.agentId || activeSpawn.agentName) {
             // Stage not completed + spawn record exists → check probe
             const agentKey = activeSpawn.agentId ?? activeSpawn.agentName!;
@@ -114,9 +111,7 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
 
             if (probe === "settled") {
               // Agent settled before stage completion → clear record + notify (throttled)
-              const clearedSpawns = { ...meta.activeSpawns };
-              delete clearedSpawns[stage];
-              ctx.session.updateMeta({ activeSpawns: clearedSpawns });
+              clearActiveSpawnRecord(ctx.session, stage);
 
               const throttleKey = `child_shutdown_notify:${sessionFile ?? meta.pipelineId}:${stage}`;
               if (shouldEmitWithinWindow(throttleKey, AUDIT_THROTTLE_WINDOW_MS)) {

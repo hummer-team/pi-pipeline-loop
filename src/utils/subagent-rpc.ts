@@ -15,6 +15,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { safeWriteAuditLog } from "./auditLog";
+import { clearActiveSpawnRecord } from "./spawn-cleanup";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 
 /**
@@ -511,14 +512,10 @@ export async function spawnStageSubagent(
     opts.session.updateMeta(patch);
   };
 
-  /** Helper to clear activeSpawns entry on lifecycle settle */
+  /** Helper to clear activeSpawns entry on lifecycle settle (delegates to shared utility) */
   const clearActiveSpawn = (): void => {
     if (!opts?.session) return;
-    const currentMeta = opts.session.getMeta();
-    if (!currentMeta?.activeSpawns?.[stage]) return;
-    const cleared = { ...currentMeta.activeSpawns };
-    delete cleared[stage];
-    opts.session.updateMeta({ activeSpawns: cleared });
+    clearActiveSpawnRecord(opts.session, stage);
   };
 
   // Phase 2 / 175 (R1Q5A/R2Q5A): write reserved placeholder before ping.
