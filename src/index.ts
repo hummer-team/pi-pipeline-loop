@@ -47,6 +47,8 @@ import { createSessionShutdown } from "./core/session-shutdown";
 
 // JSON config loader
 import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader";
+import * as fsSync from "node:fs";
+import * as pathMod from "node:path";
 
 // ─── Factory Function ────────────────────────────────────────────────────────
 
@@ -294,6 +296,20 @@ export function createPipelineFromJson(jsonPath?: string): ExtensionFactory {
   const resolvedPath = jsonPath ?? ".pi/pipeline_loop.json";
   const json = loadJsonConfig(resolvedPath);
   const config = resolvePipelineConfig(json);
+
+  // Phase 3 / 175: inject config-source tracking fields so that isConfigStale()
+  // can detect mtime changes after load. Fail-open on IO errors (no injection).
+  try {
+    const absPath = pathMod.isAbsolute(resolvedPath)
+      ? resolvedPath
+      : pathMod.resolve(process.cwd(), resolvedPath);
+    const stat = fsSync.statSync(absPath);
+    config.configSourcePath = absPath;
+    config.configLoadedMtimeMs = stat.mtimeMs;
+  } catch {
+    // IO failure (file missing, permissions) → fail-open: staleness detection disabled
+  }
+
   return createPipeline(config);
 }
 
