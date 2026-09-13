@@ -885,3 +885,119 @@ describe("Phase 0 (169) P1: applyVerifyPass visitOrder append", () => {
     expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "completed"]);
   });
 });
+
+// ─── Phase 6 / 175 (R2Q3A): format failures do NOT enter violations breaker ──
+// Regression tests ensuring that requiredFiles/fileContentPattern failures
+// go through verify_attempts → verify_fail_wake → verify_attempt_overflow
+// and NOT through trackViolation. Behavioral violations (git_protected etc.)
+// remain on the separate violations path.
+
+describe("Phase 6 / 175: format failures bypass violations breaker", () => {
+  it("3 consecutive format failures: violations NOT incremented, each produces verify_fail_wake", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 5 });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyAttempts: 0,
+      violations: [], // Start with empty violations
+    });
+    const ctx = createCtx(meta);
+    const wakeCalls: string[] = [];
+    (ctx as any).pi = {
+      sendUserMessage: (msg: string) => { wakeCalls.push(msg); },
+    };
+
+    const formatFailure = {
+      structuredResult: {
+        failures: [
+          { ruleType: "requiredFiles", detail: "missing: output.md" },
+          { ruleType: "fileContentPattern", detail: "pattern not matched" },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    // 3 consecutive format failures
+    for (let i = 0; i < 3; i++) {
+      await applyVerifyFail(
+        ctx as any, meta, "develop", formatFailure, "rule", ctx.pipelineUI, config,
+      );
+    }
+
+    // verifyAttempts incremented each time
+    expect(meta.verifyAttempts).toBe(3);
+    // Each failure produced a verify_fail_wake (sendUserMessage)
+    expect(wakeCalls.length).toBe(3);
+    // violations NOT incremented (this is the key assertion)
+    expect(meta.violations?.length ?? 0).toBe(0);
+    // flowState NOT frozen (below maxVerifyAttempts=5)
+    expect(meta.flowState).not.toBe("blocked");
+  });
+
+  it("at maxVerifyAttempts: verify_attempt_overflow freeze (not violation_overflow)", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 3 });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyAttempts: 2, // Will reach 3 (max) on next call
+      violations: [],
+    });
+    const ctx = createCtx(meta);
+    let wakeCalls = 0;
+    (ctx as any).pi = {
+      sendUserMessage: () => { wakeCalls++; },
+    };
+
+    const formatFailure = {
+      structuredResult: {
+        failures: [{ ruleType: "fileContentPattern", detail: "pattern not matched" }],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    await applyVerifyFail(
+      ctx as any, meta, "develop", formatFailure, "rule", ctx.pipelineUI, config,
+    );
+
+    // Pipeline frozen via verify path
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_attempt_overflow");
+    // violations still empty
+    expect(meta.violations?.length ?? 0).toBe(0);
+    // Overflow freeze does NOT send wake (H2 fix)
+    expect(wakeCalls).toBe(0);
+  });
+
+  it("format failures and behavioral violations use separate counters (no cross-contamination)", async () => {
+    const config = makeTestConfig({ maxVerifyAttempts: 5 });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      verifyAttempts: 0,
+      violations: [
+        { type: "git_protected", tool: "bash", detail: "git add", suggestion: "", timestamp: Date.now() - 1000 },
+        { type: "write_protected", tool: "write", detail: ".pi/config", suggestion: "", timestamp: Date.now() - 500 },
+      ],
+    });
+    const ctx = createCtx(meta);
+    (ctx as any).pi = { sendUserMessage: () => {} };
+
+    const formatFailure = {
+      structuredResult: {
+        failures: [{ ruleType: "requiredFiles", detail: "missing: report.md" }],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    // Format failure should not affect existing violations count
+    await applyVerifyFail(
+      ctx as any, meta, "develop", formatFailure, "rule", ctx.pipelineUI, config,
+    );
+
+    expect(meta.verifyAttempts).toBe(1);
+    // Existing violations preserved (not modified by verify-advance)
+    expect(meta.violations!.length).toBe(2);
+    expect(meta.violations![0].type).toBe("git_protected");
+    expect(meta.violations![1].type).toBe("write_protected");
+  });
+});

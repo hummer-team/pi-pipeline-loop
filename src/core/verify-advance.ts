@@ -226,6 +226,15 @@ export async function applyVerifyPass(
  * - Writes audit log "auto_verify_fail" with method, failureCount, failureTypes
  * - Sends TUI failure output via ui?.fail (gated by output.pipelineStage)
  *
+ * IMPORTANT (Phase 6 / 175, R2Q3A): Format failures (requiredFiles/fileContentPattern)
+ * intentionally do NOT enter trackViolation. They use the separate verify feedback loop:
+ *   verifyAttempts++ → verify_fail_wake (sendUserMessage followUp) → verify_attempt_overflow
+ * This ensures format issues are handled through the model retry loop (maxVerifyAttempts)
+ * rather than the behavioral violations circuit breaker (DEFAULT_MAX_VIOLATIONS=3).
+ * Behavioral violations (git_protected, write_protected, bash_destructive, frozen) continue
+ * to use trackViolation in tool-guard.ts and are unaffected by verify failures.
+ * Audit trail: verify-advance.ts has ZERO calls to trackViolation (confirmed by grep).
+ *
  * @returns VerifyFailReturn with structured failure details
  */
 export async function applyVerifyFail(
