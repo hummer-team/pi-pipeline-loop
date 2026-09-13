@@ -633,34 +633,56 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         };
       }
 
-      // 3c. Phase 4 (171) Q5-B: Opt-in duplicate-spawn suppression.
-      // When guard.suppressDuplicateSpawn is true AND:
-      // - toolName is "Agent" (pi-subagents spawn tool)
-      // - args.subagent_type matches the current stage's resolved agent name
-      // - stage is clarify or plan (lightweight-advance stages only)
-      // - session is the owner (not child/clone — user sovereignty)
-      // - probe or activeSpawns indicates a live spawn for this stage
+      // 3c. Phase 2 / 175 (R2Q5A): Default-on evidence-based duplicate-spawn suppression.
+      // Enable: stageConfig.guard?.suppressDuplicateSpawn ?? true (default true, explicit false disables).
+      // Block conditions (ALL must hold):
+      //   - Owner session (not child/clone — user sovereignty)
+      //   - toolName in SPAWN_TOOL_NAMES
+      //   - subagent_type matches resolveAgentMention(stage)
+      //   - Evidence: (agentId AND probeAgentState=live) OR (reserved in-flight <60s)
       // → block with reason (NOT counted as violation).
+      // Removed: 30min time-window heuristic (was unreliable without hard evidence).
       const guard = stageConfig.guard;
-      if (guard?.suppressDuplicateSpawn && SPAWN_TOOL_NAMES.includes(toolName)) {
+      const suppressEnabled = guard?.suppressDuplicateSpawn ?? true;
+      if (suppressEnabled && SPAWN_TOOL_NAMES.includes(toolName)) {
         const subagentType = args.subagent_type as string | undefined;
-        const eligibleStages: PipelineStage[] = ["clarify", "plan"];
-        if (subagentType && eligibleStages.includes(meta.currentStage)) {
+        if (subagentType) {
           const expectedAgent = resolveAgentMention(config, meta.currentStage);
           if (expectedAgent && subagentType === expectedAgent) {
             // Domain restriction: only evaluate for owner sessions (detectSessionRole)
             const { isChild } = detectSessionRole(ctx);
             if (!isChild) {
-              // In-run probe: check pi-subagents manager singleton (primary) or activeSpawns (secondary)
-              const probeResult = checkLiveSpawn(meta, meta.currentStage);
-              if (probeResult) {
-                const suppressReason = `Stage executor '${expectedAgent}' is already running${probeResult.agentId ? ` (id ${probeResult.agentId})` : ""}. Await its result; do not spawn a duplicate.`;
+              // Phase 2 / 175: evidence-based check — probe live OR reserved <60s
+              const activeSpawn = meta.activeSpawns?.[meta.currentStage];
+              let basis: "probe_live" | "reserved" | null = null;
+              let evidenceAgentId: string | undefined;
+
+              if (activeSpawn) {
+                // Primary evidence: agentId + probe=live
+                if (activeSpawn.agentId) {
+                  const probeResult = probeAgentState(activeSpawn.agentId);
+                  if (probeResult === "live") {
+                    basis = "probe_live";
+                    evidenceAgentId = activeSpawn.agentId;
+                  }
+                  // probe=settled → do not block; probe=unknown → fall through to reserved check
+                }
+                // Secondary evidence: reserved in-flight (<60s)
+                if (!basis && activeSpawn.reserved && (Date.now() - activeSpawn.startedAt) < 60_000) {
+                  basis = "reserved";
+                  evidenceAgentId = activeSpawn.agentId;
+                }
+              }
+
+              if (basis) {
+                const suppressReason = `Stage executor '${expectedAgent}' is already running${evidenceAgentId ? ` (id ${evidenceAgentId})` : ""} [evidence: ${basis}]. Await its result; do not spawn a duplicate.`;
                 await safeWriteAuditLog("spawn_suppressed", {
                   pipelineId: meta.pipelineId,
                   stage: meta.currentStage,
                   tool: toolName,
                   subagentType,
-                  agentId: probeResult.agentId ?? "",
+                  agentId: evidenceAgentId ?? "",
+                  basis,
                 });
                 return { block: true, reason: suppressReason };
               }

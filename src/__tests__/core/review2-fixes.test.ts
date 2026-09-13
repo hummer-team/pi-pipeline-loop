@@ -376,10 +376,11 @@ describe("Matrix E: activeSpawns lifecycle", () => {
     expect(result).toBeUndefined();
   });
 
-  it("E4: probe=unknown + <30min → fall through to time-window block", async () => {
+  // Phase 2 / 175: time-window heuristic removed for blocking.
+  // probe=unknown without reserved flag → no suppression (no hard evidence).
+  it("E4: probe=unknown + no reserved → no block (Phase 2 / 175 removed time-window heuristic)", async () => {
     // Manager singleton absent → probeAgentState returns "unknown"
-    // review#2 Low consistency fix: tool-guard's checkLiveSpawn falls through to
-    // the 30min time-window check, so unknown + fresh entry still blocks.
+    // Phase 2 / 175: without hard evidence (probe=live or reserved<60s), no blocking.
     expect(probeAgentState("subagent-unknown-1")).toBe("unknown");
 
     const config = makeTestConfig({ projectRoot: TMP });
@@ -406,9 +407,8 @@ describe("Matrix E: activeSpawns lifecycle", () => {
     const hook = createToolGuard(config);
     const result: any = await hook.handler(ctx as any);
 
-    // Unknown + fresh → time-window says live → block
-    expect(result).toBeDefined();
-    expect(result.block).toBe(true);
+    // Phase 2 / 175: unknown + no reserved → no hard evidence → no block
+    expect(result).toBeUndefined();
   });
 
   it("E5: probe=unknown + >30min → time-window says stale → no block", async () => {

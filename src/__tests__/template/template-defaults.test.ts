@@ -48,10 +48,12 @@ describe("Phase 5 (173) C13: template default fields", () => {
     expect(content.stages.plan.guard.suppressDuplicateSpawn).toBe(true);
   });
 
-  it("pipeline_loop.json does NOT have suppressDuplicateSpawn in develop (Q8 correction)", () => {
+  // Phase 2 / 175: develop doesn't need explicit flag since default is now true.
+  // The absence of suppressDuplicateSpawn in develop means it defaults to true (default-on).
+  it("pipeline_loop.json does NOT have suppressDuplicateSpawn in develop (Phase 2 / 175: default-on makes flag unnecessary)", () => {
     const jsonPath = path.join(__dirname, "../../template/pipeline_loop.json");
     const content = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
-    // develop stage should NOT have guard.suppressDuplicateSpawn
+    // develop stage should NOT have guard.suppressDuplicateSpawn — default-on (175) covers it
     expect(content.stages.develop.guard?.suppressDuplicateSpawn).toBeUndefined();
   });
 

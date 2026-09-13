@@ -911,7 +911,8 @@ async function buildStageExecutor(
   } else if (executor.mode === "task-invocation") {
     lines.push(`This stage is executed by sub-agent: \`${executor.subagent_type}\``);
     lines.push("");
-    lines.push(`**Scheduling**: Main thread invokes \`${executor.subagent_type}\` via task tool.`);
+    // Phase 2 / 175 (R2Q5A): scheduling text indicates plugin auto-spawns; main thread must not re-invoke.
+    lines.push(`**Scheduling**: The plugin auto-spawns \`${executor.subagent_type}\` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call \`${executor.subagent_type}\` via task tool.`);
     lines.push(`**Return protocol**: Sub-agent returns \`nextStage: <stage>\` suggestion; main thread calls stage_advance.`);
     lines.push(`**Context**: context_arg filled by main thread from document artifacts (e.g. \`_plan.md\`, \`_commit.md\`)`);
   } else {

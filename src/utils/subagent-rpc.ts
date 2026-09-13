@@ -441,11 +441,21 @@ export async function spawnStageSubagent(
   if (opts?.session) {
     const freshMeta = opts.session.getMeta();
     if (freshMeta && freshMeta.spawnedStages?.[stage] === freshMeta.stageStartTime) {
-      await safeWriteAuditLog("stage_spawn_skipped", {
-        pipelineId: meta.pipelineId,
-        stage,
-        reason: "duplicate_spawn_guarded",
-      });
+      // Phase 2 / 175 (R1Q5A/R2Q5A): check if there's a reserved in-flight spawn (<60s)
+      const existingSpawn = freshMeta.activeSpawns?.[stage];
+      if (existingSpawn?.reserved && (Date.now() - existingSpawn.startedAt) < 60_000) {
+        await safeWriteAuditLog("stage_spawn_skipped", {
+          pipelineId: meta.pipelineId,
+          stage,
+          reason: "spawn_in_flight",
+        });
+      } else {
+        await safeWriteAuditLog("stage_spawn_skipped", {
+          pipelineId: meta.pipelineId,
+          stage,
+          reason: "duplicate_spawn_guarded",
+        });
+      }
       return { spawned: false, fallback: false };
     }
   }
@@ -511,8 +521,39 @@ export async function spawnStageSubagent(
     opts.session.updateMeta({ activeSpawns: cleared });
   };
 
+  // Phase 2 / 175 (R1Q5A/R2Q5A): write reserved placeholder before ping.
+  // This allows concurrent spawn attempts to detect in-flight spawns (<60s).
+  const writeReserved = (): void => {
+    if (!opts?.session) return;
+    const currentMeta = opts.session.getMeta();
+    if (!currentMeta) return;
+    // Only write if no existing entry (avoid overwriting a live spawn)
+    if (currentMeta.activeSpawns?.[stage]?.agentId) return;
+    opts.session.updateMeta({
+      activeSpawns: {
+        ...(currentMeta.activeSpawns ?? {}),
+        [stage]: { agentName, startedAt: Date.now(), reserved: true },
+      },
+    });
+  };
+
+  /** Helper to clear reserved flag (on any failure path) */
+  const clearReserved = (): void => {
+    if (!opts?.session) return;
+    const currentMeta = opts.session.getMeta();
+    if (!currentMeta) return;
+    const existing = currentMeta.activeSpawns?.[stage];
+    if (!existing?.reserved) return;
+    // Only clear if still reserved (not promoted to real spawn)
+    const cleared = { ...currentMeta.activeSpawns };
+    delete cleared[stage];
+    opts.session.updateMeta({ activeSpawns: cleared });
+  };
+
   // 4. RPC path: ping → spawn → success
   if (hasEventBus(pi)) {
+    // Write reserved before ping to mark in-flight spawn
+    writeReserved();
     const pinged = await pingSubagents(pi, 500);
     if (pinged) {
       const spawnResult = await spawnClarifySubagent(pi, {
@@ -544,6 +585,11 @@ export async function spawnStageSubagent(
         agentName,
         error: spawnResult.error,
       }, "warn");
+      // Phase 2 / 175: clear reserved on spawn failure
+      clearReserved();
+    } else {
+      // Ping timeout → clear reserved before falling through
+      clearReserved();
     }
     // Ping timeout or spawn failure → fall through
   }

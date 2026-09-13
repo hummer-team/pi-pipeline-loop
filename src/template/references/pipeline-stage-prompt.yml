@@ -222,7 +222,7 @@ stage_executor_plan: |
 stage_executor_develop: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
-  **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
   **Checkpoint**: Build + tests must pass before `stage_advance` with `nextStage: review`.
@@ -231,7 +231,7 @@ stage_executor_develop: |
 stage_executor_review: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
-  **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
   **Checkpoint**: Review report must contain a verdict line before `stage_advance`.
@@ -240,7 +240,7 @@ stage_executor_review: |
 stage_executor_fix: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
-  **Scheduling**: Main thread invokes `{subagent_type}` via task tool.
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
   **Checkpoint**: Build + tests must pass before `stage_advance` with `nextStage: review`.

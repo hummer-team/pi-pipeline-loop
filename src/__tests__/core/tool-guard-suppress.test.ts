@@ -15,7 +15,7 @@ async function writeAgentFile(projectRoot: string, agentPath: string, name: stri
   await writeFile(fullPath, `---\nname: ${name}\n---\n# Agent\n`);
 }
 
-describe("Phase 4 (171): suppressDuplicateSpawn", () => {
+describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", () => {
   let TMP: string;
 
   beforeEach(async () => {
@@ -25,8 +25,11 @@ describe("Phase 4 (171): suppressDuplicateSpawn", () => {
     __resetMemoryThrottle();
   });
 
-  it("default off: no suppression when suppressDuplicateSpawn is not set", async () => {
+  it("default on: no evidence → no suppression (agentName only, no agentId or reserved)", async () => {
+    // Phase 2 / 175: default is now ON, but blocking requires hard evidence.
+    // Without agentId or reserved, no suppression occurs.
     const config = makeTestConfig({ projectRoot: TMP });
+    await writeAgentFile(TMP, config.stages["plan"].agentPath!, "feat-design-plan-agent");
     const meta = makeTestMeta({
       currentStage: "plan",
       flowState: "running",
@@ -38,24 +41,18 @@ describe("Phase 4 (171): suppressDuplicateSpawn", () => {
     const hook = createToolGuard(config);
     const result = await hook.handler(ctx as any);
 
-    // Default: no suppression (guard.suppressDuplicateSpawn is undefined)
+    // No evidence (no agentId, no reserved) → no suppression
     expect(result).toBeUndefined();
   });
 
-  it("enabled: blocks Agent call with matching subagent_type in clarify stage for owner", async () => {
+  it("blocks when reserved in-flight (<60s) — evidence basis=reserved", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
-    // Enable suppression for clarify stage
-    config.stages["clarify"] = {
-      ...config.stages["clarify"],
-      guard: { suppressDuplicateSpawn: true },
-    };
-    // Create agent file so resolveAgentMention returns the expected name
     await writeAgentFile(TMP, config.stages["clarify"].agentPath!, "feat-design-plan-agent");
 
     const meta = makeTestMeta({
       currentStage: "clarify",
       flowState: "running",
-      activeSpawns: { clarify: { agentName: "feat-design-plan-agent", startedAt: Date.now() } },
+      activeSpawns: { clarify: { agentName: "feat-design-plan-agent", startedAt: Date.now(), reserved: true } },
     });
     const ctx = createMockCtx(meta, { sessionFile: "main-session" });
     ctx.toolCall = { name: "Agent", arguments: { subagent_type: "feat-design-plan-agent" } };
@@ -66,10 +63,55 @@ describe("Phase 4 (171): suppressDuplicateSpawn", () => {
     expect(result).toBeDefined();
     expect((result as any).block).toBe(true);
     expect((result as any).reason).toContain("already running");
+    expect((result as any).reason).toContain("reserved");
 
-    // Check spawn_suppressed audit
+    // Check spawn_suppressed audit with basis=reserved
     const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("spawn_suppressed");
+    expect(logContent).toContain("reserved");
+  });
+
+  it("does NOT block when reserved ≥60s (stale reservation)", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    await writeAgentFile(TMP, config.stages["clarify"].agentPath!, "feat-design-plan-agent");
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      flowState: "running",
+      // Reserved but started 120s ago — stale
+      activeSpawns: { clarify: { agentName: "feat-design-plan-agent", startedAt: Date.now() - 120_000, reserved: true } },
+    });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "feat-design-plan-agent" } };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // Stale reserved (≥60s) → no suppression
+    expect(result).toBeUndefined();
+  });
+
+  it("explicit false: suppressDuplicateSpawn=false disables suppression", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = {
+      ...config.stages["clarify"],
+      guard: { suppressDuplicateSpawn: false },
+    };
+    await writeAgentFile(TMP, config.stages["clarify"].agentPath!, "feat-design-plan-agent");
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      flowState: "running",
+      activeSpawns: { clarify: { agentName: "feat-design-plan-agent", startedAt: Date.now(), reserved: true } },
+    });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "feat-design-plan-agent" } };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // Explicit false → no suppression even with evidence
+    expect(result).toBeUndefined();
   });
 
   it("enabled: does NOT block when subagent_type does not match", async () => {

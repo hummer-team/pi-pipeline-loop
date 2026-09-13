@@ -514,7 +514,7 @@ export interface SessionMeta {
    * - Cleared on resume/restart (buildResumeMeta/buildStartMeta/buildRestartMeta)
    * - 30min stale entries treated as absent (fail-open)
    */
-  activeSpawns?: Partial<Record<PipelineStage, { agentName: string; agentId?: string; startedAt: number }>>;
+   activeSpawns?: Partial<Record<PipelineStage, { agentName: string; agentId?: string; startedAt: number; reserved?: boolean }>>;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
