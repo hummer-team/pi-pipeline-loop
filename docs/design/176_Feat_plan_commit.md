@@ -2,7 +2,7 @@
 **plan doc**: `docs/design/176_Feat_plan.md`
 
 **dev commit id**: 5bcdc20,edddb9e,151a0ae,3b18f6c,0ae0678,cd42b83
-**fix commit id**: 38ac894
+**fix commit id**: 38ac894,36ff47e
 
 ## notes
 - `5bcdc20` — prerequisite fix: removed a pre-existing stale assertion in
