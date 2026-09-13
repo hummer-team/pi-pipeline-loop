@@ -169,25 +169,42 @@ describe("High A: probeAgentState", () => {
 
 // ─── High B: forwardArgs passthrough ──────────────────────────────────────────
 
+/** Phase 2 / 176: anchors mirroring the v6 clarify verify.md declarations. */
+const CLARIFY_ANCHORS = {
+  roundHeading: {
+    patterns: ["^#{1,2}\\s*(?:第\\s*(?<roundZh>\\d+)\\s*轮澄清|[Rr]ound\\s+(?<roundEn>\\d+))"],
+    mode: "and" as const,
+  },
+  answerField: {
+    patterns: ["答\\s*[:：]|\\*{2}答\\*{2}", "Answer\\s*:"],
+    mode: "or" as const,
+  },
+  modelConfirm: {
+    patterns: ["^##\\s*模型确认", "^##\\s*Model\\s+Confirmation"],
+    mode: "or" as const,
+  },
+};
+
 describe("High B: forwardArgs passthrough in resume paths", () => {
   // review#2 High: replace empty typeof===function test with real deriveClarifyForwardArgs
   // behavior that produces the three user-visible forwardArgs shapes for clarify dispatch.
   it("deriveClarifyForwardArgs produces the 3 clarify forwardArgs shapes", () => {
     // Fresh doc → kind=fresh (no rounds yet) → spawn will use "1" (auto-derive)
-    const fresh = deriveClarifyForwardArgs("# Some doc\nNo rounds here");
+    const fresh = deriveClarifyForwardArgs("# Some doc\nNo rounds here", CLARIFY_ANCHORS);
     expect(fresh.kind).toBe("fresh");
 
     // Doc with one round AND answer → kind=full-und? (spawn with full-und? passthrough)
-    const withAnswer = deriveClarifyForwardArgs("# 第 1 轮澄清\nQ1: what?\n答: something\n");
+    const withAnswer = deriveClarifyForwardArgs("# 第 1 轮澄清\nQ1: what?\n答: something\n", CLARIFY_ANCHORS);
     expect(withAnswer.kind).toBe("full-und?");
 
     // Doc with one round but no answer → kind=await-answer (notify-only, no spawn)
-    const noAnswer = deriveClarifyForwardArgs("# 第 1 轮澄清\nQ1: what?\n");
+    const noAnswer = deriveClarifyForwardArgs("# 第 1 轮澄清\nQ1: what?\n", CLARIFY_ANCHORS);
     expect(noAnswer.kind).toBe("await-answer");
 
     // Doc with confirmation → kind=confirmed (notify-only)
     const confirmed = deriveClarifyForwardArgs(
       "# 第 1 轮澄清\nQ1: what?\n答: ok\n## 模型确认\nAll clear",
+      CLARIFY_ANCHORS,
     );
     expect(confirmed.kind).toBe("confirmed");
   });
@@ -387,22 +404,24 @@ describe("clarify-args: no dead variable roundHeadingRegex", () => {
     const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
 
     // Fresh doc (no rounds) → "1"
-    const fresh = deriveClarifyForwardArgs("# Some doc\nNo rounds here");
+    const fresh = deriveClarifyForwardArgs("# Some doc\nNo rounds here", CLARIFY_ANCHORS);
     expect(fresh.kind).toBe("fresh");
 
     // Doc with one round and answer → full-und?
     const withAnswer = deriveClarifyForwardArgs(
       "# 第 1 轮澄清\nQ1: what?\n答: something\n",
+      CLARIFY_ANCHORS,
     );
     expect(withAnswer.kind).toBe("full-und?");
 
     // Doc with one round no answer → await-answer
-    const noAnswer = deriveClarifyForwardArgs("# 第 1 轮澄清\nQ1: what?\n");
+    const noAnswer = deriveClarifyForwardArgs("# 第 1 轮澄清\nQ1: what?\n", CLARIFY_ANCHORS);
     expect(noAnswer.kind).toBe("await-answer");
 
     // Doc with confirmation → confirmed
     const confirmed = deriveClarifyForwardArgs(
       "# 第 1 轮澄清\nQ1: what?\n答: ok\n## 模型确认\nAll clear",
+      CLARIFY_ANCHORS,
     );
     expect(confirmed.kind).toBe("confirmed");
   });

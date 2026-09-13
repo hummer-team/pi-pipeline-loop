@@ -662,12 +662,29 @@ describe("verify-integration", () => {
     it("review stage with verify.require=true and report '结论：不通过' → fail + wake", async () => {
       const config = makeConfigWithVerify(["review"]);
 
-      // Create verify.md with fileContentPattern for review conclusion
+      // Phase 2 / 176: verify.md declares the verdict runtime anchor so the
+      // review decision chain can parse the conclusion (declaration-is-behavior).
       const verifyDir = path.join(TMP, ".pi", "references", "review_spec");
       await fs.mkdir(verifyDir, { recursive: true });
       await fs.writeFile(
         path.join(verifyDir, "verify.md"),
-        "---\nrules:\n  requiredFiles:\n    - \"docs/review/code_review_test.md\"\n  fileContentPattern:\n    - path: \"docs/review/code_review_test.md\"\n      pattern: \"结论：通过\"\n---\nReview verification\n",
+        [
+          "---",
+          "rules:",
+          '  path: "docs/review/code_review_test.md"',
+          "  groups:",
+          "    - name: review-ready",
+          "      ruleMode: and",
+          "      rules:",
+          "        - type: requiredFile",
+          "        - type: fileContentPattern",
+          "          mode: or",
+          "          runtime: verdict",
+          "          patterns:",
+          '            - "结论\\\\s*[:：]\\\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}"',
+          "---",
+          "Review verification",
+        ].join("\n"),
       );
 
       // Create docs/review dir and report file with FAIL conclusion

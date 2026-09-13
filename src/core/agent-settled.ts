@@ -24,7 +24,8 @@ import {
 } from "./stage-advancer";
 import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
-import { shouldNotifyAndStamp } from "../utils/audit-throttle";
+import { shouldNotifyAndStamp, shouldEmitWithinWindow } from "../utils/audit-throttle";
+import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { AUDIT_THROTTLE_WINDOW_MS, PIPELINE_TURN_SIGNATURES } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
@@ -208,9 +209,33 @@ export function createAgentSettled(
           ctx.session.updateMeta({ reviewConclusionDeclared: undefined });
         } else {
           const confirmMode = reviewStageConfig?.confirm?.mode ?? "auto";
-          const reviewVerdict = await parseReviewConclusion(config.projectRoot);
 
-          if (confirmMode !== "manual") {
+          // Phase 2 / 176: load verdict anchors from the deployed verify.md.
+          const { anchors: reviewAnchors, issues: reviewAnchorIssues } =
+            await loadVerifyContractAnchors(config, "review");
+          const reviewVerdict = await parseReviewConclusion(config.projectRoot, reviewAnchors);
+
+          if (reviewVerdict?.source === "contract-unavailable") {
+            // Fail-open: verdict anchor unavailable → fall back to the undeclared
+            // branch (audit + notify), then continue to verify + confirm gate.
+            await writeAuditLog("contract_anchor_unavailable", {
+              pipelineId: meta.pipelineId,
+              stage: "review",
+              missingKeys: "verdict",
+              issues: reviewAnchorIssues.join("; "),
+            }, "error");
+            await writeAuditLog("review_declaration_missing", {
+              pipelineId: meta.pipelineId,
+              stage: "review",
+              reason: "contract_anchor_unavailable",
+            }, "warn");
+            if (shouldEmitWithinWindow(`contract_anchor_unavailable:review:${meta.pipelineId}`, AUDIT_THROTTLE_WINDOW_MS)) {
+              ui.notify(ctx, "Review verdict runtime contract anchor unavailable in verify.md. Falling back to the undeclared reviewConclusion branch. Run /pipeline-init to restore the default declarations.");
+            }
+            if (confirmMode === "manual") {
+              reviewDefaultReject = true;
+            }
+          } else if (confirmMode !== "manual") {
             // Auto mode (or unconfigured): parse report → route directly
             if (reviewVerdict && reviewVerdict.verdict === "fail") {
               // Fail → route to fix (no count, no select, no verify)

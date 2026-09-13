@@ -3,12 +3,11 @@
  * Shared module for generating verify.md files from skill definitions.
  * Extracted from pipeline-init-verify.ts to be reusable by pipeline-init command.
  *
- * 148 Phase 1: `diffAndMergeRules` uses `TEMPLATE_BUILTIN_CONTENT_PATTERNS`
- * as a white-list to distinguish template-built-in fileContentPattern rules
- * from user-authored ones. Only non-builtin patterns set `hasCustom = true`,
- * ensuring that init 1 still merges plugin default deliverables when the
- * existing verify.md contains only template patterns (plan doc reference,
- * clarify lookahead, full-und, plan confirmation, review conclusion).
+ * Phase 2 / 176: the 148 white-list (`TEMPLATE_BUILTIN_CONTENT_PATTERNS`) has
+ * been retired. `diffAndMergeRules` now treats any existing `groups:` schema as
+ * user-authored (`hasCustom = true`), which protects custom declarations and
+ * keeps re-running init on the new v6 templates idempotent. Flat (legacy)
+ * verify.md files continue through the merge path.
  */
 
 import fs from "node:fs/promises";
@@ -60,61 +59,6 @@ export type VerifyGenerateResult = {
    */
   hasRequirementDocPlaceholder?: boolean;
 };
-
-// ─── Template Built-in Content Patterns (148 Phase 1) ─────────────────────────
-
-/**
- * White-list of fileContentPattern rules that ship with the built-in
- * stage templates (develop/fix/clarify/plan/review). When an existing
- * verify.md contains ONLY patterns from this white-list, the `hasCustom`
- * flag in `diffAndMergeRules` is NOT set, allowing plugin default
- * deliverables to be merged (init 1 backward compatibility).
- *
- * Each entry is a { path, pattern } tuple matched exactly against
- * `existing.fileContentPattern` entries. If any entry in the existing
- * rules is NOT found in this white-list → hasCustom = true (protect).
- */
-export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern: string }[] = [
-  // clarify: existing full-und confirmation check
-  { path: "{requirementDoc}", pattern: "full-und\\? 理解确认：是" },
-  // clarify: conditional lookahead for clarification structure (148, Chinese-only legacy)
-  // Kept for backward compat — existing verify.md files with this pattern are not treated as custom.
-  {
-    path: "{requirementDoc}",
-    pattern: "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))",
-  },
-  // clarify: bilingual + bold-tolerant lookahead (Phase 0 / 175)
-  // Round heading: Chinese `# 第 N 轮澄清` OR English `# Round N` (#{1,2} prevents h3+ false positives).
-  // Option line: `方案` / `Option` / `Plan` (with bold tolerance `\\*{0,2}`).
-  // Answer field: `答：`/`答:`/`**答**`/`Answer:` (tolerates indentation and half-width colon).
-  // Must stay byte-identical with clarify_spec/verify.md template default pattern.
-  {
-    path: "{requirementDoc}",
-    pattern: "(?<![\\s\\S])(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^- \\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]))(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^[ \\t]*(?:答\\s*[:：]|\\*{2}答\\*{2}|Answer\\s*:)))",
-  },
-  // plan: user confirmation marker (bilingual — old + new patterns both whitelisted
-  // so existing projects' verify.md stays mergeable under init 1, 148 compat)
-  { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
-  { path: "docs/design/*_plan.md", pattern: "^## (用户确认|User Confirmation)" },
-  // review: pass conclusion (old pattern kept for existing projects' verify.md merge compat)
-  { path: "docs/review/code_review_*.md", pattern: "结论：通过" },
-  // review: either conclusion accepted (163 — verdict is declared via stage_advance, verify only checks existence)
-  { path: "docs/review/code_review_*.md", pattern: "结论：(通过|不通过)" },
-  // review: bilingual + bold/italic tolerant verdict (Phase 0 / 175)
-  { path: "docs/review/code_review_*.md", pattern: "结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}" },
-  // review: English "Verdict: PASS/FAIL" (Phase 0 / 175)
-  { path: "docs/review/code_review_*.md", pattern: "Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}" },
-  // review: English "Conclusion: pass/fail" (Phase 0 / 175)
-  { path: "docs/review/code_review_*.md", pattern: "Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2}" },
-  // review: combined OR-alternation verdict (Phase 0 / 175 fix — single rule, not three AND rules)
-  { path: "docs/review/code_review_*.md", pattern: "(结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}|Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}|Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2})" },
-  // develop / fix: plan doc reference in commit record
-  { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
-  // 168 Phase 3: pipelineId content validation for develop/fix commit docs
-  { path: "docs/design/*_commit.md", pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$" },
-  // 168 Phase 3: pipelineId content validation for review reports
-  { path: "docs/review/code_review_*.md", pattern: "^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$" },
-];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
 
@@ -527,19 +471,11 @@ export function diffAndMergeRules(
   const hasGit = !!existing.requiredGit && Object.keys(existing.requiredGit).length > 0;
 
   // Detect user-authored extras that the expected set cannot reproduce.
-  // fileContentPattern: only counts as custom if any pattern is NOT in the
-  // template built-in white-list (148 Phase 1). Pure template patterns
-  // (plan doc reference, clarify lookahead, full-und, etc.) are skipped
-  // so that init 1 can still merge plugin default deliverables.
-  const existingFcp = existing.fileContentPattern ?? [];
-  const hasNonBuiltinContentPattern = existingFcp.some(
-    (rule) =>
-      !TEMPLATE_BUILTIN_CONTENT_PATTERNS.some(
-        (builtin) => builtin.path === rule.path && builtin.pattern === rule.pattern,
-      ),
-  );
+  // Phase 2 / 176: any `groups:` declaration is treated as custom — this both
+  // protects user-authored group schemas and keeps re-running init on the new
+  // v6 templates idempotent (the built-in white-list was retired).
   const hasCustom =
-    hasNonBuiltinContentPattern ||
+    (existing.groups?.length ?? 0) > 0 ||
     (existing.requiredCommands ?? []).some(c => c.expectOutput !== undefined) ||
     // keywords with mode="and" when expected set has no keyword rules
     (existing.mode === "and" && expectedItems.filter(i => i.type === "keyword").length === 0);

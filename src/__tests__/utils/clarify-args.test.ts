@@ -1,9 +1,36 @@
+/**
+ * @module clarify-args.test
+ * Phase 2 / 176 — clarify forward-args derivation driven by runtime contract
+ * anchors (declaration-is-behavior). All patterns are injected via anchors.
+ */
 import { describe, it, expect } from "bun:test";
 import { deriveClarifyForwardArgs } from "../../utils/clarify-args";
+import type { VerifyContractAnchors } from "../../utils/contract-loader";
 
-describe("deriveClarifyForwardArgs", () => {
+/** Decodes \uXXXX sequences stored by the source-file encoding. */
+function u(s: string): string {
+  return s.replace(/\\u([0-9a-fA-F]{4})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/** Anchors mirroring the v6 clarify verify.md runtime declarations. */
+const CLARIFY_ANCHORS: VerifyContractAnchors = {
+  roundHeading: {
+    patterns: [u(String.raw`^#{1,2}\s*(?:第\s*(?<roundZh>\d+)\s*轮澄清|[Rr]ound\s+(?<roundEn>\d+))`)],
+    mode: "and",
+  },
+  answerField: {
+    patterns: [u(String.raw`答\s*[:：]|\*{2}答\*{2}`), u(String.raw`Answer\s*:`)],
+    mode: "or",
+  },
+  modelConfirm: {
+    patterns: [u(String.raw`^##\s*模型确认`), u(String.raw`^##\s*Model\s+Confirmation`)],
+    mode: "or",
+  },
+};
+
+describe("deriveClarifyForwardArgs (anchors-driven)", () => {
   it("returns 'fresh' when no round headings found", () => {
-    const result = deriveClarifyForwardArgs("# Requirement\nSome text");
+    const result = deriveClarifyForwardArgs("# Requirement\nSome text", CLARIFY_ANCHORS);
     expect(result).toEqual({ kind: "fresh", args: "1" });
   });
 
@@ -13,7 +40,7 @@ describe("deriveClarifyForwardArgs", () => {
 - Question 2
 
 No answers yet`;
-    const result = deriveClarifyForwardArgs(doc);
+    const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
     expect(result).toEqual({ kind: "await-answer", round: 1 });
   });
 
@@ -23,7 +50,7 @@ No answers yet`;
 - **答**：Answer 1
 
 Some other text`;
-    const result = deriveClarifyForwardArgs(doc);
+    const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
     expect(result).toEqual({ kind: "full-und?", round: 1 });
   });
 
@@ -33,7 +60,7 @@ Some other text`;
 
 ## 模型确认（full-und? 收口）
 - C1: confirmed`;
-    const result = deriveClarifyForwardArgs(doc);
+    const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
     expect(result).toEqual({ kind: "confirmed", round: 1 });
   });
 
@@ -51,7 +78,7 @@ Some other text`;
 - 答：A3
 
 Some text`;
-    const result = deriveClarifyForwardArgs(doc);
+    const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
     expect(result).toEqual({ kind: "full-und?", round: 3 });
   });
 
@@ -67,7 +94,7 @@ Some text`;
 
 ## 模型确认
 - All confirmed`;
-    const result = deriveClarifyForwardArgs(doc);
+    const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
     expect(result).toEqual({ kind: "confirmed", round: 3 });
   });
 
@@ -75,12 +102,17 @@ Some text`;
     const doc = `# 第 1 轮澄清
 - Q1
 - 答: Answer with colon`;
-    const result = deriveClarifyForwardArgs(doc);
+    const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
     expect(result).toEqual({ kind: "full-und?", round: 1 });
   });
 
   it("returns empty doc as fresh", () => {
-    const result = deriveClarifyForwardArgs("");
+    const result = deriveClarifyForwardArgs("", CLARIFY_ANCHORS);
+    expect(result).toEqual({ kind: "fresh", args: "1" });
+  });
+
+  it("returns fresh when the roundHeading anchor is unavailable (fail-open)", () => {
+    const result = deriveClarifyForwardArgs("# 第 1 轮澄清\n答：x", {});
     expect(result).toEqual({ kind: "fresh", args: "1" });
   });
 
@@ -91,14 +123,14 @@ Some text`;
       const doc = `# Round 6 — final questions
 - Q1
 - Answer: A1`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "full-und?", round: 6 });
     });
 
     it("recognizes English `## round 3 — x` heading (h2, lowercase)", () => {
       const doc = `## round 3 — minor fixes
 - Q1`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "await-answer", round: 3 });
     });
 
@@ -109,7 +141,7 @@ Some text`;
 
 ## Model Confirmation
 - confirmed`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "confirmed", round: 2 });
     });
 
@@ -119,7 +151,7 @@ Some text`;
 
 ## Model Confirmation
 - C1: confirmed`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "confirmed", round: 1 });
     });
 
@@ -127,7 +159,7 @@ Some text`;
       const doc = `# Round 1
 - Q1
 - Answer: A1`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "full-und?", round: 1 });
     });
 
@@ -137,7 +169,7 @@ Some text`;
 
 # Round 2
 - Answer: A2`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "full-und?", round: 2 });
     });
   });
@@ -149,7 +181,7 @@ Some text`;
       const doc = `### 3.0 对 Round 2 的修正
 Some content here
 - No round heading at h1/h2 level`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "fresh", args: "1" });
     });
 
@@ -157,7 +189,7 @@ Some content here
       const doc = `## 问题 6：…替代 Round 2…
 Some content
 - No actual round heading`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "fresh", args: "1" });
     });
 
@@ -165,14 +197,14 @@ Some content
       const doc = `# Some Heading
 This paragraph discusses Round 3 modifications in detail.
 - Another line about Round 5`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "fresh", args: "1" });
     });
 
     it("does NOT match body text mentioning `第 N 轮澄清`", () => {
       const doc = `# Some Heading
 This paragraph discusses 第 3 轮澄清 modifications.`;
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "fresh", args: "1" });
     });
   });

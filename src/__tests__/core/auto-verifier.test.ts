@@ -1559,6 +1559,39 @@ describe("Phase 1 (172): precheckClarifyAwaitAnswer", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  /** Phase 2 / 176: v6 clarify verify.md carrying runtime anchors. */
+  const CLARIFY_ANCHOR_VERIFY = String.raw`---
+rules:
+  path: "{requirementDoc}"
+  groups:
+    - name: round-well-formed
+      when: "^#{1,2}\\s*(?:第\\s*(?<roundZh>\\d+)\\s*轮澄清|[Rr]ound\\s+(?<roundEn>\\d+))"
+      runtime: roundHeading
+      scope: section
+      rules:
+        - type: fileContentPattern
+          mode: or
+          runtime: answerField
+          patterns:
+            - "答\\s*[:：]|\\*{2}答\\*{2}"
+            - "Answer\\s*:"
+    - name: confirm
+      rules:
+        - type: fileContentPattern
+          mode: or
+          runtime: modelConfirm
+          patterns:
+            - "^##\\s*模型确认"
+            - "^##\\s*Model\\s+Confirmation"`;
+
+  /** Builds a clarify config wired to the anchor-carrying verify.md. */
+  async function makeAnchorConfig() {
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    config.stages.clarify.verify = { require: true, verifyFile: "verify.md" };
+    await fs.writeFile(path.join(tmpDir, "verify.md"), CLARIFY_ANCHOR_VERIFY, "utf-8");
+    return config;
+  }
+
   it("returns awaiting=false for non-clarify stages", async () => {
     const config = makeTestConfig({ projectRoot: tmpDir });
     const meta = makeTestMeta({ currentStage: "develop", requirementDoc: "req.md" });
@@ -1575,7 +1608,7 @@ describe("Phase 1 (172): precheckClarifyAwaitAnswer", () => {
   });
 
   it("returns awaiting=true when latest round has no answer (await-answer)", async () => {
-    const config = makeTestConfig({ projectRoot: tmpDir });
+    const config = await makeAnchorConfig();
     const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
     // Round heading but no answer marker
     await fs.writeFile(path.join(tmpDir, "req.md"), "# 第 1 轮澄清\n问题：xxx\n", "utf-8");
@@ -1585,7 +1618,7 @@ describe("Phase 1 (172): precheckClarifyAwaitAnswer", () => {
   });
 
   it("returns awaiting=false when latest round has answer", async () => {
-    const config = makeTestConfig({ projectRoot: tmpDir });
+    const config = await makeAnchorConfig();
     const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
     await fs.writeFile(path.join(tmpDir, "req.md"), "# 第 1 轮澄清\n问题：xxx\n答：yyy\n", "utf-8");
     const result = await precheckClarifyAwaitAnswer(config, meta);
@@ -1593,7 +1626,7 @@ describe("Phase 1 (172): precheckClarifyAwaitAnswer", () => {
   });
 
   it("returns awaiting=false when latest round has confirmation marker", async () => {
-    const config = makeTestConfig({ projectRoot: tmpDir });
+    const config = await makeAnchorConfig();
     const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
     await fs.writeFile(
       path.join(tmpDir, "req.md"),
@@ -1612,7 +1645,7 @@ describe("Phase 1 (172): precheckClarifyAwaitAnswer", () => {
   });
 
   it("returns awaiting=true for latest round (round 2) with no answer", async () => {
-    const config = makeTestConfig({ projectRoot: tmpDir });
+    const config = await makeAnchorConfig();
     const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
     await fs.writeFile(
       path.join(tmpDir, "req.md"),

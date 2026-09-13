@@ -1,8 +1,21 @@
 import { describe, it, expect } from "bun:test";
 import { findLatestReviewReport, parseReviewConclusion } from "../../utils/review-conclusion";
+import type { VerifyContractAnchors } from "../../utils/contract-loader";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+/** Anchors mirroring the v6 review verify.md verdict runtime declaration. */
+const VERDICT_ANCHORS: VerifyContractAnchors = {
+  verdict: {
+    patterns: [
+      "结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}",
+      "Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}",
+      "Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2}",
+    ],
+    mode: "or",
+  },
+};
 
 describe("findLatestReviewReport", () => {
   it("returns null when docs/review does not exist", async () => {
@@ -45,7 +58,7 @@ describe("parseReviewConclusion", () => {
   it("returns null when no report exists", async () => {
     const TMP = join(tmpdir(), "pi-rc-null-" + Date.now());
     await mkdir(TMP, { recursive: true });
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result).toBeNull();
     await rm(TMP, { recursive: true, force: true });
   });
@@ -57,7 +70,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Code Review\n\n## Blocker\n- [ ] Blocker: critical bug\n\n## 结论\n结论：通过\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result).not.toBeNull();
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("blocker-section");
@@ -71,7 +84,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Code Review\n\n## High\n- [ ] High: important issue\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("blocker-section");
     await rm(TMP, { recursive: true, force: true });
@@ -84,7 +97,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Code Review\n\n## Summary\nAll good.\n\n## 结论\n结论：不通过\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("conclusion-line");
     await rm(TMP, { recursive: true, force: true });
@@ -97,7 +110,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Code Review\n\n## Summary\nLooks good.\n\n## 结论\n结论：通过\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("pass");
     expect(result!.source).toBe("conclusion-line");
     await rm(TMP, { recursive: true, force: true });
@@ -110,7 +123,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Code Review\n\nConclusion: pass\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("pass");
     expect(result!.source).toBe("conclusion-line");
     await rm(TMP, { recursive: true, force: true });
@@ -123,7 +136,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Code Review\n\nSome content without a conclusion line.\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("missing");
     expect(result!.warn).toBeDefined();
@@ -137,7 +150,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Code Review\n\nNOT PASS\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("blocker-section");
     await rm(TMP, { recursive: true, force: true });
@@ -150,7 +163,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Summary\n\n## Review发现以下问题\n### 问题 1\n- 问题: src/utils/foo.ts:45-50 code bug\n- 等级：Blocker\n- 符合规划：否\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result).not.toBeNull();
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("blocker-section");
@@ -164,7 +177,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Summary\n\n## Review发现以下问题\n### 问题 1\n- 问题: some issue\n- 等级：High\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("blocker-section");
     await rm(TMP, { recursive: true, force: true });
@@ -177,7 +190,7 @@ describe("parseReviewConclusion", () => {
     await writeFile(join(reviewDir, "code_review_1.md"),
       "# Summary\n\n### 问题 1\n- 等级: Medium\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
 
-    const result = await parseReviewConclusion(TMP);
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
     expect(result!.verdict).toBe("fail");
     expect(result!.source).toBe("blocker-section");
     await rm(TMP, { recursive: true, force: true });
@@ -192,7 +205,7 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\n结论：**通过**\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       expect(result!.verdict).toBe("pass");
       expect(result!.source).toBe("conclusion-line");
       await rm(TMP, { recursive: true, force: true });
@@ -204,7 +217,7 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\n结论：_不通过_\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       expect(result!.verdict).toBe("fail");
       expect(result!.source).toBe("conclusion-line");
       await rm(TMP, { recursive: true, force: true });
@@ -216,7 +229,7 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\n结论:通过\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       expect(result!.verdict).toBe("pass");
       expect(result!.source).toBe("conclusion-line");
       await rm(TMP, { recursive: true, force: true });
@@ -228,7 +241,7 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\nVerdict: PASS\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       expect(result!.verdict).toBe("pass");
       expect(result!.source).toBe("conclusion-line");
       await rm(TMP, { recursive: true, force: true });
@@ -240,7 +253,7 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\nVerdict: FAIL\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       expect(result!.verdict).toBe("fail");
       expect(result!.source).toBe("conclusion-line");
       await rm(TMP, { recursive: true, force: true });
@@ -252,7 +265,7 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\nVerdict: **PASS**\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       expect(result!.verdict).toBe("pass");
       expect(result!.source).toBe("conclusion-line");
       await rm(TMP, { recursive: true, force: true });
@@ -264,7 +277,7 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\nConclusion: **fail**\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       expect(result!.verdict).toBe("fail");
       expect(result!.source).toBe("conclusion-line");
       await rm(TMP, { recursive: true, force: true });
@@ -276,11 +289,37 @@ describe("parseReviewConclusion", () => {
       await mkdir(reviewDir, { recursive: true });
       await writeFile(join(reviewDir, "code_review_1.md"),
         "# Review\n\n结论：待定\n");
-      const result = await parseReviewConclusion(TMP);
+      const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS);
       // 待定 should NOT match pass or fail — conservative fallback to missing
       expect(result!.verdict).toBe("fail");
       expect(result!.source).toBe("missing");
       await rm(TMP, { recursive: true, force: true });
     });
+  });
+});
+
+describe("Phase 2 / 176: contract-unavailable (fail-open)", () => {
+  it("returns contract-unavailable when the verdict anchor is missing", async () => {
+    const TMP = join(tmpdir(), "pi-rc-contract-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_1.md"), "# Review\n\n结论：通过\n");
+
+    const result = await parseReviewConclusion(TMP, {});
+    expect(result!.verdict).toBeNull();
+    expect(result!.source).toBe("contract-unavailable");
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("blocker scan still wins without verdict anchors (code-internal, unchanged)", async () => {
+    const TMP = join(tmpdir(), "pi-rc-contract-blocker-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_1.md"), "# Review\n- 等级：Blocker\n");
+
+    const result = await parseReviewConclusion(TMP, {});
+    expect(result!.verdict).toBe("fail");
+    expect(result!.source).toBe("blocker-section");
+    await rm(TMP, { recursive: true, force: true });
   });
 });

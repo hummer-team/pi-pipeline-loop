@@ -465,10 +465,24 @@ describe("createPipelineInitCommand", () => {
 
       const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
       await fs.mkdir(verifyDir, { recursive: true });
-      // Verify.md with custom fileContentPattern rule → triggers exists_custom skip
+      // Verify.md with a custom groups schema → triggers exists_custom skip
+      // (Phase 2 / 176: groups presence is the custom-protection signal).
       await fs.writeFile(
         path.join(verifyDir, "verify.md"),
-        "---\nrules:\n  requiredFiles:\n    - \"develop-result.md\"\n  fileContentPattern:\n    - path: \"develop-result.md\"\n      pattern: \"^phase:\"\n---\nCustom content\n",
+        [
+          "---",
+          "rules:",
+          '  path: "develop-result.md"',
+          "  groups:",
+          "    - name: develop-ready",
+          "      ruleMode: and",
+          "      rules:",
+          "        - type: requiredFile",
+          "        - type: fileContentPattern",
+          '          pattern: "^phase:"',
+          "---",
+          "Custom content",
+        ].join("\n"),
         "utf-8",
       );
 

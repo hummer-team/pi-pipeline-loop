@@ -14,21 +14,28 @@
  *
  * Pure parsing, no side effects.
  *
- * Verdict patterns sourced from CONTRACT_TOKENS single source of truth (src/constants.ts).
+ * Phase 2 (176, R1Q1B "declaration is behavior"): verdict patterns are supplied
+ * by the caller as runtime contract anchors loaded from the deployed verify.md
+ * (`loadVerifyContractAnchors`). When the verdict anchor is unavailable the
+ * parser returns the `contract-unavailable` state and the caller falls back to
+ * the existing "undeclared reviewConclusion" branch (fail-open).
  */
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { CONTRACT_TOKENS } from "../constants";
+import type { VerifyContractAnchors } from "./contract-loader";
 
 /**
  * Verdict result from review report parsing.
  */
 export interface ReviewVerdict {
-  /** The extracted verdict */
-  verdict: "fail" | "pass";
+  /**
+   * The extracted verdict. `null` only for the `contract-unavailable` state
+   * (verdict anchor missing from the deployed verify.md).
+   */
+  verdict: "fail" | "pass" | null;
   /** How the verdict was determined */
-  source: "blocker-section" | "conclusion-line" | "missing";
+  source: "blocker-section" | "conclusion-line" | "missing" | "contract-unavailable";
   /** Optional warning message (e.g., when verdict is inferred) */
   warn?: string;
 }
@@ -89,46 +96,43 @@ function hasOpenIssueLine(line: string): boolean {
   return false;
 }
 
-// ── Verdict regex from CONTRACT_TOKENS (bilingual, bold/italic tolerant) ──
-
-/** Chinese verdict: `结论：通过`/`结论：**不通过**` etc. — extracts pass/fail from group 1 */
-const VERDICT_ZH_RE = new RegExp(CONTRACT_TOKENS.VERDICT_ZH);
-/** English "Verdict: PASS/FAIL" — extracts from group 1 */
-const VERDICT_EN_VERDICT_RE = new RegExp(CONTRACT_TOKENS.VERDICT_EN_VERDICT, "i");
-/** English "Conclusion: pass/fail" — extracts from group 1 */
-const VERDICT_EN_CONCLUSION_RE = new RegExp(CONTRACT_TOKENS.VERDICT_EN_CONCLUSION, "i");
+// ── Verdict regex from runtime contract anchors (bilingual, bold/italic tolerant) ──
 
 /**
- * Extracts verdict from a conclusion line (bilingual, bold/italic tolerant).
- *
- * Matches patterns like:
- * - `结论：通过` / `结论：**通过**` / `结论：_不通过_` / `结论:通过`
- * - `Verdict: PASS` / `Verdict: FAIL` / `Verdict: **PASS**`
- * - `Conclusion: pass` / `Conclusion: fail` / `Conclusion: **pass**`
- *
- * Does NOT match `待定` or other non-committal terms (red-green: removing
- * verdict patterns would fail tests for valid conclusions).
+ * Maps a captured verdict token to a pass/fail code.
+ * The判别 rule is code-internal and unchanged (Phase 2 / 176, R3Q2 solution ③):
+ * `不通过` / `FAIL` / `fail` (case-insensitive) → fail, everything else → pass.
  */
-function parseConclusionLine(line: string): "pass" | "fail" | null {
+function tokenToVerdict(token: string): "pass" | "fail" {
+  if (token === "不通过") return "fail";
+  if (/^fail$/i.test(token)) return "fail";
+  return "pass";
+}
+
+/**
+ * Extracts a verdict from a conclusion line using the anchor pattern set.
+ * Patterns are tried in declaration order with the `i` flag; the first pattern
+ * whose capture group 1 matches wins.
+ *
+ * Does NOT match `待定` or other non-committal terms.
+ */
+function parseConclusionLine(
+  line: string,
+  verdictPatterns: readonly string[],
+): "pass" | "fail" | null {
   const trimmed = line.trim();
 
-  // Chinese: 结论[:：] (不通过|通过) with optional bold/italic markup
-  let m = VERDICT_ZH_RE.exec(trimmed);
-  if (m) {
-    // Group 1 = "不通过" | "通过"
-    return m[1] === "不通过" ? "fail" : "pass";
-  }
-
-  // English "Verdict: PASS|FAIL"
-  m = VERDICT_EN_VERDICT_RE.exec(trimmed);
-  if (m) {
-    return m[1].toUpperCase() === "FAIL" ? "fail" : "pass";
-  }
-
-  // English "Conclusion: pass|fail"
-  m = VERDICT_EN_CONCLUSION_RE.exec(trimmed);
-  if (m) {
-    return m[1].toLowerCase() === "fail" ? "fail" : "pass";
+  for (const pattern of verdictPatterns) {
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, "i");
+    } catch {
+      continue;
+    }
+    const match = re.exec(trimmed);
+    if (match && match[1] !== undefined) {
+      return tokenToVerdict(match[1]);
+    }
   }
 
   return null;
@@ -138,9 +142,15 @@ function parseConclusionLine(line: string): "pass" | "fail" | null {
  * Parses the review conclusion from the latest review report.
  *
  * @param projectRoot - Absolute path to the project root
+ * @param anchors - Runtime contract anchors loaded from the deployed verify.md.
+ *   When the `verdict` anchor is unavailable, the `contract-unavailable` state
+ *   is returned so the caller can fall back to the undeclared branch (fail-open).
  * @returns ReviewVerdict with verdict + source, or null if no report exists
  */
-export async function parseReviewConclusion(projectRoot: string): Promise<ReviewVerdict | null> {
+export async function parseReviewConclusion(
+  projectRoot: string,
+  anchors?: VerifyContractAnchors,
+): Promise<ReviewVerdict | null> {
   const reportPath = await findLatestReviewReport(projectRoot);
   if (!reportPath) return null;
 
@@ -153,16 +163,29 @@ export async function parseReviewConclusion(projectRoot: string): Promise<Review
 
   const lines = content.split("\n");
 
-  // Priority 1: Check for Blocker/High/Medium open items
+  // Priority 1: Check for Blocker/High/Medium open items.
+  // The blocker scan is code-internal and does NOT depend on contract anchors
+  // (Phase 2 / 176: `hasOpenIssueLine` behavior unchanged).
   for (const line of lines) {
     if (hasOpenIssueLine(line)) {
       return { verdict: "fail", source: "blocker-section" };
     }
   }
 
+  // Fail-open: no verdict anchor declared → report the unavailability state so
+  // the caller falls back to the undeclared reviewConclusion branch.
+  const verdictPatterns = anchors?.verdict?.patterns;
+  if (!verdictPatterns || verdictPatterns.length === 0) {
+    return {
+      verdict: null,
+      source: "contract-unavailable",
+      warn: "Verdict contract anchor unavailable; verify.md verdict runtime anchor is missing.",
+    };
+  }
+
   // Priority 2: Check for conclusion line (scan from bottom for the last one)
   for (let i = lines.length - 1; i >= 0; i--) {
-    const verdict = parseConclusionLine(lines[i]);
+    const verdict = parseConclusionLine(lines[i], verdictPatterns);
     if (verdict !== null) {
       return { verdict, source: "conclusion-line" };
     }

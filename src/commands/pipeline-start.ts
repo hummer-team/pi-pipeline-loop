@@ -11,11 +11,13 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, Command, SessionMeta, StartStageMode } from "../types";
 import {
+  AUDIT_THROTTLE_WINDOW_MS,
   DEFAULT_VERIFY_FILE,
   resolveStagePath,
   RESUMABLE_STAGES,
 } from "../constants";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { getFlowState, formatFrozenReason, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { buildStageSequence } from "../utils/stage-sequence";
@@ -29,6 +31,7 @@ import { registerSession } from "../utils/session-registry";
 import { pingSubagents, spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
 import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
+import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { staleConfigNotice } from "../utils/config-staleness";
 
 /**
@@ -770,8 +773,26 @@ async function maybeAutoLaunchClarify(
     try {
       const docPath = path.resolve(config.projectRoot, file);
       const docText = fs.readFileSync(docPath, "utf-8");
-      const derived = deriveClarifyForwardArgs(docText);
-      switch (derived.kind) {
+
+      // Phase 2 / 176: load runtime anchors from the deployed verify.md.
+      // Missing roundHeading → fail-open fresh(1) + throttled notify + error audit.
+      const { anchors, issues } = await loadVerifyContractAnchors(config, "clarify");
+      if (issues.length > 0 || !anchors.roundHeading) {
+        await safeWriteAuditLog("contract_anchor_unavailable", {
+          requirementDoc: file,
+          pipelineId: meta.pipelineId,
+          stage: "clarify",
+          missingKeys: "roundHeading",
+          issues: issues.join("; "),
+        }, "error");
+        if (shouldEmitWithinWindow(`contract_anchor_unavailable:clarify:${meta.pipelineId}`, AUDIT_THROTTLE_WINDOW_MS)) {
+          ui.notify(ctx, "Clarify runtime contract anchor unavailable in verify.md. Falling back to fresh(1). Run /pipeline-init to restore the default declarations.");
+        }
+        effectiveArgs = "1";
+        argsSource = "derived";
+      } else {
+        const derived = deriveClarifyForwardArgs(docText, anchors);
+        switch (derived.kind) {
         case "fresh":
           effectiveArgs = "1";
           break;
@@ -791,6 +812,7 @@ async function maybeAutoLaunchClarify(
           effectiveArgs = "";
           derivedRound = derived.round;
           break;
+        }
       }
     } catch {
       // Fail-open: file read error → fallback to "1"

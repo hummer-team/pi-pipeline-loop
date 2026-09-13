@@ -16,7 +16,6 @@ import {
   repairVerifyFrontmatter,
   loadPluginDeliverables,
   diffAndMergeRules,
-  TEMPLATE_BUILTIN_CONTENT_PATTERNS,
 } from "../../core/verify-generator";
 import { parseFrontmatter } from "../../core/auto-verifier";
 import { makeTestConfig } from "../helpers";
@@ -733,15 +732,28 @@ describe("verify-generator", () => {
       expect(results[0].reason).toBe("exists");
     });
 
-    it("protects existing verify.md with user-authored custom rules (fileContentPattern)", async () => {
+    it("protects existing verify.md with user-authored custom rules (groups schema)", async () => {
       const config = await setupConfigWithSkill("develop", "- **Must** output.md\n");
 
-      // Pre-create verify.md with custom fileContentPattern rule (user-authored)
+      // Pre-create verify.md with a custom groups schema (user-authored, v6 form)
       const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
       await fs.mkdir(verifyDir, { recursive: true });
       await fs.writeFile(
         path.join(verifyDir, "verify.md"),
-        "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n  fileContentPattern:\n    - path: \"output.md\"\n      pattern: \"^phase:\"\n---\nContent\n",
+        [
+          "---",
+          "rules:",
+          '  path: "output.md"',
+          "  groups:",
+          "    - name: output-ready",
+          "      ruleMode: and",
+          "      rules:",
+          "        - type: requiredFile",
+          "        - type: fileContentPattern",
+          '          pattern: "^phase:"',
+          "---",
+          "Content",
+        ].join("\n"),
         "utf-8",
       );
 
@@ -752,7 +764,7 @@ describe("verify-generator", () => {
 
       // Custom rules preserved — file content unchanged
       const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
-      expect(content).toContain("fileContentPattern");
+      expect(content).toContain("groups");
     });
 
     it("drops command items for develop stage", async () => {
@@ -1405,18 +1417,20 @@ describe("verify-generator", () => {
       ].join("\n");
       const config = await setupConfigWithSkill("develop", skillContent);
 
-      // Pre-create an old verify.md WITH user custom fileContentPattern
+      // Pre-create an old verify.md WITH a user-customized groups schema
       const verifyDir = path.join(TMP, ".pi", "references", "develop_spec");
       await fs.mkdir(verifyDir, { recursive: true });
       const customVerify = [
         "---",
         "rules:",
-        "  requiredFiles:",
-        '    - "docs/design/dev.md"',
-        "  fileContentPattern:",
-        '    - path: "docs/design/dev.md"',
-        '      pattern: "^# Summary"',
-        "  mode: or",
+        '  path: "docs/design/dev.md"',
+        "  groups:",
+        "    - name: dev-ready",
+        "      ruleMode: and",
+        "      rules:",
+        "        - type: requiredFile",
+        "        - type: fileContentPattern",
+        '          pattern: "^# Summary"',
         "---",
         "User-customized verify body",
       ].join("\n");
@@ -1430,29 +1444,27 @@ describe("verify-generator", () => {
 
       // Plugin rules should NOT be merged into user-customized verify.md
       const content = await fs.readFile(path.join(verifyDir, "verify.md"), "utf-8");
-      expect(content).toContain("fileContentPattern");
+      expect(content).toContain("groups");
       expect(content).not.toContain("keywords:");
       expect(content).toContain("User-customized verify body");
     });
   });
 
-  // ── Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list ──────────
+  // ── Phase 2 (176): groups-based custom protection (white-list retired) ───
 
-  describe("Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list", () => {
-    it("white-list contains all 14 expected template entries (base + bilingual clarify lookahead (Phase 0/175) + bilingual plan marker + old+bilingual review verdict + combined OR verdict + 2 pipelineId patterns)", () => {
-      // Phase 0 / 175: added bilingual clarify lookahead + 3 bilingual review verdict patterns (was 9 → 13)
-      // Review round 2 fix: added combined OR-alternation verdict pattern (13 → 14)
-      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(14);
-      const paths = TEMPLATE_BUILTIN_CONTENT_PATTERNS.map(e => e.path);
-      expect(paths).toContain("{requirementDoc}");
-      expect(paths).toContain("docs/design/*_plan.md");
-      expect(paths).toContain("docs/review/code_review_*.md");
-      expect(paths).toContain("docs/design/*_commit.md");
-      // 168 Phase 3: pipelineId patterns present in white-list
-      const pipelinePatterns = TEMPLATE_BUILTIN_CONTENT_PATTERNS.filter(
-        e => e.pattern.includes("{pipelineId}"),
-      );
-      expect(pipelinePatterns).toHaveLength(2);
+  describe("Phase 2 (176): groups-based custom protection", () => {
+    it("hasCustom=true when existing rules declare groups (v6 template re-init protection)", () => {
+      const existing = {
+        keywords: [],
+        mode: "or" as const,
+        path: "docs/design/*_commit.md",
+        groups: [
+          { name: "develop-ready", ruleMode: "and" as const, rules: [{ type: "requiredFile" as const }] },
+        ],
+      };
+      const result = diffAndMergeRules(existing, [{ type: "command" as const, target: "bun run build" }]);
+      expect(result.hasCustom).toBe(true);
+      expect(result.merged).toEqual([]);
     });
 
     it("hasCustom=false when existing rules contain only template plan doc pattern (develop)", () => {
@@ -1524,7 +1536,7 @@ describe("verify-generator", () => {
       expect(result.hasCustom).toBe(false);
     });
 
-    it("hasCustom=true when existing rules contain non-builtin fileContentPattern", () => {
+    it("flat custom fileContentPattern no longer blocks merge (white-list retired, Phase 2 / 176)", () => {
       const existing = {
         keywords: [],
         mode: "or" as const,
@@ -1534,20 +1546,9 @@ describe("verify-generator", () => {
           { path: "docs/design/*_commit.md", pattern: "^# Custom User Rule" },
         ],
       };
-      const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(true);
-    });
-
-    it("hasCustom=true when existing fileContentPattern has same path but different pattern", () => {
-      const existing = {
-        keywords: [],
-        mode: "or" as const,
-        fileContentPattern: [
-          { path: "docs/design/*_commit.md", pattern: "^\\*\\*custom doc\\*\\*:" },
-        ],
-      };
-      const result = diffAndMergeRules(existing, []);
-      expect(result.hasCustom).toBe(true);
+      const result = diffAndMergeRules(existing, [{ type: "command" as const, target: "bun run build" }]);
+      expect(result.hasCustom).toBe(false);
+      expect(result.merged).toHaveLength(1);
     });
 
     // Phase 2 (162): bilingual plan marker pattern in whitelist

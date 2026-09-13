@@ -331,49 +331,6 @@ Respond with JSON array:
 
 Respond ONLY with the JSON array.`;
 
-// ─── Bilingual Contract Tokens — Single Source of Truth (Phase 0 / 175) ─────
-
-/**
- * RegExp source strings (no flags) for bilingual contract recognition.
- * All values are plain strings suitable for `new RegExp(src, flags)`.
- *
- * Consumers MUST reference these constants rather than hardcoding patterns,
- * ensuring a single definition for round headings, answer fields, option/plan
- * keywords, model confirmation headings, and verdict lines across clarify,
- * review, and verify modules.
- *
- * Design decisions: R2Q4A / R1Q3A / R1Q8A (175_Bug plan).
- */
-export const CONTRACT_TOKENS = {
-  // ── Round heading (#{1,2} at line-start prevents ### false positives) ──
-  /** Chinese round heading: `# 第 N 轮澄清` (h1 or h2) */
-  ROUND_HEADING_ZH: `^#{1,2}\\s*第\\s*(\\d+)\\s*轮澄清`,
-  /** English round heading: `# Round N` or `## round 3` (h1 or h2, case-insensitive R) */
-  ROUND_HEADING_EN: `^#{1,2}\\s*[Rr]ound\\s+(\\d+)`,
-
-  // ── Answer field (bilingual) ──
-  /** Answer marker: `答:` / `答：` / `**答**` / `Answer:` */
-  ANSWER_FIELD: `答\\s*[:：]|\\*{2}答\\*{2}|Answer\\s*:`,
-
-  // ── Option / Plan keyword (bilingual) ──
-  /** Option/plan marker used in clarify lookahead: `方案` / `Option` / `Plan` */
-  OPTION_PLAN: `方案|Option|Plan`,
-
-  // ── Model confirmation heading (bilingual) ──
-  /** Chinese confirmation section: `## 模型确认` */
-  MODEL_CONFIRM_ZH: `^##\\s*模型确认`,
-  /** English confirmation section: `## Model Confirmation` */
-  MODEL_CONFIRM_EN: `^##\\s*Model\\s+Confirmation`,
-
-  // ── Verdict / Conclusion line (bold+italic tolerant, bilingual) ──
-  /** Chinese verdict: `结论：通过` / `结论：不通过` with optional `**`/`_` markup */
-  VERDICT_ZH: `结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}`,
-  /** English verdict (Verdict keyword): `Verdict: PASS` / `Verdict: FAIL` */
-  VERDICT_EN_VERDICT: `Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}`,
-  /** English conclusion (Conclusion keyword): `Conclusion: pass` / `Conclusion: fail` */
-  VERDICT_EN_CONCLUSION: `Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2}`,
-} as const;
-
 /**
  * Default system prompt for model-based conflict/overlap detection between
  * business SKILL content and plugin-injected prompt segments.

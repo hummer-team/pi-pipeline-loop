@@ -17,6 +17,7 @@ import {
   KNOWN_FRONTMATTER_KEYS,
   type VerifyRules,
 } from "./verify-frontmatter";
+import { hasNamedRoundGroup, countCaptureGroups } from "../utils/contract-loader";
 
 /**
  * Error codes for verify.md static configuration diagnosis (148 Phase 2).
@@ -29,7 +30,12 @@ export type VerifyConfigErrorCode =
   | "unknown_top_level_key"
   | "invalid_mode"
   | "empty_rule_item"
-  | "no_rules";
+  | "no_rules"
+  // Phase 2 / 176: groups schema + runtime anchor validation
+  | "group_missing_name"
+  | "group_runtime_invalid"
+  | "node_runtime_invalid"
+  | "anchor_validation";
 
 /**
  * A single configuration error with code and human-readable detail.
@@ -46,6 +52,65 @@ export interface VerifyConfigError {
 export interface VerifyConfigDiagnosis {
   ok: boolean;
   errors: VerifyConfigError[];
+}
+
+/** Valid node-level runtime anchor names (Phase 2 / 176). */
+const DIAG_NODE_RUNTIME_KEYS = new Set(["answerField", "modelConfirm", "verdict"]);
+
+/**
+ * Validates the groups schema and runtime anchor contracts (Phase 2 / 176).
+ * Appends findings to `errors`.
+ */
+function diagnoseGroupSchema(
+  rules: VerifyRules,
+  errors: VerifyConfigError[],
+  guideHint: string,
+): void {
+  for (const group of rules.groups ?? []) {
+    if (!group.name || group.name.trim() === "") {
+      errors.push({
+        code: "group_missing_name",
+        detail: `A verification group is missing its "name". ${guideHint}`,
+      });
+    }
+    if (group.runtime !== undefined) {
+      if (group.runtime !== "roundHeading") {
+        errors.push({
+          code: "group_runtime_invalid",
+          detail: `Group "${group.name}" has invalid runtime "${group.runtime}" (only "roundHeading" is supported). ${guideHint}`,
+        });
+      } else if (!group.when) {
+        errors.push({
+          code: "group_runtime_invalid",
+          detail: `Group "${group.name}" runtime "roundHeading" requires a "when" pattern. ${guideHint}`,
+        });
+      } else if (!hasNamedRoundGroup(group.when)) {
+        errors.push({
+          code: "anchor_validation",
+          detail: `Group "${group.name}" when pattern must declare named groups roundZh/roundEn. ${guideHint}`,
+        });
+      }
+    }
+    for (const node of group.rules) {
+      if (node.runtime === undefined) continue;
+      if (!DIAG_NODE_RUNTIME_KEYS.has(node.runtime)) {
+        errors.push({
+          code: "node_runtime_invalid",
+          detail: `Rule node has invalid runtime "${node.runtime}". ${guideHint}`,
+        });
+        continue;
+      }
+      if (node.runtime === "verdict") {
+        const bad = (node.patterns ?? []).filter((p) => countCaptureGroups(p) < 1);
+        if (bad.length > 0) {
+          errors.push({
+            code: "anchor_validation",
+            detail: `verdict runtime pattern(s) missing capture group 1: ${bad.join(", ")}. ${guideHint}`,
+          });
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -175,6 +240,9 @@ export async function diagnoseVerifyConfig(
     }
     return { ok: false, errors };
   }
+
+  // Phase 2 / 176: groups schema + runtime anchor validation.
+  diagnoseGroupSchema(rules, errors, guideHint);
 
   return { ok: errors.length === 0, errors };
 }

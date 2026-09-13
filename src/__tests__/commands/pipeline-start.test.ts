@@ -363,6 +363,42 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     expect(launchFallbackLines.length).toBe(0);
   });
 
+  it("Phase 2 / 176: missing clarify anchors → fresh(1) + notify once + error audit, launch not blocked", async () => {
+    await scaffoldMinimalPi();
+    await scaffoldAgentWithName();
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    // Round heading + answer present, but no verify.md anchors exist in TMP.
+    await fs.writeFile(
+      path.join(docsDir, "79_Anchor.md"),
+      "# 第 1 轮澄清\n- 方案 A\n答：x\n",
+      "utf-8",
+    );
+
+    const bus = makeMockEventBus({ emitPingReply: false, emitSpawnReply: false });
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: "pipe-anchor-176" });
+    const ctx = createMockCtx(meta);
+    const sendSpy: string[] = [];
+    (ctx as any).pi = { events: bus, sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/79_Anchor.md" }, ctx as any);
+
+    // Fail-open notification emitted exactly once.
+    const anchorNotifies = ctx.notifications.filter((n) => n.includes("runtime contract anchor unavailable"));
+    expect(anchorNotifies).toHaveLength(1);
+
+    // Error audit recorded for the unavailable anchor.
+    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await fs.readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("contract_anchor_unavailable");
+    expect(auditContent).toContain("[ERROR]");
+
+    // Launch not blocked: the fallback spawn message is still sent with fresh(1).
+    expect(sendSpy.some((m) => m.includes("docs/design/79_Anchor.md") && m.trim().endsWith(" 1"))).toBe(true);
+  });
+
   it("fallback: ping timeout (no reply) → sendUserMessage + audit pipeline_start_launch", async () => {
     await scaffoldMinimalPi();
     await scaffoldAgentWithName();

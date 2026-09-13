@@ -740,16 +740,32 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
     // We test the helper directly for the four states, and test the description format
     // for spawnable stages through spawnStageSubagent.
 
+    /** Phase 2 / 176: anchors mirroring the v6 clarify verify.md declarations. */
+    const CLARIFY_ANCHORS = {
+      roundHeading: {
+        patterns: ["^#{1,2}\\s*(?:第\\s*(?<roundZh>\\d+)\\s*轮澄清|[Rr]ound\\s+(?<roundEn>\\d+))"],
+        mode: "and" as const,
+      },
+      answerField: {
+        patterns: ["答\\s*[:：]|\\*{2}答\\*{2}", "Answer\\s*:"],
+        mode: "or" as const,
+      },
+      modelConfirm: {
+        patterns: ["^##\\s*模型确认", "^##\\s*Model\\s+Confirmation"],
+        mode: "or" as const,
+      },
+    };
+
     it("deriveClarifyForwardArgs: fresh doc → kind='fresh'", async () => {
       const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
-      const result = deriveClarifyForwardArgs("# Requirement\n\nSome content\n");
+      const result = deriveClarifyForwardArgs("# Requirement\n\nSome content\n", CLARIFY_ANCHORS);
       expect(result.kind).toBe("fresh");
     });
 
     it("deriveClarifyForwardArgs: await-answer (round 2, no 答) → kind='await-answer', round=2", async () => {
       const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
       const doc = "# Requirement\n\n# 第 2 轮澄清\n\n问题1：xxx\n";
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result.kind).toBe("await-answer");
       if (result.kind === "await-answer") {
         expect(result.round).toBe(2);
@@ -759,7 +775,7 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
     it("deriveClarifyForwardArgs: confirmed (round 2, has 模型确认) → kind='confirmed', round=2", async () => {
       const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
       const doc = "# Requirement\n\n# 第 2 轮澄清\n\n问题1：xxx\n**答**：yyy\n\n## 模型确认\n\n确认内容\n";
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result.kind).toBe("confirmed");
       if (result.kind === "confirmed") {
         expect(result.round).toBe(2);
@@ -769,7 +785,7 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
     it("deriveClarifyForwardArgs: full-und? (round 2, has 答 but no 模型确认) → kind='full-und?'", async () => {
       const { deriveClarifyForwardArgs } = await import("../../utils/clarify-args");
       const doc = "# Requirement\n\n# 第 2 轮澄清\n\n问题1：xxx\n**答**：yyy\n";
-      const result = deriveClarifyForwardArgs(doc);
+      const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result.kind).toBe("full-und?");
     });
 
