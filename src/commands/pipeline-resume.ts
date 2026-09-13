@@ -18,6 +18,7 @@ import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
+import { staleConfigNotice } from "../utils/config-staleness";
 
 /**
  * Creates the `/pipeline-resume` command.
@@ -35,6 +36,13 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
       // Phase 1 / 175 (R1Q7A): forwardArgs from /pipeline-resume are transparently
       // passed through to the stage subagent spawn prompt.
       const forwardArgs = (args.forwardArgs as string) || "";
+
+      // Phase 3 / 175 (R2Q6A): stale config check at command entry point.
+      const staleNotice = staleConfigNotice(config);
+      if (staleNotice) {
+        ui.notify(ctx, staleNotice);
+      }
+
       if (!ctx?.session) {
         return { error: "No session context available" };
       }

@@ -20,6 +20,7 @@ import { execSync } from "node:child_process";
 import { checkTemplateDrift } from "../utils/template-drift";
 import { detectSessionRole } from "./session-role";
 import { formatAbortedNotifyText } from "./flow-state";
+import { staleConfigNotice } from "../utils/config-staleness";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -339,6 +340,14 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
         const flowState = getFlowState(meta);
         const { isChild } = detectSessionRole(ctx);
+
+        // Phase 3 / 175 (R2Q6A): stale config check — notify once on owner session_start.
+        if (!isChild) {
+          const staleNotice = staleConfigNotice(config);
+          if (staleNotice) {
+            ui.notify(ctx, staleNotice);
+          }
+        }
 
         // Phase 3 (173) 🔴-2: Narrow stale_startup to running-only.
         // Previously (171): any non-aborted non-completed → stale abort.

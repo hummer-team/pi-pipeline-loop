@@ -276,3 +276,34 @@ export function resolveGitModifyPolicy(
   }
   return "block";
 }
+
+/**
+ * Phase 3 / 175: Describes the source tier of the git-modify policy for a given stage.
+ * Returns a human-readable label indicating which configuration layer provided the policy.
+ *
+ * Used in tool-guard block messages to help users understand where to configure the policy.
+ *
+ * @param config - Full pipeline configuration
+ * @param stage - The pipeline stage
+ * @returns "stage" | "global" | "matrix-default"
+ */
+export function describeGitModifySource(
+  config: PipelineConfig,
+  stage?: PipelineStage,
+): "stage" | "global" | "matrix-default" {
+  // Tier 1: stage-level override
+  if (stage) {
+    const stageProtect = config.stages?.[stage]?.protect;
+    if (stageProtect?.gitModify !== undefined) {
+      return "stage";
+    }
+  }
+
+  // Tier 2: global override
+  if (config.protect?.gitModify !== undefined) {
+    return "global";
+  }
+
+  // Tier 3: built-in matrix
+  return "matrix-default";
+}

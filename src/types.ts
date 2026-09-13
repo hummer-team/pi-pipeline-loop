@@ -693,6 +693,22 @@ export interface PipelineConfig {
     /** Custom instructions for the compaction (overrides DEFAULT_COMPACT_INSTRUCTIONS) */
     customInstructions?: string;
   };
+
+  // ─── Phase 3 / 175: Config staleness tracking (internal fields) ───────────
+
+  /**
+   * Internal: absolute path to the pipeline_loop.json source file.
+   * Set by createPipelineFromJson at load time. Used by config-staleness detection.
+   * Not part of the user-facing config API.
+   */
+  configSourcePath?: string;
+
+  /**
+   * Internal: mtime (ms) of the pipeline_loop.json file at load time.
+   * Set by createPipelineFromJson via statSync. Used by config-staleness detection.
+   * Not part of the user-facing config API.
+   */
+  configLoadedMtimeMs?: number;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────

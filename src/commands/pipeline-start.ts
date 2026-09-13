@@ -29,6 +29,7 @@ import { registerSession } from "../utils/session-registry";
 import { pingSubagents, spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
 import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
+import { staleConfigNotice } from "../utils/config-staleness";
 
 /**
  * Writes the persistent TUI status bar showing current pipeline stage.
@@ -969,6 +970,12 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       const forwardArgs = (args.forwardArgs as string) || "";
       const ui = createPipelineUI(config);
       const mode: StartStageMode = config.startStageMode ?? "auto";
+
+      // Phase 3 / 175 (R2Q6A): stale config check at command entry point.
+      const staleNotice = staleConfigNotice(config);
+      if (staleNotice) {
+        ui.notify(ctx, staleNotice);
+      }
 
       const meta = ctx?.session?.getMeta?.();
 

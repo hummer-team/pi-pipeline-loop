@@ -45,7 +45,8 @@ import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText, fo
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { checkGitAdd, checkGitCommit, isGitWriteCommand, isGitForbidden, type GitCheckResult } from "../utils/git-protect";
-import { resolveGitModifyPolicy } from "../utils/protect";
+import { resolveGitModifyPolicy, describeGitModifySource } from "../utils/protect";
+import { staleConfigNotice } from "../utils/config-staleness";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
@@ -476,7 +477,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
             if (isWrite && gitPolicy === "block") {
               // Block policy: hard-block git write commands (no ask popup per Phase 4 Q2-A)
-              const reason = `FORBIDDEN: git write command blocked in stage '${currentStage}' (stage git policy=block).`;
+              // Phase 3 / 175: enhanced message with policy source and stale config notice
+              const policySource = describeGitModifySource(config, currentStage);
+              const staleNotice = staleConfigNotice(config);
+              const sourceHint = policySource === "stage"
+                ? `stages.${currentStage}.protect.gitModify`
+                : policySource === "global"
+                  ? "protect.gitModify"
+                  : `matrix default for "${currentStage}"`;
+              const reason = `FORBIDDEN: git write command blocked in stage '${currentStage}'. Policy source: ${sourceHint}. To permit git writes, set protect.gitModify="allow" or stages.${currentStage}.protect.gitModify="allow" in pipeline_loop.json (protect.allow does NOT exempt git commands).${staleNotice ? " " + staleNotice : ""}`;
               await trackViolation({
                 type: "git_protected",
                 tool: "bash",

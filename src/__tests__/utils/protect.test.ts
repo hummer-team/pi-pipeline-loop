@@ -8,6 +8,7 @@ import {
   isPathProtectedForModify,
   isPathProtectedForGit,
   toProjectRelative,
+  describeGitModifySource,
   resolveGitModifyPolicy,
   GIT_MODIFY_DEFAULT_MATRIX,
   type ProtectState,
@@ -384,5 +385,41 @@ describe("resolveGitModifyPolicy", () => {
       protect: { gitignore: true, paths: [], allow: [], gitModify: "allow" },
     });
     expect(resolveGitModifyPolicy(config, null)).toBe("allow");
+  });
+});
+
+// ── Phase 3 / 175: describeGitModifySource ──────────────────────────────────
+
+describe("describeGitModifySource (Phase 3 / 175)", () => {
+  it("returns 'stage' when stage-level override exists", () => {
+    const config = makeTestConfig();
+    (config.stages as any).clarify = {
+      ...(config.stages as any).clarify,
+      protect: { gitModify: "allow" },
+    };
+    expect(describeGitModifySource(config, "clarify")).toBe("stage");
+  });
+
+  it("returns 'global' when global override exists but no stage override", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "allow" },
+    });
+    expect(describeGitModifySource(config, "clarify")).toBe("global");
+  });
+
+  it("returns 'matrix-default' when no override exists", () => {
+    const config = makeTestConfig();
+    expect(describeGitModifySource(config, "clarify")).toBe("matrix-default");
+  });
+
+  it("stage override takes precedence over global", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "block" },
+    });
+    (config.stages as any).develop = {
+      ...(config.stages as any).develop,
+      protect: { gitModify: "allow" },
+    };
+    expect(describeGitModifySource(config, "develop")).toBe("stage");
   });
 });
