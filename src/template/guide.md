@@ -891,7 +891,8 @@ develop/fix 阶段配置 `verify.selfVerifySkip: true` 时：
 | 情况 | 行为 | status | 显示文案 |
 |------|------|--------|---------|
 | 旧 verify.md 规则缺失某些 expected 命令/文件 | 补入缺失规则，body 保留 | `merged` | `Merged (rules added to existing verify.md):` |
-| 旧 verify.md 含自定义规则（fileContentPattern/expectOutput 等） | 跳过，保护人工规则 | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
+| 旧 verify.md 含 `groups:` 声明（v6 模板或用户自定义） | 跳过，保护声明（避免新模板重跑 init 被覆盖） | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
+| 旧 verify.md 含自定义规则（expectOutput 等） | 跳过，保护人工规则 | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
 | 旧 verify.md 已覆盖所有 expected 规则 | 跳过，无变化 | `skipped` (reason: `exists`) | `rules already present` |
 | 用户通过 protect.ask 拒绝覆盖（见 §9.4.1） | 该 stage 跳过，其余继续 | `skipped` (reason: `user_declined`) | `user declined overwrite` |
 
@@ -936,115 +937,146 @@ Verify the delivery items...
 
 `/pipeline-init 1` 会自动清洗已损坏的文件（见 §9.4.1）。新文件生成天然正确。手工编辑 verify.md 时，请确保 `---` 独立成行。
 
-#### 9.4.B 自定义 verify 规则完整参考
+#### 9.4.B verify 规则完整参考（groups 声明体系）
 
-入口：编辑 `.pi/references/{stage}_spec/verify.md` 的 YAML frontmatter。插件支持五类规则，可组合使用。
+入口：编辑 `.pi/references/{stage}_spec/verify.md` 的 YAML frontmatter。**一个 verify.md 只服务一个 stage**。frontmatter 采用 `rules:` 单根结构：文件级默认 `path` + `groups` 列表；`groups` 之间恒为 AND。
 
-##### 1. `requiredFiles` — 文件存在性校验
-
-路径支持 glob（`*`/`?`），至少一个匹配即通过。
+##### 1. 文件级 `path` 与两级继承
 
 ```yaml
 rules:
-  requiredFiles:
-    - "docs/design/*_plan.md"
-    - "docs/design/*_commit.md"
+  path: "docs/review/code_review_*.md"   # 文件级默认路径
+  groups: ...
 ```
 
-##### 2. `requiredCommands` — 命令执行校验
+规则节点省略 `path` 时继承文件级 `path`；节点级 `path` 覆写它（承载跨文件表达式，如"commit.md 引用 *_plan.md"）。path 支持 glob（glob 只查最新 mtime 文件）与 `{requirementDoc}`/`{pipelineId}` 占位符。
 
-`cmd` 为命令字符串，`expectExit` 为期望退出码（默认 0），`expectOutput` 为期望 stdout 子串（可选）。
+##### 2. `groups` 组属性
 
-```yaml
-rules:
-  requiredCommands:
-    - cmd: "bun run build"
-      expectExit: 0
-    - cmd: "bun test"
-      expectExit: 0
-      expectOutput: "pass"
-```
+| 字段 | 取值 | 说明 |
+|------|------|------|
+| `name` | 字符串 | 组名；失败回流前缀 `[group:name]` |
+| `when` | regex 字符串 | 门禁触发器：文档中无命中 → 本组恒过（不查） |
+| `scope` | `section` / 缺省 | `section`=按轮次标题逐节各自求值；缺省=整文档求值 |
+| `ruleMode` | `and`（缺省）/ `or` | 组内多个规则节点之间的组合 |
+| `runtime` | `roundHeading` | 组级运行时锚点：标记本组 `when` 的 pattern 兼作轮次推导源 |
+| `rules` | 规则节点列表 | 见下 |
 
-配合 `verify.selfVerifySkip: true` 可跳过模型已在本 stage 成功执行的相同命令（详见 §9.2）。`VERIFIED_COMMANDS` 自报协议见 §5。
+##### 3. 规则节点（三合一 `{ type, mode?, patterns[], path?, runtime?, ... }`）
 
-##### 3. `requiredGit` — Git 状态校验
-
-```yaml
-rules:
-  requiredGit:
-    lastCommitWithin: "1h"
-    branch: "main"
-    cleanWorkingTree: true
-```
-
-##### 4. `fileContentPattern` — 文件内容正则校验
-
-`path` 支持 glob（glob path 只查**最新 mtime** 文件）。`pattern` 为 JavaScript regex，使用 `m` 模式 + `test()` 存在匹配语义（匹配到任意位置即通过）。
-
-```yaml
-rules:
-  fileContentPattern:
-    - path: "docs/design/*_commit.md"
-      pattern: "^\\*\\*plan doc\\*\\*:"
-    - path: "docs/design/*_plan.md"
-      pattern: "^## (用户确认|User Confirmation)"
-    - path: "docs/review/code_review_*.md"
-      pattern: "结论：(通过|不通过)"
-```
-
-**占位符**：`{requirementDoc}` 由 `/pipeline-start` 设置的需求文档路径替换（引用 §4.2）。未设置时规则不生效（运行时报 `requirementDoc not set`，属运行时配置错误 → freeze + 决策菜单）。
-
-##### 5. `keywords` + `mode` — 关键词聚合校验（legacy）
-
-校验对象是**主线程 assistantMessages 聚合**（subagent 文件产物请用 `fileContentPattern`）。`mode` 仅支持 `and`/`or`（大小写敏感）。
-
-```yaml
-rules:
-  keywords:
-    - "方案推荐"
-    - "分析完成"
-  mode: and
-```
-
-##### 完整示例（clarify_spec/verify.md 形态）
-
-```yaml
----
-rules:
-  fileContentPattern:
-    - path: "{requirementDoc}"
-      pattern: "full-und\\? 理解确认：是"
-    - path: "{requirementDoc}"
-      pattern: "(?<![\\s\\S])(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^- \\*{0,2}方案[ \\t]*[A-Z]))(?![\\s\\S]*?^# 第 \\d+ 轮澄清(?![^]*?^[ \\t]*答[:：]))"
----
-等待用户输入 full-und? 询问是否完全理解需求；澄清节（含 `# 第 N 轮澄清`）必须包含方案推荐（`- 方案 [A-Z]`，容忍 `- 方案A` 无空格与 `**方案 X**` 加粗形态）与用户答复（`答：`/`答:`，容忍前导缩进如 `  答：...`）；无澄清节直接通过。
-```
-
-##### 坑点
-
-- `---` 闭合分隔符独立成行（§9.4.A），否则 `mode: and` 等尾部规则静默降级
-- glob path 只查**最新 mtime** 文件（引擎既有语义，不扩展）
-- regex 为**存在匹配语义**：匹配到任意位置即通过；需用 `^`/`$` 锚定行首行尾
-- `mode` 仅支持 `and`/`or`（大小写敏感），其他值（如 `xor`）会触发配置诊断错误
-- `{requirementDoc}` 未设置时规则不生效（运行时 freeze，非静态跳过）
-
-##### 配置错误行为（148 新增）
-
-每次 `runVerification` 前实时诊断 verify.md frontmatter。以下情形判定为配置错误：
-
-| 错误码 | 触发条件 | 行为 |
+| `type` | 必需字段 | 说明 |
 |--------|---------|------|
-| `file_missing` | verify.md 文件缺失 | 跳过验证（视为通过）+ TUI 提示 + audit `verify_config_skip` |
-| `frontmatter_missing` | 无 `---` 分隔符 | 同上 |
-| `yaml_parse_error` | frontmatter 解析失败 | 同上 |
-| `unknown_top_level_key` | 未知顶层 key | 同上 |
-| `invalid_mode` | `mode` 非 `and`/`or` | 同上 |
-| `empty_rule_item` | 空 path/pattern/keyword | 同上 |
-| `no_rules` | 无任何规则 | 同上 |
+| `requiredFile` | `path`（可继承） | 文件/glob 存在性 |
+| `fileContentPattern` | `path`（可继承）+ `patterns` | 文件内容正则（`m` 标志、存在匹配） |
+| `requiredCommand` | `cmd`（`expectExit`/`expectOutput` 可选） | 命令执行校验 |
+| `requiredGit` | `lastCommitWithin`/`branch`/`cleanWorkingTree` 至少一个 | Git 状态校验 |
+| `modelRuntimeResult` | `patterns` | 对本 stage 聚合 assistant 消息做正则匹配 |
 
-**运行时配置错误**（静态诊断无法发现）：EISDIR / 路径指向目录 / 未解析 `{requirementDoc}` 占位符 → freeze + 决策菜单（保留既有 `isConfigError` 行为）。
+`mode`（节点级，缺省 `and`）控制该节点 `patterns` 列表内的组合。单条 `pattern: x` 是 `patterns: [x]` 的糖，parser 双兼容。
 
-修复后下阶段验证自动恢复（每次验证前重新诊断）。
+##### 4. 三层布尔求值序
+
+```
+跨组 AND  →  组内 ruleMode（规则节点间 and/or）  →  节点 mode（patterns 间 and/or）
+```
+
+- `and`：全量求值、不短路，全部失败项回流（一次唤醒看到全貌）。
+- `or`：任一通过即过；全败时回流全部失败项。
+- `scope: section`：命中 `when` 后按 h1/h2 轮次标题切节，**每一节都必须各自满足组**（防止"第 1 轮漏答、靠第 2 轮蒙混"）。
+
+##### 5. `when` / `scope` 语义
+
+- `when` 不命中 → 组恒过（无轮次标题的需求文档不会被误杀）。
+- `when` 命中 + `scope: section` → 逐节严格求值。
+- 缺省 `scope` → 整文档求值（较宽松，按需选择）。
+
+##### 6. `runtime` 属性（两级共用）
+
+`runtime:` 标记"该处 pattern 兼职为运行时锚点"，运行时代码从部署 verify.md 读取，不再内置正则。
+
+| 锚点 | 宿主 | 校验 | 消费方 |
+|------|------|------|--------|
+| `roundHeading` | 组级（标记 `when`） | `when` 须含命名组 `roundZh`/`roundEn` | clarify 轮次推导 |
+| `answerField` | 节点级（标记 `patterns`） | — | clarify await-answer 判定 |
+| `modelConfirm` | 节点级 | — | clarify confirmed 判定 |
+| `verdict` | 节点级 | 每条 pattern 须含捕获组 1 | review→completed/fix 路由 |
+
+⚠️ **警示**：带 `runtime` 属性的节点/组是运行时的唯一声明源。删除该节点或其 `runtime` 属性会导致运行时降级（fail-open）：轮次推导回退 `fresh(1)`、review 走"未声明"分支，并记 `contract_anchor_unavailable` 错误审计 + 英文 notify。**不可随意删除。**
+
+##### 7. 注释与格式
+
+- frontmatter 注释**仅支持整行**（`#` 开头）；不支持行尾内联注释。
+- 引号内的 `#` 不受注释处理影响。
+- 闭合 `---` 必须独立成行（§9.4.A）。
+
+##### 8. 失败回流
+
+失败明细格式 `[group:name][ruleType] detail`，走既有 `verify_fail_wake` 闭环唤醒模型修复；`verifyAttempts`/`violations` 熔断边界不变。
+
+##### 9. 完整示例（clarify_spec/verify.md v6 形态）
+
+```yaml
+---
+rules:
+  path: "{requirementDoc}"
+  groups:
+    - name: round-well-formed
+      when: "^#{1,2}\\s*(?:第\\s*(?<roundZh>\\d+)\\s*轮澄清|[Rr]ound\\s+(?<roundEn>\\d+))"
+      runtime: roundHeading
+      scope: section
+      ruleMode: and
+      rules:
+        - type: fileContentPattern
+          patterns: ["^- \\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]"]
+        - type: fileContentPattern
+          mode: or
+          runtime: answerField
+          patterns:
+            - "答\\s*[:：]|\\*{2}答\\*{2}"
+            - "Answer\\s*:"
+    - name: full-und-confirmed
+      ruleMode: and
+      rules:
+        - type: fileContentPattern
+          mode: or
+          patterns:
+            - "full-und\\? 理解确认：是"
+            - "full-und\\? .*理解确认[:：]\\s*[*_]{0,2}(是|yes|Y)"
+        - type: fileContentPattern
+          mode: or
+          runtime: modelConfirm
+          patterns:
+            - "^##\\s*模型确认"
+            - "^##\\s*Model\\s+Confirmation"
+---
+（正文 = 人读说明，兼作 LLM 语义验证 prompt，机制不变）
+```
+
+##### 10. 行为变更清单（相对旧版）
+
+- `## 模型确认` 节升格为 clarify verify 真实门禁（最终轮确认结果，只挂 `full-und-confirmed` 组，不逐轮检查）。
+- `full-und? 理解确认：是` 旧行内形态以 or 节点保留兼容。
+- 顶层 `keywords` + `mode` 通道保留解析与求值，但标记 deprecated；新模板改用 `modelRuntimeResult` 节点。
+- 存量 verify.md 不迁移：重跑 `/pipeline-init` 获取新模板；含自定义 `groups` 的文件受 `exists_custom` 保护。
+- 运行时锚点改为从部署 verify.md 读取（声明即行为）；代码侧 `CONTRACT_TOKENS` 与内置默认正则已退役。
+
+##### 11. 诊断与错误码
+
+| 错误码 | 触发条件 |
+|--------|---------|
+| `group_missing_name` | 组缺少 `name` |
+| `group_runtime_invalid` | 组级 `runtime` 非 `roundHeading`，或缺少 `when` |
+| `node_runtime_invalid` | 节点级 `runtime` 非法值 |
+| `anchor_validation` | `roundHeading` 缺命名组 / `verdict` 缺捕获组 1 |
+
+静态诊断失败 → 跳过验证（视为通过）+ TUI 提示 + audit `verify_config_skip`。运行时配置错误（EISDIR/目录/未解析占位符）→ freeze + 决策菜单。
+
+##### 12. 坑点
+
+- glob path 只查最新 mtime 文件。
+- regex 为存在匹配语义；需 `^`/`$` 锚定。
+- 规则节点若 `fileContentPattern`/`requiredFile` 无任何 path 来源（节点与文件级皆无）会被丢弃并记 `verify_frontmatter_parse_error`。
+- 带 `runtime` 属性的节点不可删（见 §6 警示）。
 
 ### 9.5 破坏性命令拦截
 

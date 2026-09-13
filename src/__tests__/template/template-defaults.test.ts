@@ -385,3 +385,33 @@ describe("Phase 3 / 176: template engine smoke", () => {
     expect(fail.failures.some((f) => f.group === "full-und-confirmed")).toBe(true);
   });
 });
+
+// ─── Phase 4 / 176: guide.md groups reference anchors ────────────────────────
+
+describe("Phase 4 / 176: guide.md groups reference", () => {
+  const guidePath = path.join(__dirname, "../../template/guide.md");
+  const content = fs.readFileSync(guidePath, "utf-8");
+
+  it("contains the groups configuration reference section", () => {
+    expect(content).toContain("#### 9.4.B");
+    expect(content).toContain("groups 声明体系");
+    expect(content).toContain("三层布尔求值序");
+  });
+
+  it("documents the scope enum (section vs whole-document default)", () => {
+    expect(content).toContain("`scope`");
+    expect(content).toContain("section");
+    expect(content).toContain("整文档");
+  });
+
+  it("warns that runtime-attribute nodes must not be deleted", () => {
+    expect(content).toContain("不可随意删除");
+    expect(content).toContain("contract_anchor_unavailable");
+  });
+
+  it("documents the failure reflow format and behavior-change list", () => {
+    expect(content).toContain("[group:name][ruleType]");
+    expect(content).toContain("行为变更清单");
+    expect(content).toContain("模型确认");
+  });
+});

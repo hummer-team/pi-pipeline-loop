@@ -3,8 +3,8 @@
  * Shared module for generating verify.md files from skill definitions.
  * Extracted from pipeline-init-verify.ts to be reusable by pipeline-init command.
  *
- * Phase 2 / 176: the 148 white-list (`TEMPLATE_BUILTIN_CONTENT_PATTERNS`) has
- * been retired. `diffAndMergeRules` now treats any existing `groups:` schema as
+ * Phase 2 / 176: the 148 content-pattern white-list has been retired.
+ * `diffAndMergeRules` now treats any existing `groups:` schema as
  * user-authored (`hasCustom = true`), which protects custom declarations and
  * keeps re-running init on the new v6 templates idempotent. Flat (legacy)
  * verify.md files continue through the merge path.
