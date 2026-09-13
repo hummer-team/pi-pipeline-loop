@@ -389,7 +389,11 @@ function buildVerifyFailurePrompt(meta: SessionMeta): string | null {
     return null;
   }
 
-  const lines = failures.map(f => `- [${f.ruleType}] ${f.detail}`);
+  const lines = failures.map(f => (
+    f.group
+      ? `- [${f.group}][${f.ruleType}] ${f.detail}`
+      : `- [${f.ruleType}] ${f.detail}`
+  ));
   return (
     `# PREVIOUS VERIFICATION FAILURES (MUST FIX)\n` +
     `The following verification checks failed. You MUST fix ALL of them before the stage can advance.\n\n` +

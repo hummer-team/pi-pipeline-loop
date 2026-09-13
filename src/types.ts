@@ -270,6 +270,11 @@ export interface VerifyFailureItem {
   ruleType: string;
   /** Human-readable failure detail */
   detail: string;
+  /**
+   * Owning verification group name (Phase 1 / 176). Optional and backward
+   * compatible — present only for failures produced by the groups engine.
+   */
+  group?: string;
   /** Unix timestamp (ms) when the failure was recorded */
   timestamp: number;
 }
@@ -298,7 +303,7 @@ export interface ViolationItem {
  */
 export interface VerifyResultSnapshot {
   /** Result from the structured rule engine */
-  structured: { passed: boolean; failures: { ruleType: string; detail: string }[] };
+  structured: { passed: boolean; failures: { ruleType: string; detail: string; group?: string }[] };
   /** Combined overall pass: structured.passed */
   overallPassed: boolean;
 }

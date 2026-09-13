@@ -126,12 +126,16 @@ export async function verifyRequiredFiles(
  * @param rules - Array of { path, pattern } rules
  * @param projectRoot - Absolute path to the project root directory
  * @param logError - Optional audit log callback for recording errors
+ * @param options - Optional evaluation options. When `textOverride` is provided,
+ *   non-glob paths are matched against that text instead of the file on disk
+ *   (used by groups `scope: section` per-section evaluation, Phase 1 / 176).
  * @returns Verification result with pattern mismatch details on failure
  */
 export async function verifyFileContentPattern(
   rules: { path: string; pattern: string }[] | undefined,
   projectRoot: string,
   logError?: AuditLogFn,
+  options?: { textOverride?: string },
 ): Promise<VerifierResult> {
   if (!rules || rules.length === 0) {
     return { passed: true, detail: "No file content patterns to check" };
@@ -179,6 +183,16 @@ export async function verifyFileContentPattern(
       // Phase 1 (L1): pre-validate path to prevent EISDIR from path.join(root, "")
       if (rule.path.trim() === "") {
         failures.push(`fileContentPattern path is empty (config error)`);
+        continue;
+      }
+
+      // Section-scoped evaluation (groups `scope: section`): match the pattern
+      // against the provided text slice instead of reading the file on disk.
+      if (options?.textOverride !== undefined) {
+        const regex = new RegExp(rule.pattern, "m");
+        if (!regex.test(options.textOverride)) {
+          failures.push(`${rule.path}: pattern "${rule.pattern}" not found in section`);
+        }
         continue;
       }
 

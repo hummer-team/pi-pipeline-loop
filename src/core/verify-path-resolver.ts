@@ -18,7 +18,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
-import type { VerifyRules, FileContentRule } from "./verify-frontmatter";
+import type { VerifyRules, FileContentRule, VerifyGroupRuleNode } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
 
 /**
@@ -53,6 +53,24 @@ export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): Veri
   const replace = (s: string): string => replacePipelineId(replaceReqDoc(s));
 
   const resolved: VerifyRules = { ...rules };
+
+  // Phase 1 / 176: file-level path used as the group rule-node default.
+  if (resolved.path) {
+    resolved.path = replace(resolved.path);
+  }
+
+  // Phase 1 / 176: penetrate groups (node path + pattern placeholders).
+  if (resolved.groups) {
+    resolved.groups = resolved.groups.map((group) => ({
+      ...group,
+      rules: group.rules.map((node) => {
+        const nextNode: VerifyGroupRuleNode = { ...node };
+        if (node.path) nextNode.path = replace(node.path);
+        if (node.patterns) nextNode.patterns = node.patterns.map(replace);
+        return nextNode;
+      }),
+    }));
+  }
 
   if (resolved.requiredFiles) {
     resolved.requiredFiles = resolved.requiredFiles.map(replace);
@@ -208,6 +226,21 @@ function replaceGlobInRules(
   concretePath: string,
 ): VerifyRules {
   const result: VerifyRules = { ...rules };
+
+  // Phase 1 / 176: concrete glob replacement for the file-level path and
+  // group rule-node paths (requiredFile nodes inherit rules.path).
+  if (result.path && isMatch(result.path)) {
+    result.path = concretePath;
+  }
+
+  if (result.groups) {
+    result.groups = result.groups.map((group) => ({
+      ...group,
+      rules: group.rules.map((node) => (
+        node.path && isMatch(node.path) ? { ...node, path: concretePath } : node
+      )),
+    }));
+  }
 
   if (result.requiredFiles) {
     result.requiredFiles = result.requiredFiles.map((p) =>

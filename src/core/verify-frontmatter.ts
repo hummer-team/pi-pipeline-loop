@@ -20,8 +20,16 @@ import { safeWriteAuditLog } from "../utils/auditLog";
  * Supports both legacy keyword rules and new structured rule types.
  */
 export interface VerifyRules {
+  /**
+   * @deprecated Legacy top-level keyword channel (Phase 1 / 176, R4Q5A).
+   * Parsing and evaluation are retained for backward compatibility, but new
+   * templates must use a `modelRuntimeResult` group rule node instead.
+   */
   keywords: string[];
-  /** "and" = all keywords must match, "or" = any keyword match passes */
+  /**
+   * @deprecated Legacy keyword combination mode. Only applies to the top-level
+   * `keywords` channel; groups use per-node `mode` and per-group `ruleMode`.
+   */
   mode: "and" | "or";
   /**
    * File-level default path for group rule nodes (Phase 0 / 176, R4Q4A).

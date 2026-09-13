@@ -37,9 +37,19 @@ interface VerifyAdvanceCtx {
  * and the runVerification return shape.
  */
 interface VerifyAdvanceResult {
-  structuredResult?: { failures: { ruleType: string; detail: string }[] };
+  structuredResult?: { failures: { ruleType: string; detail: string; group?: string }[] };
   ruleMissing: string[];
   verifyResult?: { structured: { passed: boolean }; overallPassed: boolean } | null;
+}
+
+/**
+ * Builds a failure summary line. Group-tagged failures (Phase 1 / 176) use the
+ * `[group:name][ruleType] detail` format; flat failures keep the legacy format.
+ */
+function formatFailure(failure: { ruleType: string; detail: string; group?: string }): string {
+  return failure.group
+    ? `[${failure.group}][${failure.ruleType}] ${failure.detail}`
+    : `[${failure.ruleType}] ${failure.detail}`;
 }
 
 /** Options controlling applyVerifyPass behavior for different callers */
@@ -255,6 +265,7 @@ export async function applyVerifyFail(
       verifyFailures.push({
         ruleType: f.ruleType,
         detail: f.detail,
+        ...(f.group ? { group: f.group } : {}),
         timestamp: now,
       });
     }
@@ -303,7 +314,7 @@ export async function applyVerifyFail(
     });
 
     const failureSummary = verifyFailures
-      .map((f) => `[${f.ruleType}] ${f.detail}`)
+      .map((f) => formatFailure(f))
       .join("; ");
 
     return {
@@ -330,7 +341,7 @@ export async function applyVerifyFail(
   }, "warn");
 
   const failureSummary = verifyFailures
-    .map((f) => `[${f.ruleType}] ${f.detail}`)
+    .map((f) => formatFailure(f))
     .join("; ");
 
   // TUI failure output (gated by output.pipelineStage)

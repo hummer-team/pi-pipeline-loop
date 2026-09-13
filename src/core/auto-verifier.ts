@@ -22,9 +22,10 @@ import { verifyRequiredFiles, verifyFileContentPattern, globMatchFiles } from ".
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
+import { evaluateGroups } from "./verifiers/group-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getVerifyPrompt } from "./prompt-config";
-import { parseFrontmatter, type VerifyRules } from "./verify-frontmatter";
+import { parseFrontmatter, type VerifyRules, type VerifyGroupRuleNode } from "./verify-frontmatter";
 import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
 import { diagnoseVerifyConfig } from "./verify-config-diagnosis";
 
@@ -59,6 +60,11 @@ export interface VerifyFailure {
   ruleType: string;
   /** Human-readable failure detail */
   detail: string;
+  /**
+   * Owning verification group name (Phase 1 / 176). Present only for failures
+   * produced by the groups engine; surfaced as `[group:name][ruleType] detail`.
+   */
+  group?: string;
 }
 
 /**
@@ -166,6 +172,20 @@ export async function executeStructuredRules(
   stageName?: string,
 ): Promise<StructuredVerifyResult> {
   const failures: VerifyFailure[] = [];
+
+  // 0. Groups evaluation (Phase 1 / 176) — merged alongside flat failures.
+  // Cross-group AND, group ruleMode, node mode, when/scope conditionals.
+  if (rules.groups && rules.groups.length > 0) {
+    const groupResult = await evaluateGroups(rules, projectRoot, assistantMessages, {
+      execFn,
+      logError,
+      toolCallRecords,
+      selfVerifySkip: selfVerifySkip === true,
+      stageStartTime,
+      stageName,
+    });
+    failures.push(...groupResult.failures);
+  }
 
   // 1. Required files check
   const fileResult = await verifyRequiredFiles(rules.requiredFiles, projectRoot);
@@ -413,7 +433,7 @@ export async function runVerification(
   // derivation so that pattern equality comparison works on both glob and non-glob inputs.
   const deferList = options?.deferContentPatterns;
   let deferredCount = 0;
-  if (deferList && deferList.length > 0 && resolvedRules.fileContentPattern) {
+  if (deferList && deferList.length > 0) {
     // Resolve plan doc globs in defer entries so they match resolvedRules paths
     let resolvedDeferList = deferList;
     if (meta.currentStage === "plan") {
@@ -427,13 +447,39 @@ export async function runVerification(
       }
     }
 
-    const original = resolvedRules.fileContentPattern;
-    const filtered = original.filter(
-      (r) => !resolvedDeferList.some((d) => d.path === r.path && d.pattern === r.pattern),
-    );
-    deferredCount = original.length - filtered.length;
+    const matchesDefer = (rulePath: string, pattern: string): boolean =>
+      resolvedDeferList.some((d) => d.path === rulePath && d.pattern === pattern);
+
+    // Flat fileContentPattern (legacy path) — behavior unchanged.
+    if (resolvedRules.fileContentPattern) {
+      const original = resolvedRules.fileContentPattern;
+      const filtered = original.filter((r) => !matchesDefer(r.path, r.pattern));
+      deferredCount += original.length - filtered.length;
+      if (filtered.length !== original.length) {
+        resolvedRules = { ...resolvedRules, fileContentPattern: filtered };
+      }
+    }
+
+    // Phase 1 / 176: penetrate groups — remove matching patterns from nodes;
+    // drop emptied nodes; keep emptied groups (always-pass semantics).
+    if (resolvedRules.groups) {
+      const nextGroups = resolvedRules.groups.map((group) => ({
+        ...group,
+        rules: group.rules
+          .map((node): VerifyGroupRuleNode | null => {
+            if (!node.patterns || node.patterns.length === 0) return node;
+            const effectivePath = node.path ?? resolvedRules.path ?? "";
+            const kept = node.patterns.filter((p) => !matchesDefer(effectivePath, p));
+            deferredCount += node.patterns.length - kept.length;
+            if (kept.length === 0) return null;
+            return { ...node, patterns: kept };
+          })
+          .filter((node): node is VerifyGroupRuleNode => node !== null),
+      }));
+      resolvedRules = { ...resolvedRules, groups: nextGroups };
+    }
+
     if (deferredCount > 0) {
-      resolvedRules = { ...resolvedRules, fileContentPattern: filtered };
       await safeWriteAuditLog("verify_rule_deferred", {
         pipelineId: meta.pipelineId,
         stage: meta.currentStage,
@@ -444,9 +490,20 @@ export async function runVerification(
 
   // Detect unresolved {requirementDoc} placeholders (L2-A: explicit failure instead of EISDIR)
   const unresolvedPlaceholder = /\{requirementDoc\}/;
+  const groupsContainPlaceholder = (re: RegExp): boolean =>
+    !!resolvedRules.groups?.some((group) =>
+      (group.when !== undefined && re.test(group.when)) ||
+      (resolvedRules.path !== undefined && re.test(resolvedRules.path)) ||
+      group.rules.some((node) =>
+        (node.path !== undefined && re.test(node.path)) ||
+        (node.patterns?.some((p) => re.test(p)) ?? false),
+      ),
+    );
   const unresolvedRuleType =
     (resolvedRules.requiredFiles?.some(p => unresolvedPlaceholder.test(p)) ? "requiredFiles" : null) ??
-    (resolvedRules.fileContentPattern?.some(r => unresolvedPlaceholder.test(r.path)) ? "fileContentPattern" : null);
+    (resolvedRules.fileContentPattern?.some(r => unresolvedPlaceholder.test(r.path)) ? "fileContentPattern" : null) ??
+    (resolvedRules.path && unresolvedPlaceholder.test(resolvedRules.path) ? "fileContentPattern" : null) ??
+    (groupsContainPlaceholder(unresolvedPlaceholder) ? "fileContentPattern" : null);
   if (unresolvedRuleType) {
     const structuredResult: StructuredVerifyResult = {
       passed: false,
@@ -473,7 +530,9 @@ export async function runVerification(
   const unresolvedPipelineId = /\{pipelineId\}/;
   const unresolvedPipelineIdRuleType =
     (resolvedRules.requiredFiles?.some(p => unresolvedPipelineId.test(p)) ? "requiredFiles" : null) ??
-    (resolvedRules.fileContentPattern?.some(r => unresolvedPipelineId.test(r.path) || unresolvedPipelineId.test(r.pattern)) ? "fileContentPattern" : null);
+    (resolvedRules.fileContentPattern?.some(r => unresolvedPipelineId.test(r.path) || unresolvedPipelineId.test(r.pattern)) ? "fileContentPattern" : null) ??
+    (resolvedRules.path && unresolvedPipelineId.test(resolvedRules.path) ? "fileContentPattern" : null) ??
+    (groupsContainPlaceholder(unresolvedPipelineId) ? "fileContentPattern" : null);
   if (unresolvedPipelineIdRuleType) {
     const structuredResult: StructuredVerifyResult = {
       passed: false,
@@ -498,7 +557,8 @@ export async function runVerification(
     (resolvedRules.requiredFiles && resolvedRules.requiredFiles.length > 0) ||
     (resolvedRules.requiredCommands && resolvedRules.requiredCommands.length > 0) ||
     !!resolvedRules.requiredGit ||
-    (resolvedRules.fileContentPattern && resolvedRules.fileContentPattern.length > 0);
+    (resolvedRules.fileContentPattern && resolvedRules.fileContentPattern.length > 0) ||
+    (resolvedRules.groups && resolvedRules.groups.length > 0);
 
   if (hasStructuredRules) {
     // Phase 6 (139): merge VERIFIED_COMMANDS from task result text with toolCallRecords
