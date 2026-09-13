@@ -135,3 +135,24 @@ export async function checkTemplateDrift(
 
   return drifts;
 }
+
+/**
+ * Formats a drift notification message from an array of drift entries.
+ * Phase 5 / 175 (R1Q2A): single notification with count + top 3 asset names
+ * + /pipeline-init guidance. guide.md drift gets a hint appended.
+ *
+ * Returns null when drifts is empty (no notification needed).
+ *
+ * @param drifts - Array of drift entries to report
+ * @returns English notification string, or null if no drifts
+ */
+export function formatDriftNotification(drifts: DriftEntry[]): string | null {
+  if (drifts.length === 0) return null;
+
+  const top3 = drifts.slice(0, 3).map(d => d.asset);
+  const names = top3.join(", ") + (drifts.length > 3 ? `, … (+${drifts.length - 3} more)` : "");
+  const guideHint = drifts.some(d => d.asset === "guide.md")
+    ? " guide.md is outdated (overwrite via /pipeline-init)."
+    : "";
+  return `${drifts.length} template asset(s) drifted from repo: ${names}. Re-run /pipeline-init to overwrite.${guideHint}`;
+}

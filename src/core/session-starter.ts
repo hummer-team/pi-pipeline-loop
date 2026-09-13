@@ -17,7 +17,7 @@ import { registerSession, lookupParentPipeline } from "../utils/session-registry
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText } from "./session-state";
 import { execSync } from "node:child_process";
-import { checkTemplateDrift } from "../utils/template-drift";
+import { checkTemplateDrift, formatDriftNotification } from "../utils/template-drift";
 import { detectSessionRole } from "./session-role";
 import { formatAbortedNotifyText } from "./flow-state";
 import { staleConfigNotice } from "../utils/config-staleness";
@@ -293,9 +293,12 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
               repoHash: d.repoHash.substring(0, 12),
             }, "warn");
           }
-          // Phase 5 (173) C14: notify user when guide.md has drifted
-          if (drifts.some(d => d.asset === "guide.md")) {
-            ui.notify(ctx, "guide.md is outdated — re-run /pipeline-init to overwrite.");
+          // Phase 5 / 175 (R1Q2A): notify user when ANY assets have drifted.
+          // Single notification with total count + top 3 asset names + /pipeline-init guidance.
+          // guide.md drift is included in the same message (no separate notify).
+          const driftNotice = formatDriftNotification(drifts);
+          if (driftNotice) {
+            ui.notify(ctx, driftNotice);
           }
         } catch (err) {
           // Fail-open: drift check must never block session start

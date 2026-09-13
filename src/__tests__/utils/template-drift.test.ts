@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { checkTemplateDrift } from "../../utils/template-drift";
+import { checkTemplateDrift, formatDriftNotification } from "../../utils/template-drift";
 import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -110,5 +110,73 @@ describe("checkTemplateDrift (Phase 6 / 170)", () => {
     // The deployed file matches the repo source → should NOT appear in drift list
     const driftedAsset = drifts.find(d => d.asset === assetToCopy);
     expect(driftedAsset).toBeUndefined();
+  });
+});
+
+// ─── Phase 5 / 175 (R1Q2A): formatDriftNotification ──────────────────────────
+
+describe("formatDriftNotification (Phase 5 / 175)", () => {
+  const mk = (asset: string) => ({ asset, deployedHash: "a".repeat(64), repoHash: "b".repeat(64) });
+
+  it("returns null for zero drifts (silent)", () => {
+    expect(formatDriftNotification([])).toBeNull();
+  });
+
+  it("single drift: count=1, asset name, no truncation", () => {
+    const msg = formatDriftNotification([mk("guide.md")]);
+    expect(msg).toContain("1 template asset(s)");
+    expect(msg).toContain("guide.md");
+    expect(msg).toContain("/pipeline-init");
+    expect(msg).not.toContain("+");
+  });
+
+  it("multiple drifts: count + top 3 names", () => {
+    const drifts = [mk("guide.md"), mk("skills/design/SKILL.md"), mk("skills/plan/SKILL.md")];
+    const msg = formatDriftNotification(drifts);
+    expect(msg).toContain("3 template asset(s)");
+    expect(msg).toContain("guide.md");
+    expect(msg).toContain("skills/design/SKILL.md");
+    expect(msg).toContain("skills/plan/SKILL.md");
+    expect(msg).not.toContain("more");
+  });
+
+  it("more than 3 drifts: truncated with '+N more'", () => {
+    const drifts = [
+      mk("guide.md"),
+      mk("skills/design/SKILL.md"),
+      mk("skills/plan/SKILL.md"),
+      mk("skills/develop/SKILL.md"),
+      mk("skills/review/SKILL.md"),
+    ];
+    const msg = formatDriftNotification(drifts);
+    expect(msg).toContain("5 template asset(s)");
+    // Top 3 names present
+    expect(msg).toContain("guide.md");
+    expect(msg).toContain("skills/design/SKILL.md");
+    expect(msg).toContain("skills/plan/SKILL.md");
+    // 4th and 5th NOT listed
+    expect(msg).not.toContain("skills/develop/SKILL.md");
+    expect(msg).not.toContain("skills/review/SKILL.md");
+    // Truncation marker
+    expect(msg).toContain("+2 more");
+  });
+
+  it("guide.md drift appends special hint", () => {
+    const msg = formatDriftNotification([mk("guide.md")]);
+    expect(msg).toContain("guide.md is outdated");
+    expect(msg).toContain("overwrite via /pipeline-init");
+  });
+
+  it("non-guide drift: no guide.md hint", () => {
+    const msg = formatDriftNotification([mk("skills/design/SKILL.md")]);
+    expect(msg).not.toContain("guide.md is outdated");
+  });
+
+  it("mixed drifts including guide.md: hint appended once", () => {
+    const msg = formatDriftNotification([mk("skills/design/SKILL.md"), mk("guide.md")]);
+    expect(msg).toContain("guide.md is outdated");
+    // Hint should appear only once (not duplicated)
+    const hintCount = msg!.split("guide.md is outdated").length - 1;
+    expect(hintCount).toBe(1);
   });
 });
