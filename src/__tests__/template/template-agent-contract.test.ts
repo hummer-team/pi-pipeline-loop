@@ -49,9 +49,10 @@ describe("template agent contract (Phase 2 / 169)", () => {
     expect(fm).not.toHaveProperty("inherit_skills");
 
     // Other expected fields should still be present
+    // NOTE: `permission` was removed from the agent schema — no current template
+    // agent declares it; `tools` is the effective field. Stale assertion dropped.
     expect(fm).toHaveProperty("name");
     expect(fm).toHaveProperty("model");
-    expect(fm).toHaveProperty("permission");
     expect(fm).toHaveProperty("tools");
   });
 
