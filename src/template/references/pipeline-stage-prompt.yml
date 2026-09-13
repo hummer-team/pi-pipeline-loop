@@ -258,11 +258,14 @@ stage_executor_fix: |
 
 stage_deliverable_clarify: |
   - **MUST** produce clarification questions and record answers
-  - **MUST** write `## 模型确认` marker to the requirement document via write or edit tools upon full-und? confirmation
+  - **MUST** write `## 模型确认` / `## Model Confirmation` marker to the requirement document via write or edit tools upon full-und? confirmation
+  - **MUST** use round heading format `# 第 N 轮澄清` (recommended) or `# Round N` (compatible) — `#{1,2}` only (h1/h2) to prevent h3+ false positives
+  - **MUST** include answer fields in bilingual form: `答：`/`答:`/`**答**`/`Answer:` (all accepted)
 
 stage_deliverable_plan: |
   - **MUST** produce a planning document with implementation steps
   - **MUST** include phase breakdown and task descriptions
+  - **MUST** end the plan document with `## 用户确认` / `## User Confirmation` section for user sign-off
 
 stage_deliverable_develop: |
   - **MUST** run the project build command and confirm it passes (command determined by project tech stack)
@@ -273,7 +276,7 @@ stage_deliverable_develop: |
 stage_deliverable_review: |
   - **MUST** include `pipeline: {pipelineId}` in the artifact file header
   - **MUST** perform code review and produce a review report
-  - **MUST** include a verdict line: either "结论：通过" or "结论：不通过" in the review report
+  - **MUST** include a verdict line in bilingual+bold-tolerant form: `结论：(通过|不通过)` / `Verdict: (PASS|FAIL)` / `Conclusion: (pass|fail)` — bold/italic markup (`**`/`_`) tolerated
 
 stage_deliverable_fix: |
   - **MUST** run the project build command and confirm it passes (command determined by project tech stack)

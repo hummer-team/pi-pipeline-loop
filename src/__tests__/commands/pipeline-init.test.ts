@@ -1400,13 +1400,18 @@ describe("createPipelineInitCommand", () => {
         }
         expect(content).not.toContain("loop_check");
         expect(content).not.toContain("nextStage:");
-        expect(content).not.toMatch(/pipeline:\s*\{pipelineId\}/);
+        // Phase 5 / 175: managed block may contain pipeline: {pipelineId} as part of the contract.
+        // Check outside the managed block markers for raw plugin control keywords.
+        const outsideManagedBlock = content.replace(/<!-- BEGIN pi-pipeline:managed-contract -->[\s\S]*?<!-- END pi-pipeline:managed-contract -->/g, "");
+        expect(outsideManagedBlock).not.toMatch(/pipeline:\s*\{pipelineId\}/);
         // Phase 3: all SKILLs no longer contain **必须** delivery markers (moved to yml)
         // develop uses Template-TODO placeholder for business-specific items
         if (stage === "develop") {
           expect(content).toContain("Template-TODO");
         }
         // All stages: no **必须** delivery markers (now in yml stage_deliverable_{stage})
+        // Phase 5 / 175: managed block may add **MUST** (English form) from yml — that's expected.
+        // The original **必须** (Chinese form) must still be absent from the raw template copy.
         expect(content).not.toContain("**必须**");
       }
     });

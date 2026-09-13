@@ -17,11 +17,13 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Command } from "../types";
 import { CONFIG_DIR_NAME } from "../constants";
-import { generateVerifyFiles } from "../core/verify-generator";
+import { generateVerifyFiles, loadPluginDeliverables } from "../core/verify-generator";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { askProtectDecision } from "../utils/protect-ask";
 import { resolveStagePath, DEFAULT_VERIFY_FILE } from "../constants";
+import { renderContractBlock, mergeManagedBlock } from "../utils/skill-managed-block";
+import { loadPromptConfig } from "../core/prompt-config";
 import {
   checkTemplateResidues,
   computeResidueFingerprint,
@@ -273,6 +275,45 @@ async function copyTemplateFiles(
     if (!fs.existsSync(docsDir)) {
       await fsp.mkdir(docsDir, { recursive: true });
       docsCreated = true;
+    }
+
+    // Phase 5 / 175: merge managed contract blocks into SKILL.md files.
+    // Idempotent: if block exists, replace in-place; if missing, append.
+    // Fail-open: write errors are logged but do not block init.
+    const stages = ["clarify", "plan", "develop", "review", "fix"] as const;
+    const skillsDir = path.join(targetDir, "skills");
+    const skillFileMap: Record<string, string> = {
+      clarify: "design/SKILL.md",
+      plan: "plan/SKILL.md",
+      develop: "develop/SKILL.md",
+      review: "review/SKILL.md",
+      fix: "fix/SKILL.md",
+    };
+    try {
+      const ymlConfig = await loadPromptConfig(config.projectRoot);
+      for (const stage of stages) {
+        const deliverableKey = `stage_deliverable_${stage}`;
+        const deliverableText = ymlConfig[deliverableKey];
+        if (!deliverableText) continue;
+
+        const skillRelPath = skillFileMap[stage];
+        if (!skillRelPath) continue;
+        const skillAbsPath = path.join(skillsDir, skillRelPath);
+
+        if (!fs.existsSync(skillAbsPath)) continue;
+
+        const existingContent = await fsp.readFile(skillAbsPath, "utf-8");
+        const block = renderContractBlock(stage, deliverableText);
+        const merged = mergeManagedBlock(existingContent, block);
+
+        if (merged !== existingContent) {
+          await fsp.writeFile(skillAbsPath, merged, "utf-8");
+        }
+      }
+    } catch (err) {
+      // Fail-open: managed block merge errors do not block init
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await safeWriteAuditLog("pipeline_init_managed_block_error", { error: errMsg }, "warn");
     }
 
     await safeWriteAuditLog("pipeline-init_done", {
