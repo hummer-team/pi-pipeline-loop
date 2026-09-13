@@ -42,6 +42,11 @@ export function parseCommandArgs(
       const forwardArgs = trimmed.substring(firstSpace + 1).trim();
       return { file, forwardArgs, raw: args };
     }
+    case "pipeline-resume": {
+      // Phase 1 / 175 (R1Q7A): /pipeline-resume accepts free-form forward args.
+      // e.g. `/pipeline-resume 2 答` → { forwardArgs: "2 答", raw: " 2 答" }
+      return { forwardArgs: args.trim(), raw: args };
+    }
     case "pipeline-status":
       return {};
     case "pipeline-quit":

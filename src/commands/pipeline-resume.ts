@@ -31,7 +31,10 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
   return {
     name: "pipeline-resume",
     description: "Resume a frozen pipeline in this session",
-    execute: async (_args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
+    execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
+      // Phase 1 / 175 (R1Q7A): forwardArgs from /pipeline-resume are transparently
+      // passed through to the stage subagent spawn prompt.
+      const forwardArgs = (args.forwardArgs as string) || "";
       if (!ctx?.session) {
         return { error: "No session context available" };
       }
@@ -95,7 +98,7 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
 
           if (shouldSpawn) {
             const doc = freshMeta.requirementDoc ?? "";
-            await dispatchAfterResume(ctx, config, ui, freshMeta, doc);
+            await dispatchAfterResume(ctx, config, ui, freshMeta, doc, forwardArgs || undefined);
           }
         }
 

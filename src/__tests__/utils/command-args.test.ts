@@ -16,6 +16,7 @@ import { parseCommandArgs } from "../../utils/command-args";
 const REGISTERED_COMMAND_NAMES: string[] = [
   "pipeline-init",
   "pipeline-start",
+  "pipeline-resume",
   "pipeline-status",
   "pipeline-quit",
 ];
@@ -88,6 +89,35 @@ describe("parseCommandArgs", () => {
     expect(parseCommandArgs("pipeline-init", "")).toEqual({ sub: "" });
   });
 
+  // ─── Phase 1 / 175: pipeline-resume forwardArgs ───────────────────────────
+  it("Phase 1 / 175: pipeline-resume parses forwardArgs from args", () => {
+    expect(parseCommandArgs("pipeline-resume", "2 答")).toEqual({
+      forwardArgs: "2 答",
+      raw: "2 答",
+    });
+  });
+
+  it("Phase 1 / 175: pipeline-resume with empty args → forwardArgs=''", () => {
+    expect(parseCommandArgs("pipeline-resume", "")).toEqual({
+      forwardArgs: "",
+      raw: "",
+    });
+  });
+
+  it("Phase 1 / 175: pipeline-resume with whitespace-only → forwardArgs=''", () => {
+    expect(parseCommandArgs("pipeline-resume", "   ")).toEqual({
+      forwardArgs: "",
+      raw: "   ",
+    });
+  });
+
+  it("Phase 1 / 175: pipeline-resume trims multi-space args", () => {
+    expect(parseCommandArgs("pipeline-resume", "  full-und?  ")).toEqual({
+      forwardArgs: "full-und?",
+      raw: "  full-und?  ",
+    });
+  });
+
   // ─── pipeline-status / pipeline-quit (no-arg commands) ───────────────────
   it("returns {} for pipeline-status regardless of args", () => {
     expect(parseCommandArgs("pipeline-status", "")).toEqual({});
@@ -119,6 +149,9 @@ describe("parseCommandArgs", () => {
         expect(result.file).toBeDefined();
       } else if (cmdName === "pipeline-init") {
         expect(result.sub).toBeDefined();
+      } else if (cmdName === "pipeline-resume") {
+        // pipeline-resume has forwardArgs (Phase 1 / 175)
+        expect(result.forwardArgs).toBeDefined();
       } else {
         // pipeline-status / pipeline-quit: explicit case returns {}, default returns {raw}
         expect(result.raw).toBeUndefined();

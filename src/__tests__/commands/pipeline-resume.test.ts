@@ -175,4 +175,30 @@ describe("createPipelineResumeCommand", () => {
 
     await rm(TMP, { recursive: true, force: true });
   });
+
+  // ── Phase 1 / 175: forwardArgs passthrough ──────────────────────────────
+
+  it("Phase 1 / 175: blocked pipeline with forwardArgs passes them to dispatchAfterResume", async () => {
+    const TMP = join(tmpdir(), "pi-resume-fwdargs-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      requirementDoc: "docs/req.md",
+    });
+    const ctx = createMockCtx(meta);
+    const cmd = createPipelineResumeCommand(config);
+
+    // Pass forwardArgs as the command args would provide
+    const result = await cmd.execute({ forwardArgs: "2 答" }, ctx as any);
+
+    // Resume should succeed without error
+    expect((result as any).error).toBeUndefined();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
 });

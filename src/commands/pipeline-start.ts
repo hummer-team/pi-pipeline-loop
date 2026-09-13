@@ -751,14 +751,19 @@ async function maybeAutoLaunchClarify(
 ): Promise<void> {
   const agentName = resolveAgentMention(config, "clarify");
 
-  // Phase 3 (171): determine effective args (explicit > derived)
+  // Phase 3 (171) + Phase 1 (175): determine effective args (explicit > derived)
   let effectiveArgs: string;
   let skipSpawn = false;
   let skipMessage = "";
+  // Phase 1 / 175 (R2Q2A): track args source for faithful display and audit
+  let argsSource: "user" | "derived" = "derived";
+  // Phase 1 / 175: derived round number for notify text (undefined when explicit)
+  let derivedRound: number | undefined;
 
   if (forwardArgs && forwardArgs.trim()) {
     // Explicit user args → transparent passthrough (Q3-A)
     effectiveArgs = forwardArgs.trim();
+    argsSource = "user";
   } else {
     // Derive from document text
     try {
@@ -771,16 +776,19 @@ async function maybeAutoLaunchClarify(
           break;
         case "full-und?":
           effectiveArgs = "full-und?";
+          derivedRound = derived.round;
           break;
         case "await-answer":
           skipSpawn = true;
-          skipMessage = `Round ${derived.round} has no answers yet. Answer in the 第 ${derived.round} 轮澄清 答 fields, then re-mention @agent ${file} ${derived.round} 答.`;
+          skipMessage = `Round ${derived.round} has no answers yet. Answer in the clarification 答/Answer fields, then re-mention @agent ${file} ${derived.round} 答.`;
           effectiveArgs = "";
+          derivedRound = derived.round;
           break;
         case "confirmed":
           skipSpawn = true;
           skipMessage = `Round ${derived.round} clarification confirmed. Awaiting marker verification.`;
           effectiveArgs = "";
+          derivedRound = derived.round;
           break;
       }
     } catch {
@@ -809,6 +817,19 @@ async function maybeAutoLaunchClarify(
   const message = `@${agentName} ${file} ${effectiveArgs}`;
   const prompt = `${file} ${effectiveArgs}`;
 
+  // Phase 1 / 175 (R2Q2A): description — explicit carries args verbatim;
+  // derived carries ONLY file (no round/args suffix to avoid misleading labels).
+  const description = argsSource === "user"
+    ? `Clarify: ${file} ${effectiveArgs}`.trim()
+    : `Clarify: ${file}`;
+
+  // Phase 1 / 175 (R2Q2A): one-time English notify for derived args source.
+  // Does NOT block the flow — purely informational.
+  if (argsSource === "derived") {
+    const roundInfo = derivedRound !== undefined ? `round ${derivedRound}` : "fresh";
+    ui.notify(ctx, `Clarify args derived from document state (${roundInfo}). Prompt/description reflect document status, not user-supplied parameters.`);
+  }
+
   // Try RPC path if pi.events is available
   if (ctx?.pi?.events) {
     const pinged = await pingSubagents(ctx.pi, 500);
@@ -816,7 +837,7 @@ async function maybeAutoLaunchClarify(
       const spawnResult = await spawnClarifySubagent(ctx.pi, {
         agentName,
         prompt,
-        description: `Clarify: ${file} ${effectiveArgs}`.trim(),
+        description,
       });
 
       if (spawnResult.ok) {
@@ -827,6 +848,8 @@ async function maybeAutoLaunchClarify(
           pipelineId: meta.pipelineId,
           subagentId: spawnResult.id,
           stage: "clarify",
+          argsSource,
+          ...(derivedRound !== undefined ? { derivedRound: String(derivedRound) } : {}),
         });
         // Hold the cleanup function and self-unregister after lifecycle event
         // (or on failure) to avoid listener leak on shared channels.
@@ -856,6 +879,8 @@ async function maybeAutoLaunchClarify(
     pipelineId: meta.pipelineId,
     stage: "clarify",
     fallback: "true",
+    argsSource,
+    ...(derivedRound !== undefined ? { derivedRound: String(derivedRound) } : {}),
   });
 }
 

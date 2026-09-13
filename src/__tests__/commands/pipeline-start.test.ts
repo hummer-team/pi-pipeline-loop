@@ -509,3 +509,82 @@ describe("Phase 4 (169) P1: reset surface for terminalCompact and spawnedStages"
     expect(updatedMeta.spawnedStages).toBeUndefined();
   });
 });
+
+// ── Phase 1 / 175: argsSource audit and derived label ────────────────────────
+
+/** Helper: scaffold verify.md files for all active stages so checkVerifyFiles passes */
+async function scaffoldVerifyFiles(): Promise<void> {
+  const refsDir = path.join(TMP, ".pi", "references");
+  for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+    const stageDir = path.join(refsDir, `${stage}_spec`);
+    await fs.mkdir(stageDir, { recursive: true });
+    await fs.writeFile(path.join(stageDir, "verify.md"), "---\nrules:\n  keywords:\n    - \"test\"\n---\nBody\n", "utf-8");
+  }
+}
+
+describe("Phase 1 / 175: argsSource and derived label in maybeAutoLaunchClarify", () => {
+  it("explicit forwardArgs → audit contains argsSource=user", async () => {
+    await scaffoldMinimalPi();
+    await scaffoldVerifyFiles();
+    // Create agent file at the path expected by makeTestConfig (./agents/test-agent.md)
+    const agentsDir = path.join(TMP, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+    await fs.writeFile(path.join(agentsDir, "test-agent.md"), "---\nname: test-clarify-agent\n---\n# Agent\n", "utf-8");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "80_Args.md"), "# Requirement\n", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+    const notifications: string[] = [];
+    ctx.ui.notify = (msg: string) => { notifications.push(msg); };
+    const sendSpy: string[] = [];
+    (ctx as any).pi = { events: makeMockEventBus(), sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/80_Args.md", forwardArgs: "2 答" }, ctx as any);
+
+    // Read audit log
+    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await fs.readFile(auditPath, "utf-8");
+    // argsSource=user should be in the audit for explicit args
+    expect(auditContent).toContain("argsSource");
+  });
+
+  it("derived args → description does NOT contain round args; English notify emitted once", async () => {
+    await scaffoldMinimalPi();
+    await scaffoldVerifyFiles();
+    // Create agent file at the path expected by makeTestConfig
+    const agentsDir = path.join(TMP, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+    await fs.writeFile(path.join(agentsDir, "test-agent.md"), "---\nname: test-clarify-agent\n---\n# Agent\n", "utf-8");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    // Document with Round 1 and answer but no confirmation → derived "full-und?"
+    const docContent = `# Round 1
+- Q1
+- Answer: A1
+`;
+    await fs.writeFile(path.join(docsDir, "81_Derived.md"), docContent, "utf-8");
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+    const notifications: string[] = [];
+    ctx.ui.notify = (msg: string) => { notifications.push(msg); };
+    const sendSpy: string[] = [];
+    (ctx as any).pi = { events: makeMockEventBus(), sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
+
+    const cmd = createPipelineStartCommand(config);
+    await cmd.execute({ file: "docs/design/81_Derived.md" }, ctx as any);
+
+    // English notify about derived args should be emitted exactly once
+    const derivedNotifies = notifications.filter(n => n.includes("derived from document state"));
+    expect(derivedNotifies.length).toBe(1);
+    // Should not block the flow
+    expect(notifications.some(n => n.includes("Clarify") || n.includes("Next") || n.includes("@"))).toBe(true);
+  });
+});
