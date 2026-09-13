@@ -892,7 +892,7 @@ develop/fix 阶段配置 `verify.selfVerifySkip: true` 时：
 |------|------|--------|---------|
 | 旧 verify.md 规则缺失某些 expected 命令/文件 | 补入缺失规则，body 保留 | `merged` | `Merged (rules added to existing verify.md):` |
 | 旧 verify.md 含 `groups:` 声明（v6 模板或用户自定义） | 跳过，保护声明（避免新模板重跑 init 被覆盖） | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
-| 旧 verify.md 含自定义规则（expectOutput 等） | 跳过，保护人工规则 | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
+| 旧 verify.md 含自定义规则（expectOutput 等）或扁平 `fileContentPattern` | 跳过，保护人工规则或存量扁平内容模式（避免 init merge 静默丢弃） | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
 | 旧 verify.md 已覆盖所有 expected 规则 | 跳过，无变化 | `skipped` (reason: `exists`) | `rules already present` |
 | 用户通过 protect.ask 拒绝覆盖（见 §9.4.1） | 该 stage 跳过，其余继续 | `skipped` (reason: `user_declined`) | `user declined overwrite` |
 
@@ -1057,7 +1057,7 @@ rules:
 - `## 模型确认` 节升格为 clarify verify 真实门禁（最终轮确认结果，只挂 `full-und-confirmed` 组，不逐轮检查）。
 - `full-und? 理解确认：是` 旧行内形态以 or 节点保留兼容。
 - 顶层 `keywords` + `mode` 通道保留解析与求值，但标记 deprecated；新模板改用 `modelRuntimeResult` 节点。
-- 存量 verify.md 不迁移：重跑 `/pipeline-init` 获取新模板；含自定义 `groups` 的文件受 `exists_custom` 保护。
+- 存量 verify.md 不迁移：重跑 `/pipeline-init` 获取新模板；含自定义 `groups` 或扁平 `fileContentPattern` 的文件受 `exists_custom` 保护（避免 init merge 静默丢弃用户内容）。
 - 运行时锚点改为从部署 verify.md 读取（声明即行为）；代码侧 `CONTRACT_TOKENS` 与内置默认正则已退役。
 
 ##### 11. 诊断与错误码
