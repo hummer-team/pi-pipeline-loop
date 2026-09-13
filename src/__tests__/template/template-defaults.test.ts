@@ -9,9 +9,11 @@
  *   - E2: FROZEN_ABORT_EXEMPT_TOOLS comment correction (code review item, no test needed)
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { resolvePipelineConfig } from "../../core/json-config-loader";
 import { checkTemplateDrift } from "../../utils/template-drift";
 import { makeTestMeta } from "../helpers";
@@ -211,9 +213,10 @@ describe("D2 (174): stage SKILL frontmatter regression guard", () => {
 });
 
 // ─── Phase 0 / 175: review_spec/verify.md default pattern ────────────────────
-// Verifies the deployed template uses bilingual+bold tolerant verdict patterns,
-// not the legacy single-pattern form. Prevents B7 regression (new projects
-// rejecting `结论：**通过**` / `Verdict: PASS` / `Conclusion: pass`).
+// Verifies the deployed template uses a SINGLE OR-alternation verdict pattern
+// (fileContentPattern rules are AND — three parallel rules would require ALL
+// three forms in a report, which is incorrect). Prevents B7 regression AND
+// the AND-regression where 3 parallel rules freeze the review pipeline.
 
 describe("Phase 0 / 175: review_spec/verify.md bilingual+bold tolerant verdict", () => {
   const reviewVerifyPath = path.join(__dirname, "../../template/references/review_spec/verify.md");
@@ -222,20 +225,20 @@ describe("Phase 0 / 175: review_spec/verify.md bilingual+bold tolerant verdict",
     expect(fs.existsSync(reviewVerifyPath)).toBe(true);
   });
 
-  it("contains bilingual+bold tolerant Chinese verdict pattern", () => {
+  it("verdict rule is a SINGLE OR-alternation pattern (not three separate AND rules)", () => {
     const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    // YAML double-quoted: \\\\s in file → \\s raw bytes → toContain needs \\\\s in JS string
-    expect(content).toContain("结论\\\\s*[:：]\\\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}");
-  });
-
-  it("contains English 'Verdict: PASS/FAIL' pattern", () => {
-    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    expect(content).toContain("Verdict\\\\s*[:：]\\\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}");
-  });
-
-  it("contains English 'Conclusion: pass/fail' pattern", () => {
-    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    expect(content).toContain("Conclusion\\\\s*[:：]\\\\s*[*_]{0,2}(pass|fail)[*_]{0,2}");
+    // Count verdict-related pattern lines (lines starting with "pattern:" containing verdict keywords)
+    const verdictPatternLines = content.split("\n").filter(line =>
+      line.trim().startsWith("pattern:") &&
+      (line.includes("结论") || line.includes("Verdict") || line.includes("Conclusion")),
+    );
+    // Exactly ONE pattern line should contain verdict alternatives
+    expect(verdictPatternLines.length).toBe(1);
+    // That single pattern must contain all three alternatives
+    const line = verdictPatternLines[0];
+    expect(line).toContain("结论");
+    expect(line).toContain("Verdict");
+    expect(line).toContain("Conclusion");
   });
 
   it("does NOT contain the legacy single-pattern form '结论：(通过|不通过)'", () => {
@@ -243,33 +246,131 @@ describe("Phase 0 / 175: review_spec/verify.md bilingual+bold tolerant verdict",
     expect(content).not.toMatch(/pattern:\s*"结论：\(通过\|不通过\)"/);
   });
 
-  it("pattern actually matches bold Chinese verdict `结论：**通过**`", () => {
+  it("single OR pattern matches Chinese verdict `结论：**通过**`", () => {
     const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    // Extract pattern string from YAML (double-backslash in file → single backslash in regex)
-    const patternMatch = content.match(/pattern:\s*"(结论[^"]+)"/);
+    const patternMatch = content.match(/pattern:\s*"\((结论[^"]+)\)"/);
     expect(patternMatch).not.toBeNull();
-    // YAML double-escape: \\\\s → \\s in string → matches \s in regex
     const regex = new RegExp(patternMatch![1].replace(/\\\\/g, "\\"));
     expect(regex.test("结论：**通过**")).toBe(true);
     expect(regex.test("结论: 不通过")).toBe(true);
     expect(regex.test("结论：_通过_")).toBe(true);
   });
 
-  it("pattern matches English 'Verdict: PASS' and 'Conclusion: fail'", () => {
+  it("single OR pattern matches English 'Verdict: PASS' and 'Conclusion: fail'", () => {
     const content = fs.readFileSync(reviewVerifyPath, "utf-8");
+    const patternMatch = content.match(/pattern:\s*"\((结论[^"]+)\)"/);
+    expect(patternMatch).not.toBeNull();
+    const regex = new RegExp(patternMatch![1].replace(/\\\\/g, "\\"));
+    expect(regex.test("Verdict: PASS")).toBe(true);
+    expect(regex.test("Verdict：**FAIL**")).toBe(true);
+    expect(regex.test("Conclusion: fail")).toBe(true);
+    expect(regex.test("Conclusion：_pass_")).toBe(true);
+  });
 
-    // Extract Verdict pattern
-    const verdictMatch = content.match(/pattern:\s*"(Verdict[^"]+)"/);
-    expect(verdictMatch).not.toBeNull();
-    const verdictRe = new RegExp(verdictMatch![1].replace(/\\\\/g, "\\"));
-    expect(verdictRe.test("Verdict: PASS")).toBe(true);
-    expect(verdictRe.test("Verdict：**FAIL**")).toBe(true);
+  it("single OR pattern does NOT match invalid verdict forms", () => {
+    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
+    const patternMatch = content.match(/pattern:\s*"\((结论[^"]+)\)"/);
+    expect(patternMatch).not.toBeNull();
+    const regex = new RegExp(patternMatch![1].replace(/\\\\/g, "\\"));
+    expect(regex.test("结论：待定")).toBe(false);
+    expect(regex.test("Verdict: MAYBE")).toBe(false);
+    expect(regex.test("no verdict here")).toBe(false);
+  });
+});
 
-    // Extract Conclusion pattern
-    const conclusionMatch = content.match(/pattern:\s*"(Conclusion[^"]+)"/);
-    expect(conclusionMatch).not.toBeNull();
-    const conclusionRe = new RegExp(conclusionMatch![1].replace(/\\\\/g, "\\"));
-    expect(conclusionRe.test("Conclusion: fail")).toBe(true);
-    expect(conclusionRe.test("Conclusion：_pass_")).toBe(true);
+// ─── Phase 0 / 175: end-to-end review verify against template-compliant report ─
+// Validates via the production verifyFileContentPattern that a report matching
+// the plugin's own review_report_template.md passes with a single verdict form.
+
+describe("Phase 0 / 175: end-to-end review verify against compliant report", () => {
+  let e2eTmp: string;
+
+  beforeEach(async () => {
+    e2eTmp = path.join(tmpdir(), "pi-review-e2e-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    await fsp.mkdir(e2eTmp, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fsp.rm(e2eTmp, { recursive: true, force: true });
+  });
+
+  /**
+   * Helper: load the default review verify.md template and resolve placeholders.
+   * Uses the production parseFrontmatter + resolvePlaceholders pipeline.
+   */
+  async function loadResolvedVerifyRules(pipelineId: string) {
+    const { parseFrontmatter } = await import("../../core/verify-frontmatter");
+    const { resolvePlaceholders } = await import("../../core/verify-path-resolver");
+    const verifyMdPath = path.join(__dirname, "../../template/references/review_spec/verify.md");
+    const raw = fs.readFileSync(verifyMdPath, "utf-8");
+    const parts = raw.split(/^---\s*$/m);
+    const frontmatter = parts[1].trim();
+    const rules = await parseFrontmatter(frontmatter);
+    if (!rules) throw new Error("Failed to parse verify.md frontmatter");
+    const meta = makeTestMeta({ pipelineId });
+    return resolvePlaceholders(rules, meta);
+  }
+
+  it("template-compliant report (Chinese 结论：通过 only) passes verifyFileContentPattern", async () => {
+    const { verifyFileContentPattern } = await import("../../core/verifiers/file-verifier");
+    const rules = await loadResolvedVerifyRules("pipe-test-e2e-001");
+
+    // Create a report matching the review_report_template.md format
+    const reportDir = path.join(e2eTmp, "docs", "review");
+    await fsp.mkdir(reportDir, { recursive: true });
+    const reportContent = [
+      "**pipeline**: pipe-test-e2e-001",
+      "",
+      "# Summary",
+      "- Test review report",
+      "",
+      "## 结论",
+      "- 结论：通过",
+    ].join("\n");
+    await fsp.writeFile(path.join(reportDir, "code_review_test.md"), reportContent);
+
+    const result = await verifyFileContentPattern(rules.fileContentPattern, e2eTmp);
+    expect(result.passed).toBe(true);
+  });
+
+  it("English 'Verdict: PASS' report passes verifyFileContentPattern", async () => {
+    const { verifyFileContentPattern } = await import("../../core/verifiers/file-verifier");
+    const rules = await loadResolvedVerifyRules("pipe-test-e2e-002");
+
+    const reportDir = path.join(e2eTmp, "docs", "review");
+    await fsp.mkdir(reportDir, { recursive: true });
+    const reportContent = [
+      "**pipeline**: pipe-test-e2e-002",
+      "",
+      "# Summary",
+      "- English verdict report",
+      "",
+      "## Conclusion",
+      "- Verdict: PASS",
+    ].join("\n");
+    await fsp.writeFile(path.join(reportDir, "code_review_en.md"), reportContent);
+
+    const result = await verifyFileContentPattern(rules.fileContentPattern, e2eTmp);
+    expect(result.passed).toBe(true);
+  });
+
+  it("report with NO verdict form fails verifyFileContentPattern", async () => {
+    const { verifyFileContentPattern } = await import("../../core/verifiers/file-verifier");
+    const rules = await loadResolvedVerifyRules("pipe-test-e2e-003");
+
+    const reportDir = path.join(e2eTmp, "docs", "review");
+    await fsp.mkdir(reportDir, { recursive: true });
+    const reportContent = [
+      "**pipeline**: pipe-test-e2e-003",
+      "",
+      "# Summary",
+      "- No verdict report",
+    ].join("\n");
+    await fsp.writeFile(path.join(reportDir, "code_review_noverdict.md"), reportContent);
+
+    const result = await verifyFileContentPattern(rules.fileContentPattern, e2eTmp);
+    // Should fail: verdict is required
+    expect(result.passed).toBe(false);
+    expect(result.detail).toContain("not found");
   });
 });

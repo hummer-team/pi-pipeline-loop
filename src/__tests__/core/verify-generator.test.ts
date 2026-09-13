@@ -1439,9 +1439,10 @@ describe("verify-generator", () => {
   // ── Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list ──────────
 
   describe("Phase 1 (148): TEMPLATE_BUILTIN_CONTENT_PATTERNS white-list", () => {
-    it("white-list contains all 13 expected template entries (base + bilingual clarify lookahead (Phase 0/175) + bilingual plan marker + old+bilingual review verdict + 2 pipelineId patterns)", () => {
+    it("white-list contains all 14 expected template entries (base + bilingual clarify lookahead (Phase 0/175) + bilingual plan marker + old+bilingual review verdict + combined OR verdict + 2 pipelineId patterns)", () => {
       // Phase 0 / 175: added bilingual clarify lookahead + 3 bilingual review verdict patterns (was 9 → 13)
-      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(13);
+      // Review round 2 fix: added combined OR-alternation verdict pattern (13 → 14)
+      expect(TEMPLATE_BUILTIN_CONTENT_PATTERNS).toHaveLength(14);
       const paths = TEMPLATE_BUILTIN_CONTENT_PATTERNS.map(e => e.path);
       expect(paths).toContain("{requirementDoc}");
       expect(paths).toContain("docs/design/*_plan.md");

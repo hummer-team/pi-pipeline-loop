@@ -285,6 +285,37 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
 }
 
 /**
+ * Loads a pipeline_loop.json file and returns a fully-resolved PipelineConfig
+ * with staleness-tracking fields (configSourcePath / configLoadedMtimeMs)
+ * injected. Exported for testability — createPipelineFromJson delegates here.
+ *
+ * Fail-open on IO errors: if stat fails, the config is returned without the
+ * staleness fields (isConfigStale will then return false).
+ *
+ * @param jsonPath - Path to the pipeline_loop.json file
+ * @returns PipelineConfig with injected staleness fields
+ */
+export function loadPipelineConfigFromJson(jsonPath: string): PipelineConfig {
+  const json = loadJsonConfig(jsonPath);
+  const config = resolvePipelineConfig(json);
+
+  // Phase 3 / 175: inject config-source tracking fields so that isConfigStale()
+  // can detect mtime changes after load. Fail-open on IO errors (no injection).
+  try {
+    const absPath = pathMod.isAbsolute(jsonPath)
+      ? jsonPath
+      : pathMod.resolve(process.cwd(), jsonPath);
+    const stat = fsSync.statSync(absPath);
+    config.configSourcePath = absPath;
+    config.configLoadedMtimeMs = stat.mtimeMs;
+  } catch {
+    // IO failure (file missing, permissions) → fail-open: staleness detection disabled
+  }
+
+  return config;
+}
+
+/**
  * Creates a pipeline extension from a pipeline_loop.json configuration file.
  * This is the simplified entry point — the JSON file only needs stage
  * orchestration data; all other fields receive sensible defaults.
@@ -294,22 +325,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
  */
 export function createPipelineFromJson(jsonPath?: string): ExtensionFactory {
   const resolvedPath = jsonPath ?? ".pi/pipeline_loop.json";
-  const json = loadJsonConfig(resolvedPath);
-  const config = resolvePipelineConfig(json);
-
-  // Phase 3 / 175: inject config-source tracking fields so that isConfigStale()
-  // can detect mtime changes after load. Fail-open on IO errors (no injection).
-  try {
-    const absPath = pathMod.isAbsolute(resolvedPath)
-      ? resolvedPath
-      : pathMod.resolve(process.cwd(), resolvedPath);
-    const stat = fsSync.statSync(absPath);
-    config.configSourcePath = absPath;
-    config.configLoadedMtimeMs = stat.mtimeMs;
-  } catch {
-    // IO failure (file missing, permissions) → fail-open: staleness detection disabled
-  }
-
+  const config = loadPipelineConfigFromJson(resolvedPath);
   return createPipeline(config);
 }
 

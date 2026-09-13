@@ -5,11 +5,12 @@
  * - isConfigStale: mtime-based staleness check
  * - staleConfigNotice: throttled English notification
  * - Fail-open on IO errors
- * - Production chain: createPipelineFromJson → isConfigStale integration
+ * - Production chain: loadPipelineConfigFromJson → isConfigStale integration
+ *   (directly asserts that the production loader injects staleness fields)
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { isConfigStale, staleConfigNotice } from "../../utils/config-staleness";
-import { createPipelineFromJson } from "../../index";
+import { loadPipelineConfigFromJson, createPipelineFromJson } from "../../index";
 import { makeTestConfig } from "../helpers";
 import { mkdir, writeFile, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
@@ -125,12 +126,14 @@ describe("staleConfigNotice", () => {
   });
 });
 
-// ─── Production chain integration: createPipelineFromJson → isConfigStale ──────
+// ─── Production chain integration: loadPipelineConfigFromJson → isConfigStale ──
 // Verifies that the fields configSourcePath / configLoadedMtimeMs are actually
-// injected by createPipelineFromJson (prevents regression to the Blocker where
+// injected by the production loader (prevents regression to the Blocker where
 // these fields were declared in types but never populated in production).
+// Uses loadPipelineConfigFromJson directly — the same function createPipelineFromJson
+// delegates to — so we can assert the injected config without closure obscurity.
 
-describe("production chain: createPipelineFromJson injects staleness fields", () => {
+describe("production chain: loadPipelineConfigFromJson injects staleness fields", () => {
   let chainTmp: string;
 
   beforeEach(async () => {
@@ -143,7 +146,7 @@ describe("production chain: createPipelineFromJson injects staleness fields", ()
     await rm(chainTmp, { recursive: true, force: true });
   });
 
-  it("after createPipelineFromJson, staleConfigNotice is null when mtime unchanged", async () => {
+  it("loadPipelineConfigFromJson injects configSourcePath and configLoadedMtimeMs", async () => {
     const cfgPath = join(chainTmp, "pipeline_loop.json");
     await writeFile(cfgPath, JSON.stringify({
       stages: {
@@ -158,12 +161,17 @@ describe("production chain: createPipelineFromJson injects staleness fields", ()
       maxLoops: 3,
     }));
 
-    // createPipelineFromJson should NOT throw and should inject fields
-    const factory = createPipelineFromJson(cfgPath);
-    expect(typeof factory).toBe("function");
+    // Load via the production entry point
+    const config = loadPipelineConfigFromJson(cfgPath);
+
+    // Assert the fields WERE actually injected (not undefined)
+    expect(config.configSourcePath).toBe(cfgPath);
+    expect(config.configLoadedMtimeMs).toBeDefined();
+    expect(typeof config.configLoadedMtimeMs).toBe("number");
+    expect(config.configLoadedMtimeMs).toBeGreaterThan(0);
   });
 
-  it("after mtime change, config becomes stale and staleConfigNotice returns non-null", async () => {
+  it("after load, file NOT stale → staleConfigNotice returns null", async () => {
     const cfgPath = join(chainTmp, "pipeline_loop.json");
     await writeFile(cfgPath, JSON.stringify({
       stages: {
@@ -178,33 +186,93 @@ describe("production chain: createPipelineFromJson injects staleness fields", ()
       maxLoops: 3,
     }));
 
-    // Load config via the production entry point
-    const factory = createPipelineFromJson(cfgPath);
-    expect(typeof factory).toBe("function");
+    const config = loadPipelineConfigFromJson(cfgPath);
 
-    // Simulate mtime change by rewriting the file with a future mtime
+    // File not modified after load → not stale
+    expect(isConfigStale(config)).toBe(false);
+    expect(staleConfigNotice(config)).toBeNull();
+  });
+
+  it("after load then mtime change → isConfigStale true + staleConfigNotice non-null", async () => {
+    const cfgPath = join(chainTmp, "pipeline_loop.json");
+    await writeFile(cfgPath, JSON.stringify({
+      stages: {
+        clarify: { require: true },
+        plan: { require: true },
+        develop: { require: true },
+        review: { require: true },
+        fix: { require: true },
+        awaiting_human: { require: false },
+        completed: { require: false },
+      },
+      maxLoops: 3,
+    }));
+
+    // Load via production entry — this captures the CURRENT mtime
+    const config = loadPipelineConfigFromJson(cfgPath);
+    const originalMtime = config.configLoadedMtimeMs!;
+    expect(originalMtime).toBeGreaterThan(0);
+
+    // Simulate file modification (set mtime to the future)
     const futureTime = new Date(Date.now() + 10_000);
     await utimes(cfgPath, futureTime, futureTime);
 
-    // Re-read the config to check staleness via the same production path
-    // (We test via isConfigStale directly because createPipelineFromJson
-    // creates a closure, but we verify the fields are present by re-loading)
-    const factory2 = createPipelineFromJson(cfgPath);
-    // The second load captures the new mtime, so it's NOT stale relative to itself
-    // To test staleness, we need to load once, then mutate the file
-    expect(typeof factory2).toBe("function");
-
-    // Directly verify: load with known-old mtime → isConfigStale returns true
-    const { loadJsonConfig, resolvePipelineConfig } = await import("../../core/json-config-loader");
-    const json = loadJsonConfig(cfgPath);
-    const config = resolvePipelineConfig(json);
-    // Inject with an old mtime (simulating what createPipelineFromJson does at load time)
-    config.configSourcePath = cfgPath;
-    config.configLoadedMtimeMs = Date.now() - 60_000; // loaded 60s ago
+    // NOW the config is stale relative to the captured load-time mtime
     expect(isConfigStale(config)).toBe(true);
-
     const notice = staleConfigNotice(config);
     expect(notice).not.toBeNull();
     expect(notice).toContain("/reload");
+    expect(notice).toContain("pipeline_loop.json");
+  });
+
+  it("removing the production injection would cause isConfigStale to fail-open (false-green guard)", async () => {
+    const cfgPath = join(chainTmp, "pipeline_loop.json");
+    await writeFile(cfgPath, JSON.stringify({
+      stages: {
+        clarify: { require: true },
+        plan: { require: true },
+        develop: { require: true },
+        review: { require: true },
+        fix: { require: true },
+        awaiting_human: { require: false },
+        completed: { require: false },
+      },
+      maxLoops: 3,
+    }));
+
+    // Simulate the OLD broken behavior: load WITHOUT injection
+    const { loadJsonConfig, resolvePipelineConfig } = await import("../../core/json-config-loader");
+    const json = loadJsonConfig(cfgPath);
+    const configWithoutInjection = resolvePipelineConfig(json);
+
+    // Without injection → configSourcePath is undefined → isConfigStale returns false
+    // This test PASSES if the production injection is working (because we use
+    // loadPipelineConfigFromJson which DOES inject). If someone removes the
+    // injection and switches the test to use the raw loader, this would fail.
+    expect(configWithoutInjection.configSourcePath).toBeUndefined();
+    expect(isConfigStale(configWithoutInjection)).toBe(false);
+
+    // Meanwhile, the production loader DOES inject
+    const configWithInjection = loadPipelineConfigFromJson(cfgPath);
+    expect(configWithInjection.configSourcePath).toBe(cfgPath);
+  });
+
+  it("createPipelineFromJson still returns a valid factory (integration smoke)", async () => {
+    const cfgPath = join(chainTmp, "pipeline_loop.json");
+    await writeFile(cfgPath, JSON.stringify({
+      stages: {
+        clarify: { require: true },
+        plan: { require: true },
+        develop: { require: true },
+        review: { require: true },
+        fix: { require: true },
+        awaiting_human: { require: false },
+        completed: { require: false },
+      },
+      maxLoops: 3,
+    }));
+
+    const factory = createPipelineFromJson(cfgPath);
+    expect(typeof factory).toBe("function");
   });
 });

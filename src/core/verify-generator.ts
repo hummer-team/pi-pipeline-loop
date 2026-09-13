@@ -106,6 +106,8 @@ export const TEMPLATE_BUILTIN_CONTENT_PATTERNS: readonly { path: string; pattern
   { path: "docs/review/code_review_*.md", pattern: "Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}" },
   // review: English "Conclusion: pass/fail" (Phase 0 / 175)
   { path: "docs/review/code_review_*.md", pattern: "Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2}" },
+  // review: combined OR-alternation verdict (Phase 0 / 175 fix — single rule, not three AND rules)
+  { path: "docs/review/code_review_*.md", pattern: "(结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}|Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}|Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2})" },
   // develop / fix: plan doc reference in commit record
   { path: "docs/design/*_commit.md", pattern: "^\\*\\*plan doc\\*\\*:" },
   // 168 Phase 3: pipelineId content validation for develop/fix commit docs
