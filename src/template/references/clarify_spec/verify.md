@@ -1,9 +1,34 @@
 ---
 rules:
-  fileContentPattern:
-    - path: "{requirementDoc}"
-      pattern: "full-und\\? 理解确认：是"
-    - path: "{requirementDoc}"
-      pattern: "(?<![\\s\\S])(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^- \\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]))(?![\\s\\S]*?^#{1,2}\\s*(?:第\\s*\\d+\\s*轮澄清|[Rr]ound\\s+\\d+)(?![^]*?^[ \\t]*(?:答\\s*[:：]|\\*{2}答\\*{2}|Answer\\s*:)))"
+  path: "{requirementDoc}"
+  groups:
+    - name: round-well-formed
+      when: "^#{1,2}\\s*(?:第\\s*(?<roundZh>\\d+)\\s*轮澄清|[Rr]ound\\s+(?<roundEn>\\d+))"
+      runtime: roundHeading
+      scope: section
+      ruleMode: and
+      rules:
+        - type: fileContentPattern
+          patterns: ["^- \\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]"]
+        - type: fileContentPattern
+          mode: or
+          runtime: answerField
+          patterns:
+            - "答\\s*[:：]|\\*{2}答\\*{2}"
+            - "Answer\\s*:"
+    - name: full-und-confirmed
+      ruleMode: and
+      rules:
+        - type: fileContentPattern
+          mode: or
+          patterns:
+            - "full-und\\? 理解确认：是"
+            - "full-und\\? .*理解确认[:：]\\s*[*_]{0,2}(是|yes|Y)"
+        - type: fileContentPattern
+          mode: or
+          runtime: modelConfirm
+          patterns:
+            - "^##\\s*模型确认"
+            - "^##\\s*Model\\s+Confirmation"
 ---
-等待用户输入 full-und? 询问是否完全理解需求；模型确认理解后须在需求文档末尾写入"## 模型确认"标记节。澄清节（`# 第 N 轮澄清` 推荐，`# Round N` 兼容；`#{1,2}` 仅限 h1/h2 防误命中）必须包含方案推荐（`- 方案 [A-Z]` / `- Option [A-Z]` / `- Plan [A-Z]`，容忍 `- 方案A` 无空格与 `**方案 X**` 加粗形态）与用户答复（`答：`/`答:`/`**答**`/`Answer:`，容忍前导缩进如 `  答：...`）。
+澄清验证：等待用户输入 full-und? 询问是否完全理解需求；模型确认理解后须在需求文档末尾写入"## 模型确认"标记节（最终轮确认结果，只在本组求值，不逐轮检查）。澄清节（`# 第 N 轮澄清` 推荐，`# Round N` 兼容；`#{1,2}` 仅限 h1/h2 防误命中）必须逐节包含方案推荐（`- 方案 [A-Z]` / `- Option [A-Z]` / `- Plan [A-Z]`，容忍 `- 方案A` 无空格与 `**方案 X**` 加粗形态）与用户答复（`答：`/`答:`/`**答**`/`Answer:`，容忍前导缩进如 `  答：...`）。

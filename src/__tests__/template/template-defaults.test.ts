@@ -17,6 +17,10 @@ import { tmpdir } from "node:os";
 import { resolvePipelineConfig } from "../../core/json-config-loader";
 import { checkTemplateDrift } from "../../utils/template-drift";
 import { makeTestMeta } from "../helpers";
+import { PLAN_CONFIRM_MARKER_RULE } from "../../core/stage-advancer";
+import { evaluateGroups } from "../../core/verifiers/group-verifier";
+import { resolvePlaceholders } from "../../core/verify-path-resolver";
+import { parseFrontmatter, type VerifyRules } from "../../core/verify-frontmatter";
 
 // ─── C13: Template default fields ────────────────────────────────────────────
 
@@ -212,165 +216,172 @@ describe("D2 (174): stage SKILL frontmatter regression guard", () => {
   }
 });
 
-// ─── Phase 0 / 175: review_spec/verify.md default pattern ────────────────────
-// Verifies the deployed template uses a SINGLE OR-alternation verdict pattern
-// (fileContentPattern rules are AND — three parallel rules would require ALL
-// three forms in a report, which is incorrect). Prevents B7 regression AND
-// the AND-regression where 3 parallel rules freeze the review pipeline.
+// ─── Phase 3 / 176: v6 template structure + engine smoke ─────────────────────
 
-describe("Phase 0 / 175: review_spec/verify.md bilingual+bold tolerant verdict", () => {
-  const reviewVerifyPath = path.join(__dirname, "../../template/references/review_spec/verify.md");
+/** Parses a deployed stage template's frontmatter into VerifyRules. */
+async function loadTemplateRules(stage: string): Promise<VerifyRules> {
+  const verifyMdPath = path.join(__dirname, `../../template/references/${stage}_spec/verify.md`);
+  const raw = fs.readFileSync(verifyMdPath, "utf-8");
+  const parts = raw.split(/^---\s*$/m);
+  const rules = await parseFrontmatter(parts[1].trim());
+  if (!rules) throw new Error(`Failed to parse ${stage} verify.md`);
+  return rules;
+}
 
-  it("default review verify.md template exists", () => {
-    expect(fs.existsSync(reviewVerifyPath)).toBe(true);
+describe("Phase 3 / 176: v6 template structure", () => {
+  const STAGES = ["clarify", "plan", "develop", "review", "fix"] as const;
+
+  it("all 5 templates parse into groups with a file-level path", async () => {
+    for (const stage of STAGES) {
+      const rules = await loadTemplateRules(stage);
+      expect(rules.path).toBeDefined();
+      expect(rules.groups?.length ?? 0).toBeGreaterThan(0);
+    }
   });
 
-  it("verdict rule is a SINGLE OR-alternation pattern (not three separate AND rules)", () => {
-    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    // Count verdict-related pattern lines (lines starting with "pattern:" containing verdict keywords)
-    const verdictPatternLines = content.split("\n").filter(line =>
-      line.trim().startsWith("pattern:") &&
-      (line.includes("结论") || line.includes("Verdict") || line.includes("Conclusion")),
-    );
-    // Exactly ONE pattern line should contain verdict alternatives
-    expect(verdictPatternLines.length).toBe(1);
-    // That single pattern must contain all three alternatives
-    const line = verdictPatternLines[0];
-    expect(line).toContain("结论");
-    expect(line).toContain("Verdict");
-    expect(line).toContain("Conclusion");
+  it("clarify declares round-well-formed (when named groups + runtime) and full-und-confirmed (modelConfirm)", async () => {
+    const rules = await loadTemplateRules("clarify");
+    const round = rules.groups!.find((g) => g.name === "round-well-formed")!;
+    expect(round).toBeDefined();
+    expect(round.scope).toBe("section");
+    expect(round.ruleMode).toBe("and");
+    expect(round.runtime).toBe("roundHeading");
+    expect(round.when).toContain("roundZh");
+    expect(round.when).toContain("roundEn");
+
+    const confirm = rules.groups!.find((g) => g.name === "full-und-confirmed")!;
+    expect(confirm.ruleMode).toBe("and");
+    expect(confirm.rules.some((n) => n.runtime === "modelConfirm")).toBe(true);
   });
 
-  it("does NOT contain the legacy single-pattern form '结论：(通过|不通过)'", () => {
-    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    expect(content).not.toMatch(/pattern:\s*"结论：\(通过\|不通过\)"/);
+  it("review declares a verdict runtime node whose patterns all expose capture group 1", async () => {
+    const rules = await loadTemplateRules("review");
+    const group = rules.groups!.find((g) => g.name === "review-report-ready")!;
+    const verdictNode = group.rules.find((n) => n.runtime === "verdict")!;
+    expect(verdictNode).toBeDefined();
+    expect(verdictNode.mode).toBe("or");
+    for (const pattern of verdictNode.patterns ?? []) {
+      const re = new RegExp(`${pattern}|`);
+      expect((re.exec("")?.length ?? 0) - 1).toBeGreaterThanOrEqual(1);
+    }
   });
 
-  it("single OR pattern matches Chinese verdict `结论：**通过**`", () => {
-    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    const patternMatch = content.match(/pattern:\s*"\((结论[^"]+)\)"/);
-    expect(patternMatch).not.toBeNull();
-    const regex = new RegExp(patternMatch![1].replace(/\\\\/g, "\\"));
-    expect(regex.test("结论：**通过**")).toBe(true);
-    expect(regex.test("结论: 不通过")).toBe(true);
-    expect(regex.test("结论：_通过_")).toBe(true);
+  it("plan marker node matches PLAN_CONFIRM_MARKER_RULE exactly (defer contract)", async () => {
+    const rules = await loadTemplateRules("plan");
+    expect(rules.path).toBe(PLAN_CONFIRM_MARKER_RULE.path);
+    const group = rules.groups![0];
+    const marker = group.rules.find((n) => n.type === "fileContentPattern")!;
+    expect(marker.patterns).toEqual([PLAN_CONFIRM_MARKER_RULE.pattern]);
   });
 
-  it("single OR pattern matches English 'Verdict: PASS' and 'Conclusion: fail'", () => {
-    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    const patternMatch = content.match(/pattern:\s*"\((结论[^"]+)\)"/);
-    expect(patternMatch).not.toBeNull();
-    const regex = new RegExp(patternMatch![1].replace(/\\\\/g, "\\"));
-    expect(regex.test("Verdict: PASS")).toBe(true);
-    expect(regex.test("Verdict：**FAIL**")).toBe(true);
-    expect(regex.test("Conclusion: fail")).toBe(true);
-    expect(regex.test("Conclusion：_pass_")).toBe(true);
-  });
-
-  it("single OR pattern does NOT match invalid verdict forms", () => {
-    const content = fs.readFileSync(reviewVerifyPath, "utf-8");
-    const patternMatch = content.match(/pattern:\s*"\((结论[^"]+)\)"/);
-    expect(patternMatch).not.toBeNull();
-    const regex = new RegExp(patternMatch![1].replace(/\\\\/g, "\\"));
-    expect(regex.test("结论：待定")).toBe(false);
-    expect(regex.test("Verdict: MAYBE")).toBe(false);
-    expect(regex.test("no verdict here")).toBe(false);
+  it("develop/fix commit templates declare requiredFile + plan doc + pipelineId nodes", async () => {
+    for (const stage of ["develop", "fix"] as const) {
+      const rules = await loadTemplateRules(stage);
+      const group = rules.groups![0];
+      expect(group.rules.some((n) => n.type === "requiredFile")).toBe(true);
+      expect(group.rules.some((n) => n.patterns?.some((p) => p.includes("plan doc")))).toBe(true);
+      expect(group.rules.some((n) => n.patterns?.some((p) => p.includes("{pipelineId}")))).toBe(true);
+    }
   });
 });
 
-// ─── Phase 0 / 175: end-to-end review verify against template-compliant report ─
-// Validates via the production verifyFileContentPattern that a report matching
-// the plugin's own review_report_template.md passes with a single verdict form.
+// ─── Phase 3 / 176: template engine smoke (positive / negative) ──────────────
 
-describe("Phase 0 / 175: end-to-end review verify against compliant report", () => {
-  let e2eTmp: string;
+describe("Phase 3 / 176: template engine smoke", () => {
+  let smokeTmp: string;
 
   beforeEach(async () => {
-    e2eTmp = path.join(tmpdir(), "pi-review-e2e-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-    await fsp.mkdir(e2eTmp, { recursive: true });
+    smokeTmp = path.join(tmpdir(), "pi-v6-smoke-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    await fsp.mkdir(smokeTmp, { recursive: true });
   });
 
   afterEach(async () => {
-    await fsp.rm(e2eTmp, { recursive: true, force: true });
+    await fsp.rm(smokeTmp, { recursive: true, force: true });
   });
 
-  /**
-   * Helper: load the default review verify.md template and resolve placeholders.
-   * Uses the production parseFrontmatter + resolvePlaceholders pipeline.
-   */
-  async function loadResolvedVerifyRules(pipelineId: string) {
-    const { parseFrontmatter } = await import("../../core/verify-frontmatter");
-    const { resolvePlaceholders } = await import("../../core/verify-path-resolver");
-    const verifyMdPath = path.join(__dirname, "../../template/references/review_spec/verify.md");
-    const raw = fs.readFileSync(verifyMdPath, "utf-8");
-    const parts = raw.split(/^---\s*$/m);
-    const frontmatter = parts[1].trim();
-    const rules = await parseFrontmatter(frontmatter);
-    if (!rules) throw new Error("Failed to parse verify.md frontmatter");
-    const meta = makeTestMeta({ pipelineId });
-    return resolvePlaceholders(rules, meta);
+  /** Parses + resolves a template and evaluates its groups against the temp project. */
+  async function runTemplate(stage: string, pipelineId: string, requirementDoc?: string) {
+    const rules = await loadTemplateRules(stage);
+    const resolved = resolvePlaceholders(rules, makeTestMeta({ pipelineId, requirementDoc }));
+    return evaluateGroups(resolved, smokeTmp, []);
   }
 
-  it("template-compliant report (Chinese 结论：通过 only) passes verifyFileContentPattern", async () => {
-    const { verifyFileContentPattern } = await import("../../core/verifiers/file-verifier");
-    const rules = await loadResolvedVerifyRules("pipe-test-e2e-001");
+  async function writeDoc(rel: string, content: string): Promise<void> {
+    const abs = path.join(smokeTmp, rel);
+    await fsp.mkdir(path.dirname(abs), { recursive: true });
+    await fsp.writeFile(abs, content, "utf-8");
+  }
 
-    // Create a report matching the review_report_template.md format
-    const reportDir = path.join(e2eTmp, "docs", "review");
-    await fsp.mkdir(reportDir, { recursive: true });
-    const reportContent = [
-      "**pipeline**: pipe-test-e2e-001",
-      "",
-      "# Summary",
-      "- Test review report",
-      "",
-      "## 结论",
-      "- 结论：通过",
-    ].join("\n");
-    await fsp.writeFile(path.join(reportDir, "code_review_test.md"), reportContent);
+  it("review: compliant report passes; missing verdict fails with group tag", async () => {
+    await writeDoc("docs/review/code_review_1.md", "**pipeline**: p-1\n\n## 结论\n结论：通过\n");
+    expect((await runTemplate("review", "p-1")).passed).toBe(true);
 
-    const result = await verifyFileContentPattern(rules.fileContentPattern, e2eTmp);
-    expect(result.passed).toBe(true);
+    await writeDoc("docs/review/code_review_1.md", "**pipeline**: p-1\n\n## 结论\nno verdict\n");
+    const fail = await runTemplate("review", "p-1");
+    expect(fail.passed).toBe(false);
+    expect(fail.failures.every((f) => f.group === "review-report-ready")).toBe(true);
   });
 
-  it("English 'Verdict: PASS' report passes verifyFileContentPattern", async () => {
-    const { verifyFileContentPattern } = await import("../../core/verifiers/file-verifier");
-    const rules = await loadResolvedVerifyRules("pipe-test-e2e-002");
+  it("develop: compliant commit doc passes; missing plan doc reference fails", async () => {
+    await writeDoc("docs/design/x_commit.md", "**plan doc**: docs/design/x_plan.md\n**pipeline**: p-2\n");
+    expect((await runTemplate("develop", "p-2")).passed).toBe(true);
 
-    const reportDir = path.join(e2eTmp, "docs", "review");
-    await fsp.mkdir(reportDir, { recursive: true });
-    const reportContent = [
-      "**pipeline**: pipe-test-e2e-002",
-      "",
-      "# Summary",
-      "- English verdict report",
-      "",
-      "## Conclusion",
-      "- Verdict: PASS",
-    ].join("\n");
-    await fsp.writeFile(path.join(reportDir, "code_review_en.md"), reportContent);
-
-    const result = await verifyFileContentPattern(rules.fileContentPattern, e2eTmp);
-    expect(result.passed).toBe(true);
+    await writeDoc("docs/design/x_commit.md", "**pipeline**: p-2\n");
+    const fail = await runTemplate("develop", "p-2");
+    expect(fail.passed).toBe(false);
+    expect(fail.failures.every((f) => f.group === "commit-ready")).toBe(true);
   });
 
-  it("report with NO verdict form fails verifyFileContentPattern", async () => {
-    const { verifyFileContentPattern } = await import("../../core/verifiers/file-verifier");
-    const rules = await loadResolvedVerifyRules("pipe-test-e2e-003");
+  it("plan: confirmation marker passes; missing marker fails", async () => {
+    await writeDoc("docs/design/x_plan.md", "# Plan\n\n## 用户确认\n");
+    expect((await runTemplate("plan", "p-3")).passed).toBe(true);
 
-    const reportDir = path.join(e2eTmp, "docs", "review");
-    await fsp.mkdir(reportDir, { recursive: true });
-    const reportContent = [
-      "**pipeline**: pipe-test-e2e-003",
-      "",
-      "# Summary",
-      "- No verdict report",
-    ].join("\n");
-    await fsp.writeFile(path.join(reportDir, "code_review_noverdict.md"), reportContent);
+    await writeDoc("docs/design/x_plan.md", "# Plan\n\nno marker\n");
+    const fail = await runTemplate("plan", "p-3");
+    expect(fail.passed).toBe(false);
+    expect(fail.failures.every((f) => f.group === "plan-ready")).toBe(true);
+  });
 
-    const result = await verifyFileContentPattern(rules.fileContentPattern, e2eTmp);
-    // Should fail: verdict is required
-    expect(result.passed).toBe(false);
-    expect(result.detail).toContain("not found");
+  it("clarify: multi-round complete + full-und confirmation passes", async () => {
+    await writeDoc("req.md", [
+      "# 第 1 轮澄清",
+      "- 方案 A",
+      "答：yes",
+      "# 第 2 轮澄清",
+      "- 方案 B",
+      "答：yes",
+      "full-und? 理解确认：是",
+      "## 模型确认",
+      "confirmed",
+    ].join("\n"));
+    expect((await runTemplate("clarify", "p-4", "req.md")).passed).toBe(true);
+  });
+
+  it("clarify: a middle round missing an answer fails per-section", async () => {
+    await writeDoc("req.md", [
+      "# 第 1 轮澄清",
+      "- 方案 A",
+      "# 第 2 轮澄清",
+      "- 方案 B",
+      "答：yes",
+      "full-und? 理解确认：是",
+      "## 模型确认",
+      "confirmed",
+    ].join("\n"));
+    const fail = await runTemplate("clarify", "p-4", "req.md");
+    expect(fail.passed).toBe(false);
+    expect(fail.failures.every((f) => f.group === "round-well-formed")).toBe(true);
+  });
+
+  it("clarify: missing model-confirm section fails the full-und group", async () => {
+    await writeDoc("req.md", [
+      "# 第 1 轮澄清",
+      "- 方案 A",
+      "答：yes",
+      "full-und? 理解确认：是",
+    ].join("\n"));
+    const fail = await runTemplate("clarify", "p-5", "req.md");
+    expect(fail.passed).toBe(false);
+    expect(fail.failures.some((f) => f.group === "full-und-confirmed")).toBe(true);
   });
 });

@@ -12,6 +12,10 @@
  *
  * Missing/invalid anchors are returned as `issues` (fail-open at the consumer),
  * never thrown.
+ *
+ * NOTE (Phase 3 / 176): `DRIFT_CHECK_ASSETS` intentionally excludes
+ * `*_spec/verify.md`. A drifted or missing anchor is covered by this module's
+ * fail-open + notify path rather than template-drift reporting.
  */
 
 import fs from "node:fs/promises";

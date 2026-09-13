@@ -144,6 +144,15 @@ describe("createPipelineInitCommand", () => {
       // sub="" runs dir then verify; .pi/skills should exist after dir copy
       expect(result.success).toBe(true);
       expect(fsSync.existsSync(path.join(TMP, ".pi", "skills"))).toBe(true);
+
+      // Phase 3 / 176: the deployed clarify verify.md carries the v6 groups schema.
+      const deployedVerify = await fs.readFile(
+        path.join(TMP, ".pi", "references", "clarify_spec", "verify.md"),
+        "utf-8",
+      );
+      expect(deployedVerify).toContain("groups:");
+      expect(deployedVerify).toContain("when:");
+      expect(deployedVerify).toContain("runtime: roundHeading");
     });
 
     it("accepts object { sub: '1' }", async () => {
