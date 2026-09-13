@@ -1895,3 +1895,37 @@ describe("Phase 6 (162): template confirm config", () => {
     expect(config.maxConfirmRejections).toBe(5);
   });
 });
+
+// ─── Phase 5 / 175 (task 3): managed block error → notify + error audit ──────
+
+describe("Phase 5 / 175: managed block error handling", () => {
+  it("audit log records 'error' level (not 'warn') for managed block write failure", async () => {
+    // This test validates the audit level change from "warn" to "error"
+    // per review Issue 9 (Medium) / Phase 5 task 3 requirement.
+    const { safeWriteAuditLog } = await import("../../utils/auditLog");
+    const { initAuditLog, getDateAuditFileName } = await import("../../utils/auditLog");
+
+    const phaseTmp = path.join(tmpdir(), "pi-init-mb-err-" + Date.now());
+    await fs.mkdir(phaseTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: phaseTmp, auditDir: ".pi/audit" }));
+
+    // Simulate what copyTemplateFiles does on managed block error
+    await safeWriteAuditLog("pipeline_init_managed_block_error", {
+      error: "EACCES: permission denied",
+      target: path.join(phaseTmp, ".pi"),
+      skillsDir: path.join(phaseTmp, ".pi", "skills"),
+    }, "error");
+
+    const logPath = path.join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+    const content = await fs.readFile(logPath, "utf-8");
+
+    // Must be logged at ERROR level, not WARN
+    expect(content).toContain("[ERROR]");
+    expect(content).toContain("pipeline_init_managed_block_error");
+    expect(content).toContain("EACCES");
+    expect(content).toContain("target=");
+    expect(content).toContain("skillsDir=");
+
+    await fs.rm(phaseTmp, { recursive: true, force: true });
+  });
+});

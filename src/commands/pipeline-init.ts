@@ -111,6 +111,11 @@ export function createPipelineInitCommand(
           // 147 Phase 5: notify hint so the user knows to run /pipeline-init 2
           // next. copyTemplateFiles lacks ctx access, so the notify is issued here.
           ctx?.ui?.notify?.("Initialization complete. Run /pipeline-init 2 to check template placeholders.");
+          // Phase 5 / 175 (task 3): notify managed block merge failure if any.
+          // The error was already logged at error level in copyTemplateFiles.
+          if (dirResult.managedBlockError) {
+            ctx?.ui?.notify?.(`Warning: Failed to merge managed contract blocks into SKILL files: ${dirResult.managedBlockError}. Run /pipeline-init again to retry.`);
+          }
           // sub="0": verify only when option 3 flagged; sub="": always run verify after dir
           const needVerify = sub === "0" ? !!dirResult.verifyAfter : true;
           if (needVerify) {
@@ -141,7 +146,7 @@ export function createPipelineInitCommand(
 async function executeDirBranch(
   config: PipelineConfig,
   ctx?: any,
-): Promise<{ success: boolean; verifyAfter?: boolean; summary?: string; content?: string; error?: string }> {
+): Promise<{ success: boolean; verifyAfter?: boolean; summary?: string; content?: string; error?: string; managedBlockError?: string }> {
   const targetDir = path.join(config.projectRoot, CONFIG_DIR_NAME);
 
   // Check template directory exists
@@ -218,12 +223,13 @@ async function copyTemplateFiles(
   targetDir: string,
   strategy: "overwrite" | "skip",
   config: PipelineConfig,
-): Promise<{ success: boolean; summary?: string; content?: string; error?: string }> {
+): Promise<{ success: boolean; summary?: string; content?: string; error?: string; managedBlockError?: string }> {
   try {
     let copiedCount = 0;
     let skippedCount = 0;
     const copiedFiles: string[] = [];
     const skippedFiles: string[] = [];
+    let managedBlockError: string | undefined;
 
     for (const relPath of templateFiles) {
       const srcPath = path.join(TEMPLATE_DIR, relPath);
@@ -311,9 +317,17 @@ async function copyTemplateFiles(
         }
       }
     } catch (err) {
-      // Fail-open: managed block merge errors do not block init
+      // Phase 5 / 175 (task 3): Fail-open + error-level audit with context.
+      // Managed block merge errors do not block init. The caller issues notify
+      // based on the managedBlockError flag in the return value.
       const errMsg = err instanceof Error ? err.message : String(err);
-      await safeWriteAuditLog("pipeline_init_managed_block_error", { error: errMsg }, "warn");
+      await safeWriteAuditLog("pipeline_init_managed_block_error", {
+        error: errMsg,
+        target: targetDir,
+        skillsDir,
+      }, "error");
+      // Store error for caller to notify (copyTemplateFiles is intentionally ctx-free)
+      managedBlockError = errMsg;
     }
 
     await safeWriteAuditLog("pipeline-init_done", {
@@ -357,6 +371,7 @@ async function copyTemplateFiles(
       success: true,
       summary: `Copied ${copiedCount} file(s) to ${CONFIG_DIR_NAME}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}; docs/ ${docsCreated ? "created" : "ensured"}`,
       content: lines.join("\n"),
+      ...(managedBlockError ? { managedBlockError } : {}),
     };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
