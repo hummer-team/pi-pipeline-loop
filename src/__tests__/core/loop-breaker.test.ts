@@ -207,19 +207,120 @@ describe("createLoopBreaker", () => {
       await createLoopBreaker(config).handler(negative as any);
       expect(negative.metadataUpdates.length).toBe(0);
     });
+  });
 
-    it("defers `bunx vitest` recognition to Phase 1 (Phase 0 adds constant only)", async () => {
-      // Phase 0 only adds `bunx` to PACKAGE_MANAGERS; the full pkg+runner
-      // structural rule arrives in Phase 1. Until then the command must not
-      // crash or produce a spurious count.
+  // ─── Phase 1 (178): structural detection rules R1–R6 ─────────────────────────
+  describe("Phase 1 (178): structural test-command detection", () => {
+    // Q8-A: mainstream-language test commands. The first group (Q5-1) are the
+    // pre-existing positives that must remain tests; the rest are the newly
+    // covered commands that the old closed-set enumeration missed.
+    const TEST_POSITIVE_MATRIX = [
+      // Q5-1: existing positives must remain tests.
+      "bun test",
+      "npm test",
+      "mvn test",
+      "node --test",
+      "make test",
+      "jest --coverage",
+      "vitest run",
+      "pytest",
+      "mocha test/",
+      "mvn -Dtest=MyTest test",
+      "mvn verify -Dtest=Foo",
+      "npm test -- --coverage",
+      // Q8-A: newly covered commands.
+      "go test ./...",
+      "cargo test",
+      "dotnet test",
+      "deno test",
+      "mix test",
+      "composer test",
+      "phpunit",
+      "ctest",
+      "php artisan test",
+      "python -m pytest",
+      "bundle exec rspec",
+      "bundle exec pytest",
+      "./gradlew test",
+      "npx jest",
+      "npx vitest",
+      "npx mocha",
+      "bunx vitest",
+      "pnpm run test:unit",
+      "yarn test:e2e",
+      "npm run test:unit",
+      // Boundary cases (Q9-1, Q7-B).
+      "mvn test-compile",
+      "cmd --verbose test",
+    ];
+
+    // Q5-2 hard lower bound: these MUST stay non-test commands.
+    const TEST_NEGATIVE_MATRIX = [
+      "git log --grep=test",
+      "tail test.md",
+      "grep -r test src/",
+      "git commit -m 'test fix'",
+      "mvn compile",
+      "mvn clean",
+      "mvn install -DskipTests",
+      "mvn package",
+      "echo test",
+      "rm test",
+      "cat phpunit",
+      "git show test",
+      'grep "test>bar" src/',
+    ];
+
+    it("counts every Q8-A test command as a test (positive matrix)", async () => {
       const config = makeTestConfig();
-      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
-      const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "bash", arguments: { command: "bunx vitest" } };
-      ctx.result = { exitCode: 1 };
+      for (const cmd of TEST_POSITIVE_MATRIX) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
 
-      await createLoopBreaker(config).handler(ctx as any);
-      expect(ctx.metadataUpdates.length).toBe(0);
+        const hook = createLoopBreaker(config);
+        await hook.handler(ctx as any);
+
+        expect(ctx.metadataUpdates.length, `expected test: ${cmd}`).toBe(1);
+        expect(ctx.metadataUpdates[0].loopCount, `expected +1: ${cmd}`).toBe(1);
+      }
+    });
+
+    it("does not count any false-positive command (Q5-2 lower bound)", async () => {
+      const config = makeTestConfig();
+      for (const cmd of TEST_NEGATIVE_MATRIX) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
+
+        const hook = createLoopBreaker(config);
+        await hook.handler(ctx as any);
+
+        expect(ctx.metadataUpdates.length, `expected non-test: ${cmd}`).toBe(0);
+      }
+    });
+
+    it("does not misfire `-DskipTests` while matching `-Dtest=` (flag boundary)", async () => {
+      const config = makeTestConfig();
+      const cases: Array<[string, boolean]> = [
+        ["mvn install -DskipTests", false],
+        ["mvn test -DskipTests", true],
+        ["mvn verify -Dtest=Foo", true],
+        ["mvn test-compile", true],
+      ];
+      for (const [cmd, isTest] of cases) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
+
+        const hook = createLoopBreaker(config);
+        await hook.handler(ctx as any);
+
+        expect(ctx.metadataUpdates.length, `unexpected decision for: ${cmd}`).toBe(isTest ? 1 : 0);
+      }
     });
   });
 

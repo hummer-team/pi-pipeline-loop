@@ -20,7 +20,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { isDormant } from "./dormancy";
 import { freezeAndPrompt } from "./flow-state";
-import { splitShellSegments, tokenize } from "../utils/bash-parse";
+import { splitShellSegments, tokenize, READ_ONLY_BASH_COMMANDS } from "../utils/bash-parse";
 
 /**
  * Ensures a directory exists, creating it recursively if needed.
@@ -53,6 +53,77 @@ const PACKAGE_MANAGERS = new Set([
 ]);
 
 /**
+ * 178 Phase 1 (Q7-A): Commands whose first token is deterministically NOT a
+ * test command. Extends the read-only bash command set with version control,
+ * text/echo utilities and container tooling. Used as the R4 guard so the R5
+ * argument-position relaxation cannot reintroduce the false-positive matrix
+ * (`git show test`, `echo test`, `rm test`, `tail test.md`, …).
+ */
+const NEVER_TEST_COMMANDS: ReadonlySet<string> = new Set([
+  ...READ_ONLY_BASH_COMMANDS,
+  "git", "echo", "printf", "cat", "rm", "mv", "cp", "sed", "awk", "docker", "kubectl",
+]);
+
+/**
+ * 178 Phase 1 (Q7-B): Subcommand-passthrough keywords. The token AFTER one of
+ * these may be a test runner (`bundle exec rspec`, `python -m pytest`) or a
+ * `test`-ish subcommand (`npm run test:unit`).
+ */
+const TEST_SUBCOMMAND_PASSTHROUGH: ReadonlySet<string> = new Set([
+  "run", "exec", "dlx", "task", "script", "-m",
+]);
+
+/**
+ * 178 Phase 1 (Q9-1): True for a "bare" test token — `test` itself or a
+ * `test`-prefixed lifecycle/variant token such as `test:unit`, `test_e2e`,
+ * `test.spec` or `test-compile` (kept a test command per Q9-1).
+ *
+ * Path-like (`test/`, `test/foo`) and flag/assignment (`-Dtest=…`,
+ * `--test=…`) tokens are rejected; flags are handled by `matchesTestFlag`.
+ *
+ * @param tok - A single shell token (quotes preserved)
+ * @returns true when the token denotes a test subcommand/variant
+ */
+function isBareTestToken(tok: string): boolean {
+  if (!tok) return false;
+  if (tok.includes("/")) return false; // path-like → not a subcommand
+  if (tok.startsWith("-")) return false; // flag → handled by matchesTestFlag
+  if (tok.includes("=")) return false; // key=value assignment
+  return tok === "test" || /^test[:._-].+$/.test(tok);
+}
+
+/**
+ * 178 Phase 1 (Q7-B): Index of the first non-flag argument (the subcommand
+ * slot), skipping global flags such as `--verbose`. Returns -1 when every
+ * token is a flag.
+ *
+ * @param tokens - Tokenized command segment
+ * @returns Index of the first non-flag token, or -1
+ */
+function findSubcommandIndex(tokens: string[]): number {
+  for (let i = 0; i < tokens.length; i++) {
+    if (!tokens[i].startsWith("-")) return i;
+  }
+  return -1;
+}
+
+/**
+ * 178 Phase 1 (Q2-B): Detects explicit test flags anywhere in a segment:
+ * `--test`, `--test=<value>`, `--tests` (Gradle filter), and `-Dtest` /
+ * `-Dtest=<value>` (Maven). `-DskipTests` is deliberately NOT matched — its
+ * prefix is `-Ds`, not `-Dt`.
+ *
+ * @param tokens - Tokenized command segment
+ * @returns true when a test flag is present
+ */
+function matchesTestFlag(tokens: string[]): boolean {
+  return tokens.some((t) =>
+    t === "--test" || t.startsWith("--test=") || t === "--tests" ||
+    t === "-Dtest" || t.startsWith("-Dtest="),
+  );
+}
+
+/**
  * Tests whether a bash command is a test command based on command structure.
  *
  * **Why this function exists (Goal 2):**
@@ -80,13 +151,18 @@ const PACKAGE_MANAGERS = new Set([
  * from paths, messages, or grep patterns containing "test".
  *
  * Detection rules per segment (after stripping `rtk ` prefix):
- * 1. First token is a known test runner (jest, vitest, pytest, phpunit, ctest, etc.) → test
- * 2. First token is a package manager (npm, pnpm, bun, bunx, etc.) AND
- *    remaining args contain "test" subcommand or "--test" flag → test
- * 3. First token is "node" with "--test" flag → test (Node.js built-in runner)
- * 4. First token is "make" with second token "test" → test
- * 5. First token is "mvn"/"gradle" with "test"/"-Dtest"/"--tests" in args → test
- * 6. Otherwise → not a test command
+ * R1. First token is a known test runner (jest, vitest, pytest, phpunit, ctest, …) → test
+ * R2. First token is a package manager (npm, pnpm, bun, bunx, …) AND the next
+ *     token is a known test runner (`npx jest`, `bunx vitest`) → test
+ * R3. A passthrough keyword (`run`/`exec`/`dlx`/`task`/`script`/`-m`) is
+ *     followed by a known test runner (`bundle exec rspec`, `python -m pytest`) → test
+ * R4. First token is in `NEVER_TEST_COMMANDS` → skip R5 for this segment
+ * R5. An explicit test flag (`--test`, `-Dtest=…`) is present, OR a bare
+ *     test-ish token appears at an argument slot (`mvn test`, `make test`,
+ *     `npm run test:unit`, `php artisan test`) → test
+ * R6. Otherwise → not a test command
+ *
+ * Note: `node --test` (Node.js built-in runner) is covered by R5's flag rule.
  *
  * @param command - The bash command string to check
  * @returns true if the command appears to be a test command
@@ -103,46 +179,35 @@ function isTestCommand(command: string): boolean {
     const tokens = tokenize(stripped);
     const firstToken = tokens[0];
 
-    // Rule 1: Direct test runner invocation
-    if (TEST_RUNNER_EXECUTABLES.has(firstToken)) {
+    // R1: direct test-runner invocation (`jest`, `pytest`, `phpunit`, …).
+    if (TEST_RUNNER_EXECUTABLES.has(firstToken)) return true;
+
+    // R2: package manager + test runner (`npx jest`, `bunx vitest`).
+    if (PACKAGE_MANAGERS.has(firstToken) && TEST_RUNNER_EXECUTABLES.has(tokens[1])) {
       return true;
     }
 
-    // Rule 2: Package manager with "test" subcommand or "--test" flag
-    if (PACKAGE_MANAGERS.has(firstToken)) {
-      const rest = tokens.slice(1);
-      // Check for "test" subcommand (e.g., "npm test", "bun run test", "pnpm test")
-      if (rest.includes("test")) {
-        return true;
-      }
-      // Check for "--test" flag (e.g., "npm test -- --coverage")
-      if (rest.some(t => t === "--test" || t.startsWith("--test="))) {
+    // R3: passthrough keyword + test runner (`bundle exec rspec`, `python -m pytest`).
+    for (let i = 0; i + 1 < tokens.length; i++) {
+      if (TEST_SUBCOMMAND_PASSTHROUGH.has(tokens[i]) && TEST_RUNNER_EXECUTABLES.has(tokens[i + 1])) {
         return true;
       }
     }
 
-    // Rule 3: "node --test" — Node.js built-in test runner
-    if (firstToken === "node") {
-      const rest = tokens.slice(1);
-      if (rest.some(t => t === "--test" || t.startsWith("--test="))) {
-        return true;
-      }
-    }
+    // R4: deterministic non-test first token — guard the R5 relaxation so
+    // `git show test`, `echo test`, `rm test`, `tail test.md` stay non-tests.
+    if (NEVER_TEST_COMMANDS.has(firstToken)) continue;
 
-    // Rule 4: "make test" style (first token is "make", second is "test")
-    if (firstToken === "make" && tokens[1] === "test") {
-      return true;
-    }
+    // R5: explicit test flag anywhere.
+    if (matchesTestFlag(tokens)) return true;
 
-    // Rule 5: "mvn test" / "gradle test" — build tools with test lifecycle phase.
-    // Only matches when "test" (or Maven-specific test flags) appears in args.
-    // `mvn compile`, `mvn clean`, `mvn install -DskipTests` → NOT test commands.
-    if (firstToken === "mvn" || firstToken === "gradle") {
-      const rest = tokens.slice(1);
-      if (rest.includes("test") || rest.includes("test-compile")
-        || rest.some(t => t === "-Dtest" || t.startsWith("-Dtest=") || t === "--tests")) {
-        return true;
-      }
+    // R5: bare test-ish token at an argument slot. `findSubcommandIndex` anchors
+    // the canonical subcommand slot (skipping global flags such as `--verbose`);
+    // the scan intentionally continues past it because the Q8-A list requires
+    // `php artisan test`, where `test` is the second non-flag argument.
+    const scanStart = Math.max(1, findSubcommandIndex(tokens));
+    for (let i = scanStart; i < tokens.length; i++) {
+      if (isBareTestToken(tokens[i])) return true;
     }
   }
   return false;
