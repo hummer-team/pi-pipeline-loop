@@ -18,6 +18,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { safeWriteAuditLog } from "./auditLog";
+import { renderContractBlock, MANAGED_BLOCK_BEGIN, MANAGED_BLOCK_END } from "./skill-managed-block";
+import { loadPromptConfig } from "../core/prompt-config";
 
 /**
  * A single drift entry comparing a deployed asset to its repo source.
@@ -88,10 +90,61 @@ function resolveRepoTemplateDir(): string | null {
 }
 
 /**
+ * Phase 5 / 177 (D11): Maps SKILL.md assets to their pipeline stage so their
+ * managed-contract block can be rendered from the current yml config.
+ */
+const SKILL_ASSET_STAGE: Readonly<Record<string, string>> = {
+  "skills/design/SKILL.md": "clarify",
+  "skills/plan/SKILL.md": "plan",
+  "skills/develop/SKILL.md": "develop",
+  "skills/review/SKILL.md": "review",
+  "skills/fix/SKILL.md": "fix",
+};
+
+/**
+ * Reads a file as UTF-8, returning null when it cannot be read.
+ */
+async function readFileText(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/** SHA-256 of a UTF-8 string. */
+function sha256(text: string): string {
+  return crypto.createHash("sha256").update(text, "utf-8").digest("hex");
+}
+
+/**
+ * Phase 5 / 177 (D11): Extracts the managed-contract block (markers inclusive).
+ * Returns null when the markers are absent (pre-injection / user-authored file).
+ */
+function extractManagedBlock(content: string): string | null {
+  const begin = content.indexOf(MANAGED_BLOCK_BEGIN);
+  const end = content.indexOf(MANAGED_BLOCK_END);
+  if (begin === -1 || end === -1 || end < begin) return null;
+  return content.slice(begin, end + MANAGED_BLOCK_END.length);
+}
+
+/** Normalizes block text for comparison (CRLF + surrounding whitespace). */
+function normalizeBlock(text: string): string {
+  return text.replace(/\r\n/g, "\n").trim();
+}
+
+/**
  * Checks all monitored template assets for drift between deployed and repo copies.
  *
- * @param config - Pipeline configuration (uses projectRoot for deployed path lookup)
- * @returns Array of DriftEntry for each asset whose deployed hash differs from repo
+ * Phase 5 / 177 (D11): SKILL.md assets are compared **only** within the
+ * managed-contract block. The expected block is rendered from the current yml
+ * `stage_deliverable_{stage}` (declaration-is-behavior) — block-external
+ * localization is never counted as drift. A deployed SKILL without markers is
+ * treated as "pending injection" (not drift). guide.md / clarify_template.md /
+ * the yml keep whole-file hashing (always-overwrite assets).
+ *
+ * @param projectRoot - Project root (deployed `.pi/` lookup)
+ * @returns Array of DriftEntry for each asset that genuinely drifted
  */
 export async function checkTemplateDrift(
   projectRoot: string,
@@ -107,8 +160,38 @@ export async function checkTemplateDrift(
   const deployedBase = path.join(projectRoot, ".pi");
   const drifts: DriftEntry[] = [];
 
+  // Best-effort yml config for managed-block rendering; failure → SKILL checks skip.
+  let promptConfig: Record<string, string> = {};
+  try {
+    promptConfig = await loadPromptConfig(projectRoot);
+  } catch {
+    // Fail-open: fall back to whole-file checks only for non-SKILL assets
+  }
+
   for (const asset of DRIFT_CHECK_ASSETS) {
     try {
+      const stage = SKILL_ASSET_STAGE[asset];
+      if (stage) {
+        // Managed-block-aware comparison for SKILL.md assets.
+        const deployedPath = path.join(deployedBase, asset);
+        const deployedContent = await readFileText(deployedPath);
+        if (deployedContent === null) continue; // not deployed → no drift
+        const deployedBlock = extractManagedBlock(deployedContent);
+        if (deployedBlock === null) continue; // pending injection → not drift
+        const deliverable = promptConfig[`stage_deliverable_${stage}`];
+        if (!deliverable) continue;
+        const expectedBlock = renderContractBlock(stage, deliverable);
+        if (normalizeBlock(deployedBlock) !== normalizeBlock(expectedBlock)) {
+          drifts.push({
+            asset,
+            deployedHash: sha256(deployedBlock),
+            repoHash: sha256(expectedBlock),
+          });
+        }
+        continue;
+      }
+
+      // Whole-file comparison for always-overwrite assets.
       const repoPath = path.join(repoTemplateDir, asset);
       const deployedPath = path.join(deployedBase, asset);
 

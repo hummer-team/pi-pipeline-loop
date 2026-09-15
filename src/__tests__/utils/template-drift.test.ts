@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { checkTemplateDrift, formatDriftNotification } from "../../utils/template-drift";
+import { renderContractBlock } from "../../utils/skill-managed-block";
+import { resetPromptConfigCache } from "../../core/prompt-config";
 import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -57,9 +59,9 @@ describe("checkTemplateDrift (Phase 6 / 170)", () => {
     }
   });
 
-  it("includes skills in drift check assets (incident root cause)", async () => {
-    // Phase 6 (170) fix: .pi/skills/*/SKILL.md must be included in drift detection
-    // Create a drifted deployed skill file
+  it("Phase 5 / 177 (D11): SKILL without managed markers → pending injection, NOT drift", async () => {
+    // A deployed SKILL that predates managed-block injection must not be flagged
+    // (English localization / pre-init state is not an incident).
     const deployedSkillDir = join(TMP, ".pi", "skills", "design");
     await mkdir(deployedSkillDir, { recursive: true });
     await writeFile(
@@ -70,11 +72,62 @@ describe("checkTemplateDrift (Phase 6 / 170)", () => {
 
     const drifts = await checkTemplateDrift(TMP);
 
-    // Should detect drift for the skill file
-    const skillDrift = drifts.find(d => d.asset.includes("skills"));
-    expect(skillDrift).toBeDefined();
-    expect(skillDrift!.asset).toContain("design/SKILL.md");
-    expect(skillDrift!.deployedHash).not.toBe(skillDrift!.repoHash);
+    const skillDrift = drifts.find(d => d.asset.includes("skills/design"));
+    expect(skillDrift).toBeUndefined();
+  });
+
+  it("Phase 5 / 177 (D11): SKILL block-identical + block-external localized → NOT drift", async () => {
+    resetPromptConfigCache();
+    const deliverable = "Produce the plan document.";
+    const refsDir = join(TMP, ".pi", "references");
+    await mkdir(refsDir, { recursive: true });
+    await writeFile(
+      join(refsDir, "pipeline-stage-prompt.yml"),
+      `stage_deliverable_plan: "${deliverable}"\n`,
+      "utf-8",
+    );
+
+    const skillDir = join(TMP, ".pi", "skills", "plan");
+    await mkdir(skillDir, { recursive: true });
+    const block = renderContractBlock("plan", deliverable);
+    await writeFile(
+      join(skillDir, "SKILL.md"),
+      `# Localized English SKILL\n\n${block}\n\nLocalized notes outside the block.\n`,
+      "utf-8",
+    );
+
+    const drifts = await checkTemplateDrift(TMP);
+    expect(drifts.find(d => d.asset.includes("skills/plan"))).toBeUndefined();
+  });
+
+  it("Phase 5 / 177 (D11): SKILL block content changed → drift reported", async () => {
+    resetPromptConfigCache();
+    const deliverable = "Produce the plan document.";
+    const refsDir = join(TMP, ".pi", "references");
+    await mkdir(refsDir, { recursive: true });
+    await writeFile(
+      join(refsDir, "pipeline-stage-prompt.yml"),
+      `stage_deliverable_plan: "${deliverable}"\n`,
+      "utf-8",
+    );
+
+    const skillDir = join(TMP, ".pi", "skills", "plan");
+    await mkdir(skillDir, { recursive: true });
+    const block = renderContractBlock("plan", deliverable).replace("Produce the plan document.", "TAMPERED");
+    await writeFile(join(skillDir, "SKILL.md"), `# SKILL\n\n${block}\n`, "utf-8");
+
+    const drifts = await checkTemplateDrift(TMP);
+    expect(drifts.find(d => d.asset.includes("skills/plan"))).toBeDefined();
+  });
+
+  it("Phase 5 / 177 (D11): verify.md remains excluded from drift assets (#176)", async () => {
+    // A deliberately different verify.md must never be reported (not in DRIFT_CHECK_ASSETS).
+    const verifyDir = join(TMP, ".pi", "references", "plan_spec");
+    await mkdir(verifyDir, { recursive: true });
+    await writeFile(join(verifyDir, "verify.md"), "---\nrequiredFiles: []\n---\ntampered\n", "utf-8");
+
+    const drifts = await checkTemplateDrift(TMP);
+    expect(drifts.find(d => d.asset.includes("verify.md"))).toBeUndefined();
   });
 
   it("fail-open: handles corrupt projectRoot gracefully", async () => {

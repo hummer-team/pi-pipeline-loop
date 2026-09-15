@@ -238,6 +238,16 @@ async function copyTemplateFiles(
       // guide.md is always overwritten regardless of strategy
       const alwaysOverwrite = relPath === "guide.md";
 
+      // Phase 5 / 177 (D11): SKILL.md is merge-only. Never overwrite an existing
+      // deployed SKILL (preserves English localization); the merge loop below
+      // injects/updates only the managed-contract block. First deployment copies.
+      const isManagedSkill = relPath.startsWith("skills/") && relPath.endsWith("/SKILL.md");
+      if (isManagedSkill && fs.existsSync(destPath)) {
+        skippedCount++;
+        skippedFiles.push(displayPath(relPath));
+        continue;
+      }
+
       if (strategy === "skip" && !alwaysOverwrite && fs.existsSync(destPath)) {
         skippedCount++;
         skippedFiles.push(displayPath(relPath));
