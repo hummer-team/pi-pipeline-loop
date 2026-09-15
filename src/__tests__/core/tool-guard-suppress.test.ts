@@ -72,7 +72,8 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
   });
 
   it("does NOT block when reserved ≥60s (stale reservation)", async () => {
-    const config = makeTestConfig({ projectRoot: TMP });
+    // Disable D7 takeover so this isolates the 3c suppression guard.
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
     await writeAgentFile(TMP, config.stages["clarify"].agentPath!, "feat-design-plan-agent");
 
     const meta = makeTestMeta({
@@ -92,7 +93,8 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
   });
 
   it("explicit false: suppressDuplicateSpawn=false disables suppression", async () => {
-    const config = makeTestConfig({ projectRoot: TMP });
+    // Disable D7 takeover so this isolates the 3c suppression guard.
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
     config.stages["clarify"] = {
       ...config.stages["clarify"],
       guard: { suppressDuplicateSpawn: false },

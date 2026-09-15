@@ -545,6 +545,14 @@ export interface SessionMeta {
    * avoid a dialog storm. `stage` scopes the count to the current visit.
    */
   confirmGateReask?: { stage: PipelineStage; count: number };
+
+  /**
+   * Phase 4 / 177 (D7③): The user's current-round clarify arguments, persisted
+   * by prompt-injector each round (e.g. `"2 答"`). The plugin-owned clarify
+   * spawn uses these verbatim for the subagent description/title; when absent
+   * it falls back to document-state round derivation.
+   */
+  lastClarifyTurnArgs?: string;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
@@ -647,6 +655,20 @@ export interface PipelineConfig {
    * Invalid values fall back to "ctrl+enter" with a console warning.
    */
   decisionShortcutKey?: string;
+
+  /**
+   * Phase 4 / 177 (D7): Stages whose subagent spawning is plugin-owned.
+   *
+   * When the model tries to invoke the stage executor directly (Agent/task tool
+   * with the matching subagent_type) in one of these stages, tool-guard blocks
+   * the call and routes the spawn through the plugin (owner `pendingSpawns`).
+   * This makes the subagent title/description a plugin contract instead of
+   * free-form model wording.
+   *
+   * Default: `["clarify"]` only. Extend to plan/develop/review/fix explicitly
+   * once the takeover behavior is validated (all-stage takeover is off by default).
+   */
+  takeoverStages?: PipelineStage[];
 
   /**
    * TUI output configuration.

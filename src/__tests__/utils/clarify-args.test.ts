@@ -4,7 +4,7 @@
  * anchors (declaration-is-behavior). All patterns are injected via anchors.
  */
 import { describe, it, expect } from "bun:test";
-import { deriveClarifyForwardArgs } from "../../utils/clarify-args";
+import { deriveClarifyForwardArgs, resolveClarifyDescription, parseClarifyTurnArgs } from "../../utils/clarify-args";
 import type { VerifyContractAnchors } from "../../utils/contract-loader";
 
 /** Decodes \uXXXX sequences stored by the source-file encoding. */
@@ -207,5 +207,33 @@ This paragraph discusses 第 3 轮澄清 modifications.`;
       const result = deriveClarifyForwardArgs(doc, CLARIFY_ANCHORS);
       expect(result).toEqual({ kind: "fresh", args: "1" });
     });
+  });
+});
+
+// ── Phase 4 / 177 (D7): two-state clarify description ───────────────────────
+
+describe("Phase 4 / 177 (D7): clarify two-state description", () => {
+  it("verbatim: lastClarifyTurnArgs wins and is carried into the title", () => {
+    expect(resolveClarifyDescription("docs/req.md", "2 答")).toEqual({
+      description: "Clarify: docs/req.md 2 答",
+      argsSource: "user",
+    });
+  });
+
+  it("derived: no verbatim args → file-only title", () => {
+    expect(resolveClarifyDescription("docs/req.md")).toEqual({
+      description: "Clarify: docs/req.md",
+      argsSource: "derived",
+    });
+    expect(resolveClarifyDescription("docs/req.md", "   ")).toEqual({
+      description: "Clarify: docs/req.md",
+      argsSource: "derived",
+    });
+  });
+
+  it("parseClarifyTurnArgs extracts the current-round args", () => {
+    expect(parseClarifyTurnArgs("@clarify-agent docs/req.md 2 答", "clarify-agent")).toBe("2 答");
+    expect(parseClarifyTurnArgs("no mention here", "clarify-agent")).toBeUndefined();
+    expect(parseClarifyTurnArgs("@clarify-agent docs/req.md 2 答", null)).toBeUndefined();
   });
 });

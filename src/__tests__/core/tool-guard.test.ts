@@ -8,8 +8,7 @@ import { resetGitignoreCache } from "../../utils/gitignore";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { formatAbortedNotifyText } from "../../core/flow-state";
-import type { ExecFn } from "../../types";
-
+import type { ExecFn, PipelineStage } from "../../types";
 describe("createToolGuard", () => {
   beforeEach(() => {
     resetGitignoreCache();
@@ -3140,6 +3139,103 @@ describe("createToolGuard", () => {
 
       expect(result).toBeUndefined();
       expect(selectCalled).toBe(false);
+    });
+  });
+
+  // ─── Phase 4 / 177 (D7): plugin-owned spawn takeover ───────────────────────
+  describe("Phase 4 / 177 (D7): plugin-owned spawn takeover", () => {
+    async function makeTakeoverSetup(opts: {
+      stage?: PipelineStage;
+      takeoverStages?: PipelineStage[];
+      isChild?: boolean;
+    } = {}) {
+      const TMP = join(tmpdir(), "pi-177-takeover-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+      await mkdir(join(TMP, "agents"), { recursive: true });
+      await writeFile(
+        join(TMP, "agents", "clarify-agent.md"),
+        "---\nname: clarify-agent\n---\n# Clarify Agent\n",
+      );
+      const base = makeTestConfig({ projectRoot: TMP });
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        stages: {
+          ...base.stages,
+          clarify: { agentPath: "agents/clarify-agent.md", skillPath: "clarify/SKILL.md", nextStage: "plan", requireDomain: false },
+          develop: { agentPath: "agents/clarify-agent.md", skillPath: "develop/SKILL.md", nextStage: "review", requireDomain: false },
+        },
+        ...(opts.takeoverStages ? { takeoverStages: opts.takeoverStages } : {}),
+      } as any);
+      const meta = makeTestMeta({ currentStage: opts.stage ?? "clarify" });
+      const ctx = createMockCtx(meta, opts.isChild ? { sessionHeader: { parentSession: "/tmp/parent.jsonl" } } : undefined);
+      ctx.toolCall = { name: "Agent", arguments: { subagent_type: "clarify-agent", prompt: "x" } };
+      return { TMP, config, meta, ctx };
+    }
+
+    it("clarify (default on): owner + Agent + matching mention → block + reserved + pendingSpawns, no violation", async () => {
+      const { TMP, config, meta, ctx } = await makeTakeoverSetup();
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("Plugin-owned spawn");
+      // Side effect ①: reserved evidence written before block
+      expect(meta.activeSpawns?.clarify?.reserved).toBe(true);
+      expect(meta.pendingSpawns?.clarify?.agentName).toBe("clarify-agent");
+      // Side effect ②: not a violation
+      expect((meta as any).violations ?? []).toHaveLength(0);
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("non-takeover stage (develop default off) → not intercepted", async () => {
+      const { TMP, config, ctx } = await makeTakeoverSetup({ stage: "develop" });
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("takeoverStages override enabling develop → intercepted", async () => {
+      const { TMP, config, meta, ctx } = await makeTakeoverSetup({
+        stage: "develop",
+        takeoverStages: ["clarify", "develop"],
+      });
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect(meta.pendingSpawns?.develop?.agentName).toBe("clarify-agent");
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("non-Agent tool → not intercepted", async () => {
+      const { TMP, config, ctx } = await makeTakeoverSetup();
+      ctx.toolCall = { name: "read", arguments: {} };
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("non-matching subagent_type → not intercepted", async () => {
+      const { TMP, config, ctx } = await makeTakeoverSetup();
+      ctx.toolCall = { name: "Agent", arguments: { subagent_type: "other-agent" } };
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("child session → not intercepted (owner routes)", async () => {
+      const { TMP, config, ctx } = await makeTakeoverSetup({ isChild: true });
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      await rm(TMP, { recursive: true, force: true });
     });
   });
 });

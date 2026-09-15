@@ -101,3 +101,52 @@ export function deriveClarifyForwardArgs(
   // Has answer but no confirmation → trigger full-und?
   return { kind: "full-und?", round: latest.round };
 }
+
+/** Result of the clarify two-state title/description derivation. */
+export interface ClarifyDescription {
+  /** Subagent description/title (plugin contract, never model free-form). */
+  description: string;
+  /** Which state produced the description. */
+  argsSource: "user" | "derived";
+}
+
+/**
+ * Phase 4 / 177 (D7): Two-state clarify description.
+ *
+ * - verbatim: the user's current-round args (`lastClarifyTurnArgs`, persisted by
+ *   prompt-injector) win and are carried into the title verbatim.
+ * - derived: no verbatim args → document-state round derivation, title carries
+ *   only the file (no misleading round/args suffix).
+ *
+ * Shared by the plugin-owned takeover spawn (all stages use the same function).
+ *
+ * @param file - Requirement document path
+ * @param lastClarifyTurnArgs - Persisted current-round args, if any
+ * @returns Description + source
+ */
+export function resolveClarifyDescription(
+  file: string,
+  lastClarifyTurnArgs?: string,
+): ClarifyDescription {
+  const verbatim = lastClarifyTurnArgs?.trim();
+  if (verbatim) {
+    return { description: `Clarify: ${file} ${verbatim}`.trim(), argsSource: "user" };
+  }
+  return { description: `Clarify: ${file}`, argsSource: "derived" };
+}
+
+/**
+ * Phase 4 / 177 (D7③): Extracts the current-round clarify args from a user
+ * message of the form `@<agent> <file> <args...>`.
+ *
+ * @param message - Last user message text
+ * @param agentName - Resolved clarify agent mention (null disables parsing)
+ * @returns The args substring, or undefined when the message does not match
+ */
+export function parseClarifyTurnArgs(message: string, agentName: string | null): string | undefined {
+  if (!agentName || !message) return undefined;
+  const escaped = agentName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = message.match(new RegExp(`@${escaped}\\s+\\S+\\s+(.+)$`, "m"));
+  const args = match?.[1]?.trim();
+  return args ? args : undefined;
+}

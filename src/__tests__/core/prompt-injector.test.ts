@@ -1564,4 +1564,24 @@ describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
 
     await rm(TMP, { recursive: true, force: true });
   });
+
+  it("Phase 4 / 177 (D7): stage executor text says the plugin owns spawning (no model task self-call)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "develop", previousStage: "plan" });
+    const ctx = {
+      session: { getMeta: () => meta },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx as any))!;
+    const prompt = result.systemPrompt!;
+
+    expect(prompt).toContain("Stage Executor Scheduling");
+    expect(prompt).toContain("plugin owns spawning");
+    // Old wording that invited a model-driven task call must be gone.
+    expect(prompt).not.toContain("via task tool");
+    expect(prompt).not.toContain("RPC unavailable fallback");
+  });
 });

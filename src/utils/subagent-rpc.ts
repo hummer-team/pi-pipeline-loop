@@ -17,6 +17,7 @@ import path from "node:path";
 import { safeWriteAuditLog } from "./auditLog";
 import { clearActiveSpawnRecord } from "./spawn-cleanup";
 import { isSubagentsReady } from "./subagent-availability";
+import { resolveClarifyDescription } from "./clarify-args";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 
 /**
@@ -772,11 +773,19 @@ export async function consumePendingSpawns(
       continue;
     }
 
-    const result = await spawnStageSubagent(pi, config, stage, fresh, {
-      ui: opts.ui,
-      session: opts.session,
-      runtimeCtx: opts.runtimeCtx,
-    });
+    // Phase 4 / 177 (D7): clarify is not in isSpawnableStage (its own spawn path),
+    // so route it through the dedicated clarify dispatcher.
+    const result = stage === "clarify"
+      ? await spawnClarifyStageSubagent(pi, config, fresh, {
+          ui: opts.ui,
+          session: opts.session,
+          runtimeCtx: opts.runtimeCtx,
+        })
+      : await spawnStageSubagent(pi, config, stage, fresh, {
+          ui: opts.ui,
+          session: opts.session,
+          runtimeCtx: opts.runtimeCtx,
+        });
 
     if (result.spawned || result.fallback) {
       clearPendingSpawn(opts.session, stage);
@@ -796,4 +805,95 @@ export async function consumePendingSpawns(
   }
 
   return consumed;
+}
+
+/**
+ * Phase 4 / 177 (D7): Spawns the clarify executor with a plugin-contract title.
+ *
+ * Clarify is intentionally excluded from `isSpawnableStage` (it has its own
+ * auto-launch path), so the takeover consumer uses this dedicated dispatcher.
+ * The description is derived two-state: verbatim user args win, otherwise a
+ * document-derived title (no model free-form wording).
+ *
+ * @param pi - Owner `pi` SDK handle
+ * @param config - Pipeline configuration
+ * @param meta - Session metadata
+ * @param opts - UI notify, session handle, runtimeCtx for sessionFile audit
+ * @returns { spawned, fallback } outcome
+ */
+export async function spawnClarifyStageSubagent(
+  pi: unknown,
+  config: PipelineConfig,
+  meta: SessionMeta,
+  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
+): Promise<{ spawned: boolean; fallback: boolean }> {
+  const agentName = resolveAgentMention(config, "clarify");
+  if (!agentName) {
+    opts?.ui?.notify?.(`No agent configured for stage "clarify". Please start manually.`);
+    await safeWriteAuditLog("stage_spawn_skipped", {
+      pipelineId: meta.pipelineId,
+      stage: "clarify",
+      reason: "agentName_unresolvable",
+    });
+    return { spawned: false, fallback: false };
+  }
+
+  const file = meta.requirementDoc ?? "";
+  const sessionFile = extractSessionFile(opts?.runtimeCtx);
+  const { description } = resolveClarifyDescription(file, meta.lastClarifyTurnArgs);
+  const argsSuffix = meta.lastClarifyTurnArgs?.trim() ? ` ${meta.lastClarifyTurnArgs.trim()}` : "";
+  const prompt = `${file}${argsSuffix}`.trim();
+
+  // RPC path (availability latch driven).
+  if (hasEventBus(pi) && isSubagentsReady()) {
+    const spawnResult = await spawnClarifySubagent(pi, { agentName, prompt, description });
+    if (spawnResult.ok) {
+      await safeWriteAuditLog("stage_spawn_rpc", {
+        pipelineId: meta.pipelineId,
+        stage: "clarify",
+        agentName,
+        subagentId: spawnResult.id,
+        ...(sessionFile ? { sessionFile } : {}),
+      });
+      const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
+        if (opts?.session) clearActiveSpawnRecord(opts.session, "clarify");
+        cleanup();
+      }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
+      return { spawned: true, fallback: false };
+    }
+    await safeWriteAuditLog("stage_spawn_rpc_failed", {
+      pipelineId: meta.pipelineId,
+      stage: "clarify",
+      agentName,
+      error: spawnResult.error,
+      ...(sessionFile ? { sessionFile } : {}),
+    }, "warn");
+  }
+
+  // Fallback: sendUserMessage with the plugin auto-handoff prefix (D10).
+  if (hasSendUserMessage(pi)) {
+    try {
+      pi.sendUserMessage(`[plugin auto-handoff] @${agentName} ${prompt}`, { deliverAs: "followUp" });
+      opts?.ui?.notify?.(`Spawned clarify agent via followUp message.`);
+      await safeWriteAuditLog("stage_spawn_fallback", {
+        pipelineId: meta.pipelineId,
+        stage: "clarify",
+        agentName,
+        ...(sessionFile ? { sessionFile } : {}),
+      });
+      return { spawned: true, fallback: true };
+    } catch {
+      // sendUserMessage failure is non-fatal; fall through to notify
+    }
+  }
+
+  opts?.ui?.notify?.(`Next: run @${agentName} manually for clarify stage.`);
+  await safeWriteAuditLog("stage_spawn_fallback", {
+    pipelineId: meta.pipelineId,
+    stage: "clarify",
+    agentName,
+    notify_only: "true",
+    ...(sessionFile ? { sessionFile } : {}),
+  });
+  return { spawned: false, fallback: false };
 }

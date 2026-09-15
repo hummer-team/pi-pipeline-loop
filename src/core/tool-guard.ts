@@ -711,6 +711,62 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         }
       }
 
+      // 3d. Phase 4 / 177 (D7): plugin-owned spawn takeover.
+      // Four conditions (ALL must hold):
+      //   - owner session (child sessions never spawn in place)
+      //   - currentStage ∈ config.takeoverStages (default: ["clarify"])
+      //   - toolName ∈ SPAWN_TOOL_NAMES (Agent)
+      //   - subagent_type === resolveAgentMention(config, stage)
+      // On hit: write reserved evidence FIRST (side effect ①), then block and
+      // route the spawn to the owner via pendingSpawns. NOT a violation (②).
+      const takeoverStages = config.takeoverStages ?? ["clarify"];
+      if (SPAWN_TOOL_NAMES.includes(toolName) && takeoverStages.includes(meta.currentStage)) {
+        const takeoverSubagentType = args.subagent_type as string | undefined;
+        if (takeoverSubagentType) {
+          const takeoverAgent = resolveAgentMention(config, meta.currentStage);
+          if (takeoverAgent && takeoverSubagentType === takeoverAgent) {
+            const { isChild: takeoverIsChild } = detectSessionRole(ctx);
+            if (!takeoverIsChild) {
+              const reservedId = `takeover-${meta.currentStage}-${Date.now()}`;
+              const latest = ctx.session.getMeta() as SessionMeta;
+              // Side effect ①: reserve evidence BEFORE returning block so an
+              // immediate model retry is caught by the 3c duplicate-spawn guard.
+              ctx.session.updateMeta({
+                activeSpawns: {
+                  ...(latest.activeSpawns ?? {}),
+                  [meta.currentStage]: {
+                    agentName: takeoverAgent,
+                    agentId: reservedId,
+                    startedAt: Date.now(),
+                    reserved: true,
+                  },
+                },
+                pendingSpawns: {
+                  ...(latest.pendingSpawns ?? {}),
+                  [meta.currentStage]: {
+                    agentName: takeoverAgent,
+                    requestedAt: Date.now(),
+                    attempts: latest.pendingSpawns?.[meta.currentStage]?.attempts ?? 0,
+                  },
+                },
+              });
+              await safeWriteAuditLog("spawn_takeover_blocked", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                tool: toolName,
+                subagentType: takeoverSubagentType,
+                reservedId,
+              });
+              // Side effect ②: takeover block is NOT counted as a violation.
+              return {
+                block: true,
+                reason: `Plugin-owned spawn: the ${meta.currentStage} executor (id ${reservedId}) has been queued; await its result. Direct Agent/task calls are rewritten to the plugin spawn path.`,
+              };
+            }
+          }
+        }
+      }
+
       // 4. File write protection for write/edit tools
       if (toolName === "write" || toolName === "edit") {
         const filePath = (args.file_path || args.path) as string;

@@ -28,7 +28,9 @@ import { computeStringHash } from "../utils/hash";
 import { isFrozen, getFlowState, formatFrozenReason, formatDecisionMenuHint } from "./flow-state";
 import { isDormant } from "./dormancy";
 import { probeAgentState } from "../utils/subagents-introspect";
-import { detectLastRunHealth } from "./session-state";
+import { detectLastRunHealth, extractLastUserMessageText } from "./session-state";
+import { parseClarifyTurnArgs } from "../utils/clarify-args";
+import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import type { RuntimeCtx } from "./runtime-ctx";
 
@@ -593,6 +595,21 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
       const meta: SessionMeta = rawMeta;
       const stageConfig = config.stages[meta.currentStage];
 
+      // Phase 4 / 177 (D7③): persist the user's current-round clarify args so the
+      // plugin-owned takeover spawn can use them verbatim in the subagent title.
+      // Best-effort; never blocks injection.
+      if (meta.currentStage === "clarify") {
+        try {
+          const lastUserMsg = extractLastUserMessageText(ctx._ctx as Parameters<typeof extractLastUserMessageText>[0]);
+          const args = parseClarifyTurnArgs(lastUserMsg, resolveAgentMention(config, "clarify"));
+          if (args && args !== meta.lastClarifyTurnArgs) {
+            ctx.session.updateMeta({ lastClarifyTurnArgs: args });
+          }
+        } catch {
+          // Fail-open: arg persistence must never block prompt injection
+        }
+      }
+
       // Extract base system prompt EARLY (before buildDynamicValues)
       // Needed for idempotent stage-skill injection detection
       const base = ctx.getSystemPrompt?.() ?? "";
@@ -910,14 +927,14 @@ async function buildStageExecutor(
     lines.push(`**Return protocol**: On \`full-und?\` confirmation, write the \`## 模型确认\` marker to the requirement document and STOP. Do NOT call \`stage_advance\` — the \`agent_settled\` hook auto-verifies (completionMarker) and advances to \`plan\`.`);
     // Phase 2 (172) G2: triage guidance for owner session
     lines.push(`**Triage**: If the user asks an unrelated question (not @mention with doc path or round args), answer briefly and do NOT touch pipeline state. Only pipeline-turn messages (containing verification results, stage routing, or @agent doc args) trigger verification.`);
-    // Phase 7 (172) G1 + Phase 1 (175 R2Q2): fresh-spawn guidance for clarify re-launch
-    // The hardline sentence ensures prompt/description carry user args verbatim per round.
-    lines.push(`**Re-launch**: When the user mentions \`@${executor.subagent_type} {file} {args}\` during clarify, spawn a **new task** with \`description = Clarify: {file} {args}\` — do NOT resume the previous task. Each round gets its own task title reflecting the round number. **MUST**: prompt and description must carry the user's current-round args verbatim (e.g. \`2 答\`); do NOT reuse the previous round's title or args.`);
+    // Phase 7 (172) G1 + Phase 1 (175 R2Q2) + Phase 4 / 177 (D7): plugin-owned re-launch.
+    // The plugin spawns the new task; direct model invocation is intercepted/rewritten.
+    lines.push(`**Re-launch**: When the user mentions \`@${executor.subagent_type} {file} {args}\` during clarify, the plugin spawns a **new task** with \`description = Clarify: {file} {args}\` — the previous task is never resumed. Each round gets its own plugin-owned task title reflecting the round number, carrying the user's current-round args verbatim (e.g. \`2 答\`).`);
   } else if (executor.mode === "task-invocation") {
     lines.push(`This stage is executed by sub-agent: \`${executor.subagent_type}\``);
     lines.push("");
-    // Phase 2 / 175 (R2Q5A): scheduling text indicates plugin auto-spawns; main thread must not re-invoke.
-    lines.push(`**Scheduling**: The plugin auto-spawns \`${executor.subagent_type}\` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call \`${executor.subagent_type}\` via task tool.`);
+    // Phase 2 / 175 (R2Q5A) + Phase 4 / 177 (D7④): the plugin owns spawning.
+    lines.push(`**Scheduling**: The plugin owns spawning of \`${executor.subagent_type}\` on stage entry. If the main thread calls \`${executor.subagent_type}\` via the Agent/task tool, the call is intercepted and rewritten to the plugin spawn path — do NOT rely on self-invocation.`);
     lines.push(`**Return protocol**: Sub-agent returns \`nextStage: <stage>\` suggestion; main thread calls stage_advance.`);
     lines.push(`**Context**: context_arg filled by main thread from document artifacts (e.g. \`_plan.md\`, \`_commit.md\`)`);
   } else {
