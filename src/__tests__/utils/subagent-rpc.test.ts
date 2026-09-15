@@ -1063,6 +1063,37 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("review fix: clears stale reserved evidence after fallback consumption", async () => {
+    __resetSubagentsReady(); // fallback path (no RPC)
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-reserved-clear",
+      // Synthetic reserved entry written by the Phase 4 takeover block.
+      activeSpawns: {
+        develop: { agentName: "develop-agent", agentId: "takeover-develop-1", startedAt: Date.now(), reserved: true },
+      },
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+    const mockPi = { sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual(["develop"]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    // Stale reserved entry must be gone (would otherwise suppress for 60s).
+    expect(meta.activeSpawns?.develop).toBeUndefined();
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it("re-delivery bound: attempts>=1 → clears without spawning", async () => {
     markSubagentsReady();
     const { config, tmpDir } = makeDevelopConfig();

@@ -788,6 +788,17 @@ export async function consumePendingSpawns(
         });
 
     if (result.spawned || result.fallback) {
+      // Phase 4 / 177 fix (review 1): the takeover block wrote synthetic reserved
+      // evidence (activeSpawns[stage] with a `takeover-…` id). RPC success
+      // overwrites it with the real agentId, but the fallback channel does not —
+      // clear the stale reserved entry so it cannot cause 60s duplicate-spawn
+      // suppression or a 30min stale active-spawn note.
+      if (result.fallback) {
+        const m = opts.session.getMeta();
+        if (m?.activeSpawns?.[stage]?.reserved) {
+          clearActiveSpawnRecord(opts.session, stage);
+        }
+      }
       clearPendingSpawn(opts.session, stage);
       consumed.push(stage);
     } else {

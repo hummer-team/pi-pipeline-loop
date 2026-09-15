@@ -24,7 +24,6 @@ import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
 import { evaluateGroups } from "./verifiers/group-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
-import { getVerifyPrompt } from "./prompt-config";
 import { parseFrontmatter, type VerifyRules, type VerifyGroupRuleNode } from "./verify-frontmatter";
 import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
 import { diagnoseVerifyConfig } from "./verify-config-diagnosis";
@@ -380,13 +379,6 @@ export async function runVerification(
       configErrors: diagnosis.errors.map(e => e.detail),
     };
   }
-
-  // Phase 6 / 177 (D8): the legacy LLM verify layer was removed, so the yml
-  // verify_{stage} prompt is no longer consumed by this function. The lookup is
-  // retained internally to keep the yml contract resolvable (no behavior change).
-  // @internal
-  const effectivePrompt = await getVerifyPrompt(config.projectRoot, meta.currentStage);
-  void effectivePrompt;
 
   // Build audit log closure: injects pipelineId into every error-level audit entry
   const logError: AuditLogFn = options?.logError ??
