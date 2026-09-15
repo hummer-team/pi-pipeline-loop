@@ -16,7 +16,7 @@ import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { getFileHash } from "../utils/hash";
-import { writeAuditLog } from "../utils/auditLog";
+import { writeAuditLog, encodeAuditValue } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { isDormant } from "./dormancy";
 import { freezeAndPrompt } from "./flow-state";
@@ -214,6 +214,22 @@ function isTestCommand(command: string): boolean {
 }
 
 /**
+ * 178 Phase 2 (Q6-B): Weak, observation-only heuristic for a *possibly* missed
+ * test command. Matches a standalone `test`/`tests` word (bounded by
+ * non-letters) anywhere in the command — e.g. `./scripts/test.sh`, `make test`
+ * variants — while ignoring commands that merely embed letters around it.
+ *
+ * This value NEVER participates in the gate: it only decides whether to write
+ * the `test_detect_miss_candidate` audit signal so a miss becomes visible.
+ *
+ * @param command - The raw bash command string
+ * @returns true when the command loosely contains a test word
+ */
+function looksLikeMissedTest(command: string): boolean {
+  return /(^|[^a-z])tests?([^a-z]|$)/i.test(command);
+}
+
+/**
  * Creates the `tool_result` hook that intercepts tool results for:
  *
  * 1. **Loop circuit breaker** — When bash test commands fail in develop/fix stages,
@@ -254,11 +270,15 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
 
       // ── 1. Test failure counting and circuit breaker ─────────────────
       // Phase 3 (172): consecutive-fail semantics — success resets the counter.
-      if (
-        toolCall.name === "bash" &&
-        typeof toolCall.arguments?.command === "string" &&
-        isTestCommand(toolCall.arguments.command as string)
-      ) {
+      // The command is resolved once so §1 and the §1a miss signal share the
+      // same `isTestCommand` verdict without re-evaluating it.
+      const bashCommand =
+        toolCall.name === "bash" && typeof toolCall.arguments?.command === "string"
+          ? (toolCall.arguments.command as string)
+          : undefined;
+      const isTestBash = bashCommand !== undefined && isTestCommand(bashCommand);
+
+      if (isTestBash) {
         if (meta.currentStage === "develop" || meta.currentStage === "fix") {
           if (ctx.result?.exitCode !== 0) {
             // Test failure: increment consecutive-fail counter
@@ -287,6 +307,27 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
             });
           }
         }
+      }
+
+      // ── 1a. Missed-test detection signal (observability only) ────────
+      // A failed bash command that was NOT classified as a test but loosely
+      // looks like one (e.g. `./scripts/test.sh`, `make check` variants) is
+      // recorded for post-hoc analysis (Q6-B). This branch MUST NOT update
+      // meta, count, or freeze — it is a pure audit signal. On a real miss the
+      // flow is fail-open: §1 is skipped and the three safety nets (§1b,
+      // agent_settled auto-verify, maxCycles) absorb the retries (Q6-A).
+      if (
+        bashCommand !== undefined &&
+        !isTestBash &&
+        ctx.result?.exitCode !== 0 &&
+        (meta.currentStage === "develop" || meta.currentStage === "fix") &&
+        looksLikeMissedTest(bashCommand)
+      ) {
+        await writeAuditLog("test_detect_miss_candidate", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          command: encodeAuditValue(bashCommand),
+        }, "info");
       }
 
       // ── 1b. Verification failure loop counting ───────────────────────

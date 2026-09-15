@@ -324,6 +324,103 @@ describe("createLoopBreaker", () => {
     });
   });
 
+  // ─── Phase 2 (178): missed-test observability + fail-open semantics ──────────
+  describe("Phase 2 (178): missed-test signal and fail-open behavior", () => {
+    it("fails open on missed test commands (no count, no freeze, no fatal audit)", async () => {
+      const TMP = join(tmpdir(), "pi-breaker-miss-failopen-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      // maxLoops=1 makes a spurious count immediately observable as a freeze.
+      const config = makeTestConfig({ projectRoot: TMP, maxLoops: 1 });
+      await initAuditLog(config);
+
+      for (const cmd of ["./scripts/test.sh", "make check"]) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0, maxLoops: 1 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
+
+        await createLoopBreaker(config).handler(ctx as any);
+
+        expect(ctx.metadataUpdates.length, `unexpected count: ${cmd}`).toBe(0);
+        expect(meta.loopCount, `loopCount changed: ${cmd}`).toBe(0);
+        expect(meta.flowState, `unexpected freeze: ${cmd}`).toBeUndefined();
+      }
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent.includes("loop_break_fatal")).toBe(false);
+    });
+
+    it("writes a test_detect_miss_candidate audit line without counting", async () => {
+      const TMP = join(tmpdir(), "pi-breaker-miss-audit-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "./scripts/test.sh" } };
+      ctx.result = { exitCode: 1 };
+
+      await createLoopBreaker(config).handler(ctx as any);
+
+      expect(ctx.metadataUpdates.length).toBe(0);
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(logContent).toContain("test_detect_miss_candidate");
+      expect(logContent).toContain("command=./scripts/test.sh");
+    });
+
+    it("does not write the miss signal for non-test-looking, non-develop/fix, or test-success cases", async () => {
+      const TMP = join(tmpdir(), "pi-breaker-miss-none-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const scenarios = [
+        { stage: "develop", cmd: "git status", exitCode: 1 }, // no "test" word
+        { stage: "clarify", cmd: "./scripts/test.sh", exitCode: 1 }, // wrong stage
+        { stage: "develop", cmd: "npm test", exitCode: 0 }, // real test success
+      ] as const;
+
+      for (const s of scenarios) {
+        const meta = makeTestMeta({ currentStage: s.stage, loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: s.cmd } };
+        ctx.result = { exitCode: s.exitCode };
+        await createLoopBreaker(config).handler(ctx as any);
+      }
+
+      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      let logContent = "";
+      try { logContent = await readFile(logPath, "utf-8"); } catch { /* no audit file written */ }
+      expect(logContent.includes("test_detect_miss_candidate")).toBe(false);
+    });
+
+    it("escapes `|` and `=` in the candidate command to keep the audit line parseable", async () => {
+      const TMP = join(tmpdir(), "pi-breaker-miss-escape-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "echo test | grep foo=bar" } };
+      ctx.result = { exitCode: 1 };
+
+      await createLoopBreaker(config).handler(ctx as any);
+
+      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const line = logContent
+        .trim()
+        .split("\n")
+        .find(l => l.includes("test_detect_miss_candidate"))!;
+      expect(line).toContain("command=echo test %7C grep foo%3Dbar");
+      // Field separators stay intact: marker + pipelineId + stage + command.
+      expect(line.split(" | ").length).toBe(4);
+    });
+  });
+
   describe("file modification diff archiving", () => {
     it("archives diff when file content changes", async () => {
       const TMP = join(tmpdir(), "pi-diff-archive-" + Date.now());
