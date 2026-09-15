@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-loader";
+import { resolveGitModifyPolicy, describeGitModifySource } from "../../utils/protect";
 import type { PipelineJsonConfig } from "../../types";
 
 let TMP: string;
@@ -548,6 +549,79 @@ describe("protect config", () => {
     };
     const result = resolvePipelineConfig(json);
     expect(result.stages.clarify.protect).toBeUndefined();
+  });
+});
+
+// ─── Phase 0 / 177: gitModify passthrough (D1) + three-state parsing ────────
+
+describe("Phase 0 / 177: protect.gitModify passthrough and three-state enum", () => {
+  it("resolvePipelineConfig preserves global protect.gitModify (D1 regression)", async () => {
+    await writeJson({
+      stages: { review: {} },
+      protect: { gitModify: "allow" },
+    });
+    const json = loadJsonConfig(jsonPath);
+    const cfg = resolvePipelineConfig(json);
+    // D1 core: previously dropped during protect rebuild → always matrix-default.
+    expect(cfg.protect!.gitModify).toBe("allow");
+    expect(resolveGitModifyPolicy(cfg, null, "review")).toBe("allow");
+    expect(describeGitModifySource(cfg, "review")).toBe("global");
+  });
+
+  it("loadJsonConfig parses global gitModify: 'ask'", async () => {
+    await writeJson({ stages: { clarify: {} }, protect: { gitModify: "ask" } });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.protect!.gitModify).toBe("ask");
+  });
+
+  it("loadJsonConfig parses stage-level gitModify: 'ask'", async () => {
+    await writeJson({ stages: { develop: { protect: { gitModify: "ask" } } } });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.stages.develop!.protect!.gitModify).toBe("ask");
+  });
+
+  it("resolvePipelineConfig preserves stage-level gitModify: 'ask'", () => {
+    const json: PipelineJsonConfig = {
+      stages: { develop: { protect: { gitModify: "ask" } } },
+    };
+    const cfg = resolvePipelineConfig(json);
+    expect(cfg.stages.develop.protect!.gitModify).toBe("ask");
+    expect(resolveGitModifyPolicy(cfg, null, "develop")).toBe("ask");
+    expect(describeGitModifySource(cfg, "develop")).toBe("stage");
+  });
+
+  it("loadJsonConfig warns and drops invalid global gitModify 'foo'", async () => {
+    const originalWarn = console.warn;
+    const captured: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      if (typeof args[0] === "string") captured.push(args[0]);
+    };
+    try {
+      await writeJson({ stages: { clarify: {} }, protect: { gitModify: "foo" } });
+      const result = loadJsonConfig(jsonPath);
+      expect(result.protect!.gitModify).toBeUndefined();
+      expect(captured.some((msg) => msg.includes("Invalid protect.gitModify"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("resolvePipelineConfig warns and drops invalid stage-level gitModify 'foo'", () => {
+    const originalWarn = console.warn;
+    const captured: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      if (typeof args[0] === "string") captured.push(args[0]);
+    };
+    try {
+      const json: PipelineJsonConfig = {
+        stages: { clarify: { protect: { gitModify: "foo" as any } } },
+      };
+      const result = resolvePipelineConfig(json);
+      expect(result.stages.clarify.protect!.gitModify).toBeUndefined();
+      expect(captured.some((msg) => msg.includes("Invalid stage protect.gitModify"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });
 

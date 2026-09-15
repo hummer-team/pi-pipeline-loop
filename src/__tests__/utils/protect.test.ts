@@ -386,6 +386,39 @@ describe("resolveGitModifyPolicy", () => {
     });
     expect(resolveGitModifyPolicy(config, null)).toBe("allow");
   });
+
+  // ── Phase 0 / 177: three-state ("ask") + matrix invariance ──
+
+  it("matrix defaults remain unchanged: develop/fix allow, others block", () => {
+    const config = makeTestConfig();
+    expect(GIT_MODIFY_DEFAULT_MATRIX.develop).toBe("allow");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.fix).toBe("allow");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.clarify).toBe("block");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.plan).toBe("block");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.review).toBe("block");
+    expect(GIT_MODIFY_DEFAULT_MATRIX.completed).toBe("block");
+    // Resolved values for stages without overrides
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("allow");
+    expect(resolveGitModifyPolicy(config, null, "fix")).toBe("allow");
+    expect(resolveGitModifyPolicy(config, null, "completed")).toBe("block");
+  });
+
+  it("global 'ask' override resolves to 'ask'", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "ask" },
+    });
+    expect(resolveGitModifyPolicy(config, null, "clarify")).toBe("ask");
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("ask");
+  });
+
+  it("stage-level 'ask' takes priority over global", () => {
+    const config = makeTestConfig({
+      protect: { gitignore: true, paths: [], allow: [], gitModify: "block" },
+    });
+    config.stages.develop.protect = { gitModify: "ask" };
+    expect(resolveGitModifyPolicy(config, null, "develop")).toBe("ask");
+    expect(resolveGitModifyPolicy(config, null, "clarify")).toBe("block");
+  });
 });
 
 // ── Phase 3 / 175: describeGitModifySource ──────────────────────────────────

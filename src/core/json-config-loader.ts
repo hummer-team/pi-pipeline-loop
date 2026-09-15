@@ -284,13 +284,13 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
     }
   }
 
-  // Parse gitModify enum (Phase 0 / 172)
+  // Parse gitModify enum (Phase 0 / 172; Phase 0 / 177 adds "ask")
   if (obj.gitModify !== undefined) {
-    if (obj.gitModify === "allow" || obj.gitModify === "block") {
+    if (obj.gitModify === "allow" || obj.gitModify === "block" || obj.gitModify === "ask") {
       result.gitModify = obj.gitModify;
     } else {
       console.warn(
-        `[pi-pipeline] Invalid protect.gitModify "${String(obj.gitModify)}" — expected "allow"|"block", ignoring`,
+        `[pi-pipeline] Invalid protect.gitModify "${String(obj.gitModify)}" — expected "allow"|"block"|"ask", ignoring`,
       );
     }
   }
@@ -301,9 +301,10 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
 /**
  * Parses per-stage protect overrides from JSON stage config.
  * Only `gitModify` sub-field is effective at stage level (Phase 0 / 172).
+ * Value domain is "allow" | "block" | "ask" (Phase 0 / 177 adds "ask").
  * Returns undefined when input is missing or not an object.
  */
-function parseStageProtectConfig(raw: unknown): { gitModify?: "allow" | "block" } | undefined {
+function parseStageProtectConfig(raw: unknown): { gitModify?: "allow" | "block" | "ask" } | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "object" || Array.isArray(raw)) {
     console.warn(
@@ -312,14 +313,14 @@ function parseStageProtectConfig(raw: unknown): { gitModify?: "allow" | "block" 
     return undefined;
   }
   const obj = raw as Record<string, unknown>;
-  const result: { gitModify?: "allow" | "block" } = {};
+  const result: { gitModify?: "allow" | "block" | "ask" } = {};
 
   if (obj.gitModify !== undefined) {
-    if (obj.gitModify === "allow" || obj.gitModify === "block") {
+    if (obj.gitModify === "allow" || obj.gitModify === "block" || obj.gitModify === "ask") {
       result.gitModify = obj.gitModify;
     } else {
       console.warn(
-        `[pi-pipeline] Invalid stage protect.gitModify "${String(obj.gitModify)}" — expected "allow"|"block", ignoring`,
+        `[pi-pipeline] Invalid stage protect.gitModify "${String(obj.gitModify)}" — expected "allow"|"block"|"ask", ignoring`,
       );
     }
   }
@@ -715,6 +716,9 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       paths: json.protect?.paths ?? [],
       allow: json.protect?.allow ?? [],
       ask: json.protect?.ask ?? false,
+      // Phase 0 / 177 (D1): preserve the global gitModify override. Omitting this
+      // field silently degraded every global config to the stage matrix default.
+      gitModify: json.protect?.gitModify,
     },
     startStageMode: json.startStageMode ?? "auto",
     audit: { promptSnapshot: json.audit?.promptSnapshot ?? "full" },

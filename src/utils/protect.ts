@@ -245,17 +245,19 @@ export const GIT_MODIFY_DEFAULT_MATRIX: Readonly<Partial<Record<PipelineStage, "
  *   3. GIT_MODIFY_DEFAULT_MATRIX[stage]  (built-in matrix; unknown stage → "block")
  *
  * This pure function has no side effects and does not consult gitignore or protect.ask.
+ * The value domain is "allow" | "block" | "ask" (Phase 1 / 177 adds "ask"); the
+ * `protect.ask` block-state fallback gate is applied by tool-guard, not here.
  *
  * @param config - Full pipeline configuration (used for global protect.gitModify)
  * @param _gitignore - Unused parameter, kept for API symmetry with resolveProtectConfig
  * @param stage - The pipeline stage to resolve for
- * @returns "allow" or "block"
+ * @returns "allow", "block", or "ask"
  */
 export function resolveGitModifyPolicy(
   config: PipelineConfig,
   _gitignore?: GitignoreInfo | null,
   stage?: PipelineStage,
-): "allow" | "block" {
+): "allow" | "block" | "ask" {
   // Tier 1: stage-level override
   if (stage) {
     const stageProtect = config.stages?.[stage]?.protect;
