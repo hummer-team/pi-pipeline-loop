@@ -20,7 +20,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { isDormant } from "./dormancy";
 import { freezeAndPrompt } from "./flow-state";
-import { splitShellSegments } from "../utils/bash-parse";
+import { splitShellSegments, tokenize } from "../utils/bash-parse";
 
 /**
  * Ensures a directory exists, creating it recursively if needed.
@@ -39,6 +39,8 @@ async function ensureDir(dirPath: string): Promise<void> {
  */
 const TEST_RUNNER_EXECUTABLES = new Set([
   "jest", "vitest", "pytest", "pytest3", "rspec", "mocha", "ava", "playwright",
+  // 178 Phase 0 (Q8-A): additional "unconditional runner" executables.
+  "phpunit", "ctest",
 ]);
 
 /**
@@ -46,17 +48,40 @@ const TEST_RUNNER_EXECUTABLES = new Set([
  */
 const PACKAGE_MANAGERS = new Set([
   "npm", "npx", "pnpm", "yarn", "bun",
+  // 178 Phase 0 (Q8-A): bunx is bun's npx equivalent (covers `bunx vitest`).
+  "bunx",
 ]);
 
 /**
  * Tests whether a bash command is a test command based on command structure.
  *
+ * **Why this function exists (Goal 2):**
+ * It is the gate for the 172-P3 consecutive-failure counter in the develop/fix
+ * stages. Without it, any failing bash command (build, git, ls, …) would pollute
+ * `loopCount` and trigger a premature circuit break, while a non-test success
+ * would wrongly reset the counter and corrupt the audit semantics of the
+ * fix→pass iteration.
+ *
+ * **Return value:**
+ * Pure predicate — no side effects; the return value is the only output. Its
+ * sole caller is the §1 gate `if` below, which consumes it as a predicate
+ * (correcting the Goal-2 reading that the value was "never received").
+ *
+ * **Fail-open semantics (Q6-A):**
+ * On a missed detection the whole §1 block is skipped — a failure does not
+ * increment, a success does not reset, and the pipeline is not frozen; the flow
+ * continues normally. Three safety nets absorb this: (1) §1b counts any bash
+ * failure while `verifyFailures` is non-empty; (2) `agent_settled`
+ * auto-verification freezes with `verify_attempt_overflow`; (3) `maxCycles`
+ * caps the overall loop. Missed detections are additionally made observable via
+ * the `test_detect_miss_candidate` audit signal (§2).
+ *
  * Uses segment-level parsing (splitShellSegments) to avoid false positives
  * from paths, messages, or grep patterns containing "test".
  *
  * Detection rules per segment (after stripping `rtk ` prefix):
- * 1. First token is a known test runner (jest, vitest, pytest, etc.) → test
- * 2. First token is a package manager (npm, pnpm, bun, etc.) AND
+ * 1. First token is a known test runner (jest, vitest, pytest, phpunit, ctest, etc.) → test
+ * 2. First token is a package manager (npm, pnpm, bun, bunx, etc.) AND
  *    remaining args contain "test" subcommand or "--test" flag → test
  * 3. First token is "node" with "--test" flag → test (Node.js built-in runner)
  * 4. First token is "make" with second token "test" → test
@@ -73,8 +98,9 @@ function isTestCommand(command: string): boolean {
     const stripped = segment.trim().replace(/^rtk\s+/, "");
     if (!stripped) continue;
 
-    // Tokenize by whitespace (simple split — sufficient for first-token analysis)
-    const tokens = stripped.split(/\s+/);
+    // Quote-aware tokenization (shared bash-parse helper) so quoted arguments
+    // such as `grep "test>bar"` keep a correct token boundary.
+    const tokens = tokenize(stripped);
     const firstToken = tokens[0];
 
     // Rule 1: Direct test runner invocation

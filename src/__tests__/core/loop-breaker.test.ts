@@ -172,6 +172,57 @@ describe("createLoopBreaker", () => {
     });
   });
 
+  // ─── Phase 0 (178): tokenization hardening + constant extension ──────────────
+  describe("Phase 0 (178): test-command detection hardening", () => {
+    it("recognizes phpunit and ctest as direct runners (constant extension)", async () => {
+      const config = makeTestConfig();
+      for (const cmd of ["phpunit", "ctest"]) {
+        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command: cmd } };
+        ctx.result = { exitCode: 1 };
+
+        const hook = createLoopBreaker(config);
+        await hook.handler(ctx as any);
+
+        expect(ctx.metadataUpdates.length).toBe(1);
+        expect(ctx.metadataUpdates[0].loopCount).toBe(1);
+      }
+    });
+
+    it("keeps existing positive/negative decisions after quote-aware tokenization", async () => {
+      const config = makeTestConfig();
+
+      // Positive: quote-aware tokenization must not break `bun test`.
+      const positive = createMockCtx(makeTestMeta({ currentStage: "develop", loopCount: 0 }));
+      positive.toolCall = { name: "bash", arguments: { command: "bun test" } };
+      positive.result = { exitCode: 1 };
+      await createLoopBreaker(config).handler(positive as any);
+      expect(positive.metadataUpdates.length).toBe(1);
+
+      // Negative: a quoted argument containing "test" must stay a non-test command.
+      const negative = createMockCtx(makeTestMeta({ currentStage: "develop", loopCount: 0 }));
+      negative.toolCall = { name: "bash", arguments: { command: 'grep "test>bar" src/' } };
+      negative.result = { exitCode: 1 };
+      await createLoopBreaker(config).handler(negative as any);
+      expect(negative.metadataUpdates.length).toBe(0);
+    });
+
+    it("defers `bunx vitest` recognition to Phase 1 (Phase 0 adds constant only)", async () => {
+      // Phase 0 only adds `bunx` to PACKAGE_MANAGERS; the full pkg+runner
+      // structural rule arrives in Phase 1. Until then the command must not
+      // crash or produce a spurious count.
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "bunx vitest" } };
+      ctx.result = { exitCode: 1 };
+
+      await createLoopBreaker(config).handler(ctx as any);
+      expect(ctx.metadataUpdates.length).toBe(0);
+    });
+  });
+
   describe("file modification diff archiving", () => {
     it("archives diff when file content changes", async () => {
       const TMP = join(tmpdir(), "pi-diff-archive-" + Date.now());
