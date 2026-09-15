@@ -16,7 +16,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { safeWriteAuditLog } from "./auditLog";
 import { clearActiveSpawnRecord } from "./spawn-cleanup";
+import { isSubagentsReady } from "./subagent-availability";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
+
+/**
+ * Phase 2 / 177 (D4⑥): Extracts the current session file from a runtime context
+ * for audit correlation. Mirrors the 171 precedent (`tool_rejected_frozen`).
+ *
+ * Fail-safe: returns undefined when the context shape does not expose it.
+ *
+ * @param runtimeCtx - Raw runtime context (structural)
+ * @returns Session file path, or undefined
+ */
+function extractSessionFile(runtimeCtx: unknown): string | undefined {
+  const sm = (runtimeCtx as { _ctx?: { sessionManager?: { getSessionFile?: () => string } } } | undefined)
+    ?._ctx?.sessionManager;
+  return sm?.getSessionFile?.();
+}
 
 /**
  * Minimal EventBus interface expected from pi.events.
@@ -198,18 +214,14 @@ export async function spawnClarifySubagent(
     try {
       pi.events.on(replyChannel, replyHandler);
 
-      // Note: run_in_background=false blocks the caller until the RPC reply arrives
-      // (~500ms ping + up to 5s spawn timeout). Originally constrained to command-handler
-      // async contexts only (E2E_Flow_Bug_plan Phase 2), but 168/169 generalized spawn
-      // to hook paths (agent_settled → autoAdvanceAfterVerify, routeConfirmReject).
-      // The blocking window is acceptable: it's the RPC handshake latency, not the full
-      // subagent lifecycle. See reaudit report Nit 5 for the design evolution rationale.
+      // Phase 2 / 177 (D4): `run_in_background` was removed — it is an Agent-tool
+      // parameter that the RPC silently ignored (spawn is already detached).
+      // The RPC handshake latency is bounded by SPAWN_TIMEOUT_MS.
       pi.events.emit("subagents:rpc:spawn", {
         requestId,
         type: req.agentName,
         prompt: req.prompt,
         options: {
-          run_in_background: false,
           ...(req.description ? { description: req.description } : {}),
         },
       });
@@ -413,7 +425,7 @@ interface SpawnSession {
  * 2. Idempotency guard: if session provided and spawnedStages[stage] === stageStartTime
  *    → audit stage_spawn_skipped reason=duplicate_spawn_guarded, return { spawned: false }
  * 3. resolveAgentMention fails → notify + audit stage_spawn_skipped
- * 4. RPC path (hasEventBus): ping → spawn → audit stage_spawn_rpc + watch lifecycle
+ * 4. RPC path (hasEventBus + availability latch): spawn → audit stage_spawn_rpc + watch lifecycle
  * 5. Fallback: sendUserMessage with deliverAs:"followUp" + notify + audit stage_spawn_fallback
  *
  * On success (RPC or fallback), writes the guard: spawnedStages[stage] = stageStartTime.
@@ -423,7 +435,8 @@ interface SpawnSession {
  * @param config - Pipeline configuration
  * @param stage - Target stage to spawn subagent for
  * @param meta - Current session metadata
- * @param opts - Optional UI notify handle and session for idempotency guard
+ * @param opts - Optional UI notify handle, session for idempotency guard,
+ *   extraArgs, and runtimeCtx (for sessionFile audit correlation)
  * @returns { spawned, fallback } indicating outcome
  */
 export async function spawnStageSubagent(
@@ -431,7 +444,7 @@ export async function spawnStageSubagent(
   config: PipelineConfig,
   stage: PipelineStage,
   meta: SessionMeta,
-  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; extraArgs?: string },
+  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; extraArgs?: string; runtimeCtx?: unknown },
 ): Promise<{ spawned: boolean; fallback: boolean }> {
   // 1. Non-spawnable stage → skip silently
   if (!isSpawnableStage(config, stage)) {
@@ -473,8 +486,23 @@ export async function spawnStageSubagent(
     return { spawned: false, fallback: false };
   }
 
+  // 3b. Phase 2 / 177 (D4③): child/clone contexts must not spawn in place.
+  // Enqueue for the owner session, which consumes pendingSpawns on agent_settled.
+  if (opts?.session && isChildRuntimeCtx(opts.runtimeCtx)) {
+    enqueuePendingSpawn(opts.session, stage, agentName);
+    await safeWriteAuditLog("stage_spawn_routed_to_owner", {
+      pipelineId: meta.pipelineId,
+      stage,
+      agentName,
+      ...(extractSessionFile(opts.runtimeCtx) ? { sessionFile: extractSessionFile(opts.runtimeCtx)! } : {}),
+    });
+    return { spawned: false, fallback: false };
+  }
+
   // Phase 1 (169): spawn prompt includes requirementDoc pointer for context passing
   const reqDocHint = meta.requirementDoc ?? "(unset)";
+  // Phase 2 / 177 (D4⑥): sessionFile for audit correlation (171 precedent).
+  const sessionFile = extractSessionFile(opts?.runtimeCtx);
   let prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}. Requirement doc: ${reqDocHint} — read it first (contains clarification conclusions)`;
   // Phase 3 (171) High B: append extraArgs (User focus) when provided by caller
   if (opts?.extraArgs) {
@@ -547,59 +575,60 @@ export async function spawnStageSubagent(
     opts.session.updateMeta({ activeSpawns: cleared });
   };
 
-  // 4. RPC path: ping → spawn → success
-  if (hasEventBus(pi)) {
-    // Write reserved before ping to mark in-flight spawn
+  // 4. RPC path: availability latch → spawn (Phase 2 / 177 D4).
+  // The latch is set by `subagents:ready`; when it is false we skip the ping
+  // entirely and fall back immediately (zero dead wait).
+  if (hasEventBus(pi) && isSubagentsReady()) {
+    // Write reserved before spawn to mark in-flight spawn
     writeReserved();
-    const pinged = await pingSubagents(pi, 500);
-    if (pinged) {
-      const spawnResult = await spawnClarifySubagent(pi, {
-        agentName,
-        prompt,
-        description,
-      });
+    const spawnResult = await spawnClarifySubagent(pi, {
+      agentName,
+      prompt,
+      description,
+    });
 
-      if (spawnResult.ok) {
-        await safeWriteAuditLog("stage_spawn_rpc", {
-          pipelineId: meta.pipelineId,
-          stage,
-          agentName,
-          subagentId: spawnResult.id,
-        });
-        // Watch lifecycle (self-unregistering) with timeout guard to prevent leak.
-        // On settle: clear activeSpawns entry so duplicate-spawn guard does not misfire.
-        const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
-          clearActiveSpawn();
-          cleanup();
-        }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
-        await writeGuard(spawnResult.id);
-        return { spawned: true, fallback: false };
-      }
-      // Spawn rejected/failed → log failure reason before falling back
-      await safeWriteAuditLog("stage_spawn_rpc_failed", {
+    if (spawnResult.ok) {
+      await safeWriteAuditLog("stage_spawn_rpc", {
         pipelineId: meta.pipelineId,
         stage,
         agentName,
-        error: spawnResult.error,
-      }, "warn");
-      // Phase 2 / 175: clear reserved on spawn failure
-      clearReserved();
-    } else {
-      // Ping timeout → clear reserved before falling through
-      clearReserved();
+        subagentId: spawnResult.id,
+        ...(sessionFile ? { sessionFile } : {}),
+      });
+      // Watch lifecycle (self-unregistering) with timeout guard to prevent leak.
+      // On settle: clear activeSpawns entry so duplicate-spawn guard does not misfire.
+      const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
+        clearActiveSpawn();
+        cleanup();
+      }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
+      await writeGuard(spawnResult.id);
+      return { spawned: true, fallback: false };
     }
-    // Ping timeout or spawn failure → fall through
+    // Spawn rejected/failed → log failure reason before falling back
+    await safeWriteAuditLog("stage_spawn_rpc_failed", {
+      pipelineId: meta.pipelineId,
+      stage,
+      agentName,
+      error: spawnResult.error,
+      ...(sessionFile ? { sessionFile } : {}),
+    }, "warn");
+    // Phase 2 / 175: clear reserved on spawn failure
+    clearReserved();
+    // Fall through to fallback
   }
 
   // 5. Fallback: sendUserMessage with deliverAs:"followUp"
   if (hasSendUserMessage(pi)) {
     try {
-      pi.sendUserMessage(`@${agentName} ${prompt}`, { deliverAs: "followUp" });
+      // Phase 2 / 177 (D10): `[plugin auto-handoff]` prefix prevents the main-thread
+      // model from re-narrating/duplicating the handoff.
+      pi.sendUserMessage(`[plugin auto-handoff] @${agentName} ${prompt}`, { deliverAs: "followUp" });
       opts?.ui?.notify?.(`Spawned ${stage} agent via followUp message.`);
       await safeWriteAuditLog("stage_spawn_fallback", {
         pipelineId: meta.pipelineId,
         stage,
         agentName,
+        ...(sessionFile ? { sessionFile } : {}),
       });
       await writeGuard();
       return { spawned: true, fallback: true };
@@ -615,6 +644,156 @@ export async function spawnStageSubagent(
     stage,
     agentName,
     notify_only: "true",
+    ...(sessionFile ? { sessionFile } : {}),
   });
   return { spawned: false, fallback: false };
+}
+
+// ─── Owner-routed pending spawns (Phase 2 / 177 D4③/D4④) ────────────────────
+
+/**
+ * Bounds idempotent re-delivery: the owner session attempts at most one
+ * consumption per pending stage entry.
+ */
+const PENDING_SPAWN_MAX_ATTEMPTS = 1;
+
+/** Subagent session-name pattern (mirrors session-role.ts). */
+const SUBAGENT_NAME_PATTERN = /^[a-z0-9-]+#[0-9a-f]{8}$/;
+
+/**
+ * Phase 2 / 177 (D4③): Structural child-session detection for owner routing.
+ * Mirrors `detectSessionRole` without importing core (avoids a utils→core cycle).
+ *
+ * @param runtimeCtx - Raw runtime context (structural)
+ * @returns true when the context belongs to a child/clone session
+ */
+function isChildRuntimeCtx(runtimeCtx: unknown): boolean {
+  const sm = (runtimeCtx as {
+    _ctx?: {
+      sessionManager?: {
+        getHeader?: () => Record<string, unknown> | undefined;
+        getSessionName?: () => string;
+      };
+    };
+  } | undefined)?._ctx?.sessionManager;
+  if (!sm) return false;
+  const parentSession = sm.getHeader?.()?.parentSession;
+  const name = sm.getSessionName?.() ?? "";
+  return !!parentSession || SUBAGENT_NAME_PATTERN.test(name);
+}
+
+/**
+ * Phase 2 / 177 (D4③): Enqueues a spawn request for the owner session.
+ *
+ * Child/clone sessions have no owner `pi` handle or UI, so they must not spawn
+ * in place. The owner consumes `pendingSpawns[stage]` on `agent_settled`.
+ *
+ * Idempotent: re-enqueuing the same stage preserves `requestedAt`/`attempts`.
+ *
+ * @param session - Session handle exposing meta read/write
+ * @param stage - Stage to spawn
+ * @param agentName - Resolved agent mention for the stage
+ */
+export function enqueuePendingSpawn(
+  session: SpawnSession,
+  stage: PipelineStage,
+  agentName: string,
+): void {
+  const meta = session.getMeta();
+  if (!meta) return;
+  const existing = meta.pendingSpawns?.[stage];
+  session.updateMeta({
+    pendingSpawns: {
+      ...(meta.pendingSpawns ?? {}),
+      [stage]: {
+        agentName,
+        requestedAt: existing?.requestedAt ?? Date.now(),
+        attempts: existing?.attempts ?? 0,
+      },
+    },
+  });
+}
+
+/**
+ * Phase 2 / 177 (D4③): Removes a consumed pendingSpawns entry.
+ *
+ * @param session - Session handle exposing meta read/write
+ * @param stage - Stage entry to clear
+ */
+export function clearPendingSpawn(session: SpawnSession, stage: PipelineStage): void {
+  const meta = session.getMeta();
+  if (!meta?.pendingSpawns?.[stage]) return;
+  const next = { ...meta.pendingSpawns };
+  delete next[stage];
+  session.updateMeta({ pendingSpawns: next });
+}
+
+/**
+ * Phase 2 / 177 (D4③/D4④): Consumes owner-routed pending spawns.
+ *
+ * For each pending stage the owner spawns via its own `pi`. Bounded/idempotent:
+ * - skipped (and cleared) when the stage was already spawned for this visit
+ *   (spawnedStages match — coordinates with the 3c duplicate-spawn guard)
+ * - at most PENDING_SPAWN_MAX_ATTEMPTS consumption attempts per stage
+ *
+ * @param pi - Owner `pi` SDK handle
+ * @param config - Pipeline configuration
+ * @param meta - Owner session metadata
+ * @param opts - UI notify, session handle, and runtimeCtx for sessionFile audit
+ * @returns Stages that were successfully spawned/fallback-delivered
+ */
+export async function consumePendingSpawns(
+  pi: unknown,
+  config: PipelineConfig,
+  meta: SessionMeta,
+  opts: { ui?: { notify: (msg: string) => void }; session: SpawnSession; runtimeCtx?: unknown },
+): Promise<PipelineStage[]> {
+  const pending = meta.pendingSpawns;
+  if (!pending) return [];
+  const consumed: PipelineStage[] = [];
+  const entries = Object.entries(pending) as [
+    PipelineStage,
+    { agentName: string; requestedAt: number; attempts: number },
+  ][];
+
+  for (const [stage, entry] of entries) {
+    const fresh = opts.session.getMeta();
+    if (!fresh?.pendingSpawns?.[stage]) continue;
+
+    // Already spawned for this visit → nothing to do; drop the pending entry.
+    if (fresh.spawnedStages?.[stage] === fresh.stageStartTime) {
+      clearPendingSpawn(opts.session, stage);
+      continue;
+    }
+
+    // Re-delivery bound reached → stop to avoid a settle loop.
+    if (entry.attempts >= PENDING_SPAWN_MAX_ATTEMPTS) {
+      clearPendingSpawn(opts.session, stage);
+      continue;
+    }
+
+    const result = await spawnStageSubagent(pi, config, stage, fresh, {
+      ui: opts.ui,
+      session: opts.session,
+      runtimeCtx: opts.runtimeCtx,
+    });
+
+    if (result.spawned || result.fallback) {
+      clearPendingSpawn(opts.session, stage);
+      consumed.push(stage);
+    } else {
+      // Record the failed attempt so the next settle does not re-deliver forever.
+      const latest = opts.session.getMeta();
+      if (latest?.pendingSpawns?.[stage]) {
+        opts.session.updateMeta({
+          pendingSpawns: {
+            ...latest.pendingSpawns,
+            [stage]: { ...latest.pendingSpawns[stage]!, attempts: entry.attempts + 1 },
+          },
+        });
+      }
+    }
+  }
+
+  return consumed;
 }

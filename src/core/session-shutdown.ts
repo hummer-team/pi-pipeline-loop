@@ -29,6 +29,7 @@ import { probeAgentState } from "../utils/subagents-introspect";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { clearActiveSpawnRecord, clearStageSpawnRecords } from "../utils/spawn-cleanup";
+import { markSubagentsUnavailable } from "../utils/subagent-availability";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -51,6 +52,13 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 6 (172) G5: clear all decision retry timers on shutdown (prevent leaks)
       clearAllDecisionTimers();
+
+      // Phase 2 / 177 (D4): owner shutdown tears down the availability latch.
+      // A child shutdown must NOT clear it (the owner is still active); the next
+      // `subagents:ready` event re-arms it regardless.
+      if (!detectSessionRole(ctx).isChild) {
+        markSubagentsUnavailable();
+      }
 
       // Phase 2b (173) C3: dormant guard — identity audit + return
       // Covers: no meta, aborted, completed

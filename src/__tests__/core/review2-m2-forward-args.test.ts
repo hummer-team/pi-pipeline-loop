@@ -17,6 +17,15 @@ import { createPipelineStartCommand } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
+
+// Phase 2 / 177 (D4): spawn paths are latch-driven; pre-arm for RPC-path tests.
+beforeEach(() => {
+  markSubagentsReady();
+});
+afterEach(() => {
+  __resetSubagentsReady();
+});
 
 /** Write an agent definition file so resolveAgentMention returns a name. */
 async function writeAgentFile(

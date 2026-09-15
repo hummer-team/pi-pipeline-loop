@@ -522,6 +522,21 @@ export interface SessionMeta {
    * - 30min stale entries treated as absent (fail-open)
    */
    activeSpawns?: Partial<Record<PipelineStage, { agentName: string; agentId?: string; startedAt: number; reserved?: boolean }>>;
+
+  /**
+   * Phase 2 / 177 (D4③): Owner-routed pending spawn requests.
+   *
+   * A child/clone session has no owner `pi` handle or UI, so it must not spawn
+   * subagents in place. Instead it enqueues `pendingSpawns[stage]`; the owner
+   * session consumes the entry on `agent_settled` and performs the spawn with
+   * its own `pi`.
+   *
+   * Lifecycle:
+   * - Written by a child context via `enqueuePendingSpawn`
+   * - Consumed (and cleared) by the owner session in `agent_settled`
+   * - `attempts` bounds idempotent re-delivery (max 1 re-delivery per stage)
+   */
+  pendingSpawns?: Partial<Record<PipelineStage, { agentName: string; requestedAt: number; attempts: number }>>;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

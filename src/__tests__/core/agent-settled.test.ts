@@ -1962,3 +1962,55 @@ describe("Phase 2 (172): pipeline-turn source gate", () => {
     expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
   });
 });
+
+// ── Phase 2 / 177 (D4③): owner consumes child-routed pendingSpawns ──────────
+
+describe("Phase 2 / 177 (D4): owner pendingSpawns consumption", () => {
+  it("owner agent_settled consumes pendingSpawns and spawns once", async () => {
+    const root = join(tmpdir(), "pi-177-settled-pending-" + Date.now());
+    await mkdir(join(root, "agents"), { recursive: true });
+    await writeFile(
+      join(root, "agents", "dev-agent.md"),
+      "---\nname: develop-agent\n---\n# Dev Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: root,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "agents/dev-agent.md",
+          skillPath: "develop/SKILL.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-settled-pending",
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+    // No user messages → fail-open pipeline turn
+    (ctx._ctx.sessionManager as any).getBranch = () => [];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // pendingSpawns consumed and cleared
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    // Owner spawned via fallback (latch off by default in this file)
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0]).toContain("[plugin auto-handoff]");
+    expect(sentMessages[0]).toContain("develop-agent");
+
+    await rm(root, { recursive: true, force: true });
+  });
+});

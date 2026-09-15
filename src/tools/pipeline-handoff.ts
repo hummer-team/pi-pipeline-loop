@@ -168,6 +168,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
           {
             ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
             session: ctx.session,
+            runtimeCtx: ctx,
           },
         );
       }

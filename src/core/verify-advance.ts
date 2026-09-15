@@ -465,6 +465,7 @@ export async function autoAdvanceAfterVerify(
     const spawnResult = await spawnStageSubagent(ctx.pi, config, toStage, freshMeta, {
       ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
       session: ctx.session,
+      runtimeCtx: ctx,
     });
 
     if (spawnResult.spawned || spawnResult.fallback) {

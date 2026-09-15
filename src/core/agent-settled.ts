@@ -29,6 +29,8 @@ import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { AUDIT_THROTTLE_WINDOW_MS, PIPELINE_TURN_SIGNATURES } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
+import { consumePendingSpawns } from "../utils/subagent-rpc";
+import { detectSessionRole } from "./session-role";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -146,6 +148,29 @@ export function createAgentSettled(
         // Fail-open: gate error must not block settle flow
         const errMsg = err instanceof Error ? err.message : String(err);
         await writeAuditLog("agent_settled_gate_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: errMsg,
+        }, "warn");
+      }
+
+      // Phase 2 / 177 (D4③/D4④): owner consumes child-routed pending spawns.
+      // Child sessions enqueue `pendingSpawns[stage]` instead of spawning in place;
+      // the owner performs the spawn with its own `pi`. Bounded to one attempt per
+      // stage and coordinated with the 3c duplicate-spawn guard.
+      try {
+        const { isChild } = detectSessionRole(ctx);
+        if (!isChild && meta.pendingSpawns && Object.keys(meta.pendingSpawns).length > 0) {
+          await consumePendingSpawns(ctx.pi, config, meta, {
+            ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
+            session: ctx.session,
+            runtimeCtx: ctx,
+          });
+        }
+      } catch (err) {
+        // Fail-open: pending-spawn consumption must never block the settle flow
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await writeAuditLog("pending_spawn_consume_error", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
           error: errMsg,

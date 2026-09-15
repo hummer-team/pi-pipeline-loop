@@ -7,6 +7,7 @@ import { createPipelineStartCommand, collectStagesFrom, buildResumeVisitOrder } 
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import { buildStageSequence } from "../../utils/stage-sequence";
+import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import type { PipelineStage } from "../../types";
 
 let TMP: string;
@@ -15,10 +16,14 @@ beforeEach(async () => {
   TMP = path.join(tmpdir(), "pi-start-gate-" + Date.now() + "-" + Math.random().toString(36).slice(2));
   await fs.mkdir(TMP, { recursive: true });
   await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+  // Phase 2 / 177 (D4): default latch off (fallback semantics). RPC tests
+  // explicitly call markSubagentsReady().
+  __resetSubagentsReady();
 });
 
 afterEach(async () => {
   await fs.rm(TMP, { recursive: true, force: true });
+  __resetSubagentsReady();
 });
 
 /** Helper: scaffold a minimal .pi/ tree that lets pipeline-start pass config checks. */
@@ -342,6 +347,8 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
       emitSpawnReply: true,
     });
 
+    // Phase 2 / 177 (D4): latch on → RPC path is taken (no ping needed).
+    markSubagentsReady();
     const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
     const ctx = createMockCtx(meta);
     const sendSpy: string[] = [];
@@ -399,7 +406,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     expect(sendSpy.some((m) => m.includes("docs/design/79_Anchor.md") && m.trim().endsWith(" 1"))).toBe(true);
   });
 
-  it("fallback: ping timeout (no reply) → sendUserMessage + audit pipeline_start_launch", async () => {
+  it("fallback: availability latch off → immediate fallback (no ping) + audit pipeline_start_launch", async () => {
     await scaffoldMinimalPi();
     await scaffoldAgentWithName();
     const config = makeTestConfig({ projectRoot: TMP });
@@ -407,7 +414,8 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     await fs.mkdir(docsDir, { recursive: true });
     await fs.writeFile(path.join(docsDir, "78_RPC.md"), "# Requirement\n", "utf-8");
 
-    // Bus that never replies to ping → ping times out
+    // Phase 2 / 177 (D4): latch off → skip RPC entirely (no ping round-trip).
+    __resetSubagentsReady();
     const bus = makeMockEventBus({ emitPingReply: false, emitSpawnReply: false });
 
     const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
@@ -417,6 +425,9 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
 
     const cmd = createPipelineStartCommand(config);
     await cmd.execute({ file: "docs/design/78_RPC.md" }, ctx as any);
+
+    // No ping emitted — the latch short-circuits the RPC path.
+    expect(bus._emitted.some((e) => e.event === "subagents:rpc:ping")).toBe(false);
 
     // sendUserMessage SHOULD be called on fallback
     expect(sendSpy.length).toBe(1);
@@ -444,6 +455,8 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
       emitSpawnReply: true,
     });
 
+    // Phase 2 / 177 (D4): latch on → spawn is attempted, then rejected → fallback.
+    markSubagentsReady();
     const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
     const ctx = createMockCtx(meta);
     const sendSpy: string[] = [];

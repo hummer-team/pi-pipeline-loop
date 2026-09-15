@@ -28,7 +28,8 @@ import {
   writeResidueGateStatus,
 } from "../core/template-residue-check";
 import { registerSession } from "../utils/session-registry";
-import { pingSubagents, spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
+import { spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
+import { isSubagentsReady } from "../utils/subagent-availability";
 import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
@@ -593,6 +594,7 @@ export async function dispatchAfterResume(
     ui: { notify: (msg: string) => ui.notify(ctx, msg) },
     extraArgs,
     session,
+    runtimeCtx: ctx,
   });
 
   if (result.spawned) {
@@ -863,37 +865,34 @@ async function maybeAutoLaunchClarify(
     ui.notify(ctx, `Clarify args derived from document state (${roundInfo}). Prompt/description reflect document status, not user-supplied parameters.`);
   }
 
-  // Try RPC path if pi.events is available
-  if (ctx?.pi?.events) {
-    const pinged = await pingSubagents(ctx.pi, 500);
-    if (pinged) {
-      const spawnResult = await spawnClarifySubagent(ctx.pi, {
-        agentName,
-        prompt,
-        description,
-      });
+  // Try RPC path when the subagents availability latch is set (Phase 2 / 177 D4).
+  // No ping: the latch is event-driven; when false we fall back immediately.
+  if (ctx?.pi?.events && isSubagentsReady()) {
+    const spawnResult = await spawnClarifySubagent(ctx.pi, {
+      agentName,
+      prompt,
+      description,
+    });
 
-      if (spawnResult.ok) {
-        // RPC success: audit + watch lifecycle, no manual @ hint needed
-        await safeWriteAuditLog("pipeline_start_launch_rpc", {
-          agentName,
-          requirementDoc: file,
-          pipelineId: meta.pipelineId,
-          subagentId: spawnResult.id,
-          stage: "clarify",
-          argsSource,
-          ...(derivedRound !== undefined ? { derivedRound: String(derivedRound) } : {}),
-        });
-        // Hold the cleanup function and self-unregister after lifecycle event
-        // (or on failure) to avoid listener leak on shared channels.
-        const cleanup = watchSubagentLifecycle(ctx.pi, spawnResult.id, () => {
-          cleanup();
-        });
-        return;
-      }
-      // Spawn failed → fall through to sendUserMessage fallback
+    if (spawnResult.ok) {
+      // RPC success: audit + watch lifecycle, no manual @ hint needed
+      await safeWriteAuditLog("pipeline_start_launch_rpc", {
+        agentName,
+        requirementDoc: file,
+        pipelineId: meta.pipelineId,
+        subagentId: spawnResult.id,
+        stage: "clarify",
+        argsSource,
+        ...(derivedRound !== undefined ? { derivedRound: String(derivedRound) } : {}),
+      });
+      // Hold the cleanup function and self-unregister after lifecycle event
+      // (or on failure) to avoid listener leak on shared channels.
+      const cleanup = watchSubagentLifecycle(ctx.pi, spawnResult.id, () => {
+        cleanup();
+      });
+      return;
     }
-    // Ping timeout or spawn failure → fall through
+    // Spawn failed → fall through to sendUserMessage fallback
   }
 
   // Fallback: sendUserMessage + TUI notification + audit

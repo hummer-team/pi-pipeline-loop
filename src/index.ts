@@ -14,6 +14,8 @@ import type { PipelineDecision } from "./core/flow-state";
 import { isDormant } from "./core/dormancy";
 import { safeWriteAuditLog } from "./utils/auditLog";
 import { parseCommandArgs } from "./utils/command-args";
+// Phase 2 / 177 (D4): event-driven subagent availability latch
+import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
@@ -91,6 +93,11 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           return { stdout: result.stdout, stderr: result.stderr, code: result.code };
         }
       : undefined;
+
+    // Phase 2 / 177 (D4): subscribe to the `subagents:ready` availability
+    // announcement. The latch replaces timeout-based ping probing; when false,
+    // spawn paths fall back immediately (zero dead wait).
+    wireSubagentsReadyListener(pi);
 
     // ── Hooks registration (bridge: SDK (event, ctx) → internal RuntimeCtx) ──
     const hooks = [

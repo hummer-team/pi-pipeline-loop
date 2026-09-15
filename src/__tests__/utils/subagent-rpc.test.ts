@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   pingSubagents,
   spawnClarifySubagent,
@@ -6,11 +6,29 @@ import {
   isSpawnableStage,
   resolveAgentMention,
   spawnStageSubagent,
+  consumePendingSpawns,
 } from "../../utils/subagent-rpc";
+import {
+  markSubagentsReady,
+  markSubagentsUnavailable,
+  isSubagentsReady,
+  __resetSubagentsReady,
+} from "../../utils/subagent-availability";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
+
+// Phase 2 / 177 (D4): spawn paths are latch-driven. Pre-set the latch so
+// existing RPC-path tests exercise the RPC branch; latch-specific tests reset it.
+beforeEach(() => {
+  markSubagentsReady();
+});
+afterEach(() => {
+  __resetSubagentsReady();
+  __resetAuditDirPath();
+});
 
 /**
  * Creates a programmable mock EventBus.
@@ -132,7 +150,8 @@ describe("spawnClarifySubagent", () => {
     expect(spawnEvent).toBeDefined();
     expect(spawnEvent!.payload.type).toBe("feat-design-plan-agent");
     expect(spawnEvent!.payload.prompt).toBe("docs/req.md 1");
-    expect((spawnEvent!.payload.options as Record<string, unknown>).run_in_background).toBe(false);
+    // Phase 2 / 177 (D4): run_in_background was removed from the RPC payload.
+    expect((spawnEvent!.payload.options as Record<string, unknown>).run_in_background).toBeUndefined();
   });
 
   it("returns ok:false on spawn rejection", async () => {
@@ -172,7 +191,7 @@ describe("spawnClarifySubagent", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("spawn_timeout");
-  });
+  }, 10000);
 
   it("returns ok:false when pi has no events", async () => {
     const result = await spawnClarifySubagent({}, {
@@ -855,5 +874,243 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
       const description = (spawnPayload?.options as Record<string, unknown>)?.description as string | undefined;
       expect(description).toBe("develop: docs/req.md");
     });
+  });
+});
+
+// ── Phase 2 / 177 (D4): event-driven latch + owner routing ───────────────────
+
+/** Creates a temp project with a develop agent file and returns { config, tmpDir }. */
+function makeDevelopConfig() {
+  const tmpDir = path.join(tmpdir(), "pi-177-p2-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+  fs.mkdirSync(path.join(tmpDir, "agents"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, "agents", "dev-agent.md"),
+    "---\nname: develop-agent\n---\n# Dev Agent\n",
+  );
+  const config = makeTestConfig({
+    projectRoot: tmpDir,
+    stages: {
+      ...makeTestConfig().stages,
+      develop: {
+        agentPath: "agents/dev-agent.md",
+        skillPath: "develop/SKILL.md",
+        nextStage: "review",
+        requireDomain: false,
+      },
+    },
+  } as any);
+  return { config, tmpDir };
+}
+
+describe("Phase 2 / 177 (D4): availability latch", () => {
+  it("latch=false → immediate fallback with [plugin auto-handoff], no ping/spawn", async () => {
+    __resetSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-latch-off" });
+    const bus = createMockEventBus();
+    const sent: string[] = [];
+    const mockPi = {
+      events: bus,
+      sendUserMessage: (msg: string) => { sent.push(msg); },
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+    });
+
+    expect(result.spawned).toBe(true);
+    expect(result.fallback).toBe(true);
+    // No ping, no RPC spawn — the latch short-circuits both.
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:ping")).toBe(false);
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+    expect(sent[0]).toContain("[plugin auto-handoff]");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("latch=true → RPC spawn without a ping round-trip", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-latch-on" });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-latch" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+    });
+
+    expect(result.spawned).toBe(true);
+    expect(result.fallback).toBe(false);
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:ping")).toBe(false);
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("markSubagentsUnavailable flips the latch back off", () => {
+    markSubagentsReady();
+    expect(isSubagentsReady()).toBe(true);
+    markSubagentsUnavailable();
+    expect(isSubagentsReady()).toBe(false);
+  });
+});
+
+describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
+  const childRuntimeCtx = {
+    _ctx: {
+      sessionManager: {
+        getHeader: () => ({ parentSession: "/tmp/parent.jsonl" }),
+        getSessionName: () => "",
+      },
+    },
+  };
+
+  it("child context enqueues pendingSpawns instead of spawning in place", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-owner-route" });
+    const bus = createMockEventBus();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+      runtimeCtx: childRuntimeCtx,
+    });
+
+    expect(result.spawned).toBe(false);
+    expect(result.fallback).toBe(false);
+    expect(meta.pendingSpawns?.develop?.agentName).toBe("develop-agent");
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("owner consumes pendingSpawns and spawns once", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-owner-consume",
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-consume" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual(["develop"]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("idempotent: already spawned this visit → clears pending without spawning", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const stageStartTime = Date.now();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-owner-idem",
+      stageStartTime,
+      spawnedStages: { develop: stageStartTime },
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+    const bus = createMockEventBus();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual([]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("re-delivery bound: attempts>=1 → clears without spawning", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-owner-bound",
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 1 } },
+    });
+    const bus = createMockEventBus();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual([]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe("Phase 2 / 177 (D4): spawn audit sessionFile", () => {
+  it("fallback audit records sessionFile from runtimeCtx", async () => {
+    __resetSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-audit-sf" });
+    const mockPi = { sendUserMessage: () => {} };
+
+    await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      runtimeCtx: { _ctx: { sessionManager: { getSessionFile: () => "/tmp/sess-audit.jsonl" } } },
+    });
+
+    const logContent = fs.readFileSync(
+      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      "utf-8",
+    );
+    expect(logContent).toContain("stage_spawn_fallback");
+    expect(logContent).toContain("sessionFile=/tmp/sess-audit.jsonl");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });

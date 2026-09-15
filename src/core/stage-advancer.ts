@@ -403,6 +403,7 @@ async function routeConfirmReject(
   const spawnResult = await spawnStageSubagent(ctx.pi, config, toStage, freshMetaForSpawn, {
     ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
     session: sessionForSpawn.getMeta ? sessionForSpawn as { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined } : undefined,
+    runtimeCtx: ctx,
   });
 
   if (spawnResult.spawned || spawnResult.fallback) {
@@ -1147,6 +1148,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         {
           ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
           session: ctx.session,
+          runtimeCtx: ctx,
         },
       );
 
