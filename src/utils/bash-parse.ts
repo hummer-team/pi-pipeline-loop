@@ -21,6 +21,28 @@ export interface BashTarget {
   kind: "redirect" | "file-arg";
   /** Target file path */
   target: string;
+  /**
+   * Phase 1 / 177 (D3): true when the extracted redirect target looks like
+   * non-path source text (contains `,`, `(`, `)`, `;` or ends with a shell
+   * operator). Such targets are surfaced to the user via ask rather than being
+   * silently blocked or allowed.
+   */
+  suspicious?: true;
+}
+
+/**
+ * Phase 1 / 177 (D3): Heuristic for "suspicious non-path" write targets.
+ * A real unquoted path never contains shell metacharacters such as `,`, `(`,
+ * `)`, or `;`; their presence usually means `>` was captured out of source text
+ * (e.g. `List<String> ids,` → target `ids,`) instead of a real redirect.
+ *
+ * @param target - The stripped redirect target
+ * @returns true when the target should be confirmed with the user
+ */
+export function isSuspiciousPathTarget(target: string): boolean {
+  if (/[(),;]/.test(target)) return true;
+  // Trailing shell operators cannot terminate a valid path token.
+  return /[|&<>]$/.test(target);
 }
 
 /** Commands that take a file as the first non-flag argument */
@@ -143,11 +165,166 @@ function findUnquotedRedirect(token: string): { index: number; opLength: number 
 }
 
 /**
+ * Phase 1 / 177 (D3): Parsed heredoc operator metadata.
+ */
+interface HeredocOperator {
+  /** Delimiter word with surrounding quotes stripped. */
+  delimiter: string;
+  /** True for the `<<-` form (leading tabs are stripped from the terminator line). */
+  stripTabs: boolean;
+  /** Index in the command immediately after the delimiter word. */
+  afterDelimiter: number;
+}
+
+/**
+ * Phase 1 / 177 (D3): Parses a heredoc operator `<<[-]['"]?WORD['"]?` starting at
+ * `start` (which must point at the first `<`). Returns null when `start` is not a
+ * valid heredoc operator — e.g. a here-string (`<<<`) or an unterminated delimiter.
+ *
+ * @param command - Full command string
+ * @param start - Index of the first `<`
+ * @returns Parsed operator metadata, or null when not a heredoc
+ */
+function parseHeredocOperator(command: string, start: number): HeredocOperator | null {
+  if (command[start] !== "<" || command[start + 1] !== "<") return null;
+  // Here-strings (`<<<`) have no body and must not be treated as heredocs.
+  if (command[start + 2] === "<") return null;
+
+  let j = start + 2;
+  let stripTabs = false;
+  if (command[j] === "-") {
+    stripTabs = true;
+    j++;
+  }
+  // Whitespace between the operator and the delimiter is optional.
+  while (j < command.length && (command[j] === " " || command[j] === "\t")) j++;
+  if (j >= command.length) return null;
+
+  let delimiter = "";
+  const quote = command[j];
+  if (quote === "'" || quote === '"') {
+    j++;
+    while (j < command.length && command[j] !== quote) {
+      delimiter += command[j];
+      j++;
+    }
+    if (j >= command.length) return null; // unterminated quote → not a valid operator
+    j++; // consume the closing quote
+  } else {
+    while (j < command.length && !/[\s;&|<>()]/.test(command[j])) {
+      delimiter += command[j];
+      j++;
+    }
+  }
+  if (!delimiter) return null;
+  return { delimiter, stripTabs, afterDelimiter: j };
+}
+
+/**
+ * Phase 1 / 177 (D3): Finds the end of a heredoc body — the index of the newline
+ * (or end-of-string) that terminates the delimiter line.
+ *
+ * An unterminated heredoc returns the command length: the remainder is treated as
+ * body, which fail-safes against splitting on newlines inside prose.
+ *
+ * @param command - Full command string
+ * @param op - Parsed heredoc operator
+ * @returns Index of the terminator line's newline, or command.length
+ */
+function findHeredocEnd(command: string, op: HeredocOperator): number {
+  const firstNewline = command.indexOf("\n", op.afterDelimiter);
+  if (firstNewline === -1) return command.length; // no body at all
+  let lineStart = firstNewline + 1;
+  while (lineStart <= command.length) {
+    let lineEnd = command.indexOf("\n", lineStart);
+    if (lineEnd === -1) lineEnd = command.length;
+    let line = command.slice(lineStart, lineEnd);
+    if (op.stripTabs) line = line.replace(/^\t+/, "");
+    if (line === op.delimiter) return lineEnd;
+    if (lineEnd >= command.length) break;
+    lineStart = lineEnd + 1;
+  }
+  return command.length; // unterminated → consume to end
+}
+
+/**
+ * Phase 1 / 177 (D3): Removes heredoc bodies (including terminator lines) from a
+ * command, keeping only parseable head text. Used by `extractBashFileTargets` so
+ * heredoc prose (e.g. `List<String>`) is not mistaken for a redirect target.
+ *
+ * @param command - Full command string
+ * @returns Command with heredoc bodies stripped
+ */
+function stripHeredocBodies(command: string): string {
+  let result = "";
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < command.length) {
+    const ch = command[i];
+    if (inSingle) {
+      result += ch;
+      if (ch === "'") inSingle = false;
+      i++;
+      continue;
+    }
+    if (inDouble) {
+      result += ch;
+      if (ch === "\\" && i + 1 < command.length) {
+        result += command[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      i++;
+      continue;
+    }
+    if (ch === "'") { inSingle = true; result += ch; i++; continue; }
+    if (ch === '"') { inDouble = true; result += ch; i++; continue; }
+    if (ch === "<" && command[i + 1] === "<") {
+      const op = parseHeredocOperator(command, i);
+      if (op) {
+        const headEnd = command.indexOf("\n", op.afterDelimiter);
+        if (headEnd === -1) {
+          // No body at all — keep the remainder verbatim.
+          result += command.slice(i);
+          i = command.length;
+        } else {
+          // Keep the head line (may carry a redirect after the operator), then
+          // skip the body and terminator line, leaving the terminator newline.
+          result += command.slice(i, headEnd);
+          i = findHeredocEnd(command, op);
+        }
+        continue;
+      }
+    }
+    result += ch;
+    i++;
+  }
+  return result;
+}
+
+/**
+ * Phase 1 / 177 (D3): Builds a redirect target, tagging suspicious non-path text.
+ *
+ * @param target - Stripped redirect target
+ * @returns A redirect BashTarget (with `suspicious: true` when applicable)
+ */
+function makeRedirectTarget(target: string): BashTarget {
+  return isSuspiciousPathTarget(target)
+    ? { kind: "redirect", target, suspicious: true }
+    : { kind: "redirect", target };
+}
+
+/**
  * Extracts file modification targets from a bash command.
  *
  * Phase 4 (170): Read-only commands (grep, cat, ls, etc.) skip FILE_ARG_COMMANDS
  * extraction. Redirect detection is quote-aware: `>` inside quoted strings is
  * treated as a literal character, not a redirect operator.
+ *
+ * Phase 1 / 177 (D3): heredoc bodies are stripped before tokenizing so prose such
+ * as `List<String>` is never parsed as a redirect.
  *
  * @param command - The bash command string
  * @returns Array of file targets with their kind (redirect or file-arg)
@@ -155,8 +332,8 @@ function findUnquotedRedirect(token: string): { index: number; opLength: number 
 export function extractBashFileTargets(command: string): BashTarget[] {
   const targets: BashTarget[] = [];
 
-  // Tokenize the command (simple split on whitespace, handles quoted strings)
-  const tokens = tokenize(command);
+  // Phase 1 / 177 (D3): drop heredoc bodies before tokenizing.
+  const tokens = tokenize(stripHeredocBodies(command));
 
   // Phase 4 (170): detect read-only command as the first token.
   // When the FIRST token is a read-only command, skip FILE_ARG_COMMANDS
@@ -186,13 +363,13 @@ export function extractBashFileTargets(command: string): BashTarget[] {
         // Target is attached: >file
         const target = stripQuotes(afterOp);
         if (!isDevPath(target)) {
-          targets.push({ kind: "redirect", target });
+          targets.push(makeRedirectTarget(target));
         }
       } else if (i + 1 < tokens.length) {
         // Target is next token: > file
         const target = stripQuotes(tokens[i + 1]);
         if (!isDevPath(target)) {
-          targets.push({ kind: "redirect", target });
+          targets.push(makeRedirectTarget(target));
         }
         i++; // Skip next token
       }
@@ -297,6 +474,18 @@ export function splitShellSegments(command: string): string[] {
         i++;
       }
       continue;
+    }
+
+    // Phase 1 / 177 (D3): a heredoc body is opaque — consume it whole so that
+    // `;`/newline inside the body do not split the segment.
+    if (char === "<" && next === "<") {
+      const heredoc = parseHeredocOperator(command, i);
+      if (heredoc) {
+        const end = findHeredocEnd(command, heredoc);
+        current += command.slice(i, end);
+        i = end - 1; // let the loop process the terminator newline (if any)
+        continue;
+      }
     }
 
     // && operator

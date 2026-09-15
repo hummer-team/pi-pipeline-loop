@@ -397,3 +397,75 @@ describe("tokenize (exported)", () => {
     expect(tokenize('echo "hello world"')).toEqual(["echo", '"hello world"']);
   });
 });
+
+// ─── Phase 1 / 177 (D3): heredoc awareness + suspicious-target filter ───────
+
+describe("Phase 1 / 177 (D3): heredoc-aware parsing", () => {
+  const heredoc = "cat >> docs/design/94_Bug.md <<'EOF'\n ...List<String> ids,...\nEOF";
+
+  it("keeps a heredoc construct in a single segment (no ; / newline split)", () => {
+    const segments = splitShellSegments(heredoc);
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toContain("<<'EOF'");
+    expect(segments[0]).toContain("List<String> ids,");
+  });
+
+  it("does not extract the heredoc body as a redirect target", () => {
+    const targets = extractBashFileTargets(heredoc);
+    expect(targets).toEqual([{ kind: "redirect", target: "docs/design/94_Bug.md" }]);
+    expect(targets.some((t) => t.target === "ids,")).toBe(false);
+  });
+
+  it("handles SQL heredoc text without false positives", () => {
+    const sql = "psql <<SQL\nSELECT id FROM t WHERE x IN (1,2,3);\nSQL";
+    const segments = splitShellSegments(sql);
+    expect(segments).toHaveLength(1);
+    expect(extractBashFileTargets(sql)).toEqual([]);
+  });
+
+  it("handles <<- tab-indented terminators", () => {
+    const cmd = "cat <<-EOF\n\tbody; with; semicolons\n\tEOF";
+    expect(splitShellSegments(cmd)).toHaveLength(1);
+    expect(extractBashFileTargets(cmd)).toEqual([]);
+  });
+
+  it("keeps the segment after the terminator separate", () => {
+    const cmd = "cat <<EOF\nbody\nEOF\necho done";
+    expect(splitShellSegments(cmd)).toEqual(["cat <<EOF\nbody\nEOF", "echo done"]);
+  });
+
+  it("still protects a real redirect written next to a heredoc", () => {
+    const cmd = "cat <<EOF > docs/out.md\nbody\nEOF";
+    const targets = extractBashFileTargets(cmd);
+    expect(targets).toContainEqual({ kind: "redirect", target: "docs/out.md" });
+  });
+
+  it("still extracts real writes (regression)", () => {
+    expect(extractBashFileTargets("echo x > docs/a.md")).toEqual([
+      { kind: "redirect", target: "docs/a.md" },
+    ]);
+    expect(extractBashFileTargets("cat a > b")).toEqual([
+      { kind: "redirect", target: "b" },
+    ]);
+    expect(extractBashFileTargets("rm docs/x.md")).toEqual([
+      { kind: "file-arg", target: "docs/x.md" },
+    ]);
+  });
+
+  it("marks suspicious non-path redirect targets", () => {
+    const comma = extractBashFileTargets("echo x > ids,");
+    expect(comma[0]?.suspicious).toBe(true);
+
+    const paren = extractBashFileTargets("echo x > (foo)");
+    expect(paren[0]?.suspicious).toBe(true);
+
+    const semi = extractBashFileTargets("echo x > a;b");
+    expect(semi[0]?.target).toBe("a;b");
+    expect(semi[0]?.suspicious).toBe(true);
+  });
+
+  it("does not mark ordinary paths as suspicious", () => {
+    expect(extractBashFileTargets("echo x > docs/a.md")[0]?.suspicious).toBeUndefined();
+    expect(extractBashFileTargets("echo x > src/dir/")[0]?.suspicious).toBeUndefined();
+  });
+});

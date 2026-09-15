@@ -272,6 +272,49 @@ describe("isGitWriteCommand", () => {
   it("rejects bare 'git' without subcommand", () => {
     expect(isGitWriteCommand("git")).toBe(false);
   });
+
+  // ── Phase 1 / 177 (D2): expanded read-only enumeration ──
+
+  it("treats expanded pure-query subcommands as read-only", () => {
+    expect(isGitWriteCommand("git cat-file -t abc123")).toBe(false);
+    expect(isGitWriteCommand("git rev-list --count HEAD")).toBe(false);
+    expect(isGitWriteCommand("git merge-base main HEAD")).toBe(false);
+    expect(isGitWriteCommand("git show-ref")).toBe(false);
+    expect(isGitWriteCommand("git name-rev HEAD")).toBe(false);
+    expect(isGitWriteCommand("git count-objects -v")).toBe(false);
+    expect(isGitWriteCommand("git verify-commit HEAD")).toBe(false);
+    expect(isGitWriteCommand("git verify-tag v1.0.0")).toBe(false);
+    expect(isGitWriteCommand("git ls-tree HEAD")).toBe(false);
+    expect(isGitWriteCommand("git for-each-ref")).toBe(false);
+    expect(isGitWriteCommand("git var GIT_AUTHOR_IDENT")).toBe(false);
+  });
+
+  it("still treats write-capable subcommands as writes", () => {
+    expect(isGitWriteCommand("git config user.name x")).toBe(true);
+    expect(isGitWriteCommand("git symbolic-ref HEAD refs/heads/x")).toBe(true);
+    expect(isGitWriteCommand("git hash-object -w file")).toBe(true);
+    expect(isGitWriteCommand("git interpret-trailers --in-place f")).toBe(true);
+  });
+
+  // ── Phase 1 / 177 (D2): second-level worktree/remote classification ──
+
+  it("classifies worktree/remote second-level read-only forms", () => {
+    expect(isGitWriteCommand("git worktree list")).toBe(false);
+    expect(isGitWriteCommand("git remote get-url origin")).toBe(false);
+    expect(isGitWriteCommand("git remote -v")).toBe(false);
+    expect(isGitWriteCommand("git remote --verbose")).toBe(false);
+    expect(isGitWriteCommand("git remote show origin")).toBe(false);
+    expect(isGitWriteCommand("git remote")).toBe(false);
+  });
+
+  it("classifies worktree/remote write forms as writes", () => {
+    expect(isGitWriteCommand("git worktree add /tmp/wt")).toBe(true);
+    expect(isGitWriteCommand("git worktree remove /tmp/wt")).toBe(true);
+    expect(isGitWriteCommand("git worktree prune")).toBe(true);
+    expect(isGitWriteCommand("git remote add origin url")).toBe(true);
+    expect(isGitWriteCommand("git remote set-url origin url")).toBe(true);
+    expect(isGitWriteCommand("git remote rename old new")).toBe(true);
+  });
 });
 
 describe("isGitReadonlyCommand", () => {
@@ -291,6 +334,23 @@ describe("isGitReadonlyCommand", () => {
   it("rejects config and reflog (have write forms)", () => {
     expect(isGitReadonlyCommand("git config user.name x")).toBe(false);
     expect(isGitReadonlyCommand("git reflog expire")).toBe(false);
+  });
+
+  // ── Phase 1 / 177 (D2): expanded + second-level read-only ──
+
+  it("identifies expanded pure-query subcommands", () => {
+    expect(isGitReadonlyCommand("git cat-file -t abc123")).toBe(true);
+    expect(isGitReadonlyCommand("git rev-list HEAD")).toBe(true);
+    expect(isGitReadonlyCommand("git merge-base main HEAD")).toBe(true);
+    expect(isGitReadonlyCommand("git verify-tag v1.0.0")).toBe(true);
+  });
+
+  it("identifies second-level worktree/remote read-only forms", () => {
+    expect(isGitReadonlyCommand("git worktree list")).toBe(true);
+    expect(isGitReadonlyCommand("git remote get-url origin")).toBe(true);
+    expect(isGitReadonlyCommand("git remote -v")).toBe(true);
+    expect(isGitReadonlyCommand("git worktree add /tmp/wt")).toBe(false);
+    expect(isGitReadonlyCommand("git remote add origin url")).toBe(false);
   });
 });
 

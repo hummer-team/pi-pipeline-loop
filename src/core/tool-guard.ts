@@ -65,6 +65,26 @@ const GIT_ADD_PATTERN = /^\s*git\s+add\b/;
 const GIT_COMMIT_PATTERN = /^\s*git\s+commit\b/;
 
 /**
+ * Phase 1 / 177 (D2): Builds the git-write block reason, including the policy
+ * source (stage/global/matrix) and a stale-config notice. Shared by the
+ * hard-block path and the ask-deny path to keep the message single-sourced.
+ *
+ * @param config - Pipeline configuration
+ * @param currentStage - The stage being evaluated
+ * @returns Human-readable block reason
+ */
+function buildGitWriteBlockReason(config: PipelineConfig, currentStage: PipelineStage): string {
+  const policySource = describeGitModifySource(config, currentStage);
+  const staleNotice = staleConfigNotice(config);
+  const sourceHint = policySource === "stage"
+    ? `stages.${currentStage}.protect.gitModify`
+    : policySource === "global"
+      ? "protect.gitModify"
+      : `matrix default for "${currentStage}"`;
+  return `FORBIDDEN: git write command blocked in stage '${currentStage}'. Policy source: ${sourceHint}. To permit git writes, set protect.gitModify="allow" or stages.${currentStage}.protect.gitModify="allow" in pipeline_loop.json (protect.allow does NOT exempt git commands).${staleNotice ? " " + staleNotice : ""}`;
+}
+
+/**
  * Result of the stage-level write whitelist check.
  * - "block": Path is denied by stage whitelist or hardcoded protection.
  * - "allow-whitelist": Path is allowed by stage whitelist (skip global chain).
@@ -179,6 +199,26 @@ async function checkBashFileTargets(
   const sessionPaths = meta.sessionAllowedWritePaths || [];
 
   for (const t of targets) {
+    // Phase 1 / 177 (D3): a "suspicious" target is source text captured by `>`
+    // rather than a real path (e.g. `List<String> ids,`). Route it to the user
+    // via ask instead of silently blocking or allowing it.
+    if (t.suspicious) {
+      const outcome = await askCommandDecision(ctx, meta, segment, config);
+      if (outcome.decision === "block") {
+        const reason = `FORBIDDEN: ambiguous write target '${t.target}' in bash command (looks like non-path text).`;
+        // Phase 4 (173) C11: dismissed action does NOT count as violation
+        if (outcome.action !== "dismissed") {
+          await trackViolation({
+            type: "write_protected", tool: "bash", detail: reason,
+            suggestion: `Confirm the ambiguous write target or rewrite the command.`,
+          });
+        }
+        ui.notify(ctx, reason);
+        return { block: true, reason };
+      }
+      continue;
+    }
+
     const absTarget = path.isAbsolute(t.target)
       ? t.target
       : path.join(config.projectRoot, t.target);
@@ -428,25 +468,43 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
             const isWrite = isGitWriteCommand(segment);
 
-            if (isWrite && gitPolicy === "block") {
-              // Block policy: hard-block git write commands (no ask popup per Phase 4 Q2-A)
-              // Phase 3 / 175: enhanced message with policy source and stale config notice
-              const policySource = describeGitModifySource(config, currentStage);
-              const staleNotice = staleConfigNotice(config);
-              const sourceHint = policySource === "stage"
-                ? `stages.${currentStage}.protect.gitModify`
-                : policySource === "global"
-                  ? "protect.gitModify"
-                  : `matrix default for "${currentStage}"`;
-              const reason = `FORBIDDEN: git write command blocked in stage '${currentStage}'. Policy source: ${sourceHint}. To permit git writes, set protect.gitModify="allow" or stages.${currentStage}.protect.gitModify="allow" in pipeline_loop.json (protect.allow does NOT exempt git commands).${staleNotice ? " " + staleNotice : ""}`;
-              await trackViolation({
-                type: "git_protected",
-                tool: "bash",
-                detail: reason,
-                suggestion: `Git write operations are not allowed in the '${currentStage}' stage.`,
-              });
-              ui.notify(ctx, reason);
-              return { block: true, reason };
+            if (isWrite && gitPolicy !== "allow") {
+              // Phase 1 / 177 (D2) tri-state truth table:
+              // - "ask": always ask first (allow_once/session → pass; deny/cancel → block+violation;
+              //   dismissed → block without violation)
+              // - "block" (or matrix default): ask only when protect.ask === true; else hard-block
+              const shouldAsk =
+                gitPolicy === "ask" || (gitPolicy === "block" && config.protect?.ask === true);
+              if (shouldAsk) {
+                const outcome = await askCommandDecision(ctx, meta, segment, config);
+                if (outcome.decision === "allow") {
+                  // Allowed for this command → fall through to content validation below.
+                } else {
+                  const reason = buildGitWriteBlockReason(config, currentStage);
+                  // Phase 4 (173) C11: dismissed action does NOT count as violation
+                  if (outcome.action !== "dismissed") {
+                    await trackViolation({
+                      type: "git_protected",
+                      tool: "bash",
+                      detail: reason,
+                      suggestion: `Git write operations are not allowed in the '${currentStage}' stage.`,
+                    });
+                  }
+                  ui.notify(ctx, reason);
+                  return { block: true, reason };
+                }
+              } else {
+                // Hard block (policy "block" with protect.ask disabled, or matrix default)
+                const reason = buildGitWriteBlockReason(config, currentStage);
+                await trackViolation({
+                  type: "git_protected",
+                  tool: "bash",
+                  detail: reason,
+                  suggestion: `Git write operations are not allowed in the '${currentStage}' stage.`,
+                });
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
             }
 
             // git add / git commit content validation (always runs for these specific commands)

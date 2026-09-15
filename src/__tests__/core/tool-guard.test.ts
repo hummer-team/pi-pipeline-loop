@@ -2917,4 +2917,229 @@ describe("createToolGuard", () => {
       expect(result).toBeUndefined();
     });
   });
+
+  // ─── Phase 1 / 177 (D2): git tri-state truth table + ask fallback ──────────
+  describe("Phase 1 / 177 (D2): git tri-state truth table", () => {
+    const ALLOW_ONCE = "Allow this command once";
+    const DENY = "Follow default rules (block, default)";
+
+    it("ask + allow_once → pass", async () => {
+      const config = makeTestConfig({
+        protect: { gitignore: true, paths: [], allow: [], gitModify: "ask" },
+      });
+      const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+      const ctx = createMockCtx(meta, { selectReturn: ALLOW_ONCE });
+      ctx.toolCall = { name: "bash", arguments: { command: "git merge feature" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations ?? []).toHaveLength(0);
+    });
+
+    it("ask + deny → block + violation", async () => {
+      const config = makeTestConfig({
+        protect: { gitignore: true, paths: [], allow: [], gitModify: "ask" },
+      });
+      const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+      const ctx = createMockCtx(meta, { selectReturn: DENY });
+      ctx.toolCall = { name: "bash", arguments: { command: "git merge feature" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toHaveLength(1);
+      expect(finalMeta.violations[0].type).toBe("git_protected");
+    });
+
+    it("ask + dismissed → block without violation", async () => {
+      const config = makeTestConfig({
+        protect: { gitignore: true, paths: [], allow: [], gitModify: "ask" },
+      });
+      const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+      // No selectReturn → select resolves undefined quickly → dismissed
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "git merge feature" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations ?? []).toHaveLength(0);
+    });
+
+    it("block + protect.ask=false → hard block + violation (legacy behavior)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+      let selectCalled = false;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => {
+        selectCalled = true;
+        return undefined;
+      };
+      ctx.toolCall = { name: "bash", arguments: { command: "git merge feature" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect(selectCalled).toBe(false);
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toHaveLength(1);
+    });
+
+    it("block + protect.ask=true → asks first; allow_once passes", async () => {
+      const config = makeTestConfig({
+        protect: { gitignore: true, paths: [], allow: [], ask: true },
+      });
+      const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+      const ctx = createMockCtx(meta, { selectReturn: ALLOW_ONCE });
+      ctx.toolCall = { name: "bash", arguments: { command: "git merge feature" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+    });
+
+    it("block + protect.ask=true → deny blocks", async () => {
+      const config = makeTestConfig({
+        protect: { gitignore: true, paths: [], allow: [], ask: true },
+      });
+      const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+      const ctx = createMockCtx(meta, { selectReturn: DENY });
+      ctx.toolCall = { name: "bash", arguments: { command: "git merge feature" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+    });
+
+    it("allow → pass, ignores protect.ask (no prompt)", async () => {
+      const config = makeTestConfig({
+        protect: { gitignore: true, paths: [], allow: [], gitModify: "allow", ask: true },
+      });
+      const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+      let selectCalled = false;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => {
+        selectCalled = true;
+        return DENY;
+      };
+      ctx.toolCall = { name: "bash", arguments: { command: "git merge feature" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      expect(selectCalled).toBe(false);
+    });
+
+    it("GIT_FORBIDDEN → always blocks, never asks", async () => {
+      const config = makeTestConfig({
+        protect: { gitignore: true, paths: [], allow: [], gitModify: "allow", ask: true },
+      });
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      let selectCalled = false;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => {
+        selectCalled = true;
+        return ALLOW_ONCE;
+      };
+      ctx.toolCall = { name: "bash", arguments: { command: "git reset --hard HEAD" } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("forbidden pattern");
+      expect(selectCalled).toBe(false);
+    });
+
+    it("expanded read-only subcommands pass in clarify", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "clarify", flowState: "running" });
+
+      for (const command of [
+        "git cat-file -t abc123",
+        "git rev-list --count HEAD",
+        "git worktree list",
+        "git remote get-url origin",
+      ]) {
+        const ctx = createMockCtx(meta);
+        ctx.toolCall = { name: "bash", arguments: { command } };
+        const hook = createToolGuard(config);
+        const result = await hook.handler(ctx as any);
+        expect(result).toBeUndefined();
+      }
+    });
+  });
+
+  // ─── Phase 1 / 177 (D3): suspicious bash write target → ask fallback ───────
+  describe("Phase 1 / 177 (D3): suspicious write target ask fallback", () => {
+    it("suspicious target + allow_once → pass", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      const ctx = createMockCtx(meta, { selectReturn: "Allow this command once" });
+      ctx.toolCall = { name: "bash", arguments: { command: "echo x > ids," } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+    });
+
+    it("suspicious target + deny → block + violation", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      const ctx = createMockCtx(meta, { selectReturn: "Follow default rules (block, default)" });
+      ctx.toolCall = { name: "bash", arguments: { command: "echo x > ids," } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations).toHaveLength(1);
+    });
+
+    it("suspicious target + dismissed → block without violation", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "echo x > ids," } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      const finalMeta = ctx.session.getMeta() as any;
+      expect(finalMeta.violations ?? []).toHaveLength(0);
+    });
+
+    it("heredoc body is not parsed as a write target (no ask, no block)", async () => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+      let selectCalled = false;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => {
+        selectCalled = true;
+        return undefined;
+      };
+      const command = "cat >> docs/design/94_Bug.md <<'EOF'\n ...List<String> ids,...\nEOF";
+      ctx.toolCall = { name: "bash", arguments: { command } };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect(result).toBeUndefined();
+      expect(selectCalled).toBe(false);
+    });
+  });
 });

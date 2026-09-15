@@ -263,11 +263,57 @@ export const GIT_WRITE_SUBCOMMANDS: ReadonlySet<string> = new Set([
  *
  * NOTE: `config` and `reflog` are intentionally excluded — both have write forms
  * (`git config user.name x` writes `.git/config`; `git reflog expire` modifies reflog).
+ * `symbolic-ref`, `hash-object`, `interpret-trailers` are also excluded — each has a
+ * write form (`-w`, `--in-place`).
+ *
+ * Phase 1 / 177 (D2): extended with pure query subcommands (cat-file, rev-list,
+ * merge-base, show-ref, name-rev, …). Every entry is verified to have no write mode.
  */
 export const GIT_READONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "status", "log", "diff", "show", "blame", "rev-parse",
   "ls-files", "ls-remote", "describe",
+  // Phase 1 / 177 (D2): pure query subcommands (no repository state modification).
+  "cat-file", "rev-list", "merge-base", "show-ref", "name-rev",
+  "count-objects", "verify-commit", "verify-tag",
+  "ls-tree", "for-each-ref", "diff-tree", "diff-files", "diff-index",
+  "var", "version", "help", "shortlog", "whatchanged",
+  "check-attr", "check-ignore", "check-ref-format", "verify-pack",
+  "get-tar-commit-id", "stripspace", "patch-id", "fmt-merge-msg", "show-index",
 ]);
+
+/**
+ * Phase 1 / 177 (D2): Second-level read-only forms for dual-nature subcommands.
+ * `worktree` and `remote` can both read and write depending on their
+ * sub-subcommand, so they use a bounded second-level lookup instead of the
+ * top-level read-only set (R1Q2-A+B: limit complexity to these two).
+ */
+const GIT_SECOND_LEVEL_READONLY: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["worktree", new Set(["list"])],
+  ["remote", new Set(["show", "get-url"])],
+]);
+
+/**
+ * Phase 1 / 177 (D2): Classifies dual-nature subcommands (`worktree`, `remote`).
+ * Fail-closed: anything not explicitly known to be read-only is treated as a write.
+ *
+ * Read-only forms:
+ * - `git worktree list`
+ * - `git remote`, `git remote -v`/`--verbose`, `git remote show`, `git remote get-url`
+ */
+function isSecondLevelReadonly(subcmd: string, tokens: string[]): boolean {
+  const readonlySet = GIT_SECOND_LEVEL_READONLY.get(subcmd);
+  if (!readonlySet) return false;
+  const sub = tokens[2];
+  if (sub === undefined) {
+    // Bare `git remote` lists remotes; bare `git worktree` is fail-closed (write).
+    return subcmd === "remote";
+  }
+  if (sub.startsWith("-")) {
+    // `git remote -v` / `--verbose` lists remotes with URLs.
+    return subcmd === "remote" && /^--?(v|verbose)$/.test(sub);
+  }
+  return readonlySet.has(sub);
+}
 
 /**
  * Hard blacklist patterns for git subcommands.
@@ -308,6 +354,10 @@ export function isGitWriteCommand(segment: string): boolean {
   // tokens[0] = "git", tokens[1] = subcommand
   const subcmd = tokens[1];
   if (!subcmd) return false;
+  // Phase 1 / 177 (D2): dual-nature subcommands use second-level classification.
+  if (GIT_SECOND_LEVEL_READONLY.has(subcmd)) {
+    return !isSecondLevelReadonly(subcmd, tokens);
+  }
   // Fail-closed: NOT in read-only set → treat as write
   return !GIT_READONLY_SUBCOMMANDS.has(subcmd);
 }
@@ -324,6 +374,10 @@ export function isGitReadonlyCommand(segment: string): boolean {
   const tokens = normalized.split(/\s+/);
   const subcmd = tokens[1];
   if (!subcmd) return false;
+  // Phase 1 / 177 (D2): mirror the dual-nature second-level classification.
+  if (GIT_SECOND_LEVEL_READONLY.has(subcmd)) {
+    return isSecondLevelReadonly(subcmd, tokens);
+  }
   return GIT_READONLY_SUBCOMMANDS.has(subcmd);
 }
 
