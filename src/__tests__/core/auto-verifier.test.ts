@@ -23,7 +23,6 @@ import {
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { resetPromptConfigCache } from "../../core/prompt-config";
-import { DEFAULT_VERIFY_PROMPT } from "../../constants";
 import type { SessionMeta } from "../../types";
 
 let TMP: string;
@@ -57,7 +56,6 @@ describe("parseVerifyFile", () => {
     expect(result.rules).not.toBeNull();
     expect(result.rules!.keywords).toEqual(["方案推荐", "答"]);
     expect(result.rules!.mode).toBe("and");
-    expect(result.prompt).toContain("Is the requirement understood?");
   });
 
   it("returns null rules when file has no frontmatter", async () => {
@@ -65,14 +63,12 @@ describe("parseVerifyFile", () => {
     await fs.writeFile(fp, "Just a prompt body", "utf-8");
     const result = await parseVerifyFile(fp);
     expect(result.rules).toBeNull();
-    expect(result.prompt).toBe("Just a prompt body");
   });
 
-  it("returns default prompt when file is missing", async () => {
+  it("returns null rules when file is missing", async () => {
     const fp = path.join(TMP, "nonexistent.md");
     const result = await parseVerifyFile(fp);
     expect(result.rules).toBeNull();
-    expect(result.prompt).toContain("Fully understand the requirement context");
   });
 
   it("handles empty frontmatter gracefully", async () => {
@@ -84,7 +80,6 @@ describe("parseVerifyFile", () => {
     );
     const result = await parseVerifyFile(fp);
     expect(result.rules).toBeNull();
-    expect(result.prompt).toBe("Some body");
   });
 });
 
@@ -135,7 +130,6 @@ describe("runVerification", () => {
     const meta = makeTestMeta({ currentStage: "develop" });
     const result = await runVerification(config, meta, []);
     expect(result.rulePassed).toBe(true);
-    expect(result.needsModelVerify).toBe(false);
   });
 
   it("runs rule verification and returns result", async () => {
@@ -184,13 +178,11 @@ describe("runVerification", () => {
     // No matching messages
     const result1 = await runVerification(config, meta, ["nothing"]);
     expect(result1.rulePassed).toBe(false);
-    expect(result1.needsModelVerify).toBe(true);
     expect(result1.ruleMissing).toEqual(["方案推荐"]);
 
     // Matching message
     const result2 = await runVerification(config, meta, ["方案推荐 found"]);
     expect(result2.rulePassed).toBe(true);
-    expect(result2.needsModelVerify).toBe(false);
   });
 });
 
@@ -644,7 +636,7 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
   });
 });
 
-describe("runVerification — yml verify_{stage} modelPrompt priority (D5)", () => {
+describe("runVerification — structured rules from verify.md frontmatter (D5)", () => {
   beforeEach(() => {
     resetPromptConfigCache();
   });
@@ -654,75 +646,12 @@ describe("runVerification — yml verify_{stage} modelPrompt priority (D5)", () 
     __resetAuditDirPath();
   });
 
-  it("uses yml verify_{stage} as modelPrompt when available (overrides verify.md body)", async () => {
-    // Create verify.md with a body prompt
-    const verifyDir = path.join(TMP, ".pi", "references", "clarify_spec");
-    await fs.mkdir(verifyDir, { recursive: true });
-    await fs.writeFile(
-      path.join(verifyDir, "verify.md"),
-      "---\nrules:\n  keywords:\n    - hello\n    - world\n  mode: and\n---\nBody prompt from verify.md\n",
-      "utf-8",
-    );
-
-    // Create yml with verify_clarify
-    const refsDir = path.join(TMP, ".pi", "references");
-    await fs.writeFile(
-      path.join(refsDir, "pipeline-stage-prompt.yml"),
-      'verify_clarify: "YML verify prompt for clarify"\n',
-      "utf-8",
-    );
-
-    const config = makeTestConfig({ projectRoot: TMP });
-    await initAuditLog(config);
-    config.stages["clarify"] = {
-      ...config.stages["clarify"],
-      verify: { require: true, verifyFile: ".pi/references/clarify_spec/verify.md" },
-    } as any;
-    const meta = makeTestMeta({ currentStage: "clarify" });
-
-    const result = await runVerification(config, meta, []);
-
-    // modelPrompt should use yml value, not verify.md body
-    expect(result.modelPrompt).toBe("YML verify prompt for clarify");
-  });
-
-  it("falls back to verify.md body when yml verify_{stage} is missing", async () => {
-    const verifyDir = path.join(TMP, ".pi", "references", "clarify_spec");
-    await fs.mkdir(verifyDir, { recursive: true });
-    await fs.writeFile(
-      path.join(verifyDir, "verify.md"),
-      "---\nrules:\n  keywords:\n    - hello\n  mode: and\n---\nBody prompt from verify.md\n",
-      "utf-8",
-    );
-
-    // No yml file at all
-    const config = makeTestConfig({ projectRoot: TMP });
-    await initAuditLog(config);
-    config.stages["clarify"] = {
-      ...config.stages["clarify"],
-      verify: { require: true, verifyFile: ".pi/references/clarify_spec/verify.md" },
-    } as any;
-    const meta = makeTestMeta({ currentStage: "clarify" });
-
-    const result = await runVerification(config, meta, []);
-
-    // modelPrompt should use verify.md body (fallback)
-    expect(result.modelPrompt).toBe("Body prompt from verify.md");
-  });
-
-  it("rules still come from frontmatter even when yml overrides modelPrompt", async () => {
+  it("rules come from frontmatter (keyword check fails when missing)", async () => {
     const verifyDir = path.join(TMP, ".pi", "references", "clarify_spec");
     await fs.mkdir(verifyDir, { recursive: true });
     await fs.writeFile(
       path.join(verifyDir, "verify.md"),
       "---\nrules:\n  keywords:\n    - unique_keyword_xyz\n  mode: and\n---\nBody prompt\n",
-      "utf-8",
-    );
-
-    const refsDir = path.join(TMP, ".pi", "references");
-    await fs.writeFile(
-      path.join(refsDir, "pipeline-stage-prompt.yml"),
-      'verify_clarify: "Custom yml prompt"\n',
       "utf-8",
     );
 
@@ -737,36 +666,8 @@ describe("runVerification — yml verify_{stage} modelPrompt priority (D5)", () 
     // Messages missing the keyword — should fail structured check
     const result = await runVerification(config, meta, ["some message without keyword"]);
 
-    // modelPrompt from yml
-    expect(result.modelPrompt).toBe("Custom yml prompt");
-    // Rules still from frontmatter — keyword check fails
     expect(result.rulePassed).toBe(false);
     expect(result.ruleMissing).toContain("unique_keyword_xyz");
-  });
-
-  it("falls back to DEFAULT_VERIFY_PROMPT when yml is missing and verify.md body is empty", async () => {
-    // verify.md with only frontmatter, no body
-    const verifyDir = path.join(TMP, ".pi", "references", "clarify_spec");
-    await fs.mkdir(verifyDir, { recursive: true });
-    await fs.writeFile(
-      path.join(verifyDir, "verify.md"),
-      "---\nrules:\n  keywords:\n    - some_keyword\n  mode: and\n---\n",
-      "utf-8",
-    );
-
-    // No yml file at all — getVerifyPrompt returns null
-    const config = makeTestConfig({ projectRoot: TMP });
-    await initAuditLog(config);
-    config.stages["clarify"] = {
-      ...config.stages["clarify"],
-      verify: { require: true, verifyFile: ".pi/references/clarify_spec/verify.md" },
-    } as any;
-    const meta = makeTestMeta({ currentStage: "clarify" });
-
-    const result = await runVerification(config, meta, []);
-
-    // Fallback chain: yml missing (null) → body empty → DEFAULT_VERIFY_PROMPT
-    expect(result.modelPrompt).toBe(DEFAULT_VERIFY_PROMPT);
   });
 });
 
@@ -2078,7 +1979,6 @@ describe("runVerification — 148 Phase 2 skipped on config error", () => {
     expect(result.configErrors).toBeDefined();
     expect(result.configErrors!.some(e => e.includes("xor"))).toBe(true);
     expect(result.rulePassed).toBe(false);
-    expect(result.needsModelVerify).toBe(false);
   });
 
   it("returns skipped=true when verify.md has unknown top-level key", async () => {

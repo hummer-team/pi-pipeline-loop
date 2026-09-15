@@ -17,7 +17,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta, ExecFn, AuditLogFn } from "../types";
-import { DEFAULT_VERIFY_PROMPT, DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT } from "../constants";
+import { DEFAULT_VERIFY_PARSE_PROMPT, DEFAULT_VERIFY_JUDGE_PROMPT } from "../constants";
 import { verifyRequiredFiles, verifyFileContentPattern, globMatchFiles } from "./verifiers/file-verifier";
 import { verifyRequiredCommands } from "./verifiers/command-verifier";
 import { verifyRequiredGit } from "./verifiers/git-verifier";
@@ -81,18 +81,20 @@ export interface VerifyResult {
 
 /**
  * Result of parsing a verify.md file.
+ *
+ * Phase 6 / 177 (D8): the Markdown body is a human-readable contract only —
+ * the plugin reads frontmatter rules and `runtime:` anchors. The legacy `prompt`
+ * (body) field was removed as a dead "write-only" field.
  */
 export interface ParsedVerifyFile {
   /** Verification rules (null if no YAML frontmatter with keywords) */
   rules: VerifyRules | null;
-  /** Model verification prompt (Markdown body or default) */
-  prompt: string;
 }
 
 /**
- * Parses a verify.md file into rules and a verification prompt.
- * Expects YAML frontmatter (between --- delimiters) for keyword rules,
- * and Markdown body as the model verification prompt.
+ * Parses a verify.md file into rules.
+ * Expects YAML frontmatter (between --- delimiters) for keyword rules.
+ * The Markdown body is intentionally not returned (human-readable only).
  */
 export async function parseVerifyFile(
   verifyPath: string,
@@ -101,24 +103,21 @@ export async function parseVerifyFile(
   try {
     raw = await fs.readFile(verifyPath, "utf-8");
   } catch {
-    return { rules: null, prompt: DEFAULT_VERIFY_PROMPT };
+    return { rules: null };
   }
 
   const parts = raw.split(/^---\s*$/m);
   if (parts.length < 2) {
-    return { rules: null, prompt: raw.trim() || DEFAULT_VERIFY_PROMPT };
+    return { rules: null };
   }
 
   // parts[0] is before first --- (should be empty/whitespace)
   // parts[1] is the YAML frontmatter content
-  // parts.slice(2).join("---") is the Markdown body
   const frontmatter = parts[1].trim();
-  const body = parts.slice(2).join("---").trim();
 
   const rules = await parseFrontmatter(frontmatter);
-  const prompt = body || DEFAULT_VERIFY_PROMPT;
 
-  return { rules, prompt };
+  return { rules };
 }
 
 /**
@@ -339,8 +338,6 @@ export async function runVerification(
 ): Promise<{
   rulePassed: boolean;
   ruleMissing: string[];
-  needsModelVerify: boolean;
-  modelPrompt: string;
   structuredResult?: StructuredVerifyResult;
   verifyResult?: VerifyResult;
   /** 148 Phase 2: true when verification was skipped due to config errors */
@@ -355,8 +352,6 @@ export async function runVerification(
     return {
       rulePassed: true,
       ruleMissing: [],
-      needsModelVerify: false,
-      modelPrompt: "",
     };
   }
 
@@ -370,7 +365,7 @@ export async function runVerification(
   // - double fs.readFile + parseFrontmatter (performance)
   // - TOCTOU window between diagnose and parse (correctness)
   // Now parse first, then diagnose — single-read path (see raw content reuse below).
-  const { rules, prompt } = await parseVerifyFile(verifyPath);
+  const { rules } = await parseVerifyFile(verifyPath);
 
   // M4 fix: diagnose using the same file. When parseVerifyFile has already read
   // the file, we still call diagnoseVerifyConfig (which re-reads — acceptable
@@ -381,17 +376,17 @@ export async function runVerification(
     return {
       rulePassed: false,
       ruleMissing: [],
-      needsModelVerify: false,
-      modelPrompt: "",
       skipped: true,
       configErrors: diagnosis.errors.map(e => e.detail),
     };
   }
 
-  // Override modelPrompt from yml verify_{stage} when available (D5)
-  // Fallback chain: yml verify_{stage} → verify.md body prompt → DEFAULT (via parseVerifyFile)
-  const ymlPrompt = await getVerifyPrompt(config.projectRoot, meta.currentStage);
-  const effectivePrompt = ymlPrompt ?? prompt;
+  // Phase 6 / 177 (D8): the legacy LLM verify layer was removed, so the yml
+  // verify_{stage} prompt is no longer consumed by this function. The lookup is
+  // retained internally to keep the yml contract resolvable (no behavior change).
+  // @internal
+  const effectivePrompt = await getVerifyPrompt(config.projectRoot, meta.currentStage);
+  void effectivePrompt;
 
   // Build audit log closure: injects pipelineId into every error-level audit entry
   const logError: AuditLogFn = options?.logError ??
@@ -407,8 +402,6 @@ export async function runVerification(
     return {
       rulePassed: false,
       ruleMissing: [],
-      needsModelVerify: true,
-      modelPrompt: effectivePrompt,
       verifyResult,
     };
   }
@@ -515,8 +508,6 @@ export async function runVerification(
     return {
       rulePassed: false,
       ruleMissing: [],
-      needsModelVerify: true,
-      modelPrompt: effectivePrompt,
       structuredResult,
       verifyResult,
     };
@@ -543,8 +534,6 @@ export async function runVerification(
     return {
       rulePassed: false,
       ruleMissing: [],
-      needsModelVerify: true,
-      modelPrompt: effectivePrompt,
       structuredResult,
       verifyResult,
     };
@@ -597,8 +586,6 @@ export async function runVerification(
     return {
       rulePassed: true,
       ruleMissing: [],
-      needsModelVerify: false,
-      modelPrompt: "",
       structuredResult,
       verifyResult,
     };
@@ -613,8 +600,6 @@ export async function runVerification(
   return {
     rulePassed: false,
     ruleMissing,
-    needsModelVerify: true,
-    modelPrompt: effectivePrompt,
     structuredResult,
     verifyResult,
   };

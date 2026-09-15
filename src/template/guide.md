@@ -937,6 +937,8 @@ Verify the delivery items...
 
 `/pipeline-init 1` 会自动清洗已损坏的文件（见 §9.4.1）。新文件生成天然正确。手工编辑 verify.md 时，请确保 `---` 独立成行。
 
+> **插件读取范围（G6 / D8）**：pi-pipeline 只读取 verify.md 的 YAML frontmatter（结构化规则）与其中的 `runtime:` 锚点；Markdown 正文**不会**发送给模型，正文是给人阅读的契约说明。因此请把校验意图写进 frontmatter 规则，正文仅作注释用途。
+
 #### 9.4.B verify 规则完整参考（groups 声明体系）
 
 入口：编辑 `.pi/references/{stage}_spec/verify.md` 的 YAML frontmatter。**一个 verify.md 只服务一个 stage**。frontmatter 采用 `rules:` 单根结构：文件级默认 `path` + `groups` 列表；`groups` 之间恒为 AND。
@@ -1413,3 +1415,51 @@ Behavioral violations occur when the model attempts prohibited actions:
 | Behavioral violations | `meta.violations.length` | `DEFAULT_MAX_VIOLATIONS` (3) | `violation_overflow` | Decision menu |
 
 The two counters are independent — format failures do not increment violations, and behavioral violations do not increment verifyAttempts.
+
+## 17. 上下文压缩（pi 原生机制）
+
+pi-pipeline **不实现**压缩；压缩完全由 pi 原生负责。本节以原生实现为准（`file:line` 零臆断），避免把「85% 触发压缩」当成固定规则。
+
+### 17.1 权威数值与触发条件
+
+- 默认设置：`DEFAULT_COMPACTION_SETTINGS = { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }`
+  - pi 0.84.x `dist/core/compaction/compaction.js` L74-78（源码 `core/compaction/compaction.ts`）
+- 触发条件：`shouldCompact(contextTokens, contextWindow, settings) = settings.enabled && contextTokens > contextWindow - settings.reserveTokens`
+  - 同文件 `shouldCompact`（dist L160-164）
+- 配置键：`compaction.{enabled, reserveTokens, keepRecentTokens}`（`core/settings-manager`）
+- 命令：`/compact`（手动压缩）、`/autocompact`（切换自动压缩）
+- 压缩粒度：轮内（in-turn）压缩；子会话同样受该设置约束
+- TUI 读数：`⇊N` 表示已压缩摘要占用的 token 数
+
+### 17.2 纠正「85% 触发压缩」误读
+
+触发占比由 `reserveTokens` 与模型 `contextWindow` 共同决定：
+
+```
+触发占比 = (contextWindow − reserveTokens) / contextWindow
+reserveTokens = contextWindow × (1 − 触发占比)
+```
+
+`reserveTokens` 是**绝对 token 预留量**，不是百分比。用默认值 `reserveTokens=16384` 反推：
+
+| contextWindow | 实际触发占比 |
+|---|---|
+| 128k | ≈ 87.2% |
+| 200k | ≈ 91.8% |
+| 256k | ≈ 93.6% |
+
+因此「85% 触发」并非默认行为；要达到某个触发占比，请按公式设置 `reserveTokens`。
+
+### 17.3 触发占比 → reserveTokens 换算表
+
+由公式机械展开（数值由公式生成；缺省参考 16384）：
+
+| contextWindow | 80% | 85% | 90% |
+|---|---|---|---|
+| 128k | 25,600 | 19,200 | 12,800 |
+| 200k | 40,000 | 30,000 | 20,000 |
+| 256k | 51,200 | 38,400 | 25,600 |
+
+### 17.4 最佳实践（对 verify 规则的影响）
+
+轮内压缩会摘要早期对话文本。因此 verify 规则应**以磁盘/工具类为主**（`requiredFiles`、`requiredCommands`、`requiredGit`、`fileContentPattern` 等），**慎用**依赖 assistant 文本关键词（`keywords`）的规则——早期关键词可能已被压缩摘要，导致误判。
