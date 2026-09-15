@@ -29,7 +29,7 @@ import { extractAssistantMessages, extractToolCallRecords } from "./session-stat
 import { applyVerifyFail } from "./verify-advance";
 import { safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { checkStageSummaryHash } from "../utils/summary-hash";
-import { DEFAULT_CONFIRM_MAX_REJECTIONS } from "../constants";
+import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_DECISION_SHORTCUT } from "../constants";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { recordStageVisit } from "../utils/stage-visit";
@@ -550,6 +550,24 @@ async function advanceConfirmApproved(
 }
 
 /**
+ * Phase 3 / 177 (D5a): actionable copy for a pending confirm gate.
+ * Names the decision shortcut (e.g. `ctrl+r`) and the document direct-pass
+ * marker so the user has two concrete ways to proceed.
+ *
+ * @param config - Pipeline configuration (for decisionShortcutKey)
+ * @param stage - The stage awaiting confirmation
+ * @returns Human-readable guidance string
+ */
+export function formatConfirmGatePendingCopy(config: PipelineConfig, stage: PipelineStage): string {
+  const key = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
+  return (
+    `Stage "${stage}" awaits human confirmation and was not advanced. ` +
+    `Press ${key} to open the decision menu and choose "Approve & Advance", ` +
+    `or write "## 用户确认：确认无误" in the stage document and retry.`
+  );
+}
+
+/**
  * Main confirm gate orchestrator.
  * Called after verify passes when the stage has a non-auto confirm mode.
  *
@@ -1033,7 +1051,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             return {
               success: false,
               pending: true,
-              message: "Stage awaiting human confirmation. Stage not advanced.",
+              message: formatConfirmGatePendingCopy(config, currentStage),
             };
           }
           // no-gate (smart + non-complex): audit skip + clear counter + proceed to advance

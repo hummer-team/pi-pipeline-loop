@@ -997,6 +997,42 @@ Verify plan.`);
     await rm(stageTmp, { recursive: true, force: true });
   });
 
+  it("Phase 3 / 177 (D5b): owner re-asks unresolved gate once, then only hints", async () => {
+    // Restore the module-level audit dir (prior tests redirect+remove it).
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+    const root = join(TMP, "d5b-" + Date.now());
+    await mkdir(root, { recursive: true });
+
+    const config = makePlanConfigWithConfirm(root, "manual");
+    await createPlanDoc(root, "# Plan\nplan content here\n");
+    await createVerifyMd(root, `---
+requiredFiles:
+  - "docs/design/77_Config_plan.md"
+---
+Verify plan.`);
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return undefined; };
+
+    const hook = createAgentSettled(config);
+    // First settle: gate presented, dismissed → pending + bounded re-ask recorded
+    await hook.handler(ctx as any);
+    expect(selectCalls).toBe(1);
+    expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
+    expect(meta.currentStage).toBe("plan");
+
+    // Second settle: bounded → no popup, hint only, dismissed not counted as violation
+    const notifiesBefore = ctx.notifications.length;
+    await hook.handler(ctx as any);
+    expect(selectCalls).toBe(1);
+    expect(ctx.notifications.length).toBeGreaterThan(notifiesBefore);
+    expect((meta as any).violations ?? []).toHaveLength(0);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("deferContentPatterns: plan marker rule does not block verify in manual mode", async () => {
     const stageTmp = join(tmpdir(), "pi-settled-defer-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
@@ -1967,26 +2003,27 @@ describe("Phase 2 (172): pipeline-turn source gate", () => {
 
 describe("Phase 2 / 177 (D4): owner pendingSpawns consumption", () => {
   it("owner agent_settled consumes pendingSpawns and spawns once", async () => {
-    const root = join(tmpdir(), "pi-177-settled-pending-" + Date.now());
-    await mkdir(join(root, "agents"), { recursive: true });
+    // Reuse the module-level TMP (audit already initialized in beforeAll) so the
+    // module-level audit dir path is not redirected for other test files.
+    const agentsDir = join(TMP, "agents-pending");
+    await mkdir(agentsDir, { recursive: true });
     await writeFile(
-      join(root, "agents", "dev-agent.md"),
+      join(agentsDir, "dev-agent.md"),
       "---\nname: develop-agent\n---\n# Dev Agent\n",
     );
 
     const config = makeTestConfig({
-      projectRoot: root,
+      projectRoot: TMP,
       stages: {
         ...makeTestConfig().stages,
         develop: {
-          agentPath: "agents/dev-agent.md",
+          agentPath: "agents-pending/dev-agent.md",
           skillPath: "develop/SKILL.md",
           nextStage: "review",
           requireDomain: false,
         },
       },
     } as any);
-    await initAuditLog(config);
 
     const meta = makeTestMeta({
       currentStage: "develop",
@@ -2010,7 +2047,5 @@ describe("Phase 2 / 177 (D4): owner pendingSpawns consumption", () => {
     expect(sentMessages.length).toBe(1);
     expect(sentMessages[0]).toContain("[plugin auto-handoff]");
     expect(sentMessages[0]).toContain("develop-agent");
-
-    await rm(root, { recursive: true, force: true });
   });
 });

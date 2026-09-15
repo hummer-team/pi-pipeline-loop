@@ -14,6 +14,8 @@ import { recordStageVisit } from "../utils/stage-visit";
 import { toProjectRelative } from "../utils/path-display";
 import { isDormant } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
+import { maybeHandleConfirmGate, formatConfirmGatePendingCopy } from "../core/stage-advancer";
+import { detectSessionRole } from "../core/session-role";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -97,6 +99,37 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       const nextStageConfig = config.stages[nextStage];
       if (!nextStageConfig) {
         return { error: `Unknown stage: "${nextStage}"` };
+      }
+
+      // Phase 3 / 177 (D6): handoff must pass the stage confirm gate when configured.
+      // Previously handoff bypassed the gate by only checking summary validity.
+      // The gate is presented by the owner only — child sessions never show it
+      // in place (their agent_settled re-ask routes presentation to the owner).
+      const confirmMode = config.stages[currentStage]?.confirm?.mode;
+      if (confirmMode && confirmMode !== "auto") {
+        const isChild = detectSessionRole(ctx as Parameters<typeof detectSessionRole>[0]).isChild;
+        const gateCtx = isChild && ctx.ui
+          ? { ...ctx, ui: { ...ctx.ui, select: undefined } }
+          : ctx;
+        const gate = await maybeHandleConfirmGate(config, gateCtx, meta, ui, { mode: confirmMode });
+        if (gate.result === "handled") {
+          if (gate.action === "advanced") {
+            // Gate approved and advanced (marker written) — handoff contract satisfied.
+            return {
+              success: true,
+              message: `Confirm gate approved; advanced to "${gate.toStage ?? nextStage}".`,
+              currentStage: (ctx.session.getMeta() as SessionMeta).currentStage,
+            };
+          }
+          // pending / routed / aborted → do NOT handoff (closes the bypass path).
+          return {
+            success: false,
+            pending: gate.action === "pending",
+            error: `Handoff blocked: confirm gate not approved (${gate.action}).`,
+            message: formatConfirmGatePendingCopy(config, currentStage),
+          };
+        }
+        // no-gate (confirm marker already present) → fall through to the normal handoff.
       }
 
       // Cycle detection: unified via recordStageVisit helper (DRY with stage-advancer,

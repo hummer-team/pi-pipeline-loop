@@ -537,6 +537,14 @@ export interface SessionMeta {
    * - `attempts` bounds idempotent re-delivery (max 1 re-delivery per stage)
    */
   pendingSpawns?: Partial<Record<PipelineStage, { agentName: string; requestedAt: number; attempts: number }>>;
+
+  /**
+   * Phase 3 / 177 (D5b): Bounded auto re-ask bookkeeping for an unresolved
+   * confirm gate. When the owner session settles with a still-pending gate, it
+   * re-asks at most once per stage; after that it only notifies (no popup) to
+   * avoid a dialog storm. `stage` scopes the count to the current visit.
+   */
+  confirmGateReask?: { stage: PipelineStage; count: number };
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

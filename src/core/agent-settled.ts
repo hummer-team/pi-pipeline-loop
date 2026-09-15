@@ -21,6 +21,7 @@ import {
   autoWriteConfirmMarker,
   maybeHandleConfirmGate,
   routeReviewFailAuto,
+  formatConfirmGatePendingCopy,
 } from "./stage-advancer";
 import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
@@ -469,11 +470,32 @@ export function createAgentSettled(
       if (vr.rulePassed) {
         // Phase 4 (162): manual confirm gate — intercept verify-pass to show TUI dialog.
         if (stageConfig.confirm?.mode === "manual") {
+          const isChild = detectSessionRole(ctx).isChild;
+          const reask = meta.confirmGateReask;
+          const reaskExhausted = reask?.stage === meta.currentStage && reask.count >= 1;
+          // Phase 3 / 177 (D5b): owner-only bounded auto re-ask. After one re-ask,
+          // only notify (no popup) to avoid a dialog storm (173-C11 semantics).
+          if (!isChild && reaskExhausted) {
+            ui.notify(ctx, formatConfirmGatePendingCopy(config, meta.currentStage));
+            return;
+          }
           const gate = await maybeHandleConfirmGate(config, ctxWithPi, meta, ui, {
             mode: "manual",
             ...(reviewDefaultReject !== undefined ? { defaultReject: reviewDefaultReject } : {}),
           });
           if (gate.result === "handled") {
+            if (!isChild && gate.action === "pending") {
+              // Record the re-ask so the next settle only hints.
+              ctx.session.updateMeta({
+                confirmGateReask: {
+                  stage: meta.currentStage,
+                  count: (reask?.stage === meta.currentStage ? reask.count : 0) + 1,
+                },
+              });
+            } else if (!isChild && (gate.action === "advanced" || gate.action === "routed")) {
+              // Gate resolved — clear the bounded re-ask bookkeeping.
+              ctx.session.updateMeta({ confirmGateReask: undefined });
+            }
             // Phase 4 (169) W2: After confirm gate handled, re-read meta and check if completed.
             // Covers T2 (hook path with no subsequent settle) — same dispatch, idle-safe.
             // P2-6 fix: also covers the "routed" action defensively (routeConfirmReject

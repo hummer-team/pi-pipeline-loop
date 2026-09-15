@@ -272,3 +272,98 @@ describe("Phase 0 (169) P1: pipeline_handoff relative path display", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 });
+
+// ── Phase 3 / 177 (D6): handoff must pass the confirm gate ──────────────────
+
+describe("Phase 3 / 177 (D6): handoff confirm gate", () => {
+  async function setupPlanHandoff(opts: {
+    selectReturn?: string;
+    isChild?: boolean;
+    withMarker?: boolean;
+  }) {
+    const TMP = join(tmpdir(), "pi-177-handoff-gate-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "ctrl+r" });
+    config.stages["plan"] = {
+      ...config.stages["plan"],
+      confirm: { mode: "manual" },
+      nextStage: "develop",
+    } as any;
+    await initAuditLog(config);
+
+    const summaryPath = join(TMP, "plan-summary.md");
+    const hash = await writeAndHash(summaryPath, "# Plan Summary");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/90_Feat.md",
+      summaries: { plan: { path: summaryPath, hash, status: "valid" as const } },
+    });
+
+    if (opts.withMarker) {
+      await mkdir(join(TMP, "docs", "design"), { recursive: true });
+      await writeFile(join(TMP, "docs", "design", "90_Feat_plan.md"), "## 用户确认：确认无误\n", "utf-8");
+    }
+
+    const selectCalls: string[] = [];
+    const notifications: string[] = [];
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: (m: any) => Object.assign(meta, m) },
+      ui: {
+        notify: (msg: string) => { notifications.push(msg); },
+        select: async (msg: string) => { selectCalls.push(msg); return opts.selectReturn; },
+        transition: () => {},
+        clearStage: () => {},
+      },
+      _ctx: {
+        sessionManager: {
+          getHeader: () => (opts.isChild ? { parentSession: "/tmp/parent.jsonl" } : undefined),
+          getSessionName: () => "",
+        },
+      },
+    };
+    return { TMP, config, meta, ctx, selectCalls, notifications };
+  }
+
+  it("manual mode: gate presented, pending blocks handoff (no bypass)", async () => {
+    const { TMP, config, meta, ctx, selectCalls } = await setupPlanHandoff({});
+    const tool = createPipelineHandoff(config);
+    const result = (await tool.execute({ nextStage: "develop" }, ctx as any)) as any;
+
+    expect(result.success).not.toBe(true);
+    expect(result.pending).toBe(true);
+    expect(selectCalls.length).toBe(1);
+    // Actionable copy: shortcut + document direct-pass
+    expect(result.message).toContain("ctrl+r");
+    expect(result.message).toContain("用户确认：确认无误");
+    // Handoff did not advance the stage
+    expect(meta.currentStage).toBe("plan");
+
+    await rm(TMP, { recursive: true, force: true });
+    __resetAuditDirPath();
+  });
+
+  it("no-gate: confirm marker present → handoff proceeds without popup", async () => {
+    const { TMP, config, meta, ctx, selectCalls } = await setupPlanHandoff({ withMarker: true });
+    const tool = createPipelineHandoff(config);
+    const result = (await tool.execute({ nextStage: "develop" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(selectCalls.length).toBe(0);
+    expect(meta.currentStage).toBe("develop");
+
+    await rm(TMP, { recursive: true, force: true });
+    __resetAuditDirPath();
+  });
+
+  it("child session: gate is not presented in place (owner-routed)", async () => {
+    const { TMP, config, ctx, selectCalls } = await setupPlanHandoff({ isChild: true });
+    const tool = createPipelineHandoff(config);
+    const result = (await tool.execute({ nextStage: "develop" }, ctx as any)) as any;
+
+    expect(result.pending).toBe(true);
+    expect(selectCalls.length).toBe(0);
+
+    await rm(TMP, { recursive: true, force: true });
+    __resetAuditDirPath();
+  });
+});
