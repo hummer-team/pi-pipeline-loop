@@ -10,7 +10,7 @@ import {
   PLAN_CONFIRM_MARKER_RULE,
 } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { initAuditLog } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import type { SessionMeta, PipelineConfig } from "../../types";
 
 let tmpDir: string;
@@ -925,5 +925,108 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
     }
 
     await fs.rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
+// ─── Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle ────────
+
+describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", () => {
+  const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+  /** Manager with a working hasRunning() probe. */
+  function setManagerRunning(running: boolean): void {
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: () => undefined,
+      hasRunning: () => running,
+    };
+  }
+
+  /** Manager with getRecord only (anyTopLevelRunning → null, degraded path). */
+  function setManagerRecordOnly(records: Record<string, string>): void {
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
+    };
+  }
+
+  function clearManager(): void {
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+  }
+
+  afterEach(() => clearManager());
+
+  it("anyTopLevelRunning()=true → no popup, pending, deferred stamp", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+    setManagerRunning(true);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    expect(selectCalls).toBe(0);
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_deferred");
+  });
+
+  it("anyTopLevelRunning()=false → popup presented", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+    setManagerRunning(false);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+
+    expect(selectCalls).toBe(1);
+    expect(result.result).toBe("handled");
+  });
+
+  it("probe null + live activeSpawn evidence → deferred (degraded scan)", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      activeSpawns: { develop: { agentName: "develop-agent", agentId: "live-1", startedAt: Date.now() } },
+    });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+    setManagerRecordOnly({ "live-1": "running" });
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    expect(selectCalls).toBe(0);
+    expect(result).toEqual({ result: "handled", action: "pending" });
+  });
+
+  it("deferral exceeds spawnWaitTimeoutMs → popup + timeout hint, stamp cleared", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = { ...makePlanConfigWithConfirm(tmpDir, "manual"), spawnWaitTimeoutMs: 1000 };
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() - 200_000 },
+    });
+    let selectCalls = 0;
+    const notifications: string[] = [];
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+    setManagerRunning(true);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: (_ctx: unknown, m: string) => notifications.push(m), transition: () => {} } as any, { mode: "manual" });
+
+    expect(selectCalls).toBe(1);
+    expect(result.result).toBe("handled");
+    expect(notifications.some((n) => n.includes("timeout"))).toBe(true);
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_defer_timeout");
   });
 });

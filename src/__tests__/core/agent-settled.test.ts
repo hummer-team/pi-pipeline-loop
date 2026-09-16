@@ -997,7 +997,7 @@ Verify plan.`);
     await rm(stageTmp, { recursive: true, force: true });
   });
 
-  it("Phase 3 / 177 (D5b): owner re-asks unresolved gate once, then only hints", async () => {
+  it("Phase 4 / 179 (G5/G7): owner re-asks unresolved gate up to 3 times, then only hints", async () => {
     // Restore the module-level audit dir (prior tests redirect+remove it).
     await initAuditLog(makeTestConfig({ projectRoot: TMP }));
     const root = join(TMP, "d5b-" + Date.now());
@@ -1017,18 +1017,51 @@ Verify plan.`);
     ctx.ui.select = async () => { selectCalls++; return undefined; };
 
     const hook = createAgentSettled(config);
-    // First settle: gate presented, dismissed → pending + bounded re-ask recorded
-    await hook.handler(ctx as any);
-    expect(selectCalls).toBe(1);
-    expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
-    expect(meta.currentStage).toBe("plan");
+    // Settles 1-3: gate presented each time, dismissed → pending + bounded re-ask count
+    for (let i = 1; i <= 3; i++) {
+      await hook.handler(ctx as any);
+      expect(selectCalls).toBe(i);
+      expect(meta.confirmGateReask).toEqual({ stage: "plan", count: i });
+      expect(meta.currentStage).toBe("plan");
+    }
 
-    // Second settle: bounded → no popup, hint only, dismissed not counted as violation
+    // 4th settle: cap reached → no popup, hint only, dismissed not counted as violation
     const notifiesBefore = ctx.notifications.length;
     await hook.handler(ctx as any);
-    expect(selectCalls).toBe(1);
+    expect(selectCalls).toBe(3);
     expect(ctx.notifications.length).toBeGreaterThan(notifiesBefore);
     expect((meta as any).violations ?? []).toHaveLength(0);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("Phase 4 / 179 (G5/G7): re-ask count is scoped to the current stage (stage change resets)", async () => {
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+    const root = join(TMP, "d5b-scope-" + Date.now());
+    await mkdir(root, { recursive: true });
+
+    const config = makePlanConfigWithConfirm(root, "manual");
+    await createPlanDoc(root, "# Plan\nplan content here\n");
+    await createVerifyMd(root, `---
+requiredFiles:
+  - "docs/design/77_Config_plan.md"
+---
+Verify plan.`);
+
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      // Stale count from a DIFFERENT stage must not exhaust the gate.
+      confirmGateReask: { stage: "review", count: 9 },
+    });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return undefined; };
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    expect(selectCalls).toBe(1);
+    expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
 
     await rm(root, { recursive: true, force: true });
   });

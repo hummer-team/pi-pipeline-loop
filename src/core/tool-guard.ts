@@ -751,6 +751,47 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         }
       }
 
+      // 3e. Phase 4 / 179 (G6): out-of-stage spawn block.
+      // Spawning another stage's executor directly (e.g. develop during plan) is
+      // blocked and routed to the normal confirm-gate progression. Owner-only;
+      // NOT counted as a violation. The current-stage executor is handled by
+      // 3c/3d above, which short-circuit first.
+      if (SPAWN_TOOL_NAMES.includes(toolName)) {
+        const outOfStageType = args.subagent_type as string | undefined;
+        if (outOfStageType) {
+          const { isChild: oosIsChild } = detectSessionRole(ctx);
+          if (!oosIsChild) {
+            const currentAgent = resolveAgentMention(config, meta.currentStage);
+            if (outOfStageType !== currentAgent) {
+              let matchedStage: PipelineStage | null = null;
+              for (const stageName of Object.keys(config.stages) as PipelineStage[]) {
+                if (stageName === meta.currentStage) continue;
+                if (!config.stages[stageName]?.agentPath) continue;
+                if (resolveAgentMention(config, stageName) === outOfStageType) {
+                  matchedStage = stageName;
+                  break;
+                }
+              }
+              if (matchedStage) {
+                await safeWriteAuditLog("out_of_stage_spawn_blocked", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  tool: toolName,
+                  subagentType: outOfStageType,
+                  targetStage: matchedStage,
+                });
+                return {
+                  block: true,
+                  reason:
+                    `Current stage is "${meta.currentStage}"; spawning the "${matchedStage}" executor ("${outOfStageType}") directly is not allowed. ` +
+                    `Advance through the confirm gate (or exit/override) so the pipeline routes it correctly.`,
+                };
+              }
+            }
+          }
+        }
+      }
+
       // 4. File write protection for write/edit tools
       if (toolName === "write" || toolName === "edit") {
         const filePath = (args.file_path || args.path) as string;

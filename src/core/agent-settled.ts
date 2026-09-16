@@ -27,7 +27,7 @@ import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp, shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
-import { AUDIT_THROTTLE_WINDOW_MS, PIPELINE_TURN_SIGNATURES } from "../constants";
+import { AUDIT_THROTTLE_WINDOW_MS, CONFIRM_GATE_REASK_MAX, PIPELINE_TURN_SIGNATURES } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
 import { consumePendingSpawns, resolveAgentMention } from "../utils/subagent-rpc";
@@ -497,8 +497,10 @@ export function createAgentSettled(
         if (stageConfig.confirm?.mode === "manual") {
           const isChild = detectSessionRole(ctx).isChild;
           const reask = meta.confirmGateReask;
-          const reaskExhausted = reask?.stage === meta.currentStage && reask.count >= 1;
-          // Phase 3 / 177 (D5b): owner-only bounded auto re-ask. After one re-ask,
+          // Phase 4 / 179 (G5/G7): bounded re-ask raised 1 → 3 so a collateral
+          // Esc from a subagent window does not deadlock the gate on first miss.
+          const reaskExhausted = reask?.stage === meta.currentStage && reask.count >= CONFIRM_GATE_REASK_MAX;
+          // Phase 3 / 177 (D5b): owner-only bounded auto re-ask. After the cap,
           // only notify (no popup) to avoid a dialog storm (173-C11 semantics).
           if (!isChild && reaskExhausted) {
             ui.notify(ctx, formatConfirmGatePendingCopy(config, meta.currentStage));

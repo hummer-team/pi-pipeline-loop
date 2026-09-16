@@ -547,6 +547,14 @@ export interface SessionMeta {
   confirmGateReask?: { stage: PipelineStage; count: number };
 
   /**
+   * Phase 4 / 179 (G5/G7): First-deferral timestamp for the confirm gate.
+   * Set when the popup is postponed because a top-level subagent is still live;
+   * used to bound the deferral (config.spawnWaitTimeoutMs) so the gate cannot
+   * deadlock when an unrelated subagent hangs.
+   */
+  confirmGateDeferredAt?: { stage: PipelineStage; at: number };
+
+  /**
    * Phase 4 / 177 (D7③): The user's current-round clarify arguments, persisted
    * by prompt-injector each round (e.g. `"2 答"`). The plugin-owned clarify
    * spawn uses these verbatim for the subagent description/title; when absent

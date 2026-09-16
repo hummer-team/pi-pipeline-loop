@@ -47,6 +47,33 @@ type ActiveSpawnEntry = NonNullable<SessionMeta["activeSpawns"]>[PipelineStage];
  *   wait-and-settle pre-check to look for live children in *other* stages)
  * @returns The first matching hit, or null when no live evidence exists
  */
+/**
+ * Scans all `activeSpawns` entries for ANY live evidence, regardless of agent
+ * name. Used as the degraded probe when `anyTopLevelRunning()` is unavailable
+ * (e.g. confirm-gate deferral, Phase 4 / 179).
+ *
+ * @param activeSpawns - The meta.activeSpawns map (may be undefined)
+ * @returns The first live/reserved hit, or null when no live evidence exists
+ */
+export function anyActiveSpawnEvidence(
+  activeSpawns: SessionMeta["activeSpawns"],
+): SpawnEvidenceHit | null {
+  if (!activeSpawns) return null;
+
+  for (const [stageKey, entry] of Object.entries(activeSpawns)) {
+    const spawn = entry as ActiveSpawnEntry | undefined;
+    if (!spawn) continue;
+
+    if (spawn.agentId && probeAgentState(spawn.agentId) === "live") {
+      return { stage: stageKey as PipelineStage, agentId: spawn.agentId, basis: "probe_live" };
+    }
+    if (spawn.reserved && (Date.now() - spawn.startedAt) < RESERVED_SPAWN_EVIDENCE_MS) {
+      return { stage: stageKey as PipelineStage, agentId: spawn.agentId, basis: "reserved" };
+    }
+  }
+  return null;
+}
+
 export function scanActiveSpawnEvidence(
   activeSpawns: SessionMeta["activeSpawns"],
   expectedAgent: string,

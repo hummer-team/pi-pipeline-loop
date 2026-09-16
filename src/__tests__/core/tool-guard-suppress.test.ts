@@ -345,3 +345,91 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
     clearManager();
   });
 });
+
+// ── Phase 4 / 179 (G6): out-of-stage spawn block ─────────────────────────────
+
+describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
+  let TMP: string;
+
+  beforeEach(async () => {
+    TMP = join(tmpdir(), "pi-tg-oos-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6));
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+    __resetMemoryThrottle();
+  });
+
+  afterEach(async () => {
+    await rm(TMP, { recursive: true, force: true });
+    __resetAuditDirPath();
+  });
+
+  it("plan stage spawn of develop executor → blocked with routing hint + audit", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    config.stages["plan"] = { ...config.stages["plan"], agentPath: "./agents/plan-agent.md" };
+    config.stages["develop"] = { ...config.stages["develop"], agentPath: "./agents/develop-agent.md" };
+    await writeAgentFile(TMP, "./agents/plan-agent.md", "feat-design-plan-agent");
+    await writeAgentFile(TMP, "./agents/develop-agent.md", "develop-agent");
+
+    const meta = makeTestMeta({ currentStage: "plan", flowState: "running" });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "develop-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+
+    expect(result).toBeDefined();
+    expect((result as any).block).toBe(true);
+    expect((result as any).reason).toContain("Advance through the confirm gate");
+    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).toContain("out_of_stage_spawn_blocked");
+    expect(audit).toContain("targetStage=develop");
+  });
+
+  it("non-pipeline executor name → allowed", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    config.stages["plan"] = { ...config.stages["plan"], agentPath: "./agents/plan-agent.md" };
+    config.stages["develop"] = { ...config.stages["develop"], agentPath: "./agents/develop-agent.md" };
+    await writeAgentFile(TMP, "./agents/plan-agent.md", "feat-design-plan-agent");
+    await writeAgentFile(TMP, "./agents/develop-agent.md", "develop-agent");
+
+    const meta = makeTestMeta({ currentStage: "plan", flowState: "running" });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "generic-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+    expect(result).toBeUndefined();
+  });
+
+  it("review stage spawn of a shared-name executor is not blocked (current-stage agent)", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    // review and fix intentionally share one agent definition.
+    config.stages["review"] = { ...config.stages["review"], agentPath: "./agents/shared-agent.md" };
+    config.stages["fix"] = { ...config.stages["fix"], agentPath: "./agents/shared-agent.md" };
+    await writeAgentFile(TMP, "./agents/shared-agent.md", "code-review-agent");
+
+    const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "code-review-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+    expect(result).toBeUndefined();
+  });
+
+  it("child session → not blocked (owner-only)", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    config.stages["plan"] = { ...config.stages["plan"], agentPath: "./agents/plan-agent.md" };
+    config.stages["develop"] = { ...config.stages["develop"], agentPath: "./agents/develop-agent.md" };
+    await writeAgentFile(TMP, "./agents/plan-agent.md", "feat-design-plan-agent");
+    await writeAgentFile(TMP, "./agents/develop-agent.md", "develop-agent");
+
+    const meta = makeTestMeta({ currentStage: "plan", flowState: "running" });
+    const ctx = createMockCtx(meta, {
+      sessionHeader: { parentSession: "parent" },
+      sessionName: "agent#aabb1122",
+      sessionFile: "child-session",
+    });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "develop-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+    expect(result).toBeUndefined();
+  });
+});

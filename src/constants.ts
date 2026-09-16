@@ -71,6 +71,20 @@ export const DEFAULT_SPAWN_WAIT_TIMEOUT_MS = 120_000;
  */
 export const DEFERRED_SPAWN_POLL_INTERVAL_MS = 5_000;
 
+// ─── Confirm Gate Re-ask Cap (Phase 4 / 179) ─────────────────────────────────
+
+/**
+ * Maximum number of bounded auto re-asks for an unresolved confirm gate.
+ *
+ * The owner session re-presents the plan/review confirmation dialog up to this
+ * many times after an Esc-dismiss. Beyond the cap it only emits the actionable
+ * hint (`formatConfirmGatePendingCopy`) to avoid a dialog storm.
+ *
+ * Raised from 1 to 3 (Phase 4 / 179, G5/G7) because a subagent-window Esc can
+ * collateral-cancel the owner's dialog; a single miss must not deadlock the gate.
+ */
+export const CONFIRM_GATE_REASK_MAX = 3;
+
 /**
  * Default maximum number of violations before the violation overflow breaker fires.
  * When violations.length >= this value, freezeAndPrompt("violation_overflow") is triggered.

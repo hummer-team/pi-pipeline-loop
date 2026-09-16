@@ -29,11 +29,13 @@ import { extractAssistantMessages, extractToolCallRecords } from "./session-stat
 import { applyVerifyFail } from "./verify-advance";
 import { safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { checkStageSummaryHash } from "../utils/summary-hash";
-import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_DECISION_SHORTCUT } from "../constants";
+import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_DECISION_SHORTCUT, DEFAULT_SPAWN_WAIT_TIMEOUT_MS } from "../constants";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { recordStageVisit } from "../utils/stage-visit";
 import { isDormant } from "./dormancy";
+import { anyTopLevelRunning } from "../utils/subagents-introspect";
+import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -551,7 +553,7 @@ async function advanceConfirmApproved(
 
 /**
  * Phase 3 / 177 (D5a): actionable copy for a pending confirm gate.
- * Names the decision shortcut (e.g. `ctrl+r`) and the document direct-pass
+ * Names the decision shortcut (e.g. `ctrl+shift+u`) and the document direct-pass
  * marker so the user has two concrete ways to proceed.
  *
  * @param config - Pipeline configuration (for decisionShortcutKey)
@@ -565,6 +567,42 @@ export function formatConfirmGatePendingCopy(config: PipelineConfig, stage: Pipe
     `Press ${key} to open the decision menu and choose "Approve & Advance", ` +
     `or write "## 用户确认：确认无误" in the stage document and retry.`
   );
+}
+
+/** Outcome of the confirm-gate deferral probe (Phase 4 / 179, G5/G7). */
+type ConfirmGateDeferralDecision = "present" | "defer" | "timeout";
+
+/**
+ * Phase 4 / 179 (G5/G7): decides whether the confirm-gate popup must be
+ * deferred because a top-level subagent is still live.
+ *
+ * An Esc pressed in a subagent window can collateral-cancel the owner's
+ * `ui.select`, so the dialog is only presented once no subagent is running.
+ * A bounded timeout (`config.spawnWaitTimeoutMs`) prevents a permanent
+ * "never pop" deadlock when an unrelated subagent hangs.
+ *
+ * Probe order:
+ * 1. `anyTopLevelRunning()` — global coarse probe (primary)
+ * 2. `anyActiveSpawnEvidence()` — per-stage scan + probe + reserved window (degrade)
+ *
+ * @returns "present" (safe to pop), "defer" (keep pending), "timeout" (pop anyway)
+ */
+function evaluateConfirmGateDeferral(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): ConfirmGateDeferralDecision {
+  const probe = anyTopLevelRunning();
+  const anyLive = probe === null
+    ? anyActiveSpawnEvidence(meta.activeSpawns) !== null
+    : probe;
+  if (!anyLive) return "present";
+
+  const deferredAt = meta.confirmGateDeferredAt;
+  if (deferredAt && deferredAt.stage === meta.currentStage) {
+    const timeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
+    if (Date.now() - deferredAt.at >= timeoutMs) return "timeout";
+  }
+  return "defer";
 }
 
 /**
@@ -631,6 +669,42 @@ export async function maybeHandleConfirmGate(
       "",
     ];
     await writeConfirmMarker(config, ctx, meta, docPath, lines, "confirm_smart_complex");
+  }
+
+  // Phase 4 / 179 (G5/G7): defer the popup while any top-level subagent is live.
+  // A subagent-window Esc collateral-cancels the owner dialog; presenting only
+  // when no subagent runs removes that failure mode entirely. The bounded
+  // timeout guarantees the gate still pops under a hanging unrelated subagent.
+  const deferral = evaluateConfirmGateDeferral(config, meta);
+  if (deferral === "defer") {
+    const existing = meta.confirmGateDeferredAt;
+    if (!existing || existing.stage !== currentStage) {
+      ctx.session.updateMeta({ confirmGateDeferredAt: { stage: currentStage, at: Date.now() } });
+    }
+    await writeAuditLog("confirm_gate_deferred", {
+      pipelineId: meta.pipelineId,
+      stage: currentStage,
+      reason: "top_level_subagent_live",
+    });
+    ui.notify(ctx, `${currentStage} confirmation deferred until running subagents settle.`);
+    return { result: "handled", action: "pending" };
+  }
+  if (deferral === "timeout") {
+    const timeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
+    await writeAuditLog("confirm_gate_defer_timeout", {
+      pipelineId: meta.pipelineId,
+      stage: currentStage,
+      waitedMs: String(timeoutMs),
+    }, "warn");
+    ui.notify(
+      ctx,
+      `${currentStage} confirmation gate timeout: a subagent is still running. ` +
+        formatConfirmGatePendingCopy(config, currentStage),
+    );
+  }
+  // Presenting now → clear deferral bookkeeping so a later deferral restarts the timer.
+  if (meta.confirmGateDeferredAt) {
+    ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
   }
 
   // Present TUI dialog
