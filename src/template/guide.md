@@ -650,6 +650,20 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 
 **通用字段**：所有 `writeStageAudit` 事件自动携带 `pipelineId`、`stage`、`sequence`（沿 nextStage 链到 completed）、`loopCount`、`maxLoops`。
 
+**Phase 0-4 / 179 新增审计事件**（G2~G9 修复引入）：
+
+| 事件 | 触发时机 | 关键字段 |
+|------|---------|---------|
+| `agent_settled_bare_turn_matched` | settle gate 以「裸文本（无 @ 前缀）+ 绑定需求文档路径」判定为 pipeline turn | stage, messagePreview |
+| `subagents_mention_model_detected` | session_start / pipeline-init 只读探测到 `.pi/subagents.json` `agentMentions:"model"` | projectRoot |
+| `stage_spawn_deferred` | 同名 agent 在另一 stage 仍 live，新 spawn 挂起等待其 settle | stage, agentName, oldChildId, evidenceStage |
+| `pending_spawn_wait_timeout` | 挂起等待超过 `spawnWaitTimeoutMs`，转人工（不消耗重试次数） | stage, agentName, waitedMs, oldChildId, evidenceStage |
+| `chain_terminal_wake` | 自动推进链到达终态（completed / 无下一 stage），向 owner 注入链摘要 | fromStage, terminalStage, stageVisitOrder |
+| `chain_terminal_wake_skipped` | 链未真正终止（有未消费 pendingSpawns / pi 不可用）而跳过唤醒 | fromStage, reason |
+| `confirm_gate_deferred` | 确认弹窗因存在顶层子代理 live 而后置 | stage, reason |
+| `confirm_gate_defer_timeout` | 后置等待超过 `spawnWaitTimeoutMs`，照常弹窗 + hint | stage, waitedMs |
+| `out_of_stage_spawn_blocked` | 当前 stage 直接 spawn 其他 stage 执行体，被拦截并给路由提示 | stage, tool, subagentType, targetStage |
+
 **Agent 速查表**：
 
 | Agent | 阶段 | 文件名 | 职责 |
