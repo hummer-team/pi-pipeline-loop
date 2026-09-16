@@ -332,8 +332,9 @@ describe("Phase 3 / 177 (D6): handoff confirm gate", () => {
     expect(result.success).not.toBe(true);
     expect(result.pending).toBe(true);
     expect(selectCalls.length).toBe(1);
-    // Actionable copy: shortcut + document direct-pass
-    expect(result.message).toContain("ctrl+r");
+    // Phase 3 / 180: actionable copy now points at /pipeline-resume + document direct-pass
+    // (migrated from the legacy decision-shortcut wording, which was not executable).
+    expect(result.message).toContain("/pipeline-resume");
     expect(result.message).toContain("用户确认：确认无误");
     // Handoff did not advance the stage
     expect(meta.currentStage).toBe("plan");

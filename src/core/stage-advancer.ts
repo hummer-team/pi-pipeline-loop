@@ -29,7 +29,7 @@ import { extractAssistantMessages, extractToolCallRecords } from "./session-stat
 import { applyVerifyFail } from "./verify-advance";
 import { safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { checkStageSummaryHash } from "../utils/summary-hash";
-import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_DECISION_SHORTCUT, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
@@ -57,6 +57,15 @@ export const PLAN_CONFIRM_MARKER_RULE = {
   path: "docs/design/*_plan.md",
   pattern: "^## (用户确认|User Confirmation)",
 };
+
+/**
+ * Regex matching the plugin-written plan confirm marker (bilingual).
+ *
+ * Single source of truth shared by the confirm gate's no-gate check and the
+ * pending-gate predicate (`detectPendingConfirmGate`) so their judgments cannot
+ * drift. Not global — `.test()` stays stateless across calls.
+ */
+export const CONFIRM_MARKER_RE = /^## (?:用户确认：确认无误|User Confirmation: Confirmed)/m;
 
 // ─── Confirm Gate Helper Functions (Phase 3 — 162) ───────────────────────────
 
@@ -559,19 +568,23 @@ async function advanceConfirmApproved(
 }
 
 /**
- * Phase 3 / 177 (D5a): actionable copy for a pending confirm gate.
- * Names the decision shortcut (e.g. `ctrl+shift+u`) and the document direct-pass
- * marker so the user has two concrete ways to proceed.
+ * Phase 3 / 180 (C3 / D5a): actionable copy for a pending confirm gate.
  *
- * @param config - Pipeline configuration (for decisionShortcutKey)
+ * The previous text pointed at the decision shortcut (`ctrl+shift+u`) and an
+ * "Approve & Advance" menu item that does not exist in the running-state menu
+ * (running = [restart, abort]) — an unexecutable instruction. The deterministic
+ * re-entry path is `/pipeline-resume`, which re-opens the existing confirm
+ * dialog; alternatively the user can write the direct-pass marker in the stage
+ * document and retry.
+ *
+ * @param config - Pipeline configuration (retained for signature compatibility)
  * @param stage - The stage awaiting confirmation
  * @returns Human-readable guidance string
  */
 export function formatConfirmGatePendingCopy(config: PipelineConfig, stage: PipelineStage): string {
-  const key = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
   return (
     `Stage "${stage}" awaits human confirmation and was not advanced. ` +
-    `Press ${key} to open the decision menu and choose "Approve & Advance", ` +
+    `Run /pipeline-resume to reopen the confirmation dialog, ` +
     `or write "## 用户确认：确认无误" in the stage document and retry.`
   );
 }
@@ -703,7 +716,7 @@ export async function maybeHandleConfirmGate(
       // Check for an exact plugin-written confirm marker (bilingual).
       // Uses precise anchor text to avoid false positives on user-authored
       // headings that share a prefix (e.g. "## 用户确认流程", "## User Confirmation Guide").
-      if (/^## (?:用户确认：确认无误|User Confirmation: Confirmed)/m.test(content)) {
+      if (CONFIRM_MARKER_RE.test(content)) {
         if (meta.confirmGateDeferredAt) {
           ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
         }
@@ -905,6 +918,98 @@ export async function maybeHandleConfirmGate(
   });
   ui.notify(ctx, `${currentStage} confirmation cancelled.`);
   return { result: "handled", action: "pending" };
+}
+
+/**
+ * Phase 3 / 180: Detects a pending manual confirm gate that `/pipeline-resume`
+ * can re-enter.
+ *
+ * The predicate mirrors the gate's own preconditions:
+ * - current stage is plan or review
+ * - the stage's confirm mode is "manual"
+ * - a persisted trace of a prior gate interaction exists for this stage —
+ *   either `confirmGateReask` scoped to the stage, or an *effective*
+ *   `confirmGateDeferredAt` (Phase 1 valid-window stamp)
+ * - the stage document does not already carry the confirm marker
+ *
+ * The re-ask count is intentionally NOT part of the predicate: `/pipeline-resume`
+ * stays a deterministic entry point even after the bounded auto re-ask budget is
+ * exhausted (V4). The gate itself remains the idempotency authority (stage guard,
+ * marker check, deferral check) — the predicate only decides whether to call it.
+ *
+ * Fail-open: an unresolvable or unreadable stage document is treated as
+ * "no marker" (consistent with the gate's own read guard).
+ *
+ * @param config - Pipeline configuration
+ * @param meta - Current session metadata
+ * @returns true when a pending manual confirm gate should be re-presented
+ */
+export async function detectPendingConfirmGate(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<boolean> {
+  const stage = meta.currentStage;
+  if (stage !== "plan" && stage !== "review") return false;
+
+  const stageConfig = config.stages[stage];
+  if (stageConfig?.confirm?.mode !== "manual") return false;
+
+  // A prior gate interaction must have left a durable trace for this stage.
+  const reaskHit = meta.confirmGateReask?.stage === stage;
+  const deferredHit = getEffectiveDeferredStamp(meta) !== undefined;
+  if (!reaskHit && !deferredHit) return false;
+
+  const docPath = await resolveStageDocPath(config, meta, stage);
+  if (!docPath) return true;
+  try {
+    await fs.access(docPath);
+    const content = await fs.readFile(docPath, "utf-8");
+    if (CONFIRM_MARKER_RE.test(content)) return false;
+  } catch {
+    // File missing/unreadable → treat as no marker (fail-open, same as the gate)
+  }
+  return true;
+}
+
+/**
+ * Phase 3 / 180: Shared confirm-gate accounting.
+ *
+ * Extracted verbatim from agent-settled's post-gate bookkeeping so the
+ * `/pipeline-resume` re-entry path and the owner auto re-ask chain share exactly
+ * the same re-ask semantics (DRY).
+ *
+ * Semantics:
+ * - owner + pending + NOT a system deferral → increment the stage-scoped re-ask count
+ * - owner + advanced/routed → clear the re-ask bookkeeping
+ * - everything else (aborted / no-gate / deferred / child) → no accounting
+ *
+ * A system deferral (`gate.deferred`) must NOT consume the re-ask budget,
+ * otherwise the bounded timeout fallback becomes unreachable (fb9822d).
+ *
+ * @param session - Session state writer (updateMeta)
+ * @param meta - Current session metadata (stage + prior re-ask count)
+ * @param gate - Result returned by maybeHandleConfirmGate
+ * @param isChild - Whether the calling session is a child/subagent
+ */
+export function recordConfirmGateOutcome(
+  session: { updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined },
+  meta: SessionMeta,
+  gate: ConfirmGateResult,
+  isChild: boolean,
+): void {
+  if (gate.result !== "handled") return;
+
+  if (!isChild && gate.action === "pending" && !gate.deferred) {
+    const reask = meta.confirmGateReask;
+    session.updateMeta({
+      confirmGateReask: {
+        stage: meta.currentStage,
+        count: (reask?.stage === meta.currentStage ? reask.count : 0) + 1,
+      },
+    });
+  } else if (!isChild && (gate.action === "advanced" || gate.action === "routed")) {
+    session.updateMeta({ confirmGateReask: undefined });
+  }
 }
 
 /**

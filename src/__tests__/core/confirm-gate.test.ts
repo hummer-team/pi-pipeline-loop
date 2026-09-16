@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import {
   maybeHandleConfirmGate,
+  detectPendingConfirmGate,
   shouldDeferPlanMarkerRule,
   resolveConfirmMaxRejections,
   autoWriteConfirmMarker,
@@ -1226,5 +1227,97 @@ describe("Phase 2 / 180: repeat-defer throttled audit", () => {
     expect(notifications.filter((n) => n.includes("deferred")).length).toBe(1);
     expect(logContent).toContain("waitedMs=");
     expect(logContent).toContain("source=owner_settled");
+  });
+});
+
+// ─── Phase 3 / 180: detectPendingConfirmGate predicate ───────────────────────
+
+describe("Phase 3 / 180: detectPendingConfirmGate", () => {
+  it("re-ask trace for the current stage → true", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateReask: { stage: "plan", count: 1 },
+    });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(true);
+  });
+
+  it("effective deferral stamp for the current stage → true", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const now = Date.now();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: now,
+      confirmGateDeferredAt: { stage: "plan", at: now },
+    });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(true);
+  });
+
+  it("stale stamp (at < stageStartTime) only → false", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const now = Date.now();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: now,
+      confirmGateDeferredAt: { stage: "plan", at: now - 200_000 },
+    });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(false);
+  });
+
+  it("confirm marker already written → false", async () => {
+    await createPlanDoc("# Plan\n\n## 用户确认：确认无误\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateReask: { stage: "plan", count: 1 },
+    });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(false);
+  });
+
+  it("non-gate stage (develop) → false", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateReask: { stage: "develop", count: 1 },
+    });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(false);
+  });
+
+  it("smart confirm mode → false", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "smart");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateReask: { stage: "plan", count: 1 },
+    });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(false);
+  });
+
+  it("re-ask budget exhausted (count=3) → still true (resume is deterministic)", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateReask: { stage: "plan", count: 3 },
+    });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(true);
+  });
+
+  it("no trace at all → false", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    expect(await detectPendingConfirmGate(config, meta)).toBe(false);
   });
 });

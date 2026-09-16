@@ -20,6 +20,7 @@ import {
   shouldDeferPlanMarkerRule,
   autoWriteConfirmMarker,
   maybeHandleConfirmGate,
+  recordConfirmGateOutcome,
   routeReviewFailAuto,
   formatConfirmGatePendingCopy,
 } from "./stage-advancer";
@@ -511,22 +512,13 @@ export function createAgentSettled(
             ...(reviewDefaultReject !== undefined ? { defaultReject: reviewDefaultReject } : {}),
           });
           if (gate.result === "handled") {
-            // Phase 4 / 179 fix: only count real dismisses (Esc / no UI) towards
-            // the re-ask budget. System deferrals (subagent still live) must NOT
-            // consume the bounded re-arm count — otherwise the timeout fallback
-            // ("pop anyway + hint" after spawnWaitTimeoutMs) becomes unreachable.
-            if (!isChild && gate.action === "pending" && !gate.deferred) {
-              // Record the re-ask so the next settle only hints.
-              ctx.session.updateMeta({
-                confirmGateReask: {
-                  stage: meta.currentStage,
-                  count: (reask?.stage === meta.currentStage ? reask.count : 0) + 1,
-                },
-              });
-            } else if (!isChild && (gate.action === "advanced" || gate.action === "routed")) {
-              // Gate resolved — clear the bounded re-ask bookkeeping.
-              ctx.session.updateMeta({ confirmGateReask: undefined });
-            }
+            // Phase 3 / 180: shared accounting helper (extracted from this block).
+            // Phase 4 / 179 fix semantics preserved: only real dismisses (Esc / no UI)
+            // count towards the re-ask budget. System deferrals (subagent still live)
+            // must NOT consume the bounded re-arm count — otherwise the timeout
+            // fallback ("pop anyway + hint" after spawnWaitTimeoutMs) becomes
+            // unreachable (fb9822d).
+            recordConfirmGateOutcome(ctx.session, meta, gate, isChild);
             // Phase 4 (169) W2: After confirm gate handled, re-read meta and check if completed.
             // Covers T2 (hook path with no subsequent settle) — same dispatch, idle-safe.
             // P2-6 fix: also covers the "routed" action defensively (routeConfirmReject

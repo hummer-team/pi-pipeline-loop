@@ -6,15 +6,19 @@
  *
  * Behavior matrix:
  * - No meta → error message
- * - Not frozen → read-only status hint (no state change)
- * - Aborted → points to /pipeline-start (no menu available)
- * - Blocked/awaiting_human → executeDecision("resume") + stage dispatch
+ * - Not frozen (running) → restore the persistent status bar; if a manual
+ *   confirm gate is pending (owner-only) re-enter the existing dialog via
+ *   maybeHandleConfirmGate, otherwise a read-only status hint
+ * - Aborted → restore status bar + points to /pipeline-start (no menu available)
+ * - Blocked/awaiting_human → executeDecision("resume") + status bar + stage dispatch
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
 import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText } from "../core/flow-state";
 import { dispatchAfterResume } from "./pipeline-start";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
+import { detectPendingConfirmGate, maybeHandleConfirmGate, recordConfirmGateOutcome } from "../core/stage-advancer";
+import { detectSessionRole } from "../core/session-role";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
@@ -67,11 +71,58 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         return { message: abortMsg };
       }
 
-      // Not frozen: read-only status hint (no state change)
+      // Not frozen: running (no state change).
+      // Phase 3 / 180: if a manual confirm gate is pending, re-enter the EXISTING
+      // confirm dialog (maybeHandleConfirmGate) — the deterministic recovery path
+      // for a dismissed gate. Otherwise keep the read-only status hint.
       if (!isFrozen(meta)) {
         // Restore the persistent status bar (parity with /pipeline-start).
         syncStageStatusBar(ui, ctx);
+
         const statusMsg = `Pipeline is running (pipelineId: ${meta.pipelineId}, stage: ${meta.currentStage}, flowState: ${flowState}). No resume needed.`;
+
+        // Owner-only: child sessions must not present the dialog. Role-detection
+        // failure is fail-open to owner (consistent with session-role.ts).
+        let isChild = false;
+        try {
+          isChild = detectSessionRole(ctx).isChild;
+        } catch {
+          // Fail-open: treat as owner
+        }
+
+        if (!isChild && await detectPendingConfirmGate(config, meta)) {
+          // Reuse the persisted session/ui/pi context shape (same as the
+          // pipeline-handoff and stage-advancer tool call sites). No new UI
+          // primitive: `ui.select` is the SDK UI passed straight through.
+          const gateCtx = { session: ctx.session, ui: ctx.ui, pi: ctx.pi };
+          // Review stage: no `defaultReject` — use the default option order.
+          const gate = await maybeHandleConfirmGate(config, gateCtx, meta, ui, {
+            mode: "manual",
+            source: "resume",
+          });
+          // Share the re-ask / cleanup accounting with the owner auto re-ask chain.
+          recordConfirmGateOutcome(ctx.session, meta, gate, false);
+
+          if (gate.result === "handled") {
+            if (gate.action === "advanced") {
+              return { message: `Confirm gate approved; advanced to "${gate.toStage ?? "next"}".` };
+            }
+            if (gate.action === "routed" || gate.action === "aborted") {
+              const resolvedMeta = ctx.session.getMeta() as SessionMeta;
+              return {
+                message:
+                  `Confirm gate resolved; pipeline is now at "${resolvedMeta.currentStage}" ` +
+                  `(flowState: ${getFlowState(resolvedMeta)}).`,
+              };
+            }
+            // pending (including deferred): the gate already emitted the deferral /
+            // pending guidance — return the running status text without repeating.
+            return { message: statusMsg };
+          }
+          // no-gate (marker written between predicate and call): fall through to
+          // the read-only status hint.
+        }
+
         ui.notify(ctx, statusMsg);
         return { message: statusMsg };
       }

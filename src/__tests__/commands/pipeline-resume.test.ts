@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createPipelineResumeCommand } from "../../commands/pipeline-resume";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
-import { readFile } from "node:fs/promises";
 import type { PipelineStage } from "../../types";
 
 describe("createPipelineResumeCommand", () => {
@@ -265,6 +264,169 @@ describe("createPipelineResumeCommand", () => {
       const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
       expect(stageCalls.length).toBe(1);
       expect(stageCalls[0].text).toContain("develop");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
+  // ── Phase 3 / 180: running branch re-enters the pending confirm gate ──────
+
+  describe("Phase 3 / 180: running branch re-enters the pending confirm gate", () => {
+    const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+    function makeManualPlanConfig(root: string) {
+      const base = makeTestConfig({ projectRoot: root });
+      const planStage = {
+        ...base.stages.plan,
+        nextStage: "develop" as PipelineStage,
+        allowedWritePaths: ["docs/"],
+        confirm: { mode: "manual" as const },
+      };
+      return {
+        ...base,
+        stages: { ...base.stages, plan: planStage as typeof base.stages.plan },
+      };
+    }
+
+    async function setupPlanDoc(root: string) {
+      const docsDir = join(root, "docs", "design");
+      await mkdir(docsDir, { recursive: true });
+      const planPath = join(docsDir, "77_Config_plan.md");
+      await writeFile(planPath, "# Plan\n", "utf-8");
+      return planPath;
+    }
+
+    function setManagerRunning(running: boolean): void {
+      (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+        getRecord: () => undefined,
+        hasRunning: () => running,
+      };
+    }
+
+    afterEach(() => {
+      delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+    });
+
+    it("plan + manual + re-ask trace + Approve → dialog shown, marker written, re-ask cleared", async () => {
+      const TMP = join(tmpdir(), "pi-resume-180-approve-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeManualPlanConfig(TMP);
+      await initAuditLog(config);
+      const planPath = await setupPlanDoc(TMP);
+
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "running",
+        requirementDoc: "docs/design/77_Config.md",
+        confirmGateReask: { stage: "plan", count: 1 },
+      });
+      const ctx = createMockCtx(meta);
+      let capturedOptions: string[] = [];
+      ctx.ui.select = async (_msg: string, options: string[]) => {
+        capturedOptions = [...options];
+        return "Approve & Advance";
+      };
+
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      // Dialog was presented with the plan gate options.
+      expect(capturedOptions).toContain("Reject & Rework (back to clarify)");
+      // Marker written to the plan document.
+      const doc = await readFile(planPath, "utf-8");
+      expect(doc).toContain("## 用户确认：确认无误");
+      // Result message + stage advance.
+      expect((result as any).message).toContain("Confirm gate approved");
+      expect(meta.currentStage).toBe("develop");
+      // Re-ask bookkeeping cleared (shared helper semantics).
+      expect(meta.confirmGateReask).toBeUndefined();
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("live subagent → deferred: no dialog, audit emitted, re-ask budget not consumed", async () => {
+      const TMP = join(tmpdir(), "pi-resume-180-deferred-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeManualPlanConfig(TMP);
+      await initAuditLog(config);
+      await setupPlanDoc(TMP);
+
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "running",
+        requirementDoc: "docs/design/77_Config.md",
+        confirmGateReask: { stage: "plan", count: 1 },
+      });
+      const ctx = createMockCtx(meta);
+      let selectCalls = 0;
+      ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+      setManagerRunning(true);
+
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      expect(selectCalls).toBe(0);
+      expect((result as any).message).toContain("No resume needed");
+      // Re-ask budget untouched by the system deferral.
+      expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
+      const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(audit).toContain("confirm_gate_deferred");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("immediate undefined (collateral cancel) → 1 re-ask + dismiss_interrupted with source=resume", async () => {
+      const TMP = join(tmpdir(), "pi-resume-180-cancel-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeManualPlanConfig(TMP);
+      await initAuditLog(config);
+      await setupPlanDoc(TMP);
+
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "running",
+        requirementDoc: "docs/design/77_Config.md",
+        confirmGateReask: { stage: "plan", count: 1 },
+      });
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => undefined;
+
+      const cmd = createPipelineResumeCommand(config);
+      await cmd.execute({}, ctx as any);
+
+      // Shared accounting helper increments the stage-scoped re-ask count.
+      expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 2 });
+      const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      expect(audit).toContain("confirm_gate_dismiss_interrupted");
+      expect(audit).toContain("source=resume");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("child session → no dialog, read-only status text (owner-only)", async () => {
+      const TMP = join(tmpdir(), "pi-resume-180-child-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeManualPlanConfig(TMP);
+      await initAuditLog(config);
+      await setupPlanDoc(TMP);
+
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        flowState: "running",
+        requirementDoc: "docs/design/77_Config.md",
+        confirmGateReask: { stage: "plan", count: 1 },
+      });
+      const ctx = createMockCtx(meta, { sessionName: "plan-agent#aabb1122" });
+      let selectCalls = 0;
+      ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      expect(selectCalls).toBe(0);
+      expect((result as any).message).toContain("No resume needed");
+      // No gate resolution → re-ask trace unchanged.
+      expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
 
       await rm(TMP, { recursive: true, force: true });
     });
