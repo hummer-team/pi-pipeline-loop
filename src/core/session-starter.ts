@@ -23,6 +23,7 @@ import { formatAbortedNotifyText } from "./flow-state";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { probeAgentState } from "../utils/subagents-introspect";
 import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
@@ -200,6 +201,42 @@ async function handleSubagentJoin(
     flowState: getFlowState(parentMeta),
     spawnTrigger,
   });
+
+  // Phase 4 / 180 (Q3B): out-of-band duplicate-spawn observability.
+  // A JOIN driven by manual @mention / external tool (spawnTrigger =
+  // "manual_or_external") while the current stage already has a live spawn record
+  // is a duplicate-spawn suspect. Audit every hit; notify is throttled and
+  // strictly non-blocking. `probeAgentState` fail-opens internally, so
+  // "settled"/"unknown" intentionally emits nothing (avoids false positives on
+  // ordinary manual @mentions).
+  if (spawnTrigger === "manual_or_external") {
+    const existingSpawn = parentMeta.activeSpawns?.[parentMeta.currentStage];
+    if (existingSpawn) {
+      const existingAgentId = existingSpawn.agentId ?? existingSpawn.agentName;
+      const probe = probeAgentState(existingSpawn.agentId ?? existingSpawn.agentName);
+      if (probe === "live") {
+        await safeWriteAuditLog("duplicate_spawn_suspect", {
+          pipelineId: parentPipelineId,
+          stage: parentMeta.currentStage,
+          existingAgentId,
+          joiningSessionFile: sessionFile,
+        });
+        if (
+          shouldEmitWithinWindow(
+            `duplicate_spawn_suspect:${parentPipelineId}:${parentMeta.currentStage}`,
+            AUDIT_THROTTLE_WINDOW_MS,
+          )
+        ) {
+          ui.notify(
+            ctx,
+            `Duplicate spawn suspect: stage "${parentMeta.currentStage}" already has a live agent ` +
+              `"${existingSpawn.agentName}"${existingSpawn.agentId ? ` (${existingSpawn.agentId})` : ""}. ` +
+              `The joining session is allowed to continue (non-blocking).`,
+          );
+        }
+      }
+    }
+  }
 
   // Phase 0 (171): warn when JOIN target parent is already aborted.
   // Indicates a zombie subagent joining a dead pipeline — useful for post-mortem attribution.

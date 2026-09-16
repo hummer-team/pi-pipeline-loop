@@ -670,6 +670,7 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `out_of_stage_spawn_blocked` | 当前 stage 直接 spawn 其他 stage 执行体，被拦截并给路由提示 | stage, tool, subagentType, targetStage |
 | `pipeline_resume_deferred` | `/pipeline-resume` 因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, requirementDoc, reason |
 | `pipeline_handoff_deferred` | handoff 工具因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, reason |
+| `duplicate_spawn_suspect` | 带外 spawn（`spawnTrigger=manual_or_external`）且当前 stage 已有 probe-live 的 spawn 记录（仅提示不阻断） | stage, existingAgentId, joiningSessionFile |
 
 **Agent 速查表**：
 

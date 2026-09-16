@@ -31,6 +31,7 @@ import { registerSession } from "../utils/session-registry";
 import { createSessionStarter, __resetPluginVersionStamp, __resetDriftCheckFlag } from "../core/session-starter";
 import { createToolGuard } from "../core/tool-guard";
 import { isDormant, DORMANT_KEEP_PROTECTION } from "../core/dormancy";
+import { __resetMemoryThrottle } from "../utils/audit-throttle";
 
 let TMP: string;
 
@@ -574,5 +575,172 @@ describe("Review-r4 Issue 1-⑤b: choose_stage→completed→compact exactly 1 t
     // or failed — all outcomes set terminalCompact. This asserts "exactly 1 time" strength:
     // the flag is consumed (idempotent guard prevents re-entry on second call).
     expect(meta.terminalCompact).toBeDefined();
+  });
+});
+
+// ─── Phase 4 / 180: duplicate_spawn_suspect (out-of-band JOIN) ───────────────
+
+describe("Phase 4 / 180: duplicate_spawn_suspect observability", () => {
+  const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+  function setManagerRecords(records: Record<string, string>): void {
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
+      hasRunning: () => false,
+    };
+  }
+
+  afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+    __resetMemoryThrottle();
+  });
+
+  async function setupJoin(label: string, parentMeta: SessionMeta): Promise<string> {
+    const root = join(
+      tmpdir(),
+      `pi-180-dupspawn-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    await mkdir(join(root, ".pi", "audit", parentMeta.pipelineId), { recursive: true });
+    await writeFile(
+      join(root, ".pi", "audit", parentMeta.pipelineId, "meta.json"),
+      JSON.stringify(parentMeta),
+    );
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
+    await registerSession(config, "dup-parent-session", parentMeta.pipelineId);
+    return root;
+  }
+
+  function makeJoinCtx(notifications: string[]) {
+    const meta: Record<string, unknown> = {};
+    return {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => { Object.assign(meta, m); return meta; },
+      },
+      ui: { notify: (msg: string) => { notifications.push(msg); }, setStatus: () => {} },
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [],
+          getEntries: () => [],
+          getHeader: () => ({ parentSession: "dup-parent-session" }),
+          getSessionName: () => "plan-agent#aabb1122",
+          getSessionFile: () => "dup-child-session",
+        },
+      },
+    };
+  }
+
+  /** Parent with an out-of-band (stale-window) activeSpawn record for the stage. */
+  function makeOutOfBandParent(pipelineId: string, agentId: string): SessionMeta {
+    return makeTestMeta({
+      currentStage: "plan",
+      pipelineId,
+      flowState: "running",
+      activeSpawns: {
+        // startedAt older than the 5-minute auto-spawn window → spawnTrigger
+        // resolves to "manual_or_external" while the record still exists.
+        plan: { agentName: "plan-agent", agentId, startedAt: Date.now() - 6 * 60 * 1000 },
+      },
+    });
+  }
+
+  it("manual_or_external + probe-live record → audit + notify once", async () => {
+    const parentMeta = makeOutOfBandParent("pipe-180-dup-live", "dup-live-1");
+    const root = await setupJoin("live", parentMeta);
+    setManagerRecords({ "dup-live-1": "running" });
+    __resetMemoryThrottle();
+    const notifications: string[] = [];
+    const ctx = makeJoinCtx(notifications);
+
+    await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
+
+    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).toContain("duplicate_spawn_suspect");
+    expect(audit).toContain("existingAgentId=dup-live-1");
+    expect(audit).toContain("joiningSessionFile=dup-child-session");
+    expect(notifications.filter((n) => n.includes("Duplicate spawn suspect")).length).toBe(1);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("same-window second JOIN → audit again, notify throttled", async () => {
+    const parentMeta = makeOutOfBandParent("pipe-180-dup-throttle", "dup-throttle-1");
+    const root = await setupJoin("throttle", parentMeta);
+    setManagerRecords({ "dup-throttle-1": "running" });
+    __resetMemoryThrottle();
+    const notifications: string[] = [];
+
+    const hook = createSessionStarter(makeTestConfig({ projectRoot: root }));
+    await hook.handler(makeJoinCtx(notifications) as any);
+    // Second JOIN uses a fresh child ctx (its meta must still be empty to re-enter JOIN).
+    await hook.handler(makeJoinCtx(notifications) as any);
+
+    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const suspectLines = audit.split("\n").filter((l) => l.includes("] duplicate_spawn_suspect |"));
+    expect(suspectLines.length).toBe(2);
+    // Notify is throttled to once within AUDIT_THROTTLE_WINDOW_MS.
+    expect(notifications.filter((n) => n.includes("Duplicate spawn suspect")).length).toBe(1);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("record exists but probe=settled → zero event, zero notify", async () => {
+    const parentMeta = makeOutOfBandParent("pipe-180-dup-settled", "dup-settled-1");
+    const root = await setupJoin("settled", parentMeta);
+    setManagerRecords({ "dup-settled-1": "settled" });
+    __resetMemoryThrottle();
+    const notifications: string[] = [];
+    const ctx = makeJoinCtx(notifications);
+
+    await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
+
+    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).not.toContain("duplicate_spawn_suspect");
+    expect(notifications.filter((n) => n.includes("Duplicate spawn suspect")).length).toBe(0);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("manager missing (probe=unknown) → zero event, zero notify", async () => {
+    const parentMeta = makeOutOfBandParent("pipe-180-dup-unknown", "dup-unknown-1");
+    const root = await setupJoin("unknown", parentMeta);
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+    __resetMemoryThrottle();
+    const notifications: string[] = [];
+    const ctx = makeJoinCtx(notifications);
+
+    await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
+
+    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).not.toContain("duplicate_spawn_suspect");
+    expect(notifications.filter((n) => n.includes("Duplicate spawn suspect")).length).toBe(0);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("spawnTrigger=pipeline_auto → not in the out-of-band branch (regression)", async () => {
+    const parentMeta = makeTestMeta({
+      currentStage: "plan",
+      pipelineId: "pipe-180-dup-auto",
+      flowState: "running",
+      activeSpawns: {
+        // Recent startedAt → inferSpawnTrigger resolves to "pipeline_auto".
+        plan: { agentName: "plan-agent", agentId: "dup-auto-1", startedAt: Date.now() - 60_000 },
+      },
+    });
+    const root = await setupJoin("auto", parentMeta);
+    setManagerRecords({ "dup-auto-1": "running" });
+    __resetMemoryThrottle();
+    const notifications: string[] = [];
+    const ctx = makeJoinCtx(notifications);
+
+    await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
+
+    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).toContain("spawnTrigger=pipeline_auto");
+    expect(audit).not.toContain("duplicate_spawn_suspect");
+
+    await rm(root, { recursive: true, force: true });
   });
 });
