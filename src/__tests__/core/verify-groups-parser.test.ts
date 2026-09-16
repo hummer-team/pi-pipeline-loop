@@ -364,3 +364,45 @@ describe("Phase 0 / 176: legacy flat frontmatter invariance", () => {
     expect(rules!.mode).toBe("or");
   });
 });
+
+// ─── Phase 3 / 179 (G4): optional `example` key parsing ──────────────────────
+
+describe("Phase 3 / 179 (G4): example optional key parsing", () => {
+  it("parses a group node-level example into the rule node", async () => {
+    const rules = await parseFrontmatter(String.raw`rules:
+  path: "doc.md"
+  groups:
+    - name: g
+      rules:
+        - type: fileContentPattern
+          patterns: ["^NOPE$"]
+          example: "- **方案 A：xxx**"
+`);
+    expect(rules).not.toBeNull();
+    const node = rules!.groups![0].rules[0];
+    expect(node.example).toBe("- **方案 A：xxx**");
+  });
+
+  it("parses a legacy flat fileContentPattern example", async () => {
+    const rules = await parseFrontmatter(String.raw`rules:
+  fileContentPattern:
+    - path: "doc.md"
+      pattern: "^NOPE$"
+      example: "答：方案 A"
+`);
+    expect(rules).not.toBeNull();
+    expect(rules!.fileContentPattern![0].example).toBe("答：方案 A");
+  });
+
+  it("omits example when absent (backward compatible node shape)", async () => {
+    const rules = await parseFrontmatter(String.raw`rules:
+  path: "doc.md"
+  groups:
+    - name: g
+      rules:
+        - type: fileContentPattern
+          patterns: ["^x$"]
+`);
+    expect(rules!.groups![0].rules[0].example).toBeUndefined();
+  });
+});

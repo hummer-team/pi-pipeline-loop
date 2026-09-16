@@ -223,7 +223,14 @@ async function evaluateFileContentNode(
   const override = sectionText !== undefined ? { textOverride: sectionText } : undefined;
   const results = await Promise.all(
     patterns.map((pattern) =>
-      verifyFileContentPattern([{ path: effectivePath, pattern }], projectRoot, logError, override),
+      // Phase 3 / 179 (G4): forward the node-level `example` so pattern
+      // mismatches can surface an actionable expected-output sample.
+      verifyFileContentPattern(
+        [{ path: effectivePath, pattern, example: node.example }],
+        projectRoot,
+        logError,
+        override,
+      ),
     ),
   );
 

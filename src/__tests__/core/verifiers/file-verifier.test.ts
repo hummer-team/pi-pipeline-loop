@@ -496,3 +496,72 @@ describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 stat
     expect(result.passed).toBe(false);
   });
 });
+
+// ─── Phase 3 / 179 (G4): solution-line pattern relaxation + example feedback ──
+
+describe("verifyFileContentPattern — Phase 3 / 179 solution-line pattern + example", () => {
+  const SOLUTION_PATTERN = "^[ \\t]*[-*][ \\t]*\\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]";
+
+  it("matches a 2-space-indented bold solution line", async () => {
+    await fs.writeFile(path.join(TMP, "doc.md"), "  - **方案 A：** foo\n");
+    const r = await verifyFileContentPattern([{ path: "doc.md", pattern: SOLUTION_PATTERN }], TMP);
+    expect(r.passed).toBe(true);
+  });
+
+  it("matches a 4-space-indented solution line", async () => {
+    await fs.writeFile(path.join(TMP, "doc.md"), "      - 方案 A：foo\n");
+    const r = await verifyFileContentPattern([{ path: "doc.md", pattern: SOLUTION_PATTERN }], TMP);
+    expect(r.passed).toBe(true);
+  });
+
+  it("matches a `*` bullet solution line", async () => {
+    await fs.writeFile(path.join(TMP, "doc.md"), "* 方案 B：bar\n");
+    const r = await verifyFileContentPattern([{ path: "doc.md", pattern: SOLUTION_PATTERN }], TMP);
+    expect(r.passed).toBe(true);
+  });
+
+  it("matches a no-space solution line (`- 方案A`)", async () => {
+    await fs.writeFile(path.join(TMP, "doc.md"), "- 方案A：foo\n");
+    const r = await verifyFileContentPattern([{ path: "doc.md", pattern: SOLUTION_PATTERN }], TMP);
+    expect(r.passed).toBe(true);
+  });
+
+  it("example present → failure detail appends `; expected:`", async () => {
+    await fs.writeFile(path.join(TMP, "doc.md"), "no solution line here\n");
+    const r = await verifyFileContentPattern(
+      [{ path: "doc.md", pattern: SOLUTION_PATTERN, example: "- **方案 A：xxx**" }],
+      TMP,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.detail).toContain("; expected: - **方案 A：xxx**");
+  });
+
+  it("no example → failure detail is unchanged (backward compatible)", async () => {
+    await fs.writeFile(path.join(TMP, "doc.md"), "no solution line here\n");
+    const r = await verifyFileContentPattern(
+      [{ path: "doc.md", pattern: SOLUTION_PATTERN }],
+      TMP,
+    );
+    expect(r.passed).toBe(false);
+    expect(r.detail).not.toContain("; expected:");
+  });
+
+  it("replay: 179_Bug.md round-3 indented solution line matches the relaxed pattern", async () => {
+    // Real-world corpus (R5 question 1): the round-3 section uses 6-space-indented
+    // `      - 方案 A：...` lines that the old `^- ` pattern rejected.
+    const docPath = path.join(__dirname, "..", "..", "..", "..", "docs", "design", "179_Bug.md");
+    const content = await fs.readFile(docPath, "utf-8");
+    expect(new RegExp(SOLUTION_PATTERN, "m").test(content)).toBe(true);
+  });
+
+  it("section-scoped evaluation also appends the example", async () => {
+    const r = await verifyFileContentPattern(
+      [{ path: "doc.md", pattern: SOLUTION_PATTERN, example: "- 方案 A：xxx" }],
+      TMP,
+      undefined,
+      { textOverride: "no solution line" },
+    );
+    expect(r.passed).toBe(false);
+    expect(r.detail).toContain("; expected: - 方案 A：xxx");
+  });
+});

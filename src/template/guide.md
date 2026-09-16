@@ -1032,13 +1032,15 @@ rules:
       ruleMode: and
       rules:
         - type: fileContentPattern
-          patterns: ["^- \\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]"]
+          patterns: ["^[ \\t]*[-*][ \\t]*\\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]"]
+          example: "- **方案 A：xxx**"
         - type: fileContentPattern
           mode: or
           runtime: answerField
           patterns:
             - "答\\s*[:：]|\\*{2}答\\*{2}"
             - "Answer\\s*:"
+          example: "答：方案 A"
     - name: full-und-confirmed
       ruleMode: and
       rules:

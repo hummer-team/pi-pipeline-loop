@@ -135,6 +135,27 @@ describe("Phase 1 / 176: three-layer boolean evaluation", () => {
     expect((await evaluateGroups(andRules, TMP, [])).passed).toBe(false);
     expect((await evaluateGroups(orRules, TMP, [])).passed).toBe(true);
   });
+
+  // Phase 3 / 179 (G4): node-level `example` is forwarded to failure details.
+  it("OR node with example → every failing pattern detail carries the expected sample", async () => {
+    await writeDoc("doc.md", "no structure here");
+    const rules: VerifyRules = {
+      keywords: [], mode: "or", path: "doc.md",
+      groups: [{
+        name: "g-example",
+        rules: [{
+          type: "fileContentPattern",
+          mode: "or",
+          patterns: ["^NOPE_A$", "^NOPE_B$"],
+          example: "- **方案 A：xxx**",
+        }],
+      }],
+    };
+    const result = await evaluateGroups(rules, TMP, []);
+    expect(result.passed).toBe(false);
+    expect(result.failures.length).toBeGreaterThan(0);
+    expect(result.failures.every((f) => f.detail.includes("; expected: - **方案 A：xxx**"))).toBe(true);
+  });
 });
 
 // ─── when / scope conditionals ───────────────────────────────────────────────

@@ -262,6 +262,7 @@ stage_deliverable_clarify: |
   - **MUST** use round heading format `# 第 N 轮澄清` (recommended) or `# Round N` (compatible) — `#{1,2}` only (h1/h2) to prevent h3+ false positives
   - **MUST** include answer fields in bilingual form: `答：`/`答:`/`**答**`/`Answer:` (all accepted)
   - **MUST** end every round (including the final/summary round) by outputting two complete, copy-pasteable next-step command lines containing the full document path and the real agent name: `@<agent> <doc> <round+1> 答` and `@<agent> <doc> full-und?` — never emit a `{file}` placeholder literal
+  - **MUST** write every round (including decision-archive/summary rounds) in full Q/A structure: question + options A/B + pros/cons/recommendation + `答：` — no exemption for summary rounds
 
 stage_deliverable_plan: |
   - **MUST** produce a planning document with implementation steps

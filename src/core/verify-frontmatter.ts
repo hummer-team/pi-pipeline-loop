@@ -74,6 +74,12 @@ export interface VerifyGroupRuleNode {
   mode?: "and" | "or";
   /** Regex patterns (file content / model runtime result). */
   patterns?: string[];
+  /**
+   * Optional human-readable expected-output example (Phase 3 / 179, G4).
+   * Surfaced in verify failure details as `; expected: <example>` so the model
+   * gets an actionable writing sample instead of only the raw regex.
+   */
+  example?: string;
   /** Node-level path override; inherits `rules.path` when absent. */
   path?: string;
   /**
@@ -151,6 +157,11 @@ export interface FileContentRule {
   path: string;
   /** Regex pattern to match against file content */
   pattern: string;
+  /**
+   * Optional expected-output example (Phase 3 / 179, G4). When present, a
+   * pattern mismatch detail includes `; expected: <example>`.
+   */
+  example?: string;
 }
 
 /** Known top-level keys in verify.md frontmatter (148 Phase 2 diagnosis) */
@@ -162,6 +173,8 @@ export const KNOWN_FRONTMATTER_KEYS = new Set([
   "requiredCommands",
   "requiredGit",
   "fileContentPattern",
+  // Phase 3 / 179 (G4): optional expected-output example on fileContentPattern rules.
+  "example",
 ]);
 
 /**
@@ -249,6 +262,7 @@ interface RawRuleNode {
   patterns: string[];
   path?: string;
   runtime?: string;
+  example?: string;
   cmd?: string;
   expectExit?: number;
   expectOutput?: string;
@@ -367,6 +381,7 @@ function parseRuleNodeItem(
     if (trimmed.startsWith("mode:")) { raw.mode = normalizeGroupMode(trimmed.slice(5), "Rule node mode", issues); continue; }
     if (trimmed.startsWith("path:")) { raw.path = stripYamlQuotes(trimmed.slice(5)); continue; }
     if (trimmed.startsWith("runtime:")) { raw.runtime = stripYamlQuotes(trimmed.slice(8)); continue; }
+    if (trimmed.startsWith("example:")) { raw.example = stripYamlQuotes(trimmed.slice(8)); continue; }
     if (trimmed.startsWith("pattern:")) {
       const value = stripYamlQuotes(trimmed.slice(8));
       if (value) raw.patterns.push(value);
@@ -437,6 +452,7 @@ function finalizeRuleNode(
   if (raw.patterns.length > 0) node.patterns = raw.patterns;
   if (raw.path) node.path = raw.path;
   if (raw.runtime) node.runtime = raw.runtime;
+  if (raw.example !== undefined) node.example = raw.example;
   if (raw.cmd !== undefined) node.cmd = raw.cmd;
   if (raw.expectExit !== undefined) node.expectExit = raw.expectExit;
   if (raw.expectOutput !== undefined) node.expectOutput = raw.expectOutput;
@@ -782,6 +798,9 @@ export async function parseFrontmatter(yaml: string): Promise<VerifyRules | null
           currentFc.path = stripYamlQuotes(trimmed.slice(5));
         } else if (trimmed.startsWith("pattern:")) {
           currentFc.pattern = stripYamlQuotes(trimmed.slice(8));
+        } else if (trimmed.startsWith("example:")) {
+          // Phase 3 / 179 (G4): optional expected-output example.
+          currentFc.example = stripYamlQuotes(trimmed.slice(8));
         } else if (indent <= 2) {
           fileContentPattern.push({ ...currentFc });
           currentFc = null;

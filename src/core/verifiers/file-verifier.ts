@@ -22,6 +22,14 @@ function isGlobPattern(s: string): boolean {
 }
 
 /**
+ * Appends an optional expected-output example to a failure detail
+ * (Phase 3 / 179, G4). Backward compatible: no example → detail unchanged.
+ */
+function withExpected(detail: string, example: string | undefined): string {
+  return example ? `${detail}; expected: ${example}` : detail;
+}
+
+/**
  * Converts a simple glob pattern to a RegExp.
  * Supports `*` (matches any chars except `/`) and `?` (matches single char except `/`).
  */
@@ -123,7 +131,7 @@ export async function verifyRequiredFiles(
  * Supports glob patterns in path — when pattern contains wildcards,
  * collects matching files and checks the most recent (by mtime).
  *
- * @param rules - Array of { path, pattern } rules
+ * @param rules - Array of { path, pattern, example? } rules
  * @param projectRoot - Absolute path to the project root directory
  * @param logError - Optional audit log callback for recording errors
  * @param options - Optional evaluation options. When `textOverride` is provided,
@@ -132,7 +140,7 @@ export async function verifyRequiredFiles(
  * @returns Verification result with pattern mismatch details on failure
  */
 export async function verifyFileContentPattern(
-  rules: { path: string; pattern: string }[] | undefined,
+  rules: { path: string; pattern: string; example?: string }[] | undefined,
   projectRoot: string,
   logError?: AuditLogFn,
   options?: { textOverride?: string },
@@ -171,7 +179,10 @@ export async function verifyFileContentPattern(
         const content = await fs.readFile(latest.absPath, "utf-8");
         const regex = new RegExp(rule.pattern, "m");
         if (!regex.test(content)) {
-          failures.push(`${rule.path}: pattern "${rule.pattern}" not found in latest match "${latest.relPath}"`);
+          failures.push(withExpected(
+            `${rule.path}: pattern "${rule.pattern}" not found in latest match "${latest.relPath}"`,
+            rule.example,
+          ));
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -191,7 +202,10 @@ export async function verifyFileContentPattern(
       if (options?.textOverride !== undefined) {
         const regex = new RegExp(rule.pattern, "m");
         if (!regex.test(options.textOverride)) {
-          failures.push(`${rule.path}: pattern "${rule.pattern}" not found in section`);
+          failures.push(withExpected(
+            `${rule.path}: pattern "${rule.pattern}" not found in section`,
+            rule.example,
+          ));
         }
         continue;
       }
@@ -216,7 +230,10 @@ export async function verifyFileContentPattern(
         const content = await fs.readFile(absolutePath, "utf-8");
         const regex = new RegExp(rule.pattern, "m");
         if (!regex.test(content)) {
-          failures.push(`${rule.path}: pattern "${rule.pattern}" not found`);
+          failures.push(withExpected(
+            `${rule.path}: pattern "${rule.pattern}" not found`,
+            rule.example,
+          ));
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
