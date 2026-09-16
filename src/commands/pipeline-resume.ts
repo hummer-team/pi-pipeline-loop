@@ -14,7 +14,7 @@
 import type { PipelineConfig, Command, SessionMeta } from "../types";
 import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText } from "../core/flow-state";
 import { dispatchAfterResume } from "./pipeline-start";
-import { createPipelineUI } from "../core/pipeline-ui";
+import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
@@ -56,6 +56,8 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
 
       // Aborted: no decision menu available — redirect to /pipeline-start
       if (flowState === "aborted") {
+        // Restore the persistent status bar (parity with /pipeline-start).
+        syncStageStatusBar(ui, ctx);
         const abortMsg = formatAbortedNotifyText(
           meta.currentStage,
           meta.terminateReason ?? "session_quit",
@@ -67,6 +69,8 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
 
       // Not frozen: read-only status hint (no state change)
       if (!isFrozen(meta)) {
+        // Restore the persistent status bar (parity with /pipeline-start).
+        syncStageStatusBar(ui, ctx);
         const statusMsg = `Pipeline is running (pipelineId: ${meta.pipelineId}, stage: ${meta.currentStage}, flowState: ${flowState}). No resume needed.`;
         ui.notify(ctx, statusMsg);
         return { message: statusMsg };
@@ -79,6 +83,10 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         if (!result.success) {
           return { error: `Resume failed: ${result.message}` };
         }
+
+        // Restore the persistent status bar after the decision (awaiting_human
+        // resolves back to previousStage — read the freshest meta).
+        syncStageStatusBar(ui, ctx);
 
         ui.notify(ctx, `Pipeline resumed at stage "${meta.currentStage}". ${result.message}`);
 

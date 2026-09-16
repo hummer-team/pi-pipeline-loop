@@ -19,7 +19,7 @@ import {
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { getFlowState, formatFrozenReason, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
-import { createPipelineUI } from "../core/pipeline-ui";
+import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { buildStageSequence } from "../utils/stage-sequence";
 import {
   checkTemplateResidues,
@@ -34,18 +34,6 @@ import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { staleConfigNotice } from "../utils/config-staleness";
-
-/**
- * Writes the persistent TUI status bar showing current pipeline stage.
- * Safely no-ops when ctx/ui is unavailable or output.pipelineStage is off.
- *
- * @param ui - PipelineUI instance
- * @param ctx - Extension context (uses session.getMeta for dynamic stage)
- */
-function syncStageStatusBar(ui: ReturnType<typeof createPipelineUI>, ctx?: any): void {
-  const stage = ctx?.session?.getMeta?.()?.currentStage ?? "clarify";
-  ui.setStage(ctx, stage);
-}
 
 /**
  * Checks that all 5 active stages have agentPath configured.

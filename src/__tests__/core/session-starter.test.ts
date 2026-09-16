@@ -11,6 +11,7 @@ import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
+  const statusCalls: { key: string; text: string }[] = [];
   return {
     session: {
       getMeta: () => meta,
@@ -21,7 +22,13 @@ function createCtx(meta: any) {
       setModel: async (_model: string) => {},
     },
     updates,
-    ui: { notify: () => {} },
+    statusCalls,
+    ui: {
+      notify: () => {},
+      setStatus: (key: string, text: string) => {
+        statusCalls.push({ key, text });
+      },
+    },
   };
 }
 
@@ -186,8 +193,106 @@ describe("createSessionStarter", () => {
     });
   });
 
-  describe("stale startup recovery", () => {
-    const TMP_STALE = join(tmpdir(), "pi-ss-stale-" + Date.now());
+  // ── Phase 0 / 180: owner reload/resume restores the persistent status bar ──
+
+  describe("Phase 0 / 180: reload/resume status bar restore", () => {
+    it("owner + reload + running (non-frozen) → status bar written exactly once", async () => {
+      const TMP = join(tmpdir(), "pi-ss-180-reload-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-180-reload",
+        flowState: "running",
+      });
+      const ctx = { ...createCtx(meta), event: { reason: "reload" } };
+
+      await createSessionStarter(config).handler(ctx as any);
+
+      const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
+      expect(stageCalls.length).toBe(1);
+      expect(stageCalls[0].text).toContain("develop");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("owner + resume + running (non-frozen) → status bar written exactly once", async () => {
+      const TMP = join(tmpdir(), "pi-ss-180-resume-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "review",
+        pipelineId: "pipe-180-resume",
+        flowState: "running",
+      });
+      const ctx = { ...createCtx(meta), event: { reason: "resume" } };
+
+      await createSessionStarter(config).handler(ctx as any);
+
+      const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
+      expect(stageCalls.length).toBe(1);
+      expect(stageCalls[0].text).toContain("review");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("startup + running → stale abort path, status bar NOT written (regression)", async () => {
+      const TMP = join(tmpdir(), "pi-ss-180-startup-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-180-startup",
+        flowState: "running",
+      });
+      const ctx = { ...createCtx(meta), event: { reason: "startup" } };
+
+      await createSessionStarter(config).handler(ctx as any);
+
+      // stale_startup abort still fires and the new status-bar branch must not run
+      expect(meta.flowState).toBe("aborted");
+      expect(meta.terminateReason).toBe("stale_startup");
+      expect(ctx.statusCalls.length).toBe(0);
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("child + reload + running → status bar NOT written (owner-only)", async () => {
+      const TMP = join(tmpdir(), "pi-ss-180-child-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        pipelineId: "pipe-180-child",
+        flowState: "running",
+      });
+      const ctx = { ...createCtx(meta), event: { reason: "reload" } };
+      (ctx as any)._ctx = {
+        sessionManager: {
+          getHeader: () => ({ parentSession: "parent-180" }),
+          getEntries: () => [],
+          getBranch: () => [],
+          getSessionFile: () => "child-180",
+        },
+      };
+
+      await createSessionStarter(config).handler(ctx as any);
+
+      expect(ctx.statusCalls.length).toBe(0);
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
+  describe("stale startup recovery", () => {    const TMP_STALE = join(tmpdir(), "pi-ss-stale-" + Date.now());
 
     it("resets running flowState to aborted on reason='startup' and writes pipeline_stale_reset audit", async () => {
       await mkdir(TMP_STALE, { recursive: true });

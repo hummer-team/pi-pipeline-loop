@@ -10,7 +10,7 @@ import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
-import { createPipelineUI } from "./pipeline-ui";
+import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, promptDecisionMenu, scheduleDecisionRetry } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
@@ -440,6 +440,19 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             meta.terminateReason ?? "session_quit",
             meta.requirementDoc,
           ));
+        } else if (
+          !isChild &&
+          (reason === "reload" || reason === "resume") &&
+          flowState === "running" &&
+          !isFrozen(meta) &&
+          !isTerminalCompleted(meta)
+        ) {
+          // Goal 1 (180): owner session reloaded/resumed a running (non-frozen)
+          // pipeline. The session-level status bar is ephemeral and is lost on
+          // reload, so restore it here — no other recovery path re-renders it.
+          // Explicitly excludes reason === "startup" (stale_startup abort path)
+          // and the frozen-replay / aborted branches above (regression boundary).
+          syncStageStatusBar(ui, ctx);
         }
       }
     },

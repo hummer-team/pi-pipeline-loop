@@ -133,6 +133,23 @@ function readDeliverablePath(ctx: any, from: string): string | null {
 }
 
 /**
+ * Writes the persistent TUI status bar showing the current pipeline stage.
+ * Safely no-ops when ctx/ui is unavailable or output.pipelineStage is off
+ * (the `setStage` gate handles the disabled case).
+ *
+ * This is the single entry point for an owner session to restore the
+ * persistent stage status bar (e.g. after `/pipeline-resume` or a reload);
+ * `/pipeline-start` uses the same helper so both commands render identically.
+ *
+ * @param ui - PipelineUI instance
+ * @param ctx - Extension context (uses session.getMeta for the dynamic stage)
+ */
+export function syncStageStatusBar(ui: PipelineUI, ctx?: any): void {
+  const stage = ctx?.session?.getMeta?.()?.currentStage ?? "clarify";
+  ui.setStage(ctx, stage);
+}
+
+/**
  * Creates a PipelineUI instance gated by config.output.pipelineStage.
  * When enabled, outputs via ctx.ui.notify() and ctx.ui.setStatus().
  * When disabled (default), all methods are silent no-ops.

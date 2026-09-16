@@ -177,7 +177,6 @@ describe("createPipelineResumeCommand", () => {
   });
 
   // ── Phase 1 / 175: forwardArgs passthrough ──────────────────────────────
-
   it("Phase 1 / 175: blocked pipeline with forwardArgs passes them to dispatchAfterResume", async () => {
     const TMP = join(tmpdir(), "pi-resume-fwdargs-" + Date.now());
     await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
@@ -200,5 +199,74 @@ describe("createPipelineResumeCommand", () => {
     expect((result as any).error).toBeUndefined();
 
     await rm(TMP, { recursive: true, force: true });
+  });
+
+  // ── Phase 0 / 180: persistent stage status bar restoration ──────────────
+
+  describe("Phase 0 / 180: stage status bar parity with /pipeline-start", () => {
+    it("running branch writes the persistent stage status bar", async () => {
+      const TMP = join(tmpdir(), "pi-resume-180-running-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({ currentStage: "develop", flowState: undefined });
+      const ctx = createMockCtx(meta);
+      const cmd = createPipelineResumeCommand(config);
+      await cmd.execute({}, ctx as any);
+
+      const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
+      expect(stageCalls.length).toBe(1);
+      expect(stageCalls[0].text).toContain("develop");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("aborted branch writes the persistent stage status bar", async () => {
+      const TMP = join(tmpdir(), "pi-resume-180-aborted-" + Date.now());
+      await mkdir(TMP, { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "aborted",
+        terminateReason: "session_quit",
+      });
+      const ctx = createMockCtx(meta);
+      const cmd = createPipelineResumeCommand(config);
+      await cmd.execute({}, ctx as any);
+
+      const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
+      expect(stageCalls.length).toBe(1);
+      expect(stageCalls[0].text).toContain("develop");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("blocked→resume success writes status bar reflecting the rolled-back stage", async () => {
+      const TMP = join(tmpdir(), "pi-resume-180-resumed-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      // awaiting_human is frozen; resume resolves back to previousStage.
+      const meta = makeTestMeta({
+        currentStage: "awaiting_human",
+        previousStage: "develop",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = createMockCtx(meta);
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      expect((result as any).error).toBeUndefined();
+      const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
+      expect(stageCalls.length).toBe(1);
+      expect(stageCalls[0].text).toContain("develop");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
   });
 });
