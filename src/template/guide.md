@@ -167,6 +167,7 @@ bun add @earendil-works/pi-pipeline
     "gitModify": "allow"             // 全局 git 写策略（三级链第 2 级；矩阵默认：develop/fix=allow, 其余=block）
   },
   "decisionShortcutKey": "ctrl+enter",  // TUI 中决策确认快捷键（默认 ctrl+enter）
+  "spawnWaitTimeoutMs": 120000,         // 子代理等待超时（默认 120000ms）：同名子未 settle 时新阶段 spawn 与确认弹窗后置的安全网；非法值告警并回落默认
   // ── 阶段配置 ──
   "stages": {
     "clarify": {

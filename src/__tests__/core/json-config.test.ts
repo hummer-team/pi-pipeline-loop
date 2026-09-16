@@ -805,6 +805,76 @@ describe("decisionShortcutKey config", () => {
   });
 });
 
+describe("spawnWaitTimeoutMs config (Phase 0 / 179)", () => {
+  it("loadJsonConfig parses a valid positive integer from JSON", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      spawnWaitTimeoutMs: 45000,
+    });
+    const result = loadJsonConfig(jsonPath);
+    expect(result.spawnWaitTimeoutMs).toBe(45000);
+  });
+
+  it("loadJsonConfig leaves missing spawnWaitTimeoutMs undefined (no warn)", async () => {
+    const originalWarn = console.warn;
+    const captured: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      if (typeof args[0] === "string") captured.push(args[0]);
+    };
+    try {
+      await writeJson({ stages: { clarify: {} } });
+      const result = loadJsonConfig(jsonPath);
+      expect(result.spawnWaitTimeoutMs).toBeUndefined();
+      expect(captured.some((msg) => msg.includes("spawnWaitTimeoutMs"))).toBe(false);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("loadJsonConfig warns and drops invalid spawnWaitTimeoutMs values", async () => {
+    const originalWarn = console.warn;
+    const captured: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      if (typeof args[0] === "string") captured.push(args[0]);
+    };
+    try {
+      for (const invalid of [0, -1, 1.5, "120000", Number.NaN]) {
+        captured.length = 0;
+        await writeJson({ stages: { clarify: {} }, spawnWaitTimeoutMs: invalid });
+        const result = loadJsonConfig(jsonPath);
+        expect(result.spawnWaitTimeoutMs).toBeUndefined();
+        expect(captured.some((msg) => msg.includes("Invalid spawnWaitTimeoutMs"))).toBe(true);
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("resolvePipelineConfig defaults spawnWaitTimeoutMs to 120000 when absent", () => {
+    const json: PipelineJsonConfig = { stages: { clarify: {} } };
+    const result = resolvePipelineConfig(json);
+    expect(result.spawnWaitTimeoutMs).toBe(120_000);
+  });
+
+  it("resolvePipelineConfig accepts a valid spawnWaitTimeoutMs override", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      spawnWaitTimeoutMs: 90000,
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.spawnWaitTimeoutMs).toBe(90000);
+  });
+
+  it("resolvePipelineConfig falls back to 120000 for invalid spawnWaitTimeoutMs", () => {
+    const json: PipelineJsonConfig = {
+      stages: { clarify: {} },
+      spawnWaitTimeoutMs: 0,
+    };
+    const result = resolvePipelineConfig(json);
+    expect(result.spawnWaitTimeoutMs).toBe(120_000);
+  });
+});
+
 describe("stage allowedWritePaths config", () => {
   it("resolvePipelineConfig uses stage-type default for clarify (docs multi-candidate)", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };

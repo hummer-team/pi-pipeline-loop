@@ -22,6 +22,7 @@ import {
   DEFAULT_DECISION_SHORTCUT,
   DEFAULT_CONFIRM_MAX_REJECTIONS,
   DEFAULT_CONFIRM_OVERFLOW,
+  DEFAULT_SPAWN_WAIT_TIMEOUT_MS,
   STAGE_TYPE_TOOL_DEFAULTS,
   resolveStagePath,
 } from "../constants";
@@ -87,6 +88,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
       typeof json.maxVerifyAttempts === "number" ? json.maxVerifyAttempts : undefined,
     decisionShortcutKey:
       typeof json.decisionShortcutKey === "string" ? json.decisionShortcutKey : undefined,
+    spawnWaitTimeoutMs: parseSpawnWaitTimeoutMs(json.spawnWaitTimeoutMs),
     output: parseOutputConfig(json.output),
     llmExtract: typeof json.llmExtract === "boolean" ? json.llmExtract : undefined,
     protect: parseProtectConfig(json.protect),
@@ -222,6 +224,24 @@ function parseDecisionShortcutKey(raw: unknown): string {
       `[pi-pipeline] Invalid decisionShortcutKey "${raw}" — does not match KeyId format, falling back to '${DEFAULT_KEY}'`,
     );
     return DEFAULT_KEY;
+  }
+  return raw;
+}
+
+/**
+ * Parses and validates a spawnWaitTimeoutMs value from JSON config.
+ * Must be a positive integer (milliseconds). Invalid values (non-number,
+ * non-integer, <= 0, NaN) warn and return undefined so the caller can fall
+ * back to DEFAULT_SPAWN_WAIT_TIMEOUT_MS. A missing value returns undefined
+ * silently (no warning).
+ */
+function parseSpawnWaitTimeoutMs(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || Number.isNaN(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid spawnWaitTimeoutMs "${String(raw)}" — expected a positive integer (ms), falling back to ${DEFAULT_SPAWN_WAIT_TIMEOUT_MS}`,
+    );
+    return undefined;
   }
   return raw;
 }
@@ -709,6 +729,10 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     maxLoopCycles: json.maxLoopCycles ?? 3,
     maxVerifyAttempts: json.maxVerifyAttempts ?? json.maxLoops ?? 3,
     decisionShortcutKey: parseDecisionShortcutKey(json.decisionShortcutKey),
+    // Validated again here so callers constructing a PipelineJsonConfig directly
+    // (bypassing loadJsonConfig) still get invalid-value guarding + the default.
+    spawnWaitTimeoutMs:
+      parseSpawnWaitTimeoutMs(json.spawnWaitTimeoutMs) ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS,
     output: { pipelineStage: json.output?.pipelineStage ?? true },
     llmExtract: json.llmExtract ?? false,
     protect: {

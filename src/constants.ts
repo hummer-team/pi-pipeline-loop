@@ -43,6 +43,23 @@ export const ALLOWED_WRITE_ALL = "**";
  */
 export const DEFAULT_DECISION_SHORTCUT = "ctrl+enter";
 
+// ─── Spawn Wait Timeout (Phase 0 / 179) ──────────────────────────────────────
+
+/**
+ * Default maximum time (ms) to wait for a live same-named subagent to settle
+ * before the pipeline escalates to manual handling.
+ *
+ * Single shared timeout source for two deferral paths:
+ * - G3: a new stage spawn waits for an older same-agent subagent to settle
+ *   before it is dequeued (prevents same-agent cross-stage twin liveness).
+ * - G5/G7: the confirm gate popup is deferred until no top-level subagent is
+ *   running (prevents Esc-key collateral cancellation from a subagent window).
+ *
+ * Overridable per-project via `spawnWaitTimeoutMs` in pipeline_loop.json.
+ * Invalid values warn and fall back to this default.
+ */
+export const DEFAULT_SPAWN_WAIT_TIMEOUT_MS = 120_000;
+
 /**
  * Default maximum number of violations before the violation overflow breaker fires.
  * When violations.length >= this value, freezeAndPrompt("violation_overflow") is triggered.

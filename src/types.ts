@@ -657,6 +657,21 @@ export interface PipelineConfig {
   decisionShortcutKey?: string;
 
   /**
+   * Maximum time (ms) to wait for a live same-named subagent to settle before
+   * the pipeline escalates to manual handling (single shared timeout source).
+   *
+   * Used by two deferral paths:
+   * - G3: a new stage spawn waits for an older same-agent subagent to settle
+   *   before it is dequeued (avoids same-agent cross-stage twin liveness).
+   * - G5/G7: the confirm gate popup is deferred until no top-level subagent is
+   *   running (avoids Esc-key collateral cancellation from a subagent window).
+   *
+   * Must be a positive integer; non-number / non-positive / non-integer / NaN
+   * values warn and fall back to the default. Default: 120000 (2 minutes).
+   */
+  spawnWaitTimeoutMs?: number;
+
+  /**
    * Phase 4 / 177 (D7): Stages whose subagent spawning is plugin-owned.
    *
    * When the model tries to invoke the stage executor directly (Agent/task tool
@@ -887,6 +902,14 @@ export interface PipelineJsonConfig {
    * Must match KeyId format; invalid values fall back to "ctrl+enter".
    */
   decisionShortcutKey?: string;
+
+  /**
+   * Maximum time (ms) to wait for a live same-named subagent to settle before
+   * escalating to manual handling. Shared by G3 spawn deferral and G5/G7
+   * confirm-gate deferral. Positive integer; invalid values warn and fall back
+   * to 120000 (default).
+   */
+  spawnWaitTimeoutMs?: number;
 
   /** TUI output configuration (default: { pipelineStage: true }) */
   output?: { pipelineStage?: boolean };
