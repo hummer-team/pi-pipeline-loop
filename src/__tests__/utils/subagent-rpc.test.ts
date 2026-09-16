@@ -6,6 +6,7 @@ import {
   isSpawnableStage,
   resolveAgentMention,
   spawnStageSubagent,
+  spawnClarifyStageSubagent,
   consumePendingSpawns,
   __setDeferredSpawnPollMs,
   __resetDeferredSpawnPollMs,
@@ -1300,6 +1301,62 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     });
     expect(incremented).toBe(false);
     expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("clarify RPC success overwrites the takeover pseudo-id with the real agentId", async () => {
+    markSubagentsReady();
+    const tmpDir = path.join(tmpdir(), "pi-clarify-id-" + Date.now());
+    fs.mkdirSync(path.join(tmpDir, "agents"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "agents", "clarify-agent.md"),
+      "---\nname: feat-design-plan-agent\n---\n",
+    );
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        clarify: {
+          agentPath: "agents/clarify-agent.md",
+          skillPath: "design/SKILL.md",
+          nextStage: "plan",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      pipelineId: "pipe-clarify-id",
+      requirementDoc: "docs/design/x.md",
+      // Synthetic reserved evidence written by the Phase 4 takeover block.
+      activeSpawns: {
+        clarify: { agentName: "feat-design-plan-agent", agentId: "takeover-clarify-1", startedAt: Date.now(), reserved: true },
+      },
+    });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "real-clarify-id" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnClarifyStageSubagent(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(result.spawned).toBe(true);
+    expect(meta.activeSpawns?.clarify?.agentId).toBe("real-clarify-id");
+    expect(meta.activeSpawns?.clarify?.agentId).not.toContain("takeover-");
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
