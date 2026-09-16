@@ -380,6 +380,9 @@ async function routeConfirmReject(
     violations: [],
     advancedThisTurn: undefined,
     confirmRejections: nextCount,
+    // Phase 1 (180): clear any deferral stamp — the source stage visit is over,
+    // so a leftover stamp must not leak into the target stage's deferral window.
+    confirmGateDeferredAt: undefined,
   });
 
   // Use custom audit event if provided (e.g. "review_auto_route_fix" to avoid double-writing)
@@ -511,8 +514,9 @@ async function advanceConfirmApproved(
     }
   }
 
-  // Reset rejection counter on approval (after marker write succeeds)
-  ctx.session.updateMeta({ confirmRejections: undefined });
+  // Reset rejection counter on approval (after marker write succeeds).
+  // Phase 1 (180): also clear the deferral stamp — the stage visit is complete.
+  ctx.session.updateMeta({ confirmRejections: undefined, confirmGateDeferredAt: undefined });
 
   // Audit the approval
   await writeAuditLog("confirm_approved", {
@@ -575,6 +579,30 @@ export function formatConfirmGatePendingCopy(config: PipelineConfig, stage: Pipe
 type ConfirmGateDeferralDecision = "present" | "defer" | "timeout";
 
 /**
+ * Phase 1 (180): Reads the confirm-gate deferral stamp only when it belongs to
+ * the current stage visit.
+ *
+ * A stamp from a previous visit to the same stage is stale — its `at` predates
+ * the current `stageStartTime`. Treating it as absent prevents the leftover
+ * stamp from immediately satisfying the deferral timeout (which would pop the
+ * dialog while a subagent is still live — the collateral-Esc failure mode).
+ *
+ * Defensive: a missing `stageStartTime` makes the stamp invalid (fail-closed).
+ *
+ * @param meta - Current session metadata
+ * @returns The effective stamp, or undefined when absent/stale/stage-mismatched
+ */
+function getEffectiveDeferredStamp(
+  meta: SessionMeta,
+): { stage: PipelineStage; at: number } | undefined {
+  const stamp = meta.confirmGateDeferredAt;
+  if (!stamp || stamp.stage !== meta.currentStage) return undefined;
+  if (meta.stageStartTime === undefined) return undefined;
+  if (stamp.at < meta.stageStartTime) return undefined;
+  return stamp;
+}
+
+/**
  * Phase 4 / 179 (G5/G7): decides whether the confirm-gate popup must be
  * deferred because a top-level subagent is still live.
  *
@@ -599,8 +627,10 @@ function evaluateConfirmGateDeferral(
     : probe;
   if (!anyLive) return "present";
 
-  const deferredAt = meta.confirmGateDeferredAt;
-  if (deferredAt && deferredAt.stage === meta.currentStage) {
+  // Phase 1 (180): only a stamp from the current stage visit counts. A stale
+  // stamp is treated as absent, so the deferral restarts instead of timing out.
+  const deferredAt = getEffectiveDeferredStamp(meta);
+  if (deferredAt) {
     const timeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
     if (Date.now() - deferredAt.at >= timeoutMs) return "timeout";
   }
@@ -690,10 +720,13 @@ export async function maybeHandleConfirmGate(
   // timeout guarantees the gate still pops under a hanging unrelated subagent.
   const deferral = evaluateConfirmGateDeferral(config, meta);
   if (deferral === "defer") {
-    const existing = meta.confirmGateDeferredAt;
+    // Phase 1 (180): read the effective stamp (current visit only). A stale
+    // stamp from a previous visit is treated as absent, so the first deferral
+    // of the new visit re-stamps and re-emits the audit/notify (visibility).
+    const existing = getEffectiveDeferredStamp(meta);
     // Audit and notify only the FIRST deferral of this deferral window (plan G5/G7);
     // subsequent settles stay silent to avoid audit noise and repeated UI notifications.
-    if (!existing || existing.stage !== currentStage) {
+    if (!existing) {
       ctx.session.updateMeta({ confirmGateDeferredAt: { stage: currentStage, at: Date.now() } });
       await writeAuditLog("confirm_gate_deferred", {
         pipelineId: meta.pipelineId,

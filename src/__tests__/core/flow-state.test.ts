@@ -338,6 +338,94 @@ describe("executeDecision", () => {
 
     expect(meta.verifyConfigError).toBeUndefined();
   });
+
+  // ── Phase 1 / 180: stage-transition cleanup of confirmGateDeferredAt ───────
+
+  it("Phase 1 / 180: skip clears the residual confirmGateDeferredAt stamp", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "verify_fail",
+      confirmGateDeferredAt: { stage: "develop", at: Date.now() },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "skip", config);
+
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+  });
+
+  it("Phase 1 / 180: rollback clears the residual confirmGateDeferredAt stamp", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      previousStage: "plan",
+      flowState: "blocked",
+      confirmGateDeferredAt: { stage: "develop", at: Date.now() },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "rollback", config);
+
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+  });
+
+  it("Phase 1 / 180: restart clears the residual confirmGateDeferredAt stamp", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      confirmGateDeferredAt: { stage: "develop", at: Date.now() },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "restart", config);
+
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+  });
+
+  it("Phase 1 / 180: choose_stage clears the residual confirmGateDeferredAt stamp", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      confirmGateDeferredAt: { stage: "develop", at: Date.now() },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "choose_stage", config, { targetStage: "review" });
+
+    expect(meta.currentStage).toBe("review");
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+  });
+
+  it("Phase 1 / 180: same-stage resume keeps the deferral window (no clear)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "resume", config);
+
+    // Same-stage resume must preserve deferral continuity.
+    expect(meta.currentStage).toBe("plan");
+    expect(meta.confirmGateDeferredAt).toBeDefined();
+  });
+
+  it("Phase 1 / 180: awaiting_human resume clears the deferral stamp (stage change)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "awaiting_human",
+      previousStage: "develop",
+      flowState: "blocked",
+      confirmGateDeferredAt: { stage: "awaiting_human", at: Date.now() },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "resume", config);
+
+    expect(meta.currentStage).toBe("develop");
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+  });
 });
 
 // ─── freezeAndPrompt ─────────────────────────────────────────────────────────

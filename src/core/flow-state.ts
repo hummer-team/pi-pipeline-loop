@@ -192,7 +192,13 @@ export async function executeDecision(
         verifyFailures: [],
         violations: [],
         ...(meta.currentStage === "awaiting_human"
-          ? { currentStage: meta.previousStage ?? "clarify", previousStage: undefined }
+          ? {
+              currentStage: meta.previousStage ?? "clarify",
+              previousStage: undefined,
+              // Phase 1 (180): a stage change ends the confirm-gate deferral
+              // window; clear the stamp. Same-stage resume keeps it (continuity).
+              confirmGateDeferredAt: undefined,
+            }
           : {}),
       });
 
@@ -238,6 +244,8 @@ export async function executeDecision(
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
+        // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
+        confirmGateDeferredAt: undefined,
         ...summariesPatch,
       });
 
@@ -294,6 +302,8 @@ export async function executeDecision(
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
+        // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
+        confirmGateDeferredAt: undefined,
         ...summariesPatch,
       });
 
@@ -338,6 +348,8 @@ export async function executeDecision(
         violations: [],
         // Phase 4 (169): clear terminal compaction flag on restart
         terminalCompact: undefined,
+        // Phase 1 (180): restart starts a fresh pipeline — clear the deferral stamp.
+        confirmGateDeferredAt: undefined,
         // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
 
@@ -442,6 +454,8 @@ export async function executeDecision(
         violations: [],
         currentStage: target,
         stageStartTime: Date.now(),
+        // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
+        confirmGateDeferredAt: undefined,
       };
 
       // Build summaries patch based on jump direction

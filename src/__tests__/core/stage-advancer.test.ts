@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { createStageAdvancer } from "../../core/stage-advancer";
+import { createStageAdvancer, maybeHandleConfirmGate } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, STAGE_LIST } from "../helpers";
 import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -333,6 +333,9 @@ Verification that will fail because the pattern does not match.`,
         nextStage: "plan",
         verify: { require: true, mode: "tool", verifyFile: ".pi/references/clarify_spec/verify.md" },
       };
+      // Initialize the audit log for this project root — the test writes a
+      // verify-fail audit and must not depend on another file's module-level state.
+      await initAuditLog(config);
       const meta = makeTestMeta({
         currentStage: "clarify",
         verifyAttempts: 1, // One previous attempt
@@ -1452,6 +1455,80 @@ describe("Reaudit r2: tool-path C2 inheritance + aborted-message disambiguation"
     expect(result.message).toContain("Max loop cycles");
     expect(result.message).not.toContain("confirm rejection limit");
     expect(meta.flowState).toBe("blocked");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
+// ─── Phase 1 / 180: confirm gate clears the deferral stamp on resolution ──────
+
+describe("Phase 1 / 180: confirm gate clears confirmGateDeferredAt", () => {
+  function makeManualPlanConfig(root: string) {
+    const base = makeTestConfig({ projectRoot: root });
+    const planStage = {
+      ...base.stages.plan,
+      allowedWritePaths: ["docs/"],
+      confirm: { mode: "manual" as const },
+    };
+    return {
+      ...base,
+      stages: { ...base.stages, plan: planStage as typeof base.stages.plan },
+    };
+  }
+
+  async function setup(label: string, selectReturn: string) {
+    const stageTmp = join(tmpdir(), `pi-adv-180-${label}-${Date.now()}`);
+    await mkdir(join(stageTmp, "docs", "design"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+    await writeFile(join(stageTmp, "docs", "design", "77_Config_plan.md"), "# Plan\n", "utf-8");
+    const config = makeManualPlanConfig(stageTmp);
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+      // Residual stamp from the current visit — must be cleared on resolution.
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<typeof meta>) => Object.assign(meta, patch),
+      },
+      ui: {
+        notify: () => {},
+        transition: () => {},
+        select: async () => selectReturn,
+      },
+      pi: { sendUserMessage: () => {} },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+    };
+    return { stageTmp, config, meta, ctx };
+  }
+
+  it("Reject routing clears confirmGateDeferredAt", async () => {
+    const { stageTmp, config, meta, ctx } = await setup("reject", "Reject & Rework (back to clarify)");
+
+    const result = await maybeHandleConfirmGate(config, ctx as any, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    expect(result.result).toBe("handled");
+    if (result.result === "handled") {
+      expect(result.action).toBe("routed");
+    }
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("Approve advance clears confirmGateDeferredAt", async () => {
+    const { stageTmp, config, meta, ctx } = await setup("approve", "Approve & Advance");
+
+    const result = await maybeHandleConfirmGate(config, ctx as any, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+
+    expect(result.result).toBe("handled");
+    if (result.result === "handled") {
+      expect(result.action).toBe("advanced");
+    }
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
 
     await rm(stageTmp, { recursive: true, force: true });
   });

@@ -1009,9 +1009,13 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
   it("deferral exceeds spawnWaitTimeoutMs → popup + timeout hint, stamp cleared", async () => {
     await createPlanDoc("# Plan\n");
     const config = { ...makePlanConfigWithConfirm(tmpDir, "manual"), spawnWaitTimeoutMs: 1000 };
+    // Phase 1 (180): the stamp must belong to the current visit (at >= stageStartTime)
+    // to count as a "fresh" deferral window. Otherwise the stale-stamp guard treats
+    // it as absent and restarts the deferral instead of timing out.
     const meta = makeTestMeta({
       currentStage: "plan",
       requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now() - 300_000,
       confirmGateDeferredAt: { stage: "plan", at: Date.now() - 200_000 },
     });
     let selectCalls = 0;
@@ -1028,5 +1032,86 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
     expect(meta.confirmGateDeferredAt).toBeUndefined();
     const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("confirm_gate_defer_timeout");
+  });
+});
+
+// ─── Phase 1 / 180: stale confirmGateDeferredAt invalidation ──────────────────
+
+describe("Phase 1 / 180: stale confirmGateDeferredAt invalidation", () => {
+  const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+  function setManagerRunning(running: boolean): void {
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: () => undefined,
+      hasRunning: () => running,
+    };
+  }
+
+  afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+  });
+
+  it("stale stamp (at < stageStartTime) + live subagent → defer (not timeout), re-stamps + audits", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = { ...makePlanConfigWithConfirm(tmpDir, "manual"), spawnWaitTimeoutMs: 1000 };
+    const now = Date.now();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: now,
+      // Stamp from a PREVIOUS visit to the same stage — older than stageStartTime.
+      confirmGateDeferredAt: { stage: "plan", at: now - 200_000 },
+    });
+    let selectCalls = 0;
+    const notifications: string[] = [];
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+    setManagerRunning(true);
+
+    const result = await maybeHandleConfirmGate(
+      config,
+      ctx,
+      meta,
+      { notify: (_ctx: unknown, m: string) => notifications.push(m), transition: () => {} } as any,
+      { mode: "manual" },
+    );
+
+    // Stale stamp treated as absent → restart deferral instead of popping on timeout.
+    expect(selectCalls).toBe(0);
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+    // Re-stamped with the current visit's timestamp.
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    expect(meta.confirmGateDeferredAt!.at).toBeGreaterThanOrEqual(now);
+    // First-deferral audit + notify reappear for the new window.
+    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_deferred");
+    expect(notifications.some((n) => n.includes("deferred"))).toBe(true);
+  });
+
+  it("stamp stage matches but stageStartTime missing → invalid, no throw, defer", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+    // Defensive: simulate a legacy/partial meta without stageStartTime.
+    delete (meta as { stageStartTime?: number }).stageStartTime;
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+    setManagerRunning(true);
+
+    const result = await maybeHandleConfirmGate(
+      config,
+      ctx,
+      meta,
+      { notify: () => {}, transition: () => {} } as any,
+      { mode: "manual" },
+    );
+
+    expect(selectCalls).toBe(0);
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
   });
 });
