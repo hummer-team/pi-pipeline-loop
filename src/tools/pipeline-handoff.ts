@@ -193,7 +193,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       // Phase 1 (169): Spawn subagent for the target stage after handoff
       if (nextStage !== "completed") {
         const freshMetaForSpawn = ctx.session.getMeta() as SessionMeta;
-        await spawnStageSubagent(
+        const result = await spawnStageSubagent(
           (ctx as { pi?: unknown }).pi,
           config,
           nextStage,
@@ -204,6 +204,16 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
             runtimeCtx: ctx,
           },
         );
+        // Phase 2 / 179 (G3): consume deferred result for observability.
+        // When deferred, the spawn is queued behind a live same-agent twin and
+        // will dequeue automatically — no user prompt needed.
+        if (result.deferred) {
+          await writeAuditLog("pipeline_handoff_deferred", {
+            pipelineId: freshMetaForSpawn.pipelineId,
+            stage: nextStage,
+            reason: "subagent_deferred",
+          });
+        }
       }
 
       return {

@@ -399,7 +399,7 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     expect(result).toBeUndefined();
   });
 
-  it("adjacent stage spawn (review→fix with different agent names) → allowed", async () => {
+  it("review→fix spawn (legitimate manual progression, different agent names) → allowed", async () => {
     const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
     config.stages["review"] = { ...config.stages["review"], agentPath: "./agents/review-agent.md" };
     config.stages["fix"] = { ...config.stages["fix"], agentPath: "./agents/fix-agent.md" };
@@ -415,7 +415,7 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     // Adjacent stages are allowed — no block
     expect(result).toBeUndefined();
     const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-    expect(audit).toContain("out_of_stage_spawn_allowed_adjacent");
+    expect(audit).toContain("out_of_stage_spawn_allowed_review_fix");
   });
 
   it("plan→develop cross-stage spawn → blocked (G6 / Plan Phase 4 task 3)", async () => {

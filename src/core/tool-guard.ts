@@ -769,10 +769,10 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       // blocked and routed to the normal confirm-gate progression. Owner-only;
       // NOT counted as a violation. The current-stage executor is handled by
       // 3c/3d above, which short-circuit first.
-      // Adjacency exception (review#2 fix): when the target stage is a direct
-      // predecessor or successor of the current stage in the pipeline chain,
-      // the spawn is allowed. This covers the legitimate review→fix manual
-      // progression path that the plan test target requires.
+      // Legitimate manual progression exception (review→fix only): spawning
+      // the fix executor during the review stage is allowed — this is a normal
+      // human workflow after a failed review. All other cross-stage spawns
+      // (including plan→develop) are blocked per Plan Phase 4 task 3 / G6.
       if (SPAWN_TOOL_NAMES.includes(toolName)) {
         const outOfStageType = args.subagent_type as string | undefined;
         if (outOfStageType) {
@@ -793,7 +793,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 // review→fix is a legitimate manual progression path — allow
                 // the spawn. All other cross-stage spawns (e.g. plan→develop)
                 // are blocked per Plan Phase 4 task 3 / G6.
-                await safeWriteAuditLog("out_of_stage_spawn_allowed_adjacent", {
+                await safeWriteAuditLog("out_of_stage_spawn_allowed_review_fix", {
                   pipelineId: meta.pipelineId,
                   stage: meta.currentStage,
                   tool: toolName,

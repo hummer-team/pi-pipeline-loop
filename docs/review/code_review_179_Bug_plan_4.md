@@ -17,7 +17,7 @@
 - 问题: `src/core/verify-advance.ts:581-584` 新增的 `pendingSpawns` 提示分支为**不可达死代码**。函数入口 `:550-557` 已在 `meta.pendingSpawns` 非空时提前 `return`（审计 `chain_terminal_wake_skipped reason=pending_spawns`），故 `:581` 的同一条件永远为假，`pending spawns queued for: …` 文案与对应 `pendingActions` 审计片段永不产出。既有测试 `verify-advance.test.ts:1032-1051` 恰以「pendingSpawns 非空 → 不 wake」固化该早退，反证该分支不可达。属死代码，无行为影响。
 - 等级：Medium
 - 符合规划：是（计划未要求该分支）
-- 是否修复：待修复
+- 是否修复：已修复（删除 `:581-584` 不可达分支，替换为维护性注释说明早退语义）
 - plan是否覆盖
   - 已覆盖：Phase 2 任务 4（去重三则之「存在未消费 pendingSpawns 不 wake」）
   - 未覆盖：无
@@ -27,7 +27,7 @@
 - 问题: `src/core/tool-guard.ts:772-775` 注释仍写「Adjacency exception (review#2 fix): when the target stage is a direct predecessor or successor of the current stage in the pipeline chain, the spawn is allowed」，与 `16870a4` 收窄后的实现（`:76-78` `isLegitimateManualProgression` 仅放行 `review→fix`）矛盾。陈旧注释会误导后续维护者按「相邻即放行」理解 3e 语义，与 Plan Phase 4 任务 3 / G6 口径冲突。
 - 等级：Medium
 - 符合规划：是（注释同步遗漏）
-- 是否修复：待修复
+- 是否修复：已修复（`:772-775` 注释已更新为「Legitimate manual progression exception (review→fix only)」，与 `isLegitimateManualProgression` 实现一致）
 - plan是否覆盖
   - 已覆盖：Phase 4 任务 3
   - 未覆盖：无
@@ -37,7 +37,7 @@
 - 问题: `src/core/stage-advancer.ts:684` 注释 `// subsequent settles stay silent to avoid audit noise and repeated UI打扰.` 在英文注释中混入中文「UI打扰」，违反 `AGENTS.md` Style 明确约束「All code comments and logs must be written in English」。该行为 `16870a4` 编辑注释时引入。
 - 等级：Medium
 - 符合规划：是（文案瑕疵）
-- 是否修复：待修复
+- 是否修复：已修复（中文「UI打扰」已替换为英文「UI notifications」）
 - plan是否覆盖
   - 已覆盖：Phase 4 任务 1（首次延后去重）
   - 未覆盖：无
@@ -47,7 +47,7 @@
 - 问题: `src/core/tool-guard.ts:796` 的审计事件名 `out_of_stage_spawn_allowed_adjacent` 在收窄后已语义失准——当前唯一放行路径是 `review→fix`，并非「adjacent」泛指；事件名保留「adjacent」会使审计检索/文档（`guide.md` 审计事件表）与实现口径不一致。
 - 等级：Medium
 - 符合规划：是（命名瑕疵）
-- 是否修复：待修复
+- 是否修复：已修复（事件名已收敛为 `out_of_stage_spawn_allowed_review_fix`，测试断言同步更新，`guide.md` 审计事件表已新增该条目）
 - plan是否覆盖
   - 已覆盖：Phase 4 任务 3
   - 未覆盖：无（事件名为实现侧新增）
@@ -57,7 +57,7 @@
 - 问题: `src/tools/pipeline-handoff.ts:196` 仍直接 `await spawnStageSubagent(...)` 而不消费返回值，未识别 `result.deferred`（上一轮 LOW 观察延续）。该路径不发送 owner wake，故无 dual-execution 风险，仅表现为 deferred 时对用户静默、无任何审计痕迹。
 - 等级：Medium
 - 符合规划：是
-- 是否修复：待修复
+- 是否修复：已修复（`pipeline-handoff.ts` 已消费 `result.deferred`，审计 `pipeline_handoff_deferred` 事件，与 `pipeline-start.ts` deferred 可观测性一致）
 - plan是否覆盖
   - 已覆盖：Phase 2 任务 2（deferred 语义）
   - 未覆盖：无（调用点枚举未含 handoff 路径）

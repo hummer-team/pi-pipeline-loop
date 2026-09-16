@@ -578,10 +578,9 @@ async function wakeOwnerOnChainTerminal(
     const details = meta.verifyFailures.map((f) => `[${f.group}][${f.ruleType}] ${f.detail}`).join("; ");
     pendingHints.push(`verify failures: ${details}`);
   }
-  if (meta.pendingSpawns && Object.keys(meta.pendingSpawns).length > 0) {
-    const stages = Object.keys(meta.pendingSpawns).join(", ");
-    pendingHints.push(`pending spawns queued for: ${stages}`);
-  }
+  // Note: pendingSpawns is intentionally NOT checked here because the function
+  // returns early at the top (lines 550-557) when pendingSpawns is non-empty,
+  // so this branch would be unreachable.
 
   const actionHint = pendingHints.length > 0
     ? ` Pending human actions: ${pendingHints.join(" | ")}.`

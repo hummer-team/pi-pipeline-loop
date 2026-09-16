@@ -681,7 +681,7 @@ export async function maybeHandleConfirmGate(
   if (deferral === "defer") {
     const existing = meta.confirmGateDeferredAt;
     // Audit and notify only the FIRST deferral of this deferral window (plan G5/G7);
-    // subsequent settles stay silent to avoid audit noise and repeated UI打扰.
+    // subsequent settles stay silent to avoid audit noise and repeated UI notifications.
     if (!existing || existing.stage !== currentStage) {
       ctx.session.updateMeta({ confirmGateDeferredAt: { stage: currentStage, at: Date.now() } });
       await writeAuditLog("confirm_gate_deferred", {
