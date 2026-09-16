@@ -11,6 +11,7 @@ import {
 } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import type { SessionMeta, PipelineConfig } from "../../types";
 
 let tmpDir: string;
@@ -1113,5 +1114,117 @@ describe("Phase 1 / 180: stale confirmGateDeferredAt invalidation", () => {
 
     expect(selectCalls).toBe(0);
     expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+  });
+});
+
+// ─── Phase 2 / 180: dismiss attribution + repeat-defer observability ─────────
+
+describe("Phase 2 / 180: confirm gate dismiss attribution", () => {
+  it("fast dismiss (<1500ms) → confirm_gate_dismiss_interrupted + collateral_suspect payload", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateReask: { stage: "plan", count: 2 },
+    });
+    const ctx = createMockCtx(meta);
+    // Immediate undefined → elapsed ≈ 0 < DECISION_DISMISS_INTERRUPT_MS.
+    ctx.ui.select = async () => undefined;
+
+    const result = await maybeHandleConfirmGate(
+      config,
+      ctx,
+      meta,
+      { notify: () => {} } as any,
+      { mode: "manual", source: "resume" },
+    );
+
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("] confirm_gate_dismiss_interrupted |");
+    expect(logContent).toContain("action=collateral_suspect");
+    expect(logContent).toContain("mode=manual");
+    expect(logContent).toContain("elapsedMs=");
+    expect(logContent).toContain("reaskCount=2");
+    expect(logContent).toContain("source=resume");
+    // Legacy generic event must no longer be emitted for dismisses.
+    expect(logContent).not.toContain("action=esc_dismissed");
+  });
+
+  it("slow dismiss (≥1500ms) → confirm_gate_dismissed + user_esc, default source owner_settled", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => {
+      await new Promise((r) => setTimeout(r, 1600));
+      return undefined;
+    };
+
+    const result = await maybeHandleConfirmGate(
+      config,
+      ctx,
+      meta,
+      { notify: () => {} } as any,
+      { mode: "manual" },
+    );
+
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("] confirm_gate_dismissed |");
+    expect(logContent).toContain("action=user_esc");
+    // Default source when not provided.
+    expect(logContent).toContain("source=owner_settled");
+  });
+});
+
+describe("Phase 2 / 180: repeat-defer throttled audit", () => {
+  const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+  function setManagerRunning(running: boolean): void {
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: () => undefined,
+      hasRunning: () => running,
+    };
+  }
+
+  afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+    __resetMemoryThrottle();
+  });
+
+  it("same-window repeats → 1 first-defer + throttled repeat audit, no duplicate notify", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const notifications: string[] = [];
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => undefined;
+    setManagerRunning(true);
+    __resetMemoryThrottle();
+    const ui = {
+      notify: (_c: unknown, m: string) => notifications.push(m),
+      transition: () => {},
+    } as any;
+
+    // Call 1: first deferral → audit + notify.
+    await maybeHandleConfirmGate(config, ctx, meta, ui, { mode: "manual" });
+    // Allow the throttled repeat audit to pass its window for call 2.
+    __resetMemoryThrottle();
+    // Call 2: repeat deferral → throttled audit, no notify.
+    await maybeHandleConfirmGate(config, ctx, meta, ui, { mode: "manual" });
+    // Call 3: still within the throttle window → no new repeat audit.
+    await maybeHandleConfirmGate(config, ctx, meta, ui, { mode: "manual" });
+
+    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const firstDeferCount = (logContent.match(/\] confirm_gate_deferred \|/g) ?? []).length;
+    const repeatCount = (logContent.match(/\] confirm_gate_defer_repeat \|/g) ?? []).length;
+    expect(firstDeferCount).toBe(1);
+    expect(repeatCount).toBe(1);
+    // Only the first deferral notifies.
+    expect(notifications.filter((n) => n.includes("deferred")).length).toBe(1);
+    expect(logContent).toContain("waitedMs=");
+    expect(logContent).toContain("source=owner_settled");
   });
 });

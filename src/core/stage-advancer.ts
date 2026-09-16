@@ -29,7 +29,8 @@ import { extractAssistantMessages, extractToolCallRecords } from "./session-stat
 import { applyVerifyFail } from "./verify-advance";
 import { safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { checkStageSummaryHash } from "../utils/summary-hash";
-import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_DECISION_SHORTCUT, DEFAULT_SPAWN_WAIT_TIMEOUT_MS } from "../constants";
+import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_DECISION_SHORTCUT, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { recordStageVisit } from "../utils/stage-visit";
@@ -657,9 +658,21 @@ export async function maybeHandleConfirmGate(
   ctx: { session: { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined }; ui?: { notify: (msg: string) => void; select?: (message: string, options: string[]) => Promise<string | undefined>; transition?: (ctx: unknown, from: string, to: string) => void; clearStage?: (ctx: unknown) => void }; pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } },
   meta: SessionMeta,
   ui: { notify: (ctx: unknown, msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void },
-  opts: { mode: ConfirmMode; needConfirm?: boolean; defaultReject?: boolean },
+  opts: {
+    mode: ConfirmMode;
+    needConfirm?: boolean;
+    defaultReject?: boolean;
+    /**
+     * Phase 2 / 180: attribution source for the dismiss/deferral audit events.
+     * Defaults to "owner_settled" so existing callers (agent-settled, tool path,
+     * pipeline-handoff) keep their current semantics without changes. The
+     * vocabulary intentionally excludes "menu" (no menu carrier exists in 180).
+     */
+    source?: "owner_settled" | "resume";
+  },
 ): Promise<ConfirmGateResult> {
   const { mode, needConfirm, defaultReject } = opts;
+  const source = opts.source ?? "owner_settled";
   const currentStage = meta.currentStage;
   const stageConfig = config.stages[currentStage];
 
@@ -734,6 +747,21 @@ export async function maybeHandleConfirmGate(
         reason: "top_level_subagent_live",
       });
       ui.notify(ctx, `${currentStage} confirmation deferred until running subagents settle.`);
+    } else if (
+      shouldEmitWithinWindow(
+        `confirm_gate_defer_repeat:${meta.pipelineId}:${currentStage}`,
+        AUDIT_THROTTLE_WINDOW_MS,
+      )
+    ) {
+      // Phase 2 / 180: a repeat deferral within the same window stays silent for
+      // notifications (bd0886a noise reduction), but a throttled audit keeps the
+      // number of deferral rounds observable (F2 blind-spot).
+      await writeAuditLog("confirm_gate_defer_repeat", {
+        pipelineId: meta.pipelineId,
+        stage: currentStage,
+        waitedMs: String(Date.now() - existing.at),
+        source,
+      });
     }
     return { result: "handled", action: "pending", deferred: true };
   }
@@ -758,7 +786,9 @@ export async function maybeHandleConfirmGate(
   // Present TUI dialog
   const rawSelect = ctx.ui?.select;
   if (!rawSelect) {
-    // No UI available — pending (notify + no advance, no count change)
+    // No UI available — pending (notify + no advance, no count change).
+    // Phase 2 / 180: this is now the ONLY `confirm_pending` emitter; Esc/dismiss
+    // is attributed via confirm_gate_dismissed / _interrupted above.
     await writeAuditLog("confirm_pending", {
       pipelineId: meta.pipelineId,
       stage: currentStage,
@@ -776,18 +806,35 @@ export async function maybeHandleConfirmGate(
       ? ["Reject & Send to Fix", "Approve & Complete"]
       : ["Approve & Complete", "Reject & Send to Fix"];
 
+  const selectStartedAt = Date.now();
   const choice = await rawSelect(
     `${currentStage} confirmation gate: please select an action`,
     options,
   );
 
-  // Handle Esc / undefined
+  // Handle Esc / undefined.
+  // Phase 2 / 180: split the dismiss into a genuine user Esc vs a fast
+  // collateral cancel, using the shared DECISION_DISMISS_INTERRUPT_MS threshold
+  // (aligned with flow-state.ts's decision-menu precedent). Return value and
+  // notify text are unchanged — only the audit attribution is enriched.
   if (choice === undefined) {
-    await writeAuditLog("confirm_pending", {
-      pipelineId: meta.pipelineId,
-      stage: currentStage,
-      action: "esc_dismissed",
-    });
+    const elapsedMs = Date.now() - selectStartedAt;
+    const reaskCount = meta.confirmGateReask?.stage === currentStage
+      ? meta.confirmGateReask.count
+      : 0;
+    const interrupted = elapsedMs < DECISION_DISMISS_INTERRUPT_MS;
+    await writeAuditLog(
+      interrupted ? "confirm_gate_dismiss_interrupted" : "confirm_gate_dismissed",
+      {
+        pipelineId: meta.pipelineId,
+        stage: currentStage,
+        mode,
+        action: interrupted ? "collateral_suspect" : "user_esc",
+        elapsedMs: String(elapsedMs),
+        reaskCount: String(reaskCount),
+        source,
+      },
+    );
     ui.notify(ctx, `${currentStage} confirmation cancelled. Awaiting marker or re-trigger.`);
     return { result: "handled", action: "pending" };
   }

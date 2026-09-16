@@ -1162,8 +1162,9 @@ Verify plan.`);
     const logContent = await readFile(logPath, "utf-8");
     // Deferral should have been applied (marker rule skipped during verify)
     expect(logContent).toContain("verify_rule_deferred");
-    // Confirm gate triggered — Esc → pending
-    expect(logContent).toContain("confirm_pending");
+    // Confirm gate triggered — immediate undefined select → fast collateral dismiss
+    // (Phase 2 / 180 migrated this assertion from the legacy `confirm_pending action=esc_dismissed`).
+    expect(logContent).toContain("confirm_gate_dismiss_interrupted");
     // Stage should not change (pending)
     expect(meta.currentStage).toBe("plan");
 
