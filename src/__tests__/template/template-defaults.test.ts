@@ -194,6 +194,20 @@ describe("Phase 5 (173) C17: SKILL path convention", () => {
   });
 });
 
+// ─── Phase 1 / 179 (G2 layer ③): design SKILL next-command MUST ──────────────
+
+describe("Phase 1 / 179 (G2): design SKILL next-command MUST clause", () => {
+  it("design/SKILL.md requires the two complete next-step command lines", () => {
+    const skillPath = path.join(__dirname, "../../template/skills/design/SKILL.md");
+    const content = fs.readFileSync(skillPath, "utf-8");
+    expect(content).toContain("full-und?");
+    expect(content).toContain("<agent>");
+    expect(content).toContain("<doc>");
+    // Must forbid literal placeholder leakage in user-facing prompts
+    expect(content).toContain("禁止");
+  });
+});
+
 // ─── D2 (174): stage SKILL frontmatter regression guard ─────────────────────
 
 describe("D2 (174): stage SKILL frontmatter regression guard", () => {

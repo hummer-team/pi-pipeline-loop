@@ -205,7 +205,7 @@ stage_executor_clarify: |
   ## Stage Executor Scheduling
   This stage is executed by the user-invoked agent: `{subagent_type}`
   **Scheduling**: User @`{subagent_type}` in chat with the requirement document path.
-  **Return protocol**: On `full-und?` confirmation, write the `## 模型确认` marker to the requirement document and STOP. Do NOT call `stage_advance` — the `agent_settled` hook auto-verifies (completionMarker) and advances to `plan`.
+  **Return protocol**: On `full-und?` confirmation, write the `## 模型确认` marker to the requirement document and STOP. Do NOT call `stage_advance` — the `agent_settled` hook auto-verifies (completionMarker) and advances to `plan`. **MUST**: end every round's user-facing output with two complete, copy-pasteable command lines containing the full document path and the real agent name — `@<agent> <doc> <round+1> 答` and `@<agent> <doc> full-und?`. Never emit a `{file}` placeholder literal in a user-facing prompt.
   **Triage**: If the user asks an unrelated question (not @mention with doc path or round args), answer briefly and do NOT touch pipeline state. Only pipeline-turn messages (containing verification results, stage routing, or @agent doc args) trigger verification.
   **Re-launch**: When the user mentions `@{subagent_type} {file} {args}` during clarify, spawn a **new task** with `description = Clarify: {file} {args}` — do NOT resume the previous task. Each round gets its own task title reflecting the round number. **MUST**: prompt and description must carry the user's current-round args verbatim (e.g. `2 答`); do NOT reuse the previous round's title or args.
   **Parent wait discipline**: After relaying the clarification questions to the user, STOP and WAIT. Do NOT collect answers interactively (e.g. via `ask_user_question`). The sole answer channel is the `**答**` fields of the requirement document. The user drives the next round by re-mentioning the agent with the document path.
@@ -261,6 +261,7 @@ stage_deliverable_clarify: |
   - **MUST** write `## 模型确认` / `## Model Confirmation` marker to the requirement document via write or edit tools upon full-und? confirmation
   - **MUST** use round heading format `# 第 N 轮澄清` (recommended) or `# Round N` (compatible) — `#{1,2}` only (h1/h2) to prevent h3+ false positives
   - **MUST** include answer fields in bilingual form: `答：`/`答:`/`**答**`/`Answer:` (all accepted)
+  - **MUST** end every round (including the final/summary round) by outputting two complete, copy-pasteable next-step command lines containing the full document path and the real agent name: `@<agent> <doc> <round+1> 答` and `@<agent> <doc> full-und?` — never emit a `{file}` placeholder literal
 
 stage_deliverable_plan: |
   - **MUST** produce a planning document with implementation steps

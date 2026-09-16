@@ -30,6 +30,7 @@ import {
   writeResidueGateStatus,
   clearResidueGateStatus,
 } from "../core/template-residue-check";
+import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
 
 /** Template directory — resolves to dist/template/ in production or src/template/ in dev */
 const TEMPLATE_DIR = path.resolve(__dirname, "..", "template");
@@ -89,6 +90,12 @@ export function createPipelineInitCommand(
       try {
         // Goal 1: Override status bar to "init" stage during command execution
         ui.setStage(ctx, "init");
+
+        // Phase 1 / 179 (G2 layer ④): surface the agentMentions:"model" deployment
+        // mode (a known @mention rewrite cause). Throttled, read-only.
+        await maybeNotifySubagentsMentionMode(config, {
+          notify: (msg: string) => ui.notify(ctx, msg),
+        });
 
         // Parse argument — supports string "0"/"1"/"2"/"" or object { sub: "0"|"1"|"2"|"" }
         const sub = typeof args === "string"

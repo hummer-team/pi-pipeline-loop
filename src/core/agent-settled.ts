@@ -30,8 +30,9 @@ import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { AUDIT_THROTTLE_WINDOW_MS, PIPELINE_TURN_SIGNATURES } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
-import { consumePendingSpawns } from "../utils/subagent-rpc";
+import { consumePendingSpawns, resolveAgentMention } from "../utils/subagent-rpc";
 import { detectSessionRole } from "./session-role";
+import { escapeRegExp } from "../utils/regex-utils";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -136,12 +137,25 @@ export function createAgentSettled(
             return sig.test(lastUserMsg);
           });
           if (!isPipelineTurn) {
-            await writeAuditLog("agent_settled_non_pipeline_turn", {
+            // Phase 1 / 179 (G2 layer ①): dynamic bare-form relaxation.
+            // The static signatures require an "@agent" prefix, but under
+            // agentMentions:"model" the mention is rewritten and the on-disk user
+            // message loses the prefix (bare "docs/x.md 2 答"). Only relax when
+            // requirementDoc is bound and the message starts with that exact path —
+            // precise prefix matching keeps pure chat from false-hitting.
+            if (!isBarePipelineTurn(lastUserMsg, meta.requirementDoc)) {
+              await writeAuditLog("agent_settled_non_pipeline_turn", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                messagePreview: lastUserMsg.substring(0, 100),
+              });
+              return;
+            }
+            await writeAuditLog("agent_settled_bare_turn_matched", {
               pipelineId: meta.pipelineId,
               stage: meta.currentStage,
               messagePreview: lastUserMsg.substring(0, 100),
             });
-            return;
           }
         }
         // Empty message or extraction failure → fail-open (treat as pipeline turn)
@@ -351,7 +365,18 @@ export function createAgentSettled(
               stage: meta.currentStage,
               round: String(awaitCheck.round ?? 0),
             });
-            ui.notify(ctx, `Clarify round ${awaitCheck.round} is awaiting your answer. Please write your answer in the requirement document (答：...) then re-mention @agent {file} ${awaitCheck.round} 答.`);
+            // Phase 1 / 179 (G2 layer ②): interpolate the real document path and
+            // agent name so the hint is a copy-pasteable command line (the old text
+            // emitted the literal "{file}" placeholder and a generic "@agent").
+            const clarifyAgent = resolveAgentMention(config, "clarify") ?? "agent";
+            const clarifyDoc = meta.requirementDoc ?? "<requirement-doc>";
+            ui.notify(
+              ctx,
+              `Clarify round ${awaitCheck.round} is awaiting your answer. ` +
+                `Please write your answer in the requirement document (答：...) then re-mention ` +
+                `@${clarifyAgent} ${clarifyDoc} ${awaitCheck.round} 答 ` +
+                `(or @${clarifyAgent} ${clarifyDoc} full-und? to finalize).`,
+            );
             return;
           }
         } catch {
@@ -526,6 +551,34 @@ export function createAgentSettled(
       }
     },
   };
+}
+
+/**
+ * Phase 1 / 179 (G2 layer ①): Detects a "bare" pipeline turn — a user message
+ * that starts with the bound requirement document path followed by a round
+ * argument, but lacks the `@agent` prefix the static signatures require.
+ *
+ * This covers the `agentMentions:"model"` deployment where pi-subagents rewrites
+ * the @mention and the on-disk user message degrades to bare text.
+ *
+ * Examples (requirementDoc = "docs/design/x.md"):
+ *   "docs/design/x.md 2 答"      → true
+ *   "docs/design/x.md full-und?" → true
+ *   "docs/design/x.md 1"         → true
+ *   "docs/design/other.md 2 答"  → false (different doc — no false hit)
+ *
+ * Returns false when requirementDoc is unbound, preserving the existing
+ * fail-open-to-non-pipeline behavior.
+ *
+ * @param message - The last user message text
+ * @param requirementDoc - The bound requirement document path (if any)
+ */
+function isBarePipelineTurn(message: string, requirementDoc: string | undefined): boolean {
+  if (!requirementDoc) return false;
+  const pattern = new RegExp(
+    `^${escapeRegExp(requirementDoc)}\\s*(\\d+\\s*答|full-und\\?|\\d+$)`,
+  );
+  return pattern.test(message);
 }
 
 /**

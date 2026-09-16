@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import { resetPromptConfigCache, loadPromptConfig } from "../../core/prompt-config";
 import { registerSession } from "../../utils/session-registry";
+import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -1123,5 +1124,69 @@ describe("createSessionStarter", () => {
 
       await rm(TMP, { recursive: true, force: true });
     });
+  });
+});
+
+// ── Phase 1 / 179 (G2 layer ④): agentMentions deployment probe ──────────────
+
+describe("Phase 1 / 179 (G2 layer ④): subagents agentMentions probe", () => {
+  function makeProbeCtx(notifications: string[]) {
+    return {
+      session: { getMeta: () => ({}), updateMeta: () => {} },
+      ui: { notify: (m: string) => notifications.push(m) },
+      _ctx: {},
+    };
+  }
+
+  it("agentMentions:'model' → exactly one notify + audit", async () => {
+    const TMP = join(tmpdir(), "pi-ss-subagents-model-" + Date.now());
+    await mkdir(join(TMP, ".pi"), { recursive: true });
+    await writeFile(
+      join(TMP, ".pi", "subagents.json"),
+      JSON.stringify({ agentMentions: "model" }),
+      "utf-8",
+    );
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    __resetMemoryThrottle();
+
+    const notifications: string[] = [];
+    await createSessionStarter(config).handler(makeProbeCtx(notifications) as any);
+
+    const matches = notifications.filter((n) => n.includes("agentMentions"));
+    expect(matches.length).toBe(1);
+    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).toContain("subagents_mention_model_detected");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("absent config → zero notify, no throw", async () => {
+    const TMP = join(tmpdir(), "pi-ss-subagents-absent-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    __resetMemoryThrottle();
+
+    const notifications: string[] = [];
+    await createSessionStarter(config).handler(makeProbeCtx(notifications) as any);
+
+    expect(notifications.filter((n) => n.includes("agentMentions")).length).toBe(0);
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("invalid JSON config → zero notify, no throw", async () => {
+    const TMP = join(tmpdir(), "pi-ss-subagents-invalid-" + Date.now());
+    await mkdir(join(TMP, ".pi"), { recursive: true });
+    await writeFile(join(TMP, ".pi", "subagents.json"), "{ not json", "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    __resetMemoryThrottle();
+
+    const notifications: string[] = [];
+    await createSessionStarter(config).handler(makeProbeCtx(notifications) as any);
+
+    expect(notifications.filter((n) => n.includes("agentMentions")).length).toBe(0);
+    await rm(TMP, { recursive: true, force: true });
   });
 });

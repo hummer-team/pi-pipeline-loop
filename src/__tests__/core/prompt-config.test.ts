@@ -772,5 +772,32 @@ describe("prompt-config", () => {
       expect(clarifyExecutor).toContain("**答**");
       expect(clarifyExecutor).toContain("requirement document");
     });
+
+    // Phase 1 / 179 (G2 layer ③): next-command MUST clause (no placeholder leakage)
+    it("stage_deliverable_clarify carries the next-command MUST clause (179 G2)", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) return;
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, string>;
+
+      const deliverable = parsed["stage_deliverable_clarify"];
+      expect(deliverable).toContain("**MUST**");
+      expect(deliverable).toContain("full-und?");
+      expect(deliverable).toContain("<agent>");
+      expect(deliverable).toContain("<doc>");
+      // Rendered segment must not leak unresolved {{...}} template placeholders
+      expect(deliverable).not.toContain("{{");
+    });
+
+    it("stage_executor_clarify return protocol carries the next-command MUST clause (179 G2)", () => {
+      if (!fsSync.existsSync(TEMPLATE_PATH)) return;
+      const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
+      const parsed = yamlParse(content) as Record<string, string>;
+
+      const executor = parsed["stage_executor_clarify"];
+      expect(executor).toContain("MUST");
+      expect(executor).toContain("full-und?");
+      expect(executor).toContain("<agent>");
+      expect(executor).not.toContain("{{");
+    });
   });
 });

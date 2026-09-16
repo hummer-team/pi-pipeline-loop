@@ -1999,6 +1999,139 @@ describe("Phase 2 (172): pipeline-turn source gate", () => {
   });
 });
 
+// ── Phase 1 / 179 (G2): bare-form gate relaxation + interpolated hint ────────
+
+const CLARIFY_VERIFY_MD = `---
+rules:
+  path: "{requirementDoc}"
+  groups:
+    - name: round-well-formed
+      when: "^#{1,2}\\\\s*(?:第\\\\s*(?<roundZh>\\\\d+)\\\\s*轮澄清|[Rr]ound\\\\s+(?<roundEn>\\\\d+))"
+      runtime: roundHeading
+      scope: section
+      ruleMode: and
+      rules:
+        - type: fileContentPattern
+          patterns: ["^- \\\\*{0,2}(?:方案|Option|Plan)[ \\\\t]*[A-Z]"]
+        - type: fileContentPattern
+          mode: or
+          runtime: answerField
+          patterns:
+            - "答\\\\s*[:：]|\\\\*{2}答\\\\*{2}"
+            - "Answer\\\\s*:"
+    - name: full-und-confirmed
+      ruleMode: and
+      rules:
+        - type: fileContentPattern
+          mode: or
+          runtime: modelConfirm
+          patterns:
+            - "^##\\\\s*模型确认"
+---
+clarify verification
+`;
+
+/** Writes the clarify runtime-contract verify.md into the test project. */
+async function writeClarifyVerifyMd(projectRoot: string): Promise<void> {
+  const dir = join(projectRoot, ".pi", "references", "clarify_spec");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "verify.md"), CLARIFY_VERIFY_MD, "utf-8");
+}
+
+/** Writes the clarify agent definition so resolveAgentMention resolves a name. */
+async function writeClarifyAgentFile(projectRoot: string): Promise<void> {
+  const dir = join(projectRoot, "agents");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "test-agent.md"), "---\nname: feat-design-plan-agent\n---\n", "utf-8");
+}
+
+describe("Phase 1 / 179 (G2 layer ①): bare-form pipeline turn relaxation", () => {
+  it("bare '<doc> 2 答' with bound requirementDoc → pipeline turn (bare_turn_matched)", async () => {
+    const config = makeTestConfig();
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop", requirementDoc: "docs/design/x.md" });
+    const ctx = createMockCtx(meta);
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "docs/design/x.md 2 答" } },
+    ];
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    const auditContent = await readFile(join(config.projectRoot, config.auditDir!, getDateAuditFileName()), "utf-8");
+    expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
+    expect(auditContent).toContain("agent_settled_bare_turn_matched");
+  });
+
+  it("bare text referencing a DIFFERENT doc → still non_pipeline_turn (no false hit)", async () => {
+    const config = makeTestConfig();
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop", requirementDoc: "docs/design/x.md" });
+    const ctx = createMockCtx(meta);
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "docs/design/other.md 2 答" } },
+    ];
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    const auditContent = await readFile(join(config.projectRoot, config.auditDir!, getDateAuditFileName()), "utf-8");
+    expect(auditContent).toContain("agent_settled_non_pipeline_turn");
+    expect(auditContent).not.toContain("agent_settled_bare_turn_matched");
+  });
+
+  it("unbound requirementDoc → bare text keeps current non_pipeline_turn behavior", async () => {
+    const config = makeTestConfig();
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "docs/design/x.md 2 答" } },
+    ];
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    const auditContent = await readFile(join(config.projectRoot, config.auditDir!, getDateAuditFileName()), "utf-8");
+    expect(auditContent).toContain("agent_settled_non_pipeline_turn");
+    expect(auditContent).not.toContain("agent_settled_bare_turn_matched");
+  });
+});
+
+describe("Phase 1 / 179 (G2 layer ②): await-answer hint interpolation", () => {
+  it("notify text carries real doc path + agent name and no '{file}' literal", async () => {
+    const config = makeTestConfig();
+    config.stages.clarify = {
+      ...config.stages.clarify,
+      verify: { require: true },
+    } as typeof config.stages.clarify;
+    await mkdir(join(config.projectRoot, config.auditDir!), { recursive: true });
+    await initAuditLog(config);
+    await writeClarifyVerifyMd(config.projectRoot);
+    await writeClarifyAgentFile(config.projectRoot);
+    await mkdir(join(config.projectRoot, "docs", "design"), { recursive: true });
+    await writeFile(
+      join(config.projectRoot, "docs", "design", "x.md"),
+      "# 第 1 轮澄清\n## 问题 1\n- 方案 A：foo\n- 方案 B：bar\n",
+      "utf-8",
+    );
+
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "docs/design/x.md" });
+    const ctx = createMockCtx(meta);
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "@feat-design-plan-agent docs/design/x.md 1 答" } },
+    ];
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    const hint = ctx.notifications.find((n) => n.includes("awaiting your answer"));
+    expect(hint).toBeDefined();
+    expect(hint).toContain("docs/design/x.md");
+    expect(hint).toContain("feat-design-plan-agent");
+    expect(hint).not.toContain("{file}");
+  });
+});
+
 // ── Phase 2 / 177 (D4③): owner consumes child-routed pendingSpawns ──────────
 
 describe("Phase 2 / 177 (D4): owner pendingSpawns consumption", () => {

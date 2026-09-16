@@ -23,6 +23,7 @@ import { formatAbortedNotifyText } from "./flow-state";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -305,6 +306,14 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           const errMsg = err instanceof Error ? err.message : String(err);
           await safeWriteAuditLog("template_drift_error", { error: errMsg }, "warn");
         }
+      }
+
+      // Phase 1 / 179 (G2 layer ④): surface the agentMentions:"model" deployment
+      // mode (a known @mention rewrite cause). Owner-only, throttled, read-only.
+      if (!detectSessionRole(ctx).isChild) {
+        await maybeNotifySubagentsMentionMode(config, {
+          notify: (msg: string) => ui.notify(ctx, msg),
+        });
       }
 
       // Preload prompt-config cache (failure silently returns {} — never blocks session start)

@@ -1,5 +1,5 @@
 {
-  "_comment": "EXCLUSION DECLARATION: Keys 'spawnSubagentOnClarify' and 'agentMentions' do NOT exist in this plugin (0 hits in codebase). Do not add them. See guide.md §14 for valid configuration keys.",
+  "_comment": "EXCLUSION DECLARATION: Keys 'spawnSubagentOnClarify' and 'agentMentions' do NOT exist in this plugin (0 hits in codebase). Do not add them here. See guide.md §14 for valid configuration keys. NOTE: the plugin performs a READ-ONLY probe of the separate pi-subagents config .pi/subagents.json (agentMentions) to surface the 'model' rewrite mode; it never writes or overwrites that file.",
   "startStageMode": "auto",
   "llmExtract": true,
   "output": { "pipelineStage": true },

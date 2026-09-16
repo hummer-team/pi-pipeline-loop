@@ -719,6 +719,8 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 
 **插件行为保证**：插件自身发起的 spawn（`stage_advance` → `spawnStageSubagent`）走 RPC 事件总线通道，不受 `agentMentions` 配置影响，参数始终保真。
 
+**与 settle gate 放宽互为冗余（Phase 1 / 179，G2 第 4 层）**：会话启动与 `/pipeline-init` 会**只读探测** `.pi/subagents.json`；当 `agentMentions === "model"` 时提示改为 `"direct"`（只提示、不代改文件，文件缺失/非法 JSON 静默跳过）。该提示与 `agent_settled` 的「裸文本 pipeline turn」放宽互为冗余：改配置消除诱因，gate 放宽兜住用户直接输入裸文本的场景——任一层生效都不会再吞掉 clarify 的下一步命令行提示。
+
 ### 7.12 SKILL 可见性控制（pi 原生机制）
 
 pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插件本身不做动态过滤（本期决策，Q2-R1）。如需隐藏无关 SKILL，可使用以下 pi 原生方式：
