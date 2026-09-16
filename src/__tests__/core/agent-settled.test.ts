@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach } from "bun:test";
+import { describe, it, expect, beforeAll } from "bun:test";
 import { createAgentSettled } from "../../core/agent-settled";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
@@ -1088,44 +1088,46 @@ Verify plan.`);
     const root = join(TMP, "d5b-defer-reask-" + Date.now());
     await mkdir(root, { recursive: true });
 
-    const config = makePlanConfigWithConfirm(root, "manual");
-    await createPlanDoc(root, "# Plan\nplan content here\n");
-    await createVerifyMd(root, `---
+    try {
+      const config = makePlanConfigWithConfirm(root, "manual");
+      await createPlanDoc(root, "# Plan\nplan content here\n");
+      await createVerifyMd(root, `---
 requiredFiles:
   - "docs/design/77_Config_plan.md"
 ---
 Verify plan.`);
 
-    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
-    let selectCalls = 0;
-    const ctx = createMockCtx(meta);
-    ctx.ui.select = async () => { selectCalls++; return undefined; };
+      const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+      let selectCalls = 0;
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => { selectCalls++; return undefined; };
 
-    // Simulate a live subagent → gate defers (returns deferred:true + pending).
-    setManagerRunning(true);
+      // Simulate a live subagent → gate defers (returns deferred:true + pending).
+      setManagerRunning(true);
 
-    const hook = createAgentSettled(config);
+      const hook = createAgentSettled(config);
 
-    // Run 5 settles — all should defer (subagent still "live"), none should
-    // increment confirmGateReask. The gate must be invoked every time.
-    for (let i = 1; i <= 5; i++) {
+      // Run 5 settles — all should defer (subagent still "live"), none should
+      // increment confirmGateReask. The gate must be invoked every time.
+      for (let i = 1; i <= 5; i++) {
+        await hook.handler(ctx as any);
+        // Deferral → select is NOT called (no popup while subagent live).
+        expect(selectCalls).toBe(0);
+        // Re-ask must NOT be incremented by deferrals.
+        expect(meta.confirmGateReask).toBeUndefined();
+      }
+
+      // Now simulate subagent settle → manager reports no running.
+      // The 6th settle should present the popup (no reaskExhausted short-circuit).
+      setManagerRunning(false);
       await hook.handler(ctx as any);
-      // Deferral → select is NOT called (no popup while subagent live).
-      expect(selectCalls).toBe(0);
-      // Re-ask must NOT be incremented by deferrals.
-      expect(meta.confirmGateReask).toBeUndefined();
+      expect(selectCalls).toBe(1); // Popup presented
+      // Esc dismiss IS a real dismiss → re-ask count increments.
+      expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
+    } finally {
+      clearManager();
+      await rm(root, { recursive: true, force: true });
     }
-
-    // Now simulate subagent settle → manager reports no running.
-    // The 6th settle should present the popup (no reaskExhausted short-circuit).
-    setManagerRunning(false);
-    await hook.handler(ctx as any);
-    expect(selectCalls).toBe(1); // Popup presented
-    // Esc dismiss IS a real dismiss → re-ask count increments.
-    expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
-
-    clearManager();
-    await rm(root, { recursive: true, force: true });
   });
 
   it("deferContentPatterns: plan marker rule does not block verify in manual mode", async () => {

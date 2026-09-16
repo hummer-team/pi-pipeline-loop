@@ -660,6 +660,7 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `pending_spawn_wait_timeout` | 挂起等待超过 `spawnWaitTimeoutMs`，转人工（不消耗重试次数） | stage, agentName, waitedMs, oldChildId, evidenceStage |
 | `chain_terminal_wake` | 自动推进链到达终态（completed / 无下一 stage），向 owner 注入链摘要 | fromStage, terminalStage, stageVisitOrder |
 | `chain_terminal_wake_skipped` | 链未真正终止（有未消费 pendingSpawns / pi 不可用）而跳过唤醒 | fromStage, reason |
+| `chain_terminal_wake_failed` | 链尾唤醒 `sendUserMessage` 抛错（warn 级别） | fromStage, error |
 | `confirm_gate_deferred` | 确认弹窗因存在顶层子代理 live 而后置 | stage, reason |
 | `confirm_gate_defer_timeout` | 后置等待超过 `spawnWaitTimeoutMs`，照常弹窗 + hint | stage, waitedMs |
 | `out_of_stage_spawn_allowed_review_fix` | review→fix 合法人工推进放行（3e 唯一例外路径） | stage, tool, subagentType, targetStage |

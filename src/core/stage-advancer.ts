@@ -635,11 +635,19 @@ export async function maybeHandleConfirmGate(
 
   // Precondition: only plan and review stages support confirm gate
   if (currentStage !== "plan" && currentStage !== "review") {
+    // Clear stale deferral timestamp so the timeout fallback only applies to
+    // the current deferral window, not a leftover from a previous stage visit.
+    if (meta.confirmGateDeferredAt) {
+      ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
+    }
     return { result: "no-gate" };
   }
 
   // Smart mode: if needConfirm is not true, skip the gate (non-complex)
   if (mode === "smart" && needConfirm !== true) {
+    if (meta.confirmGateDeferredAt) {
+      ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
+    }
     return { result: "no-gate" };
   }
 
@@ -653,6 +661,9 @@ export async function maybeHandleConfirmGate(
       // Uses precise anchor text to avoid false positives on user-authored
       // headings that share a prefix (e.g. "## 用户确认流程", "## User Confirmation Guide").
       if (/^## (?:用户确认：确认无误|User Confirmation: Confirmed)/m.test(content)) {
+        if (meta.confirmGateDeferredAt) {
+          ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
+        }
         return { result: "no-gate" };
       }
     } catch {

@@ -39,15 +39,6 @@ export interface SpawnEvidenceHit {
 type ActiveSpawnEntry = NonNullable<SessionMeta["activeSpawns"]>[PipelineStage];
 
 /**
- * Scans all `activeSpawns` entries for evidence that `expectedAgent` is live.
- *
- * @param activeSpawns - The meta.activeSpawns map (may be undefined)
- * @param expectedAgent - Agent name to match (entries with other names are skipped)
- * @param opts.excludeStage - Optional stage key to ignore (used by the
- *   wait-and-settle pre-check to look for live children in *other* stages)
- * @returns The first matching hit, or null when no live evidence exists
- */
-/**
  * Scans all `activeSpawns` entries for ANY live evidence, regardless of agent
  * name. Used as the degraded probe when `anyTopLevelRunning()` is unavailable
  * (e.g. confirm-gate deferral, Phase 4 / 179).
@@ -74,6 +65,15 @@ export function anyActiveSpawnEvidence(
   return null;
 }
 
+/**
+ * Scans all `activeSpawns` entries for evidence that `expectedAgent` is live.
+ *
+ * @param activeSpawns - The meta.activeSpawns map (may be undefined)
+ * @param expectedAgent - Agent name to match (entries with other names are skipped)
+ * @param opts.excludeStage - Optional stage key to ignore (used by the
+ *   wait-and-settle pre-check to look for live children in *other* stages)
+ * @returns The first matching hit, or null when no live evidence exists
+ */
 export function scanActiveSpawnEvidence(
   activeSpawns: SessionMeta["activeSpawns"],
   expectedAgent: string,
