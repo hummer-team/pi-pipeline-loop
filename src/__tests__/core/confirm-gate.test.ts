@@ -966,7 +966,7 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
     const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
 
     expect(selectCalls).toBe(0);
-    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
     expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
     const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("confirm_gate_deferred");
@@ -1003,7 +1003,7 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
     const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
 
     expect(selectCalls).toBe(0);
-    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
   });
 
   it("deferral exceeds spawnWaitTimeoutMs → popup + timeout hint, stamp cleared", async () => {

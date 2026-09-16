@@ -664,6 +664,8 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `confirm_gate_defer_timeout` | 后置等待超过 `spawnWaitTimeoutMs`，照常弹窗 + hint | stage, waitedMs |
 | `out_of_stage_spawn_allowed_review_fix` | review→fix 合法人工推进放行（3e 唯一例外路径） | stage, tool, subagentType, targetStage |
 | `out_of_stage_spawn_blocked` | 当前 stage 直接 spawn 其他 stage 执行体，被拦截并给路由提示 | stage, tool, subagentType, targetStage |
+| `pipeline_resume_deferred` | `/pipeline-resume` 因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, requirementDoc, reason |
+| `pipeline_handoff_deferred` | handoff 工具因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, reason |
 
 **Agent 速查表**：
 

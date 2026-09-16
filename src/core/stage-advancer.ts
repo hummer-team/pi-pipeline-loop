@@ -46,7 +46,7 @@ import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
  */
 export type ConfirmGateResult =
   | { result: "no-gate" }
-  | { result: "handled"; action: "advanced" | "routed" | "pending" | "aborted"; toStage?: PipelineStage };
+  | { result: "handled"; action: "advanced" | "routed" | "pending" | "aborted"; toStage?: PipelineStage; deferred?: true };
 
 /**
  * The plan-stage content-pattern rule used for the bilingual confirm marker.
@@ -691,7 +691,7 @@ export async function maybeHandleConfirmGate(
       });
       ui.notify(ctx, `${currentStage} confirmation deferred until running subagents settle.`);
     }
-    return { result: "handled", action: "pending" };
+    return { result: "handled", action: "pending", deferred: true };
   }
   if (deferral === "timeout") {
     const timeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;

@@ -511,7 +511,11 @@ export function createAgentSettled(
             ...(reviewDefaultReject !== undefined ? { defaultReject: reviewDefaultReject } : {}),
           });
           if (gate.result === "handled") {
-            if (!isChild && gate.action === "pending") {
+            // Phase 4 / 179 fix: only count real dismisses (Esc / no UI) towards
+            // the re-ask budget. System deferrals (subagent still live) must NOT
+            // consume the bounded re-arm count — otherwise the timeout fallback
+            // ("pop anyway + hint" after spawnWaitTimeoutMs) becomes unreachable.
+            if (!isChild && gate.action === "pending" && !gate.deferred) {
               // Record the re-ask so the next settle only hints.
               ctx.session.updateMeta({
                 confirmGateReask: {
