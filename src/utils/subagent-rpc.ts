@@ -1007,8 +1007,11 @@ function scheduleDeferredSpawn(
     // Escalate to manual. The wait is not a spawn failure → do not consume an
     // attempt; clear the pending entry so it cannot loop.
     clearPendingSpawn(session, stage);
+    const probeStatus = evidence.agentId ? probeAgentState(evidence.agentId) : "unknown";
     opts.ui?.notify?.(
-      `Deferred spawn for "${stage}" timed out after ${timeoutMs}ms (${evidence.stage} executor still live). Please handle it manually.`,
+      `Deferred spawn for "${stage}" timed out after ${timeoutMs}ms ` +
+      `(old child: ${evidence.agentId ?? "n/a"}, source stage: ${evidence.stage}, probe: ${probeStatus}). ` +
+      `Please handle it manually.`,
     );
     void safeWriteAuditLog("pending_spawn_wait_timeout", {
       stage,

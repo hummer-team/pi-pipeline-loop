@@ -605,8 +605,19 @@ export async function dispatchAfterResume(
       forwardArgs: forwardArgs ? "yes" : "no",
       ...(forwardArgs?.trim() ? { forwardArgsContent: forwardArgs.trim().substring(0, 120) } : {}),
     });
+  } else if (result.deferred) {
+    // Phase 2 / 179 (G3): spawn is queued behind a live same-agent twin in
+    // another stage. The dequeue will fire automatically once the old twin
+    // settles — do NOT prompt the user to run manually, which would cause
+    // dual execution with the pending dequeue.
+    await safeWriteAuditLog("pipeline_resume_deferred", {
+      stage,
+      requirementDoc: doc,
+      pipelineId: meta.pipelineId,
+      reason: "subagent_deferred",
+    });
   } else if (!result.fallback) {
-    // Not spawned and no fallback (e.g. non-spawnable stage) → notify
+    // Not spawned, not deferred, and no fallback (e.g. non-spawnable stage) → notify
     ui.notify(ctx, `Pipeline resumed at "${stage}". Run the ${stage} agent to continue.`);
   }
 }

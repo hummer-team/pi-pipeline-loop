@@ -418,7 +418,7 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     expect(audit).toContain("out_of_stage_spawn_allowed_adjacent");
   });
 
-  it("adjacent stage spawn (plan→develop) → allowed", async () => {
+  it("plan→develop cross-stage spawn → blocked (G6 / Plan Phase 4 task 3)", async () => {
     const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
     config.stages["plan"] = { ...config.stages["plan"], agentPath: "./agents/plan-agent.md" };
     config.stages["develop"] = { ...config.stages["develop"], agentPath: "./agents/develop-agent.md" };
@@ -431,8 +431,13 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
 
     const result = await createToolGuard(config).handler(ctx as any);
 
-    // Adjacent stages are allowed — no block
-    expect(result).toBeUndefined();
+    // plan→develop is NOT a legitimate manual progression — must be blocked.
+    expect(result).toBeDefined();
+    expect((result as any).block).toBe(true);
+    expect((result as any).reason).toContain("Advance through the confirm gate");
+    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).toContain("out_of_stage_spawn_blocked");
+    expect(audit).toContain("targetStage=develop");
   });
 
   it("review stage spawn of a shared-name executor is not blocked (current-stage agent)", async () => {

@@ -680,8 +680,8 @@ export async function maybeHandleConfirmGate(
   const deferral = evaluateConfirmGateDeferral(config, meta);
   if (deferral === "defer") {
     const existing = meta.confirmGateDeferredAt;
-    // Audit only the FIRST deferral of this deferral window (plan G5/G7);
-    // subsequent settles stay silent to avoid audit noise.
+    // Audit and notify only the FIRST deferral of this deferral window (plan G5/G7);
+    // subsequent settles stay silent to avoid audit noise and repeated UI打扰.
     if (!existing || existing.stage !== currentStage) {
       ctx.session.updateMeta({ confirmGateDeferredAt: { stage: currentStage, at: Date.now() } });
       await writeAuditLog("confirm_gate_deferred", {
@@ -689,8 +689,8 @@ export async function maybeHandleConfirmGate(
         stage: currentStage,
         reason: "top_level_subagent_live",
       });
+      ui.notify(ctx, `${currentStage} confirmation deferred until running subagents settle.`);
     }
-    ui.notify(ctx, `${currentStage} confirmation deferred until running subagents settle.`);
     return { result: "handled", action: "pending" };
   }
   if (deferral === "timeout") {

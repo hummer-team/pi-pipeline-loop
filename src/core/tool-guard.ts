@@ -65,20 +65,16 @@ const GIT_ADD_PATTERN = /^\s*git\s+add\b/;
 const GIT_COMMIT_PATTERN = /^\s*git\s+commit\b/;
 
 /**
- * Canonical pipeline stage order used for adjacency checks (3e out-of-stage exception).
- * Stages are adjacent if they are consecutive in this sequence.
+ * Checks whether the (currentStage → targetStage) pair is a legitimate manual
+ * progression path that should be allowed by the 3e out-of-stage exception.
+ *
+ * Only the review→fix transition qualifies: when a reviewer manually triggers
+ * the fix executor after a failed review, this is a normal human workflow that
+ * the confirm-gate routing would otherwise impede. All other cross-stage spawns
+ * (including plan→develop) must be blocked per Plan Phase 4 task 3 / G6.
  */
-const STAGE_ORDER: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
-
-/**
- * Checks whether two stages are direct neighbours in the canonical pipeline chain.
- * Used by 3e to allow legitimate manual progressions (e.g. review→fix).
- */
-function isAdjacentStage(a: PipelineStage, b: PipelineStage): boolean {
-  const idxA = STAGE_ORDER.indexOf(a);
-  const idxB = STAGE_ORDER.indexOf(b);
-  if (idxA < 0 || idxB < 0) return false;
-  return Math.abs(idxA - idxB) === 1;
+function isLegitimateManualProgression(currentStage: PipelineStage, targetStage: PipelineStage): boolean {
+  return currentStage === "review" && targetStage === "fix";
 }
 
 /**
@@ -793,9 +789,10 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   break;
                 }
               }
-              if (matchedStage && isAdjacentStage(meta.currentStage, matchedStage)) {
-                // Adjacent stages (e.g. review→fix) are a legitimate manual
-                // progression path — allow the spawn.
+              if (matchedStage && isLegitimateManualProgression(meta.currentStage, matchedStage)) {
+                // review→fix is a legitimate manual progression path — allow
+                // the spawn. All other cross-stage spawns (e.g. plan→develop)
+                // are blocked per Plan Phase 4 task 3 / G6.
                 await safeWriteAuditLog("out_of_stage_spawn_allowed_adjacent", {
                   pipelineId: meta.pipelineId,
                   stage: meta.currentStage,

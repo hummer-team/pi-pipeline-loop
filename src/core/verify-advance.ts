@@ -568,10 +568,29 @@ async function wakeOwnerOnChainTerminal(
 
   const visits = (meta.stageVisitOrder ?? []).join(" → ");
   const terminalStage = toStage ?? "completed";
+
+  // Build pending-human-action hints so the owner knows what to review next.
+  const pendingHints: string[] = [];
+  if (meta.confirmGateReask && meta.confirmGateReask.count > 0) {
+    pendingHints.push(`confirm gate pending on "${meta.confirmGateReask.stage}" (re-ask count: ${meta.confirmGateReask.count})`);
+  }
+  if (meta.verifyFailures && meta.verifyFailures.length > 0) {
+    const details = meta.verifyFailures.map((f) => `[${f.group}][${f.ruleType}] ${f.detail}`).join("; ");
+    pendingHints.push(`verify failures: ${details}`);
+  }
+  if (meta.pendingSpawns && Object.keys(meta.pendingSpawns).length > 0) {
+    const stages = Object.keys(meta.pendingSpawns).join(", ");
+    pendingHints.push(`pending spawns queued for: ${stages}`);
+  }
+
+  const actionHint = pendingHints.length > 0
+    ? ` Pending human actions: ${pendingHints.join(" | ")}.`
+    : "";
   const summary =
     `Pipeline chain reached its terminal stage "${terminalStage}". ` +
     `Stage visit order: ${visits || fromStage}. ` +
-    `Review the final deliverables and report the outcome to the user.`;
+    `Review the final deliverables and report the outcome to the user.` +
+    actionHint;
   try {
     pi.sendUserMessage(summary, { deliverAs: "followUp" });
     await writeAuditLog("chain_terminal_wake", {
@@ -579,6 +598,7 @@ async function wakeOwnerOnChainTerminal(
       fromStage,
       terminalStage,
       stageVisitOrder: visits,
+      ...(pendingHints.length > 0 ? { pendingActions: pendingHints.join(" | ") } : {}),
     });
   } catch (err) {
     await writeAuditLog("chain_terminal_wake_failed", {
