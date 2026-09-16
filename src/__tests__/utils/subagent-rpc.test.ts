@@ -10,6 +10,7 @@ import {
   consumePendingSpawns,
   __setDeferredSpawnPollMs,
   __resetDeferredSpawnPollMs,
+  __resetActiveDeferredSpawns,
 } from "../../utils/subagent-rpc";
 import {
   markSubagentsReady,
@@ -1172,6 +1173,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
   afterEach(() => {
     clearManager();
     __resetDeferredSpawnPollMs();
+    __resetActiveDeferredSpawns();
   });
 
   /** Builds a mock pi whose RPC spawn replies successfully. */
@@ -1392,6 +1394,58 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
 
     expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
     expect(meta.pendingSpawns?.develop).toBeUndefined();
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("repeated deferral with same (stage, oldChildId) does NOT re-arm duplicate timers", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-defer-dedup",
+      activeSpawns: {
+        review: { agentName: "develop-agent", agentId: "old-review-dedup", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-review-dedup": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus);
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    // First deferral
+    const result1 = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+    expect(result1.deferred).toBe(true);
+
+    // Second deferral with same (stage, oldChildId) — should be deduped
+    const result2 = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+    expect(result2.deferred).toBe(true);
+
+    // Count audit entries: stage_spawn_deferred should appear exactly once
+    // (the second call is deduped and returns before writing audit).
+    const logContent = fs.readFileSync(
+      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      "utf-8",
+    );
+    const deferCount = logContent.split("stage_spawn_deferred").length - 1;
+    expect(deferCount).toBe(1);
+
+    // After settle, only one spawn should be emitted (no duplicate dequeues)
+    setManager({ "old-review-dedup": "completed" });
+    bus.trigger("subagents:completed", { id: "old-review-dedup" });
+    await sleep(30);
+
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

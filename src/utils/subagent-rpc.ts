@@ -839,6 +839,30 @@ export async function consumePendingSpawns(
 // ─── Deferred spawn wait-and-settle (Phase 2 / 179 G3) ───────────────────────
 
 /**
+ * Module-level dedup registry for deferred spawn setups.
+ *
+ * Key: `${stage}:${oldChildId}` — the (stage, old-child) pair uniquely identifies
+ * a deferral. Value: a cleanup handle returned by `scheduleDeferredSpawn`.
+ *
+ * Without this registry, every owner settle while the old twin is still live
+ * would re-enter `maybeDeferSpawnForLiveTwin` → `scheduleDeferredSpawn`, arming
+ * duplicate timers/listeners/timeouts. The first finalization (settle/timeout)
+ * would clean them all up individually, but intermediate duplicates waste
+ * resources and violate the SOP #4 self-cleanup principle.
+ */
+const activeDeferredSpawns = new Map<string, () => void>();
+
+/** Build the dedup key for a deferred spawn entry. */
+function deferredSpawnKey(stage: PipelineStage, oldChildId: string | undefined): string {
+  return `${stage}:${oldChildId ?? "unknown"}`;
+}
+
+/** Test-only: reset the deferred-spawn dedup registry. */
+export function __resetActiveDeferredSpawns(): void {
+  activeDeferredSpawns.clear();
+}
+
+/**
  * Test-only override for the deferred-spawn poll interval.
  * Production uses DEFERRED_SPAWN_POLL_INTERVAL_MS.
  */
@@ -883,8 +907,16 @@ async function maybeDeferSpawnForLiveTwin(
   // Reserved in-flight evidence is transient and handled by the 3c guard.
   if (!hit || hit.basis !== "probe_live") return false;
 
+  const key = deferredSpawnKey(stage, hit.agentId);
+  // Dedup: if a deferral is already armed for this (stage, oldChildId) pair,
+  // skip re-arming timers/listeners. enqueuePendingSpawn is itself idempotent
+  // (preserves requestedAt), so re-entrance is harmless at the meta level.
+  if (activeDeferredSpawns.has(key)) {
+    return true;
+  }
   enqueuePendingSpawn(opts.session, stage, agentName);
-  scheduleDeferredSpawn(pi, config, stage, agentName, hit, opts);
+  const cleanup = scheduleDeferredSpawn(pi, config, stage, agentName, hit, opts);
+  activeDeferredSpawns.set(key, cleanup);
   await safeWriteAuditLog("stage_spawn_deferred", {
     pipelineId: meta.pipelineId,
     stage,
@@ -914,10 +946,11 @@ function scheduleDeferredSpawn(
   agentName: string,
   evidence: SpawnEvidenceHit,
   opts: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
-): void {
+): () => void {
   const session = opts.session;
-  if (!session) return;
+  if (!session) return () => { /* noop */ };
 
+  const key = deferredSpawnKey(stage, evidence.agentId);
   const timeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
   const requestedAt = session.getMeta()?.pendingSpawns?.[stage]?.requestedAt ?? Date.now();
   const remaining = Math.max(0, timeoutMs - (Date.now() - requestedAt));
@@ -933,6 +966,8 @@ function scheduleDeferredSpawn(
     if (pollTimer) clearInterval(pollTimer);
     if (timeoutTimer) clearTimeout(timeoutTimer);
     cleanupLifecycle?.();
+    // Remove from dedup registry so future deferrals for the same key can arm.
+    activeDeferredSpawns.delete(key);
   };
 
   const tryDequeue = async (): Promise<void> => {
@@ -991,6 +1026,9 @@ function scheduleDeferredSpawn(
   // Do not keep the process alive solely for these timers.
   (pollTimer as { unref?: () => void }).unref?.();
   (timeoutTimer as { unref?: () => void }).unref?.();
+
+  // Return a cleanup handle so the dedup registry can force-finalize if needed.
+  return finalize;
 }
 
 /**

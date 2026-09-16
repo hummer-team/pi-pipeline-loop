@@ -363,16 +363,16 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     __resetAuditDirPath();
   });
 
-  it("plan stage spawn of develop executor → blocked with routing hint + audit", async () => {
+  it("plan stage spawn of fix executor → blocked with routing hint + audit (non-adjacent)", async () => {
     const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
     config.stages["plan"] = { ...config.stages["plan"], agentPath: "./agents/plan-agent.md" };
-    config.stages["develop"] = { ...config.stages["develop"], agentPath: "./agents/develop-agent.md" };
+    config.stages["fix"] = { ...config.stages["fix"], agentPath: "./agents/fix-agent.md" };
     await writeAgentFile(TMP, "./agents/plan-agent.md", "feat-design-plan-agent");
-    await writeAgentFile(TMP, "./agents/develop-agent.md", "develop-agent");
+    await writeAgentFile(TMP, "./agents/fix-agent.md", "fix-agent");
 
     const meta = makeTestMeta({ currentStage: "plan", flowState: "running" });
     const ctx = createMockCtx(meta, { sessionFile: "main-session" });
-    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "develop-agent" } };
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "fix-agent" } };
 
     const result = await createToolGuard(config).handler(ctx as any);
 
@@ -381,7 +381,7 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     expect((result as any).reason).toContain("Advance through the confirm gate");
     const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(audit).toContain("out_of_stage_spawn_blocked");
-    expect(audit).toContain("targetStage=develop");
+    expect(audit).toContain("targetStage=fix");
   });
 
   it("non-pipeline executor name → allowed", async () => {
@@ -396,6 +396,42 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     ctx.toolCall = { name: "Agent", arguments: { subagent_type: "generic-agent" } };
 
     const result = await createToolGuard(config).handler(ctx as any);
+    expect(result).toBeUndefined();
+  });
+
+  it("adjacent stage spawn (review→fix with different agent names) → allowed", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    config.stages["review"] = { ...config.stages["review"], agentPath: "./agents/review-agent.md" };
+    config.stages["fix"] = { ...config.stages["fix"], agentPath: "./agents/fix-agent.md" };
+    await writeAgentFile(TMP, "./agents/review-agent.md", "code-review-agent");
+    await writeAgentFile(TMP, "./agents/fix-agent.md", "code-review-withfix-agent");
+
+    const meta = makeTestMeta({ currentStage: "review", flowState: "running" });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "code-review-withfix-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+
+    // Adjacent stages are allowed — no block
+    expect(result).toBeUndefined();
+    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(audit).toContain("out_of_stage_spawn_allowed_adjacent");
+  });
+
+  it("adjacent stage spawn (plan→develop) → allowed", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    config.stages["plan"] = { ...config.stages["plan"], agentPath: "./agents/plan-agent.md" };
+    config.stages["develop"] = { ...config.stages["develop"], agentPath: "./agents/develop-agent.md" };
+    await writeAgentFile(TMP, "./agents/plan-agent.md", "feat-design-plan-agent");
+    await writeAgentFile(TMP, "./agents/develop-agent.md", "develop-agent");
+
+    const meta = makeTestMeta({ currentStage: "plan", flowState: "running" });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "develop-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+
+    // Adjacent stages are allowed — no block
     expect(result).toBeUndefined();
   });
 

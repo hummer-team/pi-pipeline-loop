@@ -65,6 +65,23 @@ const GIT_ADD_PATTERN = /^\s*git\s+add\b/;
 const GIT_COMMIT_PATTERN = /^\s*git\s+commit\b/;
 
 /**
+ * Canonical pipeline stage order used for adjacency checks (3e out-of-stage exception).
+ * Stages are adjacent if they are consecutive in this sequence.
+ */
+const STAGE_ORDER: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
+
+/**
+ * Checks whether two stages are direct neighbours in the canonical pipeline chain.
+ * Used by 3e to allow legitimate manual progressions (e.g. review→fix).
+ */
+function isAdjacentStage(a: PipelineStage, b: PipelineStage): boolean {
+  const idxA = STAGE_ORDER.indexOf(a);
+  const idxB = STAGE_ORDER.indexOf(b);
+  if (idxA < 0 || idxB < 0) return false;
+  return Math.abs(idxA - idxB) === 1;
+}
+
+/**
  * Phase 1 / 177 (D2): Builds the git-write block reason, including the policy
  * source (stage/global/matrix) and a stale-config notice. Shared by the
  * hard-block path and the ask-deny path to keep the message single-sourced.
@@ -756,6 +773,10 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       // blocked and routed to the normal confirm-gate progression. Owner-only;
       // NOT counted as a violation. The current-stage executor is handled by
       // 3c/3d above, which short-circuit first.
+      // Adjacency exception (review#2 fix): when the target stage is a direct
+      // predecessor or successor of the current stage in the pipeline chain,
+      // the spawn is allowed. This covers the legitimate review→fix manual
+      // progression path that the plan test target requires.
       if (SPAWN_TOOL_NAMES.includes(toolName)) {
         const outOfStageType = args.subagent_type as string | undefined;
         if (outOfStageType) {
@@ -772,7 +793,17 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   break;
                 }
               }
-              if (matchedStage) {
+              if (matchedStage && isAdjacentStage(meta.currentStage, matchedStage)) {
+                // Adjacent stages (e.g. review→fix) are a legitimate manual
+                // progression path — allow the spawn.
+                await safeWriteAuditLog("out_of_stage_spawn_allowed_adjacent", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  tool: toolName,
+                  subagentType: outOfStageType,
+                  targetStage: matchedStage,
+                });
+              } else if (matchedStage) {
                 await safeWriteAuditLog("out_of_stage_spawn_blocked", {
                   pipelineId: meta.pipelineId,
                   stage: meta.currentStage,

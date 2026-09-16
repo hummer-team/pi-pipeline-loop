@@ -408,13 +408,15 @@ async function routeConfirmReject(
     runtimeCtx: ctx,
   });
 
-  if (spawnResult.spawned || spawnResult.fallback) {
-    // Subagent spawned — skip generic wake to prevent dual execution
+  if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
+    // Subagent spawned or deferred — skip generic wake to prevent dual execution.
+    // deferred means the spawn is queued and will execute once the old twin settles;
+    // waking the owner now would cause dual execution with the pending dequeue.
     await writeAuditLog("confirm_reject_wake_skipped", {
       pipelineId: meta.pipelineId,
       fromStage,
       toStage,
-      reason: "subagent_spawned",
+      reason: spawnResult.deferred ? "subagent_deferred" : "subagent_spawned",
     });
   } else {
     // Spawn did not fire — send wake and set C2 guard for the wake-triggered settle.
@@ -1247,11 +1249,12 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       );
 
       // Tool-path C2 guard (aligned with routeConfirmReject, line ~416-418):
-      // If the full spawn chain failed (no RPC, no fallback), re-set advancedThisTurn=true
-      // so the parent session's wake-triggered settle is still guarded by C2. When spawn
-      // succeeds, the flag stays cleared — subagent JOIN inherits undefined, its first
-      // settle runs verification normally.
-      if (!toolSpawnResult.spawned && !toolSpawnResult.fallback) {
+      // If the full spawn chain failed (no RPC, no fallback, no deferred), re-set
+      // advancedThisTurn=true so the parent session's wake-triggered settle is still
+      // guarded by C2. When spawn succeeded or was deferred, the flag stays cleared —
+      // subagent JOIN inherits undefined, its first settle runs verification normally.
+      // deferred: spawn is queued; the eventual dequeue will run verification.
+      if (!toolSpawnResult.spawned && !toolSpawnResult.fallback && !toolSpawnResult.deferred) {
         ctx.session.updateMeta({ advancedThisTurn: true });
       }
 

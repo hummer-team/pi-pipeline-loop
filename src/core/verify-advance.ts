@@ -468,13 +468,15 @@ export async function autoAdvanceAfterVerify(
       runtimeCtx: ctx,
     });
 
-    if (spawnResult.spawned || spawnResult.fallback) {
-      // Subagent spawned — skip generic wake to prevent dual execution
+    if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
+      // Subagent spawned or deferred — skip generic wake to prevent dual execution.
+      // deferred means the spawn is queued and will execute once the old twin settles;
+      // waking the owner now would cause dual execution with the pending dequeue.
       await writeAuditLog("auto_advance_wake_skipped", {
         pipelineId: meta.pipelineId,
         fromStage,
         toStage,
-        reason: "subagent_spawned",
+        reason: spawnResult.deferred ? "subagent_deferred" : "subagent_spawned",
       });
       return;
     }
