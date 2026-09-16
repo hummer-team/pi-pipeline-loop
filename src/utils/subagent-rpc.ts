@@ -18,6 +18,9 @@ import { safeWriteAuditLog } from "./auditLog";
 import { clearActiveSpawnRecord } from "./spawn-cleanup";
 import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
+import { probeAgentState } from "./subagents-introspect";
+import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
+import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 
 /**
@@ -438,7 +441,8 @@ interface SpawnSession {
  * @param meta - Current session metadata
  * @param opts - Optional UI notify handle, session for idempotency guard,
  *   extraArgs, and runtimeCtx (for sessionFile audit correlation)
- * @returns { spawned, fallback } indicating outcome
+ * @returns { spawned, fallback, deferred? } indicating outcome. `deferred` is
+ *   true when a live same-agent child in another stage postponed the spawn.
  */
 export async function spawnStageSubagent(
   pi: unknown,
@@ -446,7 +450,7 @@ export async function spawnStageSubagent(
   stage: PipelineStage,
   meta: SessionMeta,
   opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; extraArgs?: string; runtimeCtx?: unknown },
-): Promise<{ spawned: boolean; fallback: boolean }> {
+): Promise<{ spawned: boolean; fallback: boolean; deferred?: boolean }> {
   // 1. Non-spawnable stage → skip silently
   if (!isSpawnableStage(config, stage)) {
     return { spawned: false, fallback: false };
@@ -498,6 +502,13 @@ export async function spawnStageSubagent(
       ...(extractSessionFile(opts.runtimeCtx) ? { sessionFile: extractSessionFile(opts.runtimeCtx)! } : {}),
     });
     return { spawned: false, fallback: false };
+  }
+
+  // 3c. Phase 2 / 179 (G3): wait-and-settle pre-check.
+  // If a same-agent subagent in ANOTHER stage is still live, defer this spawn
+  // instead of creating a cross-stage twin.
+  if (await maybeDeferSpawnForLiveTwin(pi, config, stage, agentName, meta, opts)) {
+    return { spawned: false, fallback: false, deferred: true };
   }
 
   // Phase 1 (169): spawn prompt includes requirementDoc pointer for context passing
@@ -787,6 +798,13 @@ export async function consumePendingSpawns(
           runtimeCtx: opts.runtimeCtx,
         });
 
+    if (result.deferred) {
+      // Phase 2 / 179 (G3): the spawn is waiting for a live same-agent child in
+      // another stage. Leave the pending entry untouched and do NOT consume an
+      // attempt — the wait is not a spawn failure.
+      continue;
+    }
+
     if (result.spawned || result.fallback) {
       // Phase 4 / 177 fix (review 1): the takeover block wrote synthetic reserved
       // evidence (activeSpawns[stage] with a `takeover-…` id). RPC success
@@ -818,6 +836,163 @@ export async function consumePendingSpawns(
   return consumed;
 }
 
+// ─── Deferred spawn wait-and-settle (Phase 2 / 179 G3) ───────────────────────
+
+/**
+ * Test-only override for the deferred-spawn poll interval.
+ * Production uses DEFERRED_SPAWN_POLL_INTERVAL_MS.
+ */
+let deferredSpawnPollMs = DEFERRED_SPAWN_POLL_INTERVAL_MS;
+
+/** Test-only: override the deferred-spawn poll interval (ms). */
+export function __setDeferredSpawnPollMs(ms: number): void {
+  deferredSpawnPollMs = ms;
+}
+
+/** Test-only: restore the default deferred-spawn poll interval. */
+export function __resetDeferredSpawnPollMs(): void {
+  deferredSpawnPollMs = DEFERRED_SPAWN_POLL_INTERVAL_MS;
+}
+
+/**
+ * Phase 2 / 179 (G3): wait-and-settle pre-check shared by both dispatchers.
+ *
+ * When `expectedAgent` is already live in a DIFFERENT stage (primary probe
+ * evidence), the new spawn is deferred: the pending entry is enqueued and a
+ * self-cleaning watcher/poll/timeout is armed. The caller should return a
+ * `deferred: true` result so `consumePendingSpawns` leaves the entry intact.
+ *
+ * @returns true when the spawn was deferred
+ */
+async function maybeDeferSpawnForLiveTwin(
+  pi: unknown,
+  config: PipelineConfig,
+  stage: PipelineStage,
+  agentName: string,
+  meta: SessionMeta,
+  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
+): Promise<boolean> {
+  if (!opts?.session) return false;
+
+  const hit = scanActiveSpawnEvidence(
+    opts.session.getMeta()?.activeSpawns,
+    agentName,
+    { excludeStage: stage },
+  );
+  // Only defer on hard live evidence (a probeable, currently-running child).
+  // Reserved in-flight evidence is transient and handled by the 3c guard.
+  if (!hit || hit.basis !== "probe_live") return false;
+
+  enqueuePendingSpawn(opts.session, stage, agentName);
+  scheduleDeferredSpawn(pi, config, stage, agentName, hit, opts);
+  await safeWriteAuditLog("stage_spawn_deferred", {
+    pipelineId: meta.pipelineId,
+    stage,
+    agentName,
+    oldChildId: hit.agentId ?? "",
+    evidenceStage: hit.stage,
+  });
+  return true;
+}
+
+/**
+ * Phase 2 / 179 (G3): Defers a stage spawn until a live same-agent child in
+ * another stage settles.
+ *
+ * Arms three self-cleaning mechanisms:
+ * 1. `watchSubagentLifecycle` on the old child (event-driven, primary)
+ * 2. a `probeAgentState` poll fallback (covers lost lifecycle events)
+ * 3. a bounded timeout (`config.spawnWaitTimeoutMs`) that escalates to manual
+ *
+ * Dequeue reuses the existing owner-routed channel (`consumePendingSpawns`).
+ * All timers/listeners self-clean on settle or timeout — no leaks.
+ */
+function scheduleDeferredSpawn(
+  pi: unknown,
+  config: PipelineConfig,
+  stage: PipelineStage,
+  agentName: string,
+  evidence: SpawnEvidenceHit,
+  opts: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
+): void {
+  const session = opts.session;
+  if (!session) return;
+
+  const timeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
+  const requestedAt = session.getMeta()?.pendingSpawns?.[stage]?.requestedAt ?? Date.now();
+  const remaining = Math.max(0, timeoutMs - (Date.now() - requestedAt));
+
+  let done = false;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let cleanupLifecycle: (() => void) | null = null;
+
+  const finalize = (): void => {
+    if (done) return;
+    done = true;
+    if (pollTimer) clearInterval(pollTimer);
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    cleanupLifecycle?.();
+  };
+
+  const tryDequeue = async (): Promise<void> => {
+    if (done) return;
+    const fresh = session.getMeta();
+    if (!fresh?.pendingSpawns?.[stage]) {
+      // Entry already consumed/cleared elsewhere — nothing left to do.
+      finalize();
+      return;
+    }
+    // Old child still live → keep waiting (poll/timeout retry).
+    if (evidence.agentId && probeAgentState(evidence.agentId) === "live") return;
+    finalize();
+    await consumePendingSpawns(pi, config, fresh, {
+      ui: opts.ui,
+      session,
+      runtimeCtx: opts.runtimeCtx,
+    });
+  };
+
+  if (evidence.agentId) {
+    cleanupLifecycle = watchSubagentLifecycle(
+      pi,
+      evidence.agentId,
+      () => {
+        void tryDequeue();
+      },
+      { timeoutMs },
+    );
+  }
+
+  timeoutTimer = setTimeout(() => {
+    if (done) return;
+    finalize();
+    const fresh = session.getMeta();
+    if (!fresh?.pendingSpawns?.[stage]) return;
+    // Escalate to manual. The wait is not a spawn failure → do not consume an
+    // attempt; clear the pending entry so it cannot loop.
+    clearPendingSpawn(session, stage);
+    opts.ui?.notify?.(
+      `Deferred spawn for "${stage}" timed out after ${timeoutMs}ms (${evidence.stage} executor still live). Please handle it manually.`,
+    );
+    void safeWriteAuditLog("pending_spawn_wait_timeout", {
+      stage,
+      agentName,
+      waitedMs: String(timeoutMs),
+      oldChildId: evidence.agentId ?? "",
+      evidenceStage: evidence.stage,
+    }, "warn");
+  }, remaining);
+
+  pollTimer = setInterval(() => {
+    void tryDequeue();
+  }, deferredSpawnPollMs);
+
+  // Do not keep the process alive solely for these timers.
+  (pollTimer as { unref?: () => void }).unref?.();
+  (timeoutTimer as { unref?: () => void }).unref?.();
+}
+
 /**
  * Phase 4 / 177 (D7): Spawns the clarify executor with a plugin-contract title.
  *
@@ -830,14 +1005,14 @@ export async function consumePendingSpawns(
  * @param config - Pipeline configuration
  * @param meta - Session metadata
  * @param opts - UI notify, session handle, runtimeCtx for sessionFile audit
- * @returns { spawned, fallback } outcome
+ * @returns { spawned, fallback, deferred? } outcome
  */
 export async function spawnClarifyStageSubagent(
   pi: unknown,
   config: PipelineConfig,
   meta: SessionMeta,
   opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
-): Promise<{ spawned: boolean; fallback: boolean }> {
+): Promise<{ spawned: boolean; fallback: boolean; deferred?: boolean }> {
   const agentName = resolveAgentMention(config, "clarify");
   if (!agentName) {
     opts?.ui?.notify?.(`No agent configured for stage "clarify". Please start manually.`);
@@ -847,6 +1022,13 @@ export async function spawnClarifyStageSubagent(
       reason: "agentName_unresolvable",
     });
     return { spawned: false, fallback: false };
+  }
+
+  // Phase 2 / 179 (G3): same wait-and-settle pre-check as spawnStageSubagent.
+  // Clarify and plan often share the same agent name, so a live plan child must
+  // block a clarify re-spawn too.
+  if (await maybeDeferSpawnForLiveTwin(pi, config, "clarify", agentName, meta, opts)) {
+    return { spawned: false, fallback: false, deferred: true };
   }
 
   const file = meta.requirementDoc ?? "";
@@ -866,6 +1048,20 @@ export async function spawnClarifyStageSubagent(
         subagentId: spawnResult.id,
         ...(sessionFile ? { sessionFile } : {}),
       });
+      // Phase 2 / 179 (G3): overwrite any takeover pseudo-id reserved evidence
+      // with the real agentId so probeAgentState-based suppression (primary
+      // evidence) works for the clarify stage too.
+      if (opts?.session) {
+        const currentMeta = opts.session.getMeta();
+        if (currentMeta) {
+          opts.session.updateMeta({
+            activeSpawns: {
+              ...(currentMeta.activeSpawns ?? {}),
+              clarify: { agentName, agentId: spawnResult.id, startedAt: Date.now() },
+            },
+          });
+        }
+      }
       const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
         if (opts?.session) clearActiveSpawnRecord(opts.session, "clarify");
         cleanup();

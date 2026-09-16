@@ -480,6 +480,14 @@ export async function autoAdvanceAfterVerify(
     }
   }
 
+  // Phase 2 / 179 (G8): chain-terminal owner wake.
+  // When the auto-advance chain reaches a terminal point (completed / no next
+  // stage), no subagent is spawned and the owner would otherwise never learn the
+  // chain ended. Inject a chain summary so the owner can review and report.
+  if (!toStage || toStage === "completed") {
+    await wakeOwnerOnChainTerminal(ctx, freshMeta, fromStage, toStage);
+  }
+
   // Wake next stage via pi.sendUserMessage (only reached when spawn did not fire)
   const pi = ctx.pi;
   if (
@@ -515,6 +523,67 @@ export async function autoAdvanceAfterVerify(
       toStage: toStage ? String(toStage) : "none",
       reason: "pi not forwarded via RuntimeCtx",
     });
+  }
+}
+
+/**
+ * Phase 2 / 179 (G8): Wakes the owner when the auto-advance chain reaches a
+ * terminal stage (completed / no next stage configured).
+ *
+ * The chain counts as terminated only when there is no unconsumed pending spawn
+ * (otherwise it is still in flight). Fail-open: never throws.
+ *
+ * @param ctx - Session/pi context
+ * @param meta - Fresh metadata (post-advance, includes stageVisitOrder)
+ * @param fromStage - The stage that just completed
+ * @param toStage - The terminal stage (null when no next stage is configured)
+ */
+async function wakeOwnerOnChainTerminal(
+  ctx: VerifyAdvanceCtx,
+  meta: SessionMeta,
+  fromStage: PipelineStage,
+  toStage: PipelineStage | null,
+): Promise<void> {
+  // Dedup: an unconsumed pending spawn means the chain has not actually ended.
+  if (meta.pendingSpawns && Object.keys(meta.pendingSpawns).length > 0) {
+    await writeAuditLog("chain_terminal_wake_skipped", {
+      pipelineId: meta.pipelineId,
+      fromStage,
+      reason: "pending_spawns",
+    });
+    return;
+  }
+
+  const pi = ctx.pi;
+  if (!pi || typeof pi.sendUserMessage !== "function") {
+    await writeAuditLog("chain_terminal_wake_skipped", {
+      pipelineId: meta.pipelineId,
+      fromStage,
+      reason: "pi_unavailable",
+    });
+    return;
+  }
+
+  const visits = (meta.stageVisitOrder ?? []).join(" → ");
+  const terminalStage = toStage ?? "completed";
+  const summary =
+    `Pipeline chain reached its terminal stage "${terminalStage}". ` +
+    `Stage visit order: ${visits || fromStage}. ` +
+    `Review the final deliverables and report the outcome to the user.`;
+  try {
+    pi.sendUserMessage(summary, { deliverAs: "followUp" });
+    await writeAuditLog("chain_terminal_wake", {
+      pipelineId: meta.pipelineId,
+      fromStage,
+      terminalStage,
+      stageVisitOrder: visits,
+    });
+  } catch (err) {
+    await writeAuditLog("chain_terminal_wake_failed", {
+      pipelineId: meta.pipelineId,
+      fromStage,
+      error: err instanceof Error ? err.message : String(err),
+    }, "warn");
   }
 }
 

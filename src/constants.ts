@@ -61,6 +61,17 @@ export const DEFAULT_DECISION_SHORTCUT = "ctrl+enter";
 export const DEFAULT_SPAWN_WAIT_TIMEOUT_MS = 120_000;
 
 /**
+ * Poll interval (ms) for the deferred-spawn fallback loop.
+ *
+ * When a new stage spawn is deferred because a same-agent subagent in another
+ * stage is still live, the plugin listens for `subagents:completed/failed`
+ * (event-driven). This interval drives a best-effort `probeAgentState` poll as
+ * a safety net in case the lifecycle event is lost. The poll self-cleans on
+ * settle or timeout.
+ */
+export const DEFERRED_SPAWN_POLL_INTERVAL_MS = 5_000;
+
+/**
  * Default maximum number of violations before the violation overflow breaker fires.
  * When violations.length >= this value, freezeAndPrompt("violation_overflow") is triggered.
  */

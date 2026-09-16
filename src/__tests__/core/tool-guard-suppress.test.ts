@@ -15,6 +15,22 @@ async function writeAgentFile(projectRoot: string, agentPath: string, name: stri
   await writeFile(fullPath, `---\nname: ${name}\n---\n# Agent\n`);
 }
 
+/** pi-subagents manager singleton symbol (shared with subagents-introspect). */
+const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+/** Install a fake manager registry so probeAgentState can resolve live records. */
+function setManager(records: Record<string, string | undefined>): void {
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
+    hasRunning: () => Object.values(records).some((s) => s === "running" || s === "queued" || s === "steered"),
+  };
+}
+
+/** Remove the fake manager registry. */
+function clearManager(): void {
+  delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+}
+
 describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", () => {
   let TMP: string;
 
@@ -259,8 +275,73 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
     expect(meta.violations?.length ?? 0).toBe(0);
   });
 
+  // ── Phase 2 / 179 (G3): cross-stage same-agent suppression ────────────────
+
+  it("cross-stage: clarify evidence suppresses a plan-stage spawn (basis=probe_live)", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    await writeAgentFile(TMP, config.stages["plan"].agentPath!, "feat-design-plan-agent");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      flowState: "running",
+      activeSpawns: {
+        clarify: { agentName: "feat-design-plan-agent", agentId: "old-clarify-1", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-clarify-1": "running" });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "feat-design-plan-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+
+    expect(result).toBeDefined();
+    expect((result as any).block).toBe(true);
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("spawn_suppressed");
+    expect(logContent).toContain("basis=probe_live");
+    expect(logContent).toContain("evidenceStage=clarify");
+  });
+
+  it("cross-stage: probe=settled residual evidence does NOT suppress", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    await writeAgentFile(TMP, config.stages["plan"].agentPath!, "feat-design-plan-agent");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      flowState: "running",
+      activeSpawns: {
+        clarify: { agentName: "feat-design-plan-agent", agentId: "old-settled-1", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-settled-1": "completed" });
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "feat-design-plan-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("cross-stage: stale reserved evidence (≥60s) does NOT suppress", async () => {
+    const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
+    await writeAgentFile(TMP, config.stages["plan"].agentPath!, "feat-design-plan-agent");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      flowState: "running",
+      activeSpawns: {
+        clarify: { agentName: "feat-design-plan-agent", startedAt: Date.now() - 120_000, reserved: true },
+      },
+    });
+    clearManager();
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    ctx.toolCall = { name: "Agent", arguments: { subagent_type: "feat-design-plan-agent" } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+
+    expect(result).toBeUndefined();
+  });
+
   afterEach(async () => {
     await rm(TMP, { recursive: true, force: true });
     __resetAuditDirPath();
+    clearManager();
   });
 });

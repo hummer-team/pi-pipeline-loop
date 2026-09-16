@@ -52,7 +52,7 @@ import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils
 import { askCommandDecision } from "../utils/protect-ask";
 import { detectSessionRole } from "./session-role";
 import { resolveAgentMention } from "../utils/subagent-rpc";
-import { probeAgentState } from "../utils/subagents-introspect";
+import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { isDormant, DORMANT_KEEP_PROTECTION } from "./dormancy";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
@@ -672,37 +672,21 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             // Domain restriction: only evaluate for owner sessions (detectSessionRole)
             const { isChild } = detectSessionRole(ctx);
             if (!isChild) {
-              // Phase 2 / 175: evidence-based check — probe live OR reserved <60s
-              const activeSpawn = meta.activeSpawns?.[meta.currentStage];
-              let basis: "probe_live" | "reserved" | null = null;
-              let evidenceAgentId: string | undefined;
-
-              if (activeSpawn) {
-                // Primary evidence: agentId + probe=live
-                if (activeSpawn.agentId) {
-                  const probeResult = probeAgentState(activeSpawn.agentId);
-                  if (probeResult === "live") {
-                    basis = "probe_live";
-                    evidenceAgentId = activeSpawn.agentId;
-                  }
-                  // probe=settled → do not block; probe=unknown → fall through to reserved check
-                }
-                // Secondary evidence: reserved in-flight (<60s)
-                if (!basis && activeSpawn.reserved && (Date.now() - activeSpawn.startedAt) < 60_000) {
-                  basis = "reserved";
-                  evidenceAgentId = activeSpawn.agentId;
-                }
-              }
-
-              if (basis) {
-                const suppressReason = `Stage executor '${expectedAgent}' is already running${evidenceAgentId ? ` (id ${evidenceAgentId})` : ""} [evidence: ${basis}]. Await its result; do not spawn a duplicate.`;
+              // Phase 2 / 179 (G3): scan ALL stage keys, not just currentStage.
+              // A still-live same-agent child left over from a previous stage was
+              // invisible to the single-key read (cross-stage blind spot).
+              const hit = scanActiveSpawnEvidence(meta.activeSpawns, expectedAgent);
+              if (hit) {
+                const crossStageSuffix = hit.stage !== meta.currentStage ? `, stage: ${hit.stage}` : "";
+                const suppressReason = `Stage executor '${expectedAgent}' is already running${hit.agentId ? ` (id ${hit.agentId})` : ""} [evidence: ${hit.basis}${crossStageSuffix}]. Await its result; do not spawn a duplicate.`;
                 await safeWriteAuditLog("spawn_suppressed", {
                   pipelineId: meta.pipelineId,
                   stage: meta.currentStage,
                   tool: toolName,
                   subagentType,
-                  agentId: evidenceAgentId ?? "",
-                  basis,
+                  agentId: hit.agentId ?? "",
+                  basis: hit.basis,
+                  evidenceStage: hit.stage,
                 });
                 return { block: true, reason: suppressReason };
               }

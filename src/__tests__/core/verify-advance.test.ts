@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "bun:test";
-import { applyVerifyPass, applyVerifyFail, isConfigError } from "../../core/verify-advance";
+import { applyVerifyPass, applyVerifyFail, isConfigError, autoAdvanceAfterVerify } from "../../core/verify-advance";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -999,5 +999,72 @@ describe("Phase 6 / 175: format failures bypass violations breaker", () => {
     expect(meta.violations!.length).toBe(2);
     expect(meta.violations![0].type).toBe("git_protected");
     expect(meta.violations![1].type).toBe("write_protected");
+  });
+});
+
+// ── Phase 2 / 179 (G8): chain-terminal owner wake ────────────────────────────
+
+describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
+  const PASS_RESULT = { structuredResult: { failures: [] }, ruleMissing: [], verifyResult: null };
+
+  it("advance to completed → chain_terminal_wake + followUp exactly once", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-g8-terminal",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+    });
+    const ctx = createCtx(meta);
+    const wakeCalls: string[] = [];
+    (ctx as any).pi = { sendUserMessage: (msg: string) => { wakeCalls.push(msg); } };
+
+    await autoAdvanceAfterVerify(
+      config, ctx as any, meta, "review", "completed", PASS_RESULT, ctx.pipelineUI,
+    );
+
+    // Exactly one followUp (the chain summary) — no verify_fail_wake double-send.
+    expect(wakeCalls.length).toBe(1);
+    expect(wakeCalls[0]).toContain("terminal");
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("chain_terminal_wake");
+  });
+
+  it("unconsumed pendingSpawns → chain not terminated, no wake", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-g8-pending",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+    const ctx = createCtx(meta);
+    const wakeCalls: string[] = [];
+    (ctx as any).pi = { sendUserMessage: (msg: string) => { wakeCalls.push(msg); } };
+
+    await autoAdvanceAfterVerify(
+      config, ctx as any, meta, "review", "completed", PASS_RESULT, ctx.pipelineUI,
+    );
+
+    expect(wakeCalls.length).toBe(0);
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("chain_terminal_wake_skipped");
+  });
+
+  it("pi unavailable → skipped audit, no throw", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-g8-nopi",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+    });
+    const ctx = createCtx(meta);
+    // No ctx.pi
+
+    await autoAdvanceAfterVerify(
+      config, ctx as any, meta, "review", "completed", PASS_RESULT, ctx.pipelineUI,
+    );
+
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("chain_terminal_wake_skipped");
   });
 });

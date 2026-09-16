@@ -7,6 +7,8 @@ import {
   resolveAgentMention,
   spawnStageSubagent,
   consumePendingSpawns,
+  __setDeferredSpawnPollMs,
+  __resetDeferredSpawnPollMs,
 } from "../../utils/subagent-rpc";
 import {
   markSubagentsReady,
@@ -1141,6 +1143,198 @@ describe("Phase 2 / 177 (D4): spawn audit sessionFile", () => {
     );
     expect(logContent).toContain("stage_spawn_fallback");
     expect(logContent).toContain("sessionFile=/tmp/sess-audit.jsonl");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// ── Phase 2 / 179 (G3): wait-and-settle deferral ─────────────────────────────
+
+const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+/** Install a fake manager registry so probeAgentState can resolve live records. */
+function setManager(records: Record<string, string | undefined>): void {
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
+    hasRunning: () => Object.values(records).some((s) => s === "running" || s === "queued" || s === "steered"),
+  };
+}
+
+/** Remove the fake manager registry. */
+function clearManager(): void {
+  delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
+  afterEach(() => {
+    clearManager();
+    __resetDeferredSpawnPollMs();
+  });
+
+  /** Builds a mock pi whose RPC spawn replies successfully. */
+  function makeSpawnPi(bus: ReturnType<typeof createMockEventBus>, replyId = "sa-deferred") {
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: replyId } }), 5);
+      }
+    };
+    return { events: bus, sendUserMessage: () => {} };
+  }
+
+  it("same-agent live in another stage → defers (enqueues pending, no immediate spawn)", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-defer-basic",
+      activeSpawns: {
+        review: { agentName: "develop-agent", agentId: "old-review-1", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-review-1": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus);
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(result.spawned).toBe(false);
+    expect(result.deferred).toBe(true);
+    expect(meta.pendingSpawns?.develop?.agentName).toBe("develop-agent");
+    expect(meta.pendingSpawns?.develop?.attempts).toBe(0);
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("lifecycle settle → dequeues and spawns exactly once", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-defer-event",
+      activeSpawns: {
+        review: { agentName: "develop-agent", agentId: "old-review-2", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-review-2": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus);
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+    expect(meta.pendingSpawns?.develop).toBeDefined();
+
+    // Old child settles (event-driven dequeue).
+    setManager({ "old-review-2": "completed" });
+    bus.trigger("subagents:completed", { id: "old-review-2" });
+    await sleep(30);
+
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("timeout → notify + audit pending_spawn_wait_timeout, no attempt consumed", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    config.spawnWaitTimeoutMs = 40;
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-defer-timeout",
+      activeSpawns: {
+        review: { agentName: "develop-agent", agentId: "old-review-3", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-review-3": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus);
+    const patches: Array<Record<string, unknown>> = [];
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => {
+        patches.push(patch);
+        return Object.assign(meta, patch);
+      },
+    };
+    const notifications: string[] = [];
+
+    await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: (m: string) => notifications.push(m) },
+      session: session as any,
+    });
+    expect(meta.pendingSpawns?.develop).toBeDefined();
+
+    await sleep(120);
+
+    expect(notifications.some((n) => n.includes("timed out"))).toBe(true);
+    const logContent = fs.readFileSync(
+      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      "utf-8",
+    );
+    expect(logContent).toContain("pending_spawn_wait_timeout");
+    // Pending entry cleared on timeout; attempts never incremented (wait ≠ failure).
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    const incremented = patches.some((p) => {
+      const pending = (p as { pendingSpawns?: Record<string, { attempts?: number }> }).pendingSpawns;
+      return pending?.develop?.attempts === 1;
+    });
+    expect(incremented).toBe(false);
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("poll fallback: dequeue fires even when the lifecycle event is lost", async () => {
+    markSubagentsReady();
+    __setDeferredSpawnPollMs(10);
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-defer-poll",
+      activeSpawns: {
+        review: { agentName: "develop-agent", agentId: "old-review-4", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-review-4": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus, "sa-poll");
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+    expect(meta.pendingSpawns?.develop).toBeDefined();
+
+    // Old child settles but NO lifecycle event is delivered.
+    setManager({ "old-review-4": "completed" });
+    await sleep(60);
+
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
