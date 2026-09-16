@@ -1067,4 +1067,41 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("chain_terminal_wake_skipped");
   });
+
+  // review#4 Medium-1 regression: chain-terminal summary must include pending
+  // human actions (confirmGateReask) when present. The wakeOwnerOnChainTerminal
+  // function builds a "Pending human actions:" suffix from these fields.
+  // Deleting or breaking the pendingHints assembly → test turns red.
+  it("chain-terminal summary includes pending human actions (confirmGateReask)", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-g8-pending-actions",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      confirmGateReask: { stage: "plan", count: 2 },
+    });
+    const ctx = createCtx(meta);
+    const wakeCalls: string[] = [];
+    (ctx as any).pi = { sendUserMessage: (msg: string) => { wakeCalls.push(msg); } };
+
+    await autoAdvanceAfterVerify(
+      config, ctx as any, meta, "review", "completed", PASS_RESULT, ctx.pipelineUI,
+    );
+
+    // Exactly one followUp (the chain summary with pending actions)
+    expect(wakeCalls.length).toBe(1);
+    const summary = wakeCalls[0];
+
+    // Must contain the "Pending human actions:" marker
+    expect(summary).toContain("Pending human actions:");
+    // Must mention the confirm gate pending stage and re-ask count
+    expect(summary).toContain("confirm gate pending");
+    expect(summary).toContain("plan");
+    expect(summary).toContain("re-ask count: 2");
+
+    // Audit must include pendingActions payload
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("chain_terminal_wake");
+    expect(logContent).toContain("pendingActions");
+  });
 });

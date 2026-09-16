@@ -15,12 +15,17 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createPipelineStartCommand, buildResumeMeta } from "../../commands/pipeline-start";
+import { createPipelineStartCommand, buildResumeMeta, dispatchAfterResume } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import type { SessionMeta } from "../../types";
-import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
+import {
+  __resetActiveDeferredSpawns,
+  __resetDeferredSpawnPollMs,
+} from "../../utils/subagent-rpc";
+import { createPipelineUI } from "../../core/pipeline-ui";
 
 // Phase 2 / 177 (D4): spawn paths are latch-driven; pre-arm for RPC-path tests.
 beforeEach(() => {
@@ -29,6 +34,21 @@ beforeEach(() => {
 afterEach(() => {
   __resetSubagentsReady();
 });
+
+const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+/** Install a fake manager registry so probeAgentState can resolve live records. */
+function setManager(records: Record<string, string | undefined>): void {
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
+    hasRunning: () => Object.values(records).some((s) => s === "running" || s === "queued" || s === "steered"),
+  };
+}
+
+/** Remove the fake manager registry. */
+function clearManager(): void {
+  delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+}
 
 /** Write an agent definition file so resolveAgentMention returns a name. */
 async function writeAgentFile(
@@ -352,5 +372,72 @@ describe("M3: dispatchAfterResume session passthrough", () => {
     // After lifecycle settle, activeSpawns[plan] must be cleared
     const afterSettle = ctx.session.getMeta();
     expect(afterSettle.activeSpawns?.plan).toBeUndefined();
+  });
+
+  // review#4 Medium-1 regression: dispatchAfterResume must recognize result.deferred
+  // from spawnStageSubagent and suppress the false "Run the <stage> agent" prompt.
+  // When a same-agent twin is live in another stage, maybeDeferSpawnForLiveTwin returns
+  // deferred=true → dispatchAfterResume should audit pipeline_resume_deferred and NOT
+  // notify the user to run manually (which would cause dual execution with the pending
+  // dequeue). Deleting the result.deferred branch → test turns red.
+  it("H2-deferred: dispatchAfterResume with live twin in another stage → deferred, no manual-run prompt", async () => {
+    const config = makeTestConfig({
+      projectRoot: TMP,
+    });
+    // Write agent file for develop stage
+    await writeAgentFile(TMP, config.stages["develop"].agentPath!, "develop-agent");
+
+    const originalId = "pipe-deferred-resume-001";
+
+    // Set up meta with activeSpawns containing a live develop-agent in the "review" stage
+    // (different from the current "develop" stage, triggering cross-stage twin detection).
+    // We call dispatchAfterResume directly (bypassing buildResumeMeta which clears activeSpawns)
+    // to test the deferred branch in isolation.
+    const meta = makeTestMeta({
+      pipelineId: originalId,
+      currentStage: "develop",
+      requirementDoc: "docs/req.md",
+      activeSpawns: {
+        review: {
+          agentName: "develop-agent",
+          agentId: "old-review-twin",
+          startedAt: Date.now() - 5000,
+        },
+      },
+    });
+
+    const ctx = createMockCtx(meta, { sessionFile: "main-session" });
+    const notifications: string[] = [];
+    (ctx as any).ui = {
+      notify: (msg: string) => notifications.push(msg),
+      setStatus: () => {},
+    };
+
+    // Install fake manager so probeAgentState returns "live" for old-review-twin
+    setManager({ "old-review-twin": "running" });
+
+    try {
+      const pipelineUi = createPipelineUI(config);
+      // Override pipelineUi.notify to capture notifications
+      const wrappedUi = {
+        ...pipelineUi,
+        notify: (ctxObj: any, msg: string) => { notifications.push(msg); },
+      };
+
+      await dispatchAfterResume(ctx, config, wrappedUi as any, meta, "docs/req.md");
+
+      // Key assertions for deferred path:
+      // 1. No false "Run the develop agent" prompt
+      expect(notifications.some((n) => n.includes("Run the develop agent"))).toBe(false);
+
+      // 2. Audit pipeline_resume_deferred is written
+      const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditContent = await fsp.readFile(auditPath, "utf-8");
+      expect(auditContent).toContain("pipeline_resume_deferred");
+    } finally {
+      clearManager();
+      __resetActiveDeferredSpawns();
+      __resetDeferredSpawnPollMs();
+    }
   });
 });

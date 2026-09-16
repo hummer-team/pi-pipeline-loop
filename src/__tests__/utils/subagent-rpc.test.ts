@@ -1307,6 +1307,53 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  // review#4 Medium-1 regression: timeout notification must include old child id,
+  // source stage, and probe state for operator diagnosis. The notify message format
+  // is "(old child: <id>, source stage: <stage>, probe: <status>)". Deleting or
+  // altering these fields → test turns red.
+  it("timeout → notify includes old child id, source stage, and probe state", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    config.spawnWaitTimeoutMs = 40;
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-defer-timeout-content",
+      activeSpawns: {
+        review: { agentName: "develop-agent", agentId: "old-review-content", startedAt: Date.now() },
+      },
+    });
+    setManager({ "old-review-content": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus);
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+    const notifications: string[] = [];
+
+    await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: (m: string) => notifications.push(m) },
+      session: session as any,
+    });
+    expect(meta.pendingSpawns?.develop).toBeDefined();
+
+    await sleep(120);
+
+    // Find the timeout notification
+    const timeoutNotify = notifications.find((n) => n.includes("timed out"));
+    expect(timeoutNotify).toBeDefined();
+
+    // Must include old child id
+    expect(timeoutNotify).toContain("old child: old-review-content");
+    // Must include source stage (where the live twin was found)
+    expect(timeoutNotify).toContain("source stage: review");
+    // Must include probe state (manager returns "running" → probe returns "live")
+    expect(timeoutNotify).toContain("probe: live");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it("clarify RPC success overwrites the takeover pseudo-id with the real agentId", async () => {
     markSubagentsReady();
     const tmpDir = path.join(tmpdir(), "pi-clarify-id-" + Date.now());
