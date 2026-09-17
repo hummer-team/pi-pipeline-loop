@@ -1566,4 +1566,83 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
     expect(meta.confirmGateDeferredAt).toBeUndefined();
     expect(meta.currentStage).toBe("clarify");
   });
+
+  it("stale presentation stamp + reask → subagent live triggers fresh defer (not premature timeout)", async () => {
+    // Regression test for review #1 (Medium): the unconditional present-time
+    // re-stamp shifted the defer-timeout anchor from "deferral start" to "last
+    // presentation", so a presentation + long idle + subagent start would pop
+    // the dialog while the subagent is live (179 G5/G7 collateral-Esc failure).
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const stageStart = Date.now();
+    // Stamp from a presentation 300ms ago, with reask=1 (user Esc'd earlier).
+    const staleStamp = { stage: "plan" as const, at: stageStart - 300 };
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: stageStart - 1000,
+      confirmGateDeferredAt: staleStamp,
+      confirmGateReask: { stage: "plan", count: 1 },
+    });
+    // Simulate a running subagent via the global manager symbol.
+    const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: () => undefined,
+      hasRunning: () => true,
+    };
+
+    try {
+      const ctx = createMockCtx(meta);
+      // spawnWaitTimeoutMs=50: stamp is 300ms old, well past the threshold.
+      const configShortTimeout = { ...config, spawnWaitTimeoutMs: 50 } as PipelineConfig;
+      let notifyCount = 0;
+      const uiNotify = () => { notifyCount++; };
+
+      const gate = await maybeHandleConfirmGate(
+        configShortTimeout, ctx, meta,
+        { notify: uiNotify } as any,
+        { mode: "manual" },
+      );
+
+      // The gate should DEFER (fresh window), not TIME OUT.
+      expect(gate).toEqual({ result: "handled", action: "pending", deferred: true });
+      // The stale stamp is cleared and replaced with a fresh deferral stamp.
+      expect(meta.confirmGateDeferredAt).toBeDefined();
+      expect(meta.confirmGateDeferredAt!.stage).toBe("plan");
+      expect(meta.confirmGateDeferredAt!.at).toBeGreaterThan(staleStamp.at);
+      // First deferral of the new window → audit + notify emitted.
+      expect(notifyCount).toBeGreaterThanOrEqual(1);
+    } finally {
+      delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+    }
+  });
+
+  it("existing deferral stamp is preserved at presentation (anchor not shifted)", async () => {
+    // When a deferral stamp exists from a prior defer in this visit, the
+    // presentation must NOT overwrite it — preserving the defer-timeout anchor.
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const deferStamp = { stage: "plan" as const, at: Date.now() - 50 };
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now() - 5000,
+      confirmGateDeferredAt: deferStamp,
+    });
+    const ctx = createMockCtx(meta);
+    let stampAtSelect: { stage: string; at: number } | undefined;
+    ctx.ui.select = async () => {
+      stampAtSelect = meta.confirmGateDeferredAt as { stage: string; at: number } | undefined;
+      return "Cancel";
+    };
+
+    await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    // The stamp at the moment of presentation is the ORIGINAL deferral stamp,
+    // not a fresh one — the anchor is preserved.
+    expect(stampAtSelect).toEqual(deferStamp);
+    // After presentation the stamp still exists (reload recovery intact).
+    expect(meta.confirmGateDeferredAt).toBeDefined();
+    expect(meta.confirmGateDeferredAt!.at).toBe(deferStamp.at);
+  });
 });

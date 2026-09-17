@@ -777,6 +777,25 @@ export async function maybeHandleConfirmGate(
     await writeConfirmMarker(config, ctx, meta, docPath, lines, "confirm_smart_complex");
   }
 
+  // Phase 2 fix / 181 (review #1): clear a stale deferral stamp when the user
+  // has already been presented the dialog (reask exists for the current stage).
+  // This restores the 180 defer-timeout semantics: the timeout is measured from
+  // the current deferral start, not from a stale presentation-time anchor.
+  // Without this, a presentation followed by a long idle and a subagent start
+  // would immediately trigger "timeout" and pop the dialog while the subagent
+  // is live — the 179 G5/G7 collateral-Esc failure mode.
+  {
+    const staleStamp = getEffectiveDeferredStamp(meta);
+    const deferTimeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
+    if (
+      staleStamp &&
+      meta.confirmGateReask?.stage === currentStage &&
+      Date.now() - staleStamp.at >= deferTimeoutMs
+    ) {
+      ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
+    }
+  }
+
   // Phase 4 / 179 (G5/G7): defer the popup while any top-level subagent is live.
   // A subagent-window Esc collateral-cancels the owner dialog; presenting only
   // when no subagent runs removes that failure mode entirely. The bounded
@@ -828,18 +847,22 @@ export async function maybeHandleConfirmGate(
         formatConfirmGatePendingCopy(config, currentStage),
     );
   }
-  // Phase 2 / 181: re-stamp the deferral bookkeeping at presentation time,
-  // BEFORE `ui.select` is awaited. Reaching the dialog means a human decision is
-  // outstanding; clearing the stamp here (pre-181) erased the pending trace, so
-  // a reload before the user answered could not be recovered by
-  // `/pipeline-resume`. The fresh stamp keeps the gate re-enterable across
-  // reloads; Approve/Reject still clear it when the gate resolves.
-  ctx.session.updateMeta({
-    confirmGateDeferredAt: {
-      stage: currentStage,
-      at: Date.now(),
-    },
-  });
+  // Phase 2 / 181: ensure a durable trace exists for `/pipeline-resume` across
+  // reloads, but only when no effective stamp is already present. Refreshing
+  // the anchor at every presentation would shift the defer-timeout window away
+  // from the actual deferral start, re-opening the 179 G5/G7 collateral-Esc
+  // failure (review #1 fix). When an effective stamp already exists (set by a
+  // prior deferral of this visit) it is preserved as the defer-window anchor;
+  // its presence is sufficient for `detectPendingConfirmGate` to identify the
+  // pending gate on reload. Approve/Reject still clear it when the gate resolves.
+  if (!getEffectiveDeferredStamp(meta)) {
+    ctx.session.updateMeta({
+      confirmGateDeferredAt: {
+        stage: currentStage,
+        at: Date.now(),
+      },
+    });
+  }
 
   // Present TUI dialog
   const rawSelect = ctx.ui?.select;
