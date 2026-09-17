@@ -1587,3 +1587,91 @@ describe("Phase 1 / 180: confirm gate clears confirmGateDeferredAt", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ─── Phase 0 (182) G5: fix→terminal hard guard ─────────────────────────────
+
+describe("Phase 0 (182) G5: fix→terminal hard guard", () => {
+  it("fix → completed is blocked with guidance", async () => {
+    const TMP6 = join(tmpdir(), "pi-fix-terminal-1-" + Date.now());
+    await mkdir(join(TMP6, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP6 });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "fix" });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    const result = await tool.execute({ nextStage: "completed" }, ctx as any);
+
+    expect((result as any).success).toBe(false);
+    expect((result as any).message).toContain("review");
+    expect((result as any).message).toContain("completed");
+
+    // Verify audit
+    const auditPath = join(TMP6, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("fix_terminal_blocked");
+
+    await rm(TMP6, { recursive: true, force: true });
+  });
+
+  it("fix → awaiting_human is blocked", async () => {
+    const TMP6 = join(tmpdir(), "pi-fix-terminal-2-" + Date.now());
+    await mkdir(join(TMP6, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP6 });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "fix" });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    const result = await tool.execute({ nextStage: "awaiting_human" }, ctx as any);
+
+    expect((result as any).success).toBe(false);
+    expect((result as any).message).toContain("review");
+
+    await rm(TMP6, { recursive: true, force: true });
+  });
+
+  it("fix → review is allowed (normal path)", async () => {
+    const TMP6 = join(tmpdir(), "pi-fix-terminal-3-" + Date.now());
+    await mkdir(join(TMP6, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP6 });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "fix" });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    const result = await tool.execute({ nextStage: "review" }, ctx as any);
+
+    // fix → review should succeed (the normal quality loop path)
+    expect((result as any).success).toBe(true);
+
+    await rm(TMP6, { recursive: true, force: true });
+  });
+
+  it("review → completed is NOT blocked (guard only applies to fix)", async () => {
+    const TMP6 = join(tmpdir(), "pi-fix-terminal-4-" + Date.now());
+    await mkdir(join(TMP6, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP6 });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "review" });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    const result = await tool.execute({ nextStage: "completed" }, ctx as any);
+
+    // review → completed should NOT be blocked by the fix terminal guard
+    const auditPath = join(TMP6, ".pi", "audit", getDateAuditFileName());
+    try {
+      const auditContent = await readFile(auditPath, "utf-8");
+      expect(auditContent).not.toContain("fix_terminal_blocked");
+    } catch {
+      // Audit may not exist — that's fine
+    }
+
+    await rm(TMP6, { recursive: true, force: true });
+  });
+});

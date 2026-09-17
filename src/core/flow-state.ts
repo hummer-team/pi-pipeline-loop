@@ -835,17 +835,25 @@ async function promptStageSelection(
   const inferenceResult = inferResumeStage(meta, config);
   const inferred = inferenceResult.stage;
   const inferenceBasis = inferenceResult.basis;
-  const stageChoices: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
+  // Phase 0 (182) R-c: when frozen at fix, filter out "completed" from the
+  // secondary stage menu — fix must route through review before reaching terminal.
+  // awaiting_human is not in the list by default (existing behavior at line 838).
+  const baseChoices: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix", "completed"];
+  const stageChoices: PipelineStage[] = meta.currentStage === "fix"
+    ? baseChoices.filter(s => s !== "completed")
+    : baseChoices;
+  // Also filter inferred default if it happens to be completed while at fix
+  const effectiveInferred = (meta.currentStage === "fix" && inferred === "completed") ? null : inferred;
 
   // Build secondary menu items with inferred stage first (if available)
   const menuItems: string[] = [];
   const orderedChoices: PipelineStage[] = [];
-  if (inferred) {
-    menuItems.push(`${inferred} (default)`);
-    orderedChoices.push(inferred);
+  if (effectiveInferred) {
+    menuItems.push(`${effectiveInferred} (default)`);
+    orderedChoices.push(effectiveInferred);
   }
   for (const s of stageChoices) {
-    if (s !== inferred) {
+    if (s !== effectiveInferred) {
       menuItems.push(s);
       orderedChoices.push(s);
     }
@@ -853,8 +861,8 @@ async function promptStageSelection(
 
   const attemptAt = Date.now();
   const stageSelection = await ui.select!(
-    inferred
-      ? `Choose stage to resume from (inferred: ${inferred}):`
+    effectiveInferred
+      ? `Choose stage to resume from (inferred: ${effectiveInferred}):`
       : "Choose stage to resume from (cannot infer — select manually):",
     menuItems,
   );

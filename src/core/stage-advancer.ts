@@ -1258,6 +1258,22 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         };
       }
 
+      // Phase 0 (182) G5: Fix stage must route through review — block direct
+      // advancement to terminal states (completed/awaiting_human) from fix.
+      // This enforces the quality loop: fix → review → (confirm) → completed.
+      if (currentStage === "fix" && (resolvedTarget === "completed" || resolvedTarget === "awaiting_human")) {
+        await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+          fromStage: currentStage,
+          reason: "fix_terminal_blocked",
+          target: String(resolvedTarget),
+        }, "warn");
+        return {
+          success: false,
+          message: `Fix stage must route back to "review" for re-review. nextStage "${resolvedTarget}" is not allowed from "fix".`,
+          currentStage,
+        };
+      }
+
       // (c2) Review conclusion declaration handling (163 Goal 2)
       const argReviewConclusion = typeof args.reviewConclusion === "string" ? args.reviewConclusion.trim() : "";
       // Track declaration so agent-settled can distinguish "declared but not advanced"
