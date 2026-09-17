@@ -29,6 +29,8 @@ import {
 } from "../core/template-residue-check";
 import { registerSession } from "../utils/session-registry";
 import { spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
+// Phase 0 (182): name-probe for out-of-band agent detection before dispatch
+import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { isSubagentsReady } from "../utils/subagent-availability";
 import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
@@ -567,6 +569,23 @@ export async function dispatchAfterResume(
   }
 
   // plan/develop/review/fix: spawn stage subagent via existing helper
+  // Phase 0 (182): name-probe check before spawning — if a same-name agent is
+  // already live (manual/out-of-band), skip the spawn to avoid duplicate execution.
+  const expectedAgent = resolveAgentMention(config, stage);
+  if (expectedAgent) {
+    const nameProbe = findLiveAgentByName(expectedAgent);
+    if (nameProbe) {
+      ui.notify(ctx, `Agent "${expectedAgent}" is already running (id ${nameProbe.agentId}). Skipping duplicate spawn.`);
+      await safeWriteAuditLog("pipeline_resume_dispatch_skipped", {
+        stage,
+        pipelineId: meta.pipelineId,
+        reason: "manual_live_probe",
+        agentId: nameProbe.agentId,
+      });
+      return;
+    }
+  }
+
   // Phase 3 (171) High B: append user focus for non-clarify stages when forwardArgs present
   const extraArgs = forwardArgs?.trim() ? `\n\nUser focus: ${forwardArgs.trim()}` : undefined;
   // review#2 M3: pass session handle so spawnStageSubagent can write activeSpawns entry

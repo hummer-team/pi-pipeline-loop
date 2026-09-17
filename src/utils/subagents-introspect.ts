@@ -23,6 +23,8 @@ const LIVE_STATUSES = new Set(["queued", "running", "steered"]);
 interface ManagerRegistry {
   getRecord?: (id: string) => { status?: string } | undefined;
   hasRunning?: () => boolean;
+  /** Phase 0 (182): optional method for enumerating all records (name-based lookup). */
+  listRecords?: () => Array<{ id?: string; name?: string; status?: string }>;
 }
 
 /**
@@ -55,6 +57,40 @@ export function anyTopLevelRunning(): boolean | null {
     const manager = (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] as ManagerRegistry | undefined;
     if (!manager || typeof manager.hasRunning !== "function") return null;
     return manager.hasRunning();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Phase 0 (182): Finds a live agent by name from the manager registry.
+ *
+ * Used to detect out-of-band (manual/external) agents that share the same
+ * name as the plugin's expected stage executor. When a live match is found,
+ * the plugin should defer/avoid spawning a duplicate.
+ *
+ * Fail-open: returns null when:
+ * - Manager singleton is unavailable (SDK not installed)
+ * - `listRecords` is not exposed (API drift)
+ * - No matching live record found
+ *
+ * @param name - The agent name to search for
+ * @returns Object with agentId if found, null otherwise
+ */
+export function findLiveAgentByName(name: string): { agentId: string } | null {
+  try {
+    const manager = (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] as ManagerRegistry | undefined;
+    if (!manager || typeof manager.listRecords !== "function") return null;
+
+    const records = manager.listRecords();
+    if (!Array.isArray(records)) return null;
+
+    for (const record of records) {
+      if (record.name === name && record.status && LIVE_STATUSES.has(record.status) && record.id) {
+        return { agentId: record.id };
+      }
+    }
+    return null;
   } catch {
     return null;
   }

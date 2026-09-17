@@ -53,6 +53,8 @@ import { askCommandDecision } from "../utils/protect-ask";
 import { detectSessionRole } from "./session-role";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
+// Phase 0 (182): secondary name-probe for manual/out-of-band agent detection
+import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { isDormant, DORMANT_KEEP_PROTECTION } from "./dormancy";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
@@ -700,6 +702,24 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   agentId: hit.agentId ?? "",
                   basis: hit.basis,
                   evidenceStage: hit.stage,
+                });
+                return { block: true, reason: suppressReason };
+              }
+
+              // Phase 0 (182): secondary name-probe — detect manual/out-of-band
+              // agents that are live but not in the activeSpawns ledger.
+              // Reuses the spawn_suppressed audit event with basis "manual_live_probe".
+              const nameProbe = findLiveAgentByName(expectedAgent);
+              if (nameProbe) {
+                const suppressReason = `Stage executor '${expectedAgent}' is already running (id ${nameProbe.agentId}) [evidence: manual_live_probe]. Await its result; do not spawn a duplicate.`;
+                await safeWriteAuditLog("spawn_suppressed", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  tool: toolName,
+                  subagentType,
+                  agentId: nameProbe.agentId,
+                  basis: "manual_live_probe",
+                  evidenceStage: meta.currentStage,
                 });
                 return { block: true, reason: suppressReason };
               }

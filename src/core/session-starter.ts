@@ -233,7 +233,8 @@ async function handleSubagentJoin(
             ctx,
             `Duplicate spawn suspect: stage "${parentMeta.currentStage}" already has a live agent ` +
               `"${existingSpawn.agentName}"${existingSpawn.agentId ? ` (${existingSpawn.agentId})` : ""}. ` +
-              `The joining session is allowed to continue (non-blocking).`,
+              `The joining session is allowed to continue (non-blocking). ` +
+              `Plugin auto-dispatch will now defer while a same-name agent is live.`,
           );
         }
       }
