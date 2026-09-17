@@ -1,8 +1,7 @@
 /**
  * @module pipeline-resume
  * Factory for the `/pipeline-resume` command.
- * Provides a deterministic recovery path for frozen pipelines without
- * requiring the TUI decision menu (Phase 5 / 172 G6b).
+ * Provides a deterministic recovery path for frozen pipelines.
  *
  * Behavior matrix:
  * - No meta → error message
@@ -10,11 +9,16 @@
  *   confirm gate is pending (owner-only) re-enter the existing dialog via
  *   maybeHandleConfirmGate, otherwise a read-only status hint
  * - Aborted → restore status bar + points to /pipeline-start (no menu available)
- * - Blocked/awaiting_human → executeDecision("resume") + status bar + stage dispatch
+ * - Blocked/awaiting_human (frozen):
+ *   - With UI + no --force-resume → present decision menu (Phase 0 / 182)
+ *     - decided → return decision result (status bar synced by Phase 0)
+ *     - cancelled/interrupted → keep frozen, return frozen hint
+ *     - no-menu (child session) → fall through to legacy resume
+ *   - With --force-resume or no UI → legacy executeDecision("resume") + dispatch
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
-import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText } from "../core/flow-state";
+import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
 import { dispatchAfterResume } from "./pipeline-start";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { detectPendingConfirmGate, maybeHandleConfirmGate, recordConfirmGateOutcome } from "../core/stage-advancer";
@@ -40,6 +44,8 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
       // Phase 1 / 175 (R1Q7A): forwardArgs from /pipeline-resume are transparently
       // passed through to the stage subagent spawn prompt.
       const forwardArgs = (args.forwardArgs as string) || "";
+      // Phase 0 (182): --force-resume flag bypasses the frozen decision menu
+      const forceResume = args.forceResume === true;
 
       // Phase 3 / 175 (R2Q6A): stale config check at command entry point.
       const staleNotice = staleConfigNotice(config);
@@ -127,8 +133,69 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         return { message: statusMsg };
       }
 
-      // Blocked or awaiting_human: execute resume decision
+      // Blocked or awaiting_human: frozen recovery path
       try {
+        // Phase 0 (182): present decision menu on frozen resume (unless --force-resume).
+        // When the UI select is available and force-resume is not requested, show the
+        // 6-item decision menu so the user can choose the appropriate action.
+        // - decided → status bar synced by Phase 0; dispatch if needed (idempotent)
+        // - cancelled/interrupted → keep frozen, return hint
+        // - no-menu (child session / no UI) → fall through to legacy resume
+        if (!forceResume && typeof ctx?.ui?.select === "function") {
+          const onStageChangedForResume = async (freshMeta: SessionMeta): Promise<void> => {
+            const doc = freshMeta.requirementDoc ?? "";
+            await dispatchAfterResume(ctx, config, ui, freshMeta, doc, forwardArgs || undefined);
+          };
+          const menuOutcome = await promptDecisionMenu(
+            { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
+            meta,
+            config,
+            { source: "command", onStageChanged: onStageChangedForResume },
+          );
+
+          if (menuOutcome === "decided") {
+            // Decision executed (status bar already synced by Phase 0 onStageChanged).
+            // Idempotent dispatch guard: if the decision did NOT involve choose_stage
+            // (e.g. "resume"), the onStageChanged callback was not invoked, so we
+            // still need the legacy dispatch path below. Check if the pipeline is
+            // still frozen — if not, the decision resolved it and dispatch is needed.
+            const postDecisionMeta = ctx.session.getMeta() as SessionMeta;
+            if (!isFrozen(postDecisionMeta)) {
+              syncStageStatusBar(ui, ctx);
+              ui.notify(ctx, `Decision executed. Pipeline at stage "${postDecisionMeta.currentStage}".`);
+              // Idempotent dispatch (same logic as legacy path below)
+              const stage = postDecisionMeta.currentStage;
+              if (isSpawnableStage(config, stage)) {
+                const activeSpawns = postDecisionMeta.activeSpawns ?? {};
+                const existingSpawn = activeSpawns[stage];
+                let shouldSpawn = true;
+                if (existingSpawn?.agentId || existingSpawn?.agentName) {
+                  try {
+                    const probe = probeAgentState(existingSpawn.agentId ?? existingSpawn.agentName!);
+                    if (probe === "live") { shouldSpawn = false; }
+                  } catch { /* fail-open */ }
+                }
+                if (shouldSpawn) {
+                  const doc = postDecisionMeta.requirementDoc ?? "";
+                  await dispatchAfterResume(ctx, config, ui, postDecisionMeta, doc, forwardArgs || undefined);
+                }
+              }
+            }
+            return { message: "Decision executed." };
+          }
+
+          if (menuOutcome === "cancelled" || menuOutcome === "interrupted") {
+            // Keep frozen — do not silently unfreeze
+            const currentMeta = ctx.session.getMeta() as SessionMeta;
+            return {
+              message: `Pipeline remains frozen at "${currentMeta.currentStage}". ${formatDecisionMenuHint(config)}`,
+            };
+          }
+
+          // "no-menu" (child session) → fall through to legacy resume path
+        }
+
+        // Legacy path: --force-resume, no UI, or child session fallback
         const result = await executeDecision(ctx, meta, "resume", config, { source: "command" });
 
         if (!result.success) {

@@ -45,7 +45,13 @@ export function parseCommandArgs(
     case "pipeline-resume": {
       // Phase 1 / 175 (R1Q7A): /pipeline-resume accepts free-form forward args.
       // e.g. `/pipeline-resume 2 答` → { forwardArgs: "2 答", raw: " 2 答" }
-      return { forwardArgs: args.trim(), raw: args };
+      // Phase 0 (182): --force-resume flag bypasses the frozen decision menu
+      // and falls through to the legacy direct-resume path (escape hatch).
+      const rawArgs = args.trim();
+      const forceResume = rawArgs.includes("--force-resume");
+      // Strip the flag from forwardArgs and normalize whitespace
+      const forwardArgs = rawArgs.replace(/--force-resume/g, "").replace(/\s+/g, " ").trim();
+      return { forwardArgs, forceResume, raw: args };
     }
     case "pipeline-status":
       return {};

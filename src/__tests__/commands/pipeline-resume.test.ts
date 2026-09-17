@@ -86,7 +86,8 @@ describe("createPipelineResumeCommand", () => {
     });
     const ctx = createMockCtx(meta);
     const cmd = createPipelineResumeCommand(config);
-    const result = await cmd.execute({}, ctx as any);
+    // Phase 0 (182): pass forceResume to bypass the new decision menu and test legacy path
+    const result = await cmd.execute({ forceResume: true }, ctx as any);
 
     // Resume should succeed
     expect((result as any).error).toBeUndefined();
@@ -259,7 +260,8 @@ describe("createPipelineResumeCommand", () => {
       });
       const ctx = createMockCtx(meta);
       const cmd = createPipelineResumeCommand(config);
-      const result = await cmd.execute({}, ctx as any);
+      // Phase 0 (182): pass forceResume to bypass the new decision menu
+      const result = await cmd.execute({ forceResume: true }, ctx as any);
 
       expect((result as any).error).toBeUndefined();
       const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
@@ -428,6 +430,114 @@ describe("createPipelineResumeCommand", () => {
       expect((result as any).message).toContain("No resume needed");
       // No gate resolution → re-ask trace unchanged.
       expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
+  // ── Phase 0 (182): frozen decision menu integration ──────────────────────
+
+  describe("Phase 0 (182): frozen decision menu", () => {
+    it("frozen + ui.select → promptDecisionMenu called, executeDecision('resume') not directly called", async () => {
+      const TMP = join(tmpdir(), "pi-resume-menu-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = createMockCtx(meta);
+      // User selects "Resume" from the decision menu
+      ctx.ui.select = async (_msg: string, options: string[]) => {
+        return options.find(o => o === "Resume") ?? options[0];
+      };
+
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      // Menu path returns "Decision executed." on success
+      expect((result as any).message).toContain("Decision executed");
+      // Pipeline should be unfrozen (resume via menu → flowState=running)
+      expect(meta.flowState).toBe("running");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("--force-resume → bypasses menu, takes legacy resume path", async () => {
+      const TMP = join(tmpdir(), "pi-resume-force-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = createMockCtx(meta);
+      // Even with select available, --force-resume should skip it
+      let selectCalled = false;
+      ctx.ui.select = async () => { selectCalled = true; return undefined; };
+
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({ forceResume: true }, ctx as any);
+
+      expect(selectCalled).toBe(false);
+      expect((result as any).error).toBeUndefined();
+      expect(meta.flowState).toBe("running");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("no ui.select → fail-soft to legacy resume path", async () => {
+      const TMP = join(tmpdir(), "pi-resume-noselect-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = createMockCtx(meta);
+      // Remove select to simulate no UI
+      delete (ctx.ui as any).select;
+
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      // Should still resume via legacy path
+      expect((result as any).error).toBeUndefined();
+      expect(meta.flowState).toBe("running");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("menu cancelled → returns frozen hint, flowState unchanged", async () => {
+      const TMP = join(tmpdir(), "pi-resume-cancelled-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const ctx = createMockCtx(meta);
+      // User presses Esc (select returns undefined)
+      ctx.ui.select = async () => undefined;
+
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx as any);
+
+      // Should remain frozen
+      expect(meta.flowState).toBe("blocked");
+      expect((result as any).message).toContain("frozen");
 
       await rm(TMP, { recursive: true, force: true });
     });

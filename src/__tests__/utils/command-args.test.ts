@@ -93,6 +93,7 @@ describe("parseCommandArgs", () => {
   it("Phase 1 / 175: pipeline-resume parses forwardArgs from args", () => {
     expect(parseCommandArgs("pipeline-resume", "2 答")).toEqual({
       forwardArgs: "2 答",
+      forceResume: false,
       raw: "2 答",
     });
   });
@@ -100,6 +101,7 @@ describe("parseCommandArgs", () => {
   it("Phase 1 / 175: pipeline-resume with empty args → forwardArgs=''", () => {
     expect(parseCommandArgs("pipeline-resume", "")).toEqual({
       forwardArgs: "",
+      forceResume: false,
       raw: "",
     });
   });
@@ -107,6 +109,7 @@ describe("parseCommandArgs", () => {
   it("Phase 1 / 175: pipeline-resume with whitespace-only → forwardArgs=''", () => {
     expect(parseCommandArgs("pipeline-resume", "   ")).toEqual({
       forwardArgs: "",
+      forceResume: false,
       raw: "   ",
     });
   });
@@ -114,7 +117,33 @@ describe("parseCommandArgs", () => {
   it("Phase 1 / 175: pipeline-resume trims multi-space args", () => {
     expect(parseCommandArgs("pipeline-resume", "  full-und?  ")).toEqual({
       forwardArgs: "full-und?",
+      forceResume: false,
       raw: "  full-und?  ",
+    });
+  });
+
+  // ─── Phase 0 (182): pipeline-resume --force-resume flag ─────────────────
+  it("Phase 0 (182): --force-resume sets forceResume=true and strips flag from forwardArgs", () => {
+    expect(parseCommandArgs("pipeline-resume", "--force-resume")).toEqual({
+      forwardArgs: "",
+      forceResume: true,
+      raw: "--force-resume",
+    });
+  });
+
+  it("Phase 0 (182): --force-resume coexists with forwardArgs", () => {
+    expect(parseCommandArgs("pipeline-resume", "--force-resume 2 答")).toEqual({
+      forwardArgs: "2 答",
+      forceResume: true,
+      raw: "--force-resume 2 答",
+    });
+  });
+
+  it("Phase 0 (182): --force-resume in middle of args", () => {
+    expect(parseCommandArgs("pipeline-resume", "focus text --force-resume more")).toEqual({
+      forwardArgs: "focus text more",
+      forceResume: true,
+      raw: "focus text --force-resume more",
     });
   });
 
@@ -150,8 +179,9 @@ describe("parseCommandArgs", () => {
       } else if (cmdName === "pipeline-init") {
         expect(result.sub).toBeDefined();
       } else if (cmdName === "pipeline-resume") {
-        // pipeline-resume has forwardArgs (Phase 1 / 175)
+        // pipeline-resume has forwardArgs (Phase 1 / 175) and forceResume (Phase 0 / 182)
         expect(result.forwardArgs).toBeDefined();
+        expect(result.forceResume).toBeDefined();
       } else {
         // pipeline-status / pipeline-quit: explicit case returns {}, default returns {raw}
         expect(result.raw).toBeUndefined();
