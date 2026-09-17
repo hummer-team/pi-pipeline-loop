@@ -612,7 +612,32 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
 
       // Extract base system prompt EARLY (before buildDynamicValues)
       // Needed for idempotent stage-skill injection detection
-      const base = ctx.getSystemPrompt?.() ?? "";
+      // Phase 0 (183): apply gated skills dedup before downstream consumption
+      const baseRaw = ctx.getSystemPrompt?.() ?? "";
+      const dedup = skillsDedup(baseRaw);
+      const base = dedup.prompt;
+
+      // Phase 1 (183): emit audit events for skills dedup outcome (fail-open)
+      try {
+        if (dedup.removedPairs > 0) {
+          await safeWriteAuditLog("prompt_skills_dedup", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            removed_pairs: String(dedup.removedPairs),
+            removed_bytes: String(dedup.removedBytes),
+            hash_before: computeStringHash(baseRaw),
+            hash_after: computeStringHash(base),
+          }, "info");
+        } else if (dedup.skippedReason) {
+          await safeWriteAuditLog("prompt_skills_dedup_skipped", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            reason: dedup.skippedReason,
+          }, "warn");
+        }
+      } catch {
+        // Fail-open: audit must never block prompt injection
+      }
 
       // Build the plugin prompt (yml template or default 10-part)
       let pluginPrompt: string;

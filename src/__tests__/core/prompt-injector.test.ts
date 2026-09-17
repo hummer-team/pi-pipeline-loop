@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createPromptInjector, isStageSkillInBase, stripFrontmatter, stripLeadingFrontmatter } from "../../core/prompt-injector";
 import { makeTestConfig, makeTestMeta, writePromptYml } from "../helpers";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { writeFile, readFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { resetPromptConfigCache } from "../../core/prompt-config";
-import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
+import { initAuditLog, __resetAuditDirPath, getDateAuditFileName } from "../../utils/auditLog";
 
 describe("createPromptInjector", () => {
   beforeEach(() => {
@@ -1585,3 +1585,164 @@ describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
     expect(prompt).not.toContain("RPC unavailable fallback");
   });
 });
+
+// ─── Phase 1 (183): skillsDedup wiring + audit events ────────────────────────
+
+describe("Phase 1 (183): skillsDedup wiring and audit events", () => {
+  const SKILLS_INTRO = "The following skills provide specialized instructions for specific tasks.";
+
+  function buildBlock(entries: string[] = ["<skill>test</skill>"]): string {
+    return [SKILLS_INTRO, "<available_skills>", ...entries, "</available_skills>"].join("\n");
+  }
+
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+    __resetAuditDirPath();
+  });
+
+  it("deduplicates double identical blocks and emits prompt_skills_dedup info event", async () => {
+    const TMP = join(tmpdir(), "pi-dedup-wire-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const block = buildBlock();
+    const basePrompt = `Header\n\n${block}\n\nMiddle\n\n${block}\n\nFooter`;
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => basePrompt,
+    } as any))!;
+
+    // System prompt should contain only 1 <available_skills> block (deduped)
+    const systemPrompt = result.systemPrompt!;
+    const openCount = countOccurrences(systemPrompt, "<available_skills>");
+    expect(openCount).toBe(1);
+
+    // Read audit log and verify prompt_skills_dedup event
+    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("prompt_skills_dedup");
+    expect(auditContent).toContain("removed_pairs=1");
+    expect(auditContent).toContain("hash_before=");
+    expect(auditContent).toContain("hash_after=");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("single block base passes through unchanged (no audit event)", async () => {
+    const TMP = join(tmpdir(), "pi-dedup-single-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const block = buildBlock();
+    const basePrompt = `Header\n${block}\nFooter`;
+
+    const hook = createPromptInjector(config);
+
+    // Run with dedup
+    const result = (await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => basePrompt,
+    } as any))!;
+
+    // Run without dedup (no <available_skills> at all for comparison)
+    const resultNoop = (await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => basePrompt,
+    } as any))!;
+
+    // Both should produce identical systemPrompt (single block → no-op dedup)
+    expect(result.systemPrompt).toBe(resultNoop.systemPrompt);
+
+    // No dedup audit event should be present
+    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).not.toContain("prompt_skills_dedup");
+    expect(auditContent).not.toContain("prompt_skills_dedup_skipped");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("mismatch base passes through and emits prompt_skills_dedup_skipped warn event", async () => {
+    const TMP = join(tmpdir(), "pi-dedup-mismatch-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const block1 = buildBlock(["<skill>alpha</skill>"]);
+    const block2 = buildBlock(["<skill>beta</skill>"]);
+    const basePrompt = `${block1}\n\n${block2}`;
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => basePrompt,
+    } as any))!;
+
+    // System prompt should contain both blocks (mismatch → no dedup)
+    const systemPrompt = result.systemPrompt!;
+    const openCount = countOccurrences(systemPrompt, "<available_skills>");
+    expect(openCount).toBe(2);
+
+    // Read audit log and verify skipped event
+    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("prompt_skills_dedup_skipped");
+    expect(auditContent).toContain("reason=mismatch");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("audit write failure does not block injection", async () => {
+    const TMP = join(tmpdir(), "pi-dedup-auditfail-" + Date.now());
+    // Do NOT call initAuditLog — audit dir doesn't exist, so writes will fail
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+
+    const block = buildBlock();
+    const basePrompt = `${block}\n\n${block}`;
+
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      getSystemPrompt: () => basePrompt,
+    } as any))!;
+
+    // Injection should still succeed and dedup should still happen
+    const systemPrompt = result.systemPrompt!;
+    const openCount = countOccurrences(systemPrompt, "<available_skills>");
+    expect(openCount).toBe(1);
+    // Plugin prompt parts should still be present
+    expect(systemPrompt).toContain("Pipeline Status");
+  });
+});
+
+// ─── Utility ──────────────────────────────────────────────────────────────────
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let pos = 0;
+  while (true) {
+    const idx = haystack.indexOf(needle, pos);
+    if (idx === -1) break;
+    count++;
+    pos = idx + needle.length;
+  }
+  return count;
+}
