@@ -37,6 +37,7 @@ import { recordStageVisit } from "../utils/stage-visit";
 import { isDormant } from "./dormancy";
 import { anyTopLevelRunning } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
+import { detectSessionRole } from "./session-role";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -682,15 +683,34 @@ export async function maybeHandleConfirmGate(
      * vocabulary intentionally excludes "menu" (no menu carrier exists in 180).
      */
     source?: "owner_settled" | "resume";
+    /**
+     * Phase 1 / 181: true when the caller is a child/subagent session.
+     *
+     * Child sessions must never present the owner dialog or mutate gate state.
+     * They return `no-gate` for the non-gate preconditions (non plan/review
+     * stage, smart non-complex, marker already present) WITHOUT clearing any
+     * deferral stamp, and for a real gate they return
+     * `handled + pending + deferred` after writing a single
+     * `confirm_gate_suppressed_child` audit — zero `updateMeta`, zero
+     * `ui.select`, zero marker writes.
+     *
+     * Defaults to false so owner callers keep the 180 behavior unchanged.
+     */
+    isChild?: boolean;
+    /** Phase 1 / 181: child session file, recorded in the suppression audit. */
+    sessionFile?: string;
   },
 ): Promise<ConfirmGateResult> {
-  const { mode, needConfirm, defaultReject } = opts;
+  const { mode, needConfirm, defaultReject, isChild = false, sessionFile } = opts;
   const source = opts.source ?? "owner_settled";
   const currentStage = meta.currentStage;
   const stageConfig = config.stages[currentStage];
 
   // Precondition: only plan and review stages support confirm gate
   if (currentStage !== "plan" && currentStage !== "review") {
+    // Phase 1 / 181: child sessions are read-only — never clear the owner's
+    // deferral stamp, even on the non-gate path.
+    if (isChild) return { result: "no-gate" };
     // Clear stale deferral timestamp so the timeout fallback only applies to
     // the current deferral window, not a leftover from a previous stage visit.
     if (meta.confirmGateDeferredAt) {
@@ -701,6 +721,7 @@ export async function maybeHandleConfirmGate(
 
   // Smart mode: if needConfirm is not true, skip the gate (non-complex)
   if (mode === "smart" && needConfirm !== true) {
+    if (isChild) return { result: "no-gate" };
     if (meta.confirmGateDeferredAt) {
       ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
     }
@@ -717,6 +738,7 @@ export async function maybeHandleConfirmGate(
       // Uses precise anchor text to avoid false positives on user-authored
       // headings that share a prefix (e.g. "## 用户确认流程", "## User Confirmation Guide").
       if (CONFIRM_MARKER_RE.test(content)) {
+        if (isChild) return { result: "no-gate" };
         if (meta.confirmGateDeferredAt) {
           ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
         }
@@ -725,6 +747,21 @@ export async function maybeHandleConfirmGate(
     } catch {
       // File doesn't exist — proceed with gate
     }
+  }
+
+  // Phase 1 / 181: child/subagent bypass. Reaching this point means the real
+  // confirm-gate condition holds (plan/review + manual, or smart+needConfirm).
+  // A child must never present the owner dialog or mutate gate state: it stays
+  // pending with zero side effects, before the smart-complex marker write, the
+  // deferral stamp, the present-time stamp refresh, ui.select and ui.notify.
+  if (isChild) {
+    await writeAuditLog("confirm_gate_suppressed_child", {
+      pipelineId: meta.pipelineId,
+      stage: currentStage,
+      source,
+      sessionFile: sessionFile ?? "",
+    });
+    return { result: "handled", action: "pending", deferred: true };
   }
 
   // Smart mode + needConfirm=true: write "## 智能确认：复杂" marker first
@@ -1293,9 +1330,14 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             ui: ctx.ui,
             pi: (ctx as { pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } }).pi,
           };
+          // Phase 1 / 181: pass the real session role so child sessions take the
+          // zero-side-effect bypass instead of presenting the owner dialog.
+          const role = detectSessionRole(ctx);
           const gate = await maybeHandleConfirmGate(config, ctxForGate, meta, ui, {
             mode: confirmMode,
             needConfirm: args.needConfirm === true,
+            isChild: role.isChild,
+            sessionFile: role.sessionFile,
           });
           if (gate.result === "handled") {
             if (gate.action === "advanced" || gate.action === "routed") {

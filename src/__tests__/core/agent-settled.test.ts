@@ -1170,6 +1170,50 @@ Verify plan.`);
 
     await rm(stageTmp, { recursive: true, force: true });
   });
+
+  it("Phase 1 / 181: child settle is suppressed — owner pending stamp preserved, no popup", async () => {
+    const stageTmp = join(tmpdir(), "pi-settled-child181-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "manual");
+    await createPlanDoc(stageTmp, "# Plan\nplan content here\n");
+    await createVerifyMd(stageTmp, `---
+requiredFiles:
+  - "docs/design/77_Config_plan.md"
+---
+Verify plan.`);
+
+    const stamp = { stage: "plan" as const, at: Date.now() };
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+      confirmGateDeferredAt: { ...stamp },
+    });
+    let selectCalls = 0;
+    // Child session: parentSession header makes detectSessionRole report isChild.
+    const ctx = createMockCtx(meta, {
+      sessionHeader: { parentSession: "/tmp/parent.jsonl" },
+      sessionFile: "/tmp/child.jsonl",
+    });
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    // Child never presents the owner dialog.
+    expect(selectCalls).toBe(0);
+    // Owner's deferral stamp is preserved untouched (no clear, no re-stamp).
+    expect(meta.confirmGateDeferredAt).toEqual(stamp);
+    // Stage not advanced.
+    expect(meta.currentStage).toBe("plan");
+    // Suppression audit written with the child session file.
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_suppressed_child");
+    expect(logContent).toContain("sessionFile=/tmp/child.jsonl");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
 });
 
 // ── Phase 1 (163): review_declaration_missing audit in agent_settled ─────────

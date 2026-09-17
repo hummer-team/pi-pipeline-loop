@@ -1321,3 +1321,112 @@ describe("Phase 3 / 180: detectPendingConfirmGate", () => {
     expect(await detectPendingConfirmGate(config, meta)).toBe(false);
   });
 });
+
+// ─── Phase 1 / 181: child session zero-side-effect bypass ─────────────────────
+
+describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
+  it("child + non-gate stage → no-gate, deferral stamp preserved, zero meta writes", async () => {
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "completed",
+      confirmGateDeferredAt: { stage: "completed", at: Date.now() },
+    });
+    const ctx = createMockCtx(meta);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, {
+      mode: "manual",
+      isChild: true,
+      sessionFile: "child-1",
+    });
+
+    expect(result).toEqual({ result: "no-gate" });
+    expect(ctx.metadataUpdates).toEqual([]);
+    // Owner would clear the stale stamp here; the child must not.
+    expect(meta.confirmGateDeferredAt?.stage).toBe("completed");
+  });
+
+  it("child + smart needConfirm=false → no-gate, deferral stamp preserved, zero meta writes", async () => {
+    const config = makePlanConfigWithConfirm(tmpDir, "smart");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+    const ctx = createMockCtx(meta);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, {
+      mode: "smart",
+      needConfirm: false,
+      isChild: true,
+      sessionFile: "child-1",
+    });
+
+    expect(result).toEqual({ result: "no-gate" });
+    expect(ctx.metadataUpdates).toEqual([]);
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+  });
+
+  it("child + confirm marker already present → no-gate, deferral stamp preserved, zero meta writes", async () => {
+    await createPlanDoc("# Plan\n\n## 用户确认：确认无误\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+    const ctx = createMockCtx(meta);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, {
+      mode: "manual",
+      isChild: true,
+      sessionFile: "child-1",
+    });
+
+    expect(result).toEqual({ result: "no-gate" });
+    expect(ctx.metadataUpdates).toEqual([]);
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+  });
+
+  it("child + real gate (plan/manual/no marker) → handled+pending+deferred, suppression audit, zero side effects", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, {
+      mode: "manual",
+      isChild: true,
+      sessionFile: "child-42",
+    });
+
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+    // Zero UI, zero meta writes.
+    expect(selectCalls).toBe(0);
+    expect(ctx.metadataUpdates).toEqual([]);
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+    // Suppression audit with attribution fields; no deferral audit.
+    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_suppressed_child");
+    expect(logContent).toContain("stage=plan");
+    expect(logContent).toContain("sessionFile=child-42");
+    expect(logContent).not.toContain("confirm_gate_deferred");
+  });
+
+  it("owner (default isChild=false) still presents the dialog and advances", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, {
+      mode: "manual",
+    });
+
+    expect(selectCalls).toBe(1);
+    expect(result.result).toBe("handled");
+  });
+});

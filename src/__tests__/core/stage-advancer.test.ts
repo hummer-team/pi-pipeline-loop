@@ -752,6 +752,60 @@ describe("Phase 4 (162): stage_advance confirm gate integration", () => {
 
     await rm(stageTmp, { recursive: true, force: true });
   });
+
+  it("Phase 1 / 181: child session → tool returns pending and does not advance", async () => {
+    const stageTmp = join(tmpdir(), "pi-advancer-child181-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanConfigWithConfirm(stageTmp, "manual");
+    const docsDir = join(stageTmp, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_plan.md"), "# Plan\nplan\n", "utf-8");
+    const refDir = join(stageTmp, ".pi", "references", "plan_spec");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(join(refDir, "verify.md"), "---\nrequiredFiles:\n  - \"docs/design/77_Config_plan.md\"\n---\nVerify.", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    let selectCalls = 0;
+    // Child session: parentSession header makes detectSessionRole report isChild.
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (m: any) => Object.assign(meta, m),
+      },
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [],
+          getEntries: () => [],
+          getHeader: () => ({ parentSession: "/tmp/parent.jsonl" }),
+          getSessionFile: () => "/tmp/child.jsonl",
+        },
+      },
+      ui: {
+        notify: () => {},
+        select: async () => { selectCalls++; return "Approve & Advance"; },
+        transition: () => {},
+        clearStage: () => {},
+      },
+      pi: { sendUserMessage: () => {} },
+    };
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(false);
+    expect(result.pending).toBe(true);
+    expect(selectCalls).toBe(0);
+    expect(meta.currentStage).toBe("plan");
+
+    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_suppressed_child");
+    expect(logContent).not.toContain("confirm_approved");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
 });
 
 // ── Phase 1 (163): reviewConclusion declaration auto-route ──────────────────

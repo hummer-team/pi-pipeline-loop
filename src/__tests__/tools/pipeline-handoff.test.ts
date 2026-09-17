@@ -357,12 +357,37 @@ describe("Phase 3 / 177 (D6): handoff confirm gate", () => {
   });
 
   it("child session: gate is not presented in place (owner-routed)", async () => {
-    const { TMP, config, ctx, selectCalls } = await setupPlanHandoff({ isChild: true });
+    const { TMP, config, meta, ctx, selectCalls } = await setupPlanHandoff({ isChild: true });
     const tool = createPipelineHandoff(config);
     const result = (await tool.execute({ nextStage: "develop" }, ctx as any)) as any;
 
     expect(result.pending).toBe(true);
+    expect(result.success).not.toBe(true);
     expect(selectCalls.length).toBe(0);
+    // Handoff did not advance the stage.
+    expect(meta.currentStage).toBe("plan");
+
+    // Phase 1 / 181: child suppression is audited with the child session file.
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_suppressed_child");
+    expect(logContent).not.toContain("confirm_approved");
+
+    await rm(TMP, { recursive: true, force: true });
+    __resetAuditDirPath();
+  });
+
+  it("child session + marker present → no-gate, original handoff semantics preserved", async () => {
+    const { TMP, config, meta, ctx, selectCalls } = await setupPlanHandoff({ isChild: true, withMarker: true });
+    const tool = createPipelineHandoff(config);
+    const result = (await tool.execute({ nextStage: "develop" }, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(selectCalls.length).toBe(0);
+    expect(meta.currentStage).toBe("develop");
+
+    // Marker path is a no-gate: no suppression audit.
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).not.toContain("confirm_gate_suppressed_child");
 
     await rm(TMP, { recursive: true, force: true });
     __resetAuditDirPath();

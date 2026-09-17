@@ -107,11 +107,14 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       // in place (their agent_settled re-ask routes presentation to the owner).
       const confirmMode = config.stages[currentStage]?.confirm?.mode;
       if (confirmMode && confirmMode !== "auto") {
-        const isChild = detectSessionRole(ctx as Parameters<typeof detectSessionRole>[0]).isChild;
-        const gateCtx = isChild && ctx.ui
-          ? { ...ctx, ui: { ...ctx.ui, select: undefined } }
-          : ctx;
-        const gate = await maybeHandleConfirmGate(config, gateCtx, meta, ui, { mode: confirmMode });
+        // Phase 1 / 181: pass the real session role. Child sessions take the
+        // gate's zero-side-effect bypass (no ui.select stripping wrapper needed).
+        const role = detectSessionRole(ctx as Parameters<typeof detectSessionRole>[0]);
+        const gate = await maybeHandleConfirmGate(config, ctx, meta, ui, {
+          mode: confirmMode,
+          isChild: role.isChild,
+          sessionFile: role.sessionFile,
+        });
         if (gate.result === "handled") {
           if (gate.action === "advanced") {
             // Gate approved and advanced (marker written) — handoff contract satisfied.

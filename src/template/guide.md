@@ -666,6 +666,7 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `confirm_gate_deferred` | 确认弹窗因存在顶层子代理 live 而后置 | stage, reason |
 | `confirm_gate_defer_timeout` | 后置等待超过 `spawnWaitTimeoutMs`，照常弹窗 + hint | stage, waitedMs |
 | `confirm_gate_defer_repeat` | 同一后置窗口内再次 defer（节流审计，不 notify） | stage, waitedMs, source |
+| `confirm_gate_suppressed_child` | child/subagent 会话触达真实确认门：抑制弹窗、零状态写入并保持 pending | pipelineId, stage, source, sessionFile |
 | `out_of_stage_spawn_allowed_review_fix` | review→fix 合法人工推进放行（3e 唯一例外路径） | stage, tool, subagentType, targetStage |
 | `out_of_stage_spawn_blocked` | 当前 stage 直接 spawn 其他 stage 执行体，被拦截并给路由提示 | stage, tool, subagentType, targetStage |
 | `pipeline_resume_deferred` | `/pipeline-resume` 因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, requirementDoc, reason |

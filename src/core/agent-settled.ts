@@ -496,7 +496,9 @@ export function createAgentSettled(
       if (vr.rulePassed) {
         // Phase 4 (162): manual confirm gate — intercept verify-pass to show TUI dialog.
         if (stageConfig.confirm?.mode === "manual") {
-          const isChild = detectSessionRole(ctx).isChild;
+          // Phase 1 / 181: capture the role once; sessionFile feeds the child
+          // suppression audit, isChild drives the zero-side-effect bypass.
+          const { isChild, sessionFile } = detectSessionRole(ctx);
           const reask = meta.confirmGateReask;
           // Phase 4 / 179 (G5/G7): bounded re-ask raised 1 → 3 so a collateral
           // Esc from a subagent window does not deadlock the gate on first miss.
@@ -509,6 +511,8 @@ export function createAgentSettled(
           }
           const gate = await maybeHandleConfirmGate(config, ctxWithPi, meta, ui, {
             mode: "manual",
+            isChild,
+            sessionFile,
             ...(reviewDefaultReject !== undefined ? { defaultReject: reviewDefaultReject } : {}),
           });
           if (gate.result === "handled") {
