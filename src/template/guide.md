@@ -1316,7 +1316,9 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 5. **Abort & Exit** — 中止并退出
 6. **Choose stage…** (Phase 3/173) — 二级菜单选任意阶段断点续传
 
-### 13.3 四入口 + 快捷键
+**frozen-at-fix 特殊过滤**：当 pipeline 冻结在 fix 阶段时，二级菜单（Choose stage…）不含 `completed` 终态项。fix 必须先经过 review 才能进入终态（Phase 6 / 182 G5 强约束：进入 fix 必经 review）。`awaiting_human` 原本就不在二级菜单列表中。
+
+### 13.3 五入口 + 快捷键
 
 | 入口 | 触发方式 | 说明 |
 |---|---|---|
@@ -1324,8 +1326,18 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 | 快捷键 | ctrl+enter（可配置） | index.ts shortcut |
 | 重放 | session_start (Phase 3/173) | frozen 流 reload/startup 时重放 |
 | /pipeline-start | 命令 | blocked 态就地弹菜单 |
+| /pipeline-resume (Phase 1/182) | 命令 | frozen 态弹六项一级决策菜单；`--force-resume` 保留旧直解冻语义（逃生开关） |
 
-#### 13.3.1 快捷键护栏（Phase 4 / 179，G9）
+#### 13.3.1 /pipeline-resume 菜单化契约（Phase 1 / 182）
+
+- frozen 态 + 有 UI → 弹出六项一级决策菜单（owner-only，子会话不弹）
+- frozen 态 + 无 UI（child 会话 / TUI 不可用）→ fail-soft 回退旧路径（executeDecision("resume") + syncStageStatusBar + dispatch）
+- `--force-resume` flag → 跳过菜单直走旧 resume 路径（逃生开关，用于菜单化交互不符合预期的场景）
+- 菜单 cancelled / interrupted → 保持冻结状态，返回冻结提示（不静默解冻）
+- 菜单 decided + choose_stage → 状态栏即时同步 + 自动派发 stage executor（Phase 0 善后）
+- awaiting_human 的 "Resume" 特例行为不变（回跳 previousStage，173-C9 语义）
+
+#### 13.3.2 快捷键护栏（Phase 4 / 179，G9）
 
 配置 `decisionShortcutKey` 时遵守三条护栏，否则「按快捷键重开决策菜单」这条确认门兜底会静默失效：
 

@@ -362,14 +362,16 @@ async function routeConfirmReject(
   // Without this, loopCycleCount could grow unbounded via manual Reject routing.
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
-    await import("./flow-state").then(({ freezeAndPrompt }) =>
-      freezeAndPrompt(
+    await import("./flow-state").then(async ({ freezeAndPrompt }) => {
+      const { buildOnStageChangedCallback } = await import("../commands/pipeline-start");
+      await freezeAndPrompt(
         ctx as unknown as Parameters<typeof freezeAndPrompt>[0],
         meta,
         "max_loop_cycles",
         config,
-      ),
-    );
+        { onStageChanged: buildOnStageChangedCallback(ctx, config) },
+      );
+    });
     return false;
   }
 
@@ -1461,9 +1463,12 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       if (!visitResult.ok) {
         // Max loop cycles reached — freeze and return error (aligned with handoff)
         ctx.session.updateMeta(visitResult.patch);
-        await import("./flow-state").then(({ freezeAndPrompt }) =>
-          freezeAndPrompt(ctx, meta, "max_loop_cycles", config),
-        );
+        await import("./flow-state").then(async ({ freezeAndPrompt }) => {
+          const { buildOnStageChangedCallback } = await import("../commands/pipeline-start");
+          await freezeAndPrompt(ctx, meta, "max_loop_cycles", config, {
+            onStageChanged: buildOnStageChangedCallback(ctx, config),
+          });
+        });
         return {
           success: false,
           message:

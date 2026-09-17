@@ -28,6 +28,8 @@ import { safeWriteAuditLog, encodeAuditValue } from "./auditLog";
 import { PROTECT_ASK_DISMISS_MS, DEFAULT_MAX_DISMISS_COUNT } from "../constants";
 import { freezeAndPrompt } from "../core/flow-state";
 import { getHostRole } from "../core/dormancy";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
+import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 
 /**
  * Tri-state outcome for protect-ask decisions.
@@ -88,7 +90,9 @@ async function handleDismissOverflow(
   if (currentCount >= DEFAULT_MAX_DISMISS_COUNT) {
     // Trigger freeze on owner side (P1 gate ensures child → owner presentation)
     const freshMeta = ctx.session.getMeta() ?? meta;
-    await freezeAndPrompt(ctx, freshMeta, "dismiss_overflow", config);
+    await freezeAndPrompt(ctx, freshMeta, "dismiss_overflow", config, {
+      onStageChanged: buildOnStageChangedCallback(ctx, config),
+    });
   }
 }
 

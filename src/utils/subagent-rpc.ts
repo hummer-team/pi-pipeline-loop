@@ -18,7 +18,7 @@ import { safeWriteAuditLog } from "./auditLog";
 import { clearActiveSpawnRecord } from "./spawn-cleanup";
 import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
-import { probeAgentState } from "./subagents-introspect";
+import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
@@ -898,11 +898,41 @@ async function maybeDeferSpawnForLiveTwin(
 ): Promise<boolean> {
   if (!opts?.session) return false;
 
-  const hit = scanActiveSpawnEvidence(
-    opts.session.getMeta()?.activeSpawns,
-    agentName,
-    { excludeStage: stage },
-  );
+  const activeSpawns = opts.session.getMeta()?.activeSpawns;
+
+  // Phase 4 (182) Task 3: three-tier evidence chain for live-twin detection.
+  //
+  // Tier 1 — cross-stage probe (existing behavior):
+  //   A same-agent child live in a DIFFERENT stage is definitive twin evidence.
+  let hit = scanActiveSpawnEvidence(activeSpawns, agentName, { excludeStage: stage });
+
+  // Tier 2 — same-stage probe (new, excluding self-reserved entries):
+  //   A same-agent child live in the SAME stage (e.g. manually spawned via
+  //   @mention while the plugin hasn't advanced yet) must also trigger deferral.
+  //   Self-reserved entries (agentId prefixed "takeover-" / "dispatch:") are
+  //   written by the current dispatch itself and must not cause self-lock.
+  if (!hit || hit.basis !== "probe_live") {
+    const sameStageHit = scanActiveSpawnEvidence(activeSpawns, agentName);
+    if (sameStageHit && sameStageHit.basis === "probe_live" && sameStageHit.agentId) {
+      const isSelfReserved =
+        sameStageHit.agentId.startsWith("takeover-") ||
+        sameStageHit.agentId.startsWith("dispatch:");
+      if (!isSelfReserved) {
+        hit = sameStageHit;
+      }
+    }
+  }
+
+  // Tier 3 — name-probe fallback (new):
+  //   findLiveAgentByName checks the manager registry directly, catching
+  //   out-of-band (manual/external) spawns not yet in activeSpawns.
+  if (!hit || hit.basis !== "probe_live") {
+    const nameProbe = findLiveAgentByName(agentName);
+    if (nameProbe) {
+      hit = { stage, agentId: nameProbe.agentId, basis: "probe_live" };
+    }
+  }
+
   // Only defer on hard live evidence (a probeable, currently-running child).
   // Reserved in-flight evidence is transient and handled by the 3c guard.
   if (!hit || hit.basis !== "probe_live") return false;

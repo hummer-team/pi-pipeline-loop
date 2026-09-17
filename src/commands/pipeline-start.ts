@@ -545,6 +545,28 @@ async function resumePipeline(
 }
 
 /**
+ * Phase 0 (182): Builds an onStageChanged callback for use in freezeAndPrompt
+ * and promptDecisionMenu callers.
+ *
+ * The callback dispatches the stage executor after choose_stage so the TUI
+ * reflects the new stage and the agent is spawned automatically.
+ *
+ * @param ctx - FlowStateCtx (session + ui + _ctx)
+ * @param config - Pipeline config
+ * @returns onStageChanged callback
+ */
+export function buildOnStageChangedCallback(
+  ctx: { session: unknown; ui?: unknown; _ctx?: unknown },
+  config: PipelineConfig,
+): (freshMeta: SessionMeta) => Promise<void> {
+  const pipelineUI = createPipelineUI(config);
+  return async (freshMeta: SessionMeta): Promise<void> => {
+    const doc = freshMeta.requirementDoc ?? "";
+    await dispatchAfterResume(ctx, config, pipelineUI, freshMeta, doc);
+  };
+}
+
+/**
  * Phase 3 (171): stage-aware dispatch after pipeline resume.
  *
  * For the resumed stage, spawn the appropriate subagent:

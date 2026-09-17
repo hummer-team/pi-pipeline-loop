@@ -132,28 +132,9 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           currentModel: {
             provider: event.model.provider ?? "unknown",
             modelId: event.model.modelId ?? event.model.id ?? "unknown",
-        },
-      });
-      // Phase 2 (182): shortcut registration observability — audit + startup log
-      // so that "registration happened" is a verifiable fact. Combined with the
-      // pipeline_shortcut_opened event, this enables self-diagnosis: if registered
-      // but no opened events fire on keypress, the SDK did not dispatch the key.
-      const shortcutSource = config.decisionShortcutKey ? "config" : "default";
-      await safeWriteAuditLog("pipeline_shortcut_registered", {
-        keyId: shortcutKey,
-        source: shortcutSource,
-        description: "Pipeline decision menu",
-      });
-      console.info(`[pi-pipeline] decision menu shortcut registered: ${shortcutKey} (${shortcutSource})`);
-    } else {
-      // Phase 2 (182): SDK does not expose registerShortcut — audit the degradation
-      // so it is observable in post-mortem (not a silent failure).
-      await safeWriteAuditLog("pipeline_shortcut_registered", {
-        keyId: shortcutKey,
-        registered: "false",
-        reason: "api_unavailable",
-      });
-    }
+          },
+        });
+      }
     });
 
     // ── Tools registration (bridge: SDK registerTool(object) → internal Tool) ──
@@ -233,22 +214,20 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
 
     // ── Shortcut registration: pipeline decision menu ──
     const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
-    // Phase 0 (182): build the onStageChanged callback once per factory invocation.
-    // Dispatches the stage executor after choose_stage so the TUI reflects the new
-    // stage and the agent is spawned automatically (parity with pipeline-resume).
     const shortcutPipelineUI = createPipelineUI(config);
-    const onStageChangedForShortcut = async (freshMeta: SessionMeta): Promise<void> => {
-      const doc = freshMeta.requirementDoc ?? "";
-      await dispatchAfterResume(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { session: { getMeta: () => freshMeta, updateMeta: () => freshMeta }, ui: shortcutPipelineUI, pi, _ctx: undefined } as any,
-        config,
-        shortcutPipelineUI,
-        freshMeta,
-        doc,
-      );
-    };
     if (typeof pi.registerShortcut === "function") {
+      // Phase 2 (182): shortcut registration observability — audit + startup log
+      // so that "registration happened" is a verifiable fact. Combined with the
+      // pipeline_shortcut_opened event, this enables self-diagnosis: if registered
+      // but no opened events fire on keypress, the SDK did not dispatch the key.
+      const shortcutSource = config.decisionShortcutKey ? "config" : "default";
+      await safeWriteAuditLog("pipeline_shortcut_registered", {
+        keyId: shortcutKey,
+        source: shortcutSource,
+        description: "Pipeline decision menu",
+      });
+      console.info(`[pi-pipeline] decision menu shortcut registered: ${shortcutKey} (${shortcutSource})`);
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (pi.registerShortcut as any)(shortcutKey, {
         description: "Pipeline decision menu",
@@ -267,6 +246,20 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             ctx.ui.notify("Pipeline aborted. Use /pipeline-start to begin a new run.");
             return;
           }
+
+          // Phase 0 (182): build onStageChanged callback inside the handler scope
+          // so it captures the real rctx (not a stub session). This ensures
+          // dispatchAfterResume writes to the actual activeSpawns ledger.
+          const onStageChangedForShortcut = async (freshMeta: SessionMeta): Promise<void> => {
+            const doc = freshMeta.requirementDoc ?? "";
+            await dispatchAfterResume(
+              { session: rctx.session, ui: rctx.ui, _ctx: (rctx as any)._ctx },
+              config,
+              shortcutPipelineUI,
+              freshMeta,
+              doc,
+            );
+          };
 
           await safeWriteAuditLog("pipeline_shortcut_opened", {
             pipelineId: meta.pipelineId,
@@ -324,6 +317,14 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             }
           }
         },
+      });
+    } else {
+      // Phase 2 (182): SDK does not expose registerShortcut — audit the degradation
+      // so it is observable in post-mortem (not a silent failure).
+      await safeWriteAuditLog("pipeline_shortcut_registered", {
+        keyId: shortcutKey,
+        registered: false,
+        reason: "api_unavailable",
       });
     }
   };

@@ -86,7 +86,7 @@ export function getDateAuditFileName(): string {
  */
 export async function writeAuditLog(
   stage: string,
-  message?: Record<string, string>,
+  message?: Record<string, string | boolean>,
   level: AuditLogLevel = "info",
 ): Promise<void> {
   // Guard: if audit directory has not been initialized, silently skip
@@ -129,7 +129,7 @@ export async function writeAuditLog(
  */
 export async function safeWriteAuditLog(
   stage: string,
-  message?: Record<string, string>,
+  message?: Record<string, string | boolean>,
   level?: AuditLogLevel,
 ): Promise<void> {
   try {

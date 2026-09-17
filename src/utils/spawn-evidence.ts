@@ -13,6 +13,14 @@
  * Evidence model (unchanged semantics):
  * - Primary: entry has an `agentId` AND `probeAgentState(agentId) === "live"`
  * - Secondary: entry is `reserved` and started less than RESERVED_SPAWN_EVIDENCE_MS ago
+ *
+ * Phase 4 (182) same-stage blind spot supplement:
+ * The cross-stage scan (`excludeStage`) catches twins from prior stages, but a
+ * same-stage manual spawn (e.g. @mention while the plugin hasn't advanced) is
+ * invisible to the cross-stage probe alone. The same-stage avoidance in
+ * `maybeDeferSpawnForLiveTwin` (subagent-rpc) is supplemented by a
+ * `findLiveAgentByName` name-probe fallback from the manager registry, which
+ * catches out-of-band agents not yet recorded in activeSpawns.
  */
 
 import type { PipelineStage, SessionMeta } from "../types";

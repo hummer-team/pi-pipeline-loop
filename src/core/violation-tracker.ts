@@ -16,6 +16,8 @@ import type { PipelineConfig, SessionMeta, ViolationItem } from "../types";
 import { DEFAULT_MAX_VIOLATIONS } from "../constants";
 import { safeWriteAuditLog, encodeAuditValue } from "../utils/auditLog";
 import { freezeAndPrompt, type FlowStateCtx } from "./flow-state";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
+import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 
 /**
  * Records a violation item into SessionMeta.violations and writes an audit entry.
@@ -60,6 +62,9 @@ export async function checkViolationBreaker(
 ): Promise<void> {
   const count = (meta.violations || []).length;
   if (count >= DEFAULT_MAX_VIOLATIONS) {
-    await freezeAndPrompt(ctx, meta, "violation_overflow", config);
+    // Phase 0 (182): inject onStageChanged so choose_stage dispatches the executor
+    await freezeAndPrompt(ctx, meta, "violation_overflow", config, {
+      onStageChanged: buildOnStageChangedCallback(ctx, config),
+    });
   }
 }

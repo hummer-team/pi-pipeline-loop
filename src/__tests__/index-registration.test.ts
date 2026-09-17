@@ -447,18 +447,14 @@ describe("Phase 2 (182): shortcut registration observability", () => {
     const factory = createPipeline(config);
     await factory(pi);
 
-    // Verify audit file exists and contains the registration event
+    // Verify audit file exists and contains the registration event.
+    // The audit is written during factory invocation (shortcut registration block),
+    // so the file should exist immediately after factory returns.
     const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    try {
-      const auditContent = await readFile(auditPath, "utf-8");
-      expect(auditContent).toContain("pipeline_shortcut_registered");
-      expect(auditContent).toContain("ctrl+shift+u");
-      expect(auditContent).toContain("config");
-    } catch {
-      // Audit log may not have been flushed yet — verify shortcut was registered
-      // via the mock pi (primary assertion)
-      expect(true).toBe(true);
-    }
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("pipeline_shortcut_registered");
+    expect(auditContent).toContain("ctrl+shift+u");
+    expect(auditContent).toContain("config");
 
     await rm(TMP, { recursive: true, force: true });
   });

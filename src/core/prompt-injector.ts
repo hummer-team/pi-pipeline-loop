@@ -21,7 +21,7 @@ import path from "node:path";
 import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
+import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
@@ -982,5 +982,10 @@ async function buildStageDeliverables(
   const pipelineId = meta.pipelineId ?? "";
   const rendered = value.trim().replaceAll("{pipelineId}", pipelineId);
 
-  return `# STAGE DELIVERABLES (PLUGIN)\n${rendered}`;
+  // Phase 3 (182) Task 3: append commit doc naming constraint for develop/fix
+  // stages so the model sees the rule at the point of writing commit docs.
+  const isLoopStage = meta.currentStage === "develop" || meta.currentStage === "fix";
+  const namingSuffix = isLoopStage ? `\n\n**Naming**: ${COMMIT_DOC_NAMING_CONSTRAINT}` : "";
+
+  return `# STAGE DELIVERABLES (PLUGIN)\n${rendered}${namingSuffix}`;
 }

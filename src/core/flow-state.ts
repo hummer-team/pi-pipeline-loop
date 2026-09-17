@@ -1066,6 +1066,10 @@ export function scheduleDecisionRetry(
   meta: SessionMeta,
   config: PipelineConfig,
   attempt: number = 1,
+  opts?: {
+    /** Phase 0 (182): forwarded to promptDecisionMenu for choose_stage aftermath. */
+    onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+  },
 ): void {
   const pipelineId = meta.pipelineId;
   // Clear existing timer for this pipeline (prevent stacking)
@@ -1091,7 +1095,9 @@ export function scheduleDecisionRetry(
     }
 
     // Re-prompt (single in-flight select, no stacking)
-    const outcome = await promptDecisionMenu(ctx, freshMeta, config);
+    const outcome = await promptDecisionMenu(ctx, freshMeta, config, {
+      onStageChanged: opts?.onStageChanged,
+    });
 
     // Fix: cancelled (user Esc) or decided (user chose action) → stop retry loop.
     // Only interrupted (streaming dismiss) continues the retry cycle.
@@ -1102,7 +1108,7 @@ export function scheduleDecisionRetry(
     // If still frozen after prompt, schedule next retry
     const postMeta = ctx.session.getMeta() as SessionMeta | undefined;
     if (postMeta && isFrozen(postMeta)) {
-      scheduleDecisionRetry(ctx, postMeta, config, attempt + 1);
+      scheduleDecisionRetry(ctx, postMeta, config, attempt + 1, opts);
     }
   }, delay);
 
@@ -1175,7 +1181,11 @@ export async function freezeAndPrompt(
   meta: SessionMeta,
   reason: string,
   config: PipelineConfig,
-  opts?: { ui?: FlowStateCtx["ui"] },
+  opts?: {
+    ui?: FlowStateCtx["ui"];
+    /** Phase 0 (182): forwarded to promptDecisionMenu for choose_stage aftermath. */
+    onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+  },
 ): Promise<void> {
   // Idempotent: only transition running → blocked, and only perform
   // audit + menu prompt on the transition moment (not on repeated calls).
@@ -1231,8 +1241,13 @@ export async function freezeAndPrompt(
   // Instead, if the first prompt returns "interrupted" (streaming dismiss < 1500ms),
   // arm the retry scheduler AFTER the prompt returns. This prevents stacking while
   // still ensuring the menu re-appears after streaming settles.
-  const outcome = await promptDecisionMenu(ctx, frozenMeta, config, opts);
+  const outcome = await promptDecisionMenu(ctx, frozenMeta, config, {
+    ...opts,
+    onStageChanged: opts?.onStageChanged,
+  });
   if (outcome === "interrupted") {
-    scheduleDecisionRetry(ctx, frozenMeta, config);
+    scheduleDecisionRetry(ctx, frozenMeta, config, 1, {
+      onStageChanged: opts?.onStageChanged,
+    });
   }
 }

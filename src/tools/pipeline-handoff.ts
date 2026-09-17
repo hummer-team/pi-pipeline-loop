@@ -10,6 +10,8 @@ import { writeAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { freezeAndPrompt } from "../core/flow-state";
 import { checkStageSummaryHash } from "../utils/summary-hash";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
+import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 import { recordStageVisit } from "../utils/stage-visit";
 import { toProjectRelative } from "../utils/path-display";
 import { isDormant } from "../core/dormancy";
@@ -143,7 +145,9 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       if (!visitResult.ok) {
         // Max loop cycles reached — freeze pipeline and prompt for user decision
         ctx.session.updateMeta(visitResult.patch);
-        await freezeAndPrompt(ctx, meta, "max_loop_cycles", config);
+        await freezeAndPrompt(ctx, meta, "max_loop_cycles", config, {
+          onStageChanged: buildOnStageChangedCallback(ctx, config),
+        });
 
         return {
           error:

@@ -277,6 +277,19 @@ export const DEFAULT_READONLY_WRITE_PATHS = ["docs/", "doc/", "documentation/"];
 export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
 
+// ─── Commit Doc Naming Constraint (Phase 3 / 182) ─────────────────────────────
+
+/**
+ * Naming constraint for `*_commit.md` deliverables (develop/fix stages).
+ * MUST derive from the requirement doc basename (`{reqBase}_*_commit.md`),
+ * MUST NOT be derived from the plan doc name.
+ *
+ * Appended to the stage deliverables prompt by prompt-injector so the model
+ * sees the constraint at the point of writing commit docs.
+ */
+export const COMMIT_DOC_NAMING_CONSTRAINT =
+  "Commit doc files (`*_commit.md`) MUST derive their name from the requirement document basename (pattern: `{reqBase}_*_commit.md`). They MUST NOT be named after the plan document.";
+
 /** Default write scope by stage type (tools and bash prefixes no longer restricted) */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   string,

@@ -29,6 +29,51 @@ import { isSpawnableStage } from "../utils/subagent-rpc";
 import { staleConfigNotice } from "../utils/config-staleness";
 
 /**
+ * Idempotent stage dispatch helper (Phase 1 / 182).
+ *
+ * Checks if the current stage has a live agent; if not, calls
+ * dispatchAfterResume to spawn the stage executor. This deduplicates the
+ * dispatch logic shared by the "decided" branch and the legacy resume path.
+ *
+ * @param ctx - Runtime context for dispatch
+ * @param config - Pipeline configuration
+ * @param ui - Pipeline UI adapter
+ * @param currentMeta - Fresh session meta (post-decision)
+ * @param forwardArgs - Optional forwarded user args
+ */
+async function idempotentStageDispatch(
+  ctx: any,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  currentMeta: SessionMeta,
+  forwardArgs?: string,
+): Promise<void> {
+  const stage = currentMeta.currentStage;
+  if (!isSpawnableStage(config, stage)) return;
+
+  const activeSpawns = currentMeta.activeSpawns ?? {};
+  const existingSpawn = activeSpawns[stage];
+  let shouldSpawn = true;
+
+  if (existingSpawn?.agentId || existingSpawn?.agentName) {
+    try {
+      const probe = probeAgentState(existingSpawn.agentId ?? existingSpawn.agentName!);
+      if (probe === "live") {
+        shouldSpawn = false;
+        ui.notify(ctx, `Agent "${existingSpawn.agentName}" is already running for stage "${stage}". Skipping duplicate spawn.`);
+      }
+    } catch {
+      // Probe failure → fail-open, proceed with spawn
+    }
+  }
+
+  if (shouldSpawn) {
+    const doc = currentMeta.requirementDoc ?? "";
+    await dispatchAfterResume(ctx, config, ui, currentMeta, doc, forwardArgs || undefined);
+  }
+}
+
+/**
  * Creates the `/pipeline-resume` command.
  *
  * @param config - The pipeline configuration
@@ -157,29 +202,13 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             // Decision executed (status bar already synced by Phase 0 onStageChanged).
             // Idempotent dispatch guard: if the decision did NOT involve choose_stage
             // (e.g. "resume"), the onStageChanged callback was not invoked, so we
-            // still need the legacy dispatch path below. Check if the pipeline is
-            // still frozen — if not, the decision resolved it and dispatch is needed.
+            // still need the dispatch. Check if the pipeline is still frozen — if
+            // not, the decision resolved it and dispatch is needed.
             const postDecisionMeta = ctx.session.getMeta() as SessionMeta;
             if (!isFrozen(postDecisionMeta)) {
-              syncStageStatusBar(ui, ctx);
               ui.notify(ctx, `Decision executed. Pipeline at stage "${postDecisionMeta.currentStage}".`);
-              // Idempotent dispatch (same logic as legacy path below)
-              const stage = postDecisionMeta.currentStage;
-              if (isSpawnableStage(config, stage)) {
-                const activeSpawns = postDecisionMeta.activeSpawns ?? {};
-                const existingSpawn = activeSpawns[stage];
-                let shouldSpawn = true;
-                if (existingSpawn?.agentId || existingSpawn?.agentName) {
-                  try {
-                    const probe = probeAgentState(existingSpawn.agentId ?? existingSpawn.agentName!);
-                    if (probe === "live") { shouldSpawn = false; }
-                  } catch { /* fail-open */ }
-                }
-                if (shouldSpawn) {
-                  const doc = postDecisionMeta.requirementDoc ?? "";
-                  await dispatchAfterResume(ctx, config, ui, postDecisionMeta, doc, forwardArgs || undefined);
-                }
-              }
+              // Shared idempotent dispatch helper (probe-live skip + spawn)
+              await idempotentStageDispatch(ctx, config, ui, postDecisionMeta, forwardArgs);
             }
             return { message: "Decision executed." };
           }
@@ -213,31 +242,7 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         ui.notify(ctx, `Pipeline resumed at stage "${freshMeta.currentStage}". ${result.message}`);
 
         // Stage-aware dispatch: re-spawn the stage subagent if not already live
-        const stage = freshMeta.currentStage;
-
-        if (isSpawnableStage(config, stage)) {
-          // Check if there's already a live agent for this stage
-          const activeSpawns = freshMeta.activeSpawns ?? {};
-          const existingSpawn = activeSpawns[stage];
-          let shouldSpawn = true;
-
-          if (existingSpawn?.agentId || existingSpawn?.agentName) {
-            try {
-              const probe = probeAgentState(existingSpawn.agentId ?? existingSpawn.agentName!);
-              if (probe === "live") {
-                shouldSpawn = false;
-                ui.notify(ctx, `Agent "${existingSpawn.agentName}" is already running for stage "${stage}". Skipping duplicate spawn.`);
-              }
-            } catch {
-              // Probe failure → fail-open, proceed with spawn
-            }
-          }
-
-          if (shouldSpawn) {
-            const doc = freshMeta.requirementDoc ?? "";
-            await dispatchAfterResume(ctx, config, ui, freshMeta, doc, forwardArgs || undefined);
-          }
-        }
+        await idempotentStageDispatch(ctx, config, ui, freshMeta, forwardArgs);
 
         return { message: result.message };
       } catch (err) {

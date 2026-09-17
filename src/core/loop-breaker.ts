@@ -20,6 +20,8 @@ import { writeAuditLog, encodeAuditValue } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { isDormant } from "./dormancy";
 import { freezeAndPrompt } from "./flow-state";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
+import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 import { splitShellSegments, tokenize, READ_ONLY_BASH_COMMANDS } from "../utils/bash-parse";
 
 /**
@@ -295,7 +297,9 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
                 loopCount: String(newLoopCount),
               }, "warn");
 
-              await freezeAndPrompt(ctx, meta, "loop_overflow", config);
+              await freezeAndPrompt(ctx, meta, "loop_overflow", config, {
+                onStageChanged: buildOnStageChangedCallback(ctx, config),
+              });
             }
           } else if (meta.loopCount > 0) {
             // Test success: reset consecutive-fail counter (normal fix→pass iteration)
@@ -369,7 +373,9 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
               reason: "verify_failure_loop_overflow",
             }, "warn");
 
-            await freezeAndPrompt(ctx, meta, "verify_failure_loop_overflow", config);
+            await freezeAndPrompt(ctx, meta, "verify_failure_loop_overflow", config, {
+              onStageChanged: buildOnStageChangedCallback(ctx, config),
+            });
           }
         }
       }

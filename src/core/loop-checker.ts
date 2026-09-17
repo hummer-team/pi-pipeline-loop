@@ -16,6 +16,8 @@ import { createPipelineUI } from "./pipeline-ui";
 import { isDormant } from "./dormancy";
 import { freezeAndPrompt } from "./flow-state";
 import { safeWriteStageAudit } from "../utils/auditLog";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
+import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 
 /**
  * Creates the `loop_check` tool.
@@ -105,7 +107,9 @@ export function createLoopChecker(config: PipelineConfig): Tool {
         ui.fail(ctx, currentStage, "max loops reached");
 
         // Freeze pipeline and prompt for user decision
-        await freezeAndPrompt(ctx, meta, "loop_halt_overflow", config);
+        await freezeAndPrompt(ctx, meta, "loop_halt_overflow", config, {
+          onStageChanged: buildOnStageChangedCallback(ctx, config),
+        });
 
         await safeWriteStageAudit(config, "loop_check", meta, {
           action: "halt",

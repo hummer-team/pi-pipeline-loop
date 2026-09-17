@@ -15,6 +15,8 @@ import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 import { recordStageVisit } from "../utils/stage-visit";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
+import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -311,6 +313,7 @@ export async function applyVerifyFail(
     }
     await freezeAndPrompt(ctx as Parameters<typeof freezeAndPrompt>[0], meta, "verify_config_error", config, {
       ui: flowUI,
+      onStageChanged: buildOnStageChangedCallback(ctx, config),
     });
 
     const failureSummary = verifyFailures
@@ -364,6 +367,7 @@ export async function applyVerifyFail(
       }
       await freezeAndPrompt(ctx, meta, "verify_attempt_overflow", config, {
         ui: flowUI,
+        onStageChanged: buildOnStageChangedCallback(ctx, config),
       });
       // H2 fix: return immediately after freeze to prevent fall-through
       // to the wake-model code block below. Overflow freeze hands control

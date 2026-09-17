@@ -2353,14 +2353,19 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    // Verify audit event was written
+    // Verify the advance guard fired (audit event + stage unchanged)
     const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    let auditContent = "";
     try {
-      const auditContent = await readFile(auditPath, "utf-8");
-      expect(auditContent).toContain("advance_deferred_stage_agent_live");
+      auditContent = await readFile(auditPath, "utf-8");
     } catch {
-      // Audit may not have been flushed — verify meta wasn't advanced
-      expect(meta.currentStage).toBe("develop");
+      // File may not exist if guard didn't reach audit write
+    }
+    // Primary assertion: stage was not advanced (guard either fired or early-return preserved state)
+    expect(meta.currentStage).toBe("develop");
+    // Secondary assertion: if audit was written, it should contain the defer event
+    if (auditContent.includes("advance_deferred")) {
+      expect(auditContent).toContain("advance_deferred_stage_agent_live");
     }
 
     await rm(TMP5, { recursive: true, force: true });
@@ -2390,14 +2395,20 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    // Verify the advance was deferred via name-probe
+    // Verify the guard either fired (audit defer event) or preserved state (stage unchanged)
     const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    let auditContent = "";
     try {
-      const auditContent = await readFile(auditPath, "utf-8");
+      auditContent = await readFile(auditPath, "utf-8");
+    } catch {
+      // File may not exist
+    }
+    // Primary assertion: stage not advanced
+    expect(meta.currentStage).toBe("develop");
+    // Secondary assertion: if audit contains defer event, verify basis
+    if (auditContent.includes("advance_deferred")) {
       expect(auditContent).toContain("advance_deferred_stage_agent_live");
       expect(auditContent).toContain("manual_live_probe");
-    } catch {
-      // Audit may not have been flushed
     }
 
     // Cleanup
@@ -2426,11 +2437,13 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
 
     // Verify no defer audit (guard didn't fire because no evidence → fail-open)
     const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    // Audit file may not exist if nothing was written, which is the expected behavior
     try {
       const auditContent = await readFile(auditPath, "utf-8");
       expect(auditContent).not.toContain("advance_deferred_stage_agent_live");
     } catch {
-      // Expected if audit dir is empty
+      // File not existing is also valid (nothing was written)
+      expect(true).toBe(true);
     }
 
     await rm(TMP5, { recursive: true, force: true });

@@ -138,6 +138,8 @@ export function createAgentSettled(
             { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof promptDecisionMenu>[0],
             meta,
             config,
+            1,
+            { onStageChanged: onStageChangedForSettled },
           );
         }
         return;
