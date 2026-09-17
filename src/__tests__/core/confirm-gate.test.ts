@@ -1432,6 +1432,48 @@ describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
   });
 });
 
+// ─── Production-semantic mock helper ─────────────────────────────────────────
+//
+// createMockCtx (helpers.ts) uses Object.assign(meta, patch) in updateMeta,
+// which mutates the caller's `meta` snapshot in place. Production
+// createSessionState.updateMeta() (session-state.ts:174) creates a new object
+// via { ...current, ...patch } and does NOT mutate the caller's reference;
+// getMeta() returns a fresh JSON.parse on every call.
+//
+// This helper mimics production semantics so regression tests genuinely cover
+// the production path (review round-2 finding: in-place mutation caused a
+// false-positive pass).
+
+function createProductionSemanticsCtx(initialMeta: SessionMeta) {
+  // Internal "persisted" state — starts as a copy of the input snapshot.
+  let persisted: SessionMeta = { ...initialMeta };
+  const statusCalls: { key: string; text: string | undefined }[] = [];
+  const notifications: string[] = [];
+
+  return {
+    session: {
+      // Production getMeta returns a fresh copy each time.
+      getMeta: (): SessionMeta => ({ ...persisted }),
+      // Production updateMeta returns a new merged object without mutating
+      // the caller's reference (session-state.ts:174).
+      updateMeta: (patch: Partial<SessionMeta>): SessionMeta => {
+        persisted = { ...persisted, ...patch };
+        return persisted;
+      },
+    },
+    ui: {
+      notify: (_msg: string) => { /* capture via outer scope if needed */ },
+      setStatus: (key: string, text: string | undefined) => {
+        statusCalls.push({ key, text });
+      },
+      select: undefined as ((message: string, options: string[]) => Promise<string | undefined>) | undefined,
+    },
+    _statusCalls: statusCalls,
+    _notifications: notifications,
+    _persisted: () => persisted,
+  };
+}
+
 // ─── Phase 2 / 181: present-time re-stamp of the pending gate ─────────────────
 
 describe("Phase 2 / 181: present-time pending re-stamp", () => {
@@ -1567,17 +1609,17 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
     expect(meta.currentStage).toBe("clarify");
   });
 
-  it("stale presentation stamp + reask → subagent live triggers fresh defer (not premature timeout)", async () => {
-    // Regression test for review #1 (Medium): the unconditional present-time
-    // re-stamp shifted the defer-timeout anchor from "deferral start" to "last
-    // presentation", so a presentation + long idle + subagent start would pop
-    // the dialog while the subagent is live (179 G5/G7 collateral-Esc failure).
+  it("stale presentation stamp + reask → subagent live triggers fresh defer (not premature timeout) [production semantics]", async () => {
+    // Regression test for review #1→#2 (High): under production semantics,
+    // updateMeta returns a new object without mutating the caller's `meta`
+    // snapshot. The stale-stamp clearing must re-read via getMeta() so that
+    // evaluateConfirmGateDeferral sees the cleared state, not the stale input.
     await createPlanDoc("# Plan\n");
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
     const stageStart = Date.now();
     // Stamp from a presentation 300ms ago, with reask=1 (user Esc'd earlier).
     const staleStamp = { stage: "plan" as const, at: stageStart - 300 };
-    const meta = makeTestMeta({
+    const inputMeta = makeTestMeta({
       currentStage: "plan",
       requirementDoc: "docs/design/77_Config.md",
       stageStartTime: stageStart - 1000,
@@ -1592,57 +1634,97 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
     };
 
     try {
-      const ctx = createMockCtx(meta);
-      // spawnWaitTimeoutMs=50: stamp is 300ms old, well past the threshold.
+      // Production-semantic mock: updateMeta returns a new object via spread,
+      // getMeta returns the latest persisted state. The input `meta` is NOT
+      // mutated by updateMeta — matching createSessionState.updateMeta().
+      const prodCtx = createProductionSemanticsCtx(inputMeta);
       const configShortTimeout = { ...config, spawnWaitTimeoutMs: 50 } as PipelineConfig;
-      let notifyCount = 0;
-      const uiNotify = () => { notifyCount++; };
+      const notifyMessages: string[] = [];
 
       const gate = await maybeHandleConfirmGate(
-        configShortTimeout, ctx, meta,
-        { notify: uiNotify } as any,
+        configShortTimeout, prodCtx, inputMeta,
+        { notify: (_ctx: unknown, msg: string) => { notifyMessages.push(msg); } } as any,
         { mode: "manual" },
       );
 
       // The gate should DEFER (fresh window), not TIME OUT.
       expect(gate).toEqual({ result: "handled", action: "pending", deferred: true });
-      // The stale stamp is cleared and replaced with a fresh deferral stamp.
-      expect(meta.confirmGateDeferredAt).toBeDefined();
-      expect(meta.confirmGateDeferredAt!.stage).toBe("plan");
-      expect(meta.confirmGateDeferredAt!.at).toBeGreaterThan(staleStamp.at);
-      // First deferral of the new window → audit + notify emitted.
-      expect(notifyCount).toBeGreaterThanOrEqual(1);
+      // First deferral of the new window → notify with defer message, NOT timeout.
+      expect(notifyMessages.some(m => m.includes("deferred"))).toBe(true);
+      expect(notifyMessages.some(m => m.includes("timeout"))).toBe(false);
+      // The persisted state (via getMeta) has a fresh deferral stamp.
+      const persisted = prodCtx.session.getMeta();
+      expect(persisted?.confirmGateDeferredAt).toBeDefined();
+      expect(persisted?.confirmGateDeferredAt?.stage).toBe("plan");
+      expect(persisted!.confirmGateDeferredAt!.at).toBeGreaterThan(staleStamp.at);
+      // The input meta snapshot is NOT mutated (production semantics).
+      expect(inputMeta.confirmGateDeferredAt).toEqual(staleStamp);
     } finally {
       delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
     }
   });
 
-  it("existing deferral stamp is preserved at presentation (anchor not shifted)", async () => {
-    // When a deferral stamp exists from a prior defer in this visit, the
-    // presentation must NOT overwrite it — preserving the defer-timeout anchor.
+  it("existing deferral stamp is preserved at presentation (anchor not shifted) [production semantics]", async () => {
+    // Under production semantics: when a deferral stamp exists from a prior
+    // defer in this visit, the presentation must NOT overwrite it — preserving
+    // the defer-timeout anchor. The input meta snapshot is not mutated.
     await createPlanDoc("# Plan\n");
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
     const deferStamp = { stage: "plan" as const, at: Date.now() - 50 };
-    const meta = makeTestMeta({
+    const inputMeta = makeTestMeta({
       currentStage: "plan",
       requirementDoc: "docs/design/77_Config.md",
       stageStartTime: Date.now() - 5000,
       confirmGateDeferredAt: deferStamp,
     });
-    const ctx = createMockCtx(meta);
+    const prodCtx = createProductionSemanticsCtx(inputMeta);
     let stampAtSelect: { stage: string; at: number } | undefined;
-    ctx.ui.select = async () => {
-      stampAtSelect = meta.confirmGateDeferredAt as { stage: string; at: number } | undefined;
+    prodCtx.ui.select = async () => {
+      // Read from the session's latest state (production semantics).
+      const live = prodCtx.session.getMeta();
+      stampAtSelect = live?.confirmGateDeferredAt as { stage: string; at: number } | undefined;
       return "Cancel";
     };
 
-    await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+    await maybeHandleConfirmGate(config, prodCtx, inputMeta, { notify: () => {} } as any, { mode: "manual" });
 
     // The stamp at the moment of presentation is the ORIGINAL deferral stamp,
     // not a fresh one — the anchor is preserved.
     expect(stampAtSelect).toEqual(deferStamp);
-    // After presentation the stamp still exists (reload recovery intact).
-    expect(meta.confirmGateDeferredAt).toBeDefined();
-    expect(meta.confirmGateDeferredAt!.at).toBe(deferStamp.at);
+    // Persisted state still has the original stamp (reload recovery intact).
+    const persisted = prodCtx.session.getMeta();
+    expect(persisted?.confirmGateDeferredAt).toBeDefined();
+    expect(persisted!.confirmGateDeferredAt!.at).toBe(deferStamp.at);
+    // The input meta snapshot is NOT mutated.
+    expect(inputMeta.confirmGateDeferredAt).toEqual(deferStamp);
+  });
+
+  it("present with no existing stamp → persists a new stamp for reload recovery [production semantics]", async () => {
+    // When no deferral stamp exists (first presentation of this visit), the
+    // gate must persist a new stamp so that /pipeline-resume can recover the
+    // pending gate across reloads.
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const inputMeta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+    });
+    // No confirmGateDeferredAt — fresh state.
+    expect(inputMeta.confirmGateDeferredAt).toBeUndefined();
+
+    const prodCtx = createProductionSemanticsCtx(inputMeta);
+    prodCtx.ui.select = async () => undefined; // Esc
+
+    await maybeHandleConfirmGate(config, prodCtx, inputMeta, { notify: () => {} } as any, { mode: "manual" });
+
+    // Persisted state now has a stamp for reload recovery.
+    const persisted = prodCtx.session.getMeta();
+    expect(persisted?.confirmGateDeferredAt).toBeDefined();
+    expect(persisted?.confirmGateDeferredAt?.stage).toBe("plan");
+    // detectPendingConfirmGate must return true.
+    expect(await detectPendingConfirmGate(config, persisted!)).toBe(true);
+    // The input meta snapshot is NOT mutated.
+    expect(inputMeta.confirmGateDeferredAt).toBeUndefined();
   });
 });

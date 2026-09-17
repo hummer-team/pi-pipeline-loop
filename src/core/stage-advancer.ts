@@ -777,13 +777,20 @@ export async function maybeHandleConfirmGate(
     await writeConfirmMarker(config, ctx, meta, docPath, lines, "confirm_smart_complex");
   }
 
-  // Phase 2 fix / 181 (review #1): clear a stale deferral stamp when the user
-  // has already been presented the dialog (reask exists for the current stage).
-  // This restores the 180 defer-timeout semantics: the timeout is measured from
-  // the current deferral start, not from a stale presentation-time anchor.
-  // Without this, a presentation followed by a long idle and a subagent start
-  // would immediately trigger "timeout" and pop the dialog while the subagent
-  // is live — the 179 G5/G7 collateral-Esc failure mode.
+  // Phase 2 fix / 181 (review #1→#2): clear a stale deferral stamp when the
+  // user has already been presented the dialog (reask exists for the current
+  // stage). This restores the 180 defer-timeout semantics: the timeout is
+  // measured from the current deferral start, not from a stale presentation-
+  // time anchor. Without this, a presentation followed by a long idle and a
+  // subagent start would immediately trigger "timeout" and pop the dialog
+  // while the subagent is live — the 179 G5/G7 collateral-Esc failure mode.
+  //
+  // Re-read meta after updateMeta: production createSessionState.updateMeta()
+  // returns a new object via spread ({ ...current, ...patch }) without mutating
+  // the caller's reference (session-state.ts:174), and getMeta() returns a
+  // fresh JSON.parse on every call. Without the re-read, the local `meta`
+  // snapshot still carries the stale stamp and evaluateConfirmGateDeferral
+  // would still compute "timeout" (review round-2 finding).
   {
     const staleStamp = getEffectiveDeferredStamp(meta);
     const deferTimeoutMs = config.spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
@@ -793,6 +800,7 @@ export async function maybeHandleConfirmGate(
       Date.now() - staleStamp.at >= deferTimeoutMs
     ) {
       ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
+      meta = (ctx.session.getMeta() ?? meta) as SessionMeta;
     }
   }
 
