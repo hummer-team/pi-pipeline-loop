@@ -675,6 +675,17 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `pipeline_handoff_deferred` | handoff 工具因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, reason |
 | `duplicate_spawn_suspect` | 带外 spawn（`spawnTrigger=manual_or_external`）且当前 stage 已有 probe-live 的 spawn 记录（仅提示不阻断） | stage, existingAgentId, joiningSessionFile |
 
+**Phase 0-6 / 182 新增审计事件**（6 项缺陷修复引入）：
+
+| 事件 | 触发时机 | 关键字段 |
+|------|---------|---------|
+| `pipeline_shortcut_registered` | 快捷键注册成功或 SDK API 不可用降级 | keyId, source (config/default), registered, reason |
+| `advance_deferred_stage_agent_live` | owner settle 触发 auto-advance 前检测到 stage executor 仍 live（账本或 name-probe 证据） | stage, expectedAgent, basis, agentId |
+| `stage_advance_failed.reason=fix_terminal_blocked` | fix 阶段尝试直接推进至 completed/awaiting_human，被硬守卫拦截 | fromStage, target |
+| `spawn_suppressed.basis=manual_live_probe` | 模型 spawn 调用被抑制，因同名 agent 在 manager 注册表中 live（带外/manual 来源） | stage, agentId, evidenceStage |
+| `on_stage_changed_error` | choose_stage 善后回调（dispatch 执行体）抛错（fail-open，不影响 choose_stage 结果） | stage, error |
+| `pipeline_resume_dispatch_skipped` | dispatchAfterResume 因 name-probe 命中而跳过 spawn（避免同名双开） | stage, agentId, reason |
+
 **Agent 速查表**：
 
 | Agent | 阶段 | 文件名 | 职责 |
