@@ -34,6 +34,9 @@ import { extractFirstUserMessageText, extractLastUserMessageText } from "./sessi
 import { consumePendingSpawns, resolveAgentMention } from "../utils/subagent-rpc";
 import { detectSessionRole } from "./session-role";
 import { escapeRegExp } from "../utils/regex-utils";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen re-popup
+import { dispatchAfterResume } from "../commands/pipeline-start";
+import type { SessionMeta as AgentSettledSessionMeta } from "../types";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -109,10 +112,23 @@ export function createAgentSettled(
         // _ctx, the skip→completed path in flow-state.ts:224 early-returns
         // (short-cut key entry remains unaffected — it passes _ctx directly).
         // Fix #1: if prompt returns "interrupted" (streaming dismiss), arm retry scheduler.
+        // Phase 0 (182): inject onStageChanged callback so choose_stage dispatches the
+        // stage executor automatically (parity with shortcut / pipeline-resume paths).
+        const onStageChangedForSettled = async (freshMeta: AgentSettledSessionMeta): Promise<void> => {
+          const doc = freshMeta.requirementDoc ?? "";
+          await dispatchAfterResume(
+            { session: ctx.session, ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof dispatchAfterResume>[0],
+            config,
+            ui,
+            freshMeta,
+            doc,
+          );
+        };
         const promptOutcome = await promptDecisionMenu(
           { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof promptDecisionMenu>[0],
           meta,
           config,
+          { onStageChanged: onStageChangedForSettled },
         );
         if (promptOutcome === "interrupted") {
           scheduleDecisionRetry(

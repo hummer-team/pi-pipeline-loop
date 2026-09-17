@@ -1055,11 +1055,17 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           // Note: aborted + awaiting_human is handled above (aborted branch takes precedence).
           if (meta.currentStage === "awaiting_human") {
             if (typeof ctx?.ui?.select === "function") {
+              // Phase 0 (182): dispatch stage executor after choose_stage
+              const pipelineUI = createPipelineUI(config);
+              const onStageChanged = async (fresh: SessionMeta): Promise<void> => {
+                const doc = fresh.requirementDoc ?? "";
+                await dispatchAfterResume(ctx, config, pipelineUI, fresh, doc);
+              };
               const menuOutcome = await promptDecisionMenu(
                 { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
                 meta,
                 config,
-                { source: "command" },
+                { source: "command", onStageChanged },
               );
               return {
                 success: menuOutcome === "decided",
@@ -1086,11 +1092,17 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           // No-UI degradation: hint text with configured shortcut key.
           if (flowState === "blocked") {
             if (typeof ctx?.ui?.select === "function") {
+              // Phase 0 (182): dispatch stage executor after choose_stage
+              const pipelineUIForBlocked = createPipelineUI(config);
+              const onStageChangedBlocked = async (fresh: SessionMeta): Promise<void> => {
+                const doc = fresh.requirementDoc ?? "";
+                await dispatchAfterResume(ctx, config, pipelineUIForBlocked, fresh, doc);
+              };
               const menuOutcome = await promptDecisionMenu(
                 { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
                 meta,
                 config,
-                { source: "command" },
+                { source: "command", onStageChanged: onStageChangedBlocked },
               );
               return {
                 success: menuOutcome === "decided",

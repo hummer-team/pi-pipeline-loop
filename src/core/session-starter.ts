@@ -25,6 +25,8 @@ import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
+// Phase 0 (182): dispatch stage executor after choose_stage from frozen replay
+import { dispatchAfterResume } from "../commands/pipeline-start";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -458,8 +460,20 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
               meta,
               config,
               // Phase 3 (173) C8: plan §3.1 dictates source="replay" for all replay reasons
-              // (including startup); "startup" is not in the plan §3.3-④ source vocabulary.
-              { source: "replay" },
+              // (including startup); "startup" is not in the plan §3.3-④ source vocabulary.              // Phase 0 (182): inject onStageChanged for choose_stage dispatch.
+              {
+                source: "replay",
+                onStageChanged: async (fresh: SessionMeta): Promise<void> => {
+                  const doc = fresh.requirementDoc ?? "";
+                  await dispatchAfterResume(
+                    { session: ctx.session, ui, pi: (ctx as any).pi, _ctx: ctx._ctx } as Parameters<typeof dispatchAfterResume>[0],
+                    config,
+                    ui,
+                    fresh,
+                    doc,
+                  );
+                },
+              },
             );
             if (replayOutcome === "interrupted") {
               scheduleDecisionRetry(

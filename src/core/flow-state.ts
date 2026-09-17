@@ -21,6 +21,7 @@ import { DEFAULT_DECISION_SHORTCUT, DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STA
 import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
+import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
 
@@ -174,7 +175,13 @@ export async function executeDecision(
   meta: SessionMeta,
   decision: PipelineDecision,
   config: PipelineConfig,
-  opts?: { source?: string; targetStage?: PipelineStage; basis?: string },
+  opts?: {
+    source?: string;
+    targetStage?: PipelineStage;
+    basis?: string;
+    /** Phase 0 (182): DI callback invoked after choose_stage succeeds. Callers inject dispatchAfterResume. */
+    onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+  },
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
 
@@ -509,6 +516,30 @@ export async function executeDecision(
         );
       }
 
+      // Phase 0 (182): sync status bar immediately after choose_stage so the TUI
+      // reflects the new stage → nextStage pointer without waiting for the next
+      // stageEntry call. Uses the shared syncStageStatusBar helper (same format
+      // as pipeline-start / pipeline-resume).
+      syncStageStatusBar(createPipelineUI(config), ctx);
+
+      // Phase 0 (182): invoke the DI callback (if provided) so the caller can
+      // dispatch the stage executor agent. The callback receives the freshest
+      // meta snapshot (post-updateMeta) to avoid stale-stage dispatch.
+      const freshMetaForCallback = ctx.session.getMeta();
+      if (freshMetaForCallback && opts?.onStageChanged) {
+        try {
+          await opts.onStageChanged(freshMetaForCallback);
+        } catch (err) {
+          // Fail-open: dispatch failure must not break the choose_stage result
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await safeWriteAuditLog("on_stage_changed_error", {
+            pipelineId: meta.pipelineId,
+            stage: target,
+            error: errMsg,
+          }, "error");
+        }
+      }
+
       return { success: true, message: `Pipeline resumed at stage "${target}" (chosen from "${frozenStage}").` };
     }
 
@@ -792,7 +823,13 @@ async function promptStageSelection(
   ctx: FlowStateCtx,
   meta: SessionMeta,
   config: PipelineConfig,
-  opts: { ui: NonNullable<FlowStateCtx["ui"]>; source: string; tuiEnabled: boolean },
+  opts: {
+    ui: NonNullable<FlowStateCtx["ui"]>;
+    source: string;
+    tuiEnabled: boolean;
+    /** Phase 0 (182): forwarded to executeDecision for choose_stage aftermath. */
+    onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+  },
 ): Promise<PromptDecisionOutcome> {
   const { ui, source, tuiEnabled } = opts;
   const inferenceResult = inferResumeStage(meta, config);
@@ -861,6 +898,7 @@ async function promptStageSelection(
       source,
       targetStage,
       basis: inferenceBasis,
+      onStageChanged: opts.onStageChanged,
     });
   }
   return "decided";
@@ -870,7 +908,13 @@ export async function promptDecisionMenu(
   ctx: FlowStateCtx,
   meta: SessionMeta,
   config: PipelineConfig,
-  opts?: { ui?: FlowStateCtx["ui"]; source?: string; directStageSelect?: boolean },
+  opts?: {
+    ui?: FlowStateCtx["ui"];
+    source?: string;
+    directStageSelect?: boolean;
+    /** Phase 0 (182): forwarded to executeDecision via promptStageSelection for choose_stage aftermath. */
+    onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+  },
 ): Promise<PromptDecisionOutcome> {
   const ui = opts?.ui ?? ctx.ui;
   const menu = buildDecisionMenu(meta);
@@ -909,7 +953,7 @@ export async function promptDecisionMenu(
       // they pick a different top-level item in the re-prompted first menu.
       if (opts?.directStageSelect) {
         const freshMeta = ctx.session.getMeta() ?? meta;
-        return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled });
+        return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled, onStageChanged: opts.onStageChanged });
       }
 
       const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
@@ -957,7 +1001,7 @@ export async function promptDecisionMenu(
 
         // Phase 3 (173) C9: choose_stage → secondary menu (via shared helper)
         if (decision === "choose_stage") {
-          return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled });
+          return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled, onStageChanged: opts?.onStageChanged });
         }
 
         await executeDecision(ctx, freshMeta, decision, config, { source });

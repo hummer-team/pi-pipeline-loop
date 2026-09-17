@@ -139,10 +139,13 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         // resolves back to previousStage — read the freshest meta).
         syncStageStatusBar(ui, ctx);
 
-        ui.notify(ctx, `Pipeline resumed at stage "${meta.currentStage}". ${result.message}`);
+        // Phase 0 (182): use fresh meta for the notify text — awaiting_human resume
+        // transitions to previousStage, so the stale `meta.currentStage` would show
+        // the wrong stage name.
+        const freshMeta = ctx.session.getMeta() as SessionMeta;
+        ui.notify(ctx, `Pipeline resumed at stage "${freshMeta.currentStage}". ${result.message}`);
 
         // Stage-aware dispatch: re-spawn the stage subagent if not already live
-        const freshMeta = ctx.session.getMeta() as SessionMeta;
         const stage = freshMeta.currentStage;
 
         if (isSpawnableStage(config, stage)) {

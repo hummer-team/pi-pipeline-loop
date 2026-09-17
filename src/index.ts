@@ -16,6 +16,10 @@ import { safeWriteAuditLog } from "./utils/auditLog";
 import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
+// Phase 0 (182): dispatch stage executor after choose_stage
+import { dispatchAfterResume } from "./commands/pipeline-start";
+import { createPipelineUI } from "./core/pipeline-ui";
+import type { SessionMeta } from "./types";
 
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
@@ -210,6 +214,21 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
 
     // ── Shortcut registration: pipeline decision menu ──
     const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
+    // Phase 0 (182): build the onStageChanged callback once per factory invocation.
+    // Dispatches the stage executor after choose_stage so the TUI reflects the new
+    // stage and the agent is spawned automatically (parity with pipeline-resume).
+    const shortcutPipelineUI = createPipelineUI(config);
+    const onStageChangedForShortcut = async (freshMeta: SessionMeta): Promise<void> => {
+      const doc = freshMeta.requirementDoc ?? "";
+      await dispatchAfterResume(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { session: { getMeta: () => freshMeta, updateMeta: () => freshMeta }, ui: shortcutPipelineUI, pi, _ctx: undefined } as any,
+        config,
+        shortcutPipelineUI,
+        freshMeta,
+        doc,
+      );
+    };
     if (typeof pi.registerShortcut === "function") {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (pi.registerShortcut as any)(shortcutKey, {
@@ -269,7 +288,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
                       { session: rctx.session, ui: rctx.ui, _ctx: (rctx as any)._ctx },
                       freshMeta,
                       config,
-                      { source: "shortcut", directStageSelect: true },
+                      { source: "shortcut", directStageSelect: true, onStageChanged: onStageChangedForShortcut },
                     );
                   } else {
                     // Phase 3 (173) C10④: source tag for audit traceability

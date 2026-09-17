@@ -990,3 +990,82 @@ describe("Phase 1 (171): executeDecision abort enriched fields", () => {
     expect(meta.terminateReason).toBe("user_abort");
   });
 });
+
+// ─── Phase 0 (182): choose_stage onStageChanged callback ─────────────────────
+
+describe("executeDecision choose_stage onStageChanged (Phase 0 / 182)", () => {
+  const config = makeTestConfig();
+
+  it("calls onStageChanged once with fresh meta (currentStage = target) after choose_stage", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const ctx = makeCtx(meta);
+    const callbackMetas: SessionMeta[] = [];
+
+    const result = await executeDecision(ctx, meta, "choose_stage", config, {
+      targetStage: "review",
+      onStageChanged: async (freshMeta) => {
+        callbackMetas.push(freshMeta);
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(callbackMetas).toHaveLength(1);
+    expect(callbackMetas[0].currentStage).toBe("review");
+  });
+
+  it("does not throw when onStageChanged is undefined (default)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const ctx = makeCtx(meta);
+
+    const result = await executeDecision(ctx, meta, "choose_stage", config, {
+      targetStage: "review",
+    });
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("review");
+  });
+
+  it("returns success even when onStageChanged throws (fail-open)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const ctx = makeCtx(meta);
+
+    const result = await executeDecision(ctx, meta, "choose_stage", config, {
+      targetStage: "review",
+      onStageChanged: async () => {
+        throw new Error("dispatch failure");
+      },
+    });
+
+    // choose_stage itself succeeds; callback failure is swallowed
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("review");
+  });
+
+  it("does not call onStageChanged for non-choose_stage decisions", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+    });
+    const ctx = makeCtx(meta);
+    let callCount = 0;
+
+    await executeDecision(ctx, meta, "resume", config, {
+      onStageChanged: async () => { callCount++; },
+    });
+
+    expect(callCount).toBe(0);
+  });
+});
