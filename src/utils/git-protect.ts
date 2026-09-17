@@ -52,11 +52,42 @@ export function hasGitCommitAllFlag(command: string): boolean {
 }
 
 /**
+ * Phase 0 (182): Detects if a git add command contains force flags.
+ * Scans tokens after "add" for -f, --force, or --ignore-removal.
+ * Also handles combined short flags like -fv (git add supports -f combined
+ * with other single-char flags).
+ *
+ * @param command - The git add command string
+ * @returns True if the command includes a force flag
+ */
+export function hasGitAddForceFlag(command: string): boolean {
+  const tokens = tokenize(command);
+  const addIndex = tokens.indexOf("add");
+  if (addIndex < 0) return false;
+  // Scan tokens after "add" for force flags
+  for (let i = addIndex + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--force" || token === "--ignore-removal") return true;
+    // Combined short flags: -f, -fv, -fn, etc.
+    // Match short flag groups (starting with single -) that contain 'f'
+    if (/^-[a-zA-Z]*f[a-zA-Z]*$/.test(token)) return true;
+  }
+  return false;
+}
+
+/**
  * Checks if a single-segment `git add` command would stage protected paths.
  * Uses `git add --dry-run` with pathspec extracted via `tokenize`.
  *
  * Block condition: dry-run output positively shows `add <path>` where
  * `isPathProtectedForGit(path, state)` is true.
+ *
+ * Phase 0 (182): Force flag bypass detection. When `-f`/`--force`/`--ignore-removal`
+ * is present, the normal dry-run would succeed (force overrides gitignore).
+ * Instead, re-run dry-run WITHOUT the force flag. If git rejects the path as
+ * ignored AND the path is protected → block with guidance to use protect.allow.
+ * If the non-force dry-run succeeds or fails for non-ignore reasons → maintain
+ * existing behavior (no upgrade, prevents noise).
  *
  * Degrade to warn: exit≠0, stderr hints (ignored/did not match),
  * exec exception, no execFn.
@@ -88,10 +119,51 @@ export async function checkGitAdd(
     const allTokens = tokenize(command);
     // Find "add" subcommand index and collect remaining tokens as pathspec
     const addIndex = allTokens.indexOf("add");
-    const pathspecTokens = addIndex >= 0 ? allTokens.slice(addIndex + 1) : [];
+    const afterAddTokens = addIndex >= 0 ? allTokens.slice(addIndex + 1) : [];
 
-    // Run dry-run to see what would be added
-    const dryRunArgs = ["add", "--dry-run", ...pathspecTokens];
+    // Phase 0 (182): Force flag bypass detection.
+    // When -f/--force is present, normal dry-run would succeed even for gitignored
+    // paths. Re-run WITHOUT force flags to detect gitignore rejection.
+    const hasForce = hasGitAddForceFlag(command);
+    if (hasForce) {
+      // Strip force flags from pathspec tokens for the non-force dry-run
+      const nonForceTokens = afterAddTokens.filter((t) => {
+        if (t === "--force" || t === "--ignore-removal") return false;
+        // Strip combined short flags containing 'f' (e.g., -fv, -f)
+        if (/^-[a-zA-Z]*f[a-zA-Z]*$/.test(t)) return false;
+        return true;
+      });
+
+      const dryRunNoForceArgs = ["add", "--dry-run", ...nonForceTokens];
+      const noForceResult = await execFn("git", dryRunNoForceArgs, projectRoot);
+
+      if (noForceResult.code !== 0) {
+        const stderrLower = noForceResult.stderr.toLowerCase();
+        if (stderrLower.includes("ignored")) {
+          // Git rejected the path as ignored — this path would ONLY be staged via -f.
+          // Extract the rejected paths from stderr and check if any are protected.
+          // Git stderr format: "The following paths are ignored:\n  path1\n  path2"
+          const ignoredPaths = noForceResult.stderr
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0 && !l.toLowerCase().includes("the following") && !l.toLowerCase().includes("use -f"));
+          for (const ignoredPath of ignoredPaths) {
+            if (isPathProtectedForGit(ignoredPath, state)) {
+              return {
+                block: true,
+                reason: `FORBIDDEN: 'git add -f' would force-stage gitignore-protected path '${ignoredPath}'. Exempt via protect.allow if intentional.`,
+              };
+            }
+          }
+          // Ignored but not protected → fall through to normal check (no block)
+        }
+        // Non-ignore rejection → fall through to normal check
+      }
+      // Non-force dry-run succeeded → path is not gitignored, proceed with normal check
+    }
+
+    // Run dry-run to see what would be added (with original flags including -f if present)
+    const dryRunArgs = ["add", "--dry-run", ...afterAddTokens];
     const result = await execFn("git", dryRunArgs, projectRoot);
 
     // Parse output: "add 'path'" or "add path"

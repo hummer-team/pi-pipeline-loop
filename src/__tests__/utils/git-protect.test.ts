@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import {
-  checkGitAdd, checkGitCommit, hasGitCommitAllFlag,
+  checkGitAdd, checkGitCommit, hasGitCommitAllFlag, hasGitAddForceFlag,
   normalizeSegmentBaseCmd, isGitWriteCommand, isGitReadonlyCommand, isGitForbidden,
 } from "../../utils/git-protect";
 import type { ProtectState } from "../../utils/protect";
@@ -388,5 +388,132 @@ describe("isGitForbidden", () => {
   it("matches with rtk prefix", () => {
     expect(isGitForbidden("rtk git reset --hard HEAD")).toBe(true);
     expect(isGitForbidden("rtk git push -f origin main")).toBe(true);
+  });
+});
+
+// ─── Phase 0 (182): hasGitAddForceFlag ──────────────────────────────────────
+
+describe("hasGitAddForceFlag (Phase 0 / 182)", () => {
+  it("detects -f flag", () => {
+    expect(hasGitAddForceFlag("git add -f docs/file.md")).toBe(true);
+  });
+
+  it("detects --force flag", () => {
+    expect(hasGitAddForceFlag("git add --force docs/file.md")).toBe(true);
+  });
+
+  it("detects --ignore-removal flag", () => {
+    expect(hasGitAddForceFlag("git add --ignore-removal docs/file.md")).toBe(true);
+  });
+
+  it("detects -f in combined flags like -fv", () => {
+    expect(hasGitAddForceFlag("git add -fv docs/")).toBe(true);
+  });
+
+  it("returns false for normal git add", () => {
+    expect(hasGitAddForceFlag("git add docs/file.md")).toBe(false);
+    expect(hasGitAddForceFlag("git add -A .")).toBe(false);
+    expect(hasGitAddForceFlag("git add .")).toBe(false);
+  });
+});
+
+// ─── Phase 0 (182): checkGitAdd force bypass blocking ───────────────────────
+
+describe("checkGitAdd force bypass (Phase 0 / 182)", () => {
+  const state = makeTestProtectState();
+
+  it("force + gitignore rejection + protected path → block with protect.allow guidance", async () => {
+    // Simulate: git add -f .pi/config.json where .pi/ is gitignored
+    // The non-force dry-run would fail with "ignored" stderr
+    const mockExecFn: ExecFn = async (cmd, args, _cwd) => {
+      if (args.includes("--dry-run")) {
+        // Check if this is the non-force re-run (no -f in args)
+        const hasForceInArgs = args.some(a => a === "-f" || a === "--force");
+        if (!hasForceInArgs) {
+          // Non-force dry-run: git rejects as ignored
+          return {
+            stdout: "",
+            stderr: "The following paths are ignored:\n  .pi/config.json\nUse -f if you really want to add it.",
+            code: 1,
+          };
+        }
+        // Force dry-run: would succeed (showing what would be added)
+        return {
+          stdout: "add '.pi/config.json'",
+          stderr: "",
+          code: 0,
+        };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    const result = await checkGitAdd("git add -f .pi/config.json", state, "/project", mockExecFn);
+    expect(result.block).toBe(true);
+    expect(result.reason).toContain("protect.allow");
+    expect(result.reason).toContain("git add -f");
+  });
+
+  it("force + non-protected ignored path → no block", async () => {
+    // docs/design/normal.md is gitignored but NOT protected
+    const mockExecFn: ExecFn = async (cmd, args, _cwd) => {
+      const hasForceInArgs = args.some(a => a === "-f" || a === "--force");
+      if (!hasForceInArgs) {
+        return {
+          stdout: "",
+          stderr: "The following paths are ignored:\n  tmp/cache.md",
+          code: 1,
+        };
+      }
+      return { stdout: "add 'tmp/cache.md'", stderr: "", code: 0 };
+    };
+
+    const result = await checkGitAdd("git add -f tmp/cache.md", state, "/project", mockExecFn);
+    // tmp/ is not in hardcoded protection → no block
+    expect(result.block).toBe(false);
+  });
+
+  it("non-force dry-run reports 'did not match' → no block (noise boundary)", async () => {
+    const mockExecFn: ExecFn = async (cmd, args, _cwd) => {
+      const hasForceInArgs = args.some(a => a === "-f" || a === "--force");
+      if (!hasForceInArgs) {
+        return {
+          stdout: "",
+          stderr: "fatal: pathspec 'nonexistent.md' did not match any files",
+          code: 1,
+        };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+
+    const result = await checkGitAdd("git add -f nonexistent.md", state, "/project", mockExecFn);
+    expect(result.block).toBe(false);
+  });
+
+  it("no -f → behavior identical to baseline (regression)", async () => {
+    // Normal git add without -f should work as before
+    const mockExecFn: ExecFn = async (cmd, args, _cwd) => {
+      return {
+        stdout: "add 'src/index.ts'",
+        stderr: "",
+        code: 0,
+      };
+    };
+
+    const result = await checkGitAdd("git add src/index.ts", state, "/project", mockExecFn);
+    expect(result.block).toBe(false);
+  });
+
+  it("no -f + protected path → block (regression)", async () => {
+    const mockExecFn: ExecFn = async (cmd, args, _cwd) => {
+      return {
+        stdout: "add '.pi/config.json'",
+        stderr: "",
+        code: 0,
+      };
+    };
+
+    const result = await checkGitAdd("git add .pi/config.json", state, "/project", mockExecFn);
+    expect(result.block).toBe(true);
+    expect(result.reason).toContain("protected path");
   });
 });

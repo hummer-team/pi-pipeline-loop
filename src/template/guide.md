@@ -394,13 +394,15 @@ clarify → plan → develop → review ⇄ fix → review (loop) → completed
 | **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
 | **develop** | 按规划编写代码，运行测试，产出 _commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **review** | 审查代码质量，产出 code review 报告；verify 校验 `结论：(通过|不通过)`；结论由模型经 stage_advance 声明：fail→自动转 fix，pass→confirm 门通过后→completed | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
-| **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→review 复验 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
+| **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→review 复验。fix 阶段必须经 review 复验才能进入终态（completed / awaiting_human），不允许直接跳转 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **awaiting_human** | 流水线冻结，等待人工介入（仅用于兜底） | read（受限） |
 | **completed** | 终端状态，流水线结束 | 无 |
 
 **阶段交接流程**：验证模式为 `hook` 时，Agent 完成工作后进入 idle 状态，插件在 `agent_settled` hook 自动执行验证，通过则自动进入下一阶段。配置了 confirm 门的阶段（plan/review），verify 通过后还需通过 confirm 门（TUI 确认对话框）才能推进。
 
 **selfVerifySkip 语义**：develop/fix 配置 `verify.selfVerifySkip: true` 时，插件根据工具调用记录判定模型是否已在本 stage 成功执行过相同 requiredCommand（命令 token 前缀匹配，`./mvnw`/`mvnw` 归一化）。命中且 exitCode=0 则跳过重执行、仅写 audit（`method:"self_verified"`）；此后若有 write/edit 成功记录则失效强制重验。Phase 6 (139) 新增 VERIFIED_COMMANDS 协议识别——子 agent 通过 task 返回的 `VERIFIED_COMMANDS: cmd1,cmd2` 行也计入已验证命令集合。
+
+**commit doc 命名规范**：develop/fix 阶段产出的 `_commit.md` 文件名必须从需求文档 basename 派生（`{reqBase}_*_commit.md`），不得从规划文档名派生。例如需求文档为 `docs/design/182_Bug.md` 时，commit doc 应命名为 `docs/design/182_Bug_dev_commit.md`。验证路径解析器（verify-path-resolver）会自动将 `*_commit.md` glob 收窄至 `docs/design/{reqBase}_*_commit.md`。
 
 **质量环**（review ⇄ fix → review，confirm 通过→completed）：
 - review 声明 `reviewConclusion: "fail"` → 自动转 fix（不经 confirm 门）；声明 pass / 未声明 → verify + confirm 门
@@ -855,12 +857,13 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 
 **拦截机制**：
 - `git add`：使用 `git add --dry-run` 预览将被暂存的文件，命中保护路径则拦截
+- `git add -f`（force）：绕过 gitignore 的强制暂存也会被检测——插件剔除 `-f` 标志后复跑 dry-run，若 git 因 gitignore 拒绝该路径且路径受保护，则同样拦截并提示 `protect.allow` 豁免方式
 - `git commit`：检查 `git diff --cached`（staged 文件）；若带 `-a`/`--all` 还检查 unstaged 文件
 
 **解决**：
 - ⚠️ `allow` **不放开** git 通道 — gitignore 中的路径本不应提交
 - 若确需将 gitignore 中的文件纳入版本管理，先在 `.gitignore` 中移除对应条目
-- 即使使用 `git add -f`（force）也会被 dry-run 拦截
+- `git add -f` 不能绕过保护——force 暂存 gitignore-protected 路径会被拦截
 - 内置硬编码路径（`.pi/`、`AGENTS.md`、`.git/`）始终不可提交
 
 ---

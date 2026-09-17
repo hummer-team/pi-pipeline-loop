@@ -429,3 +429,27 @@ describe("Phase 4 / 176: guide.md groups reference", () => {
     expect(content).toContain("模型确认");
   });
 });
+
+// ─── Phase 0 (182): guide.md commit doc naming + force-add documentation ─────
+
+describe("Phase 0 (182): guide.md documentation additions", () => {
+  const guidePath = path.join(__dirname, "../../template/guide.md");
+  const content = fs.readFileSync(guidePath, "utf-8");
+
+  it("documents commit doc naming convention (derive from requirement doc basename)", () => {
+    expect(content).toContain("commit doc 命名规范");
+    expect(content).toContain("reqBase");
+    expect(content).toContain("_commit.md");
+  });
+
+  it("documents force-add bypass blocking", () => {
+    expect(content).toContain("git add -f");
+    expect(content).toContain("force");
+    expect(content).toContain("protect.allow");
+  });
+
+  it("documents fix must route through review (no terminal bypass)", () => {
+    expect(content).toContain("fix");
+    expect(content).toContain("review 复验");
+  });
+});
