@@ -32,6 +32,9 @@ import { AUDIT_THROTTLE_WINDOW_MS, CONFIRM_GATE_REASK_MAX, PIPELINE_TURN_SIGNATU
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
 import { consumePendingSpawns, resolveAgentMention } from "../utils/subagent-rpc";
+import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
+// Phase 0 (182) G5: name-probe for advance liveness guard
+import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { detectSessionRole } from "./session-role";
 import { escapeRegExp } from "../utils/regex-utils";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen re-popup
@@ -249,6 +252,45 @@ export function createAgentSettled(
         // Clear the flags to prevent residual state
         ctx.session.updateMeta({ advancedThisTurn: undefined, reviewConclusionDeclared: undefined });
         return;
+      }
+
+      // Phase 0 (182) G5: Advance liveness guard.
+      // While the expected stage executor (any source — plugin-dispatched or
+      // manual/out-of-band) is live, the owner settle must NOT trigger auto-advance.
+      // This prevents the race condition where the owner settle fires before the
+      // child executor has finished, causing premature stage advancement.
+      //
+      // Fail-open: when both probes return null/miss (unknown), advance is allowed
+      // to proceed (preserves existing automation behavior).
+      // Child sessions skip this guard (they have their own settle semantics).
+      try {
+        const { isChild } = detectSessionRole(ctx);
+        if (!isChild) {
+          const expectedAgent = resolveAgentMention(config, meta.currentStage);
+          if (expectedAgent) {
+            const evidenceHit = scanActiveSpawnEvidence(meta.activeSpawns, expectedAgent);
+            const nameProbeHit = !evidenceHit ? findLiveAgentByName(expectedAgent) : null;
+            const liveEvidence = evidenceHit ?? (nameProbeHit ? { basis: "manual_live_probe" as const, agentId: nameProbeHit.agentId, stage: meta.currentStage } : null);
+            if (liveEvidence) {
+              await writeAuditLog("advance_deferred_stage_agent_live", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                expectedAgent,
+                basis: liveEvidence.basis,
+                ...(liveEvidence.agentId ? { agentId: liveEvidence.agentId } : {}),
+              });
+              return;
+            }
+          }
+        }
+      } catch (err) {
+        // Fail-open: liveness guard error must not block the settle flow
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await writeAuditLog("advance_guard_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: errMsg,
+        }, "warn");
       }
 
       // 163 Goal 2: audit when review stage settles without a reviewConclusion declaration.
