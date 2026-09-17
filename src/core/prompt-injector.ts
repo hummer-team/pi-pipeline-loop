@@ -989,3 +989,200 @@ async function buildStageDeliverables(
 
   return `# STAGE DELIVERABLES (PLUGIN)\n${rendered}${namingSuffix}`;
 }
+
+// ─── skillsDedup: gated deduplication of <available_skills> blocks ──────────
+
+/** Contract header line from pi skills.js:281 */
+const SKILLS_INTRO_LINE = "The following skills provide specialized instructions for specific tasks.";
+
+/** Result of the skillsDedup pure function */
+export interface SkillsDedupResult {
+  /** Deduplicated prompt (byte-identical to input when no-op) */
+  prompt: string;
+  /** Number of duplicate pairs removed (0 = no-op) */
+  removedPairs: number;
+  /** Net bytes removed */
+  removedBytes: number;
+  /** Set only on abnormal paths (fail-open) */
+  skippedReason?: "mismatch" | "malformed";
+}
+
+/** Represents a matched pair: header line → closing tag line (inclusive) */
+interface SkillPairRange {
+  start: number;
+  end: number;
+}
+
+/** Count non-overlapping occurrences of needle in haystack */
+function countNeedle(haystack: string, needle: string): number {
+  let count = 0;
+  let pos = 0;
+  while (true) {
+    const idx = haystack.indexOf(needle, pos);
+    if (idx === -1) break;
+    count++;
+    pos = idx + needle.length;
+  }
+  return count;
+}
+
+/**
+ * Extract skill pairs from prompt lines.
+ * Each pair: header line (SKILLS_INTRO_LINE) → nearest </available_skills> line.
+ * Between them, an <available_skills> open tag must exist.
+ */
+function extractSkillPairs(lines: string[]): SkillPairRange[] {
+  const pairs: SkillPairRange[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim() !== SKILLS_INTRO_LINE) continue;
+    // Find nearest </available_skills> after header
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() !== "</available_skills>") continue;
+      // Verify <available_skills> open tag exists between header and closing
+      let hasOpen = false;
+      for (let k = i + 1; k < j; k++) {
+        if (lines[k].includes("<available_skills>")) {
+          hasOpen = true;
+          break;
+        }
+      }
+      if (!hasOpen) return pairs; // signal malformed to caller
+      pairs.push({ start: i, end: j });
+      i = j; // advance past this pair
+      break;
+    }
+  }
+  return pairs;
+}
+
+/** Check if all pairs have an open tag between start and end */
+function allPairsHaveOpenTag(lines: string[], pairs: SkillPairRange[]): boolean {
+  for (const { start, end } of pairs) {
+    let found = false;
+    for (let k = start + 1; k < end; k++) {
+      if (lines[k].includes("<available_skills>")) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+/** Extract trimmed block text for a pair (start..end inclusive) */
+function pairBlockText(lines: string[], pair: SkillPairRange): string {
+  return lines.slice(pair.start, pair.end + 1).join("\n").trim();
+}
+
+/** Find index of last line matching "Current working directory:" prefix */
+function findLastCwdLineIndex(lines: string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].trimStart().startsWith("Current working directory:")) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Find index of first non-empty line starting from `from` */
+function findNextNonEmpty(lines: string[], from: number): number {
+  for (let i = from; i < lines.length; i++) {
+    if (lines[i].trim() !== "") return i;
+  }
+  return -1;
+}
+
+/** Check if a line is a cwd line */
+function isCwdLine(line: string): boolean {
+  return line.trimStart().startsWith("Current working directory:");
+}
+
+/** Check if a line index falls within any removal range */
+function isInAnyRemovalRange(idx: number, ranges: Array<[number, number]>): boolean {
+  for (const [lo, hi] of ranges) {
+    if (idx >= lo && idx <= hi) return true;
+  }
+  return false;
+}
+
+/**
+ * Gated deduplication of `<available_skills>` blocks in the system prompt.
+ *
+ * Removes duplicate blocks that arise when pi-subagents append-mode subagent
+ * sessions receive the block both from the parent prompt and pi core
+ * unconditional append. Only triggers when:
+ * - At least 2 well-formed pairs exist (header + open tag + closing tag)
+ * - All pairs are byte-identical (after trim)
+ *
+ * Strategy: keep the LAST pair, remove all preceding ones.
+ * For each removed pair, also removes the immediately following non-empty
+ * "Current working directory:" line if it matches the prompt's last such line.
+ *
+ * Fail-open: any structural anomaly returns the original prompt unchanged.
+ *
+ * @param prompt - The raw system prompt string
+ * @returns Deduplication result with the processed prompt and metadata
+ */
+export function skillsDedup(prompt: string): SkillsDedupResult {
+  const noop: SkillsDedupResult = { prompt, removedPairs: 0, removedBytes: 0 };
+
+  try {
+    // Short-circuit: fewer than 2 opening tags → no duplication possible
+    if (countNeedle(prompt, "<available_skills>") < 2) return noop;
+
+    const lines = prompt.split("\n");
+    const pairs = extractSkillPairs(lines);
+
+    // Fewer than 2 complete pairs → no-op
+    if (pairs.length < 2) return noop;
+
+    // Validate: all pairs must have <available_skills> between header and closing tag
+    if (!allPairsHaveOpenTag(lines, pairs)) {
+      return { ...noop, skippedReason: "malformed" };
+    }
+
+    // Byte-identity check across all pairs (trimmed block comparison)
+    const referenceText = pairBlockText(lines, pairs[0]);
+    for (let i = 1; i < pairs.length; i++) {
+      if (pairBlockText(lines, pairs[i]) !== referenceText) {
+        return { ...noop, skippedReason: "mismatch" };
+      }
+    }
+
+    // All pairs identical → keep last, remove all preceding
+    const pairsToRemove = pairs.slice(0, -1);
+    const lastCwdIdx = findLastCwdLineIndex(lines);
+    const removeRanges: Array<[number, number]> = [];
+
+    for (const pair of pairsToRemove) {
+      let rangeEnd = pair.end;
+      // Check if next non-empty line after closing tag is a cwd line matching the last
+      const nextNonEmpty = findNextNonEmpty(lines, pair.end + 1);
+      if (nextNonEmpty !== -1 && isCwdLine(lines[nextNonEmpty]) && lastCwdIdx !== -1) {
+        if (lines[nextNonEmpty] === lines[lastCwdIdx]) {
+          rangeEnd = nextNonEmpty; // include cwd line in removal
+        }
+      }
+      removeRanges.push([pair.start, rangeEnd]);
+    }
+
+    // Build result by excluding removed line ranges
+    const keptLines: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!isInAnyRemovalRange(i, removeRanges)) {
+        keptLines.push(lines[i]);
+      }
+    }
+
+    const result = keptLines.join("\n");
+    return {
+      prompt: result,
+      removedPairs: pairsToRemove.length,
+      removedBytes: prompt.length - result.length,
+    };
+  } catch {
+    // Any internal error → fail-open with malformed
+    return { ...noop, skippedReason: "malformed" };
+  }
+}
