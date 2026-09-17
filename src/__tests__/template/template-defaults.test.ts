@@ -21,6 +21,7 @@ import { PLAN_CONFIRM_MARKER_RULE } from "../../core/stage-advancer";
 import { evaluateGroups } from "../../core/verifiers/group-verifier";
 import { resolvePlaceholders } from "../../core/verify-path-resolver";
 import { parseFrontmatter, type VerifyRules } from "../../core/verify-frontmatter";
+import { COMMIT_DOC_NAMING_CONSTRAINT } from "../../constants";
 
 // ─── C13: Template default fields ────────────────────────────────────────────
 
@@ -458,8 +459,6 @@ describe("Phase 0 (182): guide.md documentation additions", () => {
 
 describe("Phase 3 (182): COMMIT_DOC_NAMING_CONSTRAINT constant & injection", () => {
   it("COMMIT_DOC_NAMING_CONSTRAINT is exported and contains the naming rule", () => {
-    // Dynamic require to avoid circular import issues at module top-level
-    const { COMMIT_DOC_NAMING_CONSTRAINT } = require("../../constants");
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toBeDefined();
     expect(typeof COMMIT_DOC_NAMING_CONSTRAINT).toBe("string");
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("*_commit.md");

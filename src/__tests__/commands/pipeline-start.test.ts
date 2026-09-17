@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { createPipelineStartCommand, collectStagesFrom, buildResumeVisitOrder } from "../../commands/pipeline-start";
+import { createPipelineStartCommand, collectStagesFrom, buildResumeVisitOrder, dispatchAfterResume } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 import { buildStageSequence } from "../../utils/stage-sequence";
@@ -688,20 +688,17 @@ describe("Phase 4 (182): dispatchAfterResume name-probe live skip", () => {
       sendUserMessage: () => {},
     };
 
-    const { dispatchAfterResume } = await import("../../commands/pipeline-start");
     await dispatchAfterResume(ctx as any, config, ctx.ui as any, meta, "docs/req.md");
 
     // Should notify about already running agent
     const skipNotify = notifications.find(n => n.includes("already running") && n.includes("develop-agent"));
     expect(skipNotify).toBeDefined();
-    // Verify audit event for skip
-    const auditPath = path.join(TMP, ".pi", "audit", (await import("../../utils/auditLog")).getDateAuditFileName());
-    try {
+    // Verify audit event for skip — check file existence explicitly to avoid try/catch swallowing assertion failures
+    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    if (fsSync.existsSync(auditPath)) {
       const auditContent = await fs.readFile(auditPath, "utf-8");
       expect(auditContent).toContain("pipeline_resume_dispatch_skipped");
       expect(auditContent).toContain("manual_live_probe");
-    } catch {
-      // Audit file may not exist in some test configs — the notify assertion above is the primary check
     }
   });
 });

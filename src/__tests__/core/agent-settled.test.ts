@@ -2524,23 +2524,48 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     await rm(TMP5, { recursive: true, force: true });
   });
 
-  // Phase 5 (182) ⑤: double settle race → advance happens at most once
-  it("double owner settle race with live evidence → advance deferred each time (no double advance)", async () => {
+  // Phase 5 (182) ⑤: double settle race (owner×2 + child×1) → advance exactly once
+  // Scenario: owner-settle (live evidence, deferred) → child-settle (guard skipped, advance fires)
+  //           → owner-settle (already advanced, no second advance)
+  // The positive assertion: stage_advance audit count is exactly 1 after all three settles.
+  it("owner-settle deferred + child-settle + owner-settle → advance exactly once to review", async () => {
     const TMP5 = join(tmpdir(), "pi-advance-guard-5-" + Date.now());
     await mkdir(join(TMP5, ".pi", "audit"), { recursive: true });
     await mkdir(join(TMP5, "agents"), { recursive: true });
     // Create agent file so resolveAgentMention can find "develop-agent"
     await writeFile(join(TMP5, "agents", "test-agent.md"), "---\nname: develop-agent\n---\n# Agent\n");
-    const config = makeTestConfig({ projectRoot: TMP5 });
+
+    // Set up verify infrastructure so advance can happen when guard allows
+    const vrDir = join(TMP5, "references", "develop_spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nBody\n",
+    );
+    await writeFile(join(TMP5, "exists.md"), "content");
+
+    const config = makeTestConfig({
+      projectRoot: TMP5,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "agents/test-agent.md",
+              skillPath: "s.md",
+              nextStage: (a[i + 1] ?? null) as PipelineStage | null,
+              requireDomain: false,
+              verify: s === "develop"
+                ? { require: true, verifyFile: "references/develop_spec/verify.md", mode: "hook" as const }
+                : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
     await initAuditLog(config);
 
-    // Install manager so probeAgentState returns "live" for the agentId
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: (id: string) => (id === "agent-race-test" ? { status: "running" } : undefined),
-      hasRunning: () => true,
-    };
-
-    // ActiveSpawns has a live agent — guard should fire and defer advance
+    // Shared meta — mutations visible to all settle calls
     const meta = makeTestMeta({
       currentStage: "develop",
       flowState: "running",
@@ -2552,32 +2577,62 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
         },
       },
     });
-    const ctx = createMockCtx(meta);
-    (ctx._ctx.sessionManager as any).getBranch = () => [];
 
     const hook = createAgentSettled(config);
 
-    // Simulate double settle (race): fire the handler twice
-    await hook.handler(ctx as any);
-    await hook.handler(ctx as any);
+    // ── Step 1: owner-settle #1 with live evidence → advance DEFERRED ──
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => (id === "agent-race-test" ? { status: "running" } : undefined),
+      hasRunning: () => true,
+      listRecords: () => [{ id: "agent-race-test", name: "develop-agent", status: "running" }],
+    };
 
-    // Stage must remain "develop" — guard deferred both times
+    const ownerCtx = createMockCtx(meta);
+    (ownerCtx._ctx.sessionManager as any).getBranch = () => [];
+    await hook.handler(ownerCtx as any);
+
+    // Stage must remain "develop" — guard deferred
     expect(meta.currentStage).toBe("develop");
 
-    // Audit should contain advance_deferred (guard fired), but stage never advanced
+    // ── Step 2: child-settle (guard is owner-only → skipped, verify fires) ──
+    // Clear activeSpawns evidence so verify path succeeds (child guard skipped)
+    delete meta.activeSpawns;
+
+    const childCtx = createMockCtx(meta, {
+      sessionHeader: { parentSession: "parent-session-id" },
+      sessionName: "agent#child001",
+      sessionFile: "child-session",
+    });
+    (childCtx._ctx.sessionManager as any).getBranch = () => [];
+    await hook.handler(childCtx as any);
+
+    // Child settle with no guard and verify passing → advance to review
+    expect(meta.currentStage).toBe("review");
+
+    // ── Step 3: owner-settle #2 (already at review, no second advance) ──
+    // Remove manager to ensure no evidence blocks
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+
+    const ownerCtx2 = createMockCtx(meta);
+    (ownerCtx2._ctx.sessionManager as any).getBranch = () => [];
+    await hook.handler(ownerCtx2 as any);
+
+    // Stage stays at "review" — no double advance
+    expect(meta.currentStage).toBe("review");
+
+    // Audit assertions: exactly 1 stage_advance event (develop → review)
     const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
-    let auditContent = "";
-    try {
-      auditContent = await readFile(auditPath, "utf-8");
-    } catch {
-      // File may not exist
-    }
+    const auditContent = await readFile(auditPath, "utf-8");
+
+    // Guard fired once (step 1 deferred)
     expect(auditContent).toContain("advance_deferred_stage_agent_live");
-    // No stage_advance event should be present (advance was deferred both times)
-    expect(auditContent).not.toContain("stage_advance");
+
+    // Count stage_advance events — must be exactly 1 (not 0, not 2+)
+    const advanceMatches = auditContent.match(/stage_advance/g);
+    expect(advanceMatches).not.toBeNull();
+    expect(advanceMatches!.length).toBe(1);
 
     // Cleanup
-    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
     await rm(TMP5, { recursive: true, force: true });
   });
 });

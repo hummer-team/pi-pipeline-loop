@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { createPipeline } from "../index";
 import { makeTestConfig, makeTestMeta } from "./helpers";
 import { PIPELINE_META_CUSTOM_TYPE } from "../core/session-state";
-import { mkdir, rm, readFile } from "node:fs/promises";
+import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName } from "../utils/auditLog";
@@ -431,6 +431,101 @@ describe("registerShortcut bridge", () => {
     await factory(pi);
 
     expect(registeredShortcuts[0].options.description).toBe("Pipeline decision menu");
+  });
+});
+
+// ─── Phase 0 (182): shortcut handler → choose_stage → dispatch transparency ──
+
+describe("Phase 0 (182): shortcut handler → choose_stage → dispatch transparency", () => {
+  it("shortcut handler → choose_stage → sendUserMessage called once with target agent name", async () => {
+    const TMP = join(tmpdir(), "pi-shortcut-dispatch-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP, "agents"), { recursive: true });
+    // Create agent file so resolveAgentMention can find the review agent name
+    await writeFile(join(TMP, "agents", "review-agent.md"), "---\nname: review-agent\n---\n# Agent\n");
+
+    // Build config with review stage pointing to the test agent file
+    const baseConfig = makeTestConfig();
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        ...baseConfig.stages,
+        review: {
+          agentPath: "./agents/review-agent.md",
+          skillPath: "test-skill/SKILL.md",
+          nextStage: "fix" as const,
+          requireDomain: false,
+        },
+      },
+    });
+    await initAuditLog(config);
+
+    // Frozen meta so the decision menu appears with 6 items
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      requirementDoc: "docs/req.md",
+    });
+
+    const sendUserMessageCalls: string[] = [];
+    let selectCallCount = 0;
+    const trackedShortcuts: Array<{ key: string; options: Record<string, unknown> }> = [];
+
+    // Build a mock pi that tracks shortcuts and captures sendUserMessage calls
+    const pi = {
+      on: () => {},
+      registerTool: () => {},
+      registerCommand: () => {},
+      registerShortcut: (key: string, options: Record<string, unknown>) => {
+        trackedShortcuts.push({ key, options });
+      },
+      appendEntry: () => {},
+      exec: undefined,
+      sendUserMessage: (msg: string) => {
+        sendUserMessageCalls.push(msg);
+      },
+    } as any;
+
+    const factory = createPipeline(config);
+    await factory(pi);
+
+    expect(trackedShortcuts.length).toBe(1);
+    const handler = trackedShortcuts[0].options.handler as Function;
+
+    const extCtx = {
+      ui: {
+        notify: () => {},
+        setStatus: () => {},
+        select: async (_msg: string, _options: string[]) => {
+          selectCallCount++;
+          // First select: shortcut handler's decision menu → "Choose stage…"
+          if (selectCallCount === 1) return "Choose stage…";
+          // Second select: promptStageSelection's stage list → "review"
+          if (selectCallCount === 2) return "review";
+          return undefined;
+        },
+      },
+      sessionManager: {
+        getEntries: () => [{
+          type: "custom",
+          customType: PIPELINE_META_CUSTOM_TYPE,
+          data: meta,
+        }],
+        getBranch: () => [],
+      },
+    } as any;
+
+    await handler(extCtx);
+
+    // Primary assertion: sendUserMessage called exactly once (dispatch happened)
+    expect(sendUserMessageCalls.length).toBe(1);
+    // The fallback message contains @agentName mention
+    expect(sendUserMessageCalls[0]).toContain("@review-agent");
+    // And references the target stage
+    expect(sendUserMessageCalls[0]).toContain("review");
+
+    await rm(TMP, { recursive: true, force: true });
   });
 });
 
