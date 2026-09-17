@@ -2333,11 +2333,21 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
   it("defers advance when activeSpawns evidence shows live executor", async () => {
     const TMP5 = join(tmpdir(), "pi-advance-guard-1-" + Date.now());
     await mkdir(join(TMP5, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP5, "agents"), { recursive: true });
+    // Create agent file so resolveAgentMention can find "develop-agent"
+    await writeFile(join(TMP5, "agents", "test-agent.md"), "---\nname: develop-agent\n---\n# Agent\n");
     const config = makeTestConfig({ projectRoot: TMP5 });
     await initAuditLog(config);
 
+    // Install manager so probeAgentState("agent-123") returns "live"
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => (id === "agent-123" ? { status: "running" } : undefined),
+      hasRunning: () => true,
+    };
+
     const meta = makeTestMeta({
       currentStage: "develop",
+      flowState: "running",
       // Simulate activeSpawns with a live agent
       activeSpawns: {
         develop: {
@@ -2363,17 +2373,20 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     }
     // Primary assertion: stage was not advanced (guard either fired or early-return preserved state)
     expect(meta.currentStage).toBe("develop");
-    // Secondary assertion: if audit was written, it should contain the defer event
-    if (auditContent.includes("advance_deferred")) {
-      expect(auditContent).toContain("advance_deferred_stage_agent_live");
-    }
+    // Explicit assertion: audit must contain the defer event exactly once
+    expect(auditContent).toContain("advance_deferred_stage_agent_live");
 
+    // Cleanup
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
     await rm(TMP5, { recursive: true, force: true });
   });
 
   it("defers advance when name-probe finds live agent (manual spawn)", async () => {
     const TMP5 = join(tmpdir(), "pi-advance-guard-2-" + Date.now());
     await mkdir(join(TMP5, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP5, "agents"), { recursive: true });
+    // Create agent file so resolveAgentMention can find "develop-agent"
+    await writeFile(join(TMP5, "agents", "test-agent.md"), "---\nname: develop-agent\n---\n# Agent\n");
     const config = makeTestConfig({ projectRoot: TMP5 });
     await initAuditLog(config);
 
@@ -2387,6 +2400,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
 
     const meta = makeTestMeta({
       currentStage: "develop",
+      flowState: "running",
       // No activeSpawns evidence (manual spawn not in ledger)
     });
     const ctx = createMockCtx(meta);
@@ -2405,11 +2419,9 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     }
     // Primary assertion: stage not advanced
     expect(meta.currentStage).toBe("develop");
-    // Secondary assertion: if audit contains defer event, verify basis
-    if (auditContent.includes("advance_deferred")) {
-      expect(auditContent).toContain("advance_deferred_stage_agent_live");
-      expect(auditContent).toContain("manual_live_probe");
-    }
+    // Explicit assertion: audit must contain the defer event with manual_live_probe basis
+    expect(auditContent).toContain("advance_deferred_stage_agent_live");
+    expect(auditContent).toContain("manual_live_probe");
 
     // Cleanup
     delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
@@ -2419,6 +2431,9 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
   it("does not defer when no evidence (fail-open)", async () => {
     const TMP5 = join(tmpdir(), "pi-advance-guard-3-" + Date.now());
     await mkdir(join(TMP5, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP5, "agents"), { recursive: true });
+    // Create agent file so resolveAgentMention can find "develop-agent"
+    await writeFile(join(TMP5, "agents", "test-agent.md"), "---\nname: develop-agent\n---\n# Agent\n");
     const config = makeTestConfig({ projectRoot: TMP5 });
     await initAuditLog(config);
 
@@ -2427,6 +2442,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
 
     const meta = makeTestMeta({
       currentStage: "develop",
+      flowState: "running",
       // No verify.require → settle returns early before advance check
     });
     const ctx = createMockCtx(meta);
@@ -2437,15 +2453,131 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
 
     // Verify no defer audit (guard didn't fire because no evidence → fail-open)
     const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
-    // Audit file may not exist if nothing was written, which is the expected behavior
+    // Read audit file if it exists; either outcome (missing file or file without defer event) is valid
+    let auditContent = "";
     try {
-      const auditContent = await readFile(auditPath, "utf-8");
-      expect(auditContent).not.toContain("advance_deferred_stage_agent_live");
+      auditContent = await readFile(auditPath, "utf-8");
     } catch {
       // File not existing is also valid (nothing was written)
-      expect(true).toBe(true);
     }
+    // Explicit assertion: stage unchanged, and no defer event was written
+    expect(meta.currentStage).toBe("develop");
+    expect(auditContent).not.toContain("advance_deferred_stage_agent_live");
 
+    await rm(TMP5, { recursive: true, force: true });
+  });
+
+  // Phase 5 (182) ④: child settle → guard does NOT fire
+  it("child settle does not trigger liveness guard (guard is owner-only)", async () => {
+    const TMP5 = join(tmpdir(), "pi-advance-guard-4-" + Date.now());
+    await mkdir(join(TMP5, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP5, "agents"), { recursive: true });
+    // Create agent file so resolveAgentMention can find "develop-agent"
+    await writeFile(join(TMP5, "agents", "test-agent.md"), "---\nname: develop-agent\n---\n# Agent\n");
+    const config = makeTestConfig({ projectRoot: TMP5 });
+    await initAuditLog(config);
+
+    // Install manager so probeAgentState returns "live" for the agentId
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => (id === "agent-child-test" ? { status: "running" } : undefined),
+      hasRunning: () => true,
+    };
+
+    // ActiveSpawns has a live agent — normally the guard would fire for owner settle
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "running",
+      activeSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          agentId: "agent-child-test",
+          startedAt: Date.now(),
+        },
+      },
+    });
+    // Child session context: parentSession header present
+    const ctx = createMockCtx(meta, {
+      sessionHeader: { parentSession: "parent-session-id" },
+      sessionName: "agent#child001",
+      sessionFile: "child-session",
+    });
+    (ctx._ctx.sessionManager as any).getBranch = () => [];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Stage unchanged (child settle has its own semantics, guard skipped)
+    expect(meta.currentStage).toBe("develop");
+
+    // Audit should NOT contain advance_deferred for child settle
+    const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    let auditContent = "";
+    try {
+      auditContent = await readFile(auditPath, "utf-8");
+    } catch {
+      // File may not exist
+    }
+    expect(auditContent).not.toContain("advance_deferred_stage_agent_live");
+
+    // Cleanup
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+    await rm(TMP5, { recursive: true, force: true });
+  });
+
+  // Phase 5 (182) ⑤: double settle race → advance happens at most once
+  it("double owner settle race with live evidence → advance deferred each time (no double advance)", async () => {
+    const TMP5 = join(tmpdir(), "pi-advance-guard-5-" + Date.now());
+    await mkdir(join(TMP5, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP5, "agents"), { recursive: true });
+    // Create agent file so resolveAgentMention can find "develop-agent"
+    await writeFile(join(TMP5, "agents", "test-agent.md"), "---\nname: develop-agent\n---\n# Agent\n");
+    const config = makeTestConfig({ projectRoot: TMP5 });
+    await initAuditLog(config);
+
+    // Install manager so probeAgentState returns "live" for the agentId
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => (id === "agent-race-test" ? { status: "running" } : undefined),
+      hasRunning: () => true,
+    };
+
+    // ActiveSpawns has a live agent — guard should fire and defer advance
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "running",
+      activeSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          agentId: "agent-race-test",
+          startedAt: Date.now(),
+        },
+      },
+    });
+    const ctx = createMockCtx(meta);
+    (ctx._ctx.sessionManager as any).getBranch = () => [];
+
+    const hook = createAgentSettled(config);
+
+    // Simulate double settle (race): fire the handler twice
+    await hook.handler(ctx as any);
+    await hook.handler(ctx as any);
+
+    // Stage must remain "develop" — guard deferred both times
+    expect(meta.currentStage).toBe("develop");
+
+    // Audit should contain advance_deferred (guard fired), but stage never advanced
+    const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    let auditContent = "";
+    try {
+      auditContent = await readFile(auditPath, "utf-8");
+    } catch {
+      // File may not exist
+    }
+    expect(auditContent).toContain("advance_deferred_stage_agent_live");
+    // No stage_advance event should be present (advance was deferred both times)
+    expect(auditContent).not.toContain("stage_advance");
+
+    // Cleanup
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
     await rm(TMP5, { recursive: true, force: true });
   });
 });

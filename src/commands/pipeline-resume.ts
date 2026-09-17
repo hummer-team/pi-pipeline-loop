@@ -199,7 +199,12 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
           );
 
           if (menuOutcome === "decided") {
-            // Decision executed (status bar already synced by Phase 0 onStageChanged).
+            // Decision executed. Status bar sync is unconditional here because
+            // executeDecision only syncs for choose_stage decisions (flow-state.ts);
+            // for resume/skip/rollback/restart, we must sync explicitly to keep
+            // the bar reflecting the post-decision stage (Phase 0 / 182).
+            syncStageStatusBar(ui, ctx);
+
             // Idempotent dispatch guard: if the decision did NOT involve choose_stage
             // (e.g. "resume"), the onStageChanged callback was not invoked, so we
             // still need the dispatch. Check if the pipeline is still frozen — if

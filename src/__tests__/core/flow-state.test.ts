@@ -1069,3 +1069,65 @@ describe("executeDecision choose_stage onStageChanged (Phase 0 / 182)", () => {
     expect(callCount).toBe(0);
   });
 });
+
+// ─── Phase 6 (182): frozen@fix menu filtering ────────────────────────────────
+
+describe("Phase 6 (182): frozen@fix secondary menu filtering", () => {
+  const config = makeTestConfig();
+
+  it("frozen@fix: secondary stage menu does NOT include 'completed'", async () => {
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      pipelineId: "pipe-fix-menu-1",
+    });
+
+    // Capture the menu items passed to ui.select
+    let capturedItems: string[] = [];
+    const ctx = makeCtx(meta, {
+      select: async (_msg: string, options: string[]) => {
+        capturedItems = [...options];
+        return "review"; // Pick review to complete the menu
+      },
+    });
+
+    await promptDecisionMenu(ctx, meta, config, {
+      source: "test",
+      directStageSelect: true,
+    });
+
+    // The menu items should NOT contain "completed"
+    expect(capturedItems).not.toContain("completed");
+    // But should still contain the other stages (note: inferred default shows as "fix (default)")
+    expect(capturedItems).toContain("review");
+    expect(capturedItems).toContain("develop");
+    // "fix" may appear as "fix (default)" when it's the inferred stage
+    expect(capturedItems.some(item => item === "fix" || item.startsWith("fix "))).toBe(true);
+  });
+
+  it("frozen@develop: secondary stage menu DOES include 'completed' (regression)", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      pipelineId: "pipe-dev-menu-1",
+    });
+
+    let capturedItems: string[] = [];
+    const ctx = makeCtx(meta, {
+      select: async (_msg: string, options: string[]) => {
+        capturedItems = [...options];
+        return "review";
+      },
+    });
+
+    await promptDecisionMenu(ctx, meta, config, {
+      source: "test",
+      directStageSelect: true,
+    });
+
+    // For non-fix stages, "completed" must be present
+    expect(capturedItems).toContain("completed");
+  });
+});

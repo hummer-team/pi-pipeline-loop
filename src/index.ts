@@ -253,7 +253,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           const onStageChangedForShortcut = async (freshMeta: SessionMeta): Promise<void> => {
             const doc = freshMeta.requirementDoc ?? "";
             await dispatchAfterResume(
-              { session: rctx.session, ui: rctx.ui, _ctx: (rctx as any)._ctx },
+              { session: rctx.session, ui: rctx.ui, pi: rctx.pi, _ctx: (rctx as any)._ctx },
               config,
               shortcutPipelineUI,
               freshMeta,

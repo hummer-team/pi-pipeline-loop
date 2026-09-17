@@ -456,24 +456,28 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
                 `Resuming from "${inferred}" by inference${basisSuffix}. ${formatDecisionMenuHint(config)}`
               );
             }
+            // Phase 0 (182): inject onStageChanged for choose_stage dispatch.
+            // Extracted to a variable so both promptDecisionMenu and
+            // scheduleDecisionRetry (retry path) share the same callback.
+            const onStageChangedForReplay = async (fresh: SessionMeta): Promise<void> => {
+              const doc = fresh.requirementDoc ?? "";
+              await dispatchAfterResume(
+                { session: ctx.session, ui, pi: (ctx as any).pi, _ctx: ctx._ctx } as Parameters<typeof dispatchAfterResume>[0],
+                config,
+                ui,
+                fresh,
+                doc,
+              );
+            };
             const replayOutcome = await promptDecisionMenu(
               { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
               meta,
               config,
               // Phase 3 (173) C8: plan §3.1 dictates source="replay" for all replay reasons
-              // (including startup); "startup" is not in the plan §3.3-④ source vocabulary.              // Phase 0 (182): inject onStageChanged for choose_stage dispatch.
+              // (including startup); "startup" is not in the plan §3.3-④ source vocabulary.
               {
                 source: "replay",
-                onStageChanged: async (fresh: SessionMeta): Promise<void> => {
-                  const doc = fresh.requirementDoc ?? "";
-                  await dispatchAfterResume(
-                    { session: ctx.session, ui, pi: (ctx as any).pi, _ctx: ctx._ctx } as Parameters<typeof dispatchAfterResume>[0],
-                    config,
-                    ui,
-                    fresh,
-                    doc,
-                  );
-                },
+                onStageChanged: onStageChangedForReplay,
               },
             );
             if (replayOutcome === "interrupted") {
@@ -481,6 +485,8 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
                 { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
                 meta,
                 config,
+                1,
+                { onStageChanged: onStageChangedForReplay },
               );
             }
           }

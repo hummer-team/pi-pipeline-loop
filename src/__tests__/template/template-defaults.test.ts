@@ -453,3 +453,17 @@ describe("Phase 0 (182): guide.md documentation additions", () => {
     expect(content).toContain("review 复验");
   });
 });
+
+// ─── Phase 3 (182): COMMIT_DOC_NAMING_CONSTRAINT constant & prompt injection ─
+
+describe("Phase 3 (182): COMMIT_DOC_NAMING_CONSTRAINT constant & injection", () => {
+  it("COMMIT_DOC_NAMING_CONSTRAINT is exported and contains the naming rule", () => {
+    // Dynamic require to avoid circular import issues at module top-level
+    const { COMMIT_DOC_NAMING_CONSTRAINT } = require("../../constants");
+    expect(COMMIT_DOC_NAMING_CONSTRAINT).toBeDefined();
+    expect(typeof COMMIT_DOC_NAMING_CONSTRAINT).toBe("string");
+    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("*_commit.md");
+    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("reqBase");
+    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("MUST");
+  });
+});
