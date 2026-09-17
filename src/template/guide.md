@@ -686,6 +686,13 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `on_stage_changed_error` | choose_stage 善后回调（dispatch 执行体）抛错（fail-open，不影响 choose_stage 结果） | stage, error |
 | `pipeline_resume_dispatch_skipped` | dispatchAfterResume 因 name-probe 命中而跳过 spawn（避免同名双开） | stage, agentId, reason |
 
+**Phase 0-2 / 183 新增审计事件**（`<available_skills>` 重复块去重引入）：
+
+| 事件 | 触发时机 | 关键字段 |
+|------|---------|---------|
+| `prompt_skills_dedup` | 拦截时刻检测到一致重复 `<available_skills>` 块并完成切除（info） | stage, pipelineId, removed_pairs, removed_bytes, hash_before, hash_after |
+| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn） | stage, pipelineId, reason (mismatch/malformed) |
+
 **Agent 速查表**：
 
 | Agent | 阶段 | 文件名 | 职责 |
@@ -713,6 +720,8 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 | `prompt_snapshot` | 合并后的完整 system prompt（base + plugin） |
 | `prompt_snapshot_base` | pi 基础 system prompt（无 base 时写入占位文本） |
 | `prompt_snapshot_plugin` | 插件注入的 prompt（含 stage skill） |
+| `prompt_skills_dedup` | 拦截时刻检测到一致重复 `<available_skills>` 块并完成切除（info；含 removed_pairs / removed_bytes / hash_before / hash_after） |
+| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn；含 reason） |
 
 每个事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
 
