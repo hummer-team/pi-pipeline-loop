@@ -132,9 +132,28 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           currentModel: {
             provider: event.model.provider ?? "unknown",
             modelId: event.model.modelId ?? event.model.id ?? "unknown",
-          },
-        });
-      }
+        },
+      });
+      // Phase 2 (182): shortcut registration observability — audit + startup log
+      // so that "registration happened" is a verifiable fact. Combined with the
+      // pipeline_shortcut_opened event, this enables self-diagnosis: if registered
+      // but no opened events fire on keypress, the SDK did not dispatch the key.
+      const shortcutSource = config.decisionShortcutKey ? "config" : "default";
+      await safeWriteAuditLog("pipeline_shortcut_registered", {
+        keyId: shortcutKey,
+        source: shortcutSource,
+        description: "Pipeline decision menu",
+      });
+      console.info(`[pi-pipeline] decision menu shortcut registered: ${shortcutKey} (${shortcutSource})`);
+    } else {
+      // Phase 2 (182): SDK does not expose registerShortcut — audit the degradation
+      // so it is observable in post-mortem (not a silent failure).
+      await safeWriteAuditLog("pipeline_shortcut_registered", {
+        keyId: shortcutKey,
+        registered: "false",
+        reason: "api_unavailable",
+      });
+    }
     });
 
     // ── Tools registration (bridge: SDK registerTool(object) → internal Tool) ──
