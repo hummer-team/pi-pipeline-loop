@@ -1167,6 +1167,23 @@ function clearManager(): void {
   delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
 }
 
+/**
+ * Phase 4 (182) helper: installs a fake manager registry with both
+ * `getRecord` (for probeAgentState) and `listRecords` (for findLiveAgentByName
+ * Tier 3 name-probe fallback). `namedRecords` is the array returned by
+ * listRecords — each entry carries { id, name, status }.
+ */
+function setManagerWithListRecords(
+  records: Record<string, string | undefined>,
+  namedRecords: Array<{ id: string; name: string; status: string }>,
+): void {
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
+    hasRunning: () => Object.values(records).some((s) => s === "running" || s === "queued" || s === "steered"),
+    listRecords: () => namedRecords,
+  };
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
@@ -1493,6 +1510,196 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     await sleep(30);
 
     expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ── Phase 4 (182): same-stage deferral, self-reserved exclusion, settle-dequeue ─
+  // These tests cover the Tier 2 (same-stage probe) and Tier 3 (name-probe)
+  // evidence branches added in Phase 4. The earlier G3 tests only exercised
+  // Tier 1 (cross-stage) deferral.
+
+  it("Phase 4 (182): same-stage manual live → defers with evidenceStage=同stage (Tier 2)", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      // Plugin is currently in "develop" and wants to spawn "develop" executor,
+      // but a same-named agent is already live in the SAME stage (e.g. manual
+      // @mention spawn not yet reflected in pipeline state).
+      currentStage: "develop",
+      pipelineId: "pipe-phase4-same-stage",
+      activeSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          agentId: "manual-live-same-stage",
+          startedAt: Date.now(),
+        },
+      },
+    });
+    // probeAgentState("manual-live-same-stage") === "live"
+    setManager({ "manual-live-same-stage": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus);
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // Must defer (not double-spawn alongside the manual live agent).
+    expect(result.spawned).toBe(false);
+    expect(result.deferred).toBe(true);
+    expect(meta.pendingSpawns?.develop?.agentName).toBe("develop-agent");
+    expect(meta.pendingSpawns?.develop?.attempts).toBe(0);
+    // No immediate spawn emitted.
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    // Audit log: stage_spawn_deferred with evidenceStage=develop (NOT review/other).
+    const logContent = fs.readFileSync(
+      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      "utf-8",
+    );
+    expect(logContent).toContain("stage_spawn_deferred");
+    expect(logContent).toContain("evidenceStage=develop");
+    expect(logContent).toContain("oldChildId=manual-live-same-stage");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("Phase 4 (182): name-probe hit defers spawn when activeSpawns is empty (Tier 3)", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    // No activeSpawns entry for "develop-agent" — the out-of-band manual spawn
+    // is only visible through the manager registry (listRecords).
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-phase4-name-probe",
+    });
+    // Install manager with listRecords returning a live record named "develop-agent".
+    setManagerWithListRecords(
+      { "manual-name-probe-id": "running" },
+      [{ id: "manual-name-probe-id", name: "develop-agent", status: "running" }],
+    );
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus);
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // findLiveAgentByName hits → defers.
+    expect(result.deferred).toBe(true);
+    expect(meta.pendingSpawns?.develop?.agentName).toBe("develop-agent");
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    const logContent = fs.readFileSync(
+      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      "utf-8",
+    );
+    expect(logContent).toContain("stage_spawn_deferred");
+    expect(logContent).toContain("oldChildId=manual-name-probe-id");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("Phase 4 (182): self-reserved entry in same stage does NOT self-lock → normal spawn", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-phase4-no-selflock",
+      // The only same-stage evidence is a self-reserved entry written by this
+      // very dispatch (agentId prefixed "dispatch:" / "takeover-"). Must NOT
+      // cause the dispatcher to defer waiting on itself.
+      activeSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          agentId: "dispatch:develop-self",
+          startedAt: Date.now(),
+          reserved: true,
+        },
+      },
+    });
+    // probeAgentState("dispatch:develop-self") returns "unknown" (not in manager)
+    // so scanActiveSpawnEvidence returns { basis: "reserved" } (within window).
+    // Tier 2 skips because basis !== "probe_live".
+    // Tier 3: no listRecords installed → findLiveAgentByName returns null.
+    setManager({});
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus, "sa-no-selflock");
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // No deferral — spawn proceeds normally (result.deferred is either false
+    // or undefined; the absence of deferral is what matters).
+    expect(result.deferred).toBeFalsy();
+    expect(result.spawned).toBe(true);
+    // The spawn RPC must be emitted exactly once (no suppression, no defer).
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+    // No pending spawn enqueued.
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("Phase 4 (182): same-stage live twin settles → dequeue emits spawn exactly once", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-phase4-settle-dequeue",
+      activeSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          agentId: "manual-same-stage-settle",
+          startedAt: Date.now(),
+        },
+      },
+    });
+    setManager({ "manual-same-stage-settle": "running" });
+    const bus = createMockEventBus();
+    const mockPi = makeSpawnPi(bus, "sa-phase4-settle");
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    // Initial call defers.
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+    expect(result.deferred).toBe(true);
+    expect(meta.pendingSpawns?.develop).toBeDefined();
+    // No spawn yet.
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(0);
+
+    // Old child settles (event-driven dequeue).
+    setManager({ "manual-same-stage-settle": "completed" });
+    bus.trigger("subagents:completed", { id: "manual-same-stage-settle" });
+    await sleep(30);
+
+    // Dequeue: exactly one spawn emitted, pending entry consumed.
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
