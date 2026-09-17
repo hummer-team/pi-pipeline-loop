@@ -828,10 +828,18 @@ export async function maybeHandleConfirmGate(
         formatConfirmGatePendingCopy(config, currentStage),
     );
   }
-  // Presenting now → clear deferral bookkeeping so a later deferral restarts the timer.
-  if (meta.confirmGateDeferredAt) {
-    ctx.session.updateMeta({ confirmGateDeferredAt: undefined });
-  }
+  // Phase 2 / 181: re-stamp the deferral bookkeeping at presentation time,
+  // BEFORE `ui.select` is awaited. Reaching the dialog means a human decision is
+  // outstanding; clearing the stamp here (pre-181) erased the pending trace, so
+  // a reload before the user answered could not be recovered by
+  // `/pipeline-resume`. The fresh stamp keeps the gate re-enterable across
+  // reloads; Approve/Reject still clear it when the gate resolves.
+  ctx.session.updateMeta({
+    confirmGateDeferredAt: {
+      stage: currentStage,
+      at: Date.now(),
+    },
+  });
 
   // Present TUI dialog
   const rawSelect = ctx.ui?.select;

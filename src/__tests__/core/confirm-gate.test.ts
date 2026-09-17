@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import {
   maybeHandleConfirmGate,
   detectPendingConfirmGate,
+  recordConfirmGateOutcome,
   shouldDeferPlanMarkerRule,
   resolveConfirmMaxRejections,
   autoWriteConfirmMarker,
@@ -1428,5 +1429,141 @@ describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
 
     expect(selectCalls).toBe(1);
     expect(result.result).toBe("handled");
+  });
+});
+
+// ─── Phase 2 / 181: present-time re-stamp of the pending gate ─────────────────
+
+describe("Phase 2 / 181: present-time pending re-stamp", () => {
+  const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+  beforeEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+  });
+
+  it("refreshes confirmGateDeferredAt BEFORE ui.select is awaited", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const before = Date.now();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: before,
+    });
+    let stampAtSelect: { stage: string; at: number } | undefined;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => {
+      // Snapshot the stamp at the moment the dialog is presented.
+      stampAtSelect = meta.confirmGateDeferredAt as { stage: string; at: number } | undefined;
+      return "Cancel";
+    };
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(stampAtSelect?.stage).toBe("plan");
+    expect(stampAtSelect!.at).toBeGreaterThanOrEqual(before);
+  });
+
+  it("unresolved select (process dies while dialog open) → predicate recovers after reload", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+    });
+    const ctx = createMockCtx(meta);
+    // Never resolves — the user never answers and the process is torn down.
+    ctx.ui.select = () => new Promise<string | undefined>(() => {});
+
+    const pending = maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    // Wait until the pre-select stamp refresh has been persisted.
+    for (let i = 0; i < 100 && meta.confirmGateDeferredAt === undefined; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    // Rebuilt session state (same meta) → resume predicate hits.
+    expect(await detectPendingConfirmGate(config, meta)).toBe(true);
+
+    void pending; // intentionally left unresolved
+  });
+
+  it("Cancel keeps pending and the refreshed stamp allows /pipeline-resume re-entry", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+    });
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => "Cancel";
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    expect(await detectPendingConfirmGate(config, meta)).toBe(true);
+  });
+
+  it("Esc (undefined) keeps pending and the refreshed stamp allows re-entry", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+    });
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => undefined;
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    expect(await detectPendingConfirmGate(config, meta)).toBe(true);
+  });
+
+  it("Approve clears deferral + reask and advances to develop", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+      confirmGateReask: { stage: "plan", count: 2 },
+    });
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => "Approve & Advance";
+
+    const gate = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+    // Mirror the production callers: shared accounting runs after the gate.
+    recordConfirmGateOutcome(ctx.session, meta, gate, false);
+
+    expect(gate).toEqual({ result: "handled", action: "advanced", toStage: "develop" });
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+    expect(meta.confirmGateReask).toBeUndefined();
+    expect(meta.currentStage).toBe("develop");
+  });
+
+  it("Reject routes to clarify and clears the pending stamp", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+    });
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => "Reject & Rework (back to clarify)";
+
+    const gate = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+
+    expect(gate).toEqual({ result: "handled", action: "routed", toStage: "clarify" });
+    expect(meta.confirmGateDeferredAt).toBeUndefined();
+    expect(meta.currentStage).toBe("clarify");
   });
 });
