@@ -133,6 +133,23 @@ function readDeliverablePath(ctx: any, from: string): string | null {
 }
 
 /**
+ * Writes the pipeline stage status so it becomes the LAST entry in the
+ * third-party footer's extension-status map.
+ *
+ * `setStatus(key, undefined)` deletes the key; the immediate re-set re-inserts
+ * it at the end of the Map. A plain repeat `setStatus(key, message)` would keep
+ * the key's original insertion position. This helper is the single move-to-end
+ * writer for every stage-status boundary write.
+ *
+ * @param ctx - Extension context exposing `ui.setStatus`
+ * @param message - Formatted stage status text to display
+ */
+function writeStageStatusLast(ctx: any, message: string): void {
+  ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, undefined);
+  ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, message);
+}
+
+/**
  * Writes the persistent TUI status bar showing the current pipeline stage.
  * Safely no-ops when ctx/ui is unavailable or output.pipelineStage is off
  * (the `setStage` gate handles the disabled case).
@@ -175,7 +192,7 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
     setStage(ctx: any, stage: string): void {
       if (!enabled) return;
       const msg = formatStage(config, ctx, stage);
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
+      writeStageStatusLast(ctx, msg);
     },
 
     clearStage(ctx: any): void {
@@ -187,7 +204,7 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
       if (!enabled) return;
       const msg = formatStage(config, ctx, stage);
       ctx?.ui?.notify?.(msg);
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
+      writeStageStatusLast(ctx, msg);
     },
 
     transition(ctx: any, from: string, to: string): void {
@@ -200,7 +217,7 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
         ? `${baseMsg} ← deliverable: ${toProjectRelative(config.projectRoot, deliverablePath)}`
         : baseMsg;
       ctx?.ui?.notify?.(msg);
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
+      writeStageStatusLast(ctx, msg);
     },
 
     fail(ctx: any, stage: string, reason: string): void {
@@ -211,7 +228,7 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
         : `Pipeline → ${stage}`;
       const msg = `${prefix} ⚠ ${reason}`;
       ctx?.ui?.notify?.(msg);
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, msg);
+      writeStageStatusLast(ctx, msg);
     },
 
     progressStart(ctx: any, label: string, message?: string, intervalMs?: number): void {
@@ -228,9 +245,9 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
       progressMsg = message;
       progressFrameIndex = 0;
 
-      // Write first frame immediately
+      // Write first frame immediately (move-to-end — animation start)
       const firstFrame = PROGRESS_FRAMES[0];
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, buildProgressText(label, firstFrame, message));
+      writeStageStatusLast(ctx, buildProgressText(label, firstFrame, message));
 
       // Start frame cycling
       const interval = intervalMs ?? DEFAULT_PROGRESS_FRAME_MS;
@@ -261,8 +278,8 @@ export function createPipelineUI(config: PipelineConfig): PipelineUI {
         progressTimer = null;
       }
 
-      // Write base text (no frame, no message)
-      ctx?.ui?.setStatus?.(STAGE_STATUS_KEY, `Pipeline → ${progressLabel}`);
+      // Write base text (no frame, no message) — move-to-end at animation end
+      writeStageStatusLast(ctx, `Pipeline → ${progressLabel}`);
 
       // Reset state
       progressLabel = "";

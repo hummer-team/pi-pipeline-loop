@@ -624,10 +624,13 @@ describe("createPipelineInitCommand", () => {
       await cmd.execute({ sub: "1" }, ctx as any);
 
       // Command-level setStage("Pipeline → init") at start, restore "Pipeline → clarify" in finally (ctx has no session → fallback)
-      const texts = statusCalls.map(c => c.text);
+      // Move-to-end writer emits delete (undefined) + set pairs; filter the deletes out
+      const texts = statusCalls
+        .map(c => c.text)
+        .filter((t): t is string => t !== undefined);
       expect(texts).toContain("Pipeline → init");
       expect(texts).toContain("Pipeline → clarify");
-      // First call should be "Pipeline → init", last call should be "Pipeline → clarify"
+      // First defined text should be "Pipeline → init", last should be "Pipeline → clarify"
       expect(texts[0]).toBe("Pipeline → init");
       expect(texts[texts.length - 1]).toBe("Pipeline → clarify");
     });
@@ -1215,9 +1218,12 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, modelCtx as any);
 
-      // statusCalls should contain Pipeline → init (progressStart first frame)
-      const texts = statusCalls.map(c => c.text);
-      expect(texts.some(t => t?.includes("Pipeline → init"))).toBe(true);
+      // statusCalls should contain Pipeline → init (progressStart first frame).
+      // Filter delete calls (text === undefined) emitted by the move-to-end writer.
+      const texts = statusCalls
+        .map(c => c.text)
+        .filter((t): t is string => t !== undefined);
+      expect(texts.some(t => t.includes("Pipeline → init"))).toBe(true);
       // statusCalls should contain Pipeline → init base text (progressEnd)
       expect(texts.some(t => t === "Pipeline → init")).toBe(true);
       // statusCalls should contain Pipeline → clarify (execute finally restore)
@@ -1292,12 +1298,15 @@ describe("createPipelineInitCommand", () => {
       const cmd = createPipelineInitCommand(config);
       await cmd.execute({ sub: "1" }, ctx as any);
 
-      // Only setStage("Pipeline → init") + restore setStage("Pipeline → clarify") — no progress animation
-      const texts = statusCalls.map(c => c.text);
+      // Only setStage("Pipeline → init") + restore setStage("Pipeline → clarify") — no progress animation.
+      // Filter delete calls (text === undefined) emitted by the move-to-end writer.
+      const texts = statusCalls
+        .map(c => c.text)
+        .filter((t): t is string => t !== undefined);
       expect(texts[0]).toBe("Pipeline → init");
       expect(texts[texts.length - 1]).toBe("Pipeline → clarify");
       // No progress frames with spinner characters — llmExtract is off so no animation
-      expect(texts.filter(t => t?.includes("⠋"))).toEqual([]);
+      expect(texts.filter(t => t.includes("⠋"))).toEqual([]);
     });
   });
 

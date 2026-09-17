@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
-import { makeTestConfig, createMockCtx, createMockRuntimeCtx, makeTestMeta } from "../helpers";
+import { makeTestConfig, createMockCtx, createMockRuntimeCtx, makeTestMeta, finalStatusText } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 
 let TMP: string;
@@ -429,7 +429,7 @@ describe("createPipelineStartCommand", () => {
       // pipelineId is dynamically generated, so match with regex
       const grayOpen = "\x1b[90m";
       const grayClose = "\x1b[0m";
-      const statusText = ctx.statusCalls.find(c => c.key === "pipeline-stage")?.text;
+      const statusText = finalStatusText(ctx.statusCalls, "pipeline-stage");
       expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • clarify ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> plan${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
       // setStage uses setStatus only (no notify); ensure notifications don't echo the bar text
       expect(ctx.notifications.some(n => n.includes("clarify"))).toBe(false);
@@ -465,7 +465,7 @@ describe("createPipelineStartCommand", () => {
       // Status bar uses unified format with dynamic pipelineId
       const grayOpen = "\x1b[90m";
       const grayClose = "\x1b[0m";
-      const statusText = ctx.statusCalls.find(c => c.key === "pipeline-stage")?.text;
+      const statusText = finalStatusText(ctx.statusCalls, "pipeline-stage");
       expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • clarify ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> plan${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
     });
 
@@ -1116,7 +1116,7 @@ describe("createPipelineStartCommand", () => {
       // Status bar must reflect resumed stage: plan -> develop
       const grayOpen = "\x1b[90m";
       const grayClose = "\x1b[0m";
-      const statusText = ctx.statusCalls.find(c => c.key === "pipeline-stage")?.text;
+      const statusText = finalStatusText(ctx.statusCalls, "pipeline-stage");
       expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • plan ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> develop${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
     });
   });

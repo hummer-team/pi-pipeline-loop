@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { createPipelineUI, STAGE_STATUS_KEY, PROGRESS_FRAMES, DEFAULT_PROGRESS_FRAME_MS, _setNextStageGray, NEXT_STAGE_GRAY } from "../../core/pipeline-ui";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, finalStatusText } from "../helpers";
 import type { PipelineConfig } from "../../types";
 
 /** Helper: async sleep */
@@ -72,7 +72,11 @@ describe("createPipelineUI", () => {
       ui.stageEntry(ctx, "clarify");
 
       expect(notifications).toEqual(["Pipeline → clarify"]);
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "Pipeline → clarify" }]);
+      // Move-to-end writer: delete then re-set
+      expect(statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: "Pipeline → clarify" },
+      ]);
     });
 
     it("transition produces formatted output for 'to' stage + setStatus", () => {
@@ -84,7 +88,10 @@ describe("createPipelineUI", () => {
 
       // Without meta, falls back to "Pipeline → {to}"
       expect(notifications).toEqual(["Pipeline → plan"]);
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "Pipeline → plan" }]);
+      expect(statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: "Pipeline → plan" },
+      ]);
     });
 
     // Bug 3.1: deliverable path in transition output
@@ -112,7 +119,7 @@ describe("createPipelineUI", () => {
       expect(notifications.length).toBe(1);
       expect(notifications[0]).toContain("← deliverable:");
       expect(notifications[0]).toContain(deliverablePath);
-      expect(statusCalls[0].text).toContain("← deliverable:");
+      expect(finalStatusText(statusCalls, STAGE_STATUS_KEY)).toContain("← deliverable:");
     });
 
     it("transition without deliverable path → standard format", () => {
@@ -162,7 +169,10 @@ describe("createPipelineUI", () => {
       ui.fail(ctx, "plan", "verify failed");
 
       expect(notifications).toEqual(["Pipeline → plan ⚠ verify failed"]);
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "Pipeline → plan ⚠ verify failed" }]);
+      expect(statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: "Pipeline → plan ⚠ verify failed" },
+      ]);
     });
 
     it("notify produces message + no setStatus", () => {
@@ -184,7 +194,10 @@ describe("createPipelineUI", () => {
       // Without meta, formatStage falls back to "Pipeline → {stage}"
       ui.setStage(ctx, "working...");
 
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "Pipeline → working..." }]);
+      expect(statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: "Pipeline → working..." },
+      ]);
     });
 
     it("clearStage clears status bar (undefined)", () => {
@@ -230,9 +243,11 @@ describe("createPipelineUI", () => {
 
       ui.progressStart(ctx, "init", undefined, 50);
 
-      expect(statusCalls.length).toBe(1);
-      expect(statusCalls[0].key).toBe(STAGE_STATUS_KEY);
-      expect(statusCalls[0].text).toBe(`Pipeline → init ${PROGRESS_FRAMES[0]}`);
+      // First frame is written via the move-to-end writer (delete + set)
+      expect(statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: `Pipeline → init ${PROGRESS_FRAMES[0]}` },
+      ]);
     });
 
     it("pipelineStage: true → animation advances frames over time", async () => {
@@ -244,10 +259,13 @@ describe("createPipelineUI", () => {
       ui.progressStart(ctx, "init", undefined, 5);
       await sleep(30);
 
-      // Should have ≥2 setStatus calls (first frame + at least one interval tick)
-      expect(statusCalls.length).toBeGreaterThanOrEqual(2);
+      // Should have ≥2 defined setStatus texts (first frame + at least one interval tick).
+      // The leading delete call(s) carry `undefined` and are filtered out.
+      const texts = statusCalls
+        .map(c => c.text)
+        .filter((t): t is string => t !== undefined);
+      expect(texts.length).toBeGreaterThanOrEqual(2);
       // Frames should differ (animation advanced)
-      const texts = statusCalls.map(c => c.text);
       const uniqueTexts = new Set(texts);
       expect(uniqueTexts.size).toBeGreaterThanOrEqual(2);
       // All texts should contain "Pipeline → init"
@@ -347,7 +365,10 @@ describe("createPipelineUI", () => {
       const grayOpen = "\x1b[90m";
       const grayClose = "\x1b[0m";
       const expected = `[ pipe-test-001 • clarify ${grayOpen}-> plan${grayClose} ]`;
-      expect(ctx.statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: expected }]);
+      expect(ctx.statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: expected },
+      ]);
       expect(ctx.notifications).toEqual([expected]);
     });
 
@@ -360,7 +381,10 @@ describe("createPipelineUI", () => {
       ui.stageEntry(ctx, "completed");
 
       const expected = "[ pipe-test-001 • completed ]";
-      expect(ctx.statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: expected }]);
+      expect(ctx.statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: expected },
+      ]);
     });
 
     it("without meta → fallback 'Pipeline → {stage}'", () => {
@@ -368,17 +392,20 @@ describe("createPipelineUI", () => {
       const ui = createPipelineUI(config);
       // ctx without session.getMeta
       const ctx = { ui: { notify: () => {}, setStatus: () => {} } };
-      const statusCalls: { key: string; text: string }[] = [];
+      const statusCalls: { key: string; text: string | undefined }[] = [];
       const ctxWithCapture = {
         ui: {
           notify: () => {},
-          setStatus: (key: string, text: string) => { statusCalls.push({ key, text }); },
+          setStatus: (key: string, text: string | undefined) => { statusCalls.push({ key, text }); },
         },
       };
 
       ui.stageEntry(ctxWithCapture, "init");
 
-      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: "Pipeline → init" }]);
+      expect(statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: "Pipeline → init" },
+      ]);
     });
 
     it("fail with meta → [ {pipelineId} • {stage} ] ⚠ {reason}", () => {
@@ -390,7 +417,10 @@ describe("createPipelineUI", () => {
       ui.fail(ctx, "develop", "verify failed");
 
       const expected = "[ pipe-test-001 • develop ] ⚠ verify failed";
-      expect(ctx.statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: expected }]);
+      expect(ctx.statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: expected },
+      ]);
       expect(ctx.notifications).toEqual([expected]);
     });
 
@@ -407,7 +437,10 @@ describe("createPipelineUI", () => {
 
         // Output should contain "-> plan" without any ANSI escape codes
         const expected = "[ pipe-test-001 • clarify -> plan ]";
-        expect(ctx.statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: expected }]);
+        expect(ctx.statusCalls).toEqual([
+          { key: STAGE_STATUS_KEY, text: undefined },
+          { key: STAGE_STATUS_KEY, text: expected },
+        ]);
         expect(ctx.notifications).toEqual([expected]);
         // Verify no ANSI gray codes present
         expect(expected).not.toContain("\x1b[90m");
@@ -416,6 +449,98 @@ describe("createPipelineUI", () => {
         // Restore original value
         _setNextStageGray(true);
       }
+    });
+  });
+
+  // ── Phase 0 / 181: move-to-end status writer ──────────────────────────────
+
+  describe("Phase 0 / 181: move-to-end status writer", () => {
+    it("setStage/stageEntry/transition/fail write delete then set", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+
+      const cases: Array<{ run: (ctx: any) => void; text: string }> = [
+        { run: (ctx) => ui.setStage(ctx, "clarify"), text: "Pipeline → clarify" },
+        { run: (ctx) => ui.stageEntry(ctx, "clarify"), text: "Pipeline → clarify" },
+        { run: (ctx) => ui.transition(ctx, "clarify", "plan"), text: "Pipeline → plan" },
+        { run: (ctx) => ui.fail(ctx, "plan", "boom"), text: "Pipeline → plan ⚠ boom" },
+      ];
+
+      for (const { run, text } of cases) {
+        const { ctx, statusCalls } = makeCtx();
+        run(ctx);
+        expect(statusCalls).toEqual([
+          { key: STAGE_STATUS_KEY, text: undefined },
+          { key: STAGE_STATUS_KEY, text },
+        ]);
+      }
+    });
+
+    it("progressStart and progressEnd write delete then set", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, statusCalls } = makeCtx();
+
+      ui.progressStart(ctx, "init", undefined, 10000);
+      expect(statusCalls).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: `Pipeline → init ${PROGRESS_FRAMES[0]}` },
+      ]);
+
+      ui.progressEnd(ctx);
+      // Last two calls are the progressEnd delete + base-text set
+      expect(statusCalls.slice(-2)).toEqual([
+        { key: STAGE_STATUS_KEY, text: undefined },
+        { key: STAGE_STATUS_KEY, text: "Pipeline → init" },
+      ]);
+    });
+
+    it("clearStage performs exactly one setStatus(undefined)", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, statusCalls } = makeCtx();
+
+      ui.clearStage(ctx);
+
+      expect(statusCalls).toEqual([{ key: STAGE_STATUS_KEY, text: undefined }]);
+    });
+
+    it("progressUpdate keeps the key position (plain set, no delete)", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, statusCalls } = makeCtx();
+
+      ui.progressStart(ctx, "init", undefined, 10000);
+      const before = statusCalls.length;
+      ui.progressUpdate(ctx, "(design)");
+
+      // Exactly one additional call — a plain set, not a delete + set pair
+      expect(statusCalls.length).toBe(before + 1);
+      expect(statusCalls[statusCalls.length - 1].text).toContain("(design)");
+    });
+
+    it("delete + set moves the pipeline key to the end of a footer-style Map", () => {
+      // Simulate the third-party footer: an insertion-ordered Map where a plain
+      // set on an existing key keeps its position, while delete + set moves it last.
+      const footerMap = new Map<string, string>();
+      footerMap.set("lsp", "LSP Inactive");
+      footerMap.set("context-cap", "cap 61k/200k");
+      footerMap.set(STAGE_STATUS_KEY, "[ pipe-1 • plan -> develop ]");
+
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const ctx = {
+        ui: {
+          setStatus: (key: string, text: string | undefined) => {
+            if (text === undefined) footerMap.delete(key);
+            else footerMap.set(key, text);
+          },
+        },
+      };
+
+      ui.setStage(ctx, "plan");
+
+      expect(Array.from(footerMap.keys()).at(-1)).toBe(STAGE_STATUS_KEY);
     });
   });
 });

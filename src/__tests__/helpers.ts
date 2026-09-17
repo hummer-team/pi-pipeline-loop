@@ -65,7 +65,8 @@ export type MockCtx = {
   };
   ui: {
     notify: (msg: string) => void;
-    setStatus: (key: string, text: string) => void;
+    /** `undefined` is the delete call used by the move-to-end status writer */
+    setStatus: (key: string, text: string | undefined) => void;
     /** Optional TUI select — injectable for ask-protect tests */
     select?: (message: string, options: string[]) => Promise<string | undefined>;
     /** Optional TUI confirm — injectable for confirm-mode tests */
@@ -114,9 +115,9 @@ export function createMockCtx(
 ) {
   const metadataUpdates: SessionMeta[] = [];
   const notifications: string[] = [];
-  const statusCalls: { key: string; text: string }[] = [];
+  const statusCalls: { key: string; text: string | undefined }[] = [];
 
-  const mock: MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string }[] } = {
+  const mock: MockCtx & { metadataUpdates: SessionMeta[]; notifications: string[]; statusCalls: { key: string; text: string | undefined }[] } = {
     session: {
       getMeta: () => meta,
       updateMeta: (patch: Partial<SessionMeta>) => {
@@ -131,7 +132,7 @@ export function createMockCtx(
       notify: (msg: string) => {
         notifications.push(msg);
       },
-      setStatus: (key: string, text: string) => {
+      setStatus: (key: string, text: string | undefined) => {
         statusCalls.push({ key, text });
       },
       select: opts?.selectReturn !== undefined
@@ -185,8 +186,31 @@ export function createMockCtx(
 export type MockRuntimeCtx = RuntimeCtx & {
   metadataUpdates: SessionMeta[];
   notifications: string[];
-  statusCalls: { key: string; text: string }[];
+  statusCalls: { key: string; text: string | undefined }[];
 };
+
+/**
+ * Reads the FINAL status text written for a key from a captured `setStatus`
+ * call history.
+ *
+ * The move-to-end writer emits `setStatus(key, undefined)` followed by
+ * `setStatus(key, message)`. Assertions that only care about the resulting text
+ * (rather than the full call sequence) should use this helper instead of
+ * `find`, which would return the leading delete call.
+ *
+ * @param calls - Captured setStatus calls in order
+ * @param key - Status key to inspect
+ * @returns The text of the last call for the key, or undefined when never called
+ */
+export function finalStatusText(
+  calls: Array<{ key: string; text?: string }>,
+  key: string,
+): string | undefined {
+  for (let i = calls.length - 1; i >= 0; i--) {
+    if (calls[i].key === key) return calls[i].text;
+  }
+  return undefined;
+}
 
 export function createMockRuntimeCtx(
   meta: SessionMeta,

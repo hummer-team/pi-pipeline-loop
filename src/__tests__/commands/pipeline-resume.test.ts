@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createPipelineResumeCommand } from "../../commands/pipeline-resume";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, finalStatusText } from "../helpers";
 import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -214,9 +214,10 @@ describe("createPipelineResumeCommand", () => {
       const cmd = createPipelineResumeCommand(config);
       await cmd.execute({}, ctx as any);
 
+      // One setStage write → move-to-end delete + set pair
       const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
-      expect(stageCalls.length).toBe(1);
-      expect(stageCalls[0].text).toContain("develop");
+      expect(stageCalls.length).toBe(2);
+      expect(finalStatusText(ctx.statusCalls, "pipeline-stage")).toContain("develop");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -237,8 +238,8 @@ describe("createPipelineResumeCommand", () => {
       await cmd.execute({}, ctx as any);
 
       const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
-      expect(stageCalls.length).toBe(1);
-      expect(stageCalls[0].text).toContain("develop");
+      expect(stageCalls.length).toBe(2);
+      expect(finalStatusText(ctx.statusCalls, "pipeline-stage")).toContain("develop");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -262,8 +263,8 @@ describe("createPipelineResumeCommand", () => {
 
       expect((result as any).error).toBeUndefined();
       const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
-      expect(stageCalls.length).toBe(1);
-      expect(stageCalls[0].text).toContain("develop");
+      expect(stageCalls.length).toBe(2);
+      expect(finalStatusText(ctx.statusCalls, "pipeline-stage")).toContain("develop");
 
       await rm(TMP, { recursive: true, force: true });
     });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { createSessionStarter, __resetPluginVersionStamp } from "../../core/session-starter";
-import { makeTestConfig, makeTestMeta } from "../helpers";
+import { makeTestConfig, makeTestMeta, finalStatusText } from "../helpers";
 import { writeFile, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
-  const statusCalls: { key: string; text: string }[] = [];
+  const statusCalls: { key: string; text: string | undefined }[] = [];
   return {
     session: {
       getMeta: () => meta,
@@ -25,7 +25,7 @@ function createCtx(meta: any) {
     statusCalls,
     ui: {
       notify: () => {},
-      setStatus: (key: string, text: string) => {
+      setStatus: (key: string, text: string | undefined) => {
         statusCalls.push({ key, text });
       },
     },
@@ -211,9 +211,10 @@ describe("createSessionStarter", () => {
 
       await createSessionStarter(config).handler(ctx as any);
 
+      // One setStage write → move-to-end delete + set pair
       const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
-      expect(stageCalls.length).toBe(1);
-      expect(stageCalls[0].text).toContain("develop");
+      expect(stageCalls.length).toBe(2);
+      expect(finalStatusText(ctx.statusCalls, "pipeline-stage")).toContain("develop");
 
       await rm(TMP, { recursive: true, force: true });
     });
@@ -234,8 +235,8 @@ describe("createSessionStarter", () => {
       await createSessionStarter(config).handler(ctx as any);
 
       const stageCalls = ctx.statusCalls.filter((c) => c.key === "pipeline-stage");
-      expect(stageCalls.length).toBe(1);
-      expect(stageCalls[0].text).toContain("review");
+      expect(stageCalls.length).toBe(2);
+      expect(finalStatusText(ctx.statusCalls, "pipeline-stage")).toContain("review");
 
       await rm(TMP, { recursive: true, force: true });
     });
