@@ -720,10 +720,17 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 | `prompt_snapshot` | 合并后的完整 system prompt（base + plugin） |
 | `prompt_snapshot_base` | pi 基础 system prompt（无 base 时写入占位文本） |
 | `prompt_snapshot_plugin` | 插件注入的 prompt（含 stage skill） |
-| `prompt_skills_dedup` | 拦截时刻检测到一致重复 `<available_skills>` 块并完成切除（info；含 removed_pairs / removed_bytes / hash_before / hash_after） |
-| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn；含 reason） |
 
-每个事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
+以上快照事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
+
+此外，以下 skills 去重事件不受 `promptSnapshot` 开关控制，在拦截时刻按条件独立写入：
+
+| 事件 | 内容 |
+|------|------|
+| `prompt_skills_dedup` | 检测到一致重复 `<available_skills>` 块并完成切除（info；含 removed_pairs / removed_bytes / hash_before / hash_after） |
+| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn 含 reason；catch 异常时为 error 级并含 error 详情） |
+
+去重事件使用 `hash_before` / `hash_after` 字段（非 `prompt_hash`）。
 
 ### 7.9.1 为何全文注入 stage SKILL（设计取舍）
 

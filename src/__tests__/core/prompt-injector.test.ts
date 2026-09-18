@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { resetPromptConfigCache } from "../../core/prompt-config";
-import { initAuditLog, __resetAuditDirPath, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog, __resetAuditDirPath, getDateAuditFileName, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 
 describe("createPromptInjector", () => {
   beforeEach(() => {
@@ -1603,6 +1603,7 @@ describe("Phase 1 (183): skillsDedup wiring and audit events", () => {
   afterEach(() => {
     resetPromptConfigCache();
     __resetAuditDirPath();
+    __setSafeWriteAuditLogOverride(null);
   });
 
   it("deduplicates double identical blocks and emits prompt_skills_dedup info event", async () => {
@@ -1710,26 +1711,48 @@ describe("Phase 1 (183): skillsDedup wiring and audit events", () => {
 
   it("audit write failure does not block injection", async () => {
     const TMP = join(tmpdir(), "pi-dedup-auditfail-" + Date.now());
-    // Do NOT call initAuditLog — audit dir doesn't exist, so writes will fail
+    await mkdir(TMP, { recursive: true });
     const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
     const meta = makeTestMeta({ currentStage: "develop" });
 
-    const block = buildBlock();
-    const basePrompt = `${block}\n\n${block}`;
+    // Override safeWriteAuditLog to throw only on dedup events, exercising the fail-open catch branch
+    // Other audit calls (e.g. from buildTruncationWarning) must pass through normally
+    let dedupCallCount = 0;
+    __setSafeWriteAuditLogOverride(async (stage: string, message?: Record<string, string | boolean>, level?: any) => {
+      if (stage === "prompt_skills_dedup" || stage === "prompt_skills_dedup_skipped") {
+        dedupCallCount++;
+        throw new Error("simulated audit write failure");
+      }
+      // For non-dedup events, import and call the real writeAuditLog directly
+      const { writeAuditLog } = await import("../../utils/auditLog");
+      await writeAuditLog(stage, message, level);
+    });
 
-    const hook = createPromptInjector(config);
-    const result = (await hook.handler({
-      session: { getMeta: () => meta, updateMeta: () => meta },
-      ui: { notify: () => {}, setStatus: () => {} },
-      getSystemPrompt: () => basePrompt,
-    } as any))!;
+    try {
+      const block = buildBlock();
+      const basePrompt = `${block}\n\n${block}`;
 
-    // Injection should still succeed and dedup should still happen
-    const systemPrompt = result.systemPrompt!;
-    const openCount = countOccurrences(systemPrompt, "<available_skills>");
-    expect(openCount).toBe(1);
-    // Plugin prompt parts should still be present
-    expect(systemPrompt).toContain("Pipeline Status");
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler({
+        session: { getMeta: () => meta, updateMeta: () => meta },
+        ui: { notify: () => {}, setStatus: () => {} },
+        getSystemPrompt: () => basePrompt,
+      } as any))!;
+
+      // Injection should still succeed and dedup should still happen
+      const systemPrompt = result.systemPrompt!;
+      const openCount = countOccurrences(systemPrompt, "<available_skills>");
+      expect(openCount).toBe(1);
+      // Plugin prompt parts should still be present
+      expect(systemPrompt).toContain("Pipeline Status");
+      // Verify the override was actually called for dedup events (proves fail-open path was exercised)
+      expect(dedupCallCount).toBeGreaterThan(0);
+    } finally {
+      // Restore original safeWriteAuditLog
+      __setSafeWriteAuditLogOverride(null);
+      await rm(TMP, { recursive: true, force: true });
+    }
   });
 });
 

@@ -132,6 +132,8 @@ export async function safeWriteAuditLog(
   message?: Record<string, string | boolean>,
   level?: AuditLogLevel,
 ): Promise<void> {
+  // Test override: when set, delegate to the replacement (which may throw)
+  if (_safeWriteOverride) return _safeWriteOverride(stage, message, level);
   try {
     await writeAuditLog(stage, message, level);
   } catch {
@@ -306,6 +308,28 @@ export async function safeWritePromptSnapshot(
  */
 export function __resetAuditDirPath(): void {
   auditDirPath = "";
+}
+
+/**
+ * Sets the module-level auditDirPath to a custom value.
+ * FOR TESTING ONLY — allows tests to point audit writes to invalid paths
+ * to trigger real fs.write failures.
+ */
+export function __setAuditDirPath(dirPath: string): void {
+  auditDirPath = dirPath;
+}
+
+/** Override for safeWriteAuditLog — when set, replaces the real implementation. FOR TESTING ONLY */
+let _safeWriteOverride: ((stage: string, message?: Record<string, string | boolean>, level?: AuditLogLevel) => Promise<void>) | null = null;
+
+/**
+ * Replace safeWriteAuditLog with a custom implementation (or null to restore).
+ * FOR TESTING ONLY — allows tests to verify fail-open catch branches in callers.
+ */
+export function __setSafeWriteAuditLogOverride(
+  fn: ((stage: string, message?: Record<string, string | boolean>, level?: AuditLogLevel) => Promise<void>) | null,
+): void {
+  _safeWriteOverride = fn;
 }
 
 /**

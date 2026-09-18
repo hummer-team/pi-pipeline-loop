@@ -232,26 +232,31 @@ describe("skillsDedup", () => {
       expect(result.skippedReason).toBeUndefined();
     });
 
-    it("returns malformed when header exists but no open tag in interval", () => {
+    it("returns no-op when header exists but no open tag (pre-check short-circuits with <2 open tags)", () => {
       // Header + closing tag but no <available_skills> open tag between them
+      // Only 1 <available_skills> open tag total (in the second block), so pre-check returns noop
       const prompt = `${SKILLS_INTRO}\n</available_skills>\n\n${SKILLS_INTRO}\n<available_skills>\n<skill>x</skill>\n</available_skills>`;
       const result = skillsDedup(prompt);
 
-      // First pair: header at line 0, closing at line 1, but no open tag between → malformed
-      // extractSkillPairs returns only 1 pair (skips the malformed one),
-      // then allPairsHaveOpenTag on that 1 pair should pass.
-      // Actually: the first pair extraction finds header at 0, nearest </> at 1,
-      // checks for <available_skills> between 0 and 1 → not found → returns pairs=[]
-      // (early return). Second header at line 3: finds closing at line 5,
-      // but we already returned from first iteration...
-      // 
-      // Wait: extractSkillPairs returns early when hasOpen=false.
-      // So it returns an empty array for the first malformed pair.
-      // Then pairs.length < 2 → no-op.
+      // Pre-check: countNeedle("<available_skills>") = 1 < 2 → noop
       expect(result.removedPairs).toBe(0);
-      // Since extractSkillPairs returns [] early, we never get to allPairsHaveOpenTag
-      // with a malformed pair. So this is a no-op.
       expect(result.skippedReason).toBeUndefined();
+    });
+
+    it("returns malformed when a block has no open tag but 2+ open tags exist overall", () => {
+      // Malformed block (header + closing, no open tag) + 2 valid identical blocks
+      // Total <available_skills> open tags = 2 (in blocks 2 and 3), so pre-check passes
+      const malformedBlock = `${SKILLS_INTRO}\n</available_skills>`;
+      const validBlock = `${SKILLS_INTRO}\n<available_skills>\n<skill>x</skill>\n</available_skills>`;
+      const prompt = `${malformedBlock}\n\n${validBlock}\n\n${validBlock}`;
+      const result = skillsDedup(prompt);
+
+      // extractSkillPairs detects malformed on block 1, continues scanning blocks 2 & 3
+      // malformed flag is set → fail-open with skippedReason: "malformed"
+      expect(result.removedPairs).toBe(0);
+      expect(result.skippedReason).toBe("malformed");
+      // Original prompt returned unchanged (fail-open)
+      expect(result.prompt).toBe(prompt);
     });
   });
 
@@ -301,12 +306,34 @@ describe("skillsDedup", () => {
       expect(result.prompt).toContain("suffix");
     });
 
-    it("removedBytes accurately reflects bytes removed", () => {
+    it("removedBytes accurately reflects UTF-8 bytes removed", () => {
       const block = buildSkillsBlock();
       const prompt = `${block}\n\n${block}`;
       const result = skillsDedup(prompt);
-      expect(result.removedBytes).toBe(prompt.length - result.prompt.length);
+      expect(result.removedBytes).toBe(Buffer.byteLength(prompt) - Buffer.byteLength(result.prompt));
       expect(result.removedBytes).toBeGreaterThan(0);
+    });
+
+    it("removedBytes uses UTF-8 byte length (not UTF-16 code units) for non-ASCII content", () => {
+      // Block with non-ASCII characters (Chinese) in skill description
+      const blockWithUnicode = [
+        SKILLS_INTRO,
+        "<available_skills>",
+        "<skill>",
+        "<name>test</name>",
+        "<description>测试技能描述</description>",
+        "</skill>",
+        "</available_skills>",
+      ].join("\n");
+      const prompt = `${blockWithUnicode}\n\n${blockWithUnicode}`;
+      const result = skillsDedup(prompt);
+
+      expect(result.removedPairs).toBe(1);
+      // UTF-8 byte length should be greater than UTF-16 code unit length for non-ASCII
+      const charDiff = prompt.length - result.prompt.length;
+      const byteDiff = Buffer.byteLength(prompt) - Buffer.byteLength(result.prompt);
+      expect(byteDiff).toBeGreaterThan(charDiff);
+      expect(result.removedBytes).toBe(byteDiff);
     });
 
     it("cwd line check skips blank lines between closing tag and cwd", () => {

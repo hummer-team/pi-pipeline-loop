@@ -633,7 +633,8 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
             stage: meta.currentStage,
             pipelineId: meta.pipelineId,
             reason: dedup.skippedReason,
-          }, "warn");
+            ...(dedup.error ? { error: dedup.error } : {}),
+          }, dedup.error ? "error" : "warn");
         }
       } catch {
         // Fail-open: audit must never block prompt injection
@@ -1026,10 +1027,12 @@ export interface SkillsDedupResult {
   prompt: string;
   /** Number of duplicate pairs removed (0 = no-op) */
   removedPairs: number;
-  /** Net bytes removed */
+  /** Net bytes removed (UTF-8 byte length delta) */
   removedBytes: number;
   /** Set only on abnormal paths (fail-open) */
   skippedReason?: "mismatch" | "malformed";
+  /** Error message when caught exception triggered fail-open (for caller audit) */
+  error?: string;
 }
 
 /** Represents a matched pair: header line → closing tag line (inclusive) */
@@ -1051,13 +1054,25 @@ function countNeedle(haystack: string, needle: string): number {
   return count;
 }
 
+/** Result of extracting skill pairs from prompt lines */
+interface ExtractResult {
+  pairs: SkillPairRange[];
+  /** True if any header→closing interval was missing the <available_skills> open tag */
+  malformed: boolean;
+}
+
 /**
  * Extract skill pairs from prompt lines.
  * Each pair: header line (SKILLS_INTRO_LINE) → nearest </available_skills> line.
  * Between them, an <available_skills> open tag must exist.
+ *
+ * If a header→closing interval lacks the open tag, the pair is skipped and
+ * `malformed` is set to true, but scanning continues so subsequent valid pairs
+ * are still extracted. The caller decides how to handle the malformed flag.
  */
-function extractSkillPairs(lines: string[]): SkillPairRange[] {
+function extractSkillPairs(lines: string[]): ExtractResult {
   const pairs: SkillPairRange[] = [];
+  let malformed = false;
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trim() !== SKILLS_INTRO_LINE) continue;
     // Find nearest </available_skills> after header
@@ -1071,28 +1086,19 @@ function extractSkillPairs(lines: string[]): SkillPairRange[] {
           break;
         }
       }
-      if (!hasOpen) return pairs; // signal malformed to caller
+      if (!hasOpen) {
+        // Structural anomaly: mark malformed but continue scanning
+        // so subsequent valid pairs are still extracted
+        malformed = true;
+        i = j; // advance past this malformed pair
+        break;
+      }
       pairs.push({ start: i, end: j });
       i = j; // advance past this pair
       break;
     }
   }
-  return pairs;
-}
-
-/** Check if all pairs have an open tag between start and end */
-function allPairsHaveOpenTag(lines: string[], pairs: SkillPairRange[]): boolean {
-  for (const { start, end } of pairs) {
-    let found = false;
-    for (let k = start + 1; k < end; k++) {
-      if (lines[k].includes("<available_skills>")) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) return false;
-  }
-  return true;
+  return { pairs, malformed };
 }
 
 /** Extract trimmed block text for a pair (start..end inclusive) */
@@ -1157,15 +1163,15 @@ export function skillsDedup(prompt: string): SkillsDedupResult {
     if (countNeedle(prompt, "<available_skills>") < 2) return noop;
 
     const lines = prompt.split("\n");
-    const pairs = extractSkillPairs(lines);
+    const { pairs, malformed } = extractSkillPairs(lines);
+
+    // Structural anomaly detected (header→closing without open tag) → fail-open
+    if (malformed) {
+      return { ...noop, skippedReason: "malformed" };
+    }
 
     // Fewer than 2 complete pairs → no-op
     if (pairs.length < 2) return noop;
-
-    // Validate: all pairs must have <available_skills> between header and closing tag
-    if (!allPairsHaveOpenTag(lines, pairs)) {
-      return { ...noop, skippedReason: "malformed" };
-    }
 
     // Byte-identity check across all pairs (trimmed block comparison)
     const referenceText = pairBlockText(lines, pairs[0]);
@@ -1204,10 +1210,12 @@ export function skillsDedup(prompt: string): SkillsDedupResult {
     return {
       prompt: result,
       removedPairs: pairsToRemove.length,
-      removedBytes: prompt.length - result.length,
+      // Use Buffer.byteLength for accurate UTF-8 byte count (not UTF-16 code units)
+      removedBytes: Buffer.byteLength(prompt) - Buffer.byteLength(result),
     };
-  } catch {
-    // Any internal error → fail-open with malformed
-    return { ...noop, skippedReason: "malformed" };
+  } catch (err: unknown) {
+    // Any internal error → fail-open with malformed; capture error for caller audit
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return { ...noop, skippedReason: "malformed", error: errMsg };
   }
 }
