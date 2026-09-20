@@ -10,6 +10,7 @@
  * See `184_Bug_plan.md` Phase 0 — D7 (auditDir consolidation), D4/D5 (piWorkDir).
  */
 
+import * as os from "node:os";
 import { CONFIG_DIR_NAME } from "../constants";
 import type { PipelineConfig } from "../types";
 
@@ -34,6 +35,23 @@ export function resolvePiWorkDir(config: PipelineConfig): string {
  */
 export function resolveAuditDir(config: PipelineConfig): string {
   return config.auditDir ?? `${resolvePiWorkDir(config)}/audit`;
+}
+
+/**
+ * Expands a leading `~` in a path to the user's home directory.
+ *
+ * - `~/foo/bar` → `{homedir}/foo/bar`
+ * - Absolute path → returned unchanged
+ * - Relative path → returned unchanged (caller decides how to resolve)
+ *
+ * Used by domainDir resolution (Phase 3 / 184_Bug D9) so users can write
+ * `domainDir: "~/custom/domains"` in pipeline_loop.json.
+ */
+export function expandHomePath(p: string): string {
+  if (p.startsWith("~/") || p === "~") {
+    return p.replace("~", os.homedir());
+  }
+  return p;
 }
 
 /**

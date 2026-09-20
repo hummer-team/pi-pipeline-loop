@@ -21,7 +21,7 @@ import path from "node:path";
 import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
+import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT, CONFIG_DIR_NAME } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
@@ -32,7 +32,7 @@ import { detectLastRunHealth, extractLastUserMessageText } from "./session-state
 import { parseClarifyTurnArgs } from "../utils/clarify-args";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
-import { resolvePiWorkDir } from "../utils/work-dir";
+import { resolvePiWorkDir, expandHomePath } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
 import type { RuntimeCtx } from "./runtime-ctx";
 
@@ -95,14 +95,24 @@ function buildContextReference(
 
 /**
  * Builds Part 2: Domain Skill.
- * Reads the domain skill file from `~/.pi/domains/{domain.id}.md`.
+ * Implements the 3-state lookup chain (Phase 3 / 184_Bug D9):
+ *   1. Project-level: `{projectRoot}/{expanded domainDir}/{domain.id}.md`
+ *   2. Home-level: `~/.pi/domains/{domain.id}.md` (existing behaviour anchor)
+ *   3. Neither found → return null (skip injection)
+ *
  * Only included when the stage has `requireDomain: true`.
  *
+ * Red line: when domainDir is at its default (`.pi/domains`) AND the project-level
+ * directory does not exist, the resolution falls through to the home-level path —
+ * byte-identical to the pre-Phase-3 behaviour. No existing test should regress.
+ *
+ * @param config - Pipeline configuration (for projectRoot + domainDir)
  * @param stageConfig - Current stage configuration
  * @param meta - Current session metadata
  * @returns Prompt section string, or null if domain not required or file missing
  */
 async function buildDomainSkill(
+  config: PipelineConfig,
   stageConfig: StageConfig,
   meta: SessionMeta,
 ): Promise<string | null> {
@@ -110,24 +120,43 @@ async function buildDomainSkill(
     return null;
   }
 
-  const domainSkillPath = path.join(
+  const fileName = `${meta.domain.id}.md`;
+
+  // Candidate 1: project-level (config-driven, with ~ expansion)
+  const domainDir = config.domainDir ?? `${CONFIG_DIR_NAME}/domains`;
+  const expandedDomainDir = expandHomePath(domainDir);
+  const projectCandidate = path.isAbsolute(expandedDomainDir)
+    ? path.join(expandedDomainDir, fileName)
+    : path.join(config.projectRoot, expandedDomainDir, fileName);
+
+  try {
+    const projectContent = await fs.readFile(projectCandidate, "utf-8");
+    if (projectContent.trim()) {
+      return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${projectContent}`;
+    }
+  } catch {
+    // Project-level file missing — fall through to home-level
+  }
+
+  // Candidate 2: home-level (existing behaviour — ~/.pi/domains/{id}.md)
+  const homeCandidate = path.join(
     os.homedir(),
-    ".pi",
+    CONFIG_DIR_NAME,
     "domains",
-    `${meta.domain.id}.md`,
+    fileName,
   );
 
   try {
-    const domainContent = await fs.readFile(domainSkillPath, "utf-8");
-    // Guard: skip injection when file exists but content is empty/whitespace-only
-    if (!domainContent.trim()) {
-      return null;
+    const homeContent = await fs.readFile(homeCandidate, "utf-8");
+    if (homeContent.trim()) {
+      return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${homeContent}`;
     }
-    return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${domainContent}`;
   } catch {
-    // Domain skill file doesn't exist — skip this part
-    return null;
+    // Home-level file missing — skip injection
   }
+
+  // Neither candidate found → skip
+  return null;
 }
 
 /**
@@ -802,7 +831,7 @@ async function buildDefaultPrompt(
   base: string,
 ): Promise<string> {
   const part1 = buildContextReference(config, meta);
-  const part2 = await buildDomainSkill(stageConfig, meta);
+  const part2 = await buildDomainSkill(config, stageConfig, meta);
   const part3 = await buildStageSkill(config, stageConfig, meta, base);
   const part4 = await buildLoopStatus(config, meta);
   const part5 = buildPipelineStatus(config, meta);
@@ -848,7 +877,7 @@ async function buildDynamicValues(
 
   return {
     context_reference: buildContextReference(config, meta),
-    domain_skill: await buildDomainSkill(stageConfig, meta),
+    domain_skill: await buildDomainSkill(config, stageConfig, meta),
     // Part 3: Stage Skill — now also available as {{stage_skill}} placeholder in yml templates
     // Idempotent: returns null if skill already preloaded in base
     stage_skill: await buildStageSkill(config, stageConfig, meta, base),
