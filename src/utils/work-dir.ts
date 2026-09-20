@@ -95,7 +95,7 @@ export function resolveGitignoreSkipDirs(config: PipelineConfig): ReadonlySet<st
  *   1. project-level: `{projectRoot}/{expanded domainDir}/{domainId}.md`
  *      (domainDir supports `~` expansion and absolute paths)
  *   2. home-level: `{homedir}/.pi/domains/{domainId}.md` (existing behaviour anchor)
- *   3. empty — caller treats as "skip injection"
+ *   3. both candidates missed → caller skips injection
  *
  * All returned paths are absolute and ready for direct `fs.readFile` calls.
  * The actual file-read and frontmatter handling live in

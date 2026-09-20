@@ -52,15 +52,15 @@ function collectTemplateFiles(dir: string, base: string = dir): string[] {
 
 /**
  * Counts how many template files already exist in the target .pi/ directory.
- * Excludes guide.md (always overwritten) and pipeline_loop.json (anchor file
- * at project root — not part of the piWorkDir tree) from the check.
+ * Excludes guide.md (always overwritten) and `.pi/pipeline_loop.json` (D4, anchor
+ * — always exempt from piWorkDir relocation) from the check.
  */
 function countExistingFiles(templateFiles: string[], targetDir: string): number {
   let count = 0;
   for (const relPath of templateFiles) {
     // Skip guide.md — it's always overwritten, not checked
     if (relPath === "guide.md") continue;
-    // Skip pipeline_loop.json — it lives at project root (anchor), not in piWorkDir
+    // Anchor lives at .pi/pipeline_loop.json (D4); a convenience copy may also exist at project root
     if (relPath === "pipeline_loop.json") continue;
     const targetPath = path.join(targetDir, relPath);
     if (fs.existsSync(targetPath)) {
