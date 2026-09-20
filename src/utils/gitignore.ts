@@ -34,20 +34,23 @@ const SKIP_DIRS = new Set([".git", "node_modules", ".pi", "dist"]);
 
 /**
  * Recursively collects .gitignore files from a project directory.
- * Skips directories in SKIP_DIRS and stops descending into ignored directories.
+ * Skips directories in SKIP_DIRS (+ extraSkipDirs when provided) and stops
+ * descending into ignored directories.
  *
  * @param root - Project root directory
  * @param ig - The ignore instance to add patterns to
  * @param patterns - Array to collect patterns (prefixed to be root-relative)
  * @param currentDir - Current directory being scanned
  * @param prefix - Path prefix relative to root (for nested gitignore files)
+ * @param extraSkipDirs - Additional directory basenames to skip (e.g. custom piWorkDir)
  */
 function collectGitignoreFiles(
   root: string,
   ig: Ignore,
   patterns: string[],
   currentDir: string,
-  prefix: string
+  prefix: string,
+  extraSkipDirs?: ReadonlySet<string>
 ): void {
   let entries: fs.Dirent[];
   try {
@@ -101,8 +104,9 @@ function collectGitignoreFiles(
     if (!entry.isDirectory()) continue;
     const dirName = entry.name;
 
-    // Skip special directories
+    // Skip special directories (built-in SKIP_DIRS + caller-provided extras)
     if (SKIP_DIRS.has(dirName)) continue;
+    if (extraSkipDirs && extraSkipDirs.has(dirName)) continue;
 
     const subDir = path.join(currentDir, dirName);
     const subPrefix = prefix ? prefix + dirName + "/" : dirName + "/";
@@ -112,30 +116,34 @@ function collectGitignoreFiles(
       continue; // Parent gitignore ignores this directory
     }
 
-    collectGitignoreFiles(root, ig, patterns, subDir, subPrefix);
+    collectGitignoreFiles(root, ig, patterns, subDir, subPrefix, extraSkipDirs);
   }
 }
 
 /**
  * Loads and parses gitignore files for a project.
  * Returns null if no root .gitignore exists.
- * Results are cached by projectRoot.
+ * Results are cached by projectRoot + extraSkipDirs signature.
  *
  * @param projectRoot - Absolute path to the project root
+ * @param extraSkipDirs - Optional additional directory basenames to skip during traversal
  * @returns GitignoreInfo with unified matcher and patterns, or null if no .gitignore
  */
 export async function loadGitignoreInfo(
-  projectRoot: string
+  projectRoot: string,
+  extraSkipDirs?: ReadonlySet<string>
 ): Promise<GitignoreInfo | null> {
-  // Check cache first
-  if (cache.has(projectRoot)) {
-    return cache.get(projectRoot)!;
+  // Cache key: projectRoot + sorted extra skip dirs (stable signature)
+  const extraKey = extraSkipDirs ? [...extraSkipDirs].sort().join(",") : "";
+  const cacheKey = `${projectRoot}::${extraKey}`;
+  if (cache.has(cacheKey)) {
+    return cache.get(cacheKey)!;
   }
 
   // Check if root .gitignore exists
   const rootGitignore = path.join(projectRoot, ".gitignore");
   if (!fs.existsSync(rootGitignore)) {
-    cache.set(projectRoot, null);
+    cache.set(cacheKey, null);
     return null;
   }
 
@@ -143,10 +151,10 @@ export async function loadGitignoreInfo(
   const ig = ignore();
   const patterns: string[] = [];
 
-  collectGitignoreFiles(projectRoot, ig, patterns, projectRoot, "");
+  collectGitignoreFiles(projectRoot, ig, patterns, projectRoot, "", extraSkipDirs);
 
   const info: GitignoreInfo = { matcher: ig, patterns };
-  cache.set(projectRoot, info);
+  cache.set(cacheKey, info);
   return info;
 }
 

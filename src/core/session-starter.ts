@@ -18,6 +18,7 @@ import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText } from "./session-state";
 import { execSync } from "node:child_process";
 import { checkTemplateDrift, formatDriftNotification } from "../utils/template-drift";
+import { resolvePiWorkDir } from "../utils/work-dir";
 import { detectSessionRole } from "./session-role";
 import { formatAbortedNotifyText } from "./flow-state";
 import { staleConfigNotice } from "../utils/config-staleness";
@@ -326,7 +327,7 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
       if (!_driftCheckDone) {
         _driftCheckDone = true;
         try {
-          const drifts = await checkTemplateDrift(projectRoot);
+          const drifts = await checkTemplateDrift(projectRoot, resolvePiWorkDir(config));
           for (const d of drifts) {
             await safeWriteAuditLog("template_drift", {
               asset: d.asset,

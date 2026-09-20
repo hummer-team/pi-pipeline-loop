@@ -144,10 +144,12 @@ function normalizeBlock(text: string): string {
  * the yml keep whole-file hashing (always-overwrite assets).
  *
  * @param projectRoot - Project root (deployed `.pi/` lookup)
+ * @param piWorkDir - Optional piWorkDir (defaults to ".pi" when omitted)
  * @returns Array of DriftEntry for each asset that genuinely drifted
  */
 export async function checkTemplateDrift(
   projectRoot: string,
+  piWorkDir: string = ".pi",
 ): Promise<DriftEntry[]> {
   const repoTemplateDir = resolveRepoTemplateDir();
   if (!repoTemplateDir) {
@@ -157,7 +159,7 @@ export async function checkTemplateDrift(
     return [];
   }
 
-  const deployedBase = path.join(projectRoot, ".pi");
+  const deployedBase = path.join(projectRoot, piWorkDir);
   const drifts: DriftEntry[] = [];
 
   // Best-effort yml config for managed-block rendering; failure → SKILL checks skip.

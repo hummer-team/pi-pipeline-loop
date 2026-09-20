@@ -38,6 +38,8 @@ import {
   type ProtectState,
 } from "../utils/protect";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
+import { resolvePiWorkDir } from "../utils/work-dir";
+import { buildProtectedPaths } from "../utils/protect";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
@@ -286,7 +288,7 @@ async function checkBashFileTargets(
               const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
               // Phase 4 (173) C11: dismissed action does NOT count as violation
               if (outcome.action !== "dismissed") {
-                await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.` });
+                await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: ${state.hardcoded.join(", ")} + gitignore patterns.` });
               }
               ui.notify(ctx, reason);
               return { block: true, reason };
@@ -294,7 +296,7 @@ async function checkBashFileTargets(
             continue;
           }
           const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
-          await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: .pi/, .git/ + gitignore patterns.` });
+          await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: ${state.hardcoded.join(", ")} + gitignore patterns.` });
           ui.notify(ctx, reason);
           return { block: true, reason };
         }
@@ -355,7 +357,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       if (config.protect?.gitignore === false) {
         gitignoreCache = null;
       } else {
-        gitignoreCache = await loadGitignoreInfo(config.projectRoot);
+        // When piWorkDir differs from default, also skip traversing into it
+        const piWorkDir = resolvePiWorkDir(config);
+        const extraSkip = piWorkDir !== ".pi"
+          ? new Set([piWorkDir.split("/").pop()!])
+          : undefined;
+        gitignoreCache = await loadGitignoreInfo(config.projectRoot, extraSkip);
       }
     }
     return gitignoreCache;
@@ -531,7 +538,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   type: "git_protected",
                   tool: "bash",
                   detail: result.reason!,
-                  suggestion: `git add cannot stage protected paths (.pi/, .git/, gitignore).`,
+                  suggestion: `git add cannot stage protected paths (${gitState.hardcoded.join(", ")}, gitignore).`,
                 });
                 ui.notify(ctx, result.reason!);
                 return { block: true, reason: result.reason! };
@@ -548,7 +555,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   type: "git_protected",
                   tool: "bash",
                   detail: result.reason!,
-                  suggestion: `git commit cannot include protected paths (.pi/, .git/, gitignore).`,
+                  suggestion: `git commit cannot include protected paths (${gitState.hardcoded.join(", ")}, gitignore).`,
                 });
                 ui.notify(ctx, result.reason!);
                 return { block: true, reason: result.reason! };
@@ -905,7 +912,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                         type: "write_protected",
                         tool: toolName,
                         detail: reason,
-                        suggestion: `Hardcoded protected: .pi/, .git/.`,
+                        suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
                       });
                     }
                     ui.notify(ctx, reason);
@@ -918,7 +925,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     type: "write_protected",
                     tool: toolName,
                     detail: reason,
-                    suggestion: `Hardcoded protected: .pi/, .git/.`,
+                    suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
                   });
                   ui.notify(ctx, reason);
                   return { block: true, reason };

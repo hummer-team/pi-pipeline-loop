@@ -24,6 +24,7 @@ import { askProtectDecision } from "../utils/protect-ask";
 import { resolveStagePath, DEFAULT_VERIFY_FILE } from "../constants";
 import { renderContractBlock, mergeManagedBlock } from "../utils/skill-managed-block";
 import { loadPromptConfig } from "../core/prompt-config";
+import { resolvePiWorkDir } from "../utils/work-dir";
 import {
   checkTemplateResidues,
   computeResidueFingerprint,
@@ -54,13 +55,16 @@ function collectTemplateFiles(dir: string, base: string = dir): string[] {
 
 /**
  * Counts how many template files already exist in the target .pi/ directory.
- * Excludes guide.md from the check (guide.md is always overwritten).
+ * Excludes guide.md (always overwritten) and pipeline_loop.json (anchor file
+ * at project root — not part of the piWorkDir tree) from the check.
  */
 function countExistingFiles(templateFiles: string[], targetDir: string): number {
   let count = 0;
   for (const relPath of templateFiles) {
     // Skip guide.md — it's always overwritten, not checked
     if (relPath === "guide.md") continue;
+    // Skip pipeline_loop.json — it lives at project root (anchor), not in piWorkDir
+    if (relPath === "pipeline_loop.json") continue;
     const targetPath = path.join(targetDir, relPath);
     if (fs.existsSync(targetPath)) {
       count++;
@@ -154,7 +158,8 @@ async function executeDirBranch(
   config: PipelineConfig,
   ctx?: any,
 ): Promise<{ success: boolean; verifyAfter?: boolean; summary?: string; content?: string; error?: string; managedBlockError?: string }> {
-  const targetDir = path.join(config.projectRoot, CONFIG_DIR_NAME);
+  // Use piWorkDir for the deployment target (D5 — all assets except the anchor)
+  const targetDir = path.join(config.projectRoot, resolvePiWorkDir(config));
 
   // Check template directory exists
   if (!fs.existsSync(TEMPLATE_DIR)) {
@@ -214,10 +219,12 @@ async function executeDirBranch(
 
 /**
  * Returns the display path for a template file.
- * `pipeline_loop.json` lives at project root; all others live under `.pi/`.
+ * `pipeline_loop.json` lives at .pi/ (anchor — always shown as `.pi/pipeline_loop.json`);
+ * all others live under the configured piWorkDir.
  */
-function displayPath(rel: string): string {
-  return rel === "pipeline_loop.json" ? rel : `${CONFIG_DIR_NAME}/${rel}`;
+function displayPath(rel: string, piWorkDir: string): string {
+  if (rel === "pipeline_loop.json") return `${CONFIG_DIR_NAME}/${rel}`;
+  return `${piWorkDir}/${rel}`;
 }
 
 /**
@@ -237,10 +244,15 @@ async function copyTemplateFiles(
     const copiedFiles: string[] = [];
     const skippedFiles: string[] = [];
     let managedBlockError: string | undefined;
+    const piWorkDir = resolvePiWorkDir(config);
 
     for (const relPath of templateFiles) {
       const srcPath = path.join(TEMPLATE_DIR, relPath);
-      const destPath = path.join(targetDir, relPath);
+      // Anchor exception (D4): pipeline_loop.json always lands in .pi/ (CONFIG_DIR_NAME),
+      // not piWorkDir — the anchor path is unaffected by piWorkDir migration.
+      const destPath = relPath === "pipeline_loop.json"
+        ? path.join(config.projectRoot, CONFIG_DIR_NAME, relPath)
+        : path.join(targetDir, relPath);
 
       // guide.md is always overwritten regardless of strategy
       const alwaysOverwrite = relPath === "guide.md";
@@ -251,13 +263,13 @@ async function copyTemplateFiles(
       const isManagedSkill = relPath.startsWith("skills/") && relPath.endsWith("/SKILL.md");
       if (isManagedSkill && fs.existsSync(destPath)) {
         skippedCount++;
-        skippedFiles.push(displayPath(relPath));
+        skippedFiles.push(displayPath(relPath, piWorkDir));
         continue;
       }
 
       if (strategy === "skip" && !alwaysOverwrite && fs.existsSync(destPath)) {
         skippedCount++;
-        skippedFiles.push(displayPath(relPath));
+        skippedFiles.push(displayPath(relPath, piWorkDir));
         continue;
       }
 
@@ -265,7 +277,7 @@ async function copyTemplateFiles(
       await fsp.mkdir(path.dirname(destPath), { recursive: true });
       await fsp.copyFile(srcPath, destPath);
       copiedCount++;
-      copiedFiles.push(displayPath(relPath));
+      copiedFiles.push(displayPath(relPath, piWorkDir));
     }
 
     // Also copy pipeline_loop.json to project root if it exists in template
@@ -278,13 +290,13 @@ async function copyTemplateFiles(
           destLoopJson,
         );
         // Only add to copiedFiles if not already counted via templateFiles loop
-        if (!copiedFiles.includes(displayPath(loopJsonRelPath))) {
-          copiedFiles.push(displayPath(loopJsonRelPath));
+        if (!copiedFiles.includes(displayPath(loopJsonRelPath, piWorkDir))) {
+          copiedFiles.push(displayPath(loopJsonRelPath, piWorkDir));
           copiedCount++;
         }
       } else if (strategy === "skip") {
-        if (!skippedFiles.includes(displayPath(loopJsonRelPath))) {
-          skippedFiles.push(displayPath(loopJsonRelPath));
+        if (!skippedFiles.includes(displayPath(loopJsonRelPath, piWorkDir))) {
+          skippedFiles.push(displayPath(loopJsonRelPath, piWorkDir));
           skippedCount++;
         }
       }
@@ -361,10 +373,10 @@ async function copyTemplateFiles(
 
     // Build content string for bridge display
     const lines: string[] = [
-      "# pipeline-init — .pi/ directory setup",
+      `# pipeline-init — ${piWorkDir}/ directory setup`,
       `- copied: ${copiedCount}`,
       `- skipped: ${skippedCount}`,
-      `- target: ${CONFIG_DIR_NAME}/`,
+      `- target: ${piWorkDir}/`,
       `- docs/: ${docsCreated ? "created" : "already exists"}`,
       `- hint: run /pipeline-init 2 to check template placeholders`,
     ];
@@ -386,7 +398,7 @@ async function copyTemplateFiles(
 
     return {
       success: true,
-      summary: `Copied ${copiedCount} file(s) to ${CONFIG_DIR_NAME}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}; docs/ ${docsCreated ? "created" : "ensured"}`,
+      summary: `Copied ${copiedCount} file(s) to ${piWorkDir}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}; docs/ ${docsCreated ? "created" : "ensured"}`,
       content: lines.join("\n"),
       ...(managedBlockError ? { managedBlockError } : {}),
     };
@@ -524,13 +536,14 @@ async function executeVerifyBranch(
   config: PipelineConfig,
   ctx?: any,
 ): Promise<{ success: boolean; summary?: string; content?: string; results?: VerifyGenerateResult[] }> {
-  // Pre-check: .pi/skills must exist
-  const skillsDir = path.join(config.projectRoot, CONFIG_DIR_NAME, "skills");
+  // Pre-check: piWorkDir/skills must exist
+  const piWorkDir = resolvePiWorkDir(config);
+  const skillsDir = path.join(config.projectRoot, piWorkDir, "skills");
   if (!fs.existsSync(skillsDir)) {
     return {
       success: true,
-      summary: `skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline-init 0 first`,
-      content: `# pipeline-init — verify.md generation\n- skipped: ${CONFIG_DIR_NAME}/skills not found. Run /pipeline-init 0 first`,
+      summary: `skipped: ${piWorkDir}/skills not found. Run /pipeline-init 0 first`,
+      content: `# pipeline-init — verify.md generation\n- skipped: ${piWorkDir}/skills not found. Run /pipeline-init 0 first`,
       results: [],
     };
   }
@@ -638,10 +651,10 @@ async function executeVerifyBranch(
     const hasNoItems = skipped.some(r => r.reason === "no_items");
     if (hasSkillNotFound && hasNoItems) {
       // Mixed: show both hints
-      lines.push(`- hint: skill files not found for some stages — check pipeline_loop.json skillPath and ${CONFIG_DIR_NAME}/skills/ layout`);
+      lines.push(`- hint: skill files not found for some stages — check pipeline_loop.json skillPath and ${resolvePiWorkDir(config)}/skills/ layout`);
       lines.push("- hint: other stages have skill files but no **Must**/**必须** markers — add `**必须**` marker lines to those SKILL.md files");
     } else if (hasSkillNotFound) {
-      lines.push(`- hint: skill files not found under ${CONFIG_DIR_NAME}/skills/. Check pipeline_loop.json skillPath config and ${CONFIG_DIR_NAME}/skills/ layout`);
+      lines.push(`- hint: skill files not found under ${resolvePiWorkDir(config)}/skills/. Check pipeline_loop.json skillPath config and ${resolvePiWorkDir(config)}/skills/ layout`);
     } else if (hasNoItems) {
       lines.push("- hint: skill files found but no **Must**/**必须** markers — add `**必须**` marker lines to SKILL.md files, then re-run");
     }
@@ -916,7 +929,7 @@ async function runConflictCheck(
   for (const [stage, skillPath] of stages) {
     onStageProgress?.(stage);
     const skillBody = await readSkillBody(
-      path.join(CONFIG_DIR_NAME, "skills", skillPath),
+      path.join(resolvePiWorkDir(config), "skills", skillPath),
       config.projectRoot,
     );
     if (!skillBody) continue;
@@ -1030,7 +1043,7 @@ async function handleConflictResults(
           ["develop", "develop/SKILL.md"], ["review", "review/SKILL.md"],
           ["fix", "fix/SKILL.md"]].find(([s]) => s === r.stage) || [];
         if (!skillPath) continue;
-        const skillFile = path.join(config.projectRoot, CONFIG_DIR_NAME, "skills", skillPath);
+        const skillFile = path.join(config.projectRoot, resolvePiWorkDir(config), "skills", skillPath);
         if (!fs.existsSync(skillFile)) continue;
         try {
           const original = fs.readFileSync(skillFile, "utf-8");

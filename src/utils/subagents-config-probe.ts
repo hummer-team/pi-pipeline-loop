@@ -33,6 +33,9 @@ export type SubagentsMentionMode = "model" | "ok" | "absent" | "invalid";
  * - `"invalid"`: file present but not valid JSON (or not a JSON object)
  */
 export function probeSubagentsMentionMode(projectRoot: string): SubagentsMentionMode {
+  // External plugin asset — intentionally pinned to `.pi/`, NOT piWorkDir.
+  // subagents.json is owned by the pi-subagents plugin (not this pipeline plugin);
+  // its deployment location is independent of the pipeline's piWorkDir setting.
   const configPath = path.join(projectRoot, CONFIG_DIR_NAME, "subagents.json");
 
   let raw: string;

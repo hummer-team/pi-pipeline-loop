@@ -6,8 +6,9 @@
 
 import * as path from "node:path";
 import type { PipelineConfig, PipelineStage, ProtectConfig } from "../types";
-import { PROTECTED_PATHS, ALLOWED_WRITE_ALL } from "../constants";
+import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, CONFIG_DIR_NAME } from "../constants";
 import { type GitignoreInfo, isGitignored } from "./gitignore";
+import { resolvePiWorkDir } from "./work-dir";
 
 /**
  * Internal state for protection judgment.
@@ -23,6 +24,32 @@ export interface ProtectState {
 }
 
 /**
+ * Builds the dynamic hardcoded protection set from the config.
+ *
+ * Always includes:
+ *   - `.pi/` (anchor directory — always protected regardless of piWorkDir)
+ *   - `${piWorkDir}/` (plugin-owned asset directory, when different from `.pi`)
+ *   - `.git/`
+ *   - Any user-configured `config.protect.paths`
+ *
+ * The result is deduplicated (Set-based) to avoid double-matching when
+ * `piWorkDir === ".pi"` (the default case).
+ *
+ * @param config - Pipeline configuration
+ * @returns Deduplicated list of hardcoded-protected path prefixes
+ */
+export function buildProtectedPaths(config: PipelineConfig): string[] {
+  const piWorkDir = resolvePiWorkDir(config);
+  const userPaths = config.protect?.paths ?? [];
+  const set = new Set<string>([...PROTECTED_PATHS]);
+  // piWorkDir prefix (always include — deduped if equal to the default)
+  set.add(`${piWorkDir}/`);
+  // User-configured extra protected paths
+  for (const p of userPaths) set.add(p);
+  return [...set];
+}
+
+/**
  * Resolves protect configuration into a ProtectState for judgment.
  *
  * @param config - Pipeline configuration with protect settings
@@ -35,8 +62,8 @@ export function resolveProtectConfig(
 ): ProtectState {
   const protect: ProtectConfig = config.protect ?? {};
 
-  // Merge built-in PROTECTED_PATHS with user-configured paths
-  const hardcoded = [...PROTECTED_PATHS, ...(protect.paths ?? [])];
+  // Dynamic hardcoded set: anchor .pi/ + piWorkDir/ + .git/ + user paths (deduped)
+  const hardcoded = buildProtectedPaths(config);
 
   // Normalize allow list
   const allow = normalizeAllow(protect.allow ?? []);

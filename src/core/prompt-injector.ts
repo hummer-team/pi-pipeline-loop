@@ -32,6 +32,8 @@ import { detectLastRunHealth, extractLastUserMessageText } from "./session-state
 import { parseClarifyTurnArgs } from "../utils/clarify-args";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
+import { resolvePiWorkDir } from "../utils/work-dir";
+import { buildProtectedPaths } from "../utils/protect";
 import type { RuntimeCtx } from "./runtime-ctx";
 
 /**
@@ -237,7 +239,7 @@ async function buildStageSkill(
 ): Promise<string | null> {
   const stageSkillPath = path.join(
     config.projectRoot,
-    ".pi",
+    resolvePiWorkDir(config),
     "skills",
     stageConfig.skillPath,
   );
@@ -292,13 +294,18 @@ async function buildLoopStatus(
 
   // Build protection information
   const allowList = config.protect?.allow ?? [];
-  const userPaths = config.protect?.paths ?? [];
-  const allHardcoded = [...PROTECTED_PATHS, ...userPaths];
+  // Dynamic hardcoded set: anchor .pi/ + piWorkDir/ + .git/ + user paths (deduped)
+  const allHardcoded = buildProtectedPaths(config);
 
   // Load gitignore patterns if enabled
   let gitignorePatterns: string[] = [];
   if (config.protect?.gitignore !== false) {
-    const gitignoreInfo = await loadGitignoreInfo(config.projectRoot);
+    // When piWorkDir differs from default, also skip traversing into it
+    const piWorkDir = resolvePiWorkDir(config);
+    const extraSkip = piWorkDir !== ".pi"
+      ? new Set([piWorkDir.split("/").pop()!])
+      : undefined;
+    const gitignoreInfo = await loadGitignoreInfo(config.projectRoot, extraSkip);
     if (gitignoreInfo) {
       gitignorePatterns = gitignoreInfo.patterns;
     }
