@@ -43,9 +43,18 @@ let auditDirPath = "";
  * Must be called once before `writeAuditLog` is used (typically at
  * pipeline startup in `createPipeline`).
  *
+ * Zero-write gate (Phase 2 / 184_Bug D3): when `config.isFallbackTemplate`
+ * is true (in-memory template fallback, no config file on disk), this function
+ * is a no-op — `auditDirPath` stays empty, and `safeWriteAuditLog` (L93 guard)
+ * silently drops all writes. No directories are created on disk.
+ *
  * @param config - The pipeline configuration
  */
 export async function initAuditLog(config: PipelineConfig): Promise<void> {
+  // Phase 2 / 184_Bug (D3): fallback registration must not create any files.
+  // Skip directory creation; safeWriteAuditLog's L93 no-op guard handles the rest.
+  if (config.isFallbackTemplate) return;
+
   const auditDir = config.auditDir || ".pi/audit";
   auditDirPath = path.resolve(config.projectRoot, auditDir);
   await fs.mkdir(auditDirPath, { recursive: true });

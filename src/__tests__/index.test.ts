@@ -156,8 +156,12 @@ describe("default export", () => {
     expect(registeredCommands).toContain("pipeline-quit");
   });
 
-  // Test C: config file missing → console.warn + graceful degradation
-  it("warns and does not register when config file is missing", async () => {
+  // Test C: config file missing → fallback registration from built-in template (184_Bug Phase 2).
+  // Expected behaviour:
+  //   1. Full registration occurs (hooks/tools/commands all registered — no silent disable)
+  //   2. Console warn contains the fallback-template message
+  //   3. `.pi/pipeline_loop.json` is NOT created on disk (zero-write regression lock)
+  it("registers full pipeline from built-in template when config file is missing", async () => {
     // Temporarily remove the fixture
     const saved = fs.readFileSync(FIXTURE_PATH, "utf-8");
     fs.unlinkSync(FIXTURE_PATH);
@@ -167,19 +171,39 @@ describe("default export", () => {
     console.warn = ((...args: any[]) => {
       warnCalls.push(String(args[0]));
     }) as any;
-    const { pi, registeredEvents } = createMockPi();
 
-    await defaultExport(pi as any);
+    const { pi, registeredEvents, registeredTools, registeredCommands } = createMockPi();
 
-    expect(warnCalls.length).toBe(1);
-    expect(warnCalls[0]).toContain(".pi/pipeline_loop.json not found");
-    expect(warnCalls[0]).toContain("Pipeline disabled");
-    expect(registeredEvents.length).toBe(0);
+    try {
+      await defaultExport(pi as any);
 
-    console.warn = originalWarn;
+      // 1. Fallback message is present
+      const fallbackWarn = warnCalls.find(w => w.includes("built-in template"));
+      expect(fallbackWarn).toBeDefined();
+      expect(fallbackWarn).toContain("No configuration has been written to disk");
 
-    // Restore fixture for subsequent tests
-    fs.writeFileSync(FIXTURE_PATH, saved);
+      // 2. Full registration happened (hooks + tools + commands all present)
+      expect(registeredEvents).toContain("session_start");
+      expect(registeredEvents).toContain("before_agent_start");
+      expect(registeredEvents).toContain("agent_settled");
+      expect(registeredEvents.length).toBeGreaterThanOrEqual(6);
+
+      expect(registeredTools).toContain("stage_advance");
+      expect(registeredTools).toContain("pipeline_state");
+      expect(registeredTools.length).toBeGreaterThanOrEqual(6);
+
+      expect(registeredCommands).toContain("pipeline-status");
+      expect(registeredCommands).toContain("pipeline-init");
+      expect(registeredCommands).toContain("pipeline-start");
+      expect(registeredCommands.length).toBeGreaterThanOrEqual(5);
+
+      // 3. Zero-write regression lock: config file still does NOT exist
+      expect(fs.existsSync(FIXTURE_PATH)).toBe(false);
+    } finally {
+      console.warn = originalWarn;
+      // Restore fixture for subsequent tests
+      fs.writeFileSync(FIXTURE_PATH, saved);
+    }
   });
 
   // Test D: createPipelineFromJson() defaults to .pi/pipeline_loop.json

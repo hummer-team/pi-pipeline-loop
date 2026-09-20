@@ -4,6 +4,7 @@
  */
 
 import type { PipelineStage } from "./types";
+import * as pathMod from "node:path";
 
 /**
  * Configuration directory name — consistent with pi SDK CONFIG_DIR_NAME.
@@ -17,6 +18,16 @@ export const CONFIG_DIR_NAME = ".pi";
  * and for the protection-set baseline. Single source of truth for the literal.
  */
 export const PI_PREFIX = `${CONFIG_DIR_NAME}/`;
+
+/**
+ * Shared template directory — resolves to dist/template/ in production (after
+ * build) or src/template/ in dev (when running tests against src/).
+ *
+ * Both src/ and dist/ layouts place the `template/` folder one level below
+ * the module that imports this constant (`__dirname` resolves correctly in
+ * both contexts because `tsc` preserves the relative folder structure).
+ */
+export const TEMPLATE_DIR = pathMod.resolve(__dirname, "template");
 
 /**
  * Stages eligible for pipeline resume on aborted restart.

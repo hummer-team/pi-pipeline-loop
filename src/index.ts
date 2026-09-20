@@ -6,7 +6,7 @@
 
 import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_DECISION_SHORTCUT } from "./constants";
+import { DEFAULT_DECISION_SHORTCUT, CONFIG_DIR_NAME, TEMPLATE_DIR } from "./constants";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { buildDecisionMenu, executeDecision, labelToDecision, promptDecisionMenu } from "./core/flow-state";
@@ -385,23 +385,66 @@ export function createPipelineFromJson(jsonPath?: string): ExtensionFactory {
  *
  * Auto-loads `.pi/pipeline_loop.json` and registers all hooks, tools,
  * and commands with the pi ExtensionAPI. If the config file is missing,
- * logs a warning and gracefully degrades (no registration).
+ * falls back to the bundled template in memory (zero disk writes) and
+ * registers the full plugin — so that `/pipeline-init` remains usable
+ * to materialise the configuration.
+ *
+ * Design invariants (184_Bug):
+ * - The load path NEVER throws — all errors degrade to "Pipeline disabled"
+ *   with an error-level log.
+ * - Fallback registration sets `config.isFallbackTemplate = true` so
+ *   audit-log init is skipped (zero disk writes) and restart hints fire.
  *
  * @param pi - The pi SDK ExtensionAPI instance
  */
 export default async function initPipeline(pi: ExtensionAPI): Promise<void> {
-  const fs = await import("node:fs");
-  const defaultPath = ".pi/pipeline_loop.json";
+  const defaultPath = `${CONFIG_DIR_NAME}/pipeline_loop.json`;
 
-  if (!fs.existsSync(defaultPath)) {
+  try {
+    // Fast path: config file exists on disk → standard registration
+    if (fsSync.existsSync(defaultPath)) {
+      const factory = createPipelineFromJson(defaultPath);
+      await factory(pi);
+      return;
+    }
+
+    // Fallback path: config file absent → resolve bundled template in memory.
+    // Zero disk writes — no directory creation, no audit log init.
+    const templateJsonPath = pathMod.join(TEMPLATE_DIR, "pipeline_loop.json");
+    if (!fsSync.existsSync(templateJsonPath)) {
+      // Template itself is missing — log error and disable (no throw).
+      console.error(
+        `[pi-pipeline] Bundled template not found at ${templateJsonPath}. Pipeline disabled.`,
+      );
+      console.warn(`[pi-pipeline] ${defaultPath} not found. Pipeline disabled.`);
+      return;
+    }
+
+    const templateJson = loadJsonConfig(templateJsonPath);
+    const config = resolvePipelineConfig(templateJson);
+    config.isFallbackTemplate = true;
+    // Mark projectRoot as cwd (template has no projectRoot of its own)
+    if (!config.projectRoot) {
+      config.projectRoot = process.cwd();
+    }
+
     console.warn(
-      `[pi-pipeline] ${defaultPath} not found. Pipeline disabled.`
+      `[pi-pipeline] ${defaultPath} not found — running on built-in template defaults. ` +
+      `No configuration has been written to disk. ` +
+      `Run /pipeline-init to materialise the config, then restart pi for file-based config to take effect.`,
     );
-    return;
-  }
 
-  const factory = createPipelineFromJson(defaultPath);
-  await factory(pi);
+    const factory = createPipeline(config);
+    await factory(pi);
+  } catch (err) {
+    // Catch-all: any unexpected error during bootstrap must NOT propagate.
+    // Log at error level with context and degrade to disabled.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[pi-pipeline] Fatal error during pipeline bootstrap: ${errMsg}. Pipeline disabled.`,
+    );
+    console.warn(`[pi-pipeline] ${defaultPath} not found. Pipeline disabled.`);
+  }
 }
 
 // ─── Type Re-exports ─────────────────────────────────────────────────────────

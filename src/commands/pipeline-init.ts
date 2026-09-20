@@ -16,7 +16,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Command } from "../types";
-import { CONFIG_DIR_NAME } from "../constants";
+import { CONFIG_DIR_NAME, TEMPLATE_DIR } from "../constants";
 import { generateVerifyFiles, loadPluginDeliverables } from "../core/verify-generator";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
@@ -32,9 +32,6 @@ import {
   clearResidueGateStatus,
 } from "../core/template-residue-check";
 import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
-
-/** Template directory — resolves to dist/template/ in production or src/template/ in dev */
-const TEMPLATE_DIR = path.resolve(__dirname, "..", "template");
 
 /**
  * Recursively collects all files in a directory, returning paths relative to the root.
@@ -122,6 +119,12 @@ export function createPipelineInitCommand(
           // 147 Phase 5: notify hint so the user knows to run /pipeline-init 2
           // next. copyTemplateFiles lacks ctx access, so the notify is issued here.
           ctx?.ui?.notify?.("Initialization complete. Run /pipeline-init 2 to check template placeholders.");
+          // Phase 2 / 184_Bug (D1/R2Q4③): when the session was booted from the
+          // in-memory fallback template, remind the user that the config has now
+          // been materialised and a pi restart is needed for file-based config to take effect.
+          if (config.isFallbackTemplate) {
+            ctx?.ui?.notify?.("Pipeline config materialised from built-in template. Restart pi to activate file-based configuration.");
+          }
           // Phase 5 / 175 (task 3): notify managed block merge failure if any.
           // The error was already logged at error level in copyTemplateFiles.
           if (dirResult.managedBlockError) {
