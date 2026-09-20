@@ -70,6 +70,45 @@ describe("parsePiWorkDir", () => {
     expect(parsePiWorkDir(42)).toBe(CONFIG_DIR_NAME);
     expect(warns).toHaveLength(1);
   });
+
+  // Phase 0 / 185 — separator normalization (L5)
+  it("trailing POSIX slash → stripped", () => {
+    expect(parsePiWorkDir("piwork/")).toBe("piwork");
+    expect(warns).toHaveLength(0);
+  });
+
+  it("trailing backslash → stripped", () => {
+    expect(parsePiWorkDir("piwork\\")).toBe("piwork");
+    expect(warns).toHaveLength(0);
+  });
+
+  it("leading slash on relative-looking path → rejected as absolute", () => {
+    expect(parsePiWorkDir("/piwork")).toBe(CONFIG_DIR_NAME);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("absolute");
+  });
+
+  // Phase 0 / 185 — isAbsolute union (L1): Windows forward-slash variant
+  it("C:/pi → rejected as absolute (win32 forward-slash)", () => {
+    expect(parsePiWorkDir("C:/pi")).toBe(CONFIG_DIR_NAME);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("absolute");
+  });
+
+  // Phase 0 / 185 — isAbsolute union (L1): UNC path
+  it("\\\\server\\share → rejected as absolute (UNC)", () => {
+    expect(parsePiWorkDir("\\\\server\\share")).toBe(CONFIG_DIR_NAME);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("absolute");
+  });
+
+  // Phase 0 / 185 — idempotent normalization
+  it("normalization is idempotent", () => {
+    const once = parsePiWorkDir("piwork/");
+    const twice = parsePiWorkDir(once);
+    expect(twice).toBe("piwork");
+    expect(twice).toBe(once);
+  });
 });
 
 // ─── rewritePiPrefix ────────────────────────────────────────────────────────

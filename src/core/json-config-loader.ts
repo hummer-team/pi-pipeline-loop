@@ -256,6 +256,17 @@ function parseSpawnWaitTimeoutMs(raw: unknown): number | undefined {
  * path-traversal escapes from projectRoot). Invalid or missing values warn
  * (when present but invalid) and fall back to CONFIG_DIR_NAME (".pi").
  *
+ * Absolute check uses `path.posix.isAbsolute` ∪ `path.win32.isAbsolute` to
+ * cover both POSIX (`/`) and Windows (`C:\`, `\\server\share`) forms.
+ *
+ * Trailing/leading separators are stripped after the absolute check so that
+ * downstream consumers (e.g. `rewritePiPrefix`) see a clean basename-free
+ * directory name.
+ *
+ * Known issue (KI-1): `..` segment detection splits on `/` only — backslash
+ * forms like `..\\escape` are not caught. This is documented but not fixed
+ * per R3-Q1 decision.
+ *
  * The returned value is the resolved plugin-owned asset directory (relative
  * to projectRoot). All ".pi/" prefixed config values are rewritten to this
  * directory at resolve time, except the anchor `.pi/pipeline_loop.json`.
@@ -275,23 +286,35 @@ export function parsePiWorkDir(raw: unknown): string {
     );
     return CONFIG_DIR_NAME;
   }
-  // path.isAbsolute is not available without import; use OS-specific heuristic
-  // that matches both POSIX (/) and Windows (C:\ or \\) absolute forms.
-  if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\")) {
+  // Reject absolute paths (POSIX + Windows forms via standard library).
+  if (path.posix.isAbsolute(raw) || path.win32.isAbsolute(raw)) {
     console.warn(
       `[pi-pipeline] Invalid piWorkDir "${raw}" — absolute path not allowed, falling back to "${CONFIG_DIR_NAME}"`,
     );
     return CONFIG_DIR_NAME;
   }
-  // Reject ".." path segments (prevents escaping projectRoot)
-  const segments = raw.split("/");
+  // Normalize: strip leading/trailing separators (both / and \).
+  // Placed after the absolute check to prevent /etc/pi → etc/pi security bypass.
+  const normalized = raw.replace(/^[/\\]+|[/\\]+$/g, "");
+  // Defensive guard: after stripping, if empty → fall back (unreachable when
+  // the absolute check above already rejects leading-slash inputs, but kept
+  // for safety against future input-space changes).
+  if (normalized.length === 0) {
+    console.warn(
+      `[pi-pipeline] Invalid piWorkDir "${raw}" — empty after normalization, falling back to "${CONFIG_DIR_NAME}"`,
+    );
+    return CONFIG_DIR_NAME;
+  }
+  // Reject ".." path segments (prevents escaping projectRoot).
+  // NOTE: splits on "/" only; backslash forms are not covered (KI-1).
+  const segments = normalized.split("/");
   if (segments.some((seg) => seg === "..")) {
     console.warn(
       `[pi-pipeline] Invalid piWorkDir "${raw}" — contains ".." segment, falling back to "${CONFIG_DIR_NAME}"`,
     );
     return CONFIG_DIR_NAME;
   }
-  return raw;
+  return normalized;
 }
 
 /**
