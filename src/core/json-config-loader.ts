@@ -17,6 +17,7 @@ import type {
   StartStageMode,
 } from "../types";
 import {
+  CONFIG_DIR_NAME,
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
   DEFAULT_DECISION_SHORTCUT,
@@ -81,6 +82,7 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     projectRoot: typeof json.projectRoot === "string" ? json.projectRoot : undefined,
     auditDir: typeof json.auditDir === "string" ? json.auditDir : undefined,
     domainDir: typeof json.domainDir === "string" ? json.domainDir : undefined,
+    piWorkDir: parsePiWorkDir(json.piWorkDir),
     maxLoops: typeof json.maxLoops === "number" ? json.maxLoops : undefined,
     maxLoopCycles:
       typeof json.maxLoopCycles === "number" ? json.maxLoopCycles : undefined,
@@ -244,6 +246,71 @@ function parseSpawnWaitTimeoutMs(raw: unknown): number | undefined {
     return undefined;
   }
   return raw;
+}
+
+/**
+ * Parses and validates a piWorkDir value from JSON config.
+ *
+ * Valid: non-empty string, not an absolute path, no ".." segments (prevents
+ * path-traversal escapes from projectRoot). Invalid or missing values warn
+ * (when present but invalid) and fall back to CONFIG_DIR_NAME (".pi").
+ *
+ * The returned value is the resolved plugin-owned asset directory (relative
+ * to projectRoot). All ".pi/" prefixed config values are rewritten to this
+ * directory at resolve time, except the anchor `.pi/pipeline_loop.json`.
+ */
+export function parsePiWorkDir(raw: unknown): string {
+  if (typeof raw !== "string") {
+    if (raw !== undefined) {
+      console.warn(
+        `[pi-pipeline] Invalid piWorkDir "${String(raw)}" — expected string, falling back to "${CONFIG_DIR_NAME}"`,
+      );
+    }
+    return CONFIG_DIR_NAME;
+  }
+  if (raw.length === 0) {
+    console.warn(
+      `[pi-pipeline] Invalid piWorkDir "" — expected non-empty string, falling back to "${CONFIG_DIR_NAME}"`,
+    );
+    return CONFIG_DIR_NAME;
+  }
+  // path.isAbsolute is not available without import; use OS-specific heuristic
+  // that matches both POSIX (/) and Windows (C:\ or \\) absolute forms.
+  if (raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\")) {
+    console.warn(
+      `[pi-pipeline] Invalid piWorkDir "${raw}" — absolute path not allowed, falling back to "${CONFIG_DIR_NAME}"`,
+    );
+    return CONFIG_DIR_NAME;
+  }
+  // Reject ".." path segments (prevents escaping projectRoot)
+  const segments = raw.split("/");
+  if (segments.some((seg) => seg === "..")) {
+    console.warn(
+      `[pi-pipeline] Invalid piWorkDir "${raw}" — contains ".." segment, falling back to "${CONFIG_DIR_NAME}"`,
+    );
+    return CONFIG_DIR_NAME;
+  }
+  return raw;
+}
+
+/**
+ * Rewrites a path value's ".pi/" prefix to the configured piWorkDir, when
+ * the prefix differs from the default.
+ *
+ * - When `piWorkDir === ".pi"` (default): returns `p` unchanged (no-op).
+ * - When `p` starts with `".pi/"`: replaces the prefix with `${piWorkDir}/`.
+ * - Otherwise: returns `p` unchanged (no rewrite for non-.pi paths).
+ *
+ * Used at resolve time on `agentPath`, `verify.verifyFile`, `auditDir`, `domainDir`.
+ * Absolute / `~/` paths do not match the prefix and are left untouched.
+ */
+export function rewritePiPrefix(p: string, piWorkDir: string): string {
+  if (piWorkDir === CONFIG_DIR_NAME) return p;
+  const prefix = `${CONFIG_DIR_NAME}/`;
+  if (p.startsWith(prefix)) {
+    return `${piWorkDir}/${p.slice(prefix.length)}`;
+  }
+  return p;
 }
 
 /**
@@ -610,6 +677,9 @@ function normalizeCycleKey(cycle: PipelineStage[]): string {
 
 export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig {
   const projectRoot = json.projectRoot || process.cwd();
+  // Validate piWorkDir once (dual insurance with loadJsonConfig — handles the
+  // case where callers construct PipelineJsonConfig directly, bypassing loadJsonConfig).
+  const piWorkDir = parsePiWorkDir(json.piWorkDir);
   const stages: Record<PipelineStage, StageConfig> = {} as Record<
     PipelineStage,
     StageConfig
@@ -640,7 +710,10 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       STAGE_TYPE_TOOL_DEFAULTS.clarify;
 
     stages[stageName] = {
-      agentPath: jsonStage.agentPath,
+      // Rewrite ".pi/" prefix on configured agentPath when piWorkDir differs.
+      agentPath: jsonStage.agentPath
+        ? rewritePiPrefix(jsonStage.agentPath, piWorkDir)
+        : undefined,
       skillPath:
         jsonStage.skillPath ||
         resolveStagePath(DEFAULT_SKILL_PATH, stageName),
@@ -653,9 +726,13 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
         ? {
             // All stages default to verify.require = true
             require: jsonStage.verify.require ?? true,
-            verifyFile:
+            // Rewrite ".pi/" prefix on configured verifyFile when piWorkDir differs.
+            // DEFAULT_VERIFY_FILE starts with ".pi/" and is also rewritten.
+            verifyFile: rewritePiPrefix(
               jsonStage.verify.verifyFile ||
-              resolveStagePath(DEFAULT_VERIFY_FILE, stageName),
+                resolveStagePath(DEFAULT_VERIFY_FILE, stageName),
+              piWorkDir,
+            ),
             mode: parseVerifyMode(jsonStage.verify.mode),
             selfVerifySkip: jsonStage.verify.selfVerifySkip ?? false,
             completionMarker: jsonStage.verify.completionMarker,
@@ -720,11 +797,17 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     );
   }
 
+  // Pre-rewrite top-level directory values (apply piWorkDir prefix substitution).
+  // Absolute / ~/ prefixed paths do not match the ".pi/" prefix and pass through untouched.
+  const rawAuditDir = json.auditDir || `${CONFIG_DIR_NAME}/audit`;
+  const rawDomainDir = json.domainDir || `${CONFIG_DIR_NAME}/domains`;
+
   return {
     stages,
     projectRoot,
-    auditDir: json.auditDir || ".pi/audit",
-    domainDir: json.domainDir || ".pi/domains",
+    auditDir: rewritePiPrefix(rawAuditDir, piWorkDir),
+    domainDir: rewritePiPrefix(rawDomainDir, piWorkDir),
+    piWorkDir,
     maxLoops: json.maxLoops ?? 3,
     maxLoopCycles: json.maxLoopCycles ?? 3,
     maxVerifyAttempts: json.maxVerifyAttempts ?? json.maxLoops ?? 3,

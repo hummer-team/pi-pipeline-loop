@@ -639,8 +639,16 @@ export interface PipelineConfig {
   /** Optional directory for audit logs (relative to projectRoot); defaults to ".pi/audit" */
   auditDir?: string;
 
-  /** Optional directory for domain definitions (relative to projectRoot); defaults to ".domains" */
+  /** Optional directory for domain definitions (relative to projectRoot); defaults to ".pi/domains" */
   domainDir?: string;
+
+  /**
+   * Plugin-owned asset directory (relative to projectRoot). Defaults to ".pi".
+   * All configuration values prefixed with ".pi/" are rewritten to this directory
+   * at resolve time, except the config-file anchor `.pi/pipeline_loop.json` which
+   * is unaffected by this setting (see D4 in 184_Bug design decisions).
+   */
+  piWorkDir?: string;
 
   /** Maximum number of pipeline loop iterations; defaults to 3 */
   maxLoops?: number;
@@ -788,6 +796,14 @@ export interface PipelineConfig {
    * Not part of the user-facing config API.
    */
   configLoadedMtimeMs?: number;
+
+  /**
+   * Internal — set by initPipeline when the on-disk config was absent and the
+   * bundled template was resolved in memory. Phase 2 uses this to gate audit-log
+   * initialisation (zero disk writes) and to surface a restart-after-init hint.
+   * Not part of the user-facing config API.
+   */
+  isFallbackTemplate?: boolean;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -892,6 +908,16 @@ export interface PipelineJsonConfig {
 
   /** Domain definitions directory relative to projectRoot (default ".pi/domains") */
   domainDir?: string;
+
+  /**
+   * Plugin-owned asset directory (relative to projectRoot, default ".pi").
+   * All ".pi/" prefixed values in the config are rewritten to this directory
+   * at resolve time. Exception: the anchor file `.pi/pipeline_loop.json` is
+   * never affected by this setting.
+   * Constraints: non-empty string, relative path, no ".." segments.
+   * Invalid values warn and fall back to ".pi".
+   */
+  piWorkDir?: string;
 
   /** Maximum loop iterations per stage (default 3) */
   maxLoops?: number;

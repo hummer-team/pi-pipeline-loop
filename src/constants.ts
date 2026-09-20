@@ -12,6 +12,13 @@ import type { PipelineStage } from "./types";
 export const CONFIG_DIR_NAME = ".pi";
 
 /**
+ * Prefix derived from CONFIG_DIR_NAME — used for resolve-time path rewriting
+ * (when piWorkDir differs from ".pi", values prefixed with ".pi/" are rewritten)
+ * and for the protection-set baseline. Single source of truth for the literal.
+ */
+export const PI_PREFIX = `${CONFIG_DIR_NAME}/`;
+
+/**
  * Stages eligible for pipeline resume on aborted restart.
  * Excludes "awaiting_human" (frozen, requires decision menu) and
  * "completed" (terminal, requires fresh start).
