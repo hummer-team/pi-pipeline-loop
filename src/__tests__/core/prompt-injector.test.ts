@@ -7,6 +7,7 @@ import { tmpdir, homedir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { resetPromptConfigCache } from "../../core/prompt-config";
 import { initAuditLog, __resetAuditDirPath, getDateAuditFileName, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 
 describe("createPromptInjector", () => {
   beforeEach(() => {
@@ -1148,6 +1149,102 @@ describe("Phase 1: empty content guard", () => {
       // Always clean up the domain file we created in home directory
       await rm(domainFile, { force: true });
     }
+  });
+
+  // ─── Phase 3 / 185: domain skill candidate exhaustion audit ──────────────
+
+  describe("domain skill exhaustion audit (Phase 3 / 185)", () => {
+    beforeEach(() => {
+      __resetMemoryThrottle();
+    });
+
+    afterEach(() => {
+      __setSafeWriteAuditLogOverride(null);
+    });
+
+    it("emits error-level audit when requireDomain and all candidates miss", async () => {
+      const auditEvents: Array<{ stage: string; message?: Record<string, string | boolean>; level?: string }> = [];
+      __setSafeWriteAuditLogOverride(async (stage, message, level) => {
+        auditEvents.push({ stage, message, level: level as string });
+      });
+
+      const uniqueDomainId = `test-exhaust-${Date.now()}`;
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        requireDomain: true,
+      } as any;
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        domain: { id: uniqueDomainId, version: "v1", skillPath: "" },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler(ctx as any))!;
+
+      // Should still succeed (fail-open) with no domain paragraph
+      expect(result.systemPrompt!).not.toContain("BUSINESS DOMAIN RULES");
+
+      // Find the exhaustion event
+      const exhaustEvent = auditEvents.find(e => e.stage === "domain_skill_candidates_exhausted");
+      expect(exhaustEvent).toBeDefined();
+      expect(exhaustEvent!.level).toBe("error");
+      expect(exhaustEvent!.message?.domainId).toBe(uniqueDomainId);
+      expect(typeof exhaustEvent!.message?.candidates).toBe("string");
+    });
+
+    it("throttles: same domainId exhaust twice → only 1 event", async () => {
+      const auditEvents: Array<{ stage: string }> = [];
+      __setSafeWriteAuditLogOverride(async (stage) => {
+        auditEvents.push({ stage });
+      });
+
+      const uniqueDomainId = `test-throttle-${Date.now()}`;
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        requireDomain: true,
+      } as any;
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        domain: { id: uniqueDomainId, version: "v1", skillPath: "" },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      // Call twice in quick succession (within 60s window)
+      await hook.handler(ctx as any);
+      await hook.handler(ctx as any);
+
+      const exhaustEvents = auditEvents.filter(e => e.stage === "domain_skill_candidates_exhausted");
+      expect(exhaustEvents.length).toBe(1);
+    });
+
+    it("no audit event when requireDomain is false", async () => {
+      const auditEvents: Array<{ stage: string }> = [];
+      __setSafeWriteAuditLogOverride(async (stage) => {
+        auditEvents.push({ stage });
+      });
+
+      const uniqueDomainId = `test-noreq-${Date.now()}`;
+      const config = makeTestConfig();
+      config.stages["clarify"] = {
+        ...config.stages["clarify"],
+        requireDomain: false,
+      } as any;
+      const meta = makeTestMeta({
+        currentStage: "clarify",
+        domain: { id: uniqueDomainId, version: "v1", skillPath: "" },
+      });
+      const ctx = { session: { getMeta: () => meta } };
+
+      const hook = createPromptInjector(config);
+      await hook.handler(ctx as any);
+
+      const exhaustEvents = auditEvents.filter(e => e.stage === "domain_skill_candidates_exhausted");
+      expect(exhaustEvents.length).toBe(0);
+    });
   });
 });
 

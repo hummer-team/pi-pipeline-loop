@@ -20,9 +20,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { computeStringHash } from "../utils/hash";
 import { isFrozen, getFlowState, formatFrozenReason, formatDecisionMenuHint } from "./flow-state";
 import { isDormant } from "./dormancy";
@@ -122,6 +123,7 @@ async function buildDomainSkill(
   // Single source of truth for candidate resolution (Phase 3 / 184_Bug D9).
   // Returns absolute paths ready for direct fs.readFile calls.
   const candidates = resolveDomainSkillCandidates(config, meta.domain.id);
+  let lastError: string | undefined;
 
   for (const candidatePath of candidates) {
     try {
@@ -130,11 +132,28 @@ async function buildDomainSkill(
         return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${content}`;
       }
     } catch {
-      // Candidate file missing or unreadable — try next
+      // Candidate file missing or unreadable — expected probe path (project→home
+      // chain), not an error. Exempt from catch-error-log convention; exhaustion
+      // is recorded below when the chain is fully depleted.
+      lastError = `read failed: ${candidatePath}`;
     }
   }
 
-  // No candidate found → skip injection
+  // All candidates exhausted (either missing or empty). Record error-level
+  // audit with throttle to avoid per-turn log storms (one per domain per 60s).
+  if (shouldEmitWithinWindow(`domain_skill_missing:${meta.domain.id}`, AUDIT_THROTTLE_WINDOW_MS)) {
+    await safeWriteAuditLog(
+      "domain_skill_candidates_exhausted",
+      {
+        domainId: meta.domain.id,
+        candidates: candidates.join("; "),
+        lastError: lastError ?? "all candidates empty",
+      },
+      "error",
+    );
+  }
+
+  // Fail-open: skip injection when no candidate was usable
   return null;
 }
 
