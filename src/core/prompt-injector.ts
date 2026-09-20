@@ -31,7 +31,7 @@ import { detectLastRunHealth, extractLastUserMessageText } from "./session-state
 import { parseClarifyTurnArgs } from "../utils/clarify-args";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
-import { resolvePiWorkDir, resolveDomainSkillCandidates } from "../utils/work-dir";
+import { resolvePiWorkDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
 import type { RuntimeCtx } from "./runtime-ctx";
 
@@ -309,10 +309,7 @@ async function buildLoopStatus(
   let gitignorePatterns: string[] = [];
   if (config.protect?.gitignore !== false) {
     // When piWorkDir differs from default, also skip traversing into it
-    const piWorkDir = resolvePiWorkDir(config);
-    const extraSkip = piWorkDir !== ".pi"
-      ? new Set([piWorkDir.split("/").pop()!])
-      : undefined;
+    const extraSkip = resolveGitignoreSkipDirs(config);
     const gitignoreInfo = await loadGitignoreInfo(config.projectRoot, extraSkip);
     if (gitignoreInfo) {
       gitignorePatterns = gitignoreInfo.patterns;

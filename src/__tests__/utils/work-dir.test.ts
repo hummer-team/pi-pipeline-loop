@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { resolvePiWorkDir, resolveAuditDir, resolveDomainSkillCandidates } from "../../utils/work-dir";
+import { resolvePiWorkDir, resolveAuditDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../../utils/work-dir";
 import { loadJsonConfig, resolvePipelineConfig, parsePiWorkDir, rewritePiPrefix } from "../../core/json-config-loader";
 import { CONFIG_DIR_NAME } from "../../constants";
 import type { PipelineConfig } from "../../types";
@@ -202,6 +202,31 @@ describe("resolveDomainSkillCandidates", () => {
     const result = resolveDomainSkillCandidates(cfg, "d1");
     expect(result[0]).toBe(path.join("/tmp/test", "custom/domains", "d1.md"));
     expect(result[1]).toBe(path.join(homedir(), CONFIG_DIR_NAME, "domains", "d1.md"));
+  });
+});
+
+// ─── resolveGitignoreSkipDirs ────────────────────────────────────────────────
+
+describe("resolveGitignoreSkipDirs", () => {
+  const baseConfig = {
+    stages: {} as PipelineConfig["stages"],
+    projectRoot: "/tmp/test",
+  } as PipelineConfig;
+
+  it("default .pi → undefined (no extra skip needed)", () => {
+    expect(resolveGitignoreSkipDirs(baseConfig)).toBeUndefined();
+  });
+
+  it("custom single-segment piWorkDir → Set with that basename", () => {
+    const cfg = { ...baseConfig, piWorkDir: "piwork" };
+    const result = resolveGitignoreSkipDirs(cfg);
+    expect(result).toEqual(new Set(["piwork"]));
+  });
+
+  it("multi-segment piWorkDir → Set with last segment only", () => {
+    const cfg = { ...baseConfig, piWorkDir: "tools/pi/v1" };
+    const result = resolveGitignoreSkipDirs(cfg);
+    expect(result).toEqual(new Set(["v1"]));
   });
 });
 

@@ -38,7 +38,7 @@ import {
   type ProtectState,
 } from "../utils/protect";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
-import { resolvePiWorkDir } from "../utils/work-dir";
+import { resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
@@ -358,10 +358,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         gitignoreCache = null;
       } else {
         // When piWorkDir differs from default, also skip traversing into it
-        const piWorkDir = resolvePiWorkDir(config);
-        const extraSkip = piWorkDir !== ".pi"
-          ? new Set([piWorkDir.split("/").pop()!])
-          : undefined;
+        const extraSkip = resolveGitignoreSkipDirs(config);
         gitignoreCache = await loadGitignoreInfo(config.projectRoot, extraSkip);
       }
     }

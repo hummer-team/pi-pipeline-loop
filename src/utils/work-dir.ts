@@ -63,6 +63,31 @@ export function expandHomePath(p: string): string {
 }
 
 /**
+ * Resolves the set of directory basenames that should be skipped when scanning
+ * gitignore patterns, based on the configured `piWorkDir`.
+ *
+ * When `piWorkDir` equals the default `CONFIG_DIR_NAME` (".pi"), returns
+ * `undefined` — no extra skip is needed because `.pi` is already handled by
+ * the scanner's built-in logic.
+ *
+ * When `piWorkDir` is a custom value (e.g. `"tools/pi/v1"`), returns a set
+ * containing the last path segment (e.g. `Set{"v1"}`). This set is passed as
+ * the `extraSkipDirs` parameter to `loadGitignoreInfo` (`gitignore.ts:53`),
+ * which uses it to avoid recursing into the plugin-owned directory.
+ *
+ * Consolidates the duplicated ternary logic previously in `prompt-injector.ts`
+ * and `tool-guard.ts` (185_Bug L3).
+ */
+export function resolveGitignoreSkipDirs(config: PipelineConfig): ReadonlySet<string> | undefined {
+  const piWorkDir = resolvePiWorkDir(config);
+  if (piWorkDir === CONFIG_DIR_NAME) {
+    return undefined;
+  }
+  const basename = piWorkDir.split("/").pop()!;
+  return new Set([basename]);
+}
+
+/**
  * Returns the ordered list of absolute candidate file paths where a domain
  * skill definition may be located for the given `domainId`.
  *
