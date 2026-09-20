@@ -62,9 +62,6 @@ export interface ResidueGateStatus {
 /** Reserved placeholder marker that indicates an unfilled template slot. */
 const RESIDUE_MARKER = "Template-TODO";
 
-/** Default audit directory (relative to project root) when none is configured. */
-const DEFAULT_AUDIT_DIR = `${CONFIG_DIR_NAME}/audit`;
-
 /** Name of the gate status file inside the audit directory. */
 const GATE_STATUS_FILE = "template-residue-check.json";
 
@@ -214,9 +211,13 @@ export function computeResidueFingerprint(projectRoot: string, piWorkDir?: strin
 
 /**
  * Resolves the absolute path to the gate status file.
+ *
+ * Delegates audit dir default derivation to `resolveAuditDir` (single source
+ * of truth) so that the gate status file lands in the same directory as all
+ * other audit artifacts, including custom piWorkDir configurations.
  */
 function resolveGateStatusPath(projectRoot: string, auditDir?: string): string {
-  const auditRel = auditDir ?? DEFAULT_AUDIT_DIR;
+  const auditRel = resolveAuditDir({ auditDir });
   const auditAbs = path.isAbsolute(auditRel)
     ? auditRel
     : path.join(projectRoot, auditRel);

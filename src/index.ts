@@ -423,10 +423,7 @@ export default async function initPipeline(pi: ExtensionAPI): Promise<void> {
     const templateJson = loadJsonConfig(templateJsonPath);
     const config = resolvePipelineConfig(templateJson);
     config.isFallbackTemplate = true;
-    // Mark projectRoot as cwd (template has no projectRoot of its own)
-    if (!config.projectRoot) {
-      config.projectRoot = process.cwd();
-    }
+    // resolvePipelineConfig guarantees projectRoot (defaults to process.cwd())
 
     console.warn(
       `[pi-pipeline] ${defaultPath} not found — running on built-in template defaults. ` +

@@ -20,7 +20,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
+import { ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";

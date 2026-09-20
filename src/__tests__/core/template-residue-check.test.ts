@@ -234,5 +234,21 @@ describe("template-residue-check", () => {
       // Should not throw
       expect(() => clearResidueGateStatus(TMP)).not.toThrow();
     });
+
+    // Phase 2 / 185 — default auditDir falls through to resolveAuditDir({ auditDir: undefined })
+    it("default auditDir lands at {projectRoot}/.pi/audit/ (resolveAuditDir equivalence)", async () => {
+      const status = {
+        passed: true,
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        fingerprint: "eq123",
+      };
+      writeResidueGateStatus(TMP, status);
+      // Verify the file landed at the expected default location
+      const expectedPath = path.join(TMP, ".pi", "audit", "template-residue-check.json");
+      const onDisk = await fs.readFile(expectedPath, "utf-8");
+      expect(JSON.parse(onDisk)).toEqual(status);
+      // Round-trip through read (no auditDir arg) should succeed
+      expect(readResidueGateStatus(TMP)).toEqual(status);
+    });
   });
 });
