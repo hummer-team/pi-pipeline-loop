@@ -1245,6 +1245,49 @@ describe("Phase 1: empty content guard", () => {
       const exhaustEvents = auditEvents.filter(e => e.stage === "domain_skill_candidates_exhausted");
       expect(exhaustEvents.length).toBe(0);
     });
+
+    it("no audit event when candidate hits (home file with non-empty content)", async () => {
+      // Plan Phase 3 unit-test goal #3 (first half): when the home-level candidate
+      // resolves to a real file with content, buildDomainSkill returns early and
+      // the exhaustion audit path is never reached → zero events.
+      const auditEvents: Array<{ stage: string }> = [];
+      __setSafeWriteAuditLogOverride(async (stage) => {
+        auditEvents.push({ stage });
+      });
+
+      const uniqueDomainId = `test-hit-${Date.now()}`;
+      const domainDir = join(homedir(), ".pi", "domains");
+      const domainFile = join(domainDir, `${uniqueDomainId}.md`);
+      await mkdir(domainDir, { recursive: true });
+      // Write non-empty domain content so the candidate chain hits on the home path
+      await writeFile(domainFile, "# Domain Rule\nAlways write tests.\n");
+
+      try {
+        const config = makeTestConfig();
+        config.stages["clarify"] = {
+          ...config.stages["clarify"],
+          requireDomain: true,
+        } as any;
+        const meta = makeTestMeta({
+          currentStage: "clarify",
+          domain: { id: uniqueDomainId, version: "v1", skillPath: "" },
+        });
+        const ctx = { session: { getMeta: () => meta } };
+
+        const hook = createPromptInjector(config);
+        const result = (await hook.handler(ctx as any))!;
+
+        // Injection must succeed — BUSINESS DOMAIN RULES paragraph present
+        expect(result.systemPrompt!).toContain("BUSINESS DOMAIN RULES");
+
+        // No exhaustion event because the candidate chain hit on the home file
+        const exhaustEvents = auditEvents.filter(e => e.stage === "domain_skill_candidates_exhausted");
+        expect(exhaustEvents.length).toBe(0);
+      } finally {
+        // Always clean up the domain file we created in home directory
+        await rm(domainFile, { force: true });
+      }
+    });
   });
 });
 
