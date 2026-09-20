@@ -42,7 +42,7 @@ export const RESUMABLE_STAGES: PipelineStage[] = [
  * Project rule files (e.g. AGENTS.md) are NOT protected by default;
  * users may add them via `config.protect.paths` if needed.
  */
-export const PROTECTED_PATHS = [".pi/", ".git/"] as const;
+export const PROTECTED_PATHS = [PI_PREFIX, ".git/"] as const;
 
 /** Hard cap for stage-chain walking (prevents runaway loops on misconfigured chains) */
 export const MAX_STAGE_CHAIN_LENGTH = 16;

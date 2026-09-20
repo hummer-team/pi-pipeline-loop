@@ -18,10 +18,9 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT, CONFIG_DIR_NAME } from "../constants";
+import { PROTECTED_PATHS, ALLOWED_WRITE_ALL, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { computeStringHash } from "../utils/hash";
@@ -32,7 +31,7 @@ import { detectLastRunHealth, extractLastUserMessageText } from "./session-state
 import { parseClarifyTurnArgs } from "../utils/clarify-args";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
-import { resolvePiWorkDir, expandHomePath } from "../utils/work-dir";
+import { resolvePiWorkDir, resolveDomainSkillCandidates } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
 import type { RuntimeCtx } from "./runtime-ctx";
 
@@ -120,42 +119,22 @@ async function buildDomainSkill(
     return null;
   }
 
-  const fileName = `${meta.domain.id}.md`;
+  // Single source of truth for candidate resolution (Phase 3 / 184_Bug D9).
+  // Returns absolute paths ready for direct fs.readFile calls.
+  const candidates = resolveDomainSkillCandidates(config, meta.domain.id);
 
-  // Candidate 1: project-level (config-driven, with ~ expansion)
-  const domainDir = config.domainDir ?? `${CONFIG_DIR_NAME}/domains`;
-  const expandedDomainDir = expandHomePath(domainDir);
-  const projectCandidate = path.isAbsolute(expandedDomainDir)
-    ? path.join(expandedDomainDir, fileName)
-    : path.join(config.projectRoot, expandedDomainDir, fileName);
-
-  try {
-    const projectContent = await fs.readFile(projectCandidate, "utf-8");
-    if (projectContent.trim()) {
-      return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${projectContent}`;
+  for (const candidatePath of candidates) {
+    try {
+      const content = await fs.readFile(candidatePath, "utf-8");
+      if (content.trim()) {
+        return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${content}`;
+      }
+    } catch {
+      // Candidate file missing or unreadable — try next
     }
-  } catch {
-    // Project-level file missing — fall through to home-level
   }
 
-  // Candidate 2: home-level (existing behaviour — ~/.pi/domains/{id}.md)
-  const homeCandidate = path.join(
-    os.homedir(),
-    CONFIG_DIR_NAME,
-    "domains",
-    fileName,
-  );
-
-  try {
-    const homeContent = await fs.readFile(homeCandidate, "utf-8");
-    if (homeContent.trim()) {
-      return `# BUSINESS DOMAIN RULES (${meta.domain.id}@${meta.domain.version})\n${homeContent}`;
-    }
-  } catch {
-    // Home-level file missing — skip injection
-  }
-
-  // Neither candidate found → skip
+  // No candidate found → skip injection
   return null;
 }
 

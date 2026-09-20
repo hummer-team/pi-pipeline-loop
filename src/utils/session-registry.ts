@@ -13,6 +13,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig } from "../types";
 import { safeWriteAuditLog } from "./auditLog";
+import { resolveAuditDir } from "./work-dir";
 
 /**
  * Registry entry for a single session-to-pipeline mapping.
@@ -36,7 +37,7 @@ type RegistryMap = Record<string, RegistryEntry>;
  * @returns Absolute path to the registry file
  */
 export function resolveRegistryPath(config: PipelineConfig): string {
-  const auditDir = config.auditDir || ".pi/audit";
+  const auditDir = resolveAuditDir(config);
   return path.resolve(config.projectRoot, auditDir, "session-registry.json");
 }
 

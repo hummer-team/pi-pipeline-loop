@@ -72,11 +72,12 @@ export function buildRuntimeCtx(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   event?: Record<string, unknown>,
-  config?: { projectRoot?: string; auditDir?: string },
+  config?: { projectRoot?: string; auditDir?: string; piWorkDir?: string },
 ): RuntimeCtx {
   const session = createSessionState(pi, ctx, config ? {
     projectRoot: config.projectRoot,
     auditDir: config.auditDir,
+    piWorkDir: config.piWorkDir,
   } : undefined);
   const ui = ctx.ui;
 

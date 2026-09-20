@@ -18,6 +18,7 @@ import type {
 } from "../types";
 import {
   CONFIG_DIR_NAME,
+  PI_PREFIX,
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
   DEFAULT_DECISION_SHORTCUT,
@@ -306,9 +307,8 @@ export function parsePiWorkDir(raw: unknown): string {
  */
 export function rewritePiPrefix(p: string, piWorkDir: string): string {
   if (piWorkDir === CONFIG_DIR_NAME) return p;
-  const prefix = `${CONFIG_DIR_NAME}/`;
-  if (p.startsWith(prefix)) {
-    return `${piWorkDir}/${p.slice(prefix.length)}`;
+  if (p.startsWith(PI_PREFIX)) {
+    return `${piWorkDir}/${p.slice(PI_PREFIX.length)}`;
   }
   return p;
 }

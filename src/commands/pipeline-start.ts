@@ -36,6 +36,7 @@ import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { staleConfigNotice } from "../utils/config-staleness";
+import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
 
 /**
  * Checks that all 5 active stages have agentPath configured.
@@ -84,7 +85,7 @@ async function templateResidueGate(
   try {
     const status = readResidueGateStatus(config.projectRoot, config.auditDir);
     if (status?.passed === true) {
-      const currentFp = computeResidueFingerprint(config.projectRoot);
+      const currentFp = computeResidueFingerprint(config.projectRoot, resolvePiWorkDir(config));
       if (status.fingerprint === currentFp) {
         // Fingerprints match — cached pass is still valid
         return null;
@@ -95,12 +96,12 @@ async function templateResidueGate(
     // Any read failure → fail-open, proceed to full scan
   }
 
-  const result = checkTemplateResidues(config.projectRoot);
+  const result = checkTemplateResidues(config.projectRoot, resolvePiWorkDir(config));
 
   if (result.clean) {
     // Clean → persist gate status for future short-circuit
     try {
-      const fingerprint = computeResidueFingerprint(config.projectRoot);
+      const fingerprint = computeResidueFingerprint(config.projectRoot, resolvePiWorkDir(config));
       writeResidueGateStatus(config.projectRoot, {
         passed: true,
         checkedAt: new Date().toISOString(),
@@ -164,10 +165,10 @@ async function templateResidueGate(
     }
 
     // Re-check
-    const recheck = checkTemplateResidues(config.projectRoot);
+    const recheck = checkTemplateResidues(config.projectRoot, resolvePiWorkDir(config));
     if (recheck.clean) {
       try {
-        const fingerprint = computeResidueFingerprint(config.projectRoot);
+        const fingerprint = computeResidueFingerprint(config.projectRoot, resolvePiWorkDir(config));
         writeResidueGateStatus(config.projectRoot, {
           passed: true,
           checkedAt: new Date().toISOString(),
@@ -1172,7 +1173,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       // adopt it (pipelineId preserved) instead of creating a new one.
       if (mode === "auto") {
         try {
-          const candidates = await scanAuditFlows(config.projectRoot, config.auditDir || ".pi/audit", file);
+          const candidates = await scanAuditFlows(config.projectRoot, resolveAuditDir(config), file);
           if (candidates.length > 0) {
             // Phase 3 (171) M1: scan ALL candidates for running/blocked before adopting.
             // scanAuditFlows returns non-terminal flows sorted by stageStartTime desc.

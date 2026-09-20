@@ -11,6 +11,7 @@
  */
 
 import * as os from "node:os";
+import * as path from "node:path";
 import { CONFIG_DIR_NAME } from "../constants";
 import type { PipelineConfig } from "../types";
 
@@ -32,9 +33,16 @@ export function resolvePiWorkDir(config: PipelineConfig): string {
  * Uses `config.auditDir` directly when set (resolve-time rewrite already
  * applied the piWorkDir prefix), otherwise derives the default
  * `${piWorkDir}/audit` so a custom piWorkDir propagates to the audit dir.
+ *
+ * Accepts any object with optional `auditDir` and `piWorkDir` fields so that
+ * both full `PipelineConfig` instances and lightweight option bags (e.g.
+ * `SessionStateOptions`) can share the same derivation logic.
  */
-export function resolveAuditDir(config: PipelineConfig): string {
-  return config.auditDir ?? `${resolvePiWorkDir(config)}/audit`;
+export function resolveAuditDir(config: {
+  auditDir?: string;
+  piWorkDir?: string;
+}): string {
+  return config.auditDir ?? `${config.piWorkDir ?? CONFIG_DIR_NAME}/audit`;
 }
 
 /**
@@ -55,27 +63,35 @@ export function expandHomePath(p: string): string {
 }
 
 /**
- * Returns the ordered list of candidate file paths where a domain skill
- * definition may be located for the given `domainId`.
+ * Returns the ordered list of absolute candidate file paths where a domain
+ * skill definition may be located for the given `domainId`.
  *
  * Resolution chain (Phase 3 / 184_Bug D9 — "project-first, home-fallback"):
- *   1. project-level: `{projectRoot}/{domainDir}/{domainId}.md`
- *      (domainDir may be an absolute path or `~/...` — left to the caller to expand)
- *   2. home-level: `~/.pi/domains/{domainId}.md` (existing behaviour anchor)
+ *   1. project-level: `{projectRoot}/{expanded domainDir}/{domainId}.md`
+ *      (domainDir supports `~` expansion and absolute paths)
+ *   2. home-level: `{homedir}/.pi/domains/{domainId}.md` (existing behaviour anchor)
  *   3. empty — caller treats as "skip injection"
  *
- * This function only computes the candidate list; the actual file-read and
- * frontmatter handling live in `prompt-injector.ts:buildDomainSkill` (Phase 3).
+ * All returned paths are absolute and ready for direct `fs.readFile` calls.
+ * The actual file-read and frontmatter handling live in
+ * `prompt-injector.ts:buildDomainSkill` (Phase 3), which consumes this
+ * function as its single source of truth for candidate resolution.
  */
 export function resolveDomainSkillCandidates(
   config: PipelineConfig,
   domainId: string,
 ): string[] {
+  const fileName = `${domainId}.md`;
+
+  // Project-level candidate — supports ~ expansion and absolute paths
   const domainDir = config.domainDir ?? `${CONFIG_DIR_NAME}/domains`;
-  // Project-level candidate — caller is responsible for ~ expansion and
-  // absolute-vs-relative disambiguation before reading.
-  const projectCandidate = `${domainDir}/${domainId}.md`;
-  // Home-level fallback — `~/.pi/domains/{id}.md` literal; caller expands `~`.
-  const homeCandidate = `~/.pi/domains/${domainId}.md`;
+  const expandedDomainDir = expandHomePath(domainDir);
+  const projectCandidate = path.isAbsolute(expandedDomainDir)
+    ? path.join(expandedDomainDir, fileName)
+    : path.join(config.projectRoot, expandedDomainDir, fileName);
+
+  // Home-level fallback — {homedir}/.pi/domains/{id}.md
+  const homeCandidate = path.join(os.homedir(), CONFIG_DIR_NAME, "domains", fileName);
+
   return [projectCandidate, homeCandidate];
 }

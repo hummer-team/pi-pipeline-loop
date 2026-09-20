@@ -18,7 +18,7 @@ import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText } from "./session-state";
 import { execSync } from "node:child_process";
 import { checkTemplateDrift, formatDriftNotification } from "../utils/template-drift";
-import { resolvePiWorkDir } from "../utils/work-dir";
+import { resolvePiWorkDir, resolveAuditDir } from "../utils/work-dir";
 import { detectSessionRole } from "./session-role";
 import { formatAbortedNotifyText } from "./flow-state";
 import { staleConfigNotice } from "../utils/config-staleness";
@@ -167,7 +167,7 @@ async function handleSubagentJoin(
   }
 
   // Read parent pipeline meta.json
-  const auditDir = config.auditDir || ".pi/audit";
+  const auditDir = resolveAuditDir(config);
   const parentMetaPath = path.resolve(config.projectRoot, auditDir, parentPipelineId, "meta.json");
   let parentMeta: SessionMeta;
   try {

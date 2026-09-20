@@ -30,6 +30,7 @@ import path from "node:path";
 import { computeStringHash } from "./hash";
 import type { AuditLogLevel, PipelineConfig, SessionMeta } from "../types";
 import { buildStageSequence } from "./stage-sequence";
+import { resolveAuditDir } from "./work-dir";
 
 /** Resolved absolute path to the audit log directory. */
 let auditDirPath = "";
@@ -55,7 +56,7 @@ export async function initAuditLog(config: PipelineConfig): Promise<void> {
   // Skip directory creation; safeWriteAuditLog's L93 no-op guard handles the rest.
   if (config.isFallbackTemplate) return;
 
-  const auditDir = config.auditDir || ".pi/audit";
+  const auditDir = resolveAuditDir(config);
   auditDirPath = path.resolve(config.projectRoot, auditDir);
   await fs.mkdir(auditDirPath, { recursive: true });
 }

@@ -20,6 +20,7 @@ import type { PipelineConfig, Tool, SessionMeta, SummaryMeta } from "../types";
 import { safeWriteStageAudit } from "../utils/auditLog";
 import { toProjectRelative } from "../utils/path-display";
 import { isDormant } from "../core/dormancy";
+import { resolveAuditDir } from "../utils/work-dir";
 
 /**
  * Dynamically import estimateTokens from pi-coding-agent SDK.
@@ -147,7 +148,7 @@ export function createGenerateSummary(config: PipelineConfig): Tool {
       }
       const meta: SessionMeta = rawMeta;
       const projectRoot = config.projectRoot;
-      const auditDir = config.auditDir || ".pi/audit";
+      const auditDir = resolveAuditDir(config);
       const stage = meta.currentStage;
 
       // Build frontmatter (machine-readable)

@@ -731,11 +731,11 @@ async function executeCheckBranch(
   const lines: string[] = ["# pipeline-init — template residue check"];
 
   // Step 1: Rule-based residue scan
-  const residueResult = checkTemplateResidues(config.projectRoot);
+  const residueResult = checkTemplateResidues(config.projectRoot, resolvePiWorkDir(config));
   lines.push(`- scanned: ${residueResult.scanned} file(s)`);
   lines.push(`- hits: ${residueResult.hits.length}`);
 
-  const fingerprint = computeResidueFingerprint(config.projectRoot);
+  const fingerprint = computeResidueFingerprint(config.projectRoot, resolvePiWorkDir(config));
 
   if (residueResult.clean) {
     // Clean → persist gate status for pipeline-start short-circuit

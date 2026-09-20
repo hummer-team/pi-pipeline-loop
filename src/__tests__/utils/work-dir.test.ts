@@ -150,19 +150,19 @@ describe("resolveDomainSkillCandidates", () => {
     projectRoot: "/tmp/test",
   } as PipelineConfig;
 
-  it("returns two candidates: project-level then home-level", () => {
+  it("returns two candidates: project-level then home-level (absolute paths)", () => {
     const result = resolveDomainSkillCandidates(baseConfig, "myDomain");
     expect(result).toEqual([
-      `${CONFIG_DIR_NAME}/domains/myDomain.md`,
-      `~/.pi/domains/myDomain.md`,
+      path.join("/tmp/test", `${CONFIG_DIR_NAME}/domains`, "myDomain.md"),
+      path.join(homedir(), CONFIG_DIR_NAME, "domains", "myDomain.md"),
     ]);
   });
 
-  it("custom domainDir → used for project-level candidate", () => {
+  it("custom domainDir → used for project-level candidate (absolute path)", () => {
     const cfg = { ...baseConfig, domainDir: "custom/domains" };
     const result = resolveDomainSkillCandidates(cfg, "d1");
-    expect(result[0]).toBe("custom/domains/d1.md");
-    expect(result[1]).toBe(`~/.pi/domains/d1.md`);
+    expect(result[0]).toBe(path.join("/tmp/test", "custom/domains", "d1.md"));
+    expect(result[1]).toBe(path.join(homedir(), CONFIG_DIR_NAME, "domains", "d1.md"));
   });
 });
 

@@ -19,6 +19,7 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { SessionMeta } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { resolveAuditDir } from "../utils/work-dir";
 import type { PipelineConfig } from "../types";
 
 /** CustomEntry type identifier for pipeline metadata persistence. */
@@ -32,8 +33,10 @@ export const PIPELINE_META_CUSTOM_TYPE = "pi-pipeline:meta";
 export interface SessionStateOptions {
   /** Absolute path to the project root directory */
   projectRoot?: string;
-  /** Audit directory relative to projectRoot (default ".pi/audit") */
+  /** Audit directory relative to projectRoot (resolved by resolveAuditDir) */
   auditDir?: string;
+  /** Plugin-owned asset directory (relative to projectRoot, default ".pi") */
+  piWorkDir?: string;
 }
 
 /**
@@ -80,7 +83,7 @@ export function __resetSharedStateDir(): void {
  */
 function resolveSharedStateBaseDir(options?: SessionStateOptions): string {
   if (options?.projectRoot) {
-    const auditDir = options.auditDir || ".pi/audit";
+    const auditDir = resolveAuditDir(options);
     const resolved = path.resolve(options.projectRoot, auditDir);
     if (!sharedStateBaseDir) sharedStateBaseDir = resolved;
     return resolved;

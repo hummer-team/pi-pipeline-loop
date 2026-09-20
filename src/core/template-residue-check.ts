@@ -23,6 +23,7 @@ import path from "node:path";
 import { CONFIG_DIR_NAME } from "../constants";
 import { computeStringHash } from "../utils/hash";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { resolveAuditDir } from "../utils/work-dir";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,7 +63,7 @@ export interface ResidueGateStatus {
 const RESIDUE_MARKER = "Template-TODO";
 
 /** Default audit directory (relative to project root) when none is configured. */
-const DEFAULT_AUDIT_DIR = ".pi/audit";
+const DEFAULT_AUDIT_DIR = `${CONFIG_DIR_NAME}/audit`;
 
 /** Name of the gate status file inside the audit directory. */
 const GATE_STATUS_FILE = "template-residue-check.json";
@@ -74,15 +75,21 @@ const GATE_STATUS_FILE = "template-residue-check.json";
  * Template-TODO residues, relative to `projectRoot`.
  *
  * Scan set:
- * - .pi/skills/{stage}/SKILL.md (covers design, plan, develop, review, fix)
- * - .pi/agents/*.md (all agent templates)
+ * - {piWorkDir}/skills/{stage}/SKILL.md (covers design, plan, develop, review, fix)
+ * - {piWorkDir}/agents/*.md (all agent templates)
+ *
+ * The `piWorkDir` parameter (default: CONFIG_DIR_NAME) ensures the scan
+ * targets the configured plugin-owned asset directory rather than a
+ * hardcoded `.pi` path. When piWorkDir differs from `.pi`, assets are
+ * deployed under the custom directory and the scan must follow.
  *
  * .pi/references/sop.md and pipeline_loop.json are NOT scanned (sop.md is
  * a pure process declaration after Phase 4 generalization; no placeholders).
  */
-function resolveScanTargets(projectRoot: string): string[] {
+function resolveScanTargets(projectRoot: string, piWorkDir?: string): string[] {
   try {
-    const piDir = path.join(projectRoot, CONFIG_DIR_NAME);
+    const baseDir = piWorkDir ?? CONFIG_DIR_NAME;
+    const piDir = path.join(projectRoot, baseDir);
     if (!fs.existsSync(piDir)) return [];
 
     const targets: string[] = [];
@@ -126,13 +133,17 @@ function resolveScanTargets(projectRoot: string): string[] {
 // ─── checkTemplateResidues ────────────────────────────────────────────────────
 
 /**
- * Scans the project's `.pi/` skill and agent templates for unresolved
+ * Scans the project's skill and agent templates for unresolved
  * `Template-TODO` placeholders.
  *
- * Fail-open: if the `.pi/` directory does not exist, returns `{ scanned: 0, hits: [], clean: true }`.
+ * The `piWorkDir` parameter (default: CONFIG_DIR_NAME) ensures the scan
+ * targets the configured plugin-owned asset directory rather than a
+ * hardcoded `.pi` path.
+ *
+ * Fail-open: if the directory does not exist, returns `{ scanned: 0, hits: [], clean: true }`.
  */
-export function checkTemplateResidues(projectRoot: string): ResidueCheckResult {
-  const targets = resolveScanTargets(projectRoot);
+export function checkTemplateResidues(projectRoot: string, piWorkDir?: string): ResidueCheckResult {
+  const targets = resolveScanTargets(projectRoot, piWorkDir);
   if (targets.length === 0) {
     return { scanned: 0, hits: [], clean: true };
   }
@@ -168,14 +179,17 @@ export function checkTemplateResidues(projectRoot: string): ResidueCheckResult {
  * Computes a stable fingerprint over the scan target set:
  * `sha256(sort(relPath + "\0" + content).join("\n"))`.
  *
+ * The `piWorkDir` parameter (default: CONFIG_DIR_NAME) ensures the scan
+ * targets match the configured plugin-owned asset directory.
+ *
  * Returns a fixed empty-set fingerprint when no scan targets exist, so that
- * missing `.pi/` produces a consistent (but distinct) fingerprint.
+ * missing directory produces a consistent (but distinct) fingerprint.
  *
  * Fail-open: unreadable files are skipped; the fingerprint reflects whatever
  * could be read.
  */
-export function computeResidueFingerprint(projectRoot: string): string {
-  const targets = resolveScanTargets(projectRoot);
+export function computeResidueFingerprint(projectRoot: string, piWorkDir?: string): string {
+  const targets = resolveScanTargets(projectRoot, piWorkDir);
   if (targets.length === 0) {
     // Stable empty-set fingerprint — distinguishable from any real fingerprint
     return computeStringHash("__residue_empty_set__");
