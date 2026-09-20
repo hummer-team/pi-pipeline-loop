@@ -304,7 +304,6 @@ async function handleSubagentJoin(
  *
  * On a new session (no `currentStage` in metadata):
  * - Generates a unique pipelineId
- * - Loads domain configuration from domain.md (or uses default)
  * - Initializes SessionMeta with stage "clarify" and default counters
  * - Sets the model for the clarify stage if configured
  *

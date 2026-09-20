@@ -9,6 +9,8 @@
   "maxConfirmRejections": 5,
   "confirmOverflow": "ask",
   "auditDir": ".pi/audit",
+  "piWorkDir": ".pi",
+  "_comment_piWorkDir": "Plugin-owned asset directory (relative to projectRoot). Default \".pi\". All \".pi/\"-prefixed config values (auditDir, domainDir, stage agentPath, verifyFile) are rewritten to this directory at resolve time. EXCEPTION: the config anchor file `.pi/pipeline_loop.json` is NEVER affected by this setting — it always lives at `.pi/pipeline_loop.json`. Constraints: non-empty string, relative path, no '..' segments; invalid values warn and fall back to \".pi\". Changing this value requires re-running /pipeline-init and restarting pi to take effect.",
   "maxLoops": 3,
   "maxVerifyAttempts": 3,
   "protect": {

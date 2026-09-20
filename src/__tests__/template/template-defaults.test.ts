@@ -466,3 +466,34 @@ describe("Phase 3 (182): COMMIT_DOC_NAMING_CONSTRAINT constant & injection", () 
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("MUST");
   });
 });
+
+// ─── Phase 4 (184_Bug): template piWorkDir declaration ──────────────────────
+
+describe("Phase 4 (184_Bug): template piWorkDir declaration", () => {
+  const TEMPLATE_PATH = path.join(__dirname, "../../template/pipeline_loop.json");
+
+  it("template has explicit piWorkDir === '.pi'", () => {
+    const content = JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf-8"));
+    expect(content.piWorkDir).toBe(".pi");
+  });
+
+  it("template has _comment_piWorkDir with anchor-exception explanation", () => {
+    const content = JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf-8"));
+    expect(content._comment_piWorkDir).toBeDefined();
+    expect(typeof content._comment_piWorkDir).toBe("string");
+    // Comment should mention the anchor exception
+    expect(content._comment_piWorkDir).toContain("pipeline_loop.json");
+  });
+
+  it("template does NOT introduce new 'userDomainDir' key (negative lock, R4Q2①)", () => {
+    const content = JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf-8"));
+    expect(content.userDomainDir).toBeUndefined();
+  });
+
+  it("template does NOT introduce a new top-level 'domainDir' key (R4Q2① negative lock)", () => {
+    // Per R4Q2①, Phase 4 must NOT add domain-related new keys to the template.
+    // domainDir must remain absent from pipeline_loop.json (user opts in manually).
+    const content = JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf-8"));
+    expect(content.domainDir).toBeUndefined();
+  });
+});
