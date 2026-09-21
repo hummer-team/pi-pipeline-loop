@@ -107,7 +107,7 @@ export function createAgentSettled(
             meta.requirementDoc,
           ));
         } else {
-          ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`);
+          ui.notify(ctx, `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint()}`);
         }
         // 168 Phase 2: auto re-popup decision menu while frozen
         // Phase 4 (169) P2-5 fix: pass `_ctx` so W3 skip→completed decisions

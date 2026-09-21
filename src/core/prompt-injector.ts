@@ -401,7 +401,7 @@ function buildPipelineStatus(config: PipelineConfig, meta: SessionMeta): string 
   if (isFrozen(meta)) {
     const reason = formatFrozenReason(meta);
     parts.push(
-      `- Pipeline Status: FROZEN (blocked: ${reason}) — ${formatDecisionMenuHint(config)}`,
+      `- Pipeline Status: FROZEN (blocked: ${reason}) — ${formatDecisionMenuHint()}`,
     );
   }
 
@@ -592,7 +592,7 @@ function buildPipelineStateSection(
     const docHint = meta.requirementDoc ?? "<requirement-doc>";
     lines.push(`- Action: Run \`/pipeline-start ${docHint}\` to resume or restart.`);
   } else {
-    lines.push(`- Action: ${formatDecisionMenuHint(config)} Alternatively, run /pipeline-quit to abort.`);
+    lines.push(`- Action: ${formatDecisionMenuHint()} Alternatively, run /pipeline-quit to abort.`);
   }
 
   return lines.join("\n");

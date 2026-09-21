@@ -453,7 +453,7 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
               const basisSuffix = inferenceBasis ? ` (${inferenceBasis})` : "";
               ui.notify(ctx,
                 `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ` +
-                `Resuming from "${inferred}" by inference${basisSuffix}. ${formatDecisionMenuHint(config)}`
+                `Resuming from "${inferred}" by inference${basisSuffix}. ${formatDecisionMenuHint()}`
               );
             }
             // Phase 0 (182): inject onStageChanged for choose_stage dispatch.

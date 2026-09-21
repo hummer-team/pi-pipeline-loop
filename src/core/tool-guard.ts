@@ -720,7 +720,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         } else if (meta.currentStage === "awaiting_human") {
           reason = "Pipeline frozen. Contact the user to resume the pipeline";
         } else {
-          reason = `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`;
+          reason = `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint()}`;
         }
         // Phase 3 (170) ③: throttle audit for frozen rejection (60s window per pipelineId+tool+flowState)
         // Prevents audit flooding when the agent repeatedly hits frozen state.

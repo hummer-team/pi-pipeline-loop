@@ -88,8 +88,6 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
       typeof json.maxLoopCycles === "number" ? json.maxLoopCycles : undefined,
     maxVerifyAttempts:
       typeof json.maxVerifyAttempts === "number" ? json.maxVerifyAttempts : undefined,
-    decisionShortcutKey:
-      typeof json.decisionShortcutKey === "string" ? json.decisionShortcutKey : undefined,
     spawnWaitTimeoutMs: parseSpawnWaitTimeoutMs(json.spawnWaitTimeoutMs),
     output: parseOutputConfig(json.output),
     llmExtract: typeof json.llmExtract === "boolean" ? json.llmExtract : undefined,
@@ -194,40 +192,6 @@ function parseInitConfig(raw: unknown): { conflictCheck?: "model" | "off" } | un
     return undefined;
   }
   return { conflictCheck: (conflictCheck as "model" | "off") ?? undefined };
-}
-
-/**
- * Parses and validates a decisionShortcutKey value from JSON config.
- * Must be a string matching KeyId format: modifier combinations of ctrl/shift/alt/super
- * followed by a final key (single alphanumeric or SpecialKey whitelist entry).
- * Invalid values warn and fall back to DEFAULT_DECISION_SHORTCUT.
- */
-function parseDecisionShortcutKey(raw: unknown): string {
-  const DEFAULT_KEY = "ctrl+enter";
-  if (typeof raw !== "string" || raw.length === 0) {
-    if (raw !== undefined) {
-      console.warn(
-        `[pi-pipeline] Invalid decisionShortcutKey "${String(raw)}" — expected non-empty string, falling back to '${DEFAULT_KEY}'`,
-      );
-    }
-    return DEFAULT_KEY;
-  }
-  // KeyId format: zero or more modifier prefixes (ctrl|shift|alt|super)+
-  // followed by a final key segment that is either:
-  //   - a single lowercase letter or digit [a-z0-9]
-  //   - a SpecialKey whitelist entry (enter, escape, tab, space, etc.)
-  // Supports multi-modifier combos like "ctrl+shift+d", "ctrl+enter", "alt+f1"
-  const SPECIAL_KEYS = "enter|escape|tab|space|backspace|delete|home|end|pageUp|pageDown|up|down|left|right";
-  const KEY_ID_REGEX = new RegExp(
-    `^((ctrl|shift|alt|super)\\+)*(${SPECIAL_KEYS}|f[1-9]|f1[0-2]|[a-z0-9])$`,
-  );
-  if (!KEY_ID_REGEX.test(raw)) {
-    console.warn(
-      `[pi-pipeline] Invalid decisionShortcutKey "${raw}" — does not match KeyId format, falling back to '${DEFAULT_KEY}'`,
-    );
-    return DEFAULT_KEY;
-  }
-  return raw;
 }
 
 /**
@@ -858,7 +822,6 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     maxLoops: json.maxLoops ?? 3,
     maxLoopCycles: json.maxLoopCycles ?? 3,
     maxVerifyAttempts: json.maxVerifyAttempts ?? json.maxLoops ?? 3,
-    decisionShortcutKey: parseDecisionShortcutKey(json.decisionShortcutKey),
     // Validated again here so callers constructing a PipelineJsonConfig directly
     // (bypassing loadJsonConfig) still get invalid-value guarding + the default.
     spawnWaitTimeoutMs:

@@ -796,16 +796,14 @@ export function inferResumeStage(
  * @param opts - Optional overrides (ui for external callers)
  */
 /**
- * Formats a hint message for the decision menu shortcut key.
- * Uses the configured `decisionShortcutKey` or falls back to DEFAULT_DECISION_SHORTCUT.
- * Single source for all three consumers: frozen notify, prompt-injector, and pipeline_blocked audit.
+ * Formats a hint message directing the user to the /pipeline-resume command
+ * for opening the decision menu or bypassing it with --force-resume.
+ * Single source for all consumers: frozen notify, prompt-injector, and pipeline_blocked audit.
  *
- * @param config - Pipeline configuration
- * @returns Human-readable hint string like "Open the decision menu (press ctrl+enter) to proceed"
+ * @returns Human-readable hint string
  */
-export function formatDecisionMenuHint(config: PipelineConfig): string {
-  const key = config.decisionShortcutKey ?? "ctrl+enter";
-  return `Open the decision menu (press ${key}) to proceed.`;
+export function formatDecisionMenuHint(): string {
+  return "Run /pipeline-resume to open the decision menu, or /pipeline-resume --force-resume to resume directly.";
 }
 
 export type PromptDecisionOutcome = "cancelled" | "interrupted" | "decided" | "no-menu";
@@ -893,7 +891,7 @@ async function promptStageSelection(
     });
     if (tuiEnabled) {
       ui.notify?.(
-        `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint(config)}`,
+        `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint()}`,
       );
     }
     return "cancelled";
@@ -997,7 +995,7 @@ export async function promptDecisionMenu(
         if (tuiEnabled) {
           const freshMeta = ctx.session.getMeta() ?? meta;
           ui.notify?.(
-            `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint(config)}`,
+            `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint()}`,
           );
         }
         return "cancelled";
@@ -1030,7 +1028,7 @@ export async function promptDecisionMenu(
     if (tuiEnabled) {
       const frozenMeta = ctx.session.getMeta() ?? meta;
       ui?.notify?.(
-        `Pipeline frozen: ${formatFrozenReason(frozenMeta)} ${formatDecisionMenuHint(config)}`,
+        `Pipeline frozen: ${formatFrozenReason(frozenMeta)} ${formatDecisionMenuHint()}`,
       );
     }
     return "no-menu";
@@ -1225,7 +1223,7 @@ export async function freezeAndPrompt(
     stage: meta.currentStage,
     reason,
     nextStage: blockedNextStage ?? "null",
-    nextAction: formatDecisionMenuHint(config),
+    nextAction: formatDecisionMenuHint(),
     hostRole,
   }, "warn");
 

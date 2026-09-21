@@ -84,7 +84,7 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
 
   return {
     name: "pipeline-resume",
-    description: "Resume a frozen pipeline in this session",
+    description: "Resume a frozen pipeline. Use --force-resume to bypass the decision menu and resume directly.",
     execute: async (args: Record<string, unknown>, ctx?: any): Promise<unknown> => {
       // Phase 1 / 175 (R1Q7A): forwardArgs from /pipeline-resume are transparently
       // passed through to the stage subagent spawn prompt.
@@ -222,7 +222,7 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             // Keep frozen — do not silently unfreeze
             const currentMeta = ctx.session.getMeta() as SessionMeta;
             return {
-              message: `Pipeline remains frozen at "${currentMeta.currentStage}". ${formatDecisionMenuHint(config)}`,
+              message: `Pipeline remains frozen at "${currentMeta.currentStage}". ${formatDecisionMenuHint()}`,
             };
           }
 

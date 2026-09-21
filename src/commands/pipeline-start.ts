@@ -1111,12 +1111,12 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
               );
               return {
                 success: menuOutcome === "decided",
-                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline awaiting human input. ${formatDecisionMenuHint(config)}`,
+                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline awaiting human input. ${formatDecisionMenuHint()}`,
               };
             }
             return {
               success: false,
-              error: `Pipeline is at awaiting_human stage. ${formatDecisionMenuHint(config)}`,
+              error: `Pipeline is at awaiting_human stage. ${formatDecisionMenuHint()}`,
             };
           }
 
@@ -1148,12 +1148,12 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
               );
               return {
                 success: menuOutcome === "decided",
-                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline frozen. ${formatDecisionMenuHint(config)}`,
+                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline frozen. ${formatDecisionMenuHint()}`,
               };
             }
             return {
               success: false,
-              error: `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ${formatDecisionMenuHint(config)}`,
+              error: `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ${formatDecisionMenuHint()}`,
             };
           }
         }

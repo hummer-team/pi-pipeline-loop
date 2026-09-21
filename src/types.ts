@@ -675,15 +675,6 @@ export interface PipelineConfig {
   maxVerifyAttempts?: number;
 
   /**
-   * KeyId for the TUI shortcut that opens the pipeline decision menu.
-   * Defaults to "ctrl+enter". Must match KeyId format: modifiers (ctrl|shift|alt|super)+
-   * followed by a single alphanumeric key or SpecialKey (enter|escape|tab|space|backspace|
-   * delete|home|end|pageUp|pageDown|up|down|left|right|f1-f12).
-   * Invalid values fall back to "ctrl+enter" with a console warning.
-   */
-  decisionShortcutKey?: string;
-
-  /**
    * Maximum time (ms) to wait for a live same-named subagent to settle before
    * the pipeline escalates to manual handling (single shared timeout source).
    *
@@ -944,12 +935,6 @@ export interface PipelineJsonConfig {
    * Circuit-breaker for repeated verify failures within a single stage.
    */
   maxVerifyAttempts?: number;
-
-  /**
-   * TUI shortcut KeyId to open the pipeline decision menu (default "ctrl+enter").
-   * Must match KeyId format; invalid values fall back to "ctrl+enter".
-   */
-  decisionShortcutKey?: string;
 
   /**
    * Maximum time (ms) to wait for a live same-named subagent to settle before

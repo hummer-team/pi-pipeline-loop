@@ -573,7 +573,7 @@ async function advanceConfirmApproved(
 /**
  * Phase 3 / 180 (C3 / D5a): actionable copy for a pending confirm gate.
  *
- * The previous text pointed at the decision shortcut (`ctrl+shift+u`) and an
+ * The previous text pointed at the `/pipeline-resume` command (formerly a decision shortcut) and an
  * "Approve & Advance" menu item that does not exist in the running-state menu
  * (running = [restart, abort]) — an unexecutable instruction. The deterministic
  * re-entry path is `/pipeline-resume`, which re-opens the existing confirm
