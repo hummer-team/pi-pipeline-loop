@@ -491,7 +491,7 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("blocked");
     expect(notifications.length).toBe(1);
     expect(notifications[0]).toContain("verify_fail");
-    expect(notifications[0]).toContain("ctrl+enter");
+    expect(notifications[0]).toContain("/pipeline-resume");
   });
 
   it("without UI: keeps blocked, no crash, notify includes reason", async () => {
@@ -520,19 +520,18 @@ describe("freezeAndPrompt", () => {
     expect(meta.flowState).toBe("blocked");
   });
 
-  it("frozen message includes blockedReason, not shortcut key", async () => {
+  it("frozen message includes blockedReason and /pipeline-resume hint", async () => {
     const meta = makeTestMeta({ flowState: "running" });
     const notifications: string[] = [];
     const ctx = makeCtx(meta, {
       notify: (msg: string) => { notifications.push(msg); },
     });
-    const config = makeTestConfig({ decisionShortcutKey: "alt+f" });
+    const config = makeTestConfig();
 
     await freezeAndPrompt(ctx, meta, "test_reason", config);
 
     expect(notifications[0]).toContain("test_reason");
-    // Phase 6 (172) G5: should contain configured shortcut key
-    expect(notifications[0]).toContain("alt+f");
+    expect(notifications[0]).toContain("/pipeline-resume");
   });
 
   it("opts.ui overrides ctx.ui for select", async () => {
@@ -667,10 +666,9 @@ describe("168 Phase 2: promptDecisionMenu", () => {
 
     await promptDecisionMenu(ctx, meta, config);
 
-    // Phase 6 (172) G5: should notify with configured shortcut key
     expect(notifications.length).toBe(1);
     expect(notifications[0]).toContain("verify_attempt_overflow");
-    expect(notifications[0]).toContain("ctrl+enter");
+    expect(notifications[0]).toContain("/pipeline-resume");
   });
 
   it("returns aborted without prompting when flowState is aborted", async () => {

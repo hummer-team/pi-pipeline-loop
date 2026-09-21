@@ -64,8 +64,8 @@ describe("createToolGuard", () => {
       expect(result).toBeUndefined();
     });
 
-    it("includes blockedReason in frozen message (no shortcut key)", async () => {
-      const config = makeTestConfig({ decisionShortcutKey: "alt+f" });
+    it("includes blockedReason in frozen message with /pipeline-resume hint", async () => {
+      const config = makeTestConfig();
       const meta = makeTestMeta({ flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta);
       ctx.toolCall = { name: "read", arguments: {} };
@@ -75,9 +75,7 @@ describe("createToolGuard", () => {
 
       expect((result as any).block).toBe(true);
       expect((result as any).reason).toContain("loop_overflow");
-      expect((result as any).reason).toContain("decision menu");
-      // Phase 1 (173) C10③: frozen text now uses formatDecisionMenuHint with configured key
-      expect((result as any).reason).toContain("alt+f");
+      expect((result as any).reason).toContain("/pipeline-resume");
     });
   });
 

@@ -999,7 +999,7 @@ async function handleAbortedPipeline(
   if (meta.currentStage === "awaiting_human") {
     return {
       success: false,
-      error: `Pipeline is at awaiting_human stage. Open the decision menu to proceed.`,
+      error: `Pipeline is at awaiting_human stage. ${formatDecisionMenuHint()}`,
     };
   }
 

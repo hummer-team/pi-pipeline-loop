@@ -32,24 +32,15 @@ describe("Phase 6 (172): formatDecisionMenuHint", () => {
     clearAllDecisionTimers();
   });
 
-  it("uses default shortcut when config has no decisionShortcutKey", () => {
-    const config = makeTestConfig();
-    const hint = formatDecisionMenuHint(config);
-    expect(hint).toContain(DEFAULT_DECISION_SHORTCUT);
-    expect(hint).toContain("Open the decision menu");
-  });
-
-  it("uses configured shortcut key", () => {
-    const config = makeTestConfig({ decisionShortcutKey: "ctrl+g" });
-    const hint = formatDecisionMenuHint(config);
-    expect(hint).toContain("ctrl+g");
-    expect(hint).not.toContain(DEFAULT_DECISION_SHORTCUT);
+  it("returns hint pointing to /pipeline-resume command", () => {
+    const hint = formatDecisionMenuHint();
+    expect(hint).toContain("/pipeline-resume");
+    expect(hint).toContain("--force-resume");
   });
 
   it("hint format is consistent", () => {
-    const config = makeTestConfig({ decisionShortcutKey: "alt+f1" });
-    const hint = formatDecisionMenuHint(config);
-    expect(hint).toBe("Open the decision menu (press alt+f1) to proceed.");
+    const hint = formatDecisionMenuHint();
+    expect(hint).toBe("Run /pipeline-resume to open the decision menu, or /pipeline-resume --force-resume to resume directly.");
   });
 });
 
@@ -149,5 +140,4 @@ describe("Phase 6 (172): decision retry timer lifecycle", () => {
   });
 });
 
-// Need to import DEFAULT_DECISION_SHORTCUT for the hint tests
-import { DEFAULT_DECISION_SHORTCUT } from "../../constants";
+

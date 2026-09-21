@@ -283,7 +283,7 @@ describe("Phase 3 / 177 (D6): handoff confirm gate", () => {
   }) {
     const TMP = join(tmpdir(), "pi-177-handoff-gate-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     await mkdir(TMP, { recursive: true });
-    const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "ctrl+r" });
+    const config = makeTestConfig({ projectRoot: TMP });
     config.stages["plan"] = {
       ...config.stages["plan"],
       confirm: { mode: "manual" },

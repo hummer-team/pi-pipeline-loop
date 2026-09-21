@@ -168,7 +168,7 @@ describe("createSessionStarter", () => {
 
     it("Phase 3 (173) C8: frozen pipeline replay — notifies with inference + decision menu hint", async () => {
       const notifications: string[] = [];
-      const config = makeTestConfig({ decisionShortcutKey: "ctrl+shift+d" });
+      const config = makeTestConfig();
       const meta = makeTestMeta({
         currentStage: "develop",
         pipelineId: "existing-pipe-1",
@@ -188,8 +188,8 @@ describe("createSessionStarter", () => {
       const replayNotify = notifications.find(n => n.includes("frozen") || n.includes("blocked"));
       expect(replayNotify).toBeDefined();
       expect(replayNotify).toContain("loop_overflow");
-      // Phase 1 (173) C10③: frozen text now uses formatDecisionMenuHint with configured key
-      expect(replayNotify).toContain("ctrl+shift+d");
+      // Frozen text now uses formatDecisionMenuHint pointing to /pipeline-resume
+      expect(replayNotify).toContain("/pipeline-resume");
     });
   });
 

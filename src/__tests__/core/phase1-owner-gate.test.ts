@@ -299,12 +299,11 @@ describe("Phase 1 (173) C7: owner-only decision menu gate", () => {
 
   // ─── Test 7: Three texts contain configured key name ──────────────────────
 
-  it("formatDecisionMenuHint uses configured shortcut key (ctrl+g)", () => {
-    const config = makeTestConfig({ decisionShortcutKey: "ctrl+g" });
-    const hint = formatDecisionMenuHint(config);
-    expect(hint).toContain("ctrl+g");
-    expect(hint).toContain("Open the decision menu");
-    expect(hint).toBe("Open the decision menu (press ctrl+g) to proceed.");
+  it("formatDecisionMenuHint returns /pipeline-resume hint", () => {
+    const hint = formatDecisionMenuHint();
+    expect(hint).toContain("/pipeline-resume");
+    expect(hint).toContain("--force-resume");
+    expect(hint).toBe("Run /pipeline-resume to open the decision menu, or /pipeline-resume --force-resume to resume directly.");
   });
 
   // ─── Test 8: Owner settle re-popup chain preserved ────────────────────────

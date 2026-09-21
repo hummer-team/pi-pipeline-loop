@@ -277,9 +277,9 @@ describe("createPipelineStartCommand", () => {
     expect(updatedMeta.blockedReason).toBeUndefined();
   });
 
-  it("rejects when pipeline is blocked with decision menu hint (no shortcut key)", async () => {
+  it("rejects when pipeline is blocked with decision menu hint", async () => {
     await fs.writeFile(docPath, "content", "utf-8");
-    const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "alt+f" });
+    const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({ flowState: "blocked" });
     // Use a ctx without ui.select to test the no-UI degradation path
     const ctx = {
@@ -293,10 +293,9 @@ describe("createPipelineStartCommand", () => {
     const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
 
     expect(result.success).toBe(false);
-    // Phase 3 (173) C10①: blocked state now returns frozen hint with decision menu key
+    // blocked state returns frozen hint with /pipeline-resume reference
     expect(result.error).toContain("decision menu");
-    // The hint includes the configured shortcut key
-    expect(result.error).toContain("alt+f");
+    expect(result.error).toContain("/pipeline-resume");
   });
 
   it("handles empty file content", async () => {
@@ -946,8 +945,8 @@ describe("createPipelineStartCommand", () => {
     });
 
     // Case 5: aborted + awaiting_human → error with decision menu hint
-    it("aborted + awaiting_human → returns error with decision menu hint (no shortcut key)", async () => {
-      const config = makeTestConfig({ projectRoot: TMP, decisionShortcutKey: "ctrl+x" });
+    it("aborted + awaiting_human → returns error with decision menu hint", async () => {
+      const config = makeTestConfig({ projectRoot: TMP });
       const meta = makeTestMeta({
         currentStage: "awaiting_human",
         flowState: "aborted",
@@ -967,8 +966,7 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("awaiting_human");
       expect(result.error).toContain("decision menu");
-      // Should NOT contain shortcut key
-      expect(result.error).not.toContain("ctrl+x");
+      expect(result.error).toContain("/pipeline-resume");
       expect(updatedMeta).toBeNull();
     });
 

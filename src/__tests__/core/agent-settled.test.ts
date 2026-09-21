@@ -176,7 +176,6 @@ describe("createAgentSettled", () => {
 
     const config = makeTestConfig({
       projectRoot: stageTmp,
-      decisionShortcutKey: "alt+f",
     });
 
     const meta = makeTestMeta({
@@ -191,8 +190,8 @@ describe("createAgentSettled", () => {
 
     // Should include blockedReason in the notification
     expect(ctx.notifications.some(n => n.includes("loop_overflow"))).toBe(true);
-    // Phase 1 (173) C10③: frozen text now uses formatDecisionMenuHint with configured key
-    expect(ctx.notifications.some(n => n.includes("alt+f"))).toBe(true);
+    // Frozen text now uses formatDecisionMenuHint pointing to /pipeline-resume
+    expect(ctx.notifications.some(n => n.includes("/pipeline-resume"))).toBe(true);
 
     await rm(stageTmp, { recursive: true, force: true });
   });
