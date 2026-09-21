@@ -145,6 +145,72 @@ export function isPathAllowedWrite(
 }
 
 /**
+ * Converts a glob pattern (containing `*` or `**`) to a RegExp for path matching.
+ * - `**` matches any path segment (including `/`)
+ * - `*` matches any characters except `/`
+ *
+ * @param pattern - Glob pattern string
+ * @returns RegExp that matches the glob pattern
+ */
+function globToRegExp(pattern: string): RegExp {
+  // Escape regex special chars first (except * which we handle separately)
+  let regexStr = "";
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        // ** matches anything including /
+        regexStr += ".*";
+        i += 2;
+        // Skip a trailing / after ** (e.g. "**\/" matches zero or more dirs)
+        if (pattern[i] === "/") i++;
+      } else {
+        // * matches anything except /
+        regexStr += "[^/]*";
+        i++;
+      }
+    } else if ("\\^$.|?+()[]{}".includes(ch)) {
+      regexStr += "\\" + ch;
+      i++;
+    } else {
+      regexStr += ch;
+      i++;
+    }
+  }
+  return new RegExp(`^${regexStr}$`);
+}
+
+/**
+ * Checks if a path matches any of the stage-level read-only path patterns.
+ * Supports both directory prefix matching (same as allowedWritePaths) and
+ * glob patterns (`*`, `**`).
+ *
+ * @param relPath - Path relative to project root
+ * @param allowedReadOnlyPaths - Stage read-only path list (undefined = no read-only restriction)
+ * @returns True if the path matches a read-only pattern (write blocked)
+ */
+export function isPathReadOnly(
+  relPath: string,
+  allowedReadOnlyPaths: string[] | undefined
+): boolean {
+  if (!allowedReadOnlyPaths || allowedReadOnlyPaths.length === 0) return false;
+
+  for (const pattern of allowedReadOnlyPaths) {
+    // Glob pattern: contains * (single or double)
+    if (pattern.includes("*")) {
+      const regex = globToRegExp(pattern);
+      if (regex.test(relPath)) return true;
+    } else {
+      // Directory prefix matching (same as normalizeAllow + isPathAllowed)
+      const normalized = normalizeAllow([pattern]);
+      if (isPathAllowed(relPath, normalized)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Checks if a path matches hardcoded protection.
  * Handles both directory entries (with trailing /) and file entries.
  *

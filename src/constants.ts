@@ -311,7 +311,7 @@ export const COMMIT_DOC_NAMING_CONSTRAINT =
 /** Default write scope by stage type (tools and bash prefixes no longer restricted) */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   string,
-  { allowedWritePaths: string[] }
+  { allowedWritePaths: string[]; allowedReadOnlyPaths?: string[] }
 > = {
   clarify: {
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
@@ -321,12 +321,14 @@ export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   },
   develop: {
     allowedWritePaths: [ALLOWED_WRITE_ALL],
+    allowedReadOnlyPaths: ["docs/design/*_plan*.md"],
   },
   review: {
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   fix: {
     allowedWritePaths: [ALLOWED_WRITE_ALL],
+    allowedReadOnlyPaths: ["docs/design/*_plan*.md"],
   },
 };
 

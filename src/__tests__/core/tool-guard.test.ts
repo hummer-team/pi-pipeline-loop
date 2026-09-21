@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { createToolGuard } from "../../core/tool-guard";
+import { createToolGuard, __resetReadOnlyIntersectionWarned } from "../../core/tool-guard";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -3237,5 +3237,137 @@ describe("createToolGuard", () => {
       expect(result).toBeUndefined();
       await rm(TMP, { recursive: true, force: true });
     });
+  });
+});
+
+// ── Phase 0 (186): allowedReadOnlyPaths blocks writes ──────────────────────
+
+describe("Phase 0 (186): allowedReadOnlyPaths blocks writes", () => {
+  it("write/edit tool blocked by read-only path even when allowedWritePaths allows it", async () => {
+    const TMP = join(tmpdir(), "pi-readonly-1-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" }));
+
+    // Create a plan doc that will be in read-only paths
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    await writeFile(join(TMP, "docs", "design", "186_plan.md"), "plan content");
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      auditDir: ".pi/audit",
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "a.md",
+          skillPath: "s.md",
+          nextStage: "review",
+          requireDomain: false,
+          // allowedWritePaths allows everything (**), but allowedReadOnlyPaths blocks plan docs
+          allowedWritePaths: ["**"],
+          allowedReadOnlyPaths: ["docs/design/*_plan*.md"],
+        },
+      },
+    } as any);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    // Simulate write tool call targeting the read-only path
+    ctx.toolCall = {
+      name: "write",
+      arguments: { path: join(TMP, "docs", "design", "186_plan.md"), content: "new content" },
+    };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // Should be blocked
+    expect(result).toBeDefined();
+    expect((result as any).reason).toContain("read-only");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("bash file target blocked by read-only path", async () => {
+    const TMP = join(tmpdir(), "pi-readonly-2-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" }));
+
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    await writeFile(join(TMP, "docs", "design", "186_plan.md"), "plan content");
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      auditDir: ".pi/audit",
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "a.md",
+          skillPath: "s.md",
+          nextStage: "review",
+          requireDomain: false,
+          allowedWritePaths: ["**"],
+          allowedReadOnlyPaths: ["docs/design/*_plan*.md"],
+        },
+      },
+    } as any);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    // Bash command that writes to a read-only path
+    ctx.toolCall = {
+      name: "bash",
+      arguments: { command: `echo "overwrite" > ${join(TMP, "docs", "design", "186_plan.md")}` },
+    };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // Should be blocked
+    expect(result).toBeDefined();
+    expect((result as any).reason).toContain("read-only");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("intersection detection produces audit warning", async () => {
+    __resetReadOnlyIntersectionWarned();
+    const TMP = join(tmpdir(), "pi-readonly-3-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" }));
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      auditDir: ".pi/audit",
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "a.md",
+          skillPath: "s.md",
+          nextStage: "review",
+          requireDomain: false,
+          // Overlap: both allowedWritePaths and allowedReadOnlyPaths include "docs/"
+          allowedWritePaths: ["docs/"],
+          allowedReadOnlyPaths: ["docs/"],
+        },
+      },
+    } as any);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    // Use bash tool with a simple non-blocking command to trigger the handler
+    ctx.toolCall = { name: "bash", arguments: { command: "echo hello" } };
+
+    const hook = createToolGuard(config);
+    await hook.handler(ctx as any);
+
+    // Should have audit warning (fire-and-forget — give it a tick)
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("readonly_write_intersection_warning");
+
+    await rm(TMP, { recursive: true, force: true });
   });
 });

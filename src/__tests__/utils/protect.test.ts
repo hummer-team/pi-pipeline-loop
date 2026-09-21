@@ -4,6 +4,7 @@ import {
   normalizeAllow,
   isPathAllowed,
   isPathAllowedWrite,
+  isPathReadOnly,
   isHardcodedProtected,
   isPathProtectedForModify,
   isPathProtectedForGit,
@@ -454,5 +455,31 @@ describe("describeGitModifySource (Phase 3 / 175)", () => {
       protect: { gitModify: "allow" },
     };
     expect(describeGitModifySource(config, "develop")).toBe("stage");
+  });
+});
+
+// ── Phase 0 (186): isPathReadOnly ─────────────────────────────────────────────
+
+describe("Phase 0 (186): isPathReadOnly", () => {
+  it("matches glob pattern with * wildcard", () => {
+    expect(isPathReadOnly("docs/design/186_Bug_plan.md", ["docs/design/*_plan*.md"])).toBe(true);
+    expect(isPathReadOnly("docs/design/186_Feat_plan.md", ["docs/design/*_plan*.md"])).toBe(true);
+    expect(isPathReadOnly("docs/design/186_Bug.md", ["docs/design/*_plan*.md"])).toBe(false);
+  });
+
+  it("matches directory prefix pattern", () => {
+    expect(isPathReadOnly("docs/design/plan.md", ["docs/design/"])).toBe(true);
+    expect(isPathReadOnly("docs/design/sub/plan.md", ["docs/design/"])).toBe(true);
+    expect(isPathReadOnly("src/index.ts", ["docs/design/"])).toBe(false);
+  });
+
+  it("returns false for undefined or empty list", () => {
+    expect(isPathReadOnly("docs/design/plan.md", undefined)).toBe(false);
+    expect(isPathReadOnly("docs/design/plan.md", [])).toBe(false);
+  });
+
+  it("** glob matches any depth", () => {
+    expect(isPathReadOnly("a/b/c/plan.md", ["**/plan.md"])).toBe(true);
+    expect(isPathReadOnly("plan.md", ["**/plan.md"])).toBe(true);
   });
 });

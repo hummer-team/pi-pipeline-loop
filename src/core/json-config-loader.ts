@@ -654,6 +654,29 @@ function parseAllowedWritePaths(raw: unknown): string[] | undefined {
 }
 
 /**
+ * Parses and validates allowedReadOnlyPaths from JSON stage config.
+ * Same validation as allowedWritePaths (string[] with glob / prefix entries).
+ */
+function parseAllowedReadOnlyPaths(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid allowedReadOnlyPaths — expected string[], got ${typeof raw}, ignoring`,
+    );
+    return undefined;
+  }
+  for (const entry of raw) {
+    if (typeof entry !== "string") {
+      console.warn(
+        `[pi-pipeline] Invalid allowedReadOnlyPaths entry "${String(entry)}" — expected string, ignoring entire array`,
+      );
+      return undefined;
+    }
+  }
+  return raw as string[];
+}
+
+/**
  * Walks the nextStage chain from `start` and returns the cycle path
  * (e.g. ["review","fix","review"]) if any visited node is revisited,
  * or null if the chain terminates without a cycle.
@@ -742,6 +765,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
         resolveStagePath(DEFAULT_SKILL_PATH, stageName),
       allowedWritePaths:
         parseAllowedWritePaths(jsonStage.allowedWritePaths) ?? defaults.allowedWritePaths,
+      allowedReadOnlyPaths:
+        parseAllowedReadOnlyPaths(jsonStage.allowedReadOnlyPaths) ?? defaults.allowedReadOnlyPaths,
       nextStage:
         jsonStage.nextStage !== undefined ? jsonStage.nextStage : null,
       requireDomain: jsonStage.requireDomain ?? false,

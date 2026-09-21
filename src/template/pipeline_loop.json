@@ -42,6 +42,7 @@
       "agentPath": ".pi/agents/develop-agent.md",
       "skillPath": "develop/SKILL.md",
       "nextStage": "review",
+      "allowedReadOnlyPaths": ["docs/design/*_plan*.md"],
       "verify": { "require": true, "selfVerifySkip": true }
     },
     "review": {
@@ -55,6 +56,7 @@
       "agentPath": ".pi/agents/code-review-withfix-agent.md",
       "skillPath": "fix/SKILL.md",
       "nextStage": "review",
+      "allowedReadOnlyPaths": ["docs/design/*_plan*.md"],
       "verify": { "require": true, "selfVerifySkip": true }
     },
     "awaiting_human": { "nextStage": null },

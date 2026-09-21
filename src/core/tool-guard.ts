@@ -32,6 +32,7 @@ import {
   isHardcodedProtected,
   isPathAllowed,
   isPathAllowedWrite,
+  isPathReadOnly,
   isPathProtectedForModify,
   isPathProtectedForGit,
   toProjectRelative,
@@ -113,6 +114,75 @@ type StageWriteCheckResult =
   | { status: "continue" };
 
 /**
+ * Module-level cache for intersection warning per stage.
+ * Ensures the warning is emitted only once per stage per session.
+ */
+const readOnlyWriteIntersectionWarned = new Set<string>();
+
+/** Test-only: reset the intersection warning cache. */
+export function __resetReadOnlyIntersectionWarned(): void {
+  readOnlyWriteIntersectionWarned.clear();
+}
+
+/**
+ * Detects overlap between allowedReadOnlyPaths and allowedWritePaths for a stage.
+ * When overlap exists, writes an audit warning and emits a TUI notification.
+ * One-time per stage (dedup via module-level cache).
+ *
+ * @param stageName - Current pipeline stage
+ * @param allowedReadOnlyPaths - Read-only path patterns
+ * @param allowedWritePaths - Write whitelist patterns
+ * @param ui - Pipeline UI for notifications
+ * @param ctx - Runtime context for UI calls
+ */
+function warnReadOnlyWriteIntersection(
+  stageName: string,
+  allowedReadOnlyPaths: string[] | undefined,
+  allowedWritePaths: string[] | undefined,
+  ui: ReturnType<typeof createPipelineUI>,
+  ctx: RuntimeCtx,
+): void {
+  if (!allowedReadOnlyPaths?.length || !allowedWritePaths?.length) return;
+  const cacheKey = stageName;
+  if (readOnlyWriteIntersectionWarned.has(cacheKey)) return;
+
+  // Check for overlap: any read-only pattern also covered by a write pattern
+  const normalizedWrite = allowedWritePaths.includes(ALLOWED_WRITE_ALL)
+    ? null
+    : allowedWritePaths;
+
+  let hasOverlap = false;
+  if (normalizedWrite === null) {
+    // "**" write-all overlaps with everything
+    hasOverlap = true;
+  } else {
+    for (const roPattern of allowedReadOnlyPaths) {
+      // Check if any write path covers the same area as the read-only pattern
+      for (const wp of normalizedWrite) {
+        // Simple overlap detection: one is prefix of the other, or they share a common directory
+        if (roPattern.startsWith(wp) || wp.startsWith(roPattern) || roPattern === wp) {
+          hasOverlap = true;
+          break;
+        }
+      }
+      if (hasOverlap) break;
+    }
+  }
+
+  if (hasOverlap) {
+    readOnlyWriteIntersectionWarned.add(cacheKey);
+    const msg = `Warning: allowedReadOnlyPaths and allowedWritePaths overlap for stage '${stageName}'. Read-only paths take priority.`;
+    // Audit log (fail-open, fire-and-forget)
+    safeWriteAuditLog("readonly_write_intersection_warning", {
+      stage: stageName,
+      allowedReadOnlyPaths: allowedReadOnlyPaths.join(","),
+      allowedWritePaths: (allowedWritePaths || []).join(","),
+    }, "warn").catch(() => {});
+    ui.notify(ctx, msg);
+  }
+}
+
+/**
  * Checks if a write target is allowed by the stage write whitelist + hardcoded protection.
  *
  * Whitelist mode (allowedWritePaths does NOT contain "**"):
@@ -133,8 +203,18 @@ function checkStageWriteBlock(
   relPath: string,
   allowedWritePaths: string[] | undefined,
   stageName: string,
-  state: ProtectState
+  state: ProtectState,
+  allowedReadOnlyPaths?: string[]
 ): StageWriteCheckResult {
+  // Phase 0 (186): read-only path check BEFORE write whitelist.
+  // Read-only paths take priority over allowedWritePaths on intersection.
+  if (isPathReadOnly(relPath, allowedReadOnlyPaths)) {
+    return {
+      status: "block",
+      reason: `FORBIDDEN: '${relPath}' is in read-only paths for '${stageName}' stage.`,
+    };
+  }
+
   // Determine if stage whitelist is active (whitelist mode)
   const isWhitelistMode =
     allowedWritePaths !== undefined &&
@@ -204,7 +284,7 @@ function isGitLockFile(relPath: string): boolean {
 async function checkBashFileTargets(
   segment: string,
   state: ProtectState,
-  stageConfig: { allowedWritePaths?: string[] },
+  stageConfig: { allowedWritePaths?: string[]; allowedReadOnlyPaths?: string[] },
   meta: SessionMeta,
   config: PipelineConfig,
   ctx: RuntimeCtx,
@@ -253,8 +333,8 @@ async function checkBashFileTargets(
       // Session allowance early bypass
       if (sessionPaths.includes(relPath)) continue;
 
-      // Stage-level write whitelist check
-      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
+      // Stage-level write whitelist check (with read-only path priority)
+      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths);
       if (stageCheck.status === "block") {
         if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
           const outcome = await askProtectDecision(ctx, meta, relPath, config);
@@ -414,6 +494,16 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         const updatedMeta = ctx.session.getMeta() as SessionMeta;
         await checkViolationBreaker(ctx, updatedMeta, config);
       }
+
+      // Phase 0 (186): intersection detection — warn once per stage when
+      // allowedReadOnlyPaths and allowedWritePaths overlap.
+      warnReadOnlyWriteIntersection(
+        meta.currentStage,
+        stageConfig.allowedReadOnlyPaths,
+        stageConfig.allowedWritePaths,
+        ui,
+        ctx,
+      );
 
       // 1. Tool permission check — REMOVED in Phase 0 (D0)
       // Tools are no longer restricted by allowlist; protection relies on
@@ -862,8 +952,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const sessionAllowed = sessionPaths.includes(relPath);
 
           if (!sessionAllowed) {
-            // Stage-level write whitelist check
-            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state);
+            // Stage-level write whitelist check (with read-only path priority)
+            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths);
 
             if (stageCheck.status === "block") {
               // Phase 1: if protect.ask=true AND path is protected, surface ask dialog.

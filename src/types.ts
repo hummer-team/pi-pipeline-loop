@@ -184,7 +184,18 @@ export interface StageConfig {
    * - Hardcoded protected paths (.pi/, AGENTS.md, .git/) CANNOT be exempted
    * - git add/commit remains subject to global git content-level protection
    */
-  allowedWritePaths?: string[];
+   allowedWritePaths?: string[];
+
+  /**
+   * Stage-level read-only path list (directory prefix / glob matching, same syntax
+   * as allowedWritePaths). Paths matching this list are blocked from writes even if
+   * they also match allowedWritePaths. When intersection exists: audit warning +
+   * TUI English notification.
+   *
+   * Glob patterns (`*`, `**`) are supported and converted to regex for matching.
+   * Read-only paths take priority over allowedWritePaths on intersection.
+   */
+  allowedReadOnlyPaths?: string[];
 
   /**
    * The next stage to transition to after this stage completes.
@@ -862,6 +873,9 @@ export interface StageJsonConfig {
 
   /** Stage-level write whitelist (default depends on stage type) */
   allowedWritePaths?: string[];
+
+  /** Stage-level read-only path list (glob / prefix matching, priority over allowedWritePaths) */
+  allowedReadOnlyPaths?: string[];
 
   /** Next stage to transition to; null = terminal */
   nextStage?: PipelineStage | null;
