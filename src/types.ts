@@ -572,6 +572,18 @@ export interface SessionMeta {
    * it falls back to document-state round derivation.
    */
   lastClarifyTurnArgs?: string;
+
+  /**
+   * Phase 2 / 186 task 6: Per-stage dedup flag for the allowedReadOnlyPaths ∩
+   * allowedWritePaths overlap warning. Maps stage name → true once the warning
+   * has been emitted for that stage in the current session.
+   *
+   * Lifecycle:
+   * - Written by tool-guard on first overlap detection per stage
+   * - Scoped to the session (survives stage transitions within one pipeline run)
+   * - Cleared on pipeline reset / restart (new meta = fresh flags)
+   */
+  readOnlyIntersectionWarned?: Record<string, boolean>;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

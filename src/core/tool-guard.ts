@@ -114,26 +114,26 @@ type StageWriteCheckResult =
   | { status: "continue" };
 
 /**
- * Module-level cache for intersection warning per stage.
- * Ensures the warning is emitted only once per stage per session.
+ * Test-only hook retained for backwards compatibility.
+ * The intersection warning dedup is now stored in session meta
+ * (per-session, per-stage), so there is no module-level state to clear.
+ * Kept as a no-op so existing tests that call it before each case still compile.
  */
-const readOnlyWriteIntersectionWarned = new Set<string>();
-
-/** Test-only: reset the intersection warning cache. */
 export function __resetReadOnlyIntersectionWarned(): void {
-  readOnlyWriteIntersectionWarned.clear();
+  // No-op: dedup state lives in session meta, not module scope.
 }
 
 /**
  * Detects overlap between allowedReadOnlyPaths and allowedWritePaths for a stage.
  * When overlap exists, writes an audit warning and emits a TUI notification.
- * One-time per stage (dedup via module-level cache).
+ * One-time per stage per session (dedup via session meta flag).
  *
  * @param stageName - Current pipeline stage
  * @param allowedReadOnlyPaths - Read-only path patterns
  * @param allowedWritePaths - Write whitelist patterns
  * @param ui - Pipeline UI for notifications
- * @param ctx - Runtime context for UI calls
+ * @param ctx - Runtime context for UI calls and meta access
+ * @param meta - Current session metadata (for per-stage dedup flag)
  */
 function warnReadOnlyWriteIntersection(
   stageName: string,
@@ -141,10 +141,12 @@ function warnReadOnlyWriteIntersection(
   allowedWritePaths: string[] | undefined,
   ui: ReturnType<typeof createPipelineUI>,
   ctx: RuntimeCtx,
+  meta: SessionMeta,
 ): void {
   if (!allowedReadOnlyPaths?.length || !allowedWritePaths?.length) return;
-  const cacheKey = stageName;
-  if (readOnlyWriteIntersectionWarned.has(cacheKey)) return;
+
+  // Per-session, per-stage dedup: skip if the flag is already set in meta
+  if (meta.readOnlyIntersectionWarned?.[stageName]) return;
 
   // Check for overlap: any read-only pattern also covered by a write pattern
   const normalizedWrite = allowedWritePaths.includes(ALLOWED_WRITE_ALL)
@@ -170,7 +172,13 @@ function warnReadOnlyWriteIntersection(
   }
 
   if (hasOverlap) {
-    readOnlyWriteIntersectionWarned.add(cacheKey);
+    // Mark this stage as warned in session meta (per-session, per-stage dedup)
+    ctx.session.updateMeta({
+      readOnlyIntersectionWarned: {
+        ...(meta.readOnlyIntersectionWarned ?? {}),
+        [stageName]: true,
+      },
+    });
     const msg = `Warning: allowedReadOnlyPaths and allowedWritePaths overlap for stage '${stageName}'. Read-only paths take priority.`;
     // Audit log (fail-open, fire-and-forget)
     safeWriteAuditLog("readonly_write_intersection_warning", {
@@ -495,14 +503,16 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         await checkViolationBreaker(ctx, updatedMeta, config);
       }
 
-      // Phase 0 (186): intersection detection — warn once per stage when
+      // Phase 0 (186): intersection detection — warn once per stage per session when
       // allowedReadOnlyPaths and allowedWritePaths overlap.
+      // Dedup uses session meta flag (per-session, per-stage) instead of module-level state.
       warnReadOnlyWriteIntersection(
         meta.currentStage,
         stageConfig.allowedReadOnlyPaths,
         stageConfig.allowedWritePaths,
         ui,
         ctx,
+        meta,
       );
 
       // 1. Tool permission check — REMOVED in Phase 0 (D0)
