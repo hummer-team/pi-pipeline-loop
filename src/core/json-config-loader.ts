@@ -21,7 +21,6 @@ import {
   PI_PREFIX,
   DEFAULT_SKILL_PATH,
   DEFAULT_VERIFY_FILE,
-  DEFAULT_DECISION_SHORTCUT,
   DEFAULT_CONFIRM_MAX_REJECTIONS,
   DEFAULT_CONFIRM_OVERFLOW,
   DEFAULT_SPAWN_WAIT_TIMEOUT_MS,
@@ -204,7 +203,7 @@ function parseInitConfig(raw: unknown): { conflictCheck?: "model" | "off" } | un
  * Invalid values warn and fall back to DEFAULT_DECISION_SHORTCUT.
  */
 function parseDecisionShortcutKey(raw: unknown): string {
-  const DEFAULT_KEY = DEFAULT_DECISION_SHORTCUT;
+  const DEFAULT_KEY = "ctrl+enter";
   if (typeof raw !== "string" || raw.length === 0) {
     if (raw !== undefined) {
       console.warn(

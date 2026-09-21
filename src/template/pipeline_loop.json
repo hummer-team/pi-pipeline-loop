@@ -3,7 +3,6 @@
   "startStageMode": "auto",
   "llmExtract": true,
   "output": { "pipelineStage": true },
-  "decisionShortcutKey": "ctrl+enter",
   "spawnWaitTimeoutMs": 120000,
   "_comment_spawnWaitTimeoutMs": "Safety-net wait (ms) before escalating to manual handling while a same-named subagent is still live. Shared by stage-spawn deferral (G3) and confirm-gate deferral (G5/G7). Must be a positive integer; invalid values warn and fall back to 120000.",
   "maxConfirmRejections": 5,

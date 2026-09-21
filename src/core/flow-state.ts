@@ -17,7 +17,7 @@ import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../t
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
-import { DEFAULT_DECISION_SHORTCUT, DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER } from "../constants";
+import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER } from "../constants";
 import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
@@ -804,7 +804,7 @@ export function inferResumeStage(
  * @returns Human-readable hint string like "Open the decision menu (press ctrl+enter) to proceed"
  */
 export function formatDecisionMenuHint(config: PipelineConfig): string {
-  const key = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
+  const key = config.decisionShortcutKey ?? "ctrl+enter";
   return `Open the decision menu (press ${key}) to proceed.`;
 }
 

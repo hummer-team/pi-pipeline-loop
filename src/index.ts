@@ -6,20 +6,14 @@
 
 import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_DECISION_SHORTCUT, CONFIG_DIR_NAME, TEMPLATE_DIR } from "./constants";
+import { CONFIG_DIR_NAME, TEMPLATE_DIR } from "./constants";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
-import { buildDecisionMenu, executeDecision, labelToDecision, promptDecisionMenu } from "./core/flow-state";
-import type { PipelineDecision } from "./core/flow-state";
-import { isDormant } from "./core/dormancy";
-import { safeWriteAuditLog } from "./utils/auditLog";
+
 import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
-// Phase 0 (182): dispatch stage executor after choose_stage
-import { dispatchAfterResume } from "./commands/pipeline-start";
-import { createPipelineUI } from "./core/pipeline-ui";
-import type { SessionMeta } from "./types";
+
 
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
@@ -212,121 +206,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       });
     }
 
-    // ── Shortcut registration: pipeline decision menu ──
-    const shortcutKey = config.decisionShortcutKey ?? DEFAULT_DECISION_SHORTCUT;
-    const shortcutPipelineUI = createPipelineUI(config);
-    if (typeof pi.registerShortcut === "function") {
-      // Phase 2 (182): shortcut registration observability — audit + startup log
-      // so that "registration happened" is a verifiable fact. Combined with the
-      // pipeline_shortcut_opened event, this enables self-diagnosis: if registered
-      // but no opened events fire on keypress, the SDK did not dispatch the key.
-      const shortcutSource = config.decisionShortcutKey ? "config" : "default";
-      await safeWriteAuditLog("pipeline_shortcut_registered", {
-        keyId: shortcutKey,
-        source: shortcutSource,
-        description: "Pipeline decision menu",
-      });
-      console.info(`[pi-pipeline] decision menu shortcut registered: ${shortcutKey} (${shortcutSource})`);
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (pi.registerShortcut as any)(shortcutKey, {
-        description: "Pipeline decision menu",
-        handler: async (ctx: ExtensionContext) => {
-          const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
-          const rawMeta = rctx.session.getMeta();
-          // Phase 2b (173) C3: dormant guard — guidance notify
-          if (!rawMeta || isDormant(rawMeta)) {
-            ctx.ui.notify("No active pipeline. Run /pipeline-start <doc>.");
-            return;
-          }
-          const meta = rawMeta;
-
-          const menu = buildDecisionMenu(meta);
-          if (!menu) {
-            ctx.ui.notify("Pipeline aborted. Use /pipeline-start to begin a new run.");
-            return;
-          }
-
-          // Phase 0 (182): build onStageChanged callback inside the handler scope
-          // so it captures the real rctx (not a stub session). This ensures
-          // dispatchAfterResume writes to the actual activeSpawns ledger.
-          const onStageChangedForShortcut = async (freshMeta: SessionMeta): Promise<void> => {
-            const doc = freshMeta.requirementDoc ?? "";
-            await dispatchAfterResume(
-              { session: rctx.session, ui: rctx.ui, pi: rctx.pi, _ctx: (rctx as any)._ctx },
-              config,
-              shortcutPipelineUI,
-              freshMeta,
-              doc,
-            );
-          };
-
-          await safeWriteAuditLog("pipeline_shortcut_opened", {
-            pipelineId: meta.pipelineId,
-            stage: meta.currentStage,
-          });
-
-          if (typeof ctx.ui?.select === "function") {
-            try {
-              const selection = await ctx.ui.select(
-                "Pipeline decision menu:",
-                menu,
-              );
-              if (selection === undefined) {
-                await safeWriteAuditLog("pipeline_decision_cancelled", {
-                  pipelineId: meta.pipelineId,
-                  stage: meta.currentStage,
-                });
-                return;
-              }
-
-              // Map label back to decision key using shared helper
-              const decision: PipelineDecision | undefined = labelToDecision(selection);
-              if (decision) {
-                // Re-read meta after UI delay to get fresh state
-                const freshMeta = rctx.session.getMeta();
-                if (freshMeta) {
-                  // Phase 3 (173) C9 fix: choose_stage requires secondary menu.
-                  // Route through promptDecisionMenu which handles the stage selection
-                  // internally (including inference chain and targetStage passing).
-                  // Other decisions go through executeDecision directly.
-                  if (decision === "choose_stage") {
-                    // Phase 3 (173) C9 review-r2 fix: bypass first-level menu and
-                    // go directly to the secondary stage list. The user already
-                    // expressed "choose stage" intent via the shortcut; re-prompting
-                    // the full first-level menu would risk silent discard of this
-                    // intent if the user picks a different top-level item.
-                    await promptDecisionMenu(
-                      { session: rctx.session, ui: rctx.ui, _ctx: (rctx as any)._ctx },
-                      freshMeta,
-                      config,
-                      { source: "shortcut", directStageSelect: true, onStageChanged: onStageChangedForShortcut },
-                    );
-                  } else {
-                    // Phase 3 (173) C10④: source tag for audit traceability
-                    await executeDecision(rctx, freshMeta, decision, config, { source: "shortcut" });
-                  }
-                }
-              }
-            } catch (err) {
-              const errMsg = err instanceof Error ? err.message : String(err);
-              await safeWriteAuditLog("pipeline_shortcut_error", {
-                pipelineId: meta.pipelineId,
-                error: errMsg,
-              }, "error");
-            }
-          }
-        },
-      });
-    } else {
-      // Phase 2 (182): SDK does not expose registerShortcut — audit the degradation
-      // so it is observable in post-mortem (not a silent failure).
-      await safeWriteAuditLog("pipeline_shortcut_registered", {
-        keyId: shortcutKey,
-        registered: false,
-        reason: "api_unavailable",
-      });
-    }
   };
 }
 
