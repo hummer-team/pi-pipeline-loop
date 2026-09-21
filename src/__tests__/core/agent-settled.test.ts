@@ -2636,3 +2636,115 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     await rm(TMP5, { recursive: true, force: true });
   });
 });
+
+// ── Phase 0 (186): consumePendingSpawns before source gate + syncStageStatusBar ──
+
+describe("Phase 0 (186): consumePendingSpawns runs before source gate", () => {
+  it("consumePendingSpawns executes even when source gate rejects (non-pipeline turn)", async () => {
+    // Re-initialize audit log to the module-level TMP (prior tests may have redirected it)
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const agentsDir = join(TMP, "agents-186-srcgate");
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, "dev-agent.md"),
+      "---\nname: develop-agent\n---\n# Dev Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "agents-186-srcgate/dev-agent.md",
+          skillPath: "develop/SKILL.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-186-srcgate",
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+
+    const sentMessages: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => { sentMessages.push(msg); } },
+    });
+    // Set a non-pipeline user message so the source gate rejects
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "What is the weather today?" } },
+    ];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Source gate should have rejected (non-pipeline turn)
+    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("agent_settled_non_pipeline_turn");
+
+    // But pendingSpawns should still have been consumed (moved before source gate)
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    // Owner spawned via fallback
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0]).toContain("[plugin auto-handoff]");
+    expect(sentMessages[0]).toContain("develop-agent");
+  });
+});
+
+describe("Phase 0 (186): syncStageStatusBar on every owner settle", () => {
+  it("syncStageStatusBar is called on every owner settle (setStatus invoked with pipeline-stage key)", async () => {
+    // Re-initialize audit log to the module-level TMP (prior tests may have redirected it)
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    // No user messages → fail-open pipeline turn
+    (ctx._ctx.sessionManager as any).getBranch = () => [];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // syncStageStatusBar calls ui.setStage which calls writeStageStatusLast
+    // which calls setStatus(STAGE_STATUS_KEY, undefined) then setStatus(STAGE_STATUS_KEY, message)
+    const pipelineStageCalls = ctx.statusCalls.filter(c => c.key === "pipeline-stage");
+    // At least one setStatus call with "pipeline-stage" key (the move-to-end pattern emits 2 calls)
+    expect(pipelineStageCalls.length).toBeGreaterThanOrEqual(1);
+    // The last call should have a non-undefined text (the actual stage message)
+    const lastCall = pipelineStageCalls[pipelineStageCalls.length - 1];
+    expect(lastCall.text).toBeDefined();
+    expect(lastCall.text).toContain("develop");
+  });
+
+  it("syncStageStatusBar is NOT called on child settle (owner-only)", async () => {
+    // Re-initialize audit log to the module-level TMP (prior tests may have redirected it)
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta, {
+      sessionHeader: { parentSession: "/tmp/parent.jsonl" },
+      sessionFile: "/tmp/child.jsonl",
+    });
+    // No user messages → fail-open pipeline turn
+    (ctx._ctx.sessionManager as any).getBranch = () => [];
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as any);
+
+    // Child session → syncStageStatusBar should NOT be called
+    // (no setStatus calls for pipeline-stage key from syncStageStatusBar)
+    // Note: other pipeline-ui methods may also call setStatus, but syncStageStatusBar
+    // specifically calls setStage which uses writeStageStatusLast.
+    // For a child session, the only setStatus calls would come from stageEntry/transition,
+    // not from syncStageStatusBar. Since there's no stage transition here, there should
+    // be zero setStatus calls for "pipeline-stage" key.
+    const pipelineStageCalls = ctx.statusCalls.filter(c => c.key === "pipeline-stage");
+    expect(pipelineStageCalls.length).toBe(0);
+  });
+});

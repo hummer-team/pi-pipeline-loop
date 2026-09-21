@@ -10,7 +10,7 @@ import { runVerification, precheckCompletionMarker, precheckRequiredFiles, prech
 import type { RunVerificationOptions } from "./auto-verifier";
 import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
-import { createPipelineUI } from "./pipeline-ui";
+import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
 import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry, formatDecisionMenuHint } from "./flow-state";
 import { isDormant } from "./dormancy";
@@ -145,6 +145,44 @@ export function createAgentSettled(
         return;
       }
 
+      // Phase 0 (186): consume pending spawns BEFORE source gate so that
+      // child-routed spawns are dispatched even on non-pipeline turns.
+      try {
+        const { isChild } = detectSessionRole(ctx);
+        if (!isChild && meta.pendingSpawns && Object.keys(meta.pendingSpawns).length > 0) {
+          await consumePendingSpawns(ctx.pi, config, meta, {
+            ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
+            session: ctx.session,
+            runtimeCtx: ctx,
+          });
+        }
+      } catch (err) {
+        // Fail-open: pending-spawn consumption must never block the settle flow
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await writeAuditLog("pending_spawn_consume_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: errMsg,
+        }, "warn");
+      }
+
+      // Phase 0 (186): refresh TUI status bar on every owner settle.
+      // Covers the child-session UI isolation gap (Bug 5).
+      try {
+        const { isChild } = detectSessionRole(ctx);
+        if (!isChild) {
+          syncStageStatusBar(ui, ctx);
+        }
+      } catch (err) {
+        // Fail-open: status bar sync must never block the settle flow
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await writeAuditLog("sync_stage_status_bar_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: errMsg,
+        }, "warn");
+      }
+
       // Phase 2 (172) G2: Pipeline-turn source gate.
       // Pure chat settle (non-pipeline user turn) must NOT trigger verify/wake/counting/freeze.
       // Checks the last user message against known pipeline turn signatures.
@@ -185,29 +223,6 @@ export function createAgentSettled(
         // Fail-open: gate error must not block settle flow
         const errMsg = err instanceof Error ? err.message : String(err);
         await writeAuditLog("agent_settled_gate_error", {
-          pipelineId: meta.pipelineId,
-          stage: meta.currentStage,
-          error: errMsg,
-        }, "warn");
-      }
-
-      // Phase 2 / 177 (D4③/D4④): owner consumes child-routed pending spawns.
-      // Child sessions enqueue `pendingSpawns[stage]` instead of spawning in place;
-      // the owner performs the spawn with its own `pi`. Bounded to one attempt per
-      // stage and coordinated with the 3c duplicate-spawn guard.
-      try {
-        const { isChild } = detectSessionRole(ctx);
-        if (!isChild && meta.pendingSpawns && Object.keys(meta.pendingSpawns).length > 0) {
-          await consumePendingSpawns(ctx.pi, config, meta, {
-            ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
-            session: ctx.session,
-            runtimeCtx: ctx,
-          });
-        }
-      } catch (err) {
-        // Fail-open: pending-spawn consumption must never block the settle flow
-        const errMsg = err instanceof Error ? err.message : String(err);
-        await writeAuditLog("pending_spawn_consume_error", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
           error: errMsg,
