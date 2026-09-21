@@ -1125,6 +1125,136 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  // ─── 187: stage-consistency guard ──────────────────────────────────────────
+
+  it("187: stale pending entry (stage !== currentStage, requestedAt < stageStartTime) → cleared with audit, not spawned", async () => {
+    __resetSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    // Pipeline is now at "review" with a new stageStartTime.
+    // The pending spawn for "develop" was created BEFORE this stage visit → stale.
+    const stageStartTime = Date.now();
+    const staleRequestedAt = stageStartTime - 60_000; // 60s before current visit
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-stale-guard",
+      stageStartTime,
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: staleRequestedAt, attempts: 0 } },
+    });
+    const bus = createMockEventBus();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // Stale entry must NOT be consumed (no spawn)
+    expect(consumed).toEqual([]);
+    // Pending entry must be cleared
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    // No spawn attempt
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+    // Audit log must contain the discard event
+    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditContent = fs.readFileSync(auditPath, "utf-8");
+    expect(auditContent).toContain("pending_spawn_discarded");
+    expect(auditContent).toContain("stale_stage_mismatch");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("187: matching pending entry (stage === currentStage) → consumed normally (regression)", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-match-regression",
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-match" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // Matching entry must be consumed normally
+    expect(consumed).toEqual(["develop"]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("187: mixed entries → matching consumed, stale cleared with audit", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    // Pipeline is at "develop" with a new stageStartTime.
+    // "develop" entry was created during this visit → will be consumed.
+    // "review" entry was created BEFORE this visit → stale, will be cleared.
+    const stageStartTime = Date.now();
+    const staleRequestedAt = stageStartTime - 60_000;
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-mixed-guard",
+      stageStartTime,
+      pendingSpawns: {
+        develop: { agentName: "develop-agent", requestedAt: stageStartTime, attempts: 0 },
+        review: { agentName: "review-agent", requestedAt: staleRequestedAt, attempts: 0 },
+      },
+    });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-mixed" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // Only the matching "develop" entry should be consumed
+    expect(consumed).toEqual(["develop"]);
+    // Both entries must be cleared
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(meta.pendingSpawns?.review).toBeUndefined();
+    // Audit must record the stale "review" discard
+    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditContent = fs.readFileSync(auditPath, "utf-8");
+    expect(auditContent).toContain("pending_spawn_discarded");
+    expect(auditContent).toContain("stale_stage_mismatch");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 });
 
 describe("Phase 2 / 177 (D4): spawn audit sessionFile", () => {

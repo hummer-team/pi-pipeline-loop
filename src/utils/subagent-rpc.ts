@@ -785,6 +785,25 @@ export async function consumePendingSpawns(
     const fresh = opts.session.getMeta();
     if (!fresh?.pendingSpawns?.[stage]) continue;
 
+    // 187: stage-consistency guard — clean stale entries from prior pipeline runs.
+    // A pending entry whose stage does not match the current pipeline stage AND
+    // was created before the current stage visit (requestedAt < stageStartTime)
+    // is residue from a previous run (e.g. restart did not clear pendingSpawns).
+    // Entries created during the current visit (deferred spawns) are NOT stale.
+    // Drop stale entries with an audit record instead of spawning cross-stage.
+    const currentStage = fresh.currentStage;
+    if (stage !== currentStage && entry.requestedAt < (fresh.stageStartTime ?? 0)) {
+      clearPendingSpawn(opts.session, stage);
+      await safeWriteAuditLog("pending_spawn_discarded", {
+        stage,
+        currentStage,
+        agentName: entry.agentName,
+        reason: "stale_stage_mismatch",
+        requestedAt: String(entry.requestedAt),
+      });
+      continue;
+    }
+
     // Already spawned for this visit → nothing to do; drop the pending entry.
     if (fresh.spawnedStages?.[stage] === fresh.stageStartTime) {
       clearPendingSpawn(opts.session, stage);
