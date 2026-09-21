@@ -593,6 +593,10 @@ export function generateVerifyMdContent(items: DeliveryItem[], stage: string): s
   if (gitItems.length > 0) {
     yaml += "  requiredGit:\n";
     yaml += `    lastCommitWithin: "10min"\n`;
+    // Phase 0 (186): develop and fix stages require clean working tree
+    if (stage === "develop" || stage === "fix") {
+      yaml += `    cleanWorkingTree: true\n`;
+    }
   }
 
   if (requiredKeywords.length > 0) {

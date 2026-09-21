@@ -1733,3 +1733,46 @@ describe("verify-generator", () => {
     });
   });
 });
+
+// ── Phase 0 (186): requiredGit.cleanWorkingTree in develop/fix templates ─────
+
+describe("Phase 0 (186): requiredGit.cleanWorkingTree in develop/fix verify templates", () => {
+  it("develop verify.md template includes requiredGit with cleanWorkingTree: true", async () => {
+    const content = await fs.readFile(
+      path.join(__dirname, "../../template/references/develop_spec/verify.md"),
+      "utf-8",
+    );
+    expect(content).toContain("requiredGit");
+    expect(content).toContain("cleanWorkingTree: true");
+  });
+
+  it("fix verify.md template includes requiredGit with cleanWorkingTree: true", async () => {
+    const content = await fs.readFile(
+      path.join(__dirname, "../../template/references/fix_spec/verify.md"),
+      "utf-8",
+    );
+    expect(content).toContain("requiredGit");
+    expect(content).toContain("cleanWorkingTree: true");
+  });
+
+  it("generateVerifyMdContent includes cleanWorkingTree for develop stage with git items", () => {
+    const items = [{ type: "git" as const, target: "commit" }];
+    const content = generateVerifyMdContent(items, "develop");
+    expect(content).toContain("requiredGit");
+    expect(content).toContain("cleanWorkingTree: true");
+  });
+
+  it("generateVerifyMdContent includes cleanWorkingTree for fix stage with git items", () => {
+    const items = [{ type: "git" as const, target: "commit" }];
+    const content = generateVerifyMdContent(items, "fix");
+    expect(content).toContain("requiredGit");
+    expect(content).toContain("cleanWorkingTree: true");
+  });
+
+  it("generateVerifyMdContent does NOT include cleanWorkingTree for other stages", () => {
+    const items = [{ type: "git" as const, target: "commit" }];
+    const content = generateVerifyMdContent(items, "review");
+    expect(content).toContain("requiredGit");
+    expect(content).not.toContain("cleanWorkingTree");
+  });
+});

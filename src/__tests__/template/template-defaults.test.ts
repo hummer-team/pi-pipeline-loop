@@ -318,7 +318,19 @@ describe("Phase 3 / 176: template engine smoke", () => {
   async function runTemplate(stage: string, pipelineId: string, requirementDoc?: string) {
     const rules = await loadTemplateRules(stage);
     const resolved = resolvePlaceholders(rules, makeTestMeta({ pipelineId, requirementDoc }));
-    return evaluateGroups(resolved, smokeTmp, []);
+    // Phase 0 (186): mock git commands for stages with requiredGit rules (develop/fix).
+    // Returns clean working tree and a recent commit to pass cleanWorkingTree + lastCommitWithin checks.
+    const mockExecFn = async (cmd: string, opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+      if (cmd.includes("git status --porcelain")) {
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (cmd.includes("git log")) {
+        const now = new Date().toISOString();
+        return { stdout: now, stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "not a git command mock", exitCode: 1 };
+    };
+    return evaluateGroups(resolved, smokeTmp, [], { execFn: mockExecFn as any });
   }
 
   async function writeDoc(rel: string, content: string): Promise<void> {

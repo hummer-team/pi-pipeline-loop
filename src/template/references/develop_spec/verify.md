@@ -10,5 +10,7 @@ rules:
           patterns: ["^\\*\\*plan doc\\*\\*:"]
         - type: fileContentPattern
           patterns: ["^\\*\\*pipeline\\*\\*:\\s*{pipelineId}$"]
+        - type: requiredGit
+          cleanWorkingTree: true
 ---
-验证 develop 已产出提交记录文档（docs/design/*_commit.md），且引用了 plan doc 和当前 pipelineId。
+验证 develop 已产出提交记录文档（docs/design/*_commit.md），且引用了 plan doc 和当前 pipelineId。工作树必须干净（所有变更已提交）。
