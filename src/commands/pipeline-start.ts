@@ -320,7 +320,7 @@ function buildRestartMeta(
  * @param requirementDoc - The requirement doc path
  * @param startStage - Starting stage (default "clarify")
  */
-function buildStartMeta(
+export function buildStartMeta(
   meta: SessionMeta | undefined,
   config: PipelineConfig,
   requirementDoc: string,
@@ -374,6 +374,9 @@ function buildStartMeta(
     spawnedStages: undefined,
     // Phase 4 (171) High A: clear activeSpawns on new pipeline start
     activeSpawns: undefined,
+    // 187: clear pendingSpawns on new pipeline start — no stale deferred spawns
+    // should survive from a prior run into the fresh pipeline.
+    pendingSpawns: {},
   };
   return { pipelineId, newMeta };
 }
@@ -479,6 +482,9 @@ export function buildResumeMeta(
     // Phase 4 (171) High A: clear activeSpawns on resume so stale spawn records
     // from the previous run do not cause false-positive duplicate-spawn blocks.
     activeSpawns: undefined,
+    // 187: clear pendingSpawns on resume — stale deferred spawns from the prior
+    // run must not survive into the resumed pipeline (double-insurance with Phase 3 guard).
+    pendingSpawns: {},
 
     // Cleared terminal / blocked state
     blockedReason: undefined,

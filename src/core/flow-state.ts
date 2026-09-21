@@ -357,6 +357,11 @@ export async function executeDecision(
         terminalCompact: undefined,
         // Phase 1 (180): restart starts a fresh pipeline — clear the deferral stamp.
         confirmGateDeferredAt: undefined,
+        // 187: clear spawn residue on restart — pendingSpawns from the prior run
+        // must not survive into the new pipeline (double-insurance with Phase 3 guard).
+        pendingSpawns: {},
+        spawnedStages: undefined,
+        activeSpawns: undefined,
         // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
 

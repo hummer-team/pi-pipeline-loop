@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { createPipelineStartCommand } from "../../commands/pipeline-start";
+import { createPipelineStartCommand, buildStartMeta, buildResumeMeta } from "../../commands/pipeline-start";
 import { makeTestConfig, createMockCtx, createMockRuntimeCtx, makeTestMeta, finalStatusText } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 
@@ -2050,5 +2050,28 @@ describe("createPipelineStartCommand", () => {
       expect(sentMessages).toHaveLength(1);
       expect(sentMessages[0]).toBe("@clarify-agent req.md 1");
     });
+  });
+});
+
+// ─── 187: pendingSpawns cleanup at lifecycle entry points ────────────────────
+
+describe("187: pendingSpawns cleanup at lifecycle entry points", () => {
+  it("buildStartMeta returns pendingSpawns: {}", () => {
+    const config = makeTestConfig();
+    const existingMeta = makeTestMeta({
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+    const { newMeta } = buildStartMeta(existingMeta, config, "req.md");
+    expect(newMeta.pendingSpawns).toEqual({});
+  });
+
+  it("buildResumeMeta returns pendingSpawns: {}", () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pendingSpawns: { review: { agentName: "review-agent", requestedAt: Date.now(), attempts: 0 } },
+    });
+    const newMeta = buildResumeMeta(meta, config);
+    expect(newMeta.pendingSpawns).toEqual({});
   });
 });

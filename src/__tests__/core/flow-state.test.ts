@@ -258,6 +258,24 @@ describe("executeDecision", () => {
     expect(lastUpdate.summaries).toEqual({});
   });
 
+  it("187: restart clears pendingSpawns, spawnedStages, and activeSpawns", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      requirementDoc: "req.md",
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
+      spawnedStages: { develop: Date.now() },
+      activeSpawns: { develop: { agentName: "develop-agent", agentId: "sa-1", startedAt: Date.now() } },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "restart", config);
+
+    const lastUpdate = ctx.updates[ctx.updates.length - 1];
+    expect(lastUpdate.pendingSpawns).toEqual({});
+    expect(lastUpdate.spawnedStages).toBeUndefined();
+    expect(lastUpdate.activeSpawns).toBeUndefined();
+  });
+
   it("abort: sets flowState=aborted with terminateReason", async () => {
     const meta = makeTestMeta({ flowState: "running" });
     const ctx = makeCtx(meta);
