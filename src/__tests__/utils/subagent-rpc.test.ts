@@ -8,6 +8,7 @@ import {
   spawnStageSubagent,
   spawnClarifyStageSubagent,
   consumePendingSpawns,
+  clearAllPendingSpawns,
   __setDeferredSpawnPollMs,
   __resetDeferredSpawnPollMs,
   __resetActiveDeferredSpawns,
@@ -1702,5 +1703,47 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     expect(meta.pendingSpawns?.develop).toBeUndefined();
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// ── Phase 0 (186): clearAllPendingSpawns helper ──────────────────────────────
+
+describe("Phase 0 (186): clearAllPendingSpawns", () => {
+  it("clears all pendingSpawns when populated", () => {
+    const meta: Record<string, unknown> = {
+      pendingSpawns: {
+        develop: { agentName: "dev-agent", requestedAt: Date.now(), attempts: 0 },
+        review: { agentName: "review-agent", requestedAt: Date.now(), attempts: 0 },
+      },
+    };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    clearAllPendingSpawns(session as any);
+
+    expect(meta.pendingSpawns).toEqual({});
+  });
+
+  it("no-op when pendingSpawns is empty or undefined", () => {
+    // Empty object
+    const meta1 = { pendingSpawns: {} };
+    let updateCalled = false;
+    const session1 = {
+      getMeta: () => meta1,
+      updateMeta: (_patch: Record<string, unknown>) => { updateCalled = true; return meta1; },
+    };
+    clearAllPendingSpawns(session1 as any);
+    expect(updateCalled).toBe(false);
+
+    // Undefined pendingSpawns
+    const meta2 = {};
+    const session2 = {
+      getMeta: () => meta2,
+      updateMeta: (_patch: Record<string, unknown>) => { updateCalled = true; return meta2; },
+    };
+    clearAllPendingSpawns(session2 as any);
+    expect(updateCalled).toBe(false);
   });
 });

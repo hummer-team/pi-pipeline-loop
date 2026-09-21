@@ -1029,7 +1029,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     expect(logContent).toContain("chain_terminal_wake");
   });
 
-  it("unconsumed pendingSpawns → chain not terminated, no wake", async () => {
+  it("Phase 0 (186): pendingSpawns cleared on completed advance → chain_terminal_wake fires (Bug 6 fix)", async () => {
     const config = makeTestConfig({ projectRoot: TMP });
     const meta = makeTestMeta({
       currentStage: "review",
@@ -1045,9 +1045,12 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
       config, ctx as any, meta, "review", "completed", PASS_RESULT, ctx.pipelineUI,
     );
 
-    expect(wakeCalls.length).toBe(0);
+    // Phase 0 (186): pendingSpawns cleared on completed advance → wake fires
+    expect(wakeCalls.length).toBe(1);
+    expect(wakeCalls[0]).toContain("terminal");
+    expect(meta.pendingSpawns).toEqual({});
     const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-    expect(logContent).toContain("chain_terminal_wake_skipped");
+    expect(logContent).toContain("chain_terminal_wake");
   });
 
   it("pi unavailable → skipped audit, no throw", async () => {
@@ -1103,5 +1106,55 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("chain_terminal_wake");
     expect(logContent).toContain("pendingActions");
+  });
+});
+
+// ── Phase 0 (186): applyVerifyPass clears pendingSpawns on terminal states ──
+
+describe("Phase 0 (186): applyVerifyPass clears pendingSpawns on terminal states", () => {
+  it("nextStage='completed' clears all pendingSpawns", async () => {
+    const meta = makeTestMeta({
+      currentStage: "awaiting_human",
+      pendingSpawns: {
+        develop: { agentName: "dev-agent", requestedAt: Date.now(), attempts: 0 },
+      },
+    });
+    const ctx = createCtx(meta);
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "awaiting_human",
+      "completed",
+      { ruleMissing: [], verifyResult: null },
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
+    );
+
+    // Stage should have advanced to completed
+    expect(meta.currentStage).toBe("completed");
+    // pendingSpawns should be cleared
+    expect(meta.pendingSpawns).toEqual({});
+  });
+
+  it("nextStage=null (terminal) clears all pendingSpawns", async () => {
+    const meta = makeTestMeta({
+      currentStage: "completed",
+      pendingSpawns: {
+        review: { agentName: "review-agent", requestedAt: Date.now(), attempts: 0 },
+      },
+    });
+    const ctx = createCtx(meta);
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "completed",
+      null,
+      { ruleMissing: [], verifyResult: null },
+      { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
+    );
+
+    // pendingSpawns should be cleared
+    expect(meta.pendingSpawns).toEqual({});
   });
 });

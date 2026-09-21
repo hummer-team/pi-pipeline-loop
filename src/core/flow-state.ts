@@ -656,6 +656,7 @@ export async function markPipelineAborted(
   ctx.session.updateMeta({
     flowState: "aborted",
     terminateReason: reason,
+    pendingSpawns: {},
   });
 
   // Enriched audit with full frozen-transition fields (C14-C15)

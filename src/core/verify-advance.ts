@@ -14,7 +14,7 @@ import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 import { recordStageVisit } from "../utils/stage-visit";
-import { spawnStageSubagent } from "../utils/subagent-rpc";
+import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 
@@ -177,6 +177,12 @@ export async function applyVerifyPass(
       reviewConclusionDeclared: undefined, // Clear 163 declaration flag on stage transition
     });
 
+    // Phase 0 (186): clear all pendingSpawns when advancing to terminal completed stage.
+    // Prevents stale pendingSpawns from blocking wakeOwnerOnChainTerminal.
+    if (nextStage === "completed") {
+      clearAllPendingSpawns(ctx.session);
+    }
+
     // M1 fix: skip auto_verify_pass audit when called from the "skipped" path
     // (config-error skip treated as pass — should NOT write auto_verify_pass)
     if (!opts.skipPassAudit) {
@@ -203,6 +209,10 @@ export async function applyVerifyPass(
   }
 
   // Terminal stage (no next stage)
+  // Phase 0 (186): clear all pendingSpawns on terminal state to prevent stale
+  // entries from blocking wakeOwnerOnChainTerminal.
+  clearAllPendingSpawns(ctx.session);
+
   // M1 fix: skip auto_verify_pass audit when called from the "skipped" path
   if (!opts.skipPassAudit) {
     await writeAuditLog("auto_verify_pass", {

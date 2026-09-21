@@ -1131,3 +1131,24 @@ describe("Phase 6 (182): frozen@fix secondary menu filtering", () => {
     expect(capturedItems).toContain("completed");
   });
 });
+
+// ── Phase 0 (186): markPipelineAborted clears pendingSpawns ──────────────────
+
+describe("Phase 0 (186): markPipelineAborted clears pendingSpawns", () => {
+  it("aborted pipeline clears all pendingSpawns entries", async () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pendingSpawns: {
+        review: { agentName: "review-agent", requestedAt: Date.now(), attempts: 0 },
+      },
+    });
+    const ctx = makeCtx(meta);
+
+    await markPipelineAborted(ctx as any, "user_quit");
+
+    // pendingSpawns should be cleared
+    expect(meta.pendingSpawns).toEqual({});
+    // flowState should be aborted
+    expect(meta.flowState).toBe("aborted");
+  });
+});

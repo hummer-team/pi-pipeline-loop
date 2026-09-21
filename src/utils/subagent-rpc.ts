@@ -741,6 +741,19 @@ export function clearPendingSpawn(session: SpawnSession, stage: PipelineStage): 
 }
 
 /**
+ * Phase 0 (186): Clears ALL pendingSpawns entries at once.
+ * Used on terminal states (completed / aborted) to prevent stale entries
+ * from blocking wakeOwnerOnChainTerminal.
+ *
+ * @param session - Session handle exposing meta read/write
+ */
+export function clearAllPendingSpawns(session: SpawnSession): void {
+  const meta = session.getMeta();
+  if (!meta?.pendingSpawns || Object.keys(meta.pendingSpawns).length === 0) return;
+  session.updateMeta({ pendingSpawns: {} });
+}
+
+/**
  * Phase 2 / 177 (D4③/D4④): Consumes owner-routed pending spawns.
  *
  * For each pending stage the owner spawns via its own `pi`. Bounded/idempotent:
