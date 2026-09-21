@@ -39,3 +39,22 @@ Requirement Doc → design-und → full-und? → design-plan → develop → cod
 - Do NOT modify core project config files which break project structure.
 - No complimentary opening or closing remarks.
 - Do NOT cater to user opinions; reason and validate based on project facts.
+
+## PIPELINE AUTOMATION RULES
+The pipeline plugin handles the following automatically. Do NOT duplicate or interfere with these operations:
+
+| Operation | Owner | Trigger |
+|-----------|-------|---------|
+| Stage verification (verify.md rules) | Plugin (agent_settled hook) | After agent settles |
+| Stage advance (currentStage transition) | Plugin (auto-advance after verify pass) | Verify pass + confirm gate |
+| Stage executor spawn (subagent dispatch) | Plugin (spawnStageSubagent) | After stage advance |
+| TUI status bar update | Plugin (syncStageStatusBar) | Every owner settle |
+| Pipeline freeze (verify overflow / violation breaker) | Plugin (freezeAndPrompt) | Threshold exceeded |
+| Git clean check (develop/fix) | Plugin (requiredGit.cleanWorkingTree) | During verify |
+
+**Model responsibilities** (you MUST do these):
+1. Call `stage_advance` tool to declare stage completion (especially `reviewConclusion` for review stage)
+2. Run `git add && git commit` before stage completion in develop/fix stages
+3. Call `generate_stage_summary` with `commitIds` parameter after committing
+4. Follow SKILL output format requirements strictly
+5. Do NOT call stage_advance for stages that auto-advance via verify pass

@@ -38,3 +38,22 @@
 - 不得修改项目核心配置文件（破坏项目结构）
 - 不要有奉承的开场白或者结束语
 - 不得迎合用户的观点，而是基于项目事实思考证明
+
+## 流水线自动化规则
+以下操作由流水线插件自动处理，请勿重复或干扰：
+
+| 操作 | 责任方 | 触发时机 |
+|------|--------|----------|
+| 阶段验证（verify.md 规则） | 插件（agent_settled hook） | Agent 稳定后 |
+| 阶段推进（currentStage 切换） | 插件（验证通过后自动推进） | 验证通过 + 确认门 |
+| 阶段执行器生成（子代理调度） | 插件（spawnStageSubagent） | 阶段推进后 |
+| TUI 状态栏更新 | 插件（syncStageStatusBar） | 每次 owner settle |
+| 流水线冻结（验证溢出 / 违规断路器） | 插件（freezeAndPrompt） | 阈值超出 |
+| Git 干净检查（develop/fix） | 插件（requiredGit.cleanWorkingTree） | 验证期间 |
+
+**模型职责**（你必须做这些）：
+1. 调用 `stage_advance` 工具声明阶段完成（尤其是 review 阶段的 `reviewConclusion`）
+2. 在 develop/fix 阶段完成前运行 `git add && git commit`
+3. 提交后调用 `generate_stage_summary` 并传入 `commitIds` 参数
+4. 严格遵循 SKILL 输出格式要求
+5. 不要对通过验证自动推进的阶段调用 `stage_advance`

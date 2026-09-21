@@ -509,3 +509,28 @@ describe("Phase 4 (184_Bug): template piWorkDir declaration", () => {
     expect(content.domainDir).toBeUndefined();
   });
 });
+
+// ── Phase 0 (186): PIPELINE AUTOMATION RULES section in sop.md ──────────────
+
+describe("Phase 0 (186): PIPELINE AUTOMATION RULES in sop.md template", () => {
+  const SOP_PATH = path.join(__dirname, "../../template/references/sop.md");
+  const SOP_CN_PATH = path.join(__dirname, "../../template/references/sop_CN.md");
+
+  it("sop.md template contains PIPELINE AUTOMATION RULES section", () => {
+    const content = fs.readFileSync(SOP_PATH, "utf-8");
+    expect(content).toContain("PIPELINE AUTOMATION RULES");
+    expect(content).toContain("agent_settled hook");
+    expect(content).toContain("syncStageStatusBar");
+    expect(content).toContain("cleanWorkingTree");
+    expect(content).toContain("stage_advance");
+  });
+
+  it("sop_CN.md template contains pipeline automation rules section in Chinese", () => {
+    const content = fs.readFileSync(SOP_CN_PATH, "utf-8");
+    expect(content).toContain("流水线自动化规则");
+    expect(content).toContain("agent_settled hook");
+    expect(content).toContain("syncStageStatusBar");
+    expect(content).toContain("cleanWorkingTree");
+    expect(content).toContain("stage_advance");
+  });
+});
