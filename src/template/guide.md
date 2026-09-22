@@ -167,7 +167,6 @@ bun add @earendil-works/pi-pipeline
     "allow": ["docs/design/", "src/template/"],  // 仅放开编辑；git add/commit 仍拦截
     "gitModify": "allow"             // 全局 git 写策略（三级链第 2 级；矩阵默认：develop/fix=allow, 其余=block）
   },
-  "decisionShortcutKey": "ctrl+enter",  // TUI 中决策确认快捷键（默认 ctrl+enter；须避开 pi 内建键、全小写 ctrl+…、改键后重启 pi — 见 §13.3.1）
   "spawnWaitTimeoutMs": 120000,         // 子代理等待超时（默认 120000ms）：同名子未 settle 时新阶段 spawn 与确认弹窗后置的安全网；非法值告警并回落默认
   // ── 阶段配置 ──
   "stages": {
@@ -676,11 +675,10 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `pipeline_handoff_deferred` | handoff 工具因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, reason |
 | `duplicate_spawn_suspect` | 带外 spawn（`spawnTrigger=manual_or_external`）且当前 stage 已有 probe-live 的 spawn 记录（仅提示不阻断） | stage, existingAgentId, joiningSessionFile |
 
-**Phase 0-6 / 182 新增审计事件**（6 项缺陷修复引入）：
+**Phase 0-6 / 182 新增审计事件**（5 项缺陷修复引入）：
 
 | 事件 | 触发时机 | 关键字段 |
 |------|---------|---------|
-| `pipeline_shortcut_registered` | 快捷键注册成功或 SDK API 不可用降级 | keyId, source (config/default), registered, reason |
 | `advance_deferred_stage_agent_live` | owner settle 触发 auto-advance 前检测到 stage executor 仍 live（账本或 name-probe 证据） | stage, expectedAgent, basis, agentId |
 | `stage_advance_failed.reason=fix_terminal_blocked` | fix 阶段尝试直接推进至 completed/awaiting_human，被硬守卫拦截 | fromStage, target |
 | `spawn_suppressed.basis=manual_live_probe` | 模型 spawn 调用被抑制，因同名 agent 在 manager 注册表中 live（带外/manual 来源） | stage, agentId, evidenceStage |
@@ -1256,7 +1254,6 @@ rmdir .pi/agents/clarify .pi/agents/develop .pi/agents/review .pi/agents/fix
 | Hooks | 6 | session-starter, prompt-injector, tool-guard, loop-breaker, agent-settled, session-shutdown |
 | Tools | 6+1 | pipeline-state, loop-checker, stage-advancer, generate-summary, validate-summary, pipeline-handoff + pipeline-verify（条件注册） |
 | Commands | 5 | pipeline-start, pipeline-quit, pipeline-resume, pipeline-status, pipeline-init |
-| Shortcut | 1 | 决策菜单（默认 ctrl+enter） |
 | 事件监听 | 1 | model_select（只读记录） |
 
 ### 11.2 数据流
@@ -1335,12 +1332,11 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 **frozen-at-fix 特殊过滤**：当 pipeline 冻结在 fix 阶段时，二级菜单（Choose stage…）不含 `completed` 终态项。fix 必须先经过 review 才能进入终态（Phase 6 / 182 G5 强约束：进入 fix 必经 review）。`awaiting_human` 原本就不在二级菜单列表中。
 
-### 13.3 五入口 + 快捷键
+### 13.3 四入口
 
 | 入口 | 触发方式 | 说明 |
 |---|---|---|
 | 自动弹出 | 熔断触发 | freezeAndPrompt 直接弹 |
-| 快捷键 | ctrl+enter（可配置） | index.ts shortcut |
 | 重放 | session_start (Phase 3/173) | frozen 流 reload/startup 时重放 |
 | /pipeline-start | 命令 | blocked 态就地弹菜单 |
 | /pipeline-resume (Phase 1/182) | 命令 | frozen 态弹六项一级决策菜单；`--force-resume` 保留旧直解冻语义（逃生开关） |
@@ -1353,19 +1349,6 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 - 菜单 cancelled / interrupted → 保持冻结状态，返回冻结提示（不静默解冻）
 - 菜单 decided + choose_stage → 状态栏即时同步 + 自动派发 stage executor（Phase 0 善后）
 - awaiting_human 的 "Resume" 特例行为不变（回跳 previousStage，173-C9 语义）
-
-#### 13.3.2 快捷键护栏（Phase 4 / 179，G9）
-
-配置 `decisionShortcutKey` 时遵守三条护栏，否则「按快捷键重开决策菜单」这条确认门兜底会静默失效：
-
-1. **避开 pi 内建键**：
-   - 撞 **reserved 内建键**（`app.interrupt` / `app.clear` / `app.exit` / `app.suspend` / `app.model.*` / `app.tools.expand` / `app.thinking.*` / `app.editor.external` / `app.message.copy` / `app.message.followUp` / `tui.input.submit` / `tui.select.confirm` / `tui.select.cancel` / `tui.input.copy` / `tui.editor.deleteToLineEnd` 等，见 pi `extensions/runner.js` reserved 名单）→ 启动告警 `conflicts with built-in shortcut. Skipping`，插件快捷键被**直接丢弃**。
-   - 撞 **非 reserved 内建键**（如 `ctrl+r` = `app.session.rename`）→ 启动告警 `'X' is built-in shortcut for … Using <ext>`，插件键**胜出**、内建被遮蔽。
-   - 推荐无冲突键：`ctrl+shift+u`（pi 0.85.1 内建表与 reserved 名单均未占用；终端是否区分 `ctrl+shift+<字母>` 取决于 kitty 协议，需实测）。
-2. **书写规范**：全小写；修饰符仅 `ctrl`/`shift`/`alt`/`super`。`control` 拼写与大写字母会被插件拒绝并**静默回落**默认 `ctrl+enter`（`control` 即便放行也会被 pi 解析为丢失 ctrl 位而错绑）。
-3. **改键必须整进程重启 pi**：`registerShortcut` 仅在扩展加载期执行一次；运行期配置热重载不重挂快捷键，未重启则旧键继续生效（并可能残留旧冲突告警）。
-
-**冲突告警三形态速查**：`Skipping` = 撞 reserved（插件键失效）；`Using <ext>` = 撞非 reserved（插件胜出）；`'X' registered by both A and B` = 双实例自撞（与键值无关，检查是否重复加载同一扩展）。
 
 ---
 
@@ -1385,7 +1368,6 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 | session_shutdown | 身份审计 + 清 timer |
 | 7 tools | 引导语 |
 | commands | status 输出"无活跃管道" |
-| shortcut | 引导 notify |
 
 ### 14.2 事件表
 
@@ -1427,8 +1409,6 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 ```
                     ┌─ 自动弹出（熔断触发）
-                    │
-                    ├─ 快捷键（ctrl+enter）
                     │
 frozen pipeline ────┼─ 重放（session_start reload/startup）
                     │
