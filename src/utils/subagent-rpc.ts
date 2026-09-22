@@ -772,6 +772,7 @@ export async function consumePendingSpawns(
   config: PipelineConfig,
   meta: SessionMeta,
   opts: { ui?: { notify: (msg: string) => void }; session: SpawnSession; runtimeCtx?: unknown },
+  skipStageGuard = false,
 ): Promise<PipelineStage[]> {
   const pending = meta.pendingSpawns;
   if (!pending) return [];
@@ -785,14 +786,20 @@ export async function consumePendingSpawns(
     const fresh = opts.session.getMeta();
     if (!fresh?.pendingSpawns?.[stage]) continue;
 
-    // 187: stage-consistency guard — clean stale entries from prior pipeline runs.
-    // A pending entry whose stage does not match the current pipeline stage AND
-    // was created before the current stage visit (requestedAt < stageStartTime)
-    // is residue from a previous run (e.g. restart did not clear pendingSpawns).
-    // Entries created during the current visit (deferred spawns) are NOT stale.
-    // Drop stale entries with an audit record instead of spawning cross-stage.
+    // 187: stage-consistency guard — discard any pending entry whose stage does not
+    // match the current pipeline stage. This is the direct-cause fix for the
+    // multi-agent spawn bug (Q3 decision: 方案 B — "consume-time stage must match").
+    // Phase 4 lifecycle cleanup handles cross-run residue at pipeline entry points
+    // (buildStartMeta / buildResumeMeta / executeDecision); this guard catches
+    // same-run stage jumps (e.g. choose_stage skipped the pending entry's stage).
     const currentStage = fresh.currentStage;
-    if (stage !== currentStage && entry.requestedAt < (fresh.stageStartTime ?? 0)) {
+    // skipStageGuard: set by the deferred-spawn dequeue path (tryDequeue) where the
+    // caller has already validated the entry (pending entry exists, old child settled).
+    // In that path currentStage may still differ from the pending entry's stage because
+    // the stage transition has not yet occurred — the guard would incorrectly discard
+    // a legitimate deferred spawn. All other callers (agent-settled consume) must keep
+    // the guard to discard stale cross-run / cross-stage residue (187_Bug.md Q3 方案 B).
+    if (!skipStageGuard && stage !== currentStage) {
       clearPendingSpawn(opts.session, stage);
       await safeWriteAuditLog("pending_spawn_discarded", {
         stage,
@@ -1043,11 +1050,16 @@ function scheduleDeferredSpawn(
     // Old child still live → keep waiting (poll/timeout retry).
     if (evidence.agentId && probeAgentState(evidence.agentId) === "live") return;
     finalize();
+    // Dequeue the specific deferred entry. Skip the stage-consistency guard
+    // (187) because currentStage may still differ from the pending entry's
+    // stage at this point — the stage transition has not yet occurred. The
+    // deferred path has its own validity checks (entry exists, old child
+    // settled), so the guard would incorrectly discard a legitimate entry.
     await consumePendingSpawns(pi, config, fresh, {
       ui: opts.ui,
       session,
       runtimeCtx: opts.runtimeCtx,
-    });
+    }, true /* skipStageGuard */);
   };
 
   if (evidence.agentId) {

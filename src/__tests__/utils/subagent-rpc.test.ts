@@ -1128,12 +1128,12 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
 
   // ─── 187: stage-consistency guard ──────────────────────────────────────────
 
-  it("187: stale pending entry (stage !== currentStage, requestedAt < stageStartTime) → cleared with audit, not spawned", async () => {
+  it("187: pending entry stage !== currentStage → cleared with audit, not spawned (pure stage mismatch)", async () => {
     __resetSubagentsReady();
     const { config, tmpDir } = makeDevelopConfig();
     await initAuditLog(config);
-    // Pipeline is now at "review" with a new stageStartTime.
-    // The pending spawn for "develop" was created BEFORE this stage visit → stale.
+    // Pipeline is now at "review". The pending spawn for "develop" was created
+    // BEFORE this stage visit — classic cross-run residue scenario.
     const stageStartTime = Date.now();
     const staleRequestedAt = stageStartTime - 60_000; // 60s before current visit
     const meta = makeTestMeta({
@@ -1161,6 +1161,48 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     // No spawn attempt
     expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
     // Audit log must contain the discard event
+    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditContent = fs.readFileSync(auditPath, "utf-8");
+    expect(auditContent).toContain("pending_spawn_discarded");
+    expect(auditContent).toContain("stale_stage_mismatch");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("187: pending entry stage !== currentStage (requestedAt >= stageStartTime) → still cleared with audit (pure stage mismatch wins)", async () => {
+    // When stage !== currentStage the guard fires regardless of requestedAt — even if
+    // requestedAt >= stageStartTime (entry created during the current stage visit). This
+    // locks the plan semantics: the only condition is stage mismatch (187_Bug.md Q3
+    // decision: 方案 B — "consume-time stage must match"). Phase 4 lifecycle cleanup
+    // prevents same-run residue at pipeline entry points.
+    __resetSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    const stageStartTime = Date.now();
+    // requestedAt is AFTER stageStartTime — entry created during the current stage visit.
+    const recentRequestedAt = stageStartTime + 5_000;
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-same-run-deferred",
+      stageStartTime,
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: recentRequestedAt, attempts: 0 } },
+    });
+    const bus = createMockEventBus();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // Guard fires purely on stage mismatch — entry cleared, not consumed, audit written
+    expect(consumed).toEqual([]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
     const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
@@ -1248,6 +1290,45 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     expect(meta.pendingSpawns?.develop).toBeUndefined();
     expect(meta.pendingSpawns?.review).toBeUndefined();
     // Audit must record the stale "review" discard
+    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditContent = fs.readFileSync(auditPath, "utf-8");
+    expect(auditContent).toContain("pending_spawn_discarded");
+    expect(auditContent).toContain("stale_stage_mismatch");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("187: stage !== currentStage but stageStartTime absent → guard still fires, entry cleared with audit", async () => {
+    // The guard condition is pure `stage !== currentStage` — it does not depend on
+    // stageStartTime being defined. This locks the plan semantics and prevents the
+    // guard from being silently disabled when stageStartTime is missing (which was
+    // the bug introduced by the weaker `requestedAt < (stageStartTime ?? 0)` condition).
+    __resetSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    await initAuditLog(config);
+    const wouldBeStaleAt = Date.now() - 60_000;
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-no-stage-start",
+      stageStartTime: undefined, // explicitly absent — guard must still fire
+      pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: wouldBeStaleAt, attempts: 0 } },
+    });
+    const bus = createMockEventBus();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // Guard fires on pure stage mismatch regardless of stageStartTime presence
+    expect(consumed).toEqual([]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
     const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
