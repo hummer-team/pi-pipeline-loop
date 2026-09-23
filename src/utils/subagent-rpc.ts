@@ -479,6 +479,21 @@ export async function spawnStageSubagent(
     }
   }
 
+  // G2 (188): Gate defer guard — do not spawn when confirm gate is in deferred
+  // state for this stage. Prevents duplicate spawn when the plan subagent's
+  // settle triggers a re-spawn while the confirm gate dialog is still deferred.
+  if (opts?.session) {
+    const freshMeta = opts.session.getMeta();
+    if (freshMeta?.confirmGateDeferredAt?.stage === stage) {
+      await safeWriteAuditLog("stage_spawn_skipped", {
+        pipelineId: meta.pipelineId,
+        stage,
+        reason: "confirm_gate_deferred",
+      });
+      return { spawned: false, fallback: false };
+    }
+  }
+
   // 3. Resolve agent name from config
   const agentName = resolveAgentMention(config, stage);
   if (!agentName) {

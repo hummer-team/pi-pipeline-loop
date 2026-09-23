@@ -1958,3 +1958,82 @@ describe("Phase 0 (186): clearAllPendingSpawns", () => {
     expect(updateCalled).toBe(false);
   });
 });
+
+// ── G2 (188): confirmGateDeferredAt guard in spawnStageSubagent ─────────────
+
+describe("G2 (188): confirmGateDeferredAt guard", () => {
+  let TMP: string;
+  beforeEach(async () => {
+    markSubagentsReady();
+    TMP = path.join(tmpdir(), "pi-g2-defer-guard-" + Date.now());
+    fs.mkdirSync(path.join(TMP, ".pi", "audit"), { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+  });
+
+  it("confirmGateDeferredAt matches stage → spawn skipped with audit", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnStageSubagent({}, config, "plan", meta, { session: session as any });
+
+    expect(result.spawned).toBe(false);
+    expect(result.fallback).toBe(false);
+
+    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).toContain("confirm_gate_deferred");
+  });
+
+  it("confirmGateDeferredAt stage mismatch → spawn passes through", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      confirmGateDeferredAt: { stage: "develop", at: Date.now() },
+    });
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    // Should NOT be blocked by the guard (stage mismatch)
+    const result = await spawnStageSubagent({}, config, "plan", meta, { session: session as any });
+
+    // Result depends on other guards (agent resolution, etc.), but NOT confirm_gate_deferred
+    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).not.toContain("confirm_gate_deferred");
+  });
+
+  it("no confirmGateDeferredAt → spawn passes through", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "plan" });
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const result = await spawnStageSubagent({}, config, "plan", meta, { session: session as any });
+
+    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).not.toContain("confirm_gate_deferred");
+  });
+
+  it("opts.session undefined → guard skipped (fail-open)", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+
+    // No session → guard is skipped entirely
+    const result = await spawnStageSubagent({}, config, "plan", meta);
+
+    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    expect(logContent).not.toContain("confirm_gate_deferred");
+  });
+});
