@@ -18,6 +18,7 @@ import { safeWriteAuditLog } from "./auditLog";
 import { clearActiveSpawnRecord } from "./spawn-cleanup";
 import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
+import { findLatestReviewReport } from "./review-conclusion";
 import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
@@ -540,7 +541,14 @@ export async function spawnStageSubagent(
   // (maybeAutoLaunchClarify → spawnClarifySubagent with explicit description).
   // This path only handles spawnable stages (plan/develop/review/fix) via
   // spawnStageSubagent — clarify is NOT in isSpawnableStage (L436 early return).
-  const description = `${stage}: ${meta.requirementDoc ?? ""}`;
+  // G8 (188): fix stage uses review report path as description for TUI clarity.
+  let description = `${stage}: ${meta.requirementDoc ?? ""}`;
+  if (stage === "fix") {
+    const reviewReport = await findLatestReviewReport(config.projectRoot);
+    if (reviewReport) {
+      description = reviewReport;
+    }
+  }
 
   /** Helper to write the idempotency guard + activeSpawns entry after successful spawn */
   const writeGuard = async (subagentId?: string): Promise<void> => {

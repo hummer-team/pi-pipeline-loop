@@ -2037,3 +2037,155 @@ describe("G2 (188): confirmGateDeferredAt guard", () => {
     expect(logContent).not.toContain("confirm_gate_deferred");
   });
 });
+
+// ── G8 (188): fix stage spawn description uses review report path ───────────
+
+describe("G8 (188): fix stage spawn description", () => {
+  function createSpawnCapture() {
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    let spawnPayload: Record<string, unknown> | undefined;
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:ping") {
+        const replyChannel = `subagents:rpc:ping:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true }), 5);
+      } else if (event === "subagents:rpc:spawn") {
+        spawnPayload = payload;
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, {
+          success: true,
+          data: { id: "subagent-g8" },
+        }), 5);
+      }
+    };
+    return { bus, getSpawnPayload: () => spawnPayload };
+  }
+
+  function makeFixConfig(tmpDir: string) {
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "fix-agent.md"),
+      "---\nname: fix-agent\n---\n# Fix Agent\n",
+    );
+    return makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        fix: {
+          agentPath: "agents/fix-agent.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+  }
+
+  it("fix + review report exists → description = review report path", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-g8-fix-review-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    // Create a review report
+    const reviewDir = path.join(tmpDir, "docs", "review");
+    fs.mkdirSync(reviewDir, { recursive: true });
+    fs.writeFileSync(path.join(reviewDir, "code_review_20260101.md"), "# Review\n");
+
+    const config = makeFixConfig(tmpDir);
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: "pipe-g8-fix-review",
+      requirementDoc: "docs/req.md",
+    });
+
+    const { bus, getSpawnPayload } = createSpawnCapture();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    await spawnStageSubagent(mockPi, config, "fix", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    const description = (getSpawnPayload()?.options as Record<string, unknown>)?.description as string | undefined;
+    expect(description).toContain("code_review_");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("fix + no review report → description = default 'fix: {requirementDoc}'", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-g8-fix-noreview-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+
+    const config = makeFixConfig(tmpDir);
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: "pipe-g8-fix-noreview",
+      requirementDoc: "docs/req.md",
+    });
+
+    const { bus, getSpawnPayload } = createSpawnCapture();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    await spawnStageSubagent(mockPi, config, "fix", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    const description = (getSpawnPayload()?.options as Record<string, unknown>)?.description as string | undefined;
+    expect(description).toBe("fix: docs/req.md");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("develop stage → description unchanged (no review report lookup)", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-g8-dev-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "dev-agent.md"),
+      "---\nname: develop-agent\n---\n# Dev Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "agents/dev-agent.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-g8-dev",
+      requirementDoc: "docs/req.md",
+    });
+
+    const { bus, getSpawnPayload } = createSpawnCapture();
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    const description = (getSpawnPayload()?.options as Record<string, unknown>)?.description as string | undefined;
+    expect(description).toBe("develop: docs/req.md");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
