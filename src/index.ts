@@ -13,6 +13,7 @@ import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
+import { validateSubagentCreated } from "./utils/subagent-identity";
 
 
 // Session lifecycle and prompt injection
@@ -96,6 +97,16 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // announcement. The latch replaces timeout-based ping probing; when false,
     // spawn paths fall back immediately (zero dead wait).
     wireSubagentsReadyListener(pi);
+
+    // G4 (188): validate spawned subagent type against pipeline stage config.
+    // subagents:created fires for Agent-tool spawns only (not RPC spawns from this plugin).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((pi as any).events?.on) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (pi as any).events.on("subagents:created", async (event: { id: string; type: string; description?: string; isBackground?: boolean }) => {
+        await validateSubagentCreated(event, config, pi);
+      });
+    }
 
     // ── Hooks registration (bridge: SDK (event, ctx) → internal RuntimeCtx) ──
     const hooks = [
