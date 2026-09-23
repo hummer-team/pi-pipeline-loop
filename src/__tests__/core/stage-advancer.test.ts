@@ -1675,3 +1675,109 @@ describe("Phase 0 (182) G5: fix→terminal hard guard", () => {
     await rm(TMP6, { recursive: true, force: true });
   });
 });
+
+describe("Phase 0 (188) G7: stage_advance git uncommitted check", () => {
+  it("develop stage + uncommitted changes → block advance", async () => {
+    const TMP = join(tmpdir(), "pi-git-check-1-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createCtx(meta);
+    const mockExecFn = async () => ({ stdout: "M src/foo.ts\n", stderr: "", code: 0 });
+    const tool = createStageAdvancer(config, { execFn: mockExecFn });
+
+    const result = await tool.execute({}, ctx as any);
+
+    expect((result as any).success).toBe(false);
+    expect((result as any).message).toContain("Uncommitted changes detected");
+
+    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("stage_advance_blocked_uncommitted");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("develop stage + clean git → advance proceeds", async () => {
+    const TMP = join(tmpdir(), "pi-git-check-2-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = { ...config.stages["develop"], nextStage: "review" };
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createCtx(meta);
+    const mockExecFn = async () => ({ stdout: "", stderr: "", code: 0 });
+    const tool = createStageAdvancer(config, { execFn: mockExecFn });
+
+    const result = await tool.execute({}, ctx as any);
+
+    expect((result as any).success).toBe(true);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("fix stage + uncommitted changes → block advance", async () => {
+    const TMP = join(tmpdir(), "pi-git-check-3-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "fix" });
+    const ctx = createCtx(meta);
+    const mockExecFn = async () => ({ stdout: "M src/bar.ts\n", stderr: "", code: 0 });
+    const tool = createStageAdvancer(config, { execFn: mockExecFn });
+
+    const result = await tool.execute({ nextStage: "review" }, ctx as any);
+
+    expect((result as any).success).toBe(false);
+    expect((result as any).message).toContain("Uncommitted changes detected");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("execFn undefined → fail-open, advance proceeds", async () => {
+    const TMP = join(tmpdir(), "pi-git-check-4-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = { ...config.stages["develop"], nextStage: "review" };
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createCtx(meta);
+    // No deps passed → execFn is undefined → fail-open
+    const tool = createStageAdvancer(config);
+
+    const result = await tool.execute({}, ctx as any);
+
+    expect((result as any).success).toBe(true);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("clarify stage → execFn not called (git check only for develop/fix)", async () => {
+    const TMP = join(tmpdir(), "pi-git-check-5-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["clarify"] = { ...config.stages["clarify"], nextStage: "plan" };
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({ currentStage: "clarify" });
+    const ctx = createCtx(meta);
+    let execCalled = false;
+    const mockExecFn = async () => {
+      execCalled = true;
+      return { stdout: "M src/foo.ts\n", stderr: "", code: 0 };
+    };
+    const tool = createStageAdvancer(config, { execFn: mockExecFn });
+
+    const result = await tool.execute({}, ctx as any);
+
+    expect(execCalled).toBe(false);
+    expect((result as any).success).toBe(true);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

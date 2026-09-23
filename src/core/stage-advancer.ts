@@ -1196,6 +1196,27 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       const meta: SessionMeta = rawMeta;
       const currentStage: PipelineStage = meta.currentStage;
 
+      // G7: Block advance when develop/fix stage has uncommitted changes.
+      // Fail-open: skip check when execFn is unavailable.
+      if ((currentStage === "develop" || currentStage === "fix") && deps?.execFn) {
+        try {
+          const gitStatus = await deps.execFn("git", ["status", "--porcelain"], config.projectRoot);
+          if (gitStatus && gitStatus.stdout.trim().length > 0) {
+            await safeWriteStageAudit(config, "stage_advance_blocked_uncommitted", meta, {
+              fromStage: currentStage,
+              reason: "uncommitted_changes",
+            }, "warn");
+            return {
+              success: false,
+              message: "Uncommitted changes detected. Please commit all changes before advancing.",
+              currentStage,
+            };
+          }
+        } catch {
+          // Fail-open: git command failure should not block advance
+        }
+      }
+
       // Phase 4 (143): Hash integrity check — if current stage has a summary
       // with a hash mismatch, block advance and prompt for re-entry.
       // Only check the current stage's summary (not all stages).
