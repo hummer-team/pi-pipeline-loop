@@ -646,19 +646,30 @@ function evaluateConfirmGateDeferral(
   // G3 (188): narrow defer to the expected stage agent when its name is known.
   // If the expected agent has settled (findLiveAgentByName returns null), the
   // confirm gate can safely pop — no need to wait for unrelated subagents.
+  //
+  // IMPORTANT boundary (Plan Phase 3): `findLiveAgentByName` returns null for
+  // BOTH "manager singleton unavailable" and "no matching live agent found".
+  // These must be distinguished:
+  //   - Manager unavailable → fall back to anyTopLevelRunning() + anyActiveSpawnEvidence()
+  //   - Agent genuinely not found → safe to present the gate ("present")
+  // We detect manager availability via anyTopLevelRunning(): it returns null
+  // ONLY when the manager singleton is missing (same symbol/method check).
   let anyLive: boolean;
   if (expectedAgentName) {
-    try {
+    const globalProbe = anyTopLevelRunning();
+    if (globalProbe === null) {
+      // Manager singleton unavailable → degrade to global probe + evidence
+      // (same fallback path as when expectedAgentName is undefined)
+      anyLive = anyActiveSpawnEvidence(meta.activeSpawns) !== null;
+    } else {
+      // Manager available → use narrow name-based probe
       const agent = findLiveAgentByName(expectedAgentName);
       if (agent !== null) {
         anyLive = true;
       } else {
-        // Expected agent not live → safe to present the gate
+        // Expected agent not live (manager confirmed) → safe to present the gate
         return "present";
       }
-    } catch {
-      // findLiveAgentByName unavailable → fall through to global probe
-      anyLive = anyTopLevelRunning() ?? false;
     }
   } else {
     // No expected agent name → use global probe (legacy behavior)

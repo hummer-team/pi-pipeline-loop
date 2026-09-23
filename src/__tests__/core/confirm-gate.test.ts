@@ -1850,4 +1850,52 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     expect((result as any).action).toBe("advanced");
     expect((result as any).toStage).toBe("develop");
   });
+
+  it("manager singleton unavailable + expectedAgentName set → falls back to anyTopLevelRunning/evidence", async () => {
+    // Plan Phase 3 boundary: when the manager singleton is unavailable,
+    // findLiveAgentByName returns null (same as "agent not found"). The code
+    // must distinguish these cases and fall back to anyTopLevelRunning()
+    // instead of immediately returning "present".
+    await createPlanDoc("# Plan\n");
+    const config = await makePlanConfigWithAgent(tmpDir);
+
+    // Case A: manager unavailable + activeSpawns evidence exists → should defer
+    {
+      clearManager(); // Simulate manager singleton unavailable
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        requirementDoc: "docs/design/77_Config.md",
+        activeSpawns: {
+          plan: { agentName: "plan-agent", agentId: "reserved-1", startedAt: Date.now(), reserved: true },
+        },
+      });
+      const ctx = createMockCtx(meta);
+      ctx.ui.select = async () => "Approve & Advance";
+
+      const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+      // With activeSpawns evidence and no manager → fallback detects evidence → defer
+      expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+    }
+
+    // Case B: manager unavailable + NO activeSpawns evidence → should present (gate fires)
+    {
+      clearManager(); // Simulate manager singleton unavailable
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        requirementDoc: "docs/design/77_Config.md",
+        // No activeSpawns — fallback has nothing to detect
+      });
+      const ctx = createMockCtx(meta);
+      let selectCalls = 0;
+      ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+      const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+
+      // No manager + no evidence → fallback returns false → gate fires
+      expect(selectCalls).toBe(1);
+      expect((result as any).result).toBe("handled");
+      expect((result as any).action).toBe("advanced");
+    }
+  });
 });
