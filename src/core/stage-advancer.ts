@@ -32,10 +32,10 @@ import { checkStageSummaryHash } from "../utils/summary-hash";
 import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
-import { spawnStageSubagent } from "../utils/subagent-rpc";
+import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
 import { recordStageVisit } from "../utils/stage-visit";
 import { isDormant } from "./dormancy";
-import { anyTopLevelRunning } from "../utils/subagents-introspect";
+import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
 
@@ -629,19 +629,44 @@ function getEffectiveDeferredStamp(
  * "never pop" deadlock when an unrelated subagent hangs.
  *
  * Probe order:
- * 1. `anyTopLevelRunning()` — global coarse probe (primary)
- * 2. `anyActiveSpawnEvidence()` — per-stage scan + probe + reserved window (degrade)
+ * 1. G3 (188): When `expectedAgentName` is provided, use `findLiveAgentByName`
+ *    to check only the expected stage agent (narrow probe).
+ * 2. Fallback: `anyTopLevelRunning()` — global coarse probe (when expectedAgentName
+ *    is undefined or findLiveAgentByName is unavailable).
+ * 3. `anyActiveSpawnEvidence()` — per-stage scan + probe + reserved window (degrade)
  *
+ * @param expectedAgentName - The expected agent name for the current stage (narrow probe)
  * @returns "present" (safe to pop), "defer" (keep pending), "timeout" (pop anyway)
  */
 function evaluateConfirmGateDeferral(
   config: PipelineConfig,
   meta: SessionMeta,
+  expectedAgentName?: string,
 ): ConfirmGateDeferralDecision {
-  const probe = anyTopLevelRunning();
-  const anyLive = probe === null
-    ? anyActiveSpawnEvidence(meta.activeSpawns) !== null
-    : probe;
+  // G3 (188): narrow defer to the expected stage agent when its name is known.
+  // If the expected agent has settled (findLiveAgentByName returns null), the
+  // confirm gate can safely pop — no need to wait for unrelated subagents.
+  let anyLive: boolean;
+  if (expectedAgentName) {
+    try {
+      const agent = findLiveAgentByName(expectedAgentName);
+      if (agent !== null) {
+        anyLive = true;
+      } else {
+        // Expected agent not live → safe to present the gate
+        return "present";
+      }
+    } catch {
+      // findLiveAgentByName unavailable → fall through to global probe
+      anyLive = anyTopLevelRunning() ?? false;
+    }
+  } else {
+    // No expected agent name → use global probe (legacy behavior)
+    const probe = anyTopLevelRunning();
+    anyLive = probe === null
+      ? anyActiveSpawnEvidence(meta.activeSpawns) !== null
+      : probe;
+  }
   if (!anyLive) return "present";
 
   // Phase 1 (180): only a stamp from the current stage visit counts. A stale
@@ -810,7 +835,7 @@ export async function maybeHandleConfirmGate(
   // A subagent-window Esc collateral-cancels the owner dialog; presenting only
   // when no subagent runs removes that failure mode entirely. The bounded
   // timeout guarantees the gate still pops under a hanging unrelated subagent.
-  const deferral = evaluateConfirmGateDeferral(config, meta);
+  const deferral = evaluateConfirmGateDeferral(config, meta, resolveAgentMention(config, currentStage) ?? undefined);
   if (deferral === "defer") {
     // Phase 1 (180): read the effective stamp (current visit only). A stale
     // stamp from a previous visit is treated as absent, so the first deferral

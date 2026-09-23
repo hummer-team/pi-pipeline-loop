@@ -1728,3 +1728,126 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
     expect(inputMeta.confirmGateDeferredAt).toBeUndefined();
   });
 });
+
+// ── G3 (188): evaluateConfirmGateDeferral narrow defer to expected agent ─────
+
+describe("G3 (188): narrow confirm gate defer to expected stage agent liveness", () => {
+  const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+
+  function setManagerWithRecords(records: Array<{ id: string; name: string; status: string }>): void {
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      listRecords: () => records,
+      getRecord: () => undefined,
+      hasRunning: () => records.some(r => ["running", "spawning"].includes(r.status)),
+    };
+  }
+
+  function setManagerRunning(running: boolean): void {
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: () => undefined,
+      hasRunning: () => running,
+      listRecords: () => [],
+    };
+  }
+
+  function clearManager(): void {
+    delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
+  }
+
+  afterEach(() => clearManager());
+
+  /** Helper: create plan config with agentPath and agent file, using the beforeEach tmpDir */
+  async function makePlanConfigWithAgent(root: string) {
+    const base = makeTestConfig({ projectRoot: root });
+    const agentDir = path.join(root, "agents");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(path.join(agentDir, "plan-agent.md"), "---\nname: plan-agent\n---\n# Plan Agent\n");
+    const planStage = {
+      ...base.stages.plan,
+      agentPath: "agents/plan-agent.md",
+      allowedWritePaths: ["docs/", "doc/", "documentation/"],
+      confirm: { mode: "manual" as const },
+    };
+    return { ...base, stages: { ...base.stages, plan: planStage as typeof base.stages.plan } };
+  }
+
+  it("expected agent settled (findLiveAgentByName=null) → gate fires (present)", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = await makePlanConfigWithAgent(tmpDir);
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createMockCtx(meta);
+    let selectCalls = 0;
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+    // No live agents at all → findLiveAgentByName("plan-agent") returns null
+    setManagerWithRecords([]);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+
+    // Gate should fire (not deferred) because expected agent is not live
+    expect(selectCalls).toBe(1);
+    expect((result as any).result).toBe("handled");
+    expect((result as any).action).toBe("advanced");
+    expect((result as any).toStage).toBe("develop");
+  });
+
+  it("expected agent live (findLiveAgentByName returns record) → gate defers", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = await makePlanConfigWithAgent(tmpDir);
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => "Approve & Advance";
+
+    // Expected agent "plan-agent" is live
+    setManagerWithRecords([{ id: "agent-1", name: "plan-agent", status: "running" }]);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+
+    // Gate should defer because expected agent is live
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+  });
+
+  it("no agentPath configured (expectedAgentName=undefined) → falls back to anyTopLevelRunning", async () => {
+    await createPlanDoc("# Plan\n");
+    // Config WITHOUT agentPath → resolveAgentMention returns null → expectedAgentName=undefined
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createMockCtx(meta);
+    let selectCalls = 0;
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+    // anyTopLevelRunning returns true (unrelated subagent live)
+    setManagerRunning(true);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, { mode: "manual" });
+
+    // Should defer (legacy behavior — falls back to anyTopLevelRunning)
+    expect(selectCalls).toBe(0);
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+  });
+
+  it("unrelated agent live but expected agent settled → gate fires (narrow probe wins)", async () => {
+    await createPlanDoc("# Plan\n");
+    const config = await makePlanConfigWithAgent(tmpDir);
+
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    const ctx = createMockCtx(meta);
+    let selectCalls = 0;
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+
+    // Unrelated agent "develop-agent" is live, but expected "plan-agent" is NOT live
+    setManagerWithRecords([{ id: "agent-2", name: "develop-agent", status: "running" }]);
+
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
+
+    // G3: gate should fire because expected agent ("plan-agent") is not live,
+    // even though an unrelated agent is running
+    expect(selectCalls).toBe(1);
+    expect((result as any).result).toBe("handled");
+    expect((result as any).action).toBe("advanced");
+    expect((result as any).toStage).toBe("develop");
+  });
+});
