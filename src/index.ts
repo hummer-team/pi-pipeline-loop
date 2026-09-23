@@ -13,7 +13,7 @@ import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
-import { validateSubagentCreated } from "./utils/subagent-identity";
+import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 
 
 // Session lifecycle and prompt injection
@@ -123,6 +123,22 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (pi.on as any)(h.event, async (event: unknown, ctx: ExtensionContext) => {
         const rctx = buildRuntimeCtx(pi, ctx, event as Record<string, unknown>, config);
+
+        // G4 (188): update the module-level owner session accessor so that
+        // validateSubagentCreated (triggered by the global subagents:created
+        // event, which has no per-session ctx) can read the owner session's
+        // currentStage through the real ExtensionContext.sessionManager path.
+        // Updated on every hook invocation — always reflects latest state.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setOwnerSessionAccessor(
+          () => rctx.session.getMeta(),
+          {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            events: (pi as any).events,
+            ui: ctx.ui ? { notify: (msg: string) => ctx.ui.notify(msg) } : undefined,
+          },
+        );
+
         return h.handler(rctx);
       });
     }
