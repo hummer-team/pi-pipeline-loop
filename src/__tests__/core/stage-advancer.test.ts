@@ -1826,12 +1826,22 @@ describe("G6 (188): stage_advance tool spawn-before-audit ordering", () => {
     const spawnCalls = sentMessages.filter(m => m.msg.includes("@review-agent"));
     expect(spawnCalls.length).toBe(1);
 
-    // Verify audit ordering: stage_advance audit entry must exist
-    // (spawn happened before audit write — verified by the fact that the advance
-    // succeeded and the audit entry was written after the spawn)
+    // G6 ordering proof: the audit file is written sequentially.
+    // spawnStageSubagent writes "stage_spawn_fallback" INSIDE its execution,
+    // then safeWriteStageAudit writes "stage_advance" AFTER spawn returns.
+    // By checking file positions, we prove spawn ran before audit.
     const auditPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
     const logContent = await readFile(auditPath, "utf-8");
-    expect(logContent).toContain("stage_advance");
+
+    const spawnEntryPos = logContent.indexOf("stage_spawn_fallback");
+    const advanceEntryPos = logContent.indexOf("stage_advance");
+
+    // Both entries must exist
+    expect(spawnEntryPos).toBeGreaterThanOrEqual(0);
+    expect(advanceEntryPos).toBeGreaterThanOrEqual(0);
+
+    // Spawn entry MUST appear before advance entry — this is the ordering guarantee
+    expect(spawnEntryPos).toBeLessThan(advanceEntryPos);
 
     await rm(stageTmp, { recursive: true, force: true });
   });

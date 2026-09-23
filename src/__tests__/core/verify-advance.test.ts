@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { applyVerifyPass, applyVerifyFail, isConfigError, autoAdvanceAfterVerify } from "../../core/verify-advance";
+import { consumePendingSpawns } from "../../utils/subagent-rpc";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import type { SessionMeta, PipelineStage } from "../../types";
 import { createPipelineUI, STAGE_STATUS_KEY } from "../../core/pipeline-ui";
 
@@ -1114,7 +1115,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
 describe("G6 (188): autoAdvanceAfterVerify spawn-before-audit ordering", () => {
   const PASS_RESULT = { structuredResult: { failures: [] }, ruleMissing: [], verifyResult: null };
 
-  it("spawn is called before audit write (fix→review) — spawn fallback verified", async () => {
+  it("spawn is called before audit write (fix→review) — ordering verified via audit file positions", async () => {
     const { writeFile } = await import("node:fs/promises");
     const stageTmp = join(tmpdir(), "pi-g6-ordering-" + Date.now());
     await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
@@ -1125,6 +1126,8 @@ describe("G6 (188): autoAdvanceAfterVerify spawn-before-audit ordering", () => {
       join(agentDir, "review-agent.md"),
       "---\nname: review-agent\n---\n# Review Agent\n",
     );
+    // Redirect audit log to this test's temp directory
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
 
     const config = makeTestConfig({ projectRoot: stageTmp });
     config.stages["review"] = {
@@ -1160,7 +1163,96 @@ describe("G6 (188): autoAdvanceAfterVerify spawn-before-audit ordering", () => {
     // currentStage update and pendingSpawns write.
     expect(meta.currentStage).toBe("review");
 
+    // G6 ordering proof: the audit file is written sequentially.
+    // spawnStageSubagent writes "stage_spawn_fallback" INSIDE its execution,
+    // then writeStageAudit writes "stage_advance" AFTER spawn returns.
+    // By checking file positions, we prove spawn ran before audit.
+    const auditPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(auditPath, "utf-8");
+
+    const spawnEntryPos = logContent.indexOf("stage_spawn_fallback");
+    const advanceEntryPos = logContent.indexOf("stage_advance");
+
+    // Both entries must exist
+    expect(spawnEntryPos).toBeGreaterThanOrEqual(0);
+    expect(advanceEntryPos).toBeGreaterThanOrEqual(0);
+
+    // Spawn entry MUST appear before advance entry — this is the ordering guarantee
+    expect(spawnEntryPos).toBeLessThan(advanceEntryPos);
+
     const { rm } = await import("node:fs/promises");
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("owner consume: currentStage=review + pendingSpawns[review] present → NOT discarded", async () => {
+    // Plan Phase 1 Task 4: owner consume 时 currentStage=review,
+    // pendingSpawns[review] 存在 → 不触发 discard
+    //
+    // This tests the fix→review advance scenario: after autoAdvanceAfterVerify
+    // sets currentStage=review and writes pendingSpawns[review], the owner
+    // settle triggers consumePendingSpawns. Since currentStage matches the
+    // pending entry's stage, the stage-consistency guard must NOT discard it.
+    const { writeFile, rm } = await import("node:fs/promises");
+    const stageTmp = join(tmpdir(), "pi-g6-owner-consume-" + Date.now());
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    const agentDir = join(stageTmp, "agents");
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, "review-agent.md"),
+      "---\nname: review-agent\n---\n# Review Agent\n",
+    );
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    config.stages["review"] = {
+      ...config.stages["review"],
+      agentPath: "agents/review-agent.md",
+    } as any;
+
+    // Simulate the post-advance state: currentStage=review with a pending spawn
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-g6-owner-consume-001",
+      requirementDoc: "docs/design/Req.md",
+      pendingSpawns: {
+        review: { agentName: "review-agent", requestedAt: Date.now(), attempts: 0 },
+      },
+    });
+
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Partial<SessionMeta>) => {
+        const merged = { ...meta, ...patch } as SessionMeta;
+        Object.assign(meta, merged);
+        return merged;
+      },
+    };
+
+    // Mock pi with sendUserMessage (fallback path since no real manager)
+    const sentMessages: string[] = [];
+    const mockPi = {
+      sendUserMessage: (msg: string) => { sentMessages.push(msg); },
+    };
+
+    // Consume pending spawns — this is what happens on owner settle
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    // The pending spawn for "review" must be consumed (not discarded)
+    // because currentStage matches the pending entry's stage.
+    expect(consumed).toEqual(["review"]);
+
+    // Verify NO discard audit was written (stage-consistency guard did not fire)
+    const auditPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(auditPath, "utf-8");
+    expect(logContent).not.toContain("stale_stage_mismatch");
+
+    // The pendingSpawns entry should be cleared after consumption
+    expect(meta.pendingSpawns?.review).toBeUndefined();
+
+    __resetAuditDirPath();
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
