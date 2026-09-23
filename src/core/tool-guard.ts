@@ -400,6 +400,13 @@ async function checkBashFileTargets(
 
       // file-arg class: block in whitelist mode
       if (isWhitelistMode) {
+        // G5 (188): when protect.ask is enabled, prompt the user before blocking
+        if (config.protect?.ask) {
+          const outcome = await askCommandDecision(ctx, meta, absTarget, config);
+          if (outcome.decision === "allow") {
+            continue; // user allowed this out-of-project target
+          }
+        }
         const reason = `FORBIDDEN: Target '${absTarget}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
         await trackViolation({
           type: "write_protected", tool: "bash", detail: reason,
@@ -1074,15 +1081,33 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             stageConfig.allowedWritePaths !== undefined &&
             !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
           if (isWhitelistMode) {
-            const reason = `FORBIDDEN: Target '${absPath}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
-            await trackViolation({
-              type: "write_protected",
-              tool: toolName,
-              detail: reason,
-              suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-            });
-            ui.notify(ctx, reason);
-            return { block: true, reason };
+            // G5 (188): when protect.ask is enabled, prompt the user before blocking
+            if (config.protect?.ask) {
+              const outcome = await askCommandDecision(ctx, meta, absPath, config);
+              if (outcome.decision === "allow") {
+                // User allowed — skip the block, fall through to hash recording
+              } else {
+                const reason = `FORBIDDEN: Target '${absPath}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
+                await trackViolation({
+                  type: "write_protected",
+                  tool: toolName,
+                  detail: reason,
+                  suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                });
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
+            } else {
+              const reason = `FORBIDDEN: Target '${absPath}' is outside project root and not allowed by '${meta.currentStage}' stage whitelist.`;
+              await trackViolation({
+                type: "write_protected",
+                tool: toolName,
+                detail: reason,
+                suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+              });
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
           }
           // Full mode: out-of-project paths bypass global chain (legacy behavior)
         }

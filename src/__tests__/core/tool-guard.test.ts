@@ -3369,3 +3369,118 @@ describe("Phase 0 (186): allowedReadOnlyPaths blocks writes", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 });
+
+// ── G5 (188): protect.ask dialog for out-of-project path blocks ────────────
+
+describe("G5 (188): protect.ask dialog for out-of-project path blocks", () => {
+  const COMMAND_ASK_OPTIONS = [
+    "Follow default rules (block, default)",
+    "Allow this command once",
+    "Allow this command for session",
+  ];
+
+  it("out-of-project + whitelist + ask=true + user allows → pass (not blocked)", async () => {
+    const TMP = join(tmpdir(), "pi-g5-ask-allow-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      allowedWritePaths: ["docs/"],
+    } as any;
+    config.protect = { ...config.protect, ask: true };
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta, { selectReturn: COMMAND_ASK_OPTIONS[1] });
+    ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/outside-ask-allow.md" } };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // User allowed → not blocked
+    expect(result).toBeUndefined();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("out-of-project + whitelist + ask=true + user denies → block", async () => {
+    const TMP = join(tmpdir(), "pi-g5-ask-deny-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      allowedWritePaths: ["docs/"],
+    } as any;
+    config.protect = { ...config.protect, ask: true };
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta, { selectReturn: COMMAND_ASK_OPTIONS[0] });
+    ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/outside-ask-deny.md" } };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // User denied → blocked
+    expect((result as any).block).toBe(true);
+    expect((result as any).reason).toContain("outside project root");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("out-of-project + whitelist + ask=false → direct block (no popup)", async () => {
+    const TMP = join(tmpdir(), "pi-g5-noask-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      allowedWritePaths: ["docs/"],
+    } as any;
+    // protect.ask is NOT set
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/outside-noask.md" } };
+    let selectCalled = false;
+    ctx.ui.select = async () => { selectCalled = true; return COMMAND_ASK_OPTIONS[1]; };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // ask=false → direct block, no popup
+    expect((result as any).block).toBe(true);
+    expect((result as any).reason).toContain("outside project root");
+    expect(selectCalled).toBe(false);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("out-of-project + non-whitelist mode (full) → unchanged behavior (allowed)", async () => {
+    const TMP = join(tmpdir(), "pi-g5-full-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      allowedWritePaths: ["**"],
+    } as any;
+    config.protect = { ...config.protect, ask: true };
+
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "write", arguments: { file_path: "/tmp/outside-full.md" } };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    // Full mode: out-of-project paths bypass whitelist → not blocked
+    expect(result).toBeUndefined();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});
