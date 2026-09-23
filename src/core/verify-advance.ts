@@ -457,7 +457,38 @@ export async function autoAdvanceAfterVerify(
     skipPassAudit: options?.skipPassAudit,
   });
 
-  // Stage audit
+  // G6 (188): Spawn subagent BEFORE audit writes to close the race window where
+  // owner settle fires between currentStage update and pendingSpawns write.
+  // When spawn succeeds (RPC or fallback), skip the generic wake to avoid dual execution.
+  const freshMeta = ctx.session.getMeta() ?? meta;
+  if (toStage && toStage !== "completed") {
+    const spawnResult = await spawnStageSubagent(ctx.pi, config, toStage, freshMeta, {
+      ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
+      session: ctx.session,
+      runtimeCtx: ctx,
+    });
+
+    if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
+      // Subagent spawned or deferred — write audit after spawn to maintain ordering.
+      await writeStageAudit(config, "stage_advance", clearedMeta, {
+        fromStage,
+        toStage,
+        method: "hook_auto_advance",
+      });
+      // Subagent spawned or deferred — skip generic wake to prevent dual execution.
+      // deferred means the spawn is queued and will execute once the old twin settles;
+      // waking the owner now would cause dual execution with the pending dequeue.
+      await writeAuditLog("auto_advance_wake_skipped", {
+        pipelineId: meta.pipelineId,
+        fromStage,
+        toStage,
+        reason: spawnResult.deferred ? "subagent_deferred" : "subagent_spawned",
+      });
+      return;
+    }
+  }
+
+  // Stage audit (when spawn did not fire)
   if (toStage && toStage !== "completed") {
     await writeStageAudit(config, "stage_advance", clearedMeta, {
       fromStage,
@@ -470,30 +501,6 @@ export async function autoAdvanceAfterVerify(
       finalStage: fromStage,
       method: "hook_auto_advance",
     });
-  }
-
-  // Phase 1 (169): Spawn subagent for the target stage before sending generic wake.
-  // When spawn succeeds (RPC or fallback), skip the generic wake to avoid dual execution.
-  const freshMeta = ctx.session.getMeta() ?? meta;
-  if (toStage && toStage !== "completed") {
-    const spawnResult = await spawnStageSubagent(ctx.pi, config, toStage, freshMeta, {
-      ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
-      session: ctx.session,
-      runtimeCtx: ctx,
-    });
-
-    if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
-      // Subagent spawned or deferred — skip generic wake to prevent dual execution.
-      // deferred means the spawn is queued and will execute once the old twin settles;
-      // waking the owner now would cause dual execution with the pending dequeue.
-      await writeAuditLog("auto_advance_wake_skipped", {
-        pipelineId: meta.pipelineId,
-        fromStage,
-        toStage,
-        reason: spawnResult.deferred ? "subagent_deferred" : "subagent_spawned",
-      });
-      return;
-    }
   }
 
   // Phase 2 / 179 (G8): chain-terminal owner wake.

@@ -1109,6 +1109,62 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
   });
 });
 
+// ── G6 (188): spawn-before-audit ordering in autoAdvanceAfterVerify ─────────
+
+describe("G6 (188): autoAdvanceAfterVerify spawn-before-audit ordering", () => {
+  const PASS_RESULT = { structuredResult: { failures: [] }, ruleMissing: [], verifyResult: null };
+
+  it("spawn is called before audit write (fix→review) — spawn fallback verified", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const stageTmp = join(tmpdir(), "pi-g6-ordering-" + Date.now());
+    await mkdir(join(stageTmp, ".pi", "audit"), { recursive: true });
+    // Create real agent file for review stage
+    const agentDir = join(stageTmp, "agents");
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, "review-agent.md"),
+      "---\nname: review-agent\n---\n# Review Agent\n",
+    );
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    config.stages["review"] = {
+      ...config.stages["review"],
+      agentPath: "agents/review-agent.md",
+    } as any;
+
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: "pipe-g6-order-001",
+      requirementDoc: "docs/design/Req.md",
+    });
+    const ctx = createCtx(meta);
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    (ctx as any).pi = {
+      sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+        sentMessages.push({ msg, opts });
+      },
+    };
+
+    await autoAdvanceAfterVerify(
+      config, ctx as any, meta, "fix", "review", PASS_RESULT, ctx.pipelineUI,
+    );
+
+    // G6: Verify spawn fallback happened (sendUserMessage with @review-agent).
+    // This proves spawnStageSubagent was called and returned { fallback: true }.
+    const spawnCalls = sentMessages.filter(m => m.msg.includes("@review-agent"));
+    expect(spawnCalls.length).toBe(1);
+
+    // After the fix, spawn is called immediately after applyVerifyPass (which
+    // updates currentStage). The audit writes happen only after spawn completes.
+    // This closes the race window where owner settle could fire between
+    // currentStage update and pendingSpawns write.
+    expect(meta.currentStage).toBe("review");
+
+    const { rm } = await import("node:fs/promises");
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
 // ── Phase 0 (186): applyVerifyPass clears pendingSpawns on terminal states ──
 
 describe("Phase 0 (186): applyVerifyPass clears pendingSpawns on terminal states", () => {

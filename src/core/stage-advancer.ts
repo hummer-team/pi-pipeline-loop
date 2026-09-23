@@ -1542,16 +1542,8 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         };
       }
 
-      // Success audit for non-terminal advance
-      await safeWriteStageAudit(config, "stage_advance", meta, {
-        fromStage: currentStage,
-        toStage: resolvedTarget,
-        override: argNextStage ? "yes" : "no",
-      });
-
-      ui.transition(ctx, currentStage, resolvedTarget);
-
-      // Phase 1 (169): Spawn subagent for the target stage after transition.
+      // G6 (188): Spawn subagent BEFORE audit writes to close the race window where
+      // owner settle fires between currentStage update and pendingSpawns write.
       // freshMetaForSpawn reads AFTER the clear above, so the subagent JOIN sees
       // advancedThisTurn=undefined (C2 safe — see reaudit Minor 2 alignment).
       const freshMetaForSpawn = ctx.session.getMeta() as SessionMeta;
@@ -1566,6 +1558,15 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           runtimeCtx: ctx,
         },
       );
+
+      // Success audit for non-terminal advance (after spawn to maintain ordering)
+      await safeWriteStageAudit(config, "stage_advance", meta, {
+        fromStage: currentStage,
+        toStage: resolvedTarget,
+        override: argNextStage ? "yes" : "no",
+      });
+
+      ui.transition(ctx, currentStage, resolvedTarget);
 
       // Tool-path C2 guard (aligned with routeConfirmReject, line ~416-418):
       // If the full spawn chain failed (no RPC, no fallback, no deferred), re-set

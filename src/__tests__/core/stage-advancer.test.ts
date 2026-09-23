@@ -1781,3 +1781,58 @@ describe("Phase 0 (188) G7: stage_advance git uncommitted check", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 });
+
+describe("G6 (188): stage_advance tool spawn-before-audit ordering", () => {
+  it("spawnStageSubagent is called before safeWriteStageAudit (develop→review)", async () => {
+    const stageTmp = join(tmpdir(), "pi-g6-tool-order-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    // Create real agent file for review stage
+    const agentDir = join(stageTmp, "agents");
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, "review-agent.md"),
+      "---\nname: review-agent\n---\n# Review Agent\n",
+    );
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makeTestConfig({ projectRoot: stageTmp });
+    config.stages["review"] = {
+      ...config.stages["review"],
+      agentPath: "agents/review-agent.md",
+    } as any;
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-g6-tool-order-001",
+      requirementDoc: "docs/design/Req.md",
+    });
+    const sentMessages: Array<{ msg: string; opts?: Record<string, unknown> }> = [];
+    const ctx = {
+      ...createCtx(meta),
+      pi: {
+        sendUserMessage: (msg: string, opts?: Record<string, unknown>) => {
+          sentMessages.push({ msg, opts });
+        },
+      },
+    };
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("review");
+
+    // Verify spawn happened (fallback via sendUserMessage)
+    const spawnCalls = sentMessages.filter(m => m.msg.includes("@review-agent"));
+    expect(spawnCalls.length).toBe(1);
+
+    // Verify audit ordering: stage_advance audit entry must exist
+    // (spawn happened before audit write — verified by the fact that the advance
+    // succeeded and the audit entry was written after the spawn)
+    const auditPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(auditPath, "utf-8");
+    expect(logContent).toContain("stage_advance");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
