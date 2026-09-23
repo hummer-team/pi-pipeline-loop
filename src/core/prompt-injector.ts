@@ -756,6 +756,21 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         }
       }
 
+      // G1 (188): TUI workaround — notify user of their actual input text.
+      // The TUI input box may display stale content from a previous turn.
+      // By echoing the latest user message, we let the user confirm what they sent.
+      // Only when pipeline is active (meta exists and flowState is not aborted).
+      if (meta && meta.flowState !== "aborted") {
+        try {
+          const userText = extractLastUserMessageText(ctx._ctx as Parameters<typeof extractLastUserMessageText>[0]);
+          if (userText) {
+            ctx.ui.notify("Your input: " + userText);
+          }
+        } catch {
+          // Fail-open: notify must never block prompt injection
+        }
+      }
+
       return { systemPrompt };
     },
   };

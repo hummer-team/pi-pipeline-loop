@@ -1893,6 +1893,112 @@ describe("Phase 1 (183): skillsDedup wiring and audit events", () => {
   });
 });
 
+// ── G1 (188): notify user input in before_agent_start ──────────────────────
+
+describe("G1 (188): notify user input text in before_agent_start", () => {
+  it("has user message + active pipeline → notify called with text", async () => {
+    const TMP = join(tmpdir(), "pi-g1-notify-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const notifications: string[] = [];
+
+    const hook = createPromptInjector(config);
+    await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: (msg: string) => notifications.push(msg), setStatus: () => {} },
+      getSystemPrompt: () => "base prompt",
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [{ type: "message", message: { role: "user", content: "Please implement the feature" } }],
+          getEntries: () => [],
+        },
+      },
+    } as any);
+
+    expect(notifications.some(n => n.includes("Your input:") && n.includes("Please implement the feature"))).toBe(true);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("no user message → notify not called", async () => {
+    const TMP = join(tmpdir(), "pi-g1-nomsg-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const notifications: string[] = [];
+
+    const hook = createPromptInjector(config);
+    await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: (msg: string) => notifications.push(msg), setStatus: () => {} },
+      getSystemPrompt: () => "base prompt",
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [], // No messages
+          getEntries: () => [],
+        },
+      },
+    } as any);
+
+    expect(notifications.filter(n => n.includes("Your input:"))).toHaveLength(0);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("no meta (dormant) → notify not called", async () => {
+    const TMP = join(tmpdir(), "pi-g1-nometa-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const notifications: string[] = [];
+
+    const hook = createPromptInjector(config);
+    await hook.handler({
+      session: { getMeta: () => undefined, updateMeta: () => undefined },
+      ui: { notify: (msg: string) => notifications.push(msg), setStatus: () => {} },
+      getSystemPrompt: () => "base prompt",
+    } as any);
+
+    expect(notifications.filter(n => n.includes("Your input:"))).toHaveLength(0);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("flowState=aborted → notify not called", async () => {
+    const TMP = join(tmpdir(), "pi-g1-aborted-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "aborted" });
+    const notifications: string[] = [];
+
+    const hook = createPromptInjector(config);
+    await hook.handler({
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: (msg: string) => notifications.push(msg), setStatus: () => {} },
+      getSystemPrompt: () => "base prompt",
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [{ type: "message", message: { role: "user", content: "Some input" } }],
+          getEntries: () => [],
+        },
+      },
+    } as any);
+
+    // Dormant guard returns early — no notify
+    expect(notifications.filter(n => n.includes("Your input:"))).toHaveLength(0);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});
+
 // ─── Utility ──────────────────────────────────────────────────────────────────
 
 function countOccurrences(haystack: string, needle: string): number {
