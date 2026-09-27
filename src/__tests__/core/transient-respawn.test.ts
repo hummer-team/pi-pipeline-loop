@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, jest } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, jest } from "bun:test";
 import { maybeRespawnAfterTransientFailure } from "../../core/agent-settled";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import type { RuntimeCtx } from "../../core/runtime-ctx";
@@ -75,6 +75,11 @@ describe("Phase 2: Transient-failure auto re-spawn", () => {
     } as unknown as RuntimeCtx;
 
     jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    // Restore all mocks to prevent pollution of subsequent test files
+    jest.restoreAllMocks();
   });
 
   describe("Guard conditions", () => {
