@@ -198,6 +198,7 @@ export async function executeDecision(
         verifyAttempts: 0,
         verifyFailures: [],
         violations: [],
+        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
         ...(meta.currentStage === "awaiting_human"
           ? {
               currentStage: meta.previousStage ?? "clarify",
@@ -251,6 +252,7 @@ export async function executeDecision(
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
+        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
         // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
         confirmGateDeferredAt: undefined,
         ...summariesPatch,
@@ -309,6 +311,7 @@ export async function executeDecision(
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
+        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
         // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
         confirmGateDeferredAt: undefined,
         ...summariesPatch,
@@ -353,6 +356,7 @@ export async function executeDecision(
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
+        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
         // Phase 4 (169): clear terminal compaction flag on restart
         terminalCompact: undefined,
         // Phase 1 (180): restart starts a fresh pipeline — clear the deferral stamp.

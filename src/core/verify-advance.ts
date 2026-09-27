@@ -175,6 +175,7 @@ export async function applyVerifyPass(
       violations: [],
       advancedThisTurn: undefined, // Clear C2 flag on stage transition
       reviewConclusionDeclared: undefined, // Clear 163 declaration flag on stage transition
+      precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
     });
 
     // Phase 0 (186): clear all pendingSpawns when advancing to terminal completed stage.

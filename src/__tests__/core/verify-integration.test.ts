@@ -794,9 +794,9 @@ Verify develop commit doc.`,
     const histDir = path.join(TMP, "docs", "design");
     await fs.mkdir(histDir, { recursive: true });
     const pipelineId = "pipe-test-phase3";
-    // File name must match narrowed glob: docs/design/80_Req_*_commit.md
+    // File name must match exact narrowed path: docs/design/80_Req_plan_commit.md (189 Phase 0)
     await fs.writeFile(
-      path.join(histDir, "80_Req_dev_commit.md"),
+      path.join(histDir, "80_Req_plan_commit.md"),
       `**plan doc**: \`docs/design/80_Req_plan.md\`\n**pipeline**: ${pipelineId}\n`,
     );
 
@@ -841,9 +841,9 @@ Verify pipelineId in commit doc.`,
   it("commit.md WITHOUT pipelineId → FAIL when fileContentPattern requires it", async () => {
     const histDir = path.join(TMP, "docs", "design");
     await fs.mkdir(histDir, { recursive: true });
-    // File name matches narrowed glob but content lacks pipelineId
+    // File name matches exact narrowed path but content lacks pipelineId (189 Phase 0)
     await fs.writeFile(
-      path.join(histDir, "80_Req_dev_commit.md"),
+      path.join(histDir, "80_Req_plan_commit.md"),
       "**plan doc**: `docs/design/80_Req_plan.md`\n",
     );
 

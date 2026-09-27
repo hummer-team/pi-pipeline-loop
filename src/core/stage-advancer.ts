@@ -1370,16 +1370,45 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
       // reviewConclusion === "pass" or not provided → fall through to original verify + confirm gate flow
 
+      // 189 Bug 3: Entry check — if precheckBlocked flag is set for current stage,
+      // re-run precheck and block again if still failing (closes bypass path via skipVerify)
+      if (meta.precheckBlocked?.stage === currentStage) {
+        const precheckRetry = await precheckRequiredFiles(config, meta);
+        if (!precheckRetry.passed) {
+          // Still failing — return identical block + audit hardstop
+          await safeWriteStageAudit(config, "stage_advance_precheck_hardstop", meta, {
+            stage: currentStage,
+            missing: precheckRetry.missing.join(","),
+          }, "warn");
+          return {
+            success: false,
+            message: `Required deliverables not yet produced. Please create: ${precheckRetry.missing.join(", ")}`,
+            precheck: true,
+            missing: precheckRetry.missing,
+          };
+        }
+        // Precheck now passes — clear the flag and continue
+        ctx.session.updateMeta({ precheckBlocked: undefined });
+      }
+
       // (d) Verification gate: run when stage requires it (unless skipVerify is valid)
       const argSkipVerify = args.skipVerify === true;
       if (stageConfig.verify?.require && !argSkipVerify) {
         // P1: Pre-check required files before running full verification
         const precheck = await precheckRequiredFiles(config, meta);
         if (!precheck.passed) {
+          // 189 Bug 3: persist hard-stop flag to prevent bypass via skipVerify
+          ctx.session.updateMeta({
+            precheckBlocked: {
+              stage: currentStage,
+              missing: precheck.missing,
+              at: Date.now(),
+            },
+          });
           // Required files not yet produced — return guidance without failure/freeze
           return {
             success: false,
-            message: `Required deliverables not yet produced. Please create: ${precheck.missing.join(", ")}`,
+            message: `Required deliverables not yet produced. Please create: ${precheck.missing.join(", ")}. Verify whether ALL phases planned in the plan doc are registered under '**dev commit id**' in the commit doc. Append missing commit ids, commit them, then call stage_advance again.`,
             precheck: true,
             missing: precheck.missing,
           };
@@ -1555,6 +1584,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         verifyConfigError: undefined,
         violations: [],
         advancedThisTurn: undefined,
+        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
       });
 
       if (resolvedTarget === null || resolvedTarget === "completed") {

@@ -1846,3 +1846,209 @@ describe("G6 (188): stage_advance tool spawn-before-audit ordering", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
+
+// ─── Phase 1 (189): precheck hard-stop via precheckBlocked flag ───────────────
+
+describe("Phase 1 (189): precheck hard-stop via precheckBlocked flag", () => {
+  it("A. precheck fail → response contains precheck: true AND meta.precheckBlocked persisted", async () => {
+    const TMP = join(tmpdir(), "pi-precheck-hardstop-A-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP, ".pi", "references", "develop_spec"), { recursive: true });
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      nextStage: "review",
+      verify: { require: true },
+    } as any;
+    await initAuditLog(config);
+
+    // Create verify.md with requiredFiles rule for commit doc
+    await writeFile(
+      join(TMP, ".pi", "references", "develop_spec", "verify.md"),
+      `---
+rules:
+  path: "docs/design/*_commit.md"
+  groups:
+    - name: commit-ready
+      ruleMode: and
+      rules:
+        - type: requiredFile
+---
+Verify commit doc exists.`,
+      "utf-8"
+    );
+
+    // requirementDoc is set, but commit doc does NOT exist yet
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/Req.md",
+    });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    // Precheck should fail (commit doc missing)
+    expect(result.success).toBe(false);
+    expect(result.precheck).toBe(true);
+    expect(result.missing).toBeDefined();
+    expect(result.missing.length).toBeGreaterThan(0);
+
+    // meta.precheckBlocked should be persisted
+    expect(meta.precheckBlocked).toBeDefined();
+    expect(meta.precheckBlocked!.stage).toBe("develop");
+    expect(meta.precheckBlocked!.missing).toEqual(result.missing);
+    expect(meta.precheckBlocked!.at).toBeGreaterThan(0);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("B. flag set + second call with skipVerify → blocked again, hardstop audit written", async () => {
+    const TMP = join(tmpdir(), "pi-precheck-hardstop-B-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP, ".pi", "references", "develop_spec"), { recursive: true });
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      nextStage: "review",
+      verify: { require: true },
+    } as any;
+    await initAuditLog(config);
+
+    // Create verify.md with requiredFiles rule for commit doc
+    await writeFile(
+      join(TMP, ".pi", "references", "develop_spec", "verify.md"),
+      `---
+rules:
+  path: "docs/design/*_commit.md"
+  groups:
+    - name: commit-ready
+      ruleMode: and
+      rules:
+        - type: requiredFile
+---
+Verify commit doc exists.`,
+      "utf-8"
+    );
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/Req.md",
+      precheckBlocked: {
+        stage: "develop",
+        missing: ["docs/design/Req_plan_commit.md"],
+        at: Date.now() - 1000,
+      },
+    });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    // Second call with skipVerify:true should still be blocked by entry check
+    const result = (await tool.execute({ skipVerify: true }, ctx as any)) as any;
+
+    expect(result.success).toBe(false);
+    expect(result.precheck).toBe(true);
+
+    // Verify hardstop audit was written
+    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditContent = await readFile(auditPath, "utf-8");
+    expect(auditContent).toContain("stage_advance_precheck_hardstop");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("C. flag set + file now present → flag cleared, advance proceeds", async () => {
+    const TMP = join(tmpdir(), "pi-precheck-hardstop-C-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      nextStage: "review",
+      verify: { require: true },
+    } as any;
+    await initAuditLog(config);
+
+    // Pre-create the commit doc file
+    const commitDocPath = join(TMP, "docs", "design", "Req_plan_commit.md");
+    await writeFile(
+      commitDocPath,
+      "**plan doc**: docs/design/Req_plan.md\n**pipeline**: pipe-test-001\n",
+      "utf-8"
+    );
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-test-001",
+      requirementDoc: "docs/design/Req.md",
+      precheckBlocked: {
+        stage: "develop",
+        missing: ["docs/design/Req_plan_commit.md"],
+        at: Date.now() - 1000,
+      },
+    });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    // Call stage_advance — should clear flag and proceed
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    // Should succeed (advance to review)
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("review");
+
+    // precheckBlocked should be cleared
+    expect(meta.precheckBlocked).toBeUndefined();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("D. flag written for develop, meta later at fix → entry check ignores stale flag", async () => {
+    const TMP = join(tmpdir(), "pi-precheck-hardstop-D-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    config.stages["fix"] = {
+      ...config.stages["fix"],
+      nextStage: "review",
+      verify: { require: true },
+    } as any;
+    await initAuditLog(config);
+
+    // Pre-create the commit doc file for fix stage
+    const commitDocPath = join(TMP, "docs", "design", "Req_plan_commit.md");
+    await writeFile(
+      commitDocPath,
+      "**plan doc**: docs/design/Req_plan.md\n**pipeline**: pipe-test-001\n",
+      "utf-8"
+    );
+
+    // Flag is set for "develop" but current stage is "fix"
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: "pipe-test-001",
+      requirementDoc: "docs/design/Req.md",
+      precheckBlocked: {
+        stage: "develop", // stale flag from different stage
+        missing: ["docs/design/Req_plan_commit.md"],
+        at: Date.now() - 1000,
+      },
+    });
+    const ctx = createCtx(meta);
+    const tool = createStageAdvancer(config);
+
+    // Should ignore stale flag and proceed normally
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    // Should succeed (advance to review)
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("review");
+
+    // precheckBlocked should be cleared on advance
+    expect(meta.precheckBlocked).toBeUndefined();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

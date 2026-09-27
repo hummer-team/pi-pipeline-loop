@@ -584,6 +584,18 @@ export interface SessionMeta {
    * - Cleared on pipeline reset / restart (new meta = fresh flags)
    */
   readOnlyIntersectionWarned?: Record<string, boolean>;
+
+  /**
+   * 189 Bug 3: hard-stop marker written when stage_advance precheck fails.
+   *
+   * Lifecycle:
+   * - Written when precheckRequiredFiles fails in stage_advance tool
+   * - Checked at entry of stage_advance: if set for current stage, re-run precheck
+   *   and block again if still failing (closes the bypass path via skipVerify)
+   * - Cleared when: precheck passes, stage transitions, or decision actions
+   *   (resume/skip/rollback/restart)
+   */
+  precheckBlocked?: { stage: PipelineStage; missing: string[]; at: number };
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
