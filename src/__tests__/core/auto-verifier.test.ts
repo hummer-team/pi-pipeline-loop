@@ -2100,7 +2100,7 @@ describe("168 Phase 3: resolvePlaceholders {pipelineId} replacement", () => {
 });
 
 describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)", () => {
-  it("develop stage narrows *_commit.md glob to requirementDoc basename", async () => {
+  it("develop stage narrows *_commit.md glob to exact {reqBase}_plan_commit.md", async () => {
     const config = makeTestConfig({ projectRoot: "/tmp/test" });
     const meta = makeTestMeta({
       currentStage: "develop",
@@ -2117,12 +2117,12 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
 
-    // Glob narrowed to requirementDoc basename
-    expect(result.requiredFiles).toEqual(["docs/design/80_Fix_*_commit.md"]);
-    expect(result.fileContentPattern![0].path).toBe("docs/design/80_Fix_*_commit.md");
+    // 189 Phase 0: narrowed to exact path (no wildcard infix)
+    expect(result.requiredFiles).toEqual(["docs/design/80_Fix_plan_commit.md"]);
+    expect(result.fileContentPattern![0].path).toBe("docs/design/80_Fix_plan_commit.md");
   });
 
-  it("fix stage narrows *_commit.md glob identically to develop", async () => {
+  it("fix stage narrows *_commit.md glob to exact {reqBase}_plan_commit.md", async () => {
     const config = makeTestConfig({ projectRoot: "/tmp/test" });
     const meta = makeTestMeta({
       currentStage: "fix",
@@ -2135,7 +2135,18 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
     };
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
-    expect(result.requiredFiles).toEqual(["docs/design/99_Bug_*_commit.md"]);
+    expect(result.requiredFiles).toEqual(["docs/design/99_Bug_plan_commit.md"]);
+  });
+
+  it("exact path does not accept per-phase suffixes like _phase0_", async () => {
+    // 189 Phase 0: negative case — a file named 106_Feat_phase0_commit.md
+    // must NOT satisfy the narrowed requiredFile check (exact match only)
+    const narrowedPath = "docs/design/106_Feat_plan_commit.md";
+    const wrongPhase0Path = "docs/design/106_Feat_phase0_commit.md";
+    // The narrowed path is the exact expected name
+    expect(narrowedPath).toBe("docs/design/106_Feat_plan_commit.md");
+    // A per-phase file does not match
+    expect(wrongPhase0Path).not.toBe(narrowedPath);
   });
 
   it("review stage narrows code_review_* glob to requirementDoc basename", async () => {

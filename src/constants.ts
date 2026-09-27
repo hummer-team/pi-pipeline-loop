@@ -288,18 +288,22 @@ export const DEFAULT_READONLY_WRITE_PATHS = ["docs/", "doc/", "documentation/"];
 export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
 
-// ─── Commit Doc Naming Constraint (Phase 3 / 182) ─────────────────────────────
+// ─── Commit Doc Naming Constraint (Phase 3 / 182, Phase 0 / 189) ─────────────
 
 /**
  * Naming constraint for `*_commit.md` deliverables (develop/fix stages).
- * MUST derive from the requirement doc basename (`{reqBase}_*_commit.md`),
- * MUST NOT be derived from the plan doc name.
+ *
+ * 189 Phase 0: Narrowed from the loose `{reqBase}_*_commit.md` pattern to the
+ * exact filename `{reqBase}_plan_commit.md`. Per-phase commit ids are appended
+ * to a single file's `**dev commit id**` line; never split into per-phase files.
+ * This eliminates `_phase0_`, `_dev_`, `_develop_` drift that previously
+ * bypassed verification (audit 106_Feat commit-doc misname).
  *
  * Appended to the stage deliverables prompt by prompt-injector so the model
  * sees the constraint at the point of writing commit docs.
  */
 export const COMMIT_DOC_NAMING_CONSTRAINT =
-  "Commit doc files (`*_commit.md`) MUST derive their name from the requirement document basename (pattern: `{reqBase}_*_commit.md`). They MUST NOT be named after the plan document.";
+  "Commit doc file MUST be named exactly `{reqBase}_plan_commit.md` (e.g. `106_Feat.md` → `docs/design/106_Feat_plan_commit.md`). Per-phase commit ids MUST be appended to the single file's `**dev commit id**` line; NEVER create per-phase files (`_phase0_`, `_dev_`, `_develop_` suffixes forbidden).";
 
 /** Default write scope by stage type (tools and bash prefixes no longer restricted) */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<

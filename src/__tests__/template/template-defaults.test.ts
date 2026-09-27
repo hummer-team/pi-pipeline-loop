@@ -473,9 +473,10 @@ describe("Phase 3 (182): COMMIT_DOC_NAMING_CONSTRAINT constant & injection", () 
   it("COMMIT_DOC_NAMING_CONSTRAINT is exported and contains the naming rule", () => {
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toBeDefined();
     expect(typeof COMMIT_DOC_NAMING_CONSTRAINT).toBe("string");
-    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("*_commit.md");
-    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("reqBase");
+    // 189 Phase 0: must specify the exact {reqBase}_plan_commit.md rule
+    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("{reqBase}_plan_commit.md");
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("MUST");
+    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("dev commit id");
   });
 });
 

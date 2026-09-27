@@ -162,7 +162,8 @@ export async function planDocHasConfirmMarker(planDocPath: string): Promise<bool
  *
  * 168 Phase 3: Extended beyond "plan" stage to cover develop/fix/review.
  * - plan: `docs/design/*_plan.md` → concrete plan doc path (via resolvePlanDocPath)
- * - develop/fix: `docs/design/*_commit.md` → `docs/design/{reqBase}_*_commit.md`
+ * - develop/fix: `docs/design/*_commit.md` → `docs/design/{reqBase}_plan_commit.md`
+ *   (189 Phase 0: narrowed to exact path — no wildcard infix allowed)
  * - review: `docs/review/code_review_*.md` → `docs/review/code_review_{reqBase}*.md`
  *
  * When `meta.requirementDoc` is empty, globs are preserved as-is (fallback).
@@ -201,8 +202,11 @@ export async function applyConcreteStageDocPaths(
   }
 
   if (stage === "develop" || stage === "fix") {
-    // Narrow commit doc glob to requirementDoc basename
-    concreteGlob = `docs/design/${reqBase}_*_commit.md`;
+    // 189 Phase 0: Narrow commit doc glob to exact path (no wildcard infix).
+    // Any commit doc MUST be named `{reqBase}_plan_commit.md` — this replaces
+    // the loose `{reqBase}_*_commit.md` pattern that previously accepted
+    // per-phase suffixes like `_phase0_`, `_dev_`, `_develop_` drift.
+    concreteGlob = `docs/design/${reqBase}_plan_commit.md`;
     return replaceGlobInRules(result, isCommitDocGlob, concreteGlob);
   }
 
