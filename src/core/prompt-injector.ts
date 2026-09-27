@@ -550,7 +550,6 @@ function buildStageWriteScope(
 function buildRunHealthWarning(ctx: RuntimeCtx): string | null {
   try {
     const health = detectLastRunHealth(ctx._ctx as Parameters<typeof detectLastRunHealth>[0]);
-    
     if (health.kind === "truncated") {
       return [
         `# RUN TRUNCATION WARNING`,

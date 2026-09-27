@@ -67,7 +67,7 @@ describe("Phase 2: Transient-failure auto re-spawn", () => {
         },
       },
       ui: {
-        notify: (_ctx: unknown, msg: string) => {
+        notify: (msg: string) => {
           notifyCalls.push(msg);
         },
       },
@@ -128,6 +128,7 @@ describe("Phase 2: Transient-failure auto re-spawn", () => {
         pipelineId: "test-pipeline-123",
         stage: "develop",
         attempt: "1",
+        basis: "rpc",
         missing: "docs/design/189_req_plan.md, docs/design/189_plan_commit.md",
       });
     });
@@ -259,8 +260,8 @@ describe("Phase 2: Transient-failure auto re-spawn", () => {
         "warn",
       );
 
-      // Verify UI notification
-      expect(notifyCalls.some(n => n.includes("transient failure retry limit exceeded"))).toBe(true);
+      // Verify UI notification (freezeAndPrompt uses its own message format)
+      expect(notifyCalls.some(n => typeof n === 'string' && n.includes("Pipeline blocked: transient_retry_overflow"))).toBe(true);
     });
 
     test("D2. transientRetryCount = 1 (below limit) → spawn succeeds, count incremented to 2", async () => {
@@ -293,6 +294,7 @@ describe("Phase 2: Transient-failure auto re-spawn", () => {
         pipelineId: "test-pipeline-123",
         stage: "develop",
         attempt: "2",
+        basis: "rpc",
         missing: "docs/design/189_req_plan.md",
       });
     });
@@ -327,6 +329,7 @@ describe("Phase 2: Transient-failure auto re-spawn", () => {
         pipelineId: "test-pipeline-123",
         stage: "develop",
         attempt: "1",
+        basis: "rpc",
         missing: "docs/design/189_req_plan.md",
       });
     });
@@ -403,6 +406,7 @@ describe("Phase 2: Transient-failure auto re-spawn", () => {
         pipelineId: "test-pipeline-123",
         stage: "fix",
         attempt: "1",
+        basis: "rpc",
         missing: "docs/design/189_fix_commit.md",
       });
     });

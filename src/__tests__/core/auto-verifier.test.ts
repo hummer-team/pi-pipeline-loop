@@ -2141,12 +2141,51 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
   it("exact path does not accept per-phase suffixes like _phase0_", async () => {
     // 189 Phase 0: negative case — a file named 106_Feat_phase0_commit.md
     // must NOT satisfy the narrowed requiredFile check (exact match only)
-    const narrowedPath = "docs/design/106_Feat_plan_commit.md";
-    const wrongPhase0Path = "docs/design/106_Feat_phase0_commit.md";
-    // The narrowed path is the exact expected name
-    expect(narrowedPath).toBe("docs/design/106_Feat_plan_commit.md");
-    // A per-phase file does not match
-    expect(wrongPhase0Path).not.toBe(narrowedPath);
+    // Create a temp directory with only the wrong file
+    const testTmp = path.join(tmpdir(), "pi-narrow-test-" + Date.now());
+    await fs.mkdir(path.join(testTmp, "docs", "design"), { recursive: true });
+    
+    // Create only the wrong file (with _phase0_ suffix)
+    const wrongFile = path.join(testTmp, "docs", "design", "106_Feat_phase0_commit.md");
+    await fs.writeFile(wrongFile, "# Commit doc", "utf-8");
+    
+    // Set up config and meta for develop stage
+    const config = makeTestConfig({ projectRoot: testTmp });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "docs/design/106_Feat.md",
+    });
+    
+    // Create a verify.md that requires the commit doc
+    const vrPath = path.join(testTmp, "verify.md");
+    await fs.writeFile(
+      vrPath,
+      "---\n" +
+        "rules:\n" +
+        "  requiredFiles:\n" +
+        '    - "docs/design/*_commit.md"\n' +
+        "---\n" +
+        "Verify\n",
+      "utf-8",
+    );
+    
+    // Update config to use this verify file
+    config.stages.develop = {
+      ...config.stages.develop,
+      verify: { require: true, verifyFile: "verify.md" },
+    } as any;
+    
+    // Run precheck - it should fail because the narrowed path (106_Feat_plan_commit.md) doesn't exist
+    const result = await precheckRequiredFiles(config, meta);
+    
+    // The narrowing should have converted the glob to the exact path
+    // Since only 106_Feat_phase0_commit.md exists (not 106_Feat_plan_commit.md), the check should fail
+    expect(result.passed).toBe(false);
+    expect(result.missing).toContain("docs/design/106_Feat_plan_commit.md");
+    expect(result.missing).not.toContain("docs/design/106_Feat_phase0_commit.md");
+    
+    // Cleanup
+    await fs.rm(testTmp, { recursive: true, force: true });
   });
 
   it("review stage narrows code_review_* glob to requirementDoc basename", async () => {

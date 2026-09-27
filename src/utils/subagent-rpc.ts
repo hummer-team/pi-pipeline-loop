@@ -473,6 +473,8 @@ export async function handleFixExecutorCompleted(
       session: opts.session!,
       ui: { notify: ui.notify },
       pi,
+      // 189 Issue 8: Include runtimeCtx for isChildRuntimeCtx detection
+      ...(opts.runtimeCtx ? { _ctx: opts.runtimeCtx, runtimeCtx: opts.runtimeCtx } : {}),
     };
 
     // Build PipelineUI from config
@@ -595,7 +597,7 @@ export async function spawnStageSubagent(
   // 3b. Phase 2 / 177 (D4③): child/clone contexts must not spawn in place.
   // Enqueue for the owner session, which consumes pendingSpawns on agent_settled.
   if (opts?.session && isChildRuntimeCtx(opts.runtimeCtx)) {
-    enqueuePendingSpawn(opts.session, stage, agentName);
+    enqueuePendingSpawn(opts.session, stage, agentName, opts.extraArgs);
     await safeWriteAuditLog("stage_spawn_routed_to_owner", {
       pipelineId: meta.pipelineId,
       stage,
@@ -796,7 +798,7 @@ const SUBAGENT_NAME_PATTERN = /^[a-z0-9-]+#[0-9a-f]{8}$/;
  * @param runtimeCtx - Raw runtime context (structural)
  * @returns true when the context belongs to a child/clone session
  */
-function isChildRuntimeCtx(runtimeCtx: unknown): boolean {
+export function isChildRuntimeCtx(runtimeCtx: unknown): boolean {
   const sm = (runtimeCtx as {
     _ctx?: {
       sessionManager?: {

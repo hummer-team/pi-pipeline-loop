@@ -12,7 +12,7 @@ import { writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
-import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry, formatDecisionMenuHint } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
 import { isDormant } from "./dormancy";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
@@ -31,14 +31,14 @@ import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { AUDIT_THROTTLE_WINDOW_MS, CONFIRM_GATE_REASK_MAX, PIPELINE_TURN_SIGNATURES, TRANSIENT_RETRY_MAX } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
-import { consumePendingSpawns, resolveAgentMention, spawnStageSubagent } from "../utils/subagent-rpc";
+import { consumePendingSpawns, resolveAgentMention, spawnStageSubagent, isChildRuntimeCtx } from "../utils/subagent-rpc";
 import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // Phase 0 (182) G5: name-probe for advance liveness guard
 import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { detectSessionRole } from "./session-role";
 import { escapeRegExp } from "../utils/regex-utils";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen re-popup
-import { dispatchAfterResume } from "../commands/pipeline-start";
+import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
 import type { SessionMeta as AgentSettledSessionMeta } from "../types";
 
 /**
@@ -735,17 +735,15 @@ export async function maybeRespawnAfterTransientFailure(
     // Check retry budget
     const retryCount = meta.transientRetryCount ?? 0;
     if (retryCount >= TRANSIENT_RETRY_MAX) {
-      // Over limit → freeze pipeline
+      // Over limit → freeze pipeline via freezeAndPrompt (reuses blocked machinery)
       await writeAuditLog("transient_retry_overflow_frozen", {
         pipelineId: meta.pipelineId,
         stage,
         attempt: String(retryCount),
       }, "warn");
-      ctx.session.updateMeta({
-        flowState: "blocked",
-        blockedReason: "transient_retry_overflow",
+      await freezeAndPrompt(ctx, meta, "transient_retry_overflow", config, {
+        onStageChanged: buildOnStageChangedCallback(ctx, config),
       });
-      ui.notify(ctx, `Pipeline blocked: transient failure retry limit exceeded. ${formatDecisionMenuHint()}`);
       return;
     }
 
@@ -766,17 +764,9 @@ export async function maybeRespawnAfterTransientFailure(
     const missingList = precheck.missing.join(", ");
     const extraArgs = `\n\n[plugin auto-respawn] Previous run terminated unexpectedly (transient failure). Read ${missingList} first: phases whose commit ids are already registered are DONE — resume from the first unregistered phase; never re-execute completed phases.`;
 
-    // Audit the re-spawn
-    await writeAuditLog("transient_auto_respawn", {
-      pipelineId: meta.pipelineId,
-      stage,
-      attempt: String(newCount),
-      missing: missingList,
-    });
-
     // Spawn the stage executor with breakpoint prompt
     const freshMeta = ctx.session.getMeta() as SessionMeta;
-    await spawnStageSubagent(
+    const spawnResult = await spawnStageSubagent(
       (ctx as { pi?: unknown }).pi,
       config,
       stage,
@@ -788,6 +778,22 @@ export async function maybeRespawnAfterTransientFailure(
         extraArgs,
       },
     );
+
+    // Determine basis for audit: rpc (normal spawn), fallback (followUp), or pending_queued (child→owner route)
+    const basis = isChildRuntimeCtx(ctx)
+      ? "pending_queued"
+      : spawnResult.fallback
+        ? "fallback"
+        : "rpc";
+
+    // Audit the re-spawn
+    await writeAuditLog("transient_auto_respawn", {
+      pipelineId: meta.pipelineId,
+      stage,
+      attempt: String(newCount),
+      basis,
+      missing: missingList,
+    });
   } catch (err) {
     // Fail-open: re-spawn error must never block settle flow
     const errMsg = err instanceof Error ? err.message : String(err);

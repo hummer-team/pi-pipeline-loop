@@ -1702,6 +1702,93 @@ describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 
+  it("failed_transient last run → injects TRANSIENT FAILURE RECOVERY section", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-transient-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Test Skill\nContent", "utf-8");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+
+    // Simulate a failed transient last assistant message (error + errorMessage)
+    const transientEntries = [
+      {
+        type: "message",
+        id: "msg-transient-001",
+        message: { 
+          role: "assistant", 
+          content: "partial output...", 
+          stopReason: "error",
+          errorMessage: "Model API timeout"
+        },
+      },
+    ];
+
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      toolCall: { name: "read", arguments: {} },
+      result: undefined,
+      _ctx: { sessionManager: { getBranch: () => transientEntries, getEntries: () => transientEntries } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    const prompt = (result as any)?.systemPrompt ?? "";
+    expect(prompt).toContain("# TRANSIENT FAILURE RECOVERY");
+    expect(prompt).toContain("terminated unexpectedly");
+    expect(prompt).toContain("Resume from the last registered breakpoint");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("aborted last run with errorMessage → injects TRANSIENT FAILURE RECOVERY section", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-aborted-" + Date.now());
+    const skillDir = join(TMP, ".pi", "skills", "test-skill");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# Test Skill\nContent", "utf-8");
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop", flowState: "running" });
+
+    // Simulate an aborted last assistant message with errorMessage
+    const abortedEntries = [
+      {
+        type: "message",
+        id: "msg-aborted-001",
+        message: { 
+          role: "assistant", 
+          content: "partial output...", 
+          stopReason: "aborted",
+          errorMessage: "User interrupted"
+        },
+      },
+    ];
+
+    const ctx = {
+      session: { getMeta: () => meta, updateMeta: () => meta },
+      ui: { notify: () => {}, setStatus: () => {} },
+      toolCall: { name: "read", arguments: {} },
+      result: undefined,
+      _ctx: { sessionManager: { getBranch: () => abortedEntries, getEntries: () => abortedEntries } },
+      getSystemPrompt: () => "Base system prompt",
+    };
+
+    const hook = createPromptInjector(config);
+    const result = await hook.handler(ctx as any);
+
+    const prompt = (result as any)?.systemPrompt ?? "";
+    expect(prompt).toContain("# TRANSIENT FAILURE RECOVERY");
+    expect(prompt).toContain("terminated unexpectedly");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
   it("Phase 4 / 177 (D7): stage executor text says the plugin owns spawning (no model task self-call)", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "develop", previousStage: "plan" });

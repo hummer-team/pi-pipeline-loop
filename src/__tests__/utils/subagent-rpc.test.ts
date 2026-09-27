@@ -8,6 +8,7 @@ import {
   spawnStageSubagent,
   spawnClarifyStageSubagent,
   consumePendingSpawns,
+  enqueuePendingSpawn,
   clearAllPendingSpawns,
   __setDeferredSpawnPollMs,
   __resetDeferredSpawnPollMs,
@@ -1334,6 +1335,62 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
     expect(auditContent).toContain("stale_stage_mismatch");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("189 Issue 4: extraArgs round-trip — child enqueue with extraArgs → owner consume includes extraArgs in prompt", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-extraargs-roundtrip" });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    let spawnPayload: Record<string, unknown> | undefined;
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        spawnPayload = payload;
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-extraargs" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    // Step 1: Child context enqueues with extraArgs
+    const extraArgs = "\n\n[plugin auto-respawn] Resume from phase 3";
+    const childResult = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+      runtimeCtx: childRuntimeCtx,
+      extraArgs,
+    });
+
+    // Child should not spawn in place, should enqueue
+    expect(childResult.spawned).toBe(false);
+    expect(childResult.fallback).toBe(false);
+    expect(meta.pendingSpawns?.develop?.agentName).toBe("develop-agent");
+    expect(meta.pendingSpawns?.develop?.extraArgs).toBe(extraArgs);
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    // Step 2: Owner consumes pending spawns
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual(["develop"]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+
+    // Step 3: Verify spawn payload includes extraArgs
+    expect(spawnPayload).toBeDefined();
+    expect(spawnPayload?.prompt).toBeDefined();
+    const prompt = spawnPayload?.prompt as string;
+    expect(prompt).toContain(extraArgs);
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
