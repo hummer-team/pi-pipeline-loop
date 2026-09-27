@@ -2241,6 +2241,277 @@ describe("fix-executor-completion handler registration", () => {
   });
 });
 
+// Phase 0 (189): Event-driven dispatch tests (required by plan Phase 0 unit test objectives)
+describe("fix-executor-completion event-driven dispatch", () => {
+  // Helper to create a fix-stage config with agent file
+  function makeFixStageConfig() {
+    const tmpDir = path.join(tmpdir(), "pi-189-dispatch-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    fs.mkdirSync(path.join(tmpDir, "agents"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "agents", "fix-agent.md"),
+      "---\nname: fix-agent\n---\n# Fix Agent\n",
+    );
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        fix: {
+          agentPath: "agents/fix-agent.md",
+          nextStage: "review",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    return { config, tmpDir };
+  }
+
+  afterEach(() => {
+    // Always clear handler after each test to prevent cross-test leakage
+    setFixExecutorCompletedHandler(null);
+  });
+
+  it("handler registered: fix+completed → handler receives (pi, config, {ui, session, runtimeCtx})", async () => {
+    const { config, tmpDir } = makeFixStageConfig();
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: "pipe-dispatch-fix-completed",
+    });
+
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-dispatch-test" } }), 5);
+      }
+    };
+
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const mockUi = { notify: (msg: string) => {} };
+    const mockSession = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+    const mockRuntimeCtx = { test: "runtime-context" };
+
+    // Register spy handler to capture invocation
+    const handlerCalls: Array<{
+      pi: unknown;
+      config: any;
+      ctx: any;
+    }> = [];
+    const spyHandler: FixExecutorCompletedHandler = async (pi, cfg, ctx) => {
+      handlerCalls.push({ pi, config: cfg, ctx });
+    };
+    setFixExecutorCompletedHandler(spyHandler);
+
+    // Spawn fix stage subagent
+    const result = await spawnStageSubagent(mockPi, config, "fix", meta, {
+      ui: mockUi,
+      session: mockSession as any,
+      runtimeCtx: mockRuntimeCtx,
+    });
+
+    expect(result.spawned).toBe(true);
+    expect(result.fallback).toBe(false);
+
+    // Trigger completed event
+    bus.trigger("subagents:completed", { id: "sa-dispatch-test" });
+
+    // Wait for async handler invocation
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Assert handler was called exactly once
+    expect(handlerCalls.length).toBe(1);
+
+    // Assert handler received correct arguments
+    const call = handlerCalls[0];
+    expect(call.pi).toBe(mockPi);
+    expect(call.config).toBe(config);
+
+    // Assert ctx shape: {ui, session, runtimeCtx}
+    expect(call.ctx).toBeDefined();
+    expect(call.ctx.ui).toBe(mockUi);
+    expect(call.ctx.session).toBe(mockSession);
+    expect(call.ctx.runtimeCtx).toBe(mockRuntimeCtx);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("handler NOT called for review+completed (stage mismatch)", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-189-dispatch-review-" + Date.now());
+    fs.mkdirSync(path.join(tmpDir, "agents"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "agents", "review-agent.md"),
+      "---\nname: review-agent\n---\n# Review Agent\n",
+    );
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        review: {
+          agentPath: "agents/review-agent.md",
+          nextStage: "fix",
+          requireDomain: false,
+        },
+      },
+    } as any);
+
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-dispatch-review-completed",
+    });
+
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-review-completed" } }), 5);
+      }
+    };
+
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const mockSession = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    // Register spy handler
+    let handlerCalled = false;
+    const spyHandler: FixExecutorCompletedHandler = async () => {
+      handlerCalled = true;
+    };
+    setFixExecutorCompletedHandler(spyHandler);
+
+    // Spawn review stage subagent
+    const result = await spawnStageSubagent(mockPi, config, "review", meta, {
+      ui: { notify: () => {} },
+      session: mockSession as any,
+    });
+
+    expect(result.spawned).toBe(true);
+
+    // Trigger completed event for review stage
+    bus.trigger("subagents:completed", { id: "sa-review-completed" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Assert handler was NOT called (only fix+completed triggers handler)
+    expect(handlerCalled).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("handler NOT called for fix+failed (event mismatch)", async () => {
+    const { config, tmpDir } = makeFixStageConfig();
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: "pipe-dispatch-fix-failed",
+    });
+
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-fix-failed" } }), 5);
+      }
+    };
+
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const mockSession = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    // Register spy handler
+    let handlerCalled = false;
+    const spyHandler: FixExecutorCompletedHandler = async () => {
+      handlerCalled = true;
+    };
+    setFixExecutorCompletedHandler(spyHandler);
+
+    // Spawn fix stage subagent
+    const result = await spawnStageSubagent(mockPi, config, "fix", meta, {
+      ui: { notify: () => {} },
+      session: mockSession as any,
+    });
+
+    expect(result.spawned).toBe(true);
+
+    // Trigger failed event (not completed)
+    bus.trigger("subagents:failed", { requestId: "sa-fix-failed" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Assert handler was NOT called (only completed triggers handler)
+    expect(handlerCalled).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("handler null (unregistered): fix+completed → no error, clearActiveSpawn still executes", async () => {
+    const { config, tmpDir } = makeFixStageConfig();
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: "pipe-dispatch-handler-null",
+      // Write an activeSpawns entry to verify it gets cleared
+      activeSpawns: {
+        fix: { agentName: "fix-agent", agentId: "sa-null-test", startedAt: Date.now() },
+      },
+    });
+
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-null-test" } }), 5);
+      }
+    };
+
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const mockSession = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    // Ensure handler is null (unregistered)
+    setFixExecutorCompletedHandler(null);
+    expect(__peekFixExecutorCompletedHandler()).toBeNull();
+
+    // Spawn fix stage subagent
+    const result = await spawnStageSubagent(mockPi, config, "fix", meta, {
+      ui: { notify: () => {} },
+      session: mockSession as any,
+    });
+
+    expect(result.spawned).toBe(true);
+
+    // Verify activeSpawns.fix exists before completed event
+    expect(meta.activeSpawns?.fix).toBeDefined();
+
+    // Trigger completed event - should NOT throw even with handler=null
+    expect(() => {
+      bus.trigger("subagents:completed", { id: "sa-null-test" });
+    }).not.toThrow();
+
+    // Wait for async processing
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Assert clearActiveSpawn was called (activeSpawns.fix cleared)
+    expect(meta.activeSpawns?.fix).toBeUndefined();
+
+    // Assert no errors were thrown (test would have failed if so)
+    // This verifies the unregistered handler path silently skips without error
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
 // Phase 0 (189): Static guard test - verify no runtime circular dependencies
 describe("static guard: no runtime circular dependencies", () => {
   it("subagent-rpc.ts has no runtime imports from ../core/ (type-only imports allowed)", async () => {

@@ -102,11 +102,20 @@ export async function handleFixExecutorCompleted(
     // The autoAdvanceAfterVerify ctx requires session, ui, pi, and for
     // isChildRuntimeCtx detection the original runtimeCtx as _ctx/runtimeCtx.
     // This preserves the 189 Issue 8 runtimeCtx transparent forwarding.
+    //
+    // Type derivation uses `Parameters<typeof autoAdvanceAfterVerify>[n]` to
+    // extract the exact parameter shapes from the callee signature without
+    // requiring verify-advance to export its internal interfaces. This
+    // preserves compile-time guard against parameter-shape drift (189 Phase 0).
+    type AutoAdvanceCtxParam = Parameters<typeof autoAdvanceAfterVerify>[1];
+    type AutoAdvanceResultParam = Parameters<typeof autoAdvanceAfterVerify>[5];
+
     const notify = ctx.ui?.notify ?? (() => {});
     const verifyCtx = {
       session: ctx.session!,
       ui: { notify },
-      pi,
+      // Cast pi to the expected structural shape (extracted from the callee signature)
+      pi: pi as AutoAdvanceCtxParam["pi"],
       // 189 Issue 8: Include runtimeCtx for isChildRuntimeCtx detection
       ...(ctx.runtimeCtx ? { _ctx: ctx.runtimeCtx, runtimeCtx: ctx.runtimeCtx } : {}),
     };
@@ -114,13 +123,11 @@ export async function handleFixExecutorCompleted(
     // Advance fix→review with skipPassAudit=true
     await autoAdvanceAfterVerify(
       config,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      verifyCtx as any,
+      verifyCtx as AutoAdvanceCtxParam,
       freshMeta,
       "fix",
       "review",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      emptySharedResult as any,
+      emptySharedResult as AutoAdvanceResultParam,
       pipelineUI,
       { skipPassAudit: true },
     );
