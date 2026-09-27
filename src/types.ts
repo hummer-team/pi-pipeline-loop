@@ -547,7 +547,7 @@ export interface SessionMeta {
    * - Consumed (and cleared) by the owner session in `agent_settled`
    * - `attempts` bounds idempotent re-delivery (max 1 re-delivery per stage)
    */
-  pendingSpawns?: Partial<Record<PipelineStage, { agentName: string; requestedAt: number; attempts: number }>>;
+  pendingSpawns?: Partial<Record<PipelineStage, { agentName: string; requestedAt: number; attempts: number; extraArgs?: string }>>;
 
   /**
    * Phase 3 / 177 (D5b): Bounded auto re-ask bookkeeping for an unresolved
@@ -596,6 +596,18 @@ export interface SessionMeta {
    *   (resume/skip/rollback/restart)
    */
   precheckBlocked?: { stage: PipelineStage; missing: string[]; at: number };
+
+  /**
+   * 189 Bug 1: auto re-spawn attempts after transient run failures.
+   * Cleared on stage transition/resume to grant fresh budget.
+   */
+  transientRetryCount?: number;
+
+  /**
+   * 189 Bug 1: message id of the last failed run handled for re-spawn (dedup).
+   * Mirrors lastTruncatedAuditMsgId pattern.
+   */
+  lastTransientRespawnMsgId?: string;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

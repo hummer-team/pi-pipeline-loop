@@ -1585,6 +1585,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         violations: [],
         advancedThisTurn: undefined,
         precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
+        transientRetryCount: undefined, // 189 Bug 1: clear retry counter on stage transition
       });
 
       if (resolvedTarget === null || resolvedTarget === "completed") {

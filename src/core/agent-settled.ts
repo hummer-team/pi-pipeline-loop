@@ -28,10 +28,10 @@ import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp, shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
-import { AUDIT_THROTTLE_WINDOW_MS, CONFIRM_GATE_REASK_MAX, PIPELINE_TURN_SIGNATURES } from "../constants";
+import { AUDIT_THROTTLE_WINDOW_MS, CONFIRM_GATE_REASK_MAX, PIPELINE_TURN_SIGNATURES, TRANSIENT_RETRY_MAX } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
-import { consumePendingSpawns, resolveAgentMention } from "../utils/subagent-rpc";
+import { consumePendingSpawns, resolveAgentMention, spawnStageSubagent } from "../utils/subagent-rpc";
 import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // Phase 0 (182) G5: name-probe for advance liveness guard
 import { findLiveAgentByName } from "../utils/subagents-introspect";
@@ -247,6 +247,8 @@ export function createAgentSettled(
             stage: meta.currentStage,
             messageId: health.messageId,
           }, "warn");
+          // 189 Bug 1: auto re-spawn on transient failure for develop/fix stages
+          await maybeRespawnAfterTransientFailure(ctx, config, meta, health, ui);
         }
       } catch (err) {
         // Fail-open: truncation detection must never block the settle flow
@@ -677,5 +679,122 @@ async function compactIfTerminal(
       { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
       config,
     );
+  }
+}
+
+/**
+ * 189 Bug 1: Auto re-spawn stage executor after transient failure.
+ *
+ * Guards (all must pass):
+ * - Stage is develop or fix (re-spawn时机)
+ * - Pipeline not aborted and user did not quit
+ * - Dedup: messageId !== lastTransientRespawnMsgId
+ * - Precheck fails (stage genuinely incomplete)
+ *
+ * Retry budget: transientRetryCount <= TRANSIENT_RETRY_MAX (2).
+ * Over limit → freezeAndPrompt with reason "transient_retry_overflow".
+ * Otherwise: increment count, clear stale spawns, spawn with breakpoint prompt.
+ *
+ * Fail-open: all logic wrapped in try/catch to never block settle flow.
+ *
+ * @internal Exported for unit testing
+ */
+export async function maybeRespawnAfterTransientFailure(
+  ctx: RuntimeCtx,
+  config: PipelineConfig,
+  meta: SessionMeta,
+  health: { messageId?: string },
+  ui: ReturnType<typeof createPipelineUI>,
+): Promise<void> {
+  try {
+    const stage = meta.currentStage;
+
+    // Guard 1: only develop/fix stages
+    if (stage !== "develop" && stage !== "fix") {
+      return;
+    }
+
+    // Guard 2: not aborted and user did not quit
+    const flowState = getFlowState(meta);
+    if (flowState === "aborted" || meta.terminateReason === "user_quit") {
+      return;
+    }
+
+    // Guard 3: dedup by messageId
+    if (!health.messageId || health.messageId === meta.lastTransientRespawnMsgId) {
+      return;
+    }
+
+    // Guard 4: precheck must fail (stage genuinely incomplete)
+    const precheck = await precheckRequiredFiles(config, meta);
+    if (precheck.passed) {
+      // Stage is complete, let normal verification flow continue
+      return;
+    }
+
+    // Check retry budget
+    const retryCount = meta.transientRetryCount ?? 0;
+    if (retryCount >= TRANSIENT_RETRY_MAX) {
+      // Over limit → freeze pipeline
+      await writeAuditLog("transient_retry_overflow_frozen", {
+        pipelineId: meta.pipelineId,
+        stage,
+        attempt: String(retryCount),
+      }, "warn");
+      ctx.session.updateMeta({
+        flowState: "blocked",
+        blockedReason: "transient_retry_overflow",
+      });
+      ui.notify(ctx, `Pipeline blocked: transient failure retry limit exceeded. ${formatDecisionMenuHint()}`);
+      return;
+    }
+
+    // Increment retry count and stamp messageId
+    const newCount = retryCount + 1;
+    ctx.session.updateMeta({
+      transientRetryCount: newCount,
+      lastTransientRespawnMsgId: health.messageId,
+    });
+
+    // Clear stale spawn guards so re-spawn is not blocked by duplicate guard
+    ctx.session.updateMeta({
+      spawnedStages: { ...meta.spawnedStages, [stage]: undefined },
+      activeSpawns: { ...meta.activeSpawns, [stage]: undefined },
+    });
+
+    // Compose breakpoint prompt from missing files
+    const missingList = precheck.missing.join(", ");
+    const extraArgs = `\n\n[plugin auto-respawn] Previous run terminated unexpectedly (transient failure). Read ${missingList} first: phases whose commit ids are already registered are DONE — resume from the first unregistered phase; never re-execute completed phases.`;
+
+    // Audit the re-spawn
+    await writeAuditLog("transient_auto_respawn", {
+      pipelineId: meta.pipelineId,
+      stage,
+      attempt: String(newCount),
+      missing: missingList,
+    });
+
+    // Spawn the stage executor with breakpoint prompt
+    const freshMeta = ctx.session.getMeta() as SessionMeta;
+    await spawnStageSubagent(
+      (ctx as { pi?: unknown }).pi,
+      config,
+      stage,
+      freshMeta,
+      {
+        ui: { notify: (msg: string) => ui.notify(ctx, msg) },
+        session: ctx.session,
+        runtimeCtx: ctx,
+        extraArgs,
+      },
+    );
+  } catch (err) {
+    // Fail-open: re-spawn error must never block settle flow
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await writeAuditLog("transient_respawn_error", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      error: errMsg,
+    }, "warn");
   }
 }

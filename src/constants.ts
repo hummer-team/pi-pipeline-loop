@@ -110,6 +110,13 @@ export const DEFAULT_MAX_VIOLATIONS = 3;
 export const DEFAULT_CONFIRM_MAX_REJECTIONS = 5;
 
 /**
+ * 189 Bug 1: Maximum auto re-spawn attempts after transient run failures.
+ * Total attempts = TRANSIENT_RETRY_MAX + 1 (initial + retries).
+ * Exceeding this limit triggers freezeAndPrompt with reason "transient_retry_overflow".
+ */
+export const TRANSIENT_RETRY_MAX = 2;
+
+/**
  * Default overflow behavior when confirm rejections exceed the cap.
  * - "ask": Prompt the user with Continue/Terminate TUI select.
  * - "terminate": Immediately abort the pipeline with flowState="aborted".

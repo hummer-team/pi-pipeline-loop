@@ -728,11 +728,13 @@ function isChildRuntimeCtx(runtimeCtx: unknown): boolean {
  * @param session - Session handle exposing meta read/write
  * @param stage - Stage to spawn
  * @param agentName - Resolved agent mention for the stage
+ * @param extraArgs - 189 Bug 1: Optional breakpoint prompt for transient re-spawn
  */
 export function enqueuePendingSpawn(
   session: SpawnSession,
   stage: PipelineStage,
   agentName: string,
+  extraArgs?: string,
 ): void {
   const meta = session.getMeta();
   if (!meta) return;
@@ -744,6 +746,7 @@ export function enqueuePendingSpawn(
         agentName,
         requestedAt: existing?.requestedAt ?? Date.now(),
         attempts: existing?.attempts ?? 0,
+        extraArgs: extraArgs ?? existing?.extraArgs,
       },
     },
   });
@@ -802,7 +805,7 @@ export async function consumePendingSpawns(
   const consumed: PipelineStage[] = [];
   const entries = Object.entries(pending) as [
     PipelineStage,
-    { agentName: string; requestedAt: number; attempts: number },
+    { agentName: string; requestedAt: number; attempts: number; extraArgs?: string },
   ][];
 
   for (const [stage, entry] of entries) {
@@ -858,6 +861,7 @@ export async function consumePendingSpawns(
           ui: opts.ui,
           session: opts.session,
           runtimeCtx: opts.runtimeCtx,
+          extraArgs: entry.extraArgs,
         });
 
     if (result.deferred) {
