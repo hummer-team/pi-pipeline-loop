@@ -14,6 +14,9 @@ import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
+// Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
+import { setFixExecutorCompletedHandler } from "./utils/subagent-rpc";
+import { handleFixExecutorCompleted } from "./core/fix-executor-completion";
 
 
 // Session lifecycle and prompt injection
@@ -97,6 +100,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // announcement. The latch replaces timeout-based ping probing; when false,
     // spawn paths fall back immediately (zero dead wait).
     wireSubagentsReadyListener(pi);
+
+    // Phase 0 (189): register fix-executor-completion handler via DI.
+    // Breaks circular dependency: utils/subagent-rpc no longer imports core modules.
+    setFixExecutorCompletedHandler(handleFixExecutorCompleted);
 
     // G4 (188): validate spawned subagent type against pipeline stage config.
     // subagents:created fires for Agent-tool spawns only (not RPC spawns from this plugin).

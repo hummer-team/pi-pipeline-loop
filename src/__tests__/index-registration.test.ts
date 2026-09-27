@@ -5,6 +5,7 @@ import { PIPELINE_META_CUSTOM_TYPE } from "../core/session-state";
 import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { __peekFixExecutorCompletedHandler, setFixExecutorCompletedHandler } from "../utils/subagent-rpc";
 
 
 /**
@@ -387,6 +388,27 @@ describe("hook bridge", () => {
     const result = await sessionStartHook!.handler(event, extCtx);
     // session_starter returns undefined (no return value needed for session_start)
     expect(result === undefined || typeof result === "object").toBe(true);
+  });
+});
+
+// ─── Composition root wiring ─────────────────────────────────────────────────
+
+describe("composition root wiring", () => {
+  it("factory initialization registers fix-executor-completion handler", async () => {
+    // Clean up any existing handler first
+    setFixExecutorCompletedHandler(null);
+    
+    const { pi } = makeMockPi();
+    const factory = createPipeline(makeTestConfig());
+    await factory(pi);
+
+    // Verify handler is registered (non-null)
+    const handler = __peekFixExecutorCompletedHandler();
+    expect(handler).not.toBeNull();
+    expect(typeof handler).toBe("function");
+    
+    // Clean up
+    setFixExecutorCompletedHandler(null);
   });
 });
 

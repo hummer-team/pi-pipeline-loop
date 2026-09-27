@@ -23,9 +23,7 @@ import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
-import { autoAdvanceAfterVerify } from "../core/verify-advance";
-import { getFlowState } from "../core/flow-state";
-import { createPipelineUI } from "../core/pipeline-ui";
+import type { FixExecutorCompletedCtx, FixExecutorCompletedHandler } from "../core/fix-executor-completion";
 
 /**
  * Phase 2 / 177 (D4⑥): Extracts the current session file from a runtime context
@@ -425,89 +423,44 @@ interface SpawnSession {
   updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
 }
 
+// ─── Fix-executor-completion handler registry (Phase 0 / 189 DI) ─────────────
+
 /**
- * 189 Bug 4 (Phase 3): Auto-unfreeze fix stage when executor completes after max_loop_cycles block.
+ * Module-level handler for fix-executor completion events.
  *
- * Preconditions (all must pass):
- * - currentStage === "fix"
- * - flowState === "blocked"
- * - blockedReason === "max_loop_cycles" (exact string match)
+ * Registered by the composition root (`index.ts`) via `setFixExecutorCompletedHandler`.
+ * When null (handler not registered), the lifecycle callback silently skips the
+ * fix-completion handler invocation. Production path always registers via `createPipeline`.
  *
- * Action: unfreeze, audit, advance fix→review via autoAdvanceAfterVerify.
- * Fail-open: any error is caught and audited, frozen state preserved.
- *
- * @internal Exported for unit testing
+ * Idempotent: overwriting with a new handler is safe (handler is stateless).
  */
-export async function handleFixExecutorCompleted(
-  pi: unknown,
-  config: PipelineConfig,
-  opts: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
-  ui: { notify: (msg: string) => void },
-): Promise<void> {
-  try {
-    // Read fresh meta to check preconditions
-    const freshMeta = opts.session?.getMeta();
-    if (!freshMeta) return;
+let fixExecutorCompletedHandler: FixExecutorCompletedHandler | null = null;
 
-    // Preconditions: stage=fix, blocked, max_loop_cycles
-    if (freshMeta.currentStage !== "fix") return;
-    if (getFlowState(freshMeta) !== "blocked") return;
-    if (freshMeta.blockedReason !== "max_loop_cycles") return;
-
-    // Unfreeze the pipeline
-    opts.session?.updateMeta({
-      flowState: "running",
-      blockedReason: undefined,
-      loopCount: 0,
-    });
-
-    // Audit the unfreeze
-    await safeWriteAuditLog("fix_completed_auto_unfreeze", {
-      pipelineId: freshMeta.pipelineId,
-      stage: "fix",
-      reason: "max_loop_cycles",
-    });
-
-    // Build VerifyAdvanceCtx shape from pi + opts.session + opts.runtimeCtx
-    const verifyCtx = {
-      session: opts.session!,
-      ui: { notify: ui.notify },
-      pi,
-      // 189 Issue 8: Include runtimeCtx for isChildRuntimeCtx detection
-      ...(opts.runtimeCtx ? { _ctx: opts.runtimeCtx, runtimeCtx: opts.runtimeCtx } : {}),
-    };
-
-    // Build PipelineUI from config
-    const pipelineUI = createPipelineUI(config);
-
-    // Empty shared result (subagent finished, no verify needed — trusted signal)
-    const emptySharedResult = {
-      structuredResult: undefined,
-      ruleMissing: [],
-      verifyResult: null,
-    };
-
-    // Advance fix→review with skipPassAudit=true
-    await autoAdvanceAfterVerify(
-      config,
-      verifyCtx as Parameters<typeof autoAdvanceAfterVerify>[1],
-      freshMeta,
-      "fix",
-      "review",
-      emptySharedResult as Parameters<typeof autoAdvanceAfterVerify>[5],
-      pipelineUI,
-      { skipPassAudit: true },
-    );
-  } catch (err) {
-    // Fail-open: audit error, preserve frozen state
-    const errMsg = err instanceof Error ? err.message : String(err);
-    await safeWriteAuditLog("fix_unfreeze_error", {
-      pipelineId: opts.session?.getMeta()?.pipelineId ?? "unknown",
-      stage: "fix",
-      error: errMsg,
-    }, "warn");
-  }
+/**
+ * Registers the handler invoked when a fix-stage subagent completes.
+ *
+ * Called by the composition root (`createPipeline` factory) to wire
+ * `handleFixExecutorCompleted` from `core/fix-executor-completion.ts`.
+ * Pass `null` to unregister (test cleanup).
+ *
+ * @param handler - The handler function, or null to clear
+ */
+export function setFixExecutorCompletedHandler(handler: FixExecutorCompletedHandler | null): void {
+  fixExecutorCompletedHandler = handler;
 }
+
+/**
+ * Test-only: returns the currently registered handler (or null).
+ * Used by composition-root tests to assert the wiring occurred.
+ *
+ * @internal Exported for unit testing only
+ */
+export function __peekFixExecutorCompletedHandler(): FixExecutorCompletedHandler | null {
+  return fixExecutorCompletedHandler;
+}
+
+// Re-export types for downstream consumers (e.g., composition root, tests)
+export type { FixExecutorCompletedCtx, FixExecutorCompletedHandler };
 
 /**
  * Spawns a subagent for the given stage after stage transition.
@@ -723,12 +676,15 @@ export async function spawnStageSubagent(
         clearActiveSpawn();
         // Phase 3 (189): auto-unfreeze fix stage on executor completion
         if (stage === "fix" && event === "completed") {
-          await handleFixExecutorCompleted(
-            pi,
-            config,
-            { ui: opts?.ui, session: opts?.session, runtimeCtx: opts?.runtimeCtx },
-            { notify: opts?.ui?.notify ?? (() => {}) }
-          );
+          // Phase 0: invoke registered handler via DI (breaks circular dependency)
+          // Handler registered by composition root; silently skip if not registered
+          if (fixExecutorCompletedHandler) {
+            await fixExecutorCompletedHandler(pi, config, {
+              ui: opts?.ui,
+              session: opts?.session,
+              runtimeCtx: opts?.runtimeCtx,
+            });
+          }
         }
         cleanup();
       }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });

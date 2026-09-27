@@ -243,3 +243,44 @@ export async function writePromptYml(projectRoot: string, content: string): Prom
   await mkdir(refsDir, { recursive: true });
   await writeFile(join(refsDir, "pipeline-stage-prompt.yml"), content, "utf-8");
 }
+
+/**
+ * Phase 0 (189): Extracted mock EventBus factory for cross-file reuse.
+ * Creates a programmable mock EventBus where handlers registered via on()
+ * can be triggered manually for testing event-driven flows.
+ *
+ * @returns Mock EventBus with emit/on/off/trigger/emitted/handlers
+ */
+export function createMockEventBus() {
+  const handlers = new Map<string, Array<(payload: unknown) => void>>();
+  const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+
+  return {
+    emit(event: string, payload: Record<string, unknown>): void {
+      emitted.push({ event, payload });
+    },
+    on(event: string, handler: (payload: unknown) => void): void {
+      const list = handlers.get(event) || [];
+      list.push(handler);
+      handlers.set(event, list);
+    },
+    off(event: string, handler: (payload: unknown) => void): void {
+      const list = handlers.get(event);
+      if (list) {
+        const idx = list.indexOf(handler);
+        if (idx >= 0) list.splice(idx, 1);
+      }
+    },
+    /** Trigger all handlers for a channel with a payload */
+    trigger(event: string, payload: unknown): void {
+      const list = handlers.get(event);
+      if (list) {
+        for (const h of [...list]) h(payload);
+      }
+    },
+    /** Access emitted events for assertion */
+    emitted,
+    /** Access registered handlers */
+    handlers,
+  };
+}
