@@ -536,28 +536,46 @@ function buildStageWriteScope(
 }
 
 /**
- * Phase 5 (170): Builds the RUN TRUNCATION WARNING section.
+ * Phase 4 (189) / Phase 5 (170): Builds the RUN HEALTH WARNING section.
  *
- * Injected when the last assistant run was truncated (stopReason === "length").
- * Warns the agent to check document integrity and retry with smaller chunks.
+ * Covers two abnormal-exit scenarios:
+ * - "truncated": Last assistant run was truncated (stopReason === "length").
+ *   Warns the agent to check document integrity and retry with smaller chunks.
+ * - "failed_transient": Last run terminated unexpectedly (stopReason in ["error", "aborted"]).
+ *   Warns the agent to check stage deliverables and resume from the last breakpoint.
  *
  * @param ctx - Runtime context for session branch access
- * @returns Prompt section string, or null if no truncation detected
+ * @returns Prompt section string, or null if run was clean or extraction failed
  */
-function buildTruncationWarning(ctx: RuntimeCtx): string | null {
+function buildRunHealthWarning(ctx: RuntimeCtx): string | null {
   try {
     const health = detectLastRunHealth(ctx._ctx as Parameters<typeof detectLastRunHealth>[0]);
-    if (health.kind !== "truncated") return null;
+    
+    if (health.kind === "truncated") {
+      return [
+        `# RUN TRUNCATION WARNING`,
+        `Your previous response was truncated by the model output limit.`,
+        `Before continuing:`,
+        `1. Check the requirement document for incomplete sections at the tail.`,
+        `2. Break remaining content into smaller chunks (≤2KB each) and write incrementally.`,
+        `3. Do NOT retry the same large payload — it will be truncated again.`,
+        `4. If tool call parameters were cut mid-argument, reconstruct them from scratch.`,
+      ].join("\n");
+    }
 
-    return [
-      `# RUN TRUNCATION WARNING`,
-      `Your previous response was truncated by the model output limit.`,
-      `Before continuing:`,
-      `1. Check the requirement document for incomplete sections at the tail.`,
-      `2. Break remaining content into smaller chunks (≤2KB each) and write incrementally.`,
-      `3. Do NOT retry the same large payload — it will be truncated again.`,
-      `4. If tool call parameters were cut mid-argument, reconstruct them from scratch.`,
-    ].join("\n");
+    if (health.kind === "failed_transient") {
+      return [
+        `# TRANSIENT FAILURE RECOVERY`,
+        `Your previous run terminated unexpectedly (error or abort).`,
+        `The stage may be incomplete. Before continuing:`,
+        `1. Check the stage deliverables (commit doc) for partial progress.`,
+        `2. Resume from the last registered breakpoint — do not restart the stage.`,
+        `3. The plugin auto-respawn rule (Phase 2) may already have dispatched a continuation agent.`,
+        `4. Do not duplicate its work — check active spawns and pending spawns first.`,
+      ].join("\n");
+    }
+
+    return null; // clean or unknown
   } catch {
     return null; // Fail-open
   }
@@ -704,13 +722,13 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         ? "\n\n---\n\n" + pipelineStateSection
         : "";
 
-      // Phase 5 (170): inject RUN TRUNCATION WARNING for truncated runs
-      const truncationWarning = buildTruncationWarning(ctx);
-      const truncationSuffix = truncationWarning
-        ? "\n\n---\n\n" + truncationWarning
+      // Phase 4 (189): inject RUN HEALTH WARNING for truncated/failed_transient runs
+      const runHealthWarning = buildRunHealthWarning(ctx);
+      const runHealthSuffix = runHealthWarning
+        ? "\n\n---\n\n" + runHealthWarning
         : "";
 
-      const pluginPromptFull = pluginPrompt + pipelineStateSuffix + truncationSuffix;
+      const pluginPromptFull = pluginPrompt + pipelineStateSuffix + runHealthSuffix;
 
       const systemPrompt = base
         ? base + "\n\n---\n\n" + pluginPromptFull

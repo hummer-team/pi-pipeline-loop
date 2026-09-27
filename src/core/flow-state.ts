@@ -1240,6 +1240,12 @@ export async function freezeAndPrompt(
     hostRole,
   }, "warn");
 
+  // Phase 4 (189): Notify regardless of hostRole — child TUI shows the block,
+  // owner TUI shows both notify and menu (notify complements the menu).
+  // Zero token cost, no prompt channel.
+  const notifyMsg = `Pipeline blocked: ${reason} at stage '${meta.currentStage}'. ${formatDecisionMenuHint()}`;
+  ctx.ui?.notify?.(notifyMsg);
+
   // Phase 1 (173) C7: Child sessions skip menu prompt and retry scheduling.
   // The freeze state is recorded (owner will see it on next settle/shortcut/replay).
   if (hostRole === "child") {

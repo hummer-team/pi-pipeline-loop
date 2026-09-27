@@ -507,9 +507,10 @@ describe("freezeAndPrompt", () => {
     await freezeAndPrompt(ctx, meta, "verify_fail", config);
 
     expect(meta.flowState).toBe("blocked");
-    expect(notifications.length).toBe(1);
+    // Phase 4 (189): owner-role now has 2 notifies — initial block notification + Esc cancellation hint
+    expect(notifications.length).toBe(2);
     expect(notifications[0]).toContain("verify_fail");
-    expect(notifications[0]).toContain("/pipeline-resume");
+    expect(notifications[1]).toContain("/pipeline-resume");
   });
 
   it("without UI: keeps blocked, no crash, notify includes reason", async () => {
@@ -523,7 +524,8 @@ describe("freezeAndPrompt", () => {
     await freezeAndPrompt(ctx, meta, "max_loop_cycles", config);
 
     expect(meta.flowState).toBe("blocked");
-    expect(notifications.length).toBe(1);
+    // Phase 4 (189): owner-role now has 2 notifies - initial block notification + decision menu unavailable message
+    expect(notifications.length).toBe(2);
     expect(notifications[0]).toContain("max_loop_cycles");
     expect(notifications[0]).toContain("decision menu");
   });
