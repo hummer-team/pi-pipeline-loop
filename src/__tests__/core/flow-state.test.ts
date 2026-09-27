@@ -575,6 +575,53 @@ describe("freezeAndPrompt", () => {
     expect(ctxUiSelectCalled.length).toBe(0);
     expect(optsUiSelectCalled.length).toBe(1);
   });
+
+  // Phase 4 (189): Child-role ctx → notify called, menu NOT shown
+  it("child-role ctx → notify called, menu suppressed (no select)", async () => {
+    const meta = makeTestMeta({ flowState: "running" });
+    const notifications: string[] = [];
+    let selectCalled = false;
+    
+    // Create a child context with parentSession in header
+    const childCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        notify: (msg: string) => { notifications.push(msg); },
+        select: async (_msg: string, _opts: string[]) => {
+          selectCalled = true;
+          return undefined;
+        },
+      },
+      _ctx: {
+        sessionManager: {
+          getHeader: () => ({ parentSession: "/tmp/parent-session.jsonl" }),
+          getSessionName: () => "child-session-12345678",
+          getSessionFile: () => "/tmp/child-session.jsonl",
+        },
+      },
+    } as any;
+
+    const config = makeTestConfig();
+
+    await freezeAndPrompt(childCtx, meta, "loop_overflow", config);
+
+    // Child should still freeze
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("loop_overflow");
+    
+    // Notify should be called (Phase 4 behavior)
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]).toContain("loop_overflow");
+    
+    // But select (menu) should NOT be called (child-role suppression)
+    expect(selectCalled).toBe(false);
+  });
 });
 
 // ── 168 Phase 1: formatFrozenReason ──────────────────────────────────────────
