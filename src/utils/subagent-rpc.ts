@@ -23,6 +23,9 @@ import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
+import { autoAdvanceAfterVerify } from "../core/verify-advance";
+import { getFlowState } from "../core/flow-state";
+import { createPipelineUI } from "../core/pipeline-ui";
 
 /**
  * Phase 2 / 177 (D4⑥): Extracts the current session file from a runtime context
@@ -423,6 +426,88 @@ interface SpawnSession {
 }
 
 /**
+ * 189 Bug 4 (Phase 3): Auto-unfreeze fix stage when executor completes after max_loop_cycles block.
+ *
+ * Preconditions (all must pass):
+ * - currentStage === "fix"
+ * - flowState === "blocked"
+ * - blockedReason === "max_loop_cycles" (exact string match)
+ *
+ * Action: unfreeze, audit, advance fix→review via autoAdvanceAfterVerify.
+ * Fail-open: any error is caught and audited, frozen state preserved.
+ *
+ * @internal Exported for unit testing
+ */
+export async function handleFixExecutorCompleted(
+  pi: unknown,
+  config: PipelineConfig,
+  opts: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
+  ui: { notify: (msg: string) => void },
+): Promise<void> {
+  try {
+    // Read fresh meta to check preconditions
+    const freshMeta = opts.session?.getMeta();
+    if (!freshMeta) return;
+
+    // Preconditions: stage=fix, blocked, max_loop_cycles
+    if (freshMeta.currentStage !== "fix") return;
+    if (getFlowState(freshMeta) !== "blocked") return;
+    if (freshMeta.blockedReason !== "max_loop_cycles") return;
+
+    // Unfreeze the pipeline
+    opts.session?.updateMeta({
+      flowState: "running",
+      blockedReason: undefined,
+      loopCount: 0,
+    });
+
+    // Audit the unfreeze
+    await safeWriteAuditLog("fix_completed_auto_unfreeze", {
+      pipelineId: freshMeta.pipelineId,
+      stage: "fix",
+      reason: "max_loop_cycles",
+    });
+
+    // Build VerifyAdvanceCtx shape from pi + opts.session + opts.runtimeCtx
+    const verifyCtx = {
+      session: opts.session!,
+      ui: { notify: ui.notify },
+      pi,
+    };
+
+    // Build PipelineUI from config
+    const pipelineUI = createPipelineUI(config);
+
+    // Empty shared result (subagent finished, no verify needed — trusted signal)
+    const emptySharedResult = {
+      structuredResult: undefined,
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    // Advance fix→review with skipPassAudit=true
+    await autoAdvanceAfterVerify(
+      config,
+      verifyCtx as Parameters<typeof autoAdvanceAfterVerify>[1],
+      freshMeta,
+      "fix",
+      "review",
+      emptySharedResult as Parameters<typeof autoAdvanceAfterVerify>[5],
+      pipelineUI,
+      { skipPassAudit: true },
+    );
+  } catch (err) {
+    // Fail-open: audit error, preserve frozen state
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog("fix_unfreeze_error", {
+      pipelineId: opts.session?.getMeta()?.pipelineId ?? "unknown",
+      stage: "fix",
+      error: errMsg,
+    }, "warn");
+  }
+}
+
+/**
  * Spawns a subagent for the given stage after stage transition.
  *
  * Three-tier dispatch (mirrors clarify auto-launch pattern):
@@ -632,8 +717,17 @@ export async function spawnStageSubagent(
       });
       // Watch lifecycle (self-unregistering) with timeout guard to prevent leak.
       // On settle: clear activeSpawns entry so duplicate-spawn guard does not misfire.
-      const cleanup = watchSubagentLifecycle(pi, spawnResult.id, () => {
+      const cleanup = watchSubagentLifecycle(pi, spawnResult.id, async (event, _payload) => {
         clearActiveSpawn();
+        // Phase 3 (189): auto-unfreeze fix stage on executor completion
+        if (stage === "fix" && event === "completed") {
+          await handleFixExecutorCompleted(
+            pi,
+            config,
+            { ui: opts?.ui, session: opts?.session, runtimeCtx: opts?.runtimeCtx },
+            { notify: opts?.ui?.notify ?? (() => {}) }
+          );
+        }
         cleanup();
       }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
       await writeGuard(spawnResult.id);
