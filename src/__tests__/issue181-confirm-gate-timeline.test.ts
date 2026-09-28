@@ -95,7 +95,7 @@ describe("Issue 181: owner-only confirm gate recovery timeline", () => {
     expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
     const deferredAt = meta.confirmGateDeferredAt!.at;
 
-    // ── Step 2: child settle reaches the gate → suppressed, stamp preserved ────
+    // ── Step 2: child settle reaches the gate → suppressed, stamp refreshed ────
     let childSelectCalls = 0;
     const childCtx = createMockCtx(meta, {
       sessionHeader: { parentSession: "/tmp/parent.jsonl" },
@@ -106,7 +106,10 @@ describe("Issue 181: owner-only confirm gate recovery timeline", () => {
     await createAgentSettled(config).handler(childCtx as any);
 
     expect(childSelectCalls).toBe(0);
-    expect(meta.confirmGateDeferredAt).toEqual({ stage: "plan", at: deferredAt });
+    // Fix-E: child writes a fresh stamp (overwrites owner's), signaling deferred state
+    expect(meta.confirmGateDeferredAt).toBeDefined();
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    expect(meta.confirmGateDeferredAt!.at).toBeGreaterThanOrEqual(deferredAt);
     expect(meta.currentStage).toBe("plan");
 
     const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");

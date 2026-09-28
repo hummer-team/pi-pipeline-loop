@@ -480,6 +480,8 @@ export async function executeDecision(
         confirmGateDeferredAt: undefined,
         // Phase 1 (190) Fix-B: reset dismiss count on manual stage selection
         dismissCount: 0,
+        // Phase 3 (190) Fix-F: reset cycle count on manual stage selection
+        loopCycleCount: 0,
       };
 
       // Build summaries patch based on jump direction

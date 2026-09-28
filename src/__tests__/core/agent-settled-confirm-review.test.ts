@@ -311,7 +311,7 @@ Verify plan.`);
     await rm(stageTmp, { recursive: true, force: true });
   });
 
-  it("Phase 1 / 181: child settle is suppressed — owner pending stamp preserved, no popup", async () => {
+  it("Phase 1 / 181: child settle is suppressed — owner pending stamp refreshed by child, no popup", async () => {
     const stageTmp = join(tmpdir(), "pi-settled-child181-" + Date.now());
     await mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
@@ -324,7 +324,8 @@ requiredFiles:
 ---
 Verify plan.`);
 
-    const stamp = { stage: "plan" as const, at: Date.now() };
+    const originalAt = Date.now() - 1000; // Owner's original stamp (1s ago)
+    const stamp = { stage: "plan" as const, at: originalAt };
     const meta = makeTestMeta({
       currentStage: "plan",
       requirementDoc: "docs/design/77_Config.md",
@@ -339,12 +340,15 @@ Verify plan.`);
     });
     ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
 
+    const beforeChildSettle = Date.now();
     await createAgentSettled(config).handler(ctx as any);
 
     // Child never presents the owner dialog.
     expect(selectCalls).toBe(0);
-    // Owner's deferral stamp is preserved untouched (no clear, no re-stamp).
-    expect(meta.confirmGateDeferredAt).toEqual(stamp);
+    // Fix-E: child refreshes the stamp (overwrites owner's) with a new timestamp.
+    expect(meta.confirmGateDeferredAt).toBeDefined();
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    expect(meta.confirmGateDeferredAt!.at).toBeGreaterThanOrEqual(beforeChildSettle);
     // Stage not advanced.
     expect(meta.currentStage).toBe("plan");
     // Suppression audit written with the child session file.
