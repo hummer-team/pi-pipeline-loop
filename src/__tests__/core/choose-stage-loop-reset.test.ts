@@ -76,10 +76,12 @@ describe("Phase 3 (190) Fix-F: choose_stage resets loopCycleCount", () => {
     expect(meta.loopCycleCount).toBe(0);
 
     // Now simulate a revisit to review stage
-    // Since review was not in stageVisitOrder, this is the first visit (cycleCount=1)
+    // After choose_stage, "review" was already appended to stageVisitOrder (flow-state.ts:509-511),
+    // so this is a revisit (second visit), incrementing loopCycleCount from 0 to 1
     const visitResult = recordStageVisit(meta, "review", 3);
     expect(visitResult.ok).toBe(true);
-    expect(visitResult.wouldFreeze).toBeUndefined();
+    // When ok is true, wouldFreeze property should not exist on the result
+    expect("wouldFreeze" in visitResult).toBe(false);
     // The patch should set loopCycleCount to 1 (first revisit after reset)
     expect(visitResult.patch.loopCycleCount).toBe(1);
   });

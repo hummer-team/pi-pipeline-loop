@@ -208,6 +208,52 @@ function buildHardcodedForbiddenReason(relPath: string, hardcoded: string[]): st
 }
 
 /**
+ * Phase 1 (190) Fix-A extension: Child session hard-block for protected paths.
+ * Prevents child sessions from entering askProtectDecision, which would cause
+ * dismissCount to be incorrectly accumulated when child inherits owner's ui.select.
+ *
+ * @param isChild - Whether the current session is a child session
+ * @param relPath - Relative path being accessed
+ * @param protectionType - Type of protection ("hardcoded" | "gitignore")
+ * @param state - Protection state
+ * @param toolName - Name of the tool being used
+ * @param trackViolation - Violation tracking function (sync or async)
+ * @param ui - Pipeline UI
+ * @param ctx - Runtime context
+ * @returns Block result if child session, undefined otherwise
+ */
+async function childHardBlockForProtectedPath(
+  isChild: boolean,
+  relPath: string,
+  protectionType: "hardcoded" | "gitignore",
+  state: ProtectState,
+  toolName: string,
+  trackViolation: (item: Omit<ViolationItem, "timestamp">) => void | Promise<void>,
+  ui: ReturnType<typeof createPipelineUI>,
+  ctx: RuntimeCtx,
+): Promise<{ block: true; reason: string } | undefined> {
+  if (!isChild) return undefined;
+
+  const reason = protectionType === "hardcoded"
+    ? buildHardcodedForbiddenReason(relPath, state.hardcoded)
+    : `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
+
+  const suggestion = protectionType === "hardcoded"
+    ? `Hardcoded protected: ${state.hardcoded.join(", ")}.`
+    : `Gitignore protected. Use protect.allow to exempt specific paths.`;
+
+  await trackViolation({
+    type: "write_protected",
+    tool: toolName,
+    detail: reason,
+    suggestion,
+  });
+
+  ui.notify(ctx, reason);
+  return { block: true, reason };
+}
+
+/**
  * Checks if a write target is allowed by the stage write whitelist + hardcoded protection.
  *
  * Whitelist mode (allowedWritePaths does NOT contain "**"):
@@ -319,6 +365,8 @@ async function checkBashFileTargets(
 ): Promise<{ block: true; reason: string } | undefined> {
   const targets = extractBashFileTargets(segment);
   const sessionPaths = meta.sessionAllowedWritePaths || [];
+  // Phase 1 (190) Fix-A extension: detect session role once for child hard-block checks
+  const { isChild } = detectSessionRole(ctx);
 
   for (const t of targets) {
     // Phase 1 / 177 (D3): a "suspicious" target is source text captured by `>`
@@ -362,6 +410,13 @@ async function checkBashFileTargets(
       const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths);
       if (stageCheck.status === "block") {
         if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
+          // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
+          const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
+          const childBlock = await childHardBlockForProtectedPath(
+            isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx
+          );
+          if (childBlock) return childBlock;
+          
           const outcome = await askProtectDecision(ctx, meta, relPath, config);
           if (outcome.decision === "block") {
             // Phase 4 (173) C11: dismissed action does NOT count as violation
@@ -388,6 +443,13 @@ async function checkBashFileTargets(
       if (stageCheck.status !== "allow-whitelist") {
         if (isPathProtectedForModify(relPath, state)) {
           if (config.protect?.ask === true) {
+            // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
+            const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
+            const childBlock = await childHardBlockForProtectedPath(
+              isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx
+            );
+            if (childBlock) return childBlock;
+            
             const outcome = await askProtectDecision(ctx, meta, relPath, config);
             if (outcome.decision === "block") {
               const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
@@ -995,17 +1057,13 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // Phase 1 (190) Fix-A: child sessions hard-block immediately on protected paths
               // without entering askProtectDecision (prevents dismissCount accumulation on child)
               if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
-                if (isChild) {
-                  const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
-                  await trackViolation({
-                    type: "write_protected",
-                    tool: toolName,
-                    detail: reason,
-                    suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
-                  });
-                  ui.notify(ctx, reason);
-                  return { block: true, reason };
-                }
+                // Determine protection type for appropriate error message
+                const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
+                const childBlock = await childHardBlockForProtectedPath(
+                  isChild, relPath, protectionType, state, toolName, trackViolation, ui, ctx
+                );
+                if (childBlock) return childBlock;
+                
                 const outcome = await askProtectDecision(ctx, meta, relPath, config);
                 if (outcome.decision === "block") {
                   // Phase 4 (173) C11: dismissed action does NOT count as violation
@@ -1039,17 +1097,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 if (config.protect?.ask === true) {
                   // Phase 1 (190) Fix-A: child sessions hard-block immediately
                   // without entering askProtectDecision (prevents dismissCount accumulation on child)
-                  if (isChild) {
-                    const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
-                    await trackViolation({
-                      type: "write_protected",
-                      tool: toolName,
-                      detail: reason,
-                      suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
-                    });
-                    ui.notify(ctx, reason);
-                    return { block: true, reason };
-                  }
+                  const childBlock = await childHardBlockForProtectedPath(
+                    isChild, relPath, "hardcoded", state, toolName, trackViolation, ui, ctx
+                  );
+                  if (childBlock) return childBlock;
+                  
                   const outcome = await askProtectDecision(ctx, meta, relPath, config);
                   if (outcome.decision === "block") {
                     const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
@@ -1085,6 +1137,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   // Check gitignore protection
                   if (isGitignored(state.gitignore, relPath)) {
                     if (config.protect?.ask === true) {
+                      // Phase 1 (190) Fix-A extension: child sessions hard-block on gitignore paths
+                      const childBlock = await childHardBlockForProtectedPath(
+                        isChild, relPath, "gitignore", state, toolName, trackViolation, ui, ctx
+                      );
+                      if (childBlock) return childBlock;
+                      
                       const outcome = await askProtectDecision(ctx, meta, relPath, config);
                       if (outcome.decision === "block") {
                         const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
