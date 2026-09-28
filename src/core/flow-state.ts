@@ -200,6 +200,8 @@ export async function executeDecision(
         violations: [],
         precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
         transientRetryCount: undefined, // 189 Phase 2: clear retry counter on decision
+        // Phase 1 (190) Fix-B: reset dismiss count on decision (resume/choose_stage)
+        dismissCount: 0,
         ...(meta.currentStage === "awaiting_human"
           ? {
               currentStage: meta.previousStage ?? "clarify",
@@ -476,6 +478,8 @@ export async function executeDecision(
         stageStartTime: Date.now(),
         // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
         confirmGateDeferredAt: undefined,
+        // Phase 1 (190) Fix-B: reset dismiss count on manual stage selection
+        dismissCount: 0,
       };
 
       // Build summaries patch based on jump direction

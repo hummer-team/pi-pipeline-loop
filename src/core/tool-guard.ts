@@ -962,6 +962,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
         if (relPath) {
           const state = await getProtectState();
+          // Phase 1 (190) Fix-A: detect session role once for child hard-block checks
+          const { isChild } = detectSessionRole(ctx);
 
           // Session-level file allowance: bypasses whitelist + global chain entirely.
           // Pre-evaluated once so downstream branches can skip redundant checks.
@@ -973,9 +975,20 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths);
 
             if (stageCheck.status === "block") {
-              // Phase 1: if protect.ask=true AND path is protected, surface ask dialog.
-              // This lets users override a stage-whitelist rejection for protected paths.
+              // Phase 1 (190) Fix-A: child sessions hard-block immediately on protected paths
+              // without entering askProtectDecision (prevents dismissCount accumulation on child)
               if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
+                if (isChild) {
+                  const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                  await trackViolation({
+                    type: "write_protected",
+                    tool: toolName,
+                    detail: reason,
+                    suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
+                  });
+                  ui.notify(ctx, reason);
+                  return { block: true, reason };
+                }
                 const outcome = await askProtectDecision(ctx, meta, relPath, config);
                 if (outcome.decision === "block") {
                   // Phase 4 (173) C11: dismissed action does NOT count as violation
@@ -1007,6 +1020,19 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // Hardcoded protection (allow cannot exempt)
               if (isHardcodedProtected(relPath, state.hardcoded)) {
                 if (config.protect?.ask === true) {
+                  // Phase 1 (190) Fix-A: child sessions hard-block immediately
+                  // without entering askProtectDecision (prevents dismissCount accumulation on child)
+                  if (isChild) {
+                    const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                    await trackViolation({
+                      type: "write_protected",
+                      tool: toolName,
+                      detail: reason,
+                      suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
+                    });
+                    ui.notify(ctx, reason);
+                    return { block: true, reason };
+                  }
                   const outcome = await askProtectDecision(ctx, meta, relPath, config);
                   if (outcome.decision === "block") {
                     const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
