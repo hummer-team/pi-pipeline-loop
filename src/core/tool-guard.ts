@@ -191,6 +191,23 @@ function warnReadOnlyWriteIntersection(
 }
 
 /**
+ * Phase 2 (190) Fix-C: Build FORBIDDEN message for hardcoded protected paths.
+ * When the path is under .pi/audit/, append guidance directing the model to use
+ * generate_stage_summary tool instead of writing directly.
+ */
+function buildHardcodedForbiddenReason(relPath: string, hardcoded: string[]): string {
+  const base = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+  if (relPath.startsWith(".pi/audit/")) {
+    return (
+      base +
+      " To record commit IDs: call `generate_stage_summary(commitIds: [\"<hash>\", ...])` — the tool writes to .pi/audit/ internally." +
+      " To create a human-readable commit record: write to docs/design/ (e.g. {plan_stem}_plan_commit.md)."
+    );
+  }
+  return base;
+}
+
+/**
  * Checks if a write target is allowed by the stage write whitelist + hardcoded protection.
  *
  * Whitelist mode (allowedWritePaths does NOT contain "**"):
@@ -245,7 +262,7 @@ function checkStageWriteBlock(
   if (isHardcodedProtected(relPath, state.hardcoded)) {
     return {
       status: "block",
-      reason: `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`,
+      reason: buildHardcodedForbiddenReason(relPath, state.hardcoded),
     };
   }
 
@@ -979,7 +996,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // without entering askProtectDecision (prevents dismissCount accumulation on child)
               if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
                 if (isChild) {
-                  const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                  const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
                   await trackViolation({
                     type: "write_protected",
                     tool: toolName,
@@ -1023,7 +1040,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   // Phase 1 (190) Fix-A: child sessions hard-block immediately
                   // without entering askProtectDecision (prevents dismissCount accumulation on child)
                   if (isChild) {
-                    const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                    const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
                     await trackViolation({
                       type: "write_protected",
                       tool: toolName,
@@ -1035,7 +1052,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   }
                   const outcome = await askProtectDecision(ctx, meta, relPath, config);
                   if (outcome.decision === "block") {
-                    const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                    const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
                     // Phase 4 (173) C11: dismissed action does NOT count as violation
                     if (outcome.action !== "dismissed") {
                       await trackViolation({
@@ -1050,7 +1067,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   }
                   // "allow" → proceed with hash recording
                 } else {
-                  const reason = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
+                  const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
                   await trackViolation({
                     type: "write_protected",
                     tool: toolName,

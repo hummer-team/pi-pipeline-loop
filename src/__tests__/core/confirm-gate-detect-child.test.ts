@@ -187,7 +187,7 @@ describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
     expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
   });
 
-  it("child + real gate (plan/manual/no marker) → handled+pending+deferred, suppression audit, zero side effects", async () => {
+  it("child + real gate (plan/manual/no marker) → handled+pending+deferred, suppression audit, deferred stamp written to shared meta", async () => {
     await createPlanDoc("# Plan\n");
     const tmpDir = getTmpDir();
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
@@ -196,6 +196,7 @@ describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
     const ctx = createMockCtx(meta);
     ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
 
+    const beforeBypass = Date.now();
     const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, {
       mode: "manual",
       isChild: true,
@@ -203,11 +204,13 @@ describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
     });
 
     expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
-    // Zero UI, zero meta writes.
+    // Zero UI, but deferred stamp is written to shared meta (Phase 2 / 190 Fix-E).
     expect(selectCalls).toBe(0);
-    expect(ctx.metadataUpdates).toEqual([]);
-    expect(meta.confirmGateDeferredAt).toBeUndefined();
-    // Suppression audit with attribution fields; no deferral audit.
+    expect(ctx.metadataUpdates.length).toBe(1);
+    expect(meta.confirmGateDeferredAt).toBeDefined();
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    expect(meta.confirmGateDeferredAt!.at).toBeGreaterThanOrEqual(beforeBypass);
+    // Suppression audit with attribution fields and deferredAt stamp.
     const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
     expect(logContent).toContain("confirm_gate_suppressed_child");
     expect(logContent).toContain("stage=plan");
@@ -230,6 +233,68 @@ describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
 
     expect(selectCalls).toBe(1);
     expect(result.result).toBe("handled");
+  });
+});
+
+// ─── Phase 2 (190) Fix-E: child bypass stamp → detectPendingConfirmGate ───────
+
+describe("Phase 2 (190) Fix-E: child bypass stamp → detectPendingConfirmGate", () => {
+  it("child bypass stamp makes detectPendingConfirmGate return true (e2e)", async () => {
+    await createPlanDoc("# Plan\n");
+    const tmpDir = getTmpDir();
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const stageStartTime = Date.now() - 1000; // stage started 1s ago
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime,
+    });
+    const ctx = createMockCtx(meta);
+
+    // Child bypass writes the stamp
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, {
+      mode: "manual",
+      isChild: true,
+      sessionFile: "child-e2e",
+    });
+
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+    expect(meta.confirmGateDeferredAt).toBeDefined();
+    expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
+    // stamp.at should be after stageStartTime (non-stale)
+    expect(meta.confirmGateDeferredAt!.at).toBeGreaterThan(stageStartTime);
+
+    // Now detectPendingConfirmGate should return true
+    expect(await detectPendingConfirmGate(config, meta)).toBe(true);
+  });
+
+  it("child bypass stamp with at < stageStartTime → detectPendingConfirmGate returns false (regression)", async () => {
+    await createPlanDoc("# Plan\n");
+    const tmpDir = getTmpDir();
+    const config = makePlanConfigWithConfirm(tmpDir, "manual");
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now(),
+    });
+    const ctx = createMockCtx(meta);
+
+    // Child bypass writes the stamp
+    const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {} } as any, {
+      mode: "manual",
+      isChild: true,
+      sessionFile: "child-stale",
+    });
+
+    expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
+    expect(meta.confirmGateDeferredAt).toBeDefined();
+
+    // Now simulate stale: set stageStartTime to after the stamp
+    const stampAt = meta.confirmGateDeferredAt!.at;
+    meta.stageStartTime = stampAt + 1000;
+
+    // detectPendingConfirmGate should return false because stamp is stale
+    expect(await detectPendingConfirmGate(config, meta)).toBe(false);
   });
 });
 

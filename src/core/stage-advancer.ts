@@ -793,11 +793,14 @@ export async function maybeHandleConfirmGate(
   // pending with zero side effects, before the smart-complex marker write, the
   // deferral stamp, the present-time stamp refresh, ui.select and ui.notify.
   if (isChild) {
+    // Phase 2 (190) Fix-E: write deferred stamp to shared meta.json so owner's detectPendingConfirmGate can see it
+    ctx.session.updateMeta({ confirmGateDeferredAt: { stage: currentStage, at: Date.now() } });
     await writeAuditLog("confirm_gate_suppressed_child", {
       pipelineId: meta.pipelineId,
       stage: currentStage,
       source,
       sessionFile: sessionFile ?? "",
+      deferredAt: String(Date.now()),
     });
     return { result: "handled", action: "pending", deferred: true };
   }

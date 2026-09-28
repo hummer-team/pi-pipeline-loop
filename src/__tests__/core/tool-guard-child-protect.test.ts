@@ -172,4 +172,68 @@ describe("Phase 1 (190): child session dismiss protection", () => {
       expect(meta.dismissCount).toBe(0);
     });
   });
+
+  // ─── Phase 2 (190) Fix-C: FORBIDDEN guidance for .pi/audit/ paths ─────────
+  describe("Phase 2 (190) Fix-C: FORBIDDEN guidance for .pi/audit/ paths", () => {
+    beforeEach(() => {
+      resetGitignoreCache();
+    });
+
+    it(".pi/audit/ path block includes generate_stage_summary guidance", async () => {
+      const TMP = join(tmpdir(), "pi-tg-child-audit-guidance-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: true },
+      });
+      await initAuditLog(config);
+
+      // Child session
+      const meta = makeTestMeta({ dismissCount: 0 });
+      const ctx = createMockCtx(meta, {
+        sessionHeader: { parentSession: "parent-session-id" },
+      });
+      ctx.toolCall = {
+        name: "write",
+        arguments: { file_path: join(TMP, ".pi", "audit", "pipe-test", "fix.md") },
+      };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("FORBIDDEN");
+      expect((result as any).reason).toContain("generate_stage_summary");
+    });
+
+    it("non-.pi/audit/ hardcoded path block does NOT include guidance", async () => {
+      const TMP = join(tmpdir(), "pi-tg-child-git-no-guidance-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      await mkdir(join(TMP, ".git"), { recursive: true });
+
+      const config = makeTestConfig({
+        projectRoot: TMP,
+        protect: { ask: true },
+      });
+      await initAuditLog(config);
+
+      // Child session
+      const meta = makeTestMeta({ dismissCount: 0 });
+      const ctx = createMockCtx(meta, {
+        sessionHeader: { parentSession: "parent-session-id" },
+      });
+      ctx.toolCall = {
+        name: "write",
+        arguments: { file_path: join(TMP, ".git", "config") },
+      };
+
+      const hook = createToolGuard(config);
+      const result = await hook.handler(ctx as any);
+
+      expect((result as any).block).toBe(true);
+      expect((result as any).reason).toContain("FORBIDDEN");
+      expect((result as any).reason).not.toContain("generate_stage_summary");
+    });
+  });
 });
