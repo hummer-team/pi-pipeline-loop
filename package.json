@@ -30,6 +30,6 @@
   "pi": {
     "extensions": ["./index.ts"]
   },
-  "license": "MIT",
+  "license": "MIT"
 
 }
