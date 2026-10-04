@@ -35,7 +35,7 @@ export const TEMPLATE_DIR = pathMod.resolve(__dirname, "template");
  * "completed" (terminal, requires fresh start).
  */
 export const RESUMABLE_STAGES: PipelineStage[] = [
-  "clarify", "plan", "develop", "review", "fix",
+  "clarify", "plan", "design-review", "develop", "review", "fix",
 ];
 
 /** Paths that agents in loop stages (develop/fix) must not modify.
@@ -201,6 +201,7 @@ export const DEFAULT_MAX_DISMISS_COUNT = 5;
 export const CANONICAL_STAGE_ORDER: readonly string[] = [
   "clarify",
   "plan",
+  "design-review",
   "develop",
   "review",
   "fix",
@@ -321,6 +322,9 @@ export const STAGE_TYPE_TOOL_DEFAULTS: Record<
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   plan: {
+    allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
+  },
+  "design-review": {
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   develop: {

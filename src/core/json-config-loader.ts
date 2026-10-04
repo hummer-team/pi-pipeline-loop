@@ -31,6 +31,7 @@ import {
 const VALID_STAGES = new Set<PipelineStage>([
   "clarify",
   "plan",
+  "design-review",
   "develop",
   "review",
   "fix",
@@ -760,6 +761,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     const STAGE_ORDER: PipelineStage[] = [
       "clarify",
       "plan",
+      "design-review",
       "develop",
       "review",
       "fix",

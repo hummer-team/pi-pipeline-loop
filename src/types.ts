@@ -81,12 +81,14 @@ export type StartStageMode = "auto" | "confirm" | "ask";
 /**
  * Union type of all pipeline stages.
  * Each stage represents a distinct phase in the agent's workflow loop.
- * 7-stage state machine: clarify → plan → develop → review → fix → completed
+ * 8-stage state machine: clarify → plan → [design-review →] develop → review → fix → completed
  * (awaiting_human is a fallback only, not in normal nextStage chain)
+ * (design-review is optional, inserted between plan and develop when configured)
  */
 export type PipelineStage =
   | "clarify"
   | "plan"
+  | "design-review"
   | "develop"
   | "review"
   | "fix"
@@ -608,7 +610,177 @@ export interface SessionMeta {
    * Mirrors lastTruncatedAuditMsgId pattern.
    */
   lastTransientRespawnMsgId?: string;
+
+  /**
+   * Phase 0 / 191: Optional design-review state.
+   * Present only when the design-review stage is active in the pipeline.
+   * All fields are backward-compatible (optional) to preserve existing meta.
+   */
+  designReview?: DesignReviewState;
 }
+
+// ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
+
+/**
+ * Authorization source for design-review operations.
+ * - "menu": User selected auto-review-plan from TUI menu
+ * - "direct-entry": User explicitly chose design-review stage via choose_stage
+ */
+export type DesignReviewAuthorizationSource = "menu" | "direct-entry";
+
+/**
+ * Phase of the design-review lifecycle.
+ * Discriminated union for type-safe state transitions.
+ */
+export type DesignReviewPhase =
+  | "review_ready"      // Authorized, ready to dispatch review
+  | "review_running"    // Review subagent dispatched, awaiting result
+  | "update_ready"      // Review returned FAIL, ready to dispatch plan update
+  | "update_running"    // Update subagent dispatched, awaiting result
+  | "pass_ready"        // Review returned PASS, ready to advance to develop
+  | "paused"            // Blocked: no-change, new-decision, drift, or unavailable
+  | "finished";         // Terminal: review cycle complete
+
+/**
+ * Kind of design-review operation.
+ */
+export type DesignReviewOperationKind =
+  | "review"            // Dispatching design-review-agent
+  | "update"            // Dispatching feat-design-plan-agent with update mode
+  | "develop-handoff";  // Advancing to develop after PASS
+
+/**
+ * Dispatch state for a design-review operation.
+ */
+export type DesignReviewDispatchState =
+  | "pending"           // Intent written, not yet dispatched
+  | "dispatched"        // RPC call made, agentId known
+  | "completed"         // Agent settled with result
+  | "failed"            // Agent failed or RPC error
+  | "deferred"          // Waiting for live agent to settle
+  | "cancelled";        // Operation cancelled (stale/invalidated)
+
+/**
+ * Single design-review operation record.
+ * Tracks one review or update dispatch with identity and receipt.
+ */
+export interface DesignReviewOperation {
+  /** Unique operation identifier (UUID v4) */
+  operationId: string;
+  /** Kind of operation */
+  kind: DesignReviewOperationKind;
+  /** Stage visit ID (stageStartTime at dispatch) for idempotency */
+  stageVisitId: number;
+  /** Attempt number within this round (retry does not increment round) */
+  attempt: number;
+  /** Current dispatch state */
+  dispatchState: DesignReviewDispatchState;
+  /** Subagent ID from RPC reply (absent until dispatched) */
+  agentId?: string;
+  /** Hash of operation inputs (plan path + round for review; report path + issues for update) */
+  inputHash?: string;
+  /** Hash of operation outputs (report hash for review; new plan hash for update) */
+  outputHash?: string;
+  /** Timestamp when operation was created */
+  createdAt: number;
+  /** Timestamp when operation completed/failed (absent until settled) */
+  settledAt?: number;
+  /** Timestamp when operation was last updated */
+  updatedAt: number;
+}
+
+/**
+ * Outcome of a design-review operation.
+ */
+export interface DesignReviewOutcome {
+  /** Hash of the review report (for review operations) */
+  reportHash?: string;
+  /** Verdict: pass, fail, or invalid */
+  verdict?: "pass" | "fail" | "invalid";
+  /** Reason for verdict (e.g., "no valid issues", "ambiguous tokens") */
+  verdictReason?: string;
+  /** Timestamp when outcome was recorded */
+  recordedAt: number;
+}
+
+/**
+ * Receipt for a design-review transition.
+ * Records authorization consumption and advancement.
+ */
+export interface DesignReviewReceipt {
+  /** Authorization ID consumed */
+  authorizationId: string;
+  /** Round number consumed */
+  round: number;
+  /** Operation ID that triggered the transition */
+  operationId: string;
+  /** Transition type */
+  transition: "review-start" | "update-start" | "advance-develop" | "pause" | "finish";
+  /** Timestamp */
+  at: number;
+}
+
+/**
+ * Reason for pausing design-review lifecycle.
+ */
+export type DesignReviewPauseReason =
+  | "no-change"          // Plan hash unchanged after update
+  | "new-decision"       // New clarification decision required
+  | "drift"              // External plan modification detected
+  | "unavailable"        // Develop stage disabled or no agent configured
+  | "authorization-lost" // Authorization invalidated (quit/disable/manual choice)
+  | "budget-exhausted";  // maxLoopCycles reached
+
+/**
+ * Design-review lifecycle state.
+ * Discriminated union keyed on phase for type-safe transitions.
+ */
+export type DesignReviewState = {
+  /** Schema version for forward compatibility (currently 1) */
+  schemaVersion: 1;
+
+  /** Normalized plan document path (absolute) */
+  planDoc: string;
+
+  /** Authorization identity (UUID v4) */
+  authorizationId: string;
+
+  /** Source of authorization */
+  authorizationSource: DesignReviewAuthorizationSource;
+
+  /** Owner session file path (for cross-session recovery) */
+  ownerSessionFile?: string;
+
+  /** Current round number (starts at 1) */
+  round: number;
+
+  /** Normalized report document path (absolute) */
+  reportDoc?: string;
+
+  /** Hash of plan document at authorization time (for drift detection) */
+  planHash?: string;
+
+  /** Current phase */
+  phase: DesignReviewPhase;
+
+  /** Current or last operation */
+  operation?: DesignReviewOperation;
+
+  /** Outcome of last completed operation */
+  outcome?: DesignReviewOutcome;
+
+  /** Transition receipt (for audit and recovery) */
+  receipt?: DesignReviewReceipt;
+
+  /** Reason for pause (when phase === "paused") */
+  pauseReason?: DesignReviewPauseReason;
+
+  /** Timestamp when authorization was granted */
+  authorizedAt: number;
+
+  /** Timestamp when state was last updated */
+  updatedAt: number;
+};
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
 
