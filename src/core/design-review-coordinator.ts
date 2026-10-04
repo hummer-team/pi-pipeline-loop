@@ -28,7 +28,8 @@ import { commitDesignReviewState } from "./session-state";
 import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult } from "../utils/design-review-dispatch";
 import { recordStageVisit } from "../utils/stage-visit";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
-import { writeAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog } from "../utils/auditLog";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -87,7 +88,7 @@ export async function coordinateDesignReview(
 
   // Authorization invalid
   if (!isAuthorizationValid(drState)) {
-    await writeAuditLog("design_review_coordinator", {
+    await safeWriteAuditLog("design_review_coordinator", {
       trigger,
       action: "authorization_invalid",
       phase: drState.phase,
@@ -139,7 +140,7 @@ async function handleReviewReady(
   // Check budget before dispatch
   const budgetCheck = checkBudget(meta, ctx.config);
   if (!budgetCheck.ok) {
-    await writeAuditLog("design_review_coordinator", {
+    await safeWriteAuditLog("design_review_coordinator", {
       action: "budget_exceeded_before_review",
       currentCycle: String(meta.loopCycleCount ?? 0),
       maxCycles: String(budgetCheck.max),
@@ -175,7 +176,7 @@ async function handleReviewReady(
   // Writeback success
   writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "dispatched");
 
-  await writeAuditLog("design_review_coordinator", {
+  await safeWriteAuditLog("design_review_coordinator", {
     action: "review_dispatched",
     operationId: operation.operationId,
     round: String(drState.round),
@@ -202,7 +203,7 @@ async function handleReviewRunning(
   const verification = verifyDesignReviewReport(reportPath, drState.planDoc, drState.round);
 
   if (verification.verdict === "invalid") {
-    await writeAuditLog("design_review_coordinator", {
+    await safeWriteAuditLog("design_review_coordinator", {
       action: "report_invalid",
       reportPath,
       reason: verification.reason,
@@ -213,7 +214,7 @@ async function handleReviewRunning(
   // Check budget before transition
   const budgetCheck = checkBudget(meta, ctx.config);
   if (!budgetCheck.ok) {
-    await writeAuditLog("design_review_coordinator", {
+    await safeWriteAuditLog("design_review_coordinator", {
       action: "budget_exceeded_before_routing",
       verdict: verification.verdict,
       currentCycle: String(meta.loopCycleCount ?? 0),
@@ -244,7 +245,7 @@ async function handlePass(
   const currentPlanHash = computeHash(planContent);
   
   if (hasPlanDrifted(drState, currentPlanHash)) {
-    await writeAuditLog("design_review_coordinator", {
+    await safeWriteAuditLog("design_review_coordinator", {
       action: "plan_drift_detected",
       expectedHash: drState.planHash ?? "",
       currentHash: currentPlanHash,
@@ -255,7 +256,7 @@ async function handlePass(
   // Check develop stage availability
   const developConfig = ctx.config.stages["develop"];
   if (!developConfig || !developConfig.agentPath || !developConfig.skillPath) {
-    await writeAuditLog("design_review_coordinator", {
+    await safeWriteAuditLog("design_review_coordinator", {
       action: "develop_unavailable",
     });
     return { status: "handled", action: "pending", reason: "develop_stage_unavailable" };
@@ -290,7 +291,7 @@ async function handlePass(
     advancedThisTurn: undefined,
   });
 
-  await writeAuditLog("design_review_coordinator", {
+  await safeWriteAuditLog("design_review_coordinator", {
     action: "pass_approved",
     reportHash,
     planHash: currentPlanHash,
@@ -361,7 +362,7 @@ async function handleFail(
     advancedThisTurn: undefined,
   });
 
-  await writeAuditLog("design_review_coordinator", {
+  await safeWriteAuditLog("design_review_coordinator", {
     action: "fail_routed",
     reportHash,
     reportPath,
@@ -442,7 +443,7 @@ async function handleUpdateReady(
 
   writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "dispatched");
 
-  await writeAuditLog("design_review_coordinator", {
+  await safeWriteAuditLog("design_review_coordinator", {
     action: "update_dispatched",
     operationId: operation.operationId,
     round: String(drState.round),
@@ -470,9 +471,13 @@ async function handleUpdateRunning(
   
   // Check if plan actually changed first (before validation)
   if (currentPlanHash === drState.planHash) {
-    await writeAuditLog("design_review_coordinator", {
-      action: "update_no_change",
-    });
+    // Throttle non-critical repeated event: no actual plan change
+    const throttleKey = `${meta.pipelineId ?? "unknown"}:update_no_change`;
+    if (shouldEmitWithinWindow(throttleKey, 5000)) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "update_no_change",
+      });
+    }
     return { status: "handled", action: "pending", reason: "no_actual_change" };
   }
 
@@ -483,7 +488,7 @@ async function handleUpdateRunning(
   const validation = validatePlanUpdate(drState.planDoc, drState.planHash ?? "", issues);
   
   if (!validation.valid) {
-    await writeAuditLog("design_review_coordinator", {
+    await safeWriteAuditLog("design_review_coordinator", {
       action: "update_invalid",
       reasons: validation.reasons.join("; "),
     });
@@ -531,7 +536,7 @@ async function handleUpdateRunning(
     advancedThisTurn: undefined,
   });
 
-  await writeAuditLog("design_review_coordinator", {
+  await safeWriteAuditLog("design_review_coordinator", {
     action: "update_complete_rerun",
     previousPlanHash: drState.planHash ?? "",
     newPlanHash: currentPlanHash,
@@ -554,10 +559,14 @@ async function handlePassReady(
   drState: DesignReviewState,
   trigger: string,
 ): Promise<CoordinatorResult> {
-  await writeAuditLog("design_review_coordinator", {
-    action: "unexpected_pass_ready",
-    trigger,
-  });
+  // Throttle non-critical repeated event: unexpected pass_ready state
+  const throttleKey = `${meta.pipelineId ?? "unknown"}:unexpected_pass_ready`;
+  if (shouldEmitWithinWindow(throttleKey, 5000)) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "unexpected_pass_ready",
+      trigger,
+    });
+  }
   return { status: "handled", action: "pending", reason: "unexpected_state" };
 }
 
@@ -570,11 +579,15 @@ async function handlePaused(
   drState: DesignReviewState,
   trigger: string,
 ): Promise<CoordinatorResult> {
-  await writeAuditLog("design_review_coordinator", {
-    action: "paused_state",
-    trigger,
-    pauseReason: drState.pauseReason ?? "unknown",
-  });
+  // Throttle non-critical repeated event: paused state check
+  const throttleKey = `${meta.pipelineId ?? "unknown"}:paused_state`;
+  if (shouldEmitWithinWindow(throttleKey, 5000)) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "paused_state",
+      trigger,
+      pauseReason: drState.pauseReason ?? "unknown",
+    });
+  }
   return { status: "handled", action: "pending", reason: drState.pauseReason ?? "paused" };
 }
 
