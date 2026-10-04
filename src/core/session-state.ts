@@ -319,8 +319,8 @@ export function commitDesignReviewState(
     if (state.round < currentDR.round) {
       safeWriteAuditLog("design_review_commit", {
         reason: "round_regression",
-        currentRound: currentDR.round,
-        newRound: state.round,
+        currentRound: String(currentDR.round),
+        newRound: String(state.round),
       }, "warn");
       return { ok: false, reason: "conflict" };
     }
@@ -356,7 +356,7 @@ export function commitDesignReviewState(
       safeWriteAuditLog("design_review_commit", {
         reason: "operation_verification_failed",
         expectedOpId: state.operation.operationId,
-        actualOpId: verifyOp?.operationId,
+        actualOpId: verifyOp?.operationId || "none",
       }, "error");
       return { ok: false, reason: "verification_failed" };
     }
@@ -365,7 +365,7 @@ export function commitDesignReviewState(
   safeWriteAuditLog("design_review_commit", {
     action: "committed",
     phase: state.phase,
-    round: state.round,
+    round: String(state.round),
     operationId: state.operation?.operationId || "none",
   });
 

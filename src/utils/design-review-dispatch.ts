@@ -128,8 +128,8 @@ export function prepareDesignReviewOperation(
       safeWriteAuditLog("design_review_dispatch", {
         action: "retry_existing_operation",
         operationId: existingOp.operationId,
-        attempt: retryAttempt,
-        round: state.round,
+        attempt: String(retryAttempt),
+        round: String(state.round),
       });
       return {
         ...existingOp,
@@ -143,8 +143,8 @@ export function prepareDesignReviewOperation(
       safeWriteAuditLog("design_review_dispatch", {
         action: "supersede_stale_operation",
         oldOperationId: existingOp.operationId,
-        oldStageVisitId: existingOp.stageVisitId,
-        newStageVisitId: stageVisitId,
+        oldStageVisitId: String(existingOp.stageVisitId),
+        newStageVisitId: String(stageVisitId),
       }, "warn");
     }
   }
@@ -228,8 +228,8 @@ export function commitDesignReviewOperation(
     action: "operation_committed",
     operationId: operation.operationId,
     kind: operation.kind,
-    round: state.round,
-    attempt: operation.attempt,
+    round: String(state.round),
+    attempt: String(operation.attempt),
   });
 
   return updatedState;
@@ -272,7 +272,7 @@ export function writebackDesignReviewResult(
     safeWriteAuditLog("design_review_dispatch", {
       reason: "operation_identity_mismatch",
       expectedOperationId: operationId,
-      actualOperationId: currentOp?.operationId,
+      actualOperationId: currentOp?.operationId ?? "none",
     }, "warn");
     return undefined;
   }
@@ -368,8 +368,8 @@ export function isCurrentOperation(
   if (state.round !== round) {
     safeWriteAuditLog("design_review_dispatch", {
       reason: "stale_round_callback",
-      callbackRound: round,
-      currentRound: state.round,
+      callbackRound: String(round),
+      currentRound: String(state.round),
     }, "warn");
     return false;
   }
