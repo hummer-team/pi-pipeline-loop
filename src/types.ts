@@ -732,6 +732,30 @@ export type DesignReviewPauseReason =
   | "budget-exhausted";  // maxLoopCycles reached
 
 /**
+ * Phase 1 / 191: Design review report verdict result.
+ */
+export interface DesignReviewReportVerdict {
+  /** Verdict: pass, fail, or invalid */
+  verdict: "pass" | "fail" | "invalid";
+  /** Hash of the report content */
+  reportHash?: string;
+  /** Reasoning for the verdict */
+  reason: string;
+}
+
+/**
+ * Phase 1 / 191: Plan update validation result.
+ */
+export interface DesignReviewPlanUpdateValidation {
+  /** Whether the update is valid */
+  valid: boolean;
+  /** List of validation issues/reasons */
+  reasons: string[];
+  /** New hash of the updated plan */
+  newHash?: string;
+}
+
+/**
  * Design-review lifecycle state.
  * Discriminated union keyed on phase for type-safe transitions.
  */
