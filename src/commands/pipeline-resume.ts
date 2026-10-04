@@ -27,6 +27,8 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
 import { staleConfigNotice } from "../utils/config-staleness";
+import { coordinateDesignReview, type CoordinatorResult } from "../core/design-review-coordinator";
+import { isAuthorizationValid } from "../core/design-review-state";
 
 /**
  * Idempotent stage dispatch helper (Phase 1 / 182).
@@ -105,6 +107,35 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
       const meta = ctx.session.getMeta() as SessionMeta | undefined;
       if (!meta || !meta.pipelineId) {
         return { error: "No active pipeline. Run /pipeline-start <doc_file> to begin." };
+      }
+
+      // Phase 4 (191): design-review recovery on resume
+      // If the pipeline has a design-review state with valid authorization,
+      // delegate to coordinator for recovery before normal resume logic.
+      if (meta.designReview && isAuthorizationValid(meta.designReview)) {
+        const coordCtx = {
+          config,
+          session: ctx.session,
+          ui: ctx.ui ? { notify: (msg: string) => ui.notify(ctx, msg), transition: ctx.ui.transition } : undefined,
+          pi: ctx.pi,
+        };
+        const coordResult: CoordinatorResult = await coordinateDesignReview(coordCtx, meta, "settle");
+        if (coordResult.status === "handled") {
+          syncStageStatusBar(ui, ctx);
+          if (coordResult.action === "advanced" || coordResult.action === "routed") {
+            ui.notify(ctx, `Design-review recovered: ${coordResult.action} to "${coordResult.toStage}".`);
+            return { message: `Design-review recovered: ${coordResult.action} to "${coordResult.toStage}".` };
+          }
+          if (coordResult.action === "pending") {
+            ui.notify(ctx, `Design-review recovery pending: ${coordResult.reason}`);
+            return { message: `Design-review recovery pending: ${coordResult.reason}` };
+          }
+          if (coordResult.action === "frozen") {
+            ui.notify(ctx, `Design-review frozen: ${coordResult.reason}`);
+            return { message: `Design-review frozen: ${coordResult.reason}` };
+          }
+        }
+        // If not-applicable, continue with normal resume logic
       }
 
       const flowState = getFlowState(meta);

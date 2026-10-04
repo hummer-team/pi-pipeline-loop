@@ -28,6 +28,9 @@ import { probeAgentState } from "../utils/subagents-introspect";
 import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen replay
 import { dispatchAfterResume } from "../commands/pipeline-start";
+// Phase 4 (191): design-review recovery on session start/reload
+import { coordinateDesignReview, type CoordinatorResult } from "./design-review-coordinator";
+import { isAuthorizationValid } from "./design-review-state";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -401,6 +404,31 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           if (staleNotice) {
             ui.notify(ctx, staleNotice);
           }
+        }
+
+        // Phase 4 (191): design-review recovery on session start/reload
+        // If the pipeline has a design-review state with valid authorization,
+        // delegate to coordinator for recovery before other resume logic.
+        if (meta.designReview && isAuthorizationValid(meta.designReview)) {
+          const coordCtx = {
+            config,
+            session: ctx.session,
+            ui: { notify: (msg: string) => ui.notify(ctx, msg), transition: (ctx as any).ui?.transition },
+            pi: (ctx as any).pi,
+          };
+          const coordResult: CoordinatorResult = await coordinateDesignReview(coordCtx, meta, "settle");
+          if (coordResult.status === "handled") {
+            syncStageStatusBar(ui, ctx);
+            if (coordResult.action === "advanced" || coordResult.action === "routed") {
+              ui.notify(ctx, `Design-review recovered on session start: ${coordResult.action} to "${coordResult.toStage}".`);
+              return;
+            }
+            if (coordResult.action === "pending" || coordResult.action === "frozen") {
+              // Notify but continue to other recovery logic
+              ui.notify(ctx, `Design-review recovery: ${coordResult.reason}`);
+            }
+          }
+          // If not-applicable, continue with normal session-start logic
         }
 
         // Phase 3 (173) 🔴-2 + Phase 4 / 175 (R3Q2A/R2Q1A): stale_startup gate.

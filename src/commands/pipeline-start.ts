@@ -303,6 +303,9 @@ function buildRestartMeta(
     spawnedStages: undefined,
     // Phase 4 (171) High A: clear activeSpawns on restart to prevent stale spawn records
     activeSpawns: undefined,
+    // Phase 4 (191): clear designReview authorization on restart — new pipeline must not
+    // inherit stale authorization from previous run (prevents authorization reuse attacks)
+    designReview: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -377,6 +380,9 @@ export function buildStartMeta(
     // 187: clear pendingSpawns on new pipeline start — no stale deferred spawns
     // should survive from a prior run into the fresh pipeline.
     pendingSpawns: {},
+    // Phase 4 (191): clear designReview authorization on start — new pipeline must not
+    // inherit stale authorization from previous run (prevents authorization reuse attacks)
+    designReview: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -458,6 +464,10 @@ export function buildResumeMeta(
     contextFiles: meta.contextFiles,
     maxLoops: config.maxLoops ?? meta.maxLoops ?? 3,
     maxLoopCycles: config.maxLoopCycles ?? meta.maxLoopCycles ?? 3,
+    // Phase 4 (191): preserve designReview authorization on resume for recovery —
+    // if the pipeline was aborted during design-review stages, the authorization
+    // must be retained so recovery can resume from where it left off.
+    designReview: meta.designReview,
 
     // Rebuilt fields
     previousStage: resolvePreviousStage(config, meta.currentStage),
