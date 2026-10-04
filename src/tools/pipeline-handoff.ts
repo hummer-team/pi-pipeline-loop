@@ -18,6 +18,7 @@ import { isDormant } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { maybeHandleConfirmGate, formatConfirmGatePendingCopy } from "../core/stage-advancer";
 import { detectSessionRole } from "../core/session-role";
+import { coordinateDesignReview } from "../core/design-review-coordinator";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -68,6 +69,34 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
       const meta: SessionMeta = rawMeta;
+
+      // Phase 3 (191): Design-review coordinator delegation
+      // When design-review is active, delegate routing decisions to coordinator
+      const coordinatorCtx = {
+        config,
+        session: ctx.session,
+        ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+        pi: ctx.pi,
+      };
+      const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "handoff");
+      if (coordinatorResult.status === "handled") {
+        // Coordinator handled the routing, return early
+        const result: any = {
+          success: coordinatorResult.action !== "frozen" && coordinatorResult.action !== "pending",
+          action: coordinatorResult.action,
+        };
+        if ("reason" in coordinatorResult) {
+          result.message = coordinatorResult.reason;
+        } else {
+          result.message = `Design review ${coordinatorResult.action}`;
+        }
+        if ("toStage" in coordinatorResult) {
+          result.toStage = coordinatorResult.toStage;
+        }
+        return result;
+      }
+      // coordinatorResult.status === "not-applicable" → continue with original flow
+
       const currentStage = meta.currentStage;
       const nextStage = args.nextStage as PipelineStage;
       const note = (args.note as string) ?? "";

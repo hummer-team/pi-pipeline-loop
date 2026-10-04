@@ -40,6 +40,7 @@ import { escapeRegExp } from "../utils/regex-utils";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen re-popup
 import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
 import type { SessionMeta as AgentSettledSessionMeta } from "../types";
+import { coordinateDesignReview } from "./design-review-coordinator";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -80,6 +81,21 @@ export function createAgentSettled(
       // No agent_settled audit, no notify, no frozen block, no verify
       if (!rawMeta || isDormant(rawMeta)) return;
       const meta: SessionMeta = rawMeta;
+
+      // Phase 3 (191): Design-review coordinator delegation
+      // When design-review is active, delegate routing decisions to coordinator
+      const coordinatorCtx = {
+        config,
+        session: ctx.session,
+        ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+        pi: ctx.pi,
+      };
+      const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "settle");
+      if (coordinatorResult.status === "handled") {
+        // Coordinator handled the routing, return early
+        return;
+      }
+      // coordinatorResult.status === "not-applicable" → continue with original flow
 
       // 1. Write audit log
       await writeAuditLog("agent_settled", {

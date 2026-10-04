@@ -14,6 +14,7 @@ import { extractAssistantMessages } from "../core/session-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
 import { isDormant } from "../core/dormancy";
+import { coordinateDesignReview } from "../core/design-review-coordinator";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -89,6 +90,34 @@ export function createPipelineVerify(
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
       const meta: SessionMeta = rawMeta;
+
+      // Phase 3 (191): Design-review coordinator delegation
+      // When design-review is active, delegate routing decisions to coordinator
+      const coordinatorCtx = {
+        config,
+        session: sessionCtx.session,
+        ui: sessionCtx.ui ? { notify: (msg: string) => { sessionCtx.ui?.notify?.(msg); } } : undefined,
+        pi: (sessionCtx as any).pi,
+      };
+      const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "verify");
+      if (coordinatorResult.status === "handled") {
+        // Coordinator handled the routing, return early
+        const result: any = {
+          success: coordinatorResult.action !== "frozen" && coordinatorResult.action !== "pending",
+          action: coordinatorResult.action,
+        };
+        if ("reason" in coordinatorResult) {
+          result.message = coordinatorResult.reason;
+        } else {
+          result.message = `Design review ${coordinatorResult.action}`;
+        }
+        if ("toStage" in coordinatorResult) {
+          result.toStage = coordinatorResult.toStage;
+        }
+        return result;
+      }
+      // coordinatorResult.status === "not-applicable" → continue with original flow
+
       const stageName = (args.stage as PipelineStage) || meta.currentStage;
       const stageConfig = config.stages[stageName];
 

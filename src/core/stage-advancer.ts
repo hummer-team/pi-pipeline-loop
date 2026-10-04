@@ -38,6 +38,7 @@ import { isDormant } from "./dormancy";
 import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
+import { coordinateDesignReview } from "./design-review-coordinator";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -1234,6 +1235,33 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
       const meta: SessionMeta = rawMeta;
       const currentStage: PipelineStage = meta.currentStage;
+
+      // Phase 3 (191): Design-review coordinator delegation
+      // When design-review is active, delegate routing decisions to coordinator
+      const coordinatorCtx = {
+        config,
+        session: ctx.session,
+        ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+        pi: ctx.pi,
+      };
+      const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "advance");
+      if (coordinatorResult.status === "handled") {
+        // Coordinator handled the routing, return its result
+        const result: any = {
+          success: coordinatorResult.action !== "frozen" && coordinatorResult.action !== "pending",
+          action: coordinatorResult.action,
+        };
+        if ("reason" in coordinatorResult) {
+          result.message = coordinatorResult.reason;
+        } else {
+          result.message = `Design review ${coordinatorResult.action}`;
+        }
+        if ("toStage" in coordinatorResult) {
+          result.toStage = coordinatorResult.toStage;
+        }
+        return result;
+      }
+      // coordinatorResult.status === "not-applicable" → continue with original flow
 
       // G7: Block advance when develop/fix stage has uncommitted changes.
       // Fail-open: skip check when execFn is unavailable.
