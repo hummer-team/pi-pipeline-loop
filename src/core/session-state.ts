@@ -267,6 +267,112 @@ export function extractAssistantMessages(ctx: ExtensionContext): string[] {
 }
 
 /**
+ * Phase 2 (191): Commit result for design review state.
+ */
+export type DesignReviewCommitResult =
+  | { ok: true; state: import("../types").DesignReviewState }
+  | { ok: false; reason: "no_meta" | "write_failed" | "verification_failed" | "conflict" };
+
+/**
+ * Phase 2 (191): Reliably commits design review state to session meta.
+ *
+ * This function ensures:
+ * - State is written before any RPC call (prevents orphaned RPC)
+ * - Write is verified by reading back (prevents silent failures)
+ * - Operation identity is preserved (prevents stale writes)
+ * - Authorization validity is checked (prevents invalid transitions)
+ *
+ * @param session - Session with getMeta/updateMeta interface
+ * @param state - Design review state to commit
+ * @returns Commit result with success/failure and reason
+ */
+export function commitDesignReviewState(
+  session: {
+    getMeta: () => import("../types").SessionMeta | undefined;
+    updateMeta: (patch: Partial<import("../types").SessionMeta>) => import("../types").SessionMeta | undefined;
+  },
+  state: import("../types").DesignReviewState,
+): DesignReviewCommitResult {
+  // Read current meta
+  const meta = session.getMeta();
+  if (!meta) {
+    safeWriteAuditLog("design_review_commit", {
+      reason: "no_meta",
+    }, "error");
+    return { ok: false, reason: "no_meta" };
+  }
+
+  // Check for conflicts (different authorization or round)
+  const currentDR = meta.designReview;
+  if (currentDR) {
+    // Conflict if authorization changed
+    if (currentDR.authorizationId !== state.authorizationId) {
+      safeWriteAuditLog("design_review_commit", {
+        reason: "authorization_conflict",
+        currentAuthId: currentDR.authorizationId,
+        newAuthId: state.authorizationId,
+      }, "warn");
+      return { ok: false, reason: "conflict" };
+    }
+
+    // Conflict if round regressed (new round should never be less than current)
+    if (state.round < currentDR.round) {
+      safeWriteAuditLog("design_review_commit", {
+        reason: "round_regression",
+        currentRound: currentDR.round,
+        newRound: state.round,
+      }, "warn");
+      return { ok: false, reason: "conflict" };
+    }
+  }
+
+  // Write new state
+  const updatedMeta = session.updateMeta({
+    designReview: state,
+  });
+
+  if (!updatedMeta) {
+    safeWriteAuditLog("design_review_commit", {
+      reason: "write_failed",
+      phase: state.phase,
+    }, "error");
+    return { ok: false, reason: "write_failed" };
+  }
+
+  // Verify write by reading back
+  const verifyMeta = session.getMeta();
+  if (!verifyMeta?.designReview) {
+    safeWriteAuditLog("design_review_commit", {
+      reason: "verification_failed",
+      phase: state.phase,
+    }, "error");
+    return { ok: false, reason: "verification_failed" };
+  }
+
+  // Verify operation identity if present
+  if (state.operation) {
+    const verifyOp = verifyMeta.designReview.operation;
+    if (!verifyOp || verifyOp.operationId !== state.operation.operationId) {
+      safeWriteAuditLog("design_review_commit", {
+        reason: "operation_verification_failed",
+        expectedOpId: state.operation.operationId,
+        actualOpId: verifyOp?.operationId,
+      }, "error");
+      return { ok: false, reason: "verification_failed" };
+    }
+  }
+
+  safeWriteAuditLog("design_review_commit", {
+    action: "committed",
+    phase: state.phase,
+    round: state.round,
+    operationId: state.operation?.operationId || "none",
+  });
+
+  return { ok: true, state: verifyMeta.designReview };
+}
+
+/**
  * Phase 5 (170): Health status of the last assistant run.
  *
  * - "truncated": The last assistant message was cut off by the model's output
