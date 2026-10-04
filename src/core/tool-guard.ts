@@ -36,6 +36,8 @@ import {
   isPathProtectedForModify,
   isPathProtectedForGit,
   toProjectRelative,
+  isWithinDesignReviewScope,
+  resolveSymlinkPath,
   type ProtectState,
 } from "../utils/protect";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
@@ -367,6 +369,10 @@ async function checkBashFileTargets(
   const sessionPaths = meta.sessionAllowedWritePaths || [];
   // Phase 1 (190) Fix-A extension: detect session role once for child hard-block checks
   const { isChild } = detectSessionRole(ctx);
+  
+  // Phase 4 (191): Design-review dynamic scope - check once for all targets
+  const drState = meta.designReview;
+  const hasDesignReviewScope = !!(drState && drState.operation);
 
   for (const t of targets) {
     // Phase 1 / 177 (D3): a "suspicious" target is source text captured by `>`
@@ -402,6 +408,31 @@ async function checkBashFileTargets(
       // Fix #1: `.git/*.lock` self-rescue exemption for non-git commands in allow stages.
       // Allows `rm -f .git/index.lock` etc. when gitPolicy="allow" (develop/fix).
       if (opts?.allowGitLockFiles && isGitLockFile(relPath)) continue;
+
+      // Phase 4 (191): Design-review dynamic scope enforcement
+      if (hasDesignReviewScope && drState.operation) {
+        const resolvedAbsTarget = await resolveSymlinkPath(absTarget);
+        const resolvedRelPath = toProjectRelative(config.projectRoot, resolvedAbsTarget);
+        const checkPath = resolvedRelPath || relPath;
+        
+        if (!isWithinDesignReviewScope(
+          checkPath,
+          drState.operation.kind,
+          drState.planDoc,
+          drState.reportDoc,
+          config.projectRoot,
+        )) {
+          const reason = `FORBIDDEN: Target '${relPath}' is outside design-review dynamic write scope for operation '${drState.operation.kind}'.`;
+          await trackViolation({
+            type: "write_protected",
+            tool: "bash",
+            detail: reason,
+            suggestion: `Design-review scope: operation=${drState.operation.kind}, phase=${drState.phase}.`,
+          });
+          ui.notify(ctx, reason);
+          return { block: true, reason };
+        }
+      }
 
       // Session allowance early bypass
       if (sessionPaths.includes(relPath)) continue;
@@ -1043,6 +1074,39 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const state = await getProtectState();
           // Phase 1 (190) Fix-A: detect session role once for child hard-block checks
           const { isChild } = detectSessionRole(ctx);
+
+          // Phase 4 (191): Design-review dynamic write scope enforcement
+          // Check if path is within scope based on current operation type
+          const drState = meta.designReview;
+          if (drState && drState.operation) {
+            const operationKind = drState.operation.kind;
+            const reportDoc = drState.reportDoc;
+            const planDoc = drState.planDoc;
+            
+            // Resolve symlinks to actual paths for security
+            const resolvedAbsPath = await resolveSymlinkPath(absPath);
+            const resolvedRelPath = toProjectRelative(config.projectRoot, resolvedAbsPath);
+            const checkPath = resolvedRelPath || relPath;
+            
+            if (!isWithinDesignReviewScope(
+              checkPath,
+              operationKind,
+              planDoc,
+              reportDoc,
+              config.projectRoot,
+            )) {
+              const reason = `FORBIDDEN: Path '${relPath}' is outside design-review dynamic write scope for operation '${operationKind}'. ` +
+                `Only ${operationKind === 'review' ? `report document (${reportDoc})` : operationKind === 'update' ? `plan document (${planDoc}) and allowed artifacts` : 'no paths'} are writable.`;
+              await trackViolation({
+                type: "write_protected",
+                tool: toolName,
+                detail: reason,
+                suggestion: `Design-review scope: operation=${operationKind}, phase=${drState.phase}.`,
+              });
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
+          }
 
           // Session-level file allowance: bypasses whitelist + global chain entirely.
           // Pre-evaluated once so downstream branches can skip redundant checks.

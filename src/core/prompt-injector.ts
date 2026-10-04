@@ -34,6 +34,7 @@ import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
 import { resolvePiWorkDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
+import { isWithinDesignReviewScope } from "../utils/protect";
 import type { RuntimeCtx } from "./runtime-ctx";
 
 /**
@@ -794,6 +795,68 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
 }
 
 /**
+ * Phase 4 (191): Builds the design-review dynamic context section.
+ * Injects information about current operation, writable paths, and restrictions.
+ * 
+ * For review operations: only current report is writable.
+ * For update operations: only plan document and allowed artifacts are writable.
+ * Requirements docs and source code remain read-only.
+ * 
+ * @param meta - Current session metadata
+ * @param config - Pipeline configuration
+ * @returns Prompt section string, or null if not in design-review flow
+ */
+function buildDesignReviewContext(
+  meta: SessionMeta,
+  config: PipelineConfig,
+): string | null {
+  const drState = meta.designReview;
+  if (!drState) return null;
+
+  const operation = drState.operation;
+  if (!operation) return null;
+
+  const parts: string[] = [
+    `# DESIGN-REVIEW DYNAMIC CONTEXT`,
+    `- Operation: ${operation.kind}`,
+    `- Phase: ${drState.phase}`,
+    `- Round: ${drState.round}`,
+    `- Plan Document: ${drState.planDoc}`,
+  ];
+
+  if (drState.reportDoc) {
+    parts.push(`- Report Document: ${drState.reportDoc}`);
+  }
+
+  // Add operation-specific restrictions
+  if (operation.kind === "review") {
+    parts.push(
+      `\n**Write Scope**: Only the report document (${drState.reportDoc || "TBD"}) is writable.`,
+      `Requirements docs and source code are read-only.`,
+      `Git operations are blocked by default (gitModify=block).`,
+    );
+  } else if (operation.kind === "update") {
+    parts.push(
+      `\n**Write Scope**: Only the plan document (${drState.planDoc}) and explicitly allowed planning artifacts are writable.`,
+      `Requirements docs and source code remain read-only.`,
+      `Git operations are blocked by default (gitModify=block).`,
+    );
+  } else if (operation.kind === "develop-handoff") {
+    parts.push(
+      `\n**Write Scope**: No write operations allowed during handoff.`,
+      `Pipeline is transitioning to develop stage.`,
+    );
+  }
+
+  // Add authorization status
+  if (drState.authorizationId) {
+    parts.push(`- Authorization: ${drState.authorizationId.substring(0, 8)}...`);
+  }
+
+  return parts.join("\n");
+}
+
+/**
  * Phase 5 (162): Builds the smart confirm guidance section for stages with
  * confirm.mode === "smart". Returns null for non-smart stages or stages
  * that don't support the confirm gate (only plan/review).
@@ -875,8 +938,10 @@ async function buildDefaultPrompt(
   const part10 = await buildStageDeliverables(config, meta);
   // Part 11: Smart Confirm Guidance (Phase 5: 162)
   const part11 = buildSmartConfirmGuidance(stageConfig, meta);
+  // Part 12: Design-Review Dynamic Context (Phase 4: 191)
+  const part12 = buildDesignReviewContext(meta, config);
 
-  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11].filter(
+  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11, part12].filter(
     (p): p is string => p !== null,
   );
 
@@ -921,6 +986,8 @@ async function buildDynamicValues(
     stage_deliverables: await buildStageDeliverables(config, meta),
     // Phase 5 (162): Smart confirm guidance (plan/review smart mode only; null → paragraph removed)
     smart_confirm_guidance: buildSmartConfirmGuidance(stageConfig, meta),
+    // Phase 4 (191): Design-review dynamic context (null when not in design-review flow → paragraph removed)
+    design_review_context: buildDesignReviewContext(meta, config),
   };
 }
 

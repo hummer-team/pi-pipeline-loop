@@ -402,3 +402,84 @@ export function describeGitModifySource(
   // Tier 3: built-in matrix
   return "matrix-default";
 }
+
+// ─── Design-Review Dynamic Write Scope (Phase 4 / 191) ──────────────────────
+
+/**
+ * Phase 4 (191): Checks if a path is within the dynamic write scope for design-review operations.
+ * 
+ * For review operations: only the current report document is writable.
+ * For update operations: only the existing plan document and explicitly allowed artifacts are writable.
+ * Requirements docs and source code remain read-only.
+ * 
+ * @param relPath - Path relative to project root
+ * @param operation - Current design-review operation ("review" | "update" | "develop-handoff")
+ * @param planDoc - Absolute path to plan document
+ * @param reportDoc - Absolute path to report document (optional, only for review operations)
+ * @param projectRoot - Project root for path resolution
+ * @param allowedUpdatePaths - Additional paths allowed for update operations (optional)
+ * @returns true if path is within dynamic write scope
+ */
+export function isWithinDesignReviewScope(
+  relPath: string,
+  operation: "review" | "update" | "develop-handoff",
+  planDoc: string,
+  reportDoc: string | undefined,
+  projectRoot: string,
+  allowedUpdatePaths?: string[],
+): boolean {
+  // Resolve paths relative to project root
+  const relPlanDoc = toProjectRelative(projectRoot, planDoc);
+  const relReportDoc = reportDoc ? toProjectRelative(projectRoot, reportDoc) : undefined;
+
+  // Review operation: only report document is writable
+  if (operation === "review") {
+    if (!relReportDoc) return false;
+    return relPath === relReportDoc;
+  }
+
+  // Update operation: plan document + explicitly allowed paths are writable
+  if (operation === "update") {
+    if (relPath === relPlanDoc) return true;
+    
+    // Check allowed update paths (planning artifacts)
+    if (allowedUpdatePaths && allowedUpdatePaths.length > 0) {
+      for (const allowedPath of allowedUpdatePaths) {
+        const normalizedAllowed = normalizeAllow([allowedPath]);
+        if (isPathAllowed(relPath, normalizedAllowed)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // develop-handoff: no write scope (transitioning to develop stage)
+  return false;
+}
+
+/**
+ * Phase 4 (191): Resolves symlinks to actual paths for security checks.
+ * Prevents symlink attacks that bypass path restrictions.
+ * 
+ * @param absPath - Absolute path to resolve
+ * @returns Resolved actual path (follows symlinks)
+ */
+export async function resolveSymlinkPath(absPath: string): Promise<string> {
+  try {
+    const fs = await import("node:fs/promises");
+    const stat = await fs.lstat(absPath);
+    if (stat.isSymbolicLink()) {
+      const target = await fs.readlink(absPath);
+      // Resolve relative symlink targets against parent directory
+      const resolved = path.isAbsolute(target) 
+        ? target 
+        : path.resolve(path.dirname(absPath), target);
+      return resolveSymlinkPath(resolved); // Recursively resolve chained symlinks
+    }
+    return absPath;
+  } catch {
+    // If stat fails (file doesn't exist yet), return original path
+    return absPath;
+  }
+}
