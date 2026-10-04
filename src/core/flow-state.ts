@@ -230,6 +230,9 @@ export async function executeDecision(
         return { success: false, message: "Cannot skip: pipeline is not frozen." };
       }
 
+      // Phase 4 (191): invalidate design-review authorization on skip
+      await invalidateDesignReviewAuthorization(ctx, "decision_skip");
+
       const stageConfig = config.stages[meta.currentStage];
       const toStage: PipelineStage = stageConfig?.nextStage ?? "completed";
       const prevStage = meta.currentStage;
@@ -290,6 +293,9 @@ export async function executeDecision(
       if (!isFrozen(meta)) {
         return { success: false, message: "Cannot rollback: pipeline is not frozen." };
       }
+
+      // Phase 4 (191): invalidate design-review authorization on rollback
+      await invalidateDesignReviewAuthorization(ctx, "decision_rollback");
 
       const toStage: PipelineStage = meta.previousStage ?? "clarify";
       const prevStage = meta.currentStage;
@@ -423,6 +429,9 @@ export async function executeDecision(
     }
 
     case "abort": {
+      // Phase 4 (191): invalidate design-review authorization on abort
+      await invalidateDesignReviewAuthorization(ctx, "decision_abort");
+
       ctx.session.updateMeta({
         flowState: "aborted",
         terminateReason: "user_abort",
@@ -458,6 +467,13 @@ export async function executeDecision(
       const target = opts?.targetStage;
       if (!target) {
         return { success: false, message: "choose_stage requires targetStage option." };
+      }
+
+      // Phase 4 (191): invalidate design-review authorization when choosing a non-design-review stage.
+      // Choosing design-review requires NEW owner authorization (handled by session-starter/coordinator).
+      // Choosing any other stage clears stale authorization to prevent reuse attacks.
+      if (target !== "design-review") {
+        await invalidateDesignReviewAuthorization(ctx, "decision_choose_stage");
       }
 
       const frozenStage = meta.currentStage;
@@ -565,6 +581,49 @@ export async function executeDecision(
     default:
       return { success: false, message: `Unknown decision: "${String(decision)}".` };
   }
+}
+
+// ─── invalidateDesignReviewAuthorization ────────────────────────────────────
+
+/**
+ * Phase 4 (191): Invalidates design-review authorization on quit/shutdown/stage change.
+ *
+ * Clears the designReview field from SessionMeta to ensure stale authorization
+ * does not pollute new runs or stage transitions. This is a safety measure to
+ * prevent authorization reuse attacks and ensure each design-review session
+ * requires fresh owner authorization.
+ *
+ * Called by:
+ * - pipeline-quit (on explicit quit)
+ * - session-shutdown (on session end)
+ * - executeDecision (on skip/rollback/abort/choose_stage to non-design-review)
+ *
+ * @param ctx - FlowStateCtx with session access
+ * @param reason - Machine-readable reason for audit (e.g., "user_quit", "session_shutdown")
+ */
+export async function invalidateDesignReviewAuthorization(
+  ctx: FlowStateCtx,
+  reason: string,
+): Promise<void> {
+  const meta = ctx.session.getMeta();
+  if (!meta?.designReview) {
+    return; // No authorization to invalidate
+  }
+
+  const authorizationId = meta.designReview.authorizationId;
+  const phase = meta.designReview.phase;
+
+  ctx.session.updateMeta({
+    designReview: undefined,
+  });
+
+  await safeWriteAuditLog("design_review_authorization_invalidated", {
+    pipelineId: meta.pipelineId ?? "unknown",
+    stage: meta.currentStage ?? "unknown",
+    authorizationId,
+    phase,
+    reason,
+  });
 }
 
 // ─── isTerminalCompleted ────────────────────────────────────────────────────

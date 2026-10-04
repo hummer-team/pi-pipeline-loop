@@ -5,7 +5,7 @@
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
-import { getFlowState } from "../core/flow-state";
+import { getFlowState, invalidateDesignReviewAuthorization } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
 
@@ -31,6 +31,10 @@ export function createPipelineQuitCommand(config: PipelineConfig): Command {
       const fromState = flowState;
       const stage = meta.currentStage;
       const pipelineId = meta.pipelineId;
+
+      // Phase 4 (191): invalidate design-review authorization on quit
+      // Ensures stale authorization does not persist across pipeline runs
+      await invalidateDesignReviewAuthorization(ctx, "user_quit");
 
       // Release session-level resources (preserve pipelineId/currentStage/summaries/domain/requirementDoc)
       ctx.session.updateMeta({

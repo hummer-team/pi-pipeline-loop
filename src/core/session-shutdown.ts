@@ -18,7 +18,7 @@
  */
 
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
-import { clearAllDecisionTimers } from "./flow-state";
+import { clearAllDecisionTimers, invalidateDesignReviewAuthorization } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
@@ -171,6 +171,11 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
 
       // Owner session: reset flowState on quit/new — resume/fork/reload preserve user intent
       if (reason === "quit" || reason === "new") {
+        // Phase 4 (191): invalidate design-review authorization on owner quit/new
+        // Child sessions do not hold authorization (enforced at entry); only the owner
+        // session's quit/new terminates the pipeline and must clear stale authorization.
+        await invalidateDesignReviewAuthorization(ctx, "session_shutdown");
+
         // Phase 1 (171): pass trigger identity + config for enriched audit (C14-C15)
         await markPipelineAborted(ctx, "session_quit", {
           trigger: {
