@@ -97,17 +97,61 @@ function readNextStage(config: PipelineConfig, stage: string): string | null | u
 }
 
 /**
+ * Determines the dynamic target for design-review stage based on current phase.
+ * Returns the effective next stage to display, overriding static config.
+ * 
+ * @param meta - Session metadata
+ * @returns Dynamic target stage name, or null if not in design-review
+ */
+function getDesignReviewDynamicTarget(meta: any): string | null {
+  const drState = meta?.designReview;
+  if (!drState || meta?.currentStage !== 'design-review') {
+    return null;
+  }
+
+  const phase = drState.phase;
+  const operation = drState.operation;
+
+  // Map design-review phases to effective targets
+  if (phase === 'review_ready' || phase === 'review_running') {
+    return 'review';
+  }
+  if (phase === 'update_ready' || phase === 'update_running') {
+    return 'update';
+  }
+  if (phase === 'pass_ready') {
+    return 'develop';
+  }
+  if (phase === 'paused') {
+    return 'paused';
+  }
+  if (phase === 'finished') {
+    return 'completed';
+  }
+
+  return null;
+}
+
+/**
  * Unified stage format:
  * - With meta: "[ {pipelineId} • {stage} -> {nextStage} ]" (nextStage grayed when NEXT_STAGE_GRAY)
  * - With meta but no nextStage: "[ {pipelineId} • {stage} ]"
  * - Without meta: "Pipeline → {stage}"
+ * 
+ * Phase 4-4: For design-review stage, display dynamic target based on current phase
+ * instead of static nextStage from config.
  */
 function formatStage(config: PipelineConfig, ctx: any, stage: string): string {
   const pipelineId = readPipelineId(ctx);
   if (!pipelineId) {
     return `Pipeline → ${stage}`;
   }
-  const nextStage = readNextStage(config, stage);
+  
+  // Phase 4-4: Use dynamic target for design-review stage
+  const meta = ctx?.session?.getMeta?.();
+  const dynamicTarget = stage === 'design-review' ? getDesignReviewDynamicTarget(meta) : null;
+  const nextStage = dynamicTarget ?? readNextStage(config, stage);
+  
   if (nextStage) {
     const arrow = NEXT_STAGE_GRAY
       ? `${ANSI_GRAY_OPEN}-> ${nextStage}${ANSI_GRAY_CLOSE}`

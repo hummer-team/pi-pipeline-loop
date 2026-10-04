@@ -69,6 +69,15 @@ export function createPipelineState(config: PipelineConfig): Tool {
         stageStartTime: new Date(meta.stageStartTime).toISOString(),
         // Phase 4 (143): Hash integrity check results for all tracked summaries
         summaryIntegrity: verifySummaryHash(meta),
+        // Phase 4-4 (191): Include design-review state for display
+        designReview: meta.designReview ? {
+          phase: meta.designReview.phase,
+          round: meta.designReview.round,
+          operation: meta.designReview.operation?.kind ?? null,
+          planDoc: meta.designReview.planDoc,
+          reportDoc: meta.designReview.reportDoc ?? null,
+          pauseReason: meta.designReview.pauseReason ?? null,
+        } : null,
       };
 
       // Audit pipeline_state query with full snapshot

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { createPipelineUI, STAGE_STATUS_KEY, PROGRESS_FRAMES, DEFAULT_PROGRESS_FRAME_MS, _setNextStageGray, NEXT_STAGE_GRAY } from "../../core/pipeline-ui";
 import { makeTestConfig, makeTestMeta, createMockCtx, finalStatusText } from "../helpers";
-import type { PipelineConfig } from "../../types";
+import type { PipelineConfig, SessionMeta } from "../../types";
 
 /** Helper: async sleep */
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -19,6 +19,16 @@ function makeCtx() {
     notifications,
     statusCalls,
   };
+}
+
+/** Helper: create ctx with designReview state */
+function makeDesignReviewCtx(meta: Partial<SessionMeta> = {}) {
+  const baseMeta = makeTestMeta(meta);
+  const { ctx, notifications, statusCalls } = makeCtx();
+  (ctx as any).session = {
+    getMeta: () => baseMeta,
+  };
+  return { ctx, notifications, statusCalls, meta: baseMeta };
 }
 
 describe("createPipelineUI", () => {
@@ -541,6 +551,118 @@ describe("createPipelineUI", () => {
       ui.setStage(ctx, "plan");
 
       expect(Array.from(footerMap.keys()).at(-1)).toBe(STAGE_STATUS_KEY);
+    });
+  });
+
+  // ── Phase 4-4 (191): design-review dynamic target display ─────────────────
+
+  describe("Phase 4-4 (191): design-review dynamic target display", () => {
+    it("design-review stage with review_ready phase shows 'review' target", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, notifications } = makeDesignReviewCtx({
+        currentStage: "design-review" as any,
+        designReview: {
+          schemaVersion: 1,
+          planDoc: "/tmp/plan.md",
+          authorizationId: "auth-123",
+          authorizationSource: "direct-entry",
+          round: 1,
+          phase: "review_ready" as any,
+          authorizedAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      });
+
+      ui.stageEntry(ctx, "design-review");
+
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("design-review");
+      expect(notifications[0]).toContain("-> review");
+    });
+
+    it("design-review stage with update_ready phase shows 'update' target", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, notifications } = makeDesignReviewCtx({
+        currentStage: "design-review" as any,
+        designReview: {
+          schemaVersion: 1,
+          planDoc: "/tmp/plan.md",
+          authorizationId: "auth-123",
+          authorizationSource: "direct-entry",
+          round: 1,
+          phase: "update_ready" as any,
+          authorizedAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      });
+
+      ui.stageEntry(ctx, "design-review");
+
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("-> update");
+    });
+
+    it("design-review stage with pass_ready phase shows 'develop' target", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, notifications } = makeDesignReviewCtx({
+        currentStage: "design-review" as any,
+        designReview: {
+          schemaVersion: 1,
+          planDoc: "/tmp/plan.md",
+          authorizationId: "auth-123",
+          authorizationSource: "direct-entry",
+          round: 1,
+          phase: "pass_ready" as any,
+          authorizedAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      });
+
+      ui.stageEntry(ctx, "design-review");
+
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("-> develop");
+    });
+
+    it("design-review stage with paused phase shows 'paused' target", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, notifications } = makeDesignReviewCtx({
+        currentStage: "design-review" as any,
+        designReview: {
+          schemaVersion: 1,
+          planDoc: "/tmp/plan.md",
+          authorizationId: "auth-123",
+          authorizationSource: "direct-entry",
+          round: 1,
+          phase: "paused" as any,
+          authorizedAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      });
+
+      ui.stageEntry(ctx, "design-review");
+
+      expect(notifications.length).toBe(1);
+      expect(notifications[0]).toContain("-> paused");
+    });
+
+    it("non-design-review stage uses static nextStage from config", () => {
+      const config = makeTestConfig({ output: { pipelineStage: true } });
+      const ui = createPipelineUI(config);
+      const { ctx, notifications } = makeDesignReviewCtx({
+        currentStage: "plan",
+      });
+
+      ui.stageEntry(ctx, "plan");
+
+      expect(notifications.length).toBe(1);
+      // Should use static nextStage (develop) not dynamic target
+      expect(notifications[0]).toContain("-> develop");
+      expect(notifications[0]).not.toContain("review");
     });
   });
 });

@@ -65,7 +65,16 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         `- Summary Status: ${currentSummary?.status || "Missing"} (Path: ${currentSummary?.path || "N/A"})\n` +
         `- Loop: ${meta.loopCount}/${meta.maxLoops} (Step: ${meta.currentStepIndex})\n` +
         `- Protected: ${buildProtectedPaths(config).join(", ")}\n` +
-        driftLine;
+        driftLine +
+        // Phase 4-4 (191): Display design-review state if active
+        (meta.designReview ? `\n\n## Design Review\n` +
+          `- Phase: ${meta.designReview.phase}\n` +
+          `- Round: ${meta.designReview.round}\n` +
+          `- Operation: ${meta.designReview.operation?.kind || "N/A"}\n` +
+          `- Plan: ${meta.designReview.planDoc}\n` +
+          (meta.designReview.reportDoc ? `- Report: ${meta.designReview.reportDoc}\n` : "") +
+          (meta.designReview.pauseReason ? `- Pause Reason: ${meta.designReview.pauseReason}\n` : "")
+          : "");
 
       return { success: true, content };
     },
