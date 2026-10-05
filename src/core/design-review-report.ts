@@ -118,26 +118,97 @@ export function verifyDesignReviewReport(
   // Step 4: Extract verdict using contract patterns if provided (Phase 3 / 191 fix #15)
   // When contract anchors are available, use them as the single source of truth for verdict parsing.
   // This eliminates the dual source of truth between coordinator self-parsing and verify.md contract.
+  // Fix H-1: Apply same priority rules as legacy path (issues priority, conflict detection, section limits)
   if (verdictPatterns && verdictPatterns.length > 0) {
     const lines = content.split("\n");
+    let passFound = false;
+    let failFound = false;
+    let inVerdictSection = false;
+    let inCodeBlock = false;
     
-    // Scan from bottom for the last verdict line (like review-conclusion.ts)
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const verdict = extractVerdictFromContract(lines[i], verdictPatterns);
-      if (verdict !== null) {
-        return {
-          verdict,
-          reportHash,
-          reason: `Report verdict extracted via contract patterns: ${verdict.toUpperCase()}`,
-        };
+    // Scan all lines to find verdict patterns, respecting section boundaries and code fences
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      const lowerLine = trimmed.toLowerCase();
+      
+      // Track code block fences (```)
+      if (trimmed.startsWith("```")) {
+        inCodeBlock = !inCodeBlock;
+        continue;
+      }
+      
+      // Skip lines inside code blocks
+      if (inCodeBlock) continue;
+      
+      // Skip blockquotes
+      if (line.startsWith(">")) continue;
+      
+      // Detect verdict section start
+      if (lowerLine.includes("## verdict") || lowerLine.includes("## 结论") || 
+          lowerLine.includes("# verdict") || lowerLine.includes("# 结论")) {
+        inVerdictSection = true;
+        continue;
+      }
+      
+      // Detect section end (next heading)
+      if (inVerdictSection && (trimmed.startsWith("## ") || trimmed.startsWith("# "))) {
+        inVerdictSection = false;
+        continue;
+      }
+      
+      // Only extract verdict patterns from verdict section (or whole doc if no section marker)
+      // For now, scan whole doc but section detection can be added later if needed
+      const verdict = extractVerdictFromContract(line, verdictPatterns);
+      if (verdict === "pass") {
+        passFound = true;
+      } else if (verdict === "fail") {
+        failFound = true;
       }
     }
     
-    // No verdict found via contract patterns
+    // Apply priority rules (same as legacy path):
+    // Rule 1: Valid non-empty issues list → fail (issues priority, even if PASS also present)
+    if (validation.issuesList.length > 0) {
+      return {
+        verdict: "fail",
+        reportHash,
+        reason: `Found ${validation.issuesList.length} issue(s) requiring fix (issues take priority over verdict)`,
+      };
+    }
+
+    // Rule 2: Both PASS and FAIL found → invalid (mutually exclusive)
+    if (passFound && failFound) {
+      return {
+        verdict: "invalid",
+        reportHash,
+        reason: "Report contains both PASS and FAIL verdicts (mutually exclusive)",
+      };
+    }
+
+    // Rule 3: Single clear PASS → pass
+    if (passFound && !failFound) {
+      return {
+        verdict: "pass",
+        reportHash,
+        reason: "Report contains clear PASS verdict with no issues",
+      };
+    }
+
+    // Rule 4: Single clear FAIL → fail
+    if (failFound && !passFound) {
+      return {
+        verdict: "fail",
+        reportHash,
+        reason: "Report contains clear FAIL verdict",
+      };
+    }
+
+    // Rule 5: No verdict found → invalid
     return {
       verdict: "invalid",
       reportHash,
-      reason: "Report lacks clear verdict matching contract patterns",
+      reason: "Report lacks clear PASS/FAIL verdict matching contract patterns",
     };
   }
 

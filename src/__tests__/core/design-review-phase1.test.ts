@@ -6,6 +6,15 @@ import { renderDesignReviewUpdatePrompt } from "../../core/design-review-prompt"
 
 describe("Phase 1: Design Review Report Verification", () => {
   const testDir = "/tmp/pi-pipeline-test-design-review-phase1";
+  
+  // Test verdict patterns matching verify.md contract (runtime: verdict)
+  const TEST_VERDICT_PATTERNS = [
+    "结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}",
+    "Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}",
+    "Conclusion\\s*[:：]\\s*[*_]{0,2}(pass|fail)[*_]{0,2}",
+    "\\*\\*Design Review:\\s*(PASS|FAIL)\\*\\*",
+    "\\*\\*设计评审[:：]\\s*(通过|不通过)\\*\\*",
+  ];
 
   test("should return pass for valid PASS report", async () => {
     const reportPath = path.join(testDir, "report-pass.md");
@@ -211,6 +220,132 @@ function example() {
     const result = verifyDesignReviewReport(reportPath, "docs/plan.md", 1);
     expect(result.verdict).toBe("invalid");
     expect(result.reason).toContain("validation failed");
+  });
+
+  test("H-1 regression: PASS + non-empty issues → fail (issues take priority)", async () => {
+    const reportPath = path.join(testDir, "report-pass-with-issues.md");
+    await fs.writeFile(
+      reportPath,
+      `# Design Review Report
+
+**pipeline**: test-pipeline-789
+**plan**: docs/plan.md
+**round**: 1
+**operationId**: op-789
+**baselinePlanHash**: ghi789
+
+## Summary
+
+The plan addresses most requirements.
+
+## Issues
+
+1. Missing error handling in API endpoints
+2. No logging for critical operations
+
+## Verdict
+
+**Design Review: PASS**
+
+All requirements are met.`,
+      "utf-8"
+    );
+
+    const result = verifyDesignReviewReport(reportPath, "docs/plan.md", 1, TEST_VERDICT_PATTERNS);
+    expect(result.verdict).toBe("fail");
+    expect(result.reason).toContain("issue(s) requiring fix");
+    expect(result.reason).toContain("issues take priority");
+  });
+
+  test("H-1 regression: Both PASS and FAIL → invalid (mutually exclusive)", async () => {
+    const reportPath = path.join(testDir, "report-conflict.md");
+    await fs.writeFile(
+      reportPath,
+      `# Design Review Report
+
+**pipeline**: test-pipeline-101
+**plan**: docs/plan.md
+**round**: 1
+**operationId**: op-101
+**baselinePlanHash**: jkl101
+
+## Summary
+
+Conflicting verdicts present.
+
+## Verdict
+
+**Design Review: PASS**
+
+But also:
+
+**Design Review: FAIL**`,
+      "utf-8"
+    );
+
+    const result = verifyDesignReviewReport(reportPath, "docs/plan.md", 1, TEST_VERDICT_PATTERNS);
+    expect(result.verdict).toBe("invalid");
+    expect(result.reason).toContain("both PASS and FAIL");
+  });
+
+  test("H-1 regression: Verdict in code block should be ignored", async () => {
+    const reportPath = path.join(testDir, "report-codeblock.md");
+    await fs.writeFile(
+      reportPath,
+      `# Design Review Report
+
+**pipeline**: test-pipeline-102
+**plan**: docs/plan.md
+**round**: 1
+**operationId**: op-102
+**baselinePlanHash**: mno102
+
+## Summary
+
+Example of format.
+
+## Verdict
+
+\`\`\`
+**Design Review: PASS**
+\`\`\`
+
+Actual verdict: **Design Review: FAIL**`,
+      "utf-8"
+    );
+
+    const result = verifyDesignReviewReport(reportPath, "docs/plan.md", 1, TEST_VERDICT_PATTERNS);
+    expect(result.verdict).toBe("fail");
+    expect(result.reason).toContain("clear FAIL verdict");
+  });
+
+  test("H-1 regression: Verdict in blockquote should be ignored", async () => {
+    const reportPath = path.join(testDir, "report-blockquote.md");
+    await fs.writeFile(
+      reportPath,
+      `# Design Review Report
+
+**pipeline**: test-pipeline-103
+**plan**: docs/plan.md
+**round**: 1
+**operationId**: op-103
+**baselinePlanHash**: pqr103
+
+## Summary
+
+Quoted example.
+
+## Verdict
+
+> **Design Review: PASS**
+
+Actual verdict: **Design Review: FAIL**`,
+      "utf-8"
+    );
+
+    const result = verifyDesignReviewReport(reportPath, "docs/plan.md", 1, TEST_VERDICT_PATTERNS);
+    expect(result.verdict).toBe("fail");
+    expect(result.reason).toContain("clear FAIL verdict");
   });
 });
 
