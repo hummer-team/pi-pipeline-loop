@@ -250,7 +250,21 @@ async function handlePass(
       expectedHash: drState.planHash ?? "",
       currentHash: currentPlanHash,
     });
-    return { status: "handled", action: "pending", reason: "plan_drifted" };
+    
+    // Fix for Issue #14: Transition to paused state with proper pauseReason
+    const pausedState = transitionPhase(drState, "paused", undefined, "drift");
+    const commitResult = commitDesignReviewState(ctx.session, pausedState);
+    if (!commitResult.ok) {
+      return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
+    }
+    
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "paused_drift",
+      pauseReason: "drift",
+      round: String(drState.round),
+    });
+    
+    return { status: "handled", action: "pending", reason: "paused:plan_drifted" };
   }
 
   // Check develop stage availability
@@ -583,7 +597,27 @@ async function handleUpdateRunning(
         action: "update_no_change",
       });
     }
-    return { status: "handled", action: "pending", reason: "no_actual_change" };
+    
+    // Fix for Issue #14: Transition to paused state with proper pauseReason
+    const pausedState = transitionPhase(drState, "paused", undefined, "no-change");
+    const commitResult = commitDesignReviewState(ctx.session, pausedState);
+    if (!commitResult.ok) {
+      return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
+    }
+    
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "paused_no_change",
+      pauseReason: "no-change",
+      round: String(drState.round),
+    });
+    
+    return { status: "handled", action: "pending", reason: "paused:no_actual_change" };
+  }
+
+  // Check budget before next round (before validation, as frozen takes precedence)
+  const budgetCheck = checkBudget(meta, ctx.config);
+  if (!budgetCheck.ok) {
+    return { status: "handled", action: "frozen", reason: "budget_exceeded" };
   }
 
   // Extract issues from the review report
@@ -597,13 +631,22 @@ async function handleUpdateRunning(
       action: "update_invalid",
       reasons: validation.reasons.join("; "),
     });
-    return { status: "handled", action: "pending", reason: "update_invalid" };
-  }
-
-  // Check budget before next round
-  const budgetCheck = checkBudget(meta, ctx.config);
-  if (!budgetCheck.ok) {
-    return { status: "handled", action: "frozen", reason: "budget_exceeded" };
+    
+    // Fix for Issue #14: Transition to paused state with proper pauseReason
+    const pausedState = transitionPhase(drState, "paused", undefined, "new-decision");
+    const commitResult = commitDesignReviewState(ctx.session, pausedState);
+    if (!commitResult.ok) {
+      return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
+    }
+    
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "paused_update_invalid",
+      pauseReason: "new-decision",
+      round: String(drState.round),
+      reasons: validation.reasons.join("; "),
+    });
+    
+    return { status: "handled", action: "pending", reason: "paused:update_invalid" };
   }
 
   // Record transition

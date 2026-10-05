@@ -389,8 +389,12 @@ None
 
   describe("update_running phase", () => {
     test("valid update with new hash triggers re-review", async () => {
-      // Update the plan content
-      const newPlanContent = "# Updated Plan\n\nNew content with fixes.";
+      // Update the plan content with required Design Review Update section
+      const newPlanContent = `# Updated Plan
+
+## Design Review Update
+
+- Missing error handling: Addressed by adding try-catch blocks.`;
       await writeFile(planDoc, newPlanContent, "utf-8");
 
       // Create a report with issues
@@ -452,7 +456,8 @@ FAIL
       if (result.status === "handled") {
         expect(result.action).toBe("pending");
         if ("reason" in result) {
-          expect(result.reason).toBe("no_actual_change");
+          // Fix for Issue #14: reason now prefixed with "paused:" to indicate pause state
+          expect(result.reason).toBe("paused:no_actual_change");
         }
       }
     });

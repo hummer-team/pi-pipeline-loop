@@ -295,7 +295,8 @@ None
       if (result.status === "handled") {
         expect(result.action).toBe("pending");
         if ("reason" in result) {
-          expect(result.reason).toBe("plan_drifted");
+          // Fix for Issue #14: reason now prefixed with "paused:" to indicate pause state
+          expect(result.reason).toBe("paused:plan_drifted");
         }
       }
     });
@@ -563,7 +564,8 @@ None
       if (result.status === "handled") {
         expect(result.action).toBe("pending");
         if ("reason" in result) {
-          expect(result.reason).toBe("no_actual_change");
+          // Fix for Issue #14: reason now prefixed with "paused:" to indicate pause state
+          expect(result.reason).toBe("paused:no_actual_change");
         }
       }
     });
