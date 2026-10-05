@@ -7,6 +7,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { extractReportIssues } from "./design-review-report";
+import { computeHash } from "./design-review-state";
 
 /**
  * Parameters required for rendering an update prompt
@@ -161,7 +162,6 @@ export function validatePlanUpdate(
   }
 
   // Compute new hash
-  const { computeHash } = require("./design-review-state");
   const newHash = computeHash(content);
 
   // Check if plan has changed
@@ -179,25 +179,54 @@ export function validatePlanUpdate(
     reasons.push("Plan lacks required section headings");
   }
 
-  // Check if issues are addressed (simple heuristic: issue keywords appear in plan)
-  // This is a basic check; semantic validation is left to the next review cycle
+  // Check for Design Review Update section (mandatory per D13)
+  const updateSectionPattern = /^##\s+Design Review Update\s*$/im;
+  if (!updateSectionPattern.test(content)) {
+    reasons.push("Plan missing required '## Design Review Update' section");
+  }
+
+  // Check if issues are addressed with explicit disposition (mandatory per D13)
+  // Each issue must have a corresponding disposition marker
   if (issues.length > 0) {
     const planLower = content.toLowerCase();
     const unaddressedIssues: string[] = [];
 
+    // Look for disposition markers: Addressed, Resolved, Fixed, N/A, Not Applicable
+    const dispositionPatterns = [
+      /\b(addressed|resolved|fixed|n\/a|not applicable)\b/i,
+    ];
+    
+    // Check for issue-specific sections or markers
+    // Expected format: each issue should have a corresponding section or disposition
     for (const issue of issues) {
       // Extract key terms from issue (first 20 chars as a simple heuristic)
       const keyTerms = issue.toLowerCase().substring(0, 20);
+      
+      // Check if issue is mentioned in plan
       if (!planLower.includes(keyTerms)) {
+        unaddressedIssues.push(issue);
+        continue;
+      }
+      
+      // Check if there's a disposition marker near the issue mention
+      // Look for the issue text followed by a disposition within 500 chars
+      const issueIndex = planLower.indexOf(keyTerms);
+      if (issueIndex >= 0) {
+        const contextAfterIssue = planLower.substring(issueIndex, Math.min(issueIndex + 500, planLower.length));
+        const hasDisposition = dispositionPatterns.some(pattern => pattern.test(contextAfterIssue));
+        
+        if (!hasDisposition) {
+          unaddressedIssues.push(issue);
+        }
+      } else {
         unaddressedIssues.push(issue);
       }
     }
 
     if (unaddressedIssues.length > 0) {
-      // This is informational, not a hard failure
-      // The next review cycle will catch semantic issues
+      // Fix for Issue #16: This is now a hard failure per D13
       reasons.push(
-        `Warning: ${unaddressedIssues.length} issue(s) may not be fully addressed`
+        `${unaddressedIssues.length} issue(s) lack explicit disposition: ${unaddressedIssues.slice(0, 2).join(", ")}${unaddressedIssues.length > 2 ? "..." : ""}`
       );
     }
   }
