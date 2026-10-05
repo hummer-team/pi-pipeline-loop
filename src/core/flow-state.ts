@@ -22,6 +22,7 @@ import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
+import { designReviewAuthorisationGate } from "./design-review-authorisation";
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
 
@@ -469,10 +470,11 @@ export async function executeDecision(
         return { success: false, message: "choose_stage requires targetStage option." };
       }
 
-      // Phase 4 (191): invalidate design-review authorization when choosing a non-design-review stage.
-      // Choosing design-review requires NEW owner authorization (handled by session-starter/coordinator).
-      // Choosing any other stage clears stale authorization to prevent reuse attacks.
+      // Phase 4 (191): Preserve design-review authorization when choosing design-review stage.
+      // Authorization will be validated/created by session-starter/coordinator on actual entry.
       if (target !== "design-review") {
+        // Phase 4 (191): invalidate design-review authorization when choosing a non-design-review stage.
+        // Choosing any other stage clears stale authorization to prevent reuse attacks.
         await invalidateDesignReviewAuthorization(ctx, "decision_choose_stage");
       }
 
