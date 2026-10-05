@@ -328,6 +328,65 @@ The review found that **Design Review: PASS** criteria were mostly met.
     }
   });
 
+  it("N-1t strong isolation: PASS in summary, no issues, no verdict → invalid", async () => {
+    // N-1t: Strong isolation test - no issues to avoid short-circuit by issues priority rule
+    // PASS verdict in Summary (outside verdict section) should NOT be counted
+    // With no issues and no verdict in verdict section, should return invalid
+    const planDoc = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planDoc, "# Test Plan\n", "utf-8");
+    const planHash = computeHash(await fs.readFile(planDoc, "utf-8"));
+    
+    const drState = createInitialState(planDoc, "menu", planHash);
+    const meta = makeTestMeta({
+      currentStage: "design-review",
+      pipelineId: "pipe-n1t-isolation",
+      designReview: { ...drState, phase: "review_running", round: 1 },
+    });
+    
+    const ctx = createCoordinatorContext(meta);
+    
+    // Create report with PASS in Summary (outside verdict section), NO issues, NO verdict
+    const reportDoc = deriveReportPath(planDoc, 1);
+    const reportDir = path.dirname(reportDoc);
+    await fs.mkdir(reportDir, { recursive: true });
+    await fs.writeFile(
+      reportDoc,
+      `# Design Review Report
+
+**pipeline**: pipe-n1t-isolation
+**plan**: ${planDoc}
+**round**: 1
+
+## Summary
+The review found that **Design Review: PASS** criteria were met.
+
+## Issues
+None
+
+## Verdict
+
+The review is complete.
+`,
+      "utf-8"
+    );
+    
+    // N-1t: Should return invalid (no verdict in verdict section), not pass (from summary)
+    const result = await coordinateDesignReview(ctx, meta, "settle");
+    expect(result.status).toBe("handled");
+    
+    // Should be invalid (no clear verdict in verdict section)
+    if (result.status === "handled") {
+      expect(result.action).toBe("pending");
+      
+      // Verify state is not pass_ready (should not have transitioned to pass)
+      const currentMeta = ctx.session.getMeta();
+      if (currentMeta) {
+        const currentDrState = currentMeta.designReview;
+        expect(currentDrState?.phase).not.toBe("pass_ready");
+      }
+    }
+  });
+
 
   it("menu entry authorization: designReview state created with authorizationSource='menu'", async () => {
     // Issue #1: Auto Review Plan menu entry should create authorization state

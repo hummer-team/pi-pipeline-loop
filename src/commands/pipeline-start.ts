@@ -37,6 +37,8 @@ import { deriveClarifyForwardArgs } from "../utils/clarify-args";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
+// Round 5 (N-3): coordinator for design-review dispatch
+import { coordinateDesignReview } from "../core/design-review-coordinator";
 
 /**
  * Checks that all 5 active stages have agentPath configured.
@@ -607,16 +609,77 @@ export async function dispatchAfterResume(
     return;
   }
 
-  // Fix #1 + N-3 (Round 4): Skip design-review stage here to avoid double dispatch.
-  // Design-review is exclusively dispatched by the coordinator (handleReviewReady)
-  // to prevent race conditions between dispatchAfterResume and coordinator.
+  // Round 5 (N-3): Dispatch design-review via coordinator instead of skipping.
+  // This ensures choose_stage → design-review immediately dispatches the review agent
+  // in the current session, rather than waiting for next settle/resume compensation.
   if (stage === "design-review") {
-    await safeWriteAuditLog("pipeline_resume_dispatch_skipped", {
-      stage,
-      pipelineId: meta.pipelineId,
-      reason: "coordinator_exclusive_dispatch",
-      note: "design-review is dispatched by coordinator only",
-    });
+    const freshMeta = ctx.session?.getMeta?.() ?? meta;
+    if (!freshMeta) {
+      await safeWriteAuditLog("pipeline_resume_dispatch_failed", {
+        stage,
+        pipelineId: meta.pipelineId,
+        reason: "no_meta_available",
+      });
+      return;
+    }
+
+    // Build coordinator context with same shape as stage-advancer Auto Review Plan handler
+    const coordinatorCtx: any = {
+      config,
+      session: ctx.session,
+      ui: ui ? { notify: (msg: string) => ui.notify(ctx, msg) } : undefined,
+      pi: ctx.pi,
+      // Pass through spawnOverride test hook if provided (for testability)
+      spawnOverride: ctx.spawnOverride,
+    };
+
+    try {
+      const coordinatorResult = await coordinateDesignReview(coordinatorCtx, freshMeta, "advance");
+      
+      if (coordinatorResult.status === "handled" && coordinatorResult.action === "routed") {
+        ui.notify(ctx, `Design review agent dispatched via coordinator.`);
+        await safeWriteAuditLog("design_review_coordinator_dispatch", {
+          stage,
+          pipelineId: meta.pipelineId,
+          trigger: "dispatch_after_resume",
+          action: coordinatorResult.action,
+        });
+      } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "pending") {
+        ui.notify(ctx, `Design review dispatch pending: ${coordinatorResult.reason}`);
+        await safeWriteAuditLog("design_review_coordinator_dispatch", {
+          stage,
+          pipelineId: meta.pipelineId,
+          trigger: "dispatch_after_resume",
+          action: "pending",
+          reason: coordinatorResult.reason,
+        });
+      } else if (coordinatorResult.status === "handled") {
+        // Other handled actions: advanced, frozen
+        await safeWriteAuditLog("design_review_coordinator_dispatch", {
+          stage,
+          pipelineId: meta.pipelineId,
+          trigger: "dispatch_after_resume",
+          action: coordinatorResult.action,
+          status: coordinatorResult.status,
+        });
+      } else {
+        // not-applicable
+        await safeWriteAuditLog("design_review_coordinator_dispatch", {
+          stage,
+          pipelineId: meta.pipelineId,
+          trigger: "dispatch_after_resume",
+          status: coordinatorResult.status,
+        });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await safeWriteAuditLog("design_review_coordinator_dispatch_error", {
+        stage,
+        pipelineId: meta.pipelineId,
+        trigger: "dispatch_after_resume",
+        error: errMsg,
+      }, "error");
+    }
     return;
   }
 
