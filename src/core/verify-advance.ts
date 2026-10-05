@@ -162,6 +162,29 @@ export async function applyVerifyPass(
     const maxCycles = meta.maxLoopCycles ?? 3;
     const visitResult = recordStageVisit(meta, nextStage, maxCycles);
 
+    // Issue #20: Check budget early stop — if recordStageVisit failed (budget exceeded),
+    // freeze the pipeline instead of advancing. This prevents the "advance first, freeze later"
+    // race condition mentioned in the review.
+    if (!visitResult.ok) {
+      await writeAuditLog("auto_verify_pass_blocked_by_budget", {
+        pipelineId: meta.pipelineId,
+        fromStage: stageName,
+        nextStage,
+        method: opts.method,
+        reason: visitResult.reason ?? "budget_exceeded",
+      });
+
+      if (opts.returnResult) {
+        return {
+          success: false,
+          passed: true,
+          message: `Verification passed for "${stageName}" but advance blocked by budget: ${visitResult.reason ?? "budget_exceeded"}`,
+          verifyResult: verifyResult?.verifyResult ?? null,
+        };
+      }
+      return;
+    }
+
     // Advance to next stage — pass only the delta to avoid overwriting concurrent writes
     ctx.session.updateMeta({
       ...visitResult.patch,
