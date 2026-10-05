@@ -650,24 +650,25 @@ describe("prompt-config", () => {
       expect(typeof parsed).toBe("object");
       expect(parsed).not.toBeNull();
 
-      // All 27 keys: 5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 5 stage_executor_{stage} + 5 stage_deliverable_{stage} + 1 global verify_extract + 1 conflict_check_prompt
+      // All 33 keys: 6 stage + 6 verify_{stage} + 6 verify_extract_{stage} + 6 stage_executor_{stage} + 6 stage_deliverable_{stage} + 1 global verify_extract + 1 conflict_check_prompt + 1 design_review_update_prompt
       const expectedKeys = [
-        "clarify", "plan", "develop", "review", "fix",
-        "verify_clarify", "verify_plan", "verify_develop", "verify_review", "verify_fix",
+        "clarify", "plan", "develop", "review", "fix", "design-review",
+        "verify_clarify", "verify_plan", "verify_develop", "verify_review", "verify_fix", "verify_design-review",
         "verify_extract_clarify", "verify_extract_plan", "verify_extract_develop",
-        "verify_extract_review", "verify_extract_fix",
-        "stage_executor_clarify", "stage_executor_plan", "stage_executor_develop", "stage_executor_review", "stage_executor_fix",
-        "stage_deliverable_clarify", "stage_deliverable_plan", "stage_deliverable_develop", "stage_deliverable_review", "stage_deliverable_fix",
+        "verify_extract_review", "verify_extract_fix", "verify_extract_design-review",
+        "stage_executor_clarify", "stage_executor_plan", "stage_executor_develop", "stage_executor_review", "stage_executor_fix", "stage_executor_design-review",
+        "stage_deliverable_clarify", "stage_deliverable_plan", "stage_deliverable_develop", "stage_deliverable_review", "stage_deliverable_fix", "stage_deliverable_design-review",
         "verify_extract",
         "conflict_check_prompt",
+        "design_review_update_prompt",
       ];
       for (const key of expectedKeys) {
         expect(parsed[key]).toBeDefined();
         expect(typeof parsed[key]).toBe("string");
         expect((parsed[key] as string).trim().length).toBeGreaterThan(0);
       }
-      // Ensure total key count matches final target (27 keys)
-      expect(Object.keys(parsed).length).toBe(32);
+      // Ensure total key count matches final target (33 keys)
+      expect(Object.keys(parsed).length).toBe(33);
     });
 
     it("clarify template contains all 7 non-loop placeholders (no requirement_doc)", () => {

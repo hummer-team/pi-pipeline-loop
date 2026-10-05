@@ -29,9 +29,14 @@ describe("Phase 2: Design Review Persistence", () => {
         loopCount: 0,
         currentStepIndex: 0,
         maxLoops: 3,
+        domain: {
+          id: "test-domain",
+          version: "1.0.0",
+          skillPath: "/tmp/test-skill",
+        },
       };
 
-      testState = createInitialState("docs/plan.md", "menu", 1, "hash-123");
+      testState = createInitialState("docs/plan.md", "menu", "hash-123");
 
       mockSession = {
         getMeta: mock(() => testMeta),
@@ -80,7 +85,7 @@ describe("Phase 2: Design Review Persistence", () => {
       commitDesignReviewState(mockSession, testState);
 
       // Try to commit with different authorization
-      const differentState = createInitialState("docs/plan.md", "menu", 1, "hash-456");
+      const differentState = createInitialState("docs/plan.md", "menu", "hash-456");
 
       const result = commitDesignReviewState(mockSession, differentState);
 
@@ -123,7 +128,7 @@ describe("Phase 2: Design Review Persistence", () => {
     let testState: DesignReviewState;
 
     beforeEach(() => {
-      testState = createInitialState("docs/plan.md", "menu", 1, "hash-123");
+      testState = createInitialState("docs/plan.md", "menu", "hash-123");
     });
 
     test("should create new operation for review", () => {
@@ -197,7 +202,7 @@ describe("Phase 2: Design Review Persistence", () => {
     let testOp: DesignReviewOperation;
 
     beforeEach(() => {
-      testState = createInitialState("docs/plan.md", "menu", 1, "hash-123");
+      testState = createInitialState("docs/plan.md", "menu", "hash-123");
       testState.phase = "review_running";
       testOp = {
         operationId: "op-123",
@@ -219,6 +224,11 @@ describe("Phase 2: Design Review Persistence", () => {
         loopCount: 0,
         currentStepIndex: 0,
         maxLoops: 3,
+        domain: {
+          id: "test-domain",
+          version: "1.0.0",
+          skillPath: "/tmp/test-skill",
+        },
         designReview: testState,
       };
 
@@ -297,7 +307,7 @@ describe("Phase 2: Design Review Persistence", () => {
     let testOp: DesignReviewOperation;
 
     beforeEach(() => {
-      testState = createInitialState("docs/plan.md", "menu", 1, "hash-123");
+      testState = createInitialState("docs/plan.md", "menu", "hash-123");
       testOp = {
         operationId: "op-123",
         kind: "review",

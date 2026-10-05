@@ -74,13 +74,17 @@ function createMockMeta(overrides?: Partial<SessionMeta>): SessionMeta {
     verifyFailures: [],
     verifyAttempts: 0,
     violations: [],
+    domain: { id: "general", version: "latest", skillPath: "" },
     designReview: {
+      schemaVersion: 1,
       phase: "review_ready",
       planDoc: "/tmp/test-plan.md",
       planHash: "abc123",
       round: 1,
       authorizationId: "auth-123",
+      authorizationSource: "menu",
       authorizedAt: Date.now(),
+      updatedAt: Date.now(),
       authorizedBy: "user",
       authorizationExpiresAt: Date.now() + 3600000,
     } as DesignReviewState,
@@ -113,14 +117,17 @@ describe("Design Review Audit Lifecycle and Throttling", () => {
     test("authorization_invalid is always logged", async () => {
       const meta = createMockMeta({
         designReview: {
+          schemaVersion: 1,
           phase: "review_ready",
           planDoc: "/tmp/test-plan.md",
           planHash: "abc123",
           round: 1,
           authorizationId: "auth-123",
+          authorizationSource: "menu",
           authorizedAt: Date.now() - 7200000, // 2 hours ago
           authorizedBy: "user",
           authorizationExpiresAt: Date.now() - 3600000, // Expired 1 hour ago
+          updatedAt: Date.now(),
         } as DesignReviewState,
       });
 
@@ -155,15 +162,18 @@ describe("Design Review Audit Lifecycle and Throttling", () => {
     test("dispatch events (review_dispatched, update_dispatched) are always logged", async () => {
       const meta = createMockMeta({
         designReview: {
+          schemaVersion: 1,
           phase: "review_ready",
           planDoc: "/tmp/test-plan.md",
           planHash: "abc123",
           round: 1,
           authorizationId: "auth-123",
+          authorizationSource: "menu",
           authorizedAt: Date.now(),
           authorizedBy: "user",
           authorizationExpiresAt: Date.now() + 3600000,
           dispatchedOperationId: undefined,
+          updatedAt: Date.now(),
         } as DesignReviewState,
       });
 

@@ -40,6 +40,7 @@ describe("design-review verification integration", () => {
       nextStage: "develop",
       verify: { require: true },
       allowedWritePaths: ["docs/"],
+      requireDomain: false,
     };
     
     const results = await generateVerifyFiles(config);
@@ -59,6 +60,7 @@ describe("design-review verification integration", () => {
       nextStage: "develop",
       verify: { require: true },
       allowedWritePaths: ["docs/"],
+      requireDomain: false,
     };
     
     const results = await generateVerifyFiles(config);
@@ -79,6 +81,7 @@ describe("design-review verification integration", () => {
       nextStage: "develop",
       verify: { require: false },
       allowedWritePaths: ["docs/"],
+      requireDomain: false,
     };
     
     const results = await generateVerifyFiles(config);
@@ -97,6 +100,7 @@ describe("design-review verification integration", () => {
       nextStage: "develop",
       verify: { require: true },
       allowedWritePaths: ["docs/"],
+      requireDomain: false,
     };
     
     const designReviewStage = config.stages["design-review"];
@@ -129,6 +133,7 @@ describe("design-review verification integration", () => {
       nextStage: "develop",
       verify: { require: true },
       allowedWritePaths: ["docs/"],
+      requireDomain: false,
     };
     
     const results = await generateVerifyFiles(config);

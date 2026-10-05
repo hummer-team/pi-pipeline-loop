@@ -11,19 +11,19 @@
 
 import { describe, it, expect } from "bun:test";
 import { isAuthorizationValid } from "../../core/design-review-state";
-import type { DesignReviewState } from "../../types";
+import type { DesignReviewState, DesignReviewPhase, DesignReviewPauseReason } from "../../types";
 
-function makeValidState(phase: string = "review_ready"): DesignReviewState {
+function makeValidState(phase: DesignReviewPhase = "review_ready"): DesignReviewState {
   return {
+    schemaVersion: 1,
     phase,
     planHash: "abc123",
     planDoc: "/tmp/plan.md",
     round: 1,
-    authorizationToken: "token-xyz",
+    authorizationId: "auth-token-xyz",
+    authorizationSource: "menu",
     authorizedAt: Date.now(),
-    authorizedBy: "test-user",
-    operations: [],
-    createdAt: Date.now(),
+    operation: undefined,
     updatedAt: Date.now(),
   };
 }
@@ -46,7 +46,7 @@ describe("Phase 4 (191): Authorization validation (isAuthorizationValid)", () =>
 
   it("returns true when phase is 'paused' with other pauseReason", () => {
     const state = makeValidState("paused");
-    state.pauseReason = "awaiting-approval";
+    state.pauseReason = "no-change";
     expect(isAuthorizationValid(state)).toBe(true);
   });
 
@@ -81,9 +81,9 @@ describe("Phase 4 (191): Authorization validation (isAuthorizationValid)", () =>
     expect(isAuthorizationValid(state)).toBe(true);
   });
 
-  it("returns true for phase 'paused' with empty pauseReason", () => {
+  it("returns true for phase 'paused' with undefined pauseReason", () => {
     const state = makeValidState("paused");
-    state.pauseReason = "";
+    state.pauseReason = undefined;
     expect(isAuthorizationValid(state)).toBe(true);
   });
 });

@@ -22,7 +22,7 @@ function makeDesignReviewState(overrides: Partial<DesignReviewState> = {}): Desi
     planHash: "abc123",
     round: 1,
     authorizationId: "test-auth-id",
-    authorizationSource: "manual",
+    authorizationSource: "menu",
     phase: "review_ready",
     authorizedAt: Date.now(),
     updatedAt: Date.now(),

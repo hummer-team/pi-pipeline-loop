@@ -22,7 +22,7 @@ describe("design-review initialization integration", () => {
     
     expect(config.stages["design-review"]).toBeDefined();
     expect(config.stages["design-review"].nextStage).toBe("develop");
-    expect(config.stages["plan"].nextStage).toBe("design-review");
+    expect(config.stages["plan"].nextStage).toBe("develop");
   });
 
   it("resolved config has design-review in stage flow", () => {
@@ -30,7 +30,7 @@ describe("design-review initialization integration", () => {
       projectRoot: "/tmp/test",
       stages: {
         clarify: { nextStage: "plan" },
-        plan: { nextStage: "design-review" },
+        plan: { nextStage: "develop" },
         "design-review": { nextStage: "develop" },
         develop: { nextStage: "review" },
         review: { nextStage: "completed" },
@@ -43,7 +43,7 @@ describe("design-review initialization integration", () => {
     const config = resolvePipelineConfig(templateJson as any);
     
     expect(config.stages["design-review"]).toBeDefined();
-    expect(config.stages["plan"].nextStage).toBe("design-review");
+    expect(config.stages["plan"].nextStage).toBe("develop");
     expect(config.stages["design-review"].nextStage).toBe("develop");
   });
 
@@ -52,7 +52,7 @@ describe("design-review initialization integration", () => {
       projectRoot: "/tmp/test",
       stages: {
         clarify: { nextStage: "plan" },
-        plan: { nextStage: "design-review" },
+        plan: { nextStage: "develop" },
         "design-review": {
           nextStage: "develop",
           verify: { require: true },

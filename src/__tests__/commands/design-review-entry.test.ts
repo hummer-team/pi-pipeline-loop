@@ -35,8 +35,10 @@ function makeDesignReviewState(overrides: Partial<DesignReviewState> = {}): Desi
     planHash: "abc123",
     round: 1,
     authorizationId: "test-auth-id-xyz",
-    authorizationSource: "manual",
+    authorizationSource: "menu",
     phase: "review_ready",
+    authorizedAt: Date.now(),
+    updatedAt: Date.now(),
     ...overrides,
   };
 }
@@ -71,14 +73,14 @@ describe("Phase 4 (191): Entry point authorization checks", () => {
     test("valid authorization enables coordinator delegation", () => {
       const drState = makeDesignReviewState({
         authorizationId: "valid-auth-id",
-        authorizationSource: "manual",
+        authorizationSource: "menu",
       });
       const meta = makeTestMeta({ designReview: drState });
 
       // Valid authorization: coordinator should be called
       expect(meta.designReview).toBeDefined();
       expect(meta.designReview?.authorizationId).toBe("valid-auth-id");
-      expect(meta.designReview?.authorizationSource).toBe("manual");
+      expect(meta.designReview?.authorizationSource).toBe("menu");
     });
 
     test("missing authorization bypasses coordinator delegation", () => {
@@ -97,19 +99,19 @@ describe("Phase 4 (191): Entry point authorization checks", () => {
     });
 
     test("invalid authorization (zero timestamp) bypasses coordinator delegation", () => {
-      const drState = makeDesignReviewState({ authorizationSource: "" });
+      const drState = makeDesignReviewState({ authorizationSource: "menu" as any, authorizedAt: 0 });
       const meta = makeTestMeta({ designReview: drState });
 
-      // Empty source: isAuthorizationValid returns false
-      expect(meta.designReview?.authorizationSource).toBe("");
+      // Zero timestamp: isAuthorizationValid returns false
+      expect(meta.designReview?.authorizedAt).toBe(0);
     });
 
     test("invalid authorization (empty user) bypasses coordinator delegation", () => {
-      const drState = makeDesignReviewState({ authorizationSource: "" });
+      const drState = makeDesignReviewState({ authorizationSource: "menu" as any, authorizationId: "" });
       const meta = makeTestMeta({ designReview: drState });
 
-      // Empty source: isAuthorizationValid returns false
-      expect(meta.designReview?.authorizationSource).toBe("");
+      // Empty authorizationId: isAuthorizationValid returns false
+      expect(meta.designReview?.authorizationId).toBe("");
     });
   });
 
@@ -149,7 +151,7 @@ describe("Phase 4 (191): Entry point authorization checks", () => {
 
       // Simulating buildResumeMeta preservation
       const resumedMeta = makeTestMeta({
-        designReview: { ...meta.designReview },
+        designReview: { ...meta.designReview } as DesignReviewState,
       });
 
       expect(resumedMeta.designReview).toBeDefined();

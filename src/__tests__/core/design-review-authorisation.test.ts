@@ -83,8 +83,14 @@ describe("designReviewAuthorisationGate", () => {
 
   describe("prerequisite validation", () => {
     it("should reject child sessions", async () => {
-      // Mock child session
-      mockCtx._ctx.sessionManager.getHeader = () => ({ parentSession: "parent-123" });
+      // Mock child session (detected by presence of parentSession field)
+      mockCtx._ctx.sessionManager.getHeader = () => ({
+        type: "session" as const,
+        id: "session-123",
+        timestamp: new Date().toISOString(),
+        cwd: "/tmp/test",
+        parentSession: "parent-123",
+      });
 
       const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
@@ -151,7 +157,8 @@ describe("designReviewAuthorisationGate", () => {
     });
 
     it("should reject when design-review config is invalid (missing skillPath)", async () => {
-      mockConfig.stages["design-review"].skillPath = undefined;
+      // Intentionally set to undefined to test error handling for invalid config
+      (mockConfig.stages["design-review"] as any).skillPath = undefined;
 
       const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
@@ -164,7 +171,8 @@ describe("designReviewAuthorisationGate", () => {
 
   describe("TUI availability", () => {
     it("should reject when TUI is unavailable (no confirm)", async () => {
-      mockCtx.ui.confirm = undefined;
+      // Intentionally set to undefined to test error handling when TUI is unavailable
+      (mockCtx.ui as any).confirm = undefined;
 
       const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
@@ -175,7 +183,8 @@ describe("designReviewAuthorisationGate", () => {
     });
 
     it("should reject when TUI is unavailable (no select)", async () => {
-      mockCtx.ui.select = undefined;
+      // Intentionally set to undefined to test error handling when TUI is unavailable
+      (mockCtx.ui as any).select = undefined;
 
       const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
@@ -210,7 +219,7 @@ describe("designReviewAuthorisationGate", () => {
         expect(result.state.authorizationSource).toBe("direct-entry");
         expect(result.state.round).toBe(1);
         expect(result.state.planHash).toBeDefined();
-        expect(result.state.planHash.length).toBe(64); // SHA-256 hash length
+        expect(result.state.planHash!.length).toBe(64); // SHA-256 hash length
       }
     });
 

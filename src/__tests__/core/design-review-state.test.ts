@@ -378,6 +378,7 @@ describe("design-review-state pure functions", () => {
         attempt: 1,
         dispatchState: "pending",
         createdAt: Date.now(),
+        updatedAt: Date.now(),
       };
       const op2: DesignReviewOperation = { ...op1 };
       expect(isSameOperation(op1, op2)).toBe(true);
@@ -391,6 +392,7 @@ describe("design-review-state pure functions", () => {
         attempt: 1,
         dispatchState: "pending",
         createdAt: Date.now(),
+        updatedAt: Date.now(),
       };
       const op2: DesignReviewOperation = { ...op1, operationId: "op-456" };
       expect(isSameOperation(op1, op2)).toBe(false);
@@ -404,6 +406,7 @@ describe("design-review-state pure functions", () => {
         attempt: 1,
         dispatchState: "pending",
         createdAt: Date.now(),
+        updatedAt: Date.now(),
       };
       expect(isSameOperation(op, undefined)).toBe(false);
       expect(isSameOperation(undefined, op)).toBe(false);

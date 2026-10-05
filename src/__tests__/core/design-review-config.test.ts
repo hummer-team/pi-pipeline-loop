@@ -220,7 +220,7 @@ describe("design-review stage — JSON config loader", () => {
   });
 
   describe("design-review disabled (require: false)", () => {
-    test("design-review not in config marks stage as disabled", () => {
+    test("design-review not in config is undefined (backward compatibility)", () => {
       const json: PipelineJsonConfig = {
         stages: {
           clarify: {},
@@ -230,9 +230,9 @@ describe("design-review stage — JSON config loader", () => {
         },
       };
       const config = resolvePipelineConfig(json);
-      const drStage = config.stages["design-review"];
-      expect(drStage.disabled).toBe(true);
-      expect(drStage.nextStage).toBeNull();
+      // Phase 4 (191): design-review is a NEW stage, so old configs without it
+      // should not have it automatically added (backward compatibility)
+      expect(config.stages["design-review"]).toBeUndefined();
     });
 
     test("design-review require: false explicitly disables stage", () => {
@@ -317,7 +317,7 @@ describe("design-review stage — JSON config loader", () => {
       expect(config.stages.clarify.nextStage).toBe("plan");
       expect(config.stages.plan.nextStage).toBe("develop");
       expect(config.stages.develop.nextStage).toBe("review");
-      expect(config.stages.designReview === undefined).toBe(true);
+      expect(config.stages["design-review"] === undefined).toBe(true);
     });
 
     test("rewritePiPrefix unchanged for design-review paths with default piWorkDir", () => {

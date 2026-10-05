@@ -37,8 +37,10 @@ function makeDesignReviewState(overrides: Partial<DesignReviewState> = {}): Desi
     planHash: "abc123",
     round: 1,
     authorizationId: "test-auth-id-xyz",
-    authorizationSource: "manual",
+    authorizationSource: "menu",
     phase: "review_ready",
+    authorizedAt: Date.now(),
+    updatedAt: Date.now(),
     ...overrides,
   };
 }
@@ -152,7 +154,7 @@ describe("Phase 4 (191): Authorization lifecycle in build*Meta", () => {
       const drState = makeDesignReviewState({
         authorizationId: "aborted-auth-id",
         phase: "paused",
-        pauseReason: "budget_exceeded",
+        pauseReason: "budget-exhausted",
       });
       const abortedMeta = makeTestMeta({
         designReview: drState,
@@ -184,7 +186,7 @@ describe("Phase 4 (191): Authorization lifecycle in build*Meta", () => {
     test("restart after design-review failure clears authorization", () => {
       const drState = makeDesignReviewState({
         phase: "paused",
-        pauseReason: "max_loop_cycles",
+        pauseReason: "budget-exhausted",
       });
       const failedMeta = makeTestMeta({ designReview: drState });
       
