@@ -150,7 +150,7 @@ describe("runVerification", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -364,7 +364,7 @@ describe("runVerification — structured rules", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -425,7 +425,7 @@ describe("runVerification — structured rules", () => {
       projectRoot: TMP,
       auditDir: ".pi/audit",
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -555,7 +555,7 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -606,7 +606,7 @@ describe("runVerification — {requirementDoc} placeholder integration", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -882,7 +882,7 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -939,7 +939,7 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -984,7 +984,7 @@ describe("runVerification — unresolved {requirementDoc} placeholder (Phase 2)"
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -1958,7 +1958,7 @@ describe("runVerification — 148 Phase 2 skipped on config error", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -1993,7 +1993,7 @@ describe("runVerification — 148 Phase 2 skipped on config error", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -2028,7 +2028,7 @@ describe("runVerification — 148 Phase 2 skipped on config error", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

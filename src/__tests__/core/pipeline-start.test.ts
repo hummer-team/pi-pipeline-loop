@@ -317,7 +317,7 @@ describe("createPipelineStartCommand", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -359,7 +359,7 @@ describe("createPipelineStartCommand", () => {
     const config = makeTestConfig({
       projectRoot: TMP,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -491,7 +491,7 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -539,7 +539,7 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -579,7 +579,7 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -1111,11 +1111,11 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
       expect(result.message).toContain("resumed");
 
-      // Status bar must reflect resumed stage: plan -> develop
+      // Status bar must reflect resumed stage: plan -> design-review
       const grayOpen = "\x1b[90m";
       const grayClose = "\x1b[0m";
       const statusText = finalStatusText(ctx.statusCalls, "pipeline-stage");
-      expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • plan ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> develop${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
+      expect(statusText).toMatch(new RegExp(`^\\[ pipe-.+ • plan ${grayOpen.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-> design-review${grayClose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\]$`));
     });
   });
 
@@ -1311,7 +1311,7 @@ describe("createPipelineStartCommand", () => {
       expect(stageOptions.some(o => o.includes("completed"))).toBe(false);
     });
 
-    it("ask → spec select develop → previousStage=plan, stageVisitOrder=[clarify,plan,develop], new pipelineId", async () => {
+    it("ask → spec select develop → previousStage=design-review, stageVisitOrder=[clarify,plan,design-review,develop], new pipelineId", async () => {
       await fs.writeFile(docPath, "content", "utf-8");
       const config = makeTestConfig({ projectRoot: TMP, startStageMode: "ask" });
       const meta = makeTestMeta({ currentStage: "", pipelineId: "" } as any);
@@ -1339,8 +1339,8 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
       expect(result.currentStage).toBe("develop");
       expect(updatedMeta.currentStage).toBe("develop");
-      expect(updatedMeta.previousStage).toBe("plan");
-      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan", "develop"]);
+      expect(updatedMeta.previousStage).toBe("design-review");
+      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan", "design-review", "develop"]);
       expect(updatedMeta.pipelineId).toMatch(/^pipe-/);
       expect(updatedMeta.requirementDoc).toBe("req.md");
     });
@@ -1598,8 +1598,8 @@ describe("createPipelineStartCommand", () => {
       expect(result.currentStage).toBe("develop");
       expect(updatedMeta.pipelineId).not.toBe(originalPipelineId);
       expect(updatedMeta.currentStage).toBe("develop");
-      expect(updatedMeta.previousStage).toBe("plan");
-      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan", "develop"]);
+      expect(updatedMeta.previousStage).toBe("design-review");
+      expect(updatedMeta.stageVisitOrder).toEqual(["clarify", "plan", "design-review", "develop"]);
     });
 
     // Medium #6: A1 Spec stage + confirm(false) → cancelled
@@ -1655,7 +1655,7 @@ describe("createPipelineStartCommand", () => {
         projectRoot: TMP,
         startStageMode: "ask",
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -1702,7 +1702,7 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -1745,7 +1745,7 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -1791,7 +1791,7 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -1829,7 +1829,7 @@ describe("createPipelineStartCommand", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -1895,7 +1895,7 @@ describe("createPipelineStartCommand", () => {
         projectRoot: TMP,
         startStageMode: "ask",
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -1953,7 +1953,7 @@ describe("createPipelineStartCommand", () => {
         projectRoot: TMP,
         startStageMode: "ask",
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -2009,7 +2009,7 @@ describe("createPipelineStartCommand", () => {
         projectRoot: TMP,
         startStageMode: "ask",
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {

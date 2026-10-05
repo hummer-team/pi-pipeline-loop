@@ -5,34 +5,35 @@
 # for the pi-pipeline plugin. It is read from `.pi/references/pipeline-stage-prompt.yml`.
 #
 # Key Structure:
-#   Stage prompt keys (5):
-#     clarify, plan, develop, review, fix
+#   Stage prompt keys (6):
+#     clarify, plan, design-review, develop, review, fix
 #     — Rendered as the agent's system prompt for each stage.
 #
-#   Per-stage verify execution prompts (5):
-#     verify_clarify, verify_plan, verify_develop, verify_review, verify_fix
+#   Per-stage verify execution prompts (6):
+#     verify_clarify, verify_plan, verify_design-review, verify_develop, verify_review, verify_fix
 #     — Used as modelPrompt during stage verification (execution phase).
 #     — Empty/missing → falls back to DEFAULT_VERIFY_PROMPT.
 #
-#   Per-stage verify extract prompts (5):
-#     verify_extract_clarify, verify_extract_plan, verify_extract_develop,
-#     verify_extract_review, verify_extract_fix
+#   Per-stage verify extract prompts (6):
+#     verify_extract_clarify, verify_extract_plan, verify_extract_design-review,
+#     verify_extract_develop, verify_extract_review, verify_extract_fix
 #     — Used for LLM-based delivery item extraction (generation phase).
 #     — Fallback chain: verify_extract_{stage} → verify_extract → DEFAULT_VERIFY_EXTRACT_PROMPT.
 #
-#   Per-stage executor prompts (5) — Phase 4 (139) + Phase 0 (146):
-#     stage_executor_clarify, stage_executor_plan, stage_executor_develop,
-#     stage_executor_review, stage_executor_fix
+#   Per-stage executor prompts (6) — Phase 4 (139) + Phase 0 (146):
+#     stage_executor_clarify, stage_executor_plan, stage_executor_design-review,
+#     stage_executor_develop, stage_executor_review, stage_executor_fix
 #     — Rendered as "## Stage Executor Scheduling" section describing which sub-agent
 #       executes the stage and how the main thread orchestrates the handoff.
 #     — Injected via {{stage_executor}} placeholder (clarify: optional, not in CRITICAL_PLACEHOLDERS).
 #
-#   Per-stage plugin default deliverables (5) — Phase 0 (146):
-#     stage_deliverable_clarify, stage_deliverable_plan, stage_deliverable_develop,
-#     stage_deliverable_review, stage_deliverable_fix
+#   Per-stage plugin default deliverables (6) — Phase 0 (146):
+#     stage_deliverable_clarify, stage_deliverable_plan, stage_deliverable_design-review,
+#     stage_deliverable_develop, stage_deliverable_review, stage_deliverable_fix
 #     — Read by verify-generator as plugin default delivery items (verify rule layer).
 #     — Also injected via {{stage_deliverables}} placeholder into system prompt (inform agent).
 #     — clarify/plan have mechanism-coupled deliverables (model confirmation, planning docs).
+#     — design-review has design artifact deliverables (review report with verdict).
 #     — develop/review/fix have code artifact deliverables (build, test, commit, review report).
 #
 #   Global verify extract fallback (1):
@@ -45,7 +46,7 @@
 #     — Fallback chain: conflict_check_prompt_{stage} → conflict_check_prompt → DEFAULT_CONFLICT_CHECK_PROMPT.
 #     — Not a stage template placeholder; read directly by runConflictCheck.
 #
-# Total: 27 keys (5 stage + 5 verify_{stage} + 5 verify_extract_{stage} + 5 stage_executor_{stage} + 5 stage_deliverable_{stage} + 1 verify_extract + 1 conflict_check_prompt)
+# Total: 32 keys (6 stage + 6 verify_{stage} + 6 verify_extract_{stage} + 6 stage_executor_{stage} + 6 stage_deliverable_{stage} + 1 verify_extract + 1 conflict_check_prompt)
 #
 # Placeholder Protocol:
 #   Placeholders use the format {{key}} and are replaced at runtime with
@@ -131,6 +132,25 @@ plan: |
   {{stage_deliverables}}
   ---
   {{smart_confirm_guidance}}
+
+design-review: |
+  {{context_reference}}
+  ---
+  {{domain_skill}}
+  ---
+  {{stage_skill}}
+  ---
+  {{pipeline_status}}
+  ---
+  {{verify_failures}}
+  ---
+  {{verify_tool_guidance}}
+  ---
+  {{stage_write_scope}}
+  ---
+  {{stage_executor}}
+  ---
+  {{stage_deliverables}}
 
 develop: |
   {{context_reference}}
@@ -219,6 +239,15 @@ stage_executor_plan: |
   **Checkpoint**: Do NOT call `stage_advance` until the plan document is complete and user-confirmed.
   {active_spawn_note}
 
+stage_executor_design-review: |
+  ## Stage Executor Scheduling
+  This stage is executed by sub-agent: `{subagent_type}`
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
+  **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
+  **Context**: {context_arg}
+  **Checkpoint**: Design review report must contain a verdict line (PASS/FAIL) before `stage_advance`. On PASS, advance to develop. On FAIL, advance to plan for revision.
+  {active_spawn_note}
+
 stage_executor_develop: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
@@ -269,6 +298,13 @@ stage_deliverable_plan: |
   - **MUST** include phase breakdown and task descriptions
   - **MUST** end the plan document with `## 用户确认` / `## User Confirmation` section for user sign-off
 
+stage_deliverable_design-review: |
+  - **MUST** include `**pipeline**: {pipelineId}` in the artifact file header
+  - **MUST** perform design review and produce a review report
+  - **MUST** include a verdict line in bilingual+bold-tolerant form: `结论：(通过|不通过)` / `Verdict: (PASS|FAIL)` / `Conclusion: (pass|fail)` — bold/italic markup (`**`/`_`) tolerated
+  - **MUST** verify that the plan document addresses all requirements
+  - **MUST** provide clear reasoning for the verdict (PASS or FAIL)
+
 stage_deliverable_develop: |
   - **MUST** run the project build command and confirm it passes (command determined by project tech stack)
   - **MUST** run the project unit test command and confirm it passes (command determined by project tech stack)
@@ -305,6 +341,11 @@ verify_plan: |
   - Fully understand the requirement context (goals, scope, boundaries)
   - Clear and unambiguous solution selection that covers all requirement boundaries
 
+verify_design-review: |
+  - Review report includes verdict (PASS/FAIL) with clear reasoning
+  - All requirements are addressed in the plan document
+  - Plan document is feasible and complete
+
 verify_develop: |
   - Fully understand the requirement context (goals, scope, boundaries)
   - Clear and unambiguous solution selection that covers all requirement boundaries
@@ -318,7 +359,7 @@ verify_fix: |
   - Clear and unambiguous solution selection that covers all requirement boundaries
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Per-stage Verify Extract Prompts (5 keys)
+# Per-stage Verify Extract Prompts (6 keys)
 # Used for LLM-based delivery item extraction during verify generation.
 # Fallback chain: verify_extract_{stage} → verify_extract → DEFAULT_VERIFY_EXTRACT_PROMPT
 # Trigger: /pipeline-init 1 verify generation
@@ -346,6 +387,27 @@ verify_extract_clarify: |
   Respond ONLY with the JSON array.
 
 verify_extract_plan: |
+  You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
+
+  Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.
+
+  For each deliverable, classify it as one of:
+  - "file": a file that must be created/modified
+  - "command": a command that must succeed — MUST be based on the project's actual tech stack (e.g. Maven/Gradle for Java, npm/bun for Node, cargo for Rust), not generic examples
+  - "git": a git state that must be true
+  - "keyword": a keyword that must appear in the output
+
+  Respond with JSON array:
+  [
+    {"type": "file", "target": "docs/design/commit.md"},
+    {"type": "command", "target": "<build command from project>"},
+    {"type": "command", "target": "<test command from project>"},
+    {"type": "keyword", "target": "答"}
+  ]
+
+  Respond ONLY with the JSON array.
+
+verify_extract_design-review: |
   You are a delivery item extractor. Given a skill file content, extract the deliverables that must be produced for the stage to be considered complete.
 
   Look for items marked with **必须**, **Must**, **Required**, **MUST** or similar strong obligation markers.

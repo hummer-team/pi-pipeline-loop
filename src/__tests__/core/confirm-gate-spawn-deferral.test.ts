@@ -21,7 +21,7 @@ setupConfirmGateTmpDir();
 // ── 168 Phase 4: confirm gate + auto-spawn integration ─────────────────────
 
 describe("168 Phase 4: confirm gate spawn behavior", () => {
-  it("plan approve → develop: confirm gate triggers spawnStageSubagent with develop stage (real agent file)", async () => {
+  it("plan approve → design-review: confirm gate triggers spawnStageSubagent with design-review stage (real agent file)", async () => {
     const stageTmp = path.join(tmpdir(), "pi-cg-spawn-" + Date.now());
     await fs.mkdir(stageTmp, { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
@@ -32,12 +32,12 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
     const planDoc = path.join(planDir, "Test_plan.md");
     await fs.writeFile(planDoc, "# Test Plan\n");
 
-    // Create real agent file for develop stage so resolveAgentMention succeeds
+    // Create real agent file for design-review stage so resolveAgentMention succeeds
     const agentDir = path.join(stageTmp, "agents");
     await fs.mkdir(agentDir, { recursive: true });
     await fs.writeFile(
-      path.join(agentDir, "dev-agent.md"),
-      "---\nname: develop-agent\n---\n# Dev Agent\n",
+      path.join(agentDir, "design-review-agent.md"),
+      "---\nname: design-review-agent\n---\n# Design Review Agent\n",
     );
 
     const baseConfig = makeTestConfig({ projectRoot: stageTmp });
@@ -50,9 +50,9 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
           allowedWritePaths: ["docs/", "doc/", "documentation/"],
           confirm: { mode: "manual" },
         },
-        develop: {
-          ...baseConfig.stages.develop,
-          agentPath: "agents/dev-agent.md",
+        "design-review": {
+          ...baseConfig.stages["design-review"],
+          agentPath: "agents/design-review-agent.md",
         },
       },
     } as PipelineConfig;
@@ -92,23 +92,23 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
       mode: "manual",
     });
 
-    // Gate should handle + advance to develop
+    // Gate should handle + advance to design-review
     expect(result.result).toBe("handled");
     if ("toStage" in result) {
-      expect(result.toStage).toBe("develop");
+      expect(result.toStage).toBe("design-review");
     }
     // Stage should actually advance in meta
-    expect(meta.currentStage).toBe("develop");
+    expect(meta.currentStage).toBe("design-review");
 
     // Verify select was called (manual mode)
     expect(selectCalls.length).toBe(1);
 
     // Since no event bus is on the pi mock, spawnStageSubagent should fall back to
     // sendUserMessage with deliverAs:"followUp". Verify the spawn invocation.
-    const spawnCalls = sentMessages.filter(m => m.msg.includes("@develop-agent"));
+    const spawnCalls = sentMessages.filter(m => m.msg.includes("@design-review-agent"));
     expect(spawnCalls.length).toBe(1);
     expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
-    expect(spawnCalls[0].msg).toContain("develop");
+    expect(spawnCalls[0].msg).toContain("design-review");
     expect(spawnCalls[0].msg).toContain("pipe-spawn-integ-001");
 
     await fs.rm(stageTmp, { recursive: true, force: true });

@@ -76,7 +76,7 @@ describe("Phase 1 audit: stage_advance events", () => {
     const log = await readAuditLog(root);
     expect(log).toContain("stage_advance");
     expect(log).toContain("fromStage=plan");
-    expect(log).toContain("toStage=develop");
+    expect(log).toContain("toStage=design-review");
   });
 
   it("writes stage_advance_failed for invalid nextStage", async () => {

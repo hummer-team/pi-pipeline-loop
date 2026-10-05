@@ -31,14 +31,14 @@ async function scaffoldMinimalPi(opts: { withResidues?: boolean } = {}): Promise
   // agents (needed for checkAgentPaths)
   const agentsDir = path.join(TMP, ".pi", "agents");
   await fs.mkdir(agentsDir, { recursive: true });
-  for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+  for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"]) {
     await fs.writeFile(path.join(agentsDir, `${stage}-agent.md`), `# ${stage} agent\n`, "utf-8");
   }
 
   // skills
   const skillsDir = path.join(TMP, ".pi", "skills");
   await fs.mkdir(skillsDir, { recursive: true });
-  for (const stage of ["design", "plan", "develop", "review", "fix"]) {
+  for (const stage of ["design", "plan", "design-review", "develop", "review", "fix"]) {
     const stageDir = path.join(skillsDir, stage);
     await fs.mkdir(stageDir, { recursive: true });
     const body = opts.withResidues
@@ -173,7 +173,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
   it("checkAgentPaths error fires BEFORE template gate (ordering)", async () => {
     // Override stages to strip agentPath so checkAgentPaths fails
     const stages: Record<string, unknown> = {};
-    for (const s of ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"]) {
+    for (const s of ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"]) {
       stages[s] = { skillPath: `${s}/SKILL.md`, nextStage: null, requireDomain: false };
     }
     const config = makeTestConfig({ projectRoot: TMP, stages: stages as any });
@@ -564,7 +564,7 @@ describe("Phase 4 (169) P1: reset surface for terminalCompact and spawnedStages"
 /** Helper: scaffold verify.md files for all active stages so checkVerifyFiles passes */
 async function scaffoldVerifyFiles(): Promise<void> {
   const refsDir = path.join(TMP, ".pi", "references");
-  for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+  for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"]) {
     const stageDir = path.join(refsDir, `${stage}_spec`);
     await fs.mkdir(stageDir, { recursive: true });
     await fs.writeFile(path.join(stageDir, "verify.md"), "---\nrules:\n  keywords:\n    - \"test\"\n---\nBody\n", "utf-8");

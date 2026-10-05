@@ -137,7 +137,7 @@ describe("Nit 3 (reaudit): agent-settled auto mode + fail report → route fix v
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -207,7 +207,7 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -257,7 +257,7 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -306,7 +306,7 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

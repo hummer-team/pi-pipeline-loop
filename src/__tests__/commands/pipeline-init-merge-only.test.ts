@@ -31,7 +31,7 @@ function makeInitConfig() {
   return makeTestConfig({
     projectRoot: TMP,
     stages: Object.fromEntries(
-      ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+      ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
         (s, i, a) => [
           s,
           {

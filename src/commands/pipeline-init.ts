@@ -318,11 +318,12 @@ async function copyTemplateFiles(
     // Phase 5 / 175: merge managed contract blocks into SKILL.md files.
     // Idempotent: if block exists, replace in-place; if missing, append.
     // Fail-open: write errors are logged but do not block init.
-    const stages = ["clarify", "plan", "develop", "review", "fix"] as const;
+    const stages = ["clarify", "plan", "design-review", "develop", "review", "fix"] as const;
     const skillsDir = path.join(targetDir, "skills");
     const skillFileMap: Record<string, string> = {
       clarify: "design/SKILL.md",
       plan: "plan/SKILL.md",
+      "design-review": "design-review/SKILL.md",
       develop: "develop/SKILL.md",
       review: "review/SKILL.md",
       fix: "fix/SKILL.md",

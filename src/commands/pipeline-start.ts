@@ -45,7 +45,7 @@ import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
  */
 function checkAgentPaths(config: PipelineConfig): PipelineStage[] {
   const activeStages: PipelineStage[] = [
-    "clarify", "plan", "develop", "review", "fix",
+    "clarify", "plan", "design-review", "develop", "review", "fix",
   ];
   const missing: PipelineStage[] = [];
   for (const stage of activeStages) {
@@ -224,7 +224,7 @@ function checkVerifyFiles(config: PipelineConfig, startStage: PipelineStage = "c
   const missingStages: PipelineStage[] = [];
   const reachable = collectStagesFrom(config, startStage);
   const activeStages: PipelineStage[] = [
-    "clarify", "plan", "develop", "review", "fix",
+    "clarify", "plan", "design-review", "develop", "review", "fix",
   ];
 
   for (const stage of activeStages) {
@@ -1316,7 +1316,7 @@ async function handleAbortedWithMode(
  */
 function getSpecEligibleStages(config: PipelineConfig): PipelineStage[] {
   const eligible: PipelineStage[] = [];
-  const order: PipelineStage[] = ["clarify", "plan", "develop", "review", "fix"];
+  const order: PipelineStage[] = ["clarify", "plan", "design-review", "develop", "review", "fix"];
   for (const stage of order) {
     const stageConf = config.stages[stage];
     if (stageConf?.disabled) continue;

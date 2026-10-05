@@ -7,7 +7,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 export const STAGE_LIST: PipelineStage[] = [
-  "clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed",
+  "clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed",
 ];
 
 export function makeStageConfig(overrides?: Partial<Record<string, unknown>>) {

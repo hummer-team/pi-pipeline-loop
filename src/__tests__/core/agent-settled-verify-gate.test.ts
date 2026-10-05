@@ -28,7 +28,7 @@ describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -92,7 +92,7 @@ describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -144,7 +144,7 @@ describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -239,7 +239,7 @@ describe("168 Phase 0: precheckRequiredFiles in agent_settled hook", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -292,7 +292,7 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -363,7 +363,7 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

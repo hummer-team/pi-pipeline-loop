@@ -244,7 +244,7 @@ async function loadTemplateRules(stage: string): Promise<VerifyRules> {
 }
 
 describe("Phase 3 / 176: v6 template structure", () => {
-  const STAGES = ["clarify", "plan", "develop", "review", "fix"] as const;
+  const STAGES = ["clarify", "plan", "design-review", "develop", "review", "fix"] as const;
 
   it("all 5 templates parse into groups with a file-level path", async () => {
     for (const stage of STAGES) {

@@ -39,7 +39,7 @@ function makeConfigWithVerify(mode?: "hook" | "tool") {
   return makeTestConfig({
     projectRoot: TMP,
     stages: Object.fromEntries(
-      ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+      ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
         (s, i, a) => [
           s,
           {
@@ -193,7 +193,7 @@ describe("createPipelineVerify", () => {
     const config = makeTestConfig({
       projectRoot: overrideTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -236,7 +236,7 @@ describe("createPipelineVerify", () => {
       projectRoot: TMP,
       maxVerifyAttempts: 2,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

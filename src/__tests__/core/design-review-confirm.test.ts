@@ -75,7 +75,7 @@ describe("design-review-coordinator confirm-mode compatibility", () => {
     }
 
     test("meta with designReview=undefined → not-applicable for all stages", async () => {
-      const stages = ["clarify", "plan", "develop", "review", "fix", "completed"] as const;
+      const stages = ["clarify", "plan", "design-review", "develop", "review", "fix", "completed"] as const;
       for (const stage of stages) {
         const meta = makeTestMeta({
           currentStage: stage,

@@ -285,7 +285,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     const config = makeTestConfig({
       projectRoot: TMP5,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

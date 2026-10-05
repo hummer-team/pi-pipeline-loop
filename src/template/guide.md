@@ -108,8 +108,12 @@ bun add @earendil-works/pi-pipeline
                     "skillPath": "design/SKILL.md", "nextStage": "plan",
                     "verify": { "require": true, "completionMarker": "## 模型确认" } },
     "plan":       { "agentPath": ".pi/agents/feat-design-plan-agent.md",
-                    "skillPath": "plan/SKILL.md", "nextStage": "develop",
+                    "skillPath": "plan/SKILL.md", "nextStage": "design-review",
                     "verify": { "require": true } },
+    "design-review": { "agentPath": ".pi/agents/design-review-agent.md",
+                    "skillPath": "design-review/SKILL.md", "nextStage": "develop",
+                    "verify": { "require": true },
+                    "allowedWritePaths": ["docs/"] },
     "develop":    { "agentPath": ".pi/agents/develop-agent.md",
                     "skillPath": "develop/SKILL.md", "nextStage": "review",
                     "verify": { "require": true, "selfVerifySkip": true } },
@@ -188,8 +192,15 @@ bun add @earendil-works/pi-pipeline
     "plan": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
       "skillPath": "plan/SKILL.md",
-      "nextStage": "develop",
+      "nextStage": "design-review",
       "allowedWritePaths": ["docs/", "doc/", "documentation/"],
+      "verify": { "require": true }
+    },
+    "design-review": {
+      "agentPath": ".pi/agents/design-review-agent.md",
+      "skillPath": "design-review/SKILL.md",
+      "nextStage": "develop",
+      "allowedWritePaths": ["docs/"],
       "verify": { "require": true }
     },
      "develop": {
@@ -378,20 +389,22 @@ rules:
 
 ---
 
-## 5. 7 阶段流转说明
+## 5. 8 阶段流转说明
 
-流水线阶段序列（质量环：review ⇄ fix，review 确认通过→completed）：
+流水线阶段序列（design-review 审查环 + 质量环：review ⇄ fix，review 确认通过→completed）：
 
 ```text
-clarify → plan → develop → review ⇄ fix → review (loop) → completed
-                ↑ selfVerifySkip   ↑ confirm 门（manual）
-                └── 模型自验跳过或插件兜底 ──┘
+clarify → plan → design-review → develop → review ⇄ fix → review (loop) → completed
+                         ↑ 可选 PASS/FAIL        ↑ selfVerifySkip   ↑ confirm 门（manual）
+                         └── PASS→develop         └── 模型自验跳过或插件兜底 ──┘
+                         └── FAIL→plan 修正
 ```
 
 | 阶段 | 目标 | 工具权限 |
 |------|------|---------|
 | **clarify** | 分析需求文档，识别歧义，提出澄清问题；获得用户 full-und? 确认后完成。full-und? 确认标记（`## 模型确认`）落盘后由 agent_settled 自动验证推进 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + completionMarker 预检） |
 | **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
+| **design-review** | 审查规划文档质量，可选自动或人工审查；PASS→develop，FAIL→plan 修正 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证） |
 | **develop** | 按规划编写代码，运行测试，产出 _commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **review** | 审查代码质量，产出 code review 报告；verify 校验 `结论：(通过|不通过)`；结论由模型经 stage_advance 声明：fail→自动转 fix，pass→confirm 门通过后→completed | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
 | **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→review 复验。fix 阶段必须经 review 复验才能进入终态（completed / awaiting_human），不允许直接跳转 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |

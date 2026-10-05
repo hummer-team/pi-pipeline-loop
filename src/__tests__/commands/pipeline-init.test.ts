@@ -36,7 +36,7 @@ async function createMinimalTemplate(dir: string) {
   }
 
   // agents
-  for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+  for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"]) {
     const agentDir = path.join(dir, "agents", stage);
     await fs.mkdir(agentDir, { recursive: true });
     await fs.writeFile(path.join(agentDir, `${stage}.md`), `# ${stage} agent\n`, "utf-8");
@@ -58,7 +58,7 @@ function makeInitConfig() {
   return makeTestConfig({
     projectRoot: TMP,
     stages: Object.fromEntries(
-      ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+      ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
         (s, i, a) => [
           s,
           {
@@ -717,7 +717,7 @@ describe("createPipelineInitCommand", () => {
       const config = makeInitConfig();
 
       // Create .pi/skills with SKILL.md that has NO Must markers — ALL stages
-      for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+      for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"]) {
         const skillDir = path.join(TMP, ".pi", "skills", stage);
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(

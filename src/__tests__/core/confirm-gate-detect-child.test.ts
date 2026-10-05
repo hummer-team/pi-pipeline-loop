@@ -397,7 +397,7 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
     expect(await detectPendingConfirmGate(config, meta)).toBe(true);
   });
 
-  it("Approve clears deferral + reask and advances to develop", async () => {
+  it("Approve clears deferral + reask and advances to design-review", async () => {
     await createPlanDoc("# Plan\n");
     const tmpDir = getTmpDir();
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
@@ -414,10 +414,10 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
     // Mirror the production callers: shared accounting runs after the gate.
     recordConfirmGateOutcome(ctx.session, meta, gate, false);
 
-    expect(gate).toEqual({ result: "handled", action: "advanced", toStage: "develop" });
+    expect(gate).toEqual({ result: "handled", action: "advanced", toStage: "design-review" });
     expect(meta.confirmGateDeferredAt).toBeUndefined();
     expect(meta.confirmGateReask).toBeUndefined();
-    expect(meta.currentStage).toBe("develop");
+    expect(meta.currentStage).toBe("design-review");
   });
 
   it("Reject routes to clarify and clears the pending stamp", async () => {
@@ -623,7 +623,7 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     expect(selectCalls).toBe(1);
     expect((result as any).result).toBe("handled");
     expect((result as any).action).toBe("advanced");
-    expect((result as any).toStage).toBe("develop");
+    expect((result as any).toStage).toBe("design-review");
   });
 
   it("expected agent live (findLiveAgentByName returns record) → gate defers", async () => {
@@ -685,7 +685,7 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     expect(selectCalls).toBe(1);
     expect((result as any).result).toBe("handled");
     expect((result as any).action).toBe("advanced");
-    expect((result as any).toStage).toBe("develop");
+    expect((result as any).toStage).toBe("design-review");
   });
 
   it("manager singleton unavailable + expectedAgentName set → falls back to anyTopLevelRunning/evidence", async () => {

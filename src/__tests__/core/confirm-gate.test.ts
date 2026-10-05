@@ -155,7 +155,7 @@ describe("Phase 3 (162): maybeHandleConfirmGate", () => {
     }
   });
 
-  it("approve advances plan to develop", async () => {
+  it("approve advances plan to design-review", async () => {
     await createPlanDoc("# Plan\n");
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
     const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
@@ -165,7 +165,7 @@ describe("Phase 3 (162): maybeHandleConfirmGate", () => {
     expect(result.result).toBe("handled");
     if (result.result === "handled") {
       expect(result.action).toBe("advanced");
-      expect(result.toStage).toBe("develop");
+      expect(result.toStage).toBe("design-review");
     }
     // Rejection counter should be reset
     const updatedMeta = ctx.session.getMeta() as SessionMeta;

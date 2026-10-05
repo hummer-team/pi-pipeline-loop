@@ -667,7 +667,7 @@ describe("prompt-config", () => {
         expect((parsed[key] as string).trim().length).toBeGreaterThan(0);
       }
       // Ensure total key count matches final target (27 keys)
-      expect(Object.keys(parsed).length).toBe(27);
+      expect(Object.keys(parsed).length).toBe(32);
     });
 
     it("clarify template contains all 7 non-loop placeholders (no requirement_doc)", () => {
@@ -701,12 +701,12 @@ describe("prompt-config", () => {
       expect(develop).not.toContain("{{requirement_doc}}");
     });
 
-    it("all 5 stage keys contain {{stage_skill}} placeholder", () => {
+    it("all 6 stage keys contain {{stage_skill}} placeholder", () => {
       if (!fsSync.existsSync(TEMPLATE_PATH)) return;
       const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
       const parsed = yamlParse(content) as Record<string, string>;
 
-      for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+      for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"]) {
         expect(parsed[stage]).toContain("{{stage_skill}}");
       }
     });
@@ -716,7 +716,7 @@ describe("prompt-config", () => {
       const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
       const parsed = yamlParse(content) as Record<string, string>;
 
-      for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+      for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"]) {
         const template = parsed[stage];
         const domainIdx = template.indexOf("{{domain_skill}}");
         const stageSkillIdx = template.indexOf("{{stage_skill}}");
@@ -748,12 +748,12 @@ describe("prompt-config", () => {
       expect(parsed["plan"]).toContain("{{stage_deliverables}}");
     });
 
-    it("all 5 stage templates contain {{stage_deliverables}} placeholder", () => {
+    it("all 6 stage templates contain {{stage_deliverables}} placeholder", () => {
       if (!fsSync.existsSync(TEMPLATE_PATH)) return;
       const content = fsSync.readFileSync(TEMPLATE_PATH, "utf-8");
       const parsed = yamlParse(content) as Record<string, string>;
 
-      for (const stage of ["clarify", "plan", "develop", "review", "fix"]) {
+      for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"]) {
         expect(parsed[stage]).toContain("{{stage_deliverables}}");
       }
     });

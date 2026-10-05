@@ -257,8 +257,8 @@ describe("High C: flow-state C14/C15 audit field assertions", () => {
     const abortLine = lines.find(l => l.includes("pipeline_session_aborted"));
     expect(abortLine).toBeDefined();
 
-    // C14: verify nextStage is computed from config chain (plan → develop)
-    expect(abortLine).toContain("nextStage=develop");
+    // C14: verify nextStage is computed from config chain (plan → design-review)
+    expect(abortLine).toContain("nextStage=design-review");
     // C14: verify nextAction contains resume hint with doc
     expect(abortLine).toContain("nextAction=run /pipeline-start docs/design/test.md");
     // C14: verify trigger fields

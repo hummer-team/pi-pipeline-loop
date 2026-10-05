@@ -8,9 +8,9 @@ describe("buildStageSequence", () => {
   it("returns full chain from first stage to terminal", () => {
     const config = makeTestConfig();
     const result = buildStageSequence(config, "clarify");
-    // Default test config: clarify → plan → develop → review → fix → awaiting_human → completed → null
+    // Default test config: clarify → plan → design-review → develop → review → fix → awaiting_human → completed → null
     expect(result).toEqual([
-      "clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed",
+      "clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed",
     ]);
   });
 

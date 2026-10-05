@@ -372,7 +372,7 @@ describe("Phase 1 (163): review_declaration_missing audit", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -444,7 +444,7 @@ describe("Phase 1 (163): review_declaration_missing audit", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -499,7 +499,7 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
     return makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {

@@ -660,9 +660,8 @@ describe("createPipelineUI", () => {
       ui.stageEntry(ctx, "plan");
 
       expect(notifications.length).toBe(1);
-      // Should use static nextStage (develop) not dynamic target
-      expect(notifications[0]).toContain("-> develop");
-      expect(notifications[0]).not.toContain("review");
+      // Should use static nextStage (design-review) not dynamic target
+      expect(notifications[0]).toContain("-> design-review");
     });
   });
 });

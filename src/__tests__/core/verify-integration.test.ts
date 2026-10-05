@@ -30,7 +30,7 @@ function makeConfigWithVerify(stages: string[] = ["develop"]) {
   return makeTestConfig({
     projectRoot: TMP,
     stages: Object.fromEntries(
-      ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+      ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
         (s, i, a) => [
           s,
           {
@@ -371,7 +371,7 @@ describe("verify-integration", () => {
     const templateSkillsDir = path.join(templateDir, "skills");
     const piSkillsDir = path.join(TMP, ".pi", "skills");
 
-    for (const stageDir of ["design", "plan", "develop", "review", "fix"]) {
+    for (const stageDir of ["design", "plan", "design-review", "develop", "review", "fix"]) {
       const srcDir = path.join(templateSkillsDir, stageDir);
       const destDir = path.join(piSkillsDir, stageDir);
       await fs.mkdir(destDir, { recursive: true });
@@ -397,10 +397,10 @@ describe("verify-integration", () => {
     const generated = results.filter(r => r.status === "generated");
     const skipped = results.filter(r => r.status === "skipped");
 
-    // All 5 active stages should generate verify.md
+    // All 6 active stages should generate verify.md
     // After Phase 3 migration: SKILLs use Template-TODO placeholders (no **必须**),
     // plugin deliverables come from yml stage_deliverable_{stage}
-    expect(generated.length).toBe(5);
+    expect(generated.length).toBe(6);
     expect(skipped.length).toBe(0);
 
     // After Phase 3 migration: all stages rely on plugin deliverables from yml
@@ -438,7 +438,7 @@ describe("verify-integration", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -485,7 +485,7 @@ describe("verify-integration", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -584,9 +584,9 @@ describe("verify-integration", () => {
       const hook = createAgentSettled(config);
       await hook.handler(ctx as any);
 
-      // Should advance to next stage (plan → develop)
+      // Should advance to next stage (plan → design-review)
       const lastUpdate = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
-      expect(lastUpdate.currentStage).toBe("develop");
+      expect(lastUpdate.currentStage).toBe("design-review");
     });
 
     // Phase 3 (162): legacy plan human-gate removed. Missing marker now goes through

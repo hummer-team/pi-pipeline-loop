@@ -1098,7 +1098,7 @@ describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () 
     const config = makeTestConfig({ projectRoot: stageTmp });
     const meta = makeTestMeta({
       currentStage: "review",
-      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      stageVisitOrder: ["clarify", "plan", "design-review", "develop", "review"],
       loopCycleCount: 0,
     });
 
@@ -1109,7 +1109,7 @@ describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () 
     expect(result.success).toBe(true);
     expect(meta.currentStage).toBe("fix");
     // Visit order includes "fix" after the reject route
-    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "fix"]);
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "design-review", "develop", "review", "fix"]);
 
     await rm(stageTmp, { recursive: true, force: true });
   });
@@ -1127,8 +1127,8 @@ describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () 
     const result = (await tool.execute({}, ctx as any)) as any;
 
     expect(result.success).toBe(true);
-    expect(meta.currentStage).toBe("develop");
-    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop"]);
+    expect(meta.currentStage).toBe("design-review");
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "design-review"]);
   });
 });
 

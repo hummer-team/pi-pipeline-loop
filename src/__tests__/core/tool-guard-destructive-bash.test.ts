@@ -512,7 +512,7 @@ describe("createToolGuard", () => {
     it("guard with empty blockedTools → zero behavior change", async () => {
       const config = makeTestConfig({
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -544,7 +544,7 @@ describe("createToolGuard", () => {
       const config = makeTestConfig({
         projectRoot: TMP,
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -586,7 +586,7 @@ describe("createToolGuard", () => {
     it("guard blocks tool on configured stage only (other stages unaffected)", async () => {
       const config = makeTestConfig({
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {
@@ -616,7 +616,7 @@ describe("createToolGuard", () => {
     it("guard does not block non-listed tools", async () => {
       const config = makeTestConfig({
         stages: Object.fromEntries(
-          ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
             (s, i, a) => [
               s,
               {

@@ -394,7 +394,7 @@ export function isSpawnableStage(
   config: PipelineConfig,
   stage: PipelineStage,
 ): boolean {
-  const spawnableStages: PipelineStage[] = ["plan", "develop", "review", "fix"];
+  const spawnableStages: PipelineStage[] = ["plan", "design-review", "develop", "review", "fix"];
   if (!spawnableStages.includes(stage)) return false;
   return !!config.stages[stage]?.agentPath;
 }

@@ -211,8 +211,8 @@ describe("Review-r3 Issue 1: inferResumeStage chain", () => {
       },
     });
     const result = inferResumeStage(meta, config);
-    // plan is higher → nextStage = develop
-    expect(result.stage).toBe("develop");
+    // plan is higher → nextStage = design-review
+    expect(result.stage).toBe("design-review");
     expect(result.basis).toBe("summaries");
   });
 

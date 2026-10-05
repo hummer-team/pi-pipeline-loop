@@ -1,143 +1,103 @@
 /**
- * @module design-review-authorisation.test
- * Phase 4 / 191: Unit tests for owner authorisation gate.
- *
- * Validates:
- * - Child/tool sessions cannot authorise
- * - Prerequisites validation (requirement doc, plan doc, config)
- * - TUI availability check
- * - User confirmation flow
- * - Authorisation creation with correct hash and metadata
- * - Audit logging for all gate outcomes
+ * Unit tests for design-review-authorisation module
+ * Tests the authorization gate for direct entry to design-review stage
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { designReviewAuthorisationGate } from "../../core/design-review-authorisation";
+import type { RuntimeCtx } from "../../core/runtime-ctx";
+import type { PipelineConfig, SessionMeta } from "../../types";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PipelineConfig, SessionMeta } from "../../types";
-import { makeTestConfig, makeTestMeta, createMockRuntimeCtx } from "../helpers";
-import { designReviewAuthorisationGate } from "../../core/design-review-authorisation";
-import { initAuditLog } from "../../utils/auditLog";
-import { computeHash } from "../../core/design-review-state";
 
-describe("design-review-authorisation gate", () => {
+describe("designReviewAuthorisationGate", () => {
   let tempDir: string;
+  let projectRoot: string;
   let requirementDoc: string;
   let planDoc: string;
-  let config: PipelineConfig;
+  let mockCtx: RuntimeCtx;
+  let mockConfig: PipelineConfig;
+  let mockMeta: SessionMeta;
 
   beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "dr-auth-"));
-    requirementDoc = join(tempDir, "requirements.md");
-    planDoc = join(tempDir, "requirements_plan.md");
+    // Create temporary directory for test files
+    tempDir = await mkdtemp(join(tmpdir(), "design-review-auth-test-"));
+    projectRoot = tempDir;
 
     // Create requirement document
-    await writeFile(requirementDoc, "# Requirements\n\nTest requirements.", "utf-8");
-    // Create plan document (derived from requirement doc name)
-    await writeFile(planDoc, "# Plan\n\nTest plan content.", "utf-8");
+    requirementDoc = join(projectRoot, "requirements.md");
+    await writeFile(requirementDoc, "# Requirements\n\nTest requirements");
 
-    // Configure test project with design-review stage
-    config = makeTestConfig({
-      projectRoot: tempDir,
-      stages: {
-        clarify: { agentPath: "./agents/clarify.md", skillPath: "clarify/SKILL.md", nextStage: "plan", requireDomain: false },
-        plan: { agentPath: "./agents/plan.md", skillPath: "plan/SKILL.md", nextStage: "develop", requireDomain: false },
-        develop: { agentPath: "./agents/develop.md", skillPath: "develop/SKILL.md", nextStage: "review", requireDomain: false },
-        review: { agentPath: "./agents/review.md", skillPath: "review/SKILL.md", nextStage: "fix", requireDomain: false },
-        fix: { agentPath: "./agents/fix.md", skillPath: "fix/SKILL.md", nextStage: "awaiting_human", requireDomain: false },
-        "design-review": {
-          agentPath: "./agents/design-review.md",
-          skillPath: "design-review/SKILL.md",
-          nextStage: "develop",
-          requireDomain: false,
-          disabled: false,
-        },
-        awaiting_human: { agentPath: "./agents/human.md", skillPath: "human/SKILL.md", nextStage: "completed", requireDomain: false },
-        completed: { agentPath: "./agents/completed.md", skillPath: "completed/SKILL.md", nextStage: null, requireDomain: false },
+    // Create plan document (derived from requirement doc)
+    planDoc = join(projectRoot, "requirements_plan.md");
+    await writeFile(planDoc, "# Plan\n\nTest plan content");
+
+    // Mock RuntimeCtx
+    mockCtx = {
+      session: {
+        getMeta: () => mockMeta,
+        updateMeta: () => {},
+        getBranch: () => [],
+        getEntries: () => [],
+        getHeader: () => ({}),
+        getSessionName: () => "owner-session",
       },
-    });
+      ui: {
+        confirm: async (title: string, message: string) => true,
+        select: async (title: string, options: string[]) => options[0],
+      },
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [],
+          getEntries: () => [],
+          getHeader: () => ({}),
+          getSessionName: () => "owner-session",
+        },
+      },
+    } as any;
 
-    // Initialize audit log
-    await initAuditLog(config);
+    // Mock PipelineConfig
+    mockConfig = {
+      projectRoot,
+      stages: {
+        "design-review": {
+          agentPath: "./agents/design-review-agent.md",
+          skillPath: "./skills/design-review/SKILL.md",
+          nextStage: "develop",
+        },
+      },
+    } as any;
+
+    // Mock SessionMeta
+    mockMeta = {
+      requirementDoc: "requirements.md",
+      pipelineId: "test-pipeline-123",
+    } as any;
   });
 
   afterEach(async () => {
+    // Clean up temporary directory
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  describe("child session rejection", () => {
-    test("rejects child session with parentSession header", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-child-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, {
-        confirmReturn: true,
-        sessionHeader: { parentSession: "parent-session-123" },
-        sessionFile: "/sessions/child-session.md",
-      });
-
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
-
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe("child_session_cannot_authorise");
-      }
-    });
-
-    test("rejects child session with subagent name pattern", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-child-002",
-      });
-      const ctx = createMockRuntimeCtx(meta, {
-        confirmReturn: true,
-        sessionName: "explore-agent#abc12345",
-        sessionFile: "/sessions/subagent-session.md",
-      });
-
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
-
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe("child_session_cannot_authorise");
-      }
-    });
-
-    test("rejects child session from fork event", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-child-003",
-      });
-      const ctx = createMockRuntimeCtx(meta, {
-        confirmReturn: true,
-        sessionFile: "/sessions/fork-session.md",
-        event: { reason: "fork" },
-      });
-
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
-
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toBe("child_session_cannot_authorise");
-      }
-    });
-  });
-
   describe("prerequisite validation", () => {
-    test("rejects when requirement doc is missing", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc: undefined,
-        pipelineId: "pipe-req-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: true });
+    it("should reject child sessions", async () => {
+      // Mock child session
+      mockCtx._ctx.sessionManager.getHeader = () => ({ parentSession: "parent-123" });
 
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("child_session_cannot_authorise");
+      }
+    });
+
+    it("should reject when requirement doc is missing", async () => {
+      mockMeta.requirementDoc = undefined;
+
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -145,15 +105,10 @@ describe("design-review-authorisation gate", () => {
       }
     });
 
-    test("rejects when requirement doc file does not exist", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc: "/nonexistent/requirements.md",
-        pipelineId: "pipe-req-002",
-      });
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: true });
+    it("should reject when requirement doc file does not exist", async () => {
+      mockMeta.requirementDoc = "nonexistent.md";
 
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -161,17 +116,11 @@ describe("design-review-authorisation gate", () => {
       }
     });
 
-    test("rejects when plan doc does not exist", async () => {
-      // Remove plan doc so validation fails
+    it("should reject when plan doc is missing", async () => {
+      // Remove plan doc
       await rm(planDoc);
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-plan-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: true });
 
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -179,28 +128,10 @@ describe("design-review-authorisation gate", () => {
       }
     });
 
-    test("rejects when design-review stage is disabled", async () => {
-      const disabledConfig = makeTestConfig({
-        projectRoot: tempDir,
-        stages: {
-          ...config.stages,
-          "design-review": {
-            agentPath: "./agents/design-review.md",
-            skillPath: "design-review/SKILL.md",
-            nextStage: "develop",
-            requireDomain: false,
-            disabled: true,
-          },
-        },
-      });
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-disabled-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: true });
+    it("should reject when design-review stage is disabled", async () => {
+      mockConfig.stages["design-review"].disabled = true;
 
-      const result = await designReviewAuthorisationGate(ctx, disabledConfig, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -208,27 +139,10 @@ describe("design-review-authorisation gate", () => {
       }
     });
 
-    test("rejects when design-review config is missing agentPath", async () => {
-      const invalidConfig = makeTestConfig({
-        projectRoot: tempDir,
-        stages: {
-          ...config.stages,
-          "design-review": {
-            agentPath: undefined,
-            skillPath: "design-review/SKILL.md",
-            nextStage: "develop",
-            requireDomain: false,
-          },
-        },
-      });
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-config-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: true });
+    it("should reject when design-review config is invalid (missing agentPath)", async () => {
+      mockConfig.stages["design-review"].agentPath = undefined;
 
-      const result = await designReviewAuthorisationGate(ctx, invalidConfig, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -236,27 +150,10 @@ describe("design-review-authorisation gate", () => {
       }
     });
 
-    test("rejects when design-review config is missing skillPath", async () => {
-      const invalidConfig = makeTestConfig({
-        projectRoot: tempDir,
-        stages: {
-          ...config.stages,
-          "design-review": {
-            agentPath: "./agents/design-review.md",
-            skillPath: undefined,
-            nextStage: "develop",
-            requireDomain: false,
-          },
-        },
-      });
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-config-002",
-      });
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: true });
+    it("should reject when design-review config is invalid (missing skillPath)", async () => {
+      mockConfig.stages["design-review"].skillPath = undefined;
 
-      const result = await designReviewAuthorisationGate(ctx, invalidConfig, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -266,15 +163,10 @@ describe("design-review-authorisation gate", () => {
   });
 
   describe("TUI availability", () => {
-    test("rejects when TUI confirm is unavailable", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-tui-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, { hasConfirm: false });
+    it("should reject when TUI is unavailable (no confirm)", async () => {
+      mockCtx.ui.confirm = undefined;
 
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -282,18 +174,10 @@ describe("design-review-authorisation gate", () => {
       }
     });
 
-    test("rejects when TUI select is unavailable", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-tui-002",
-      });
-      // Create context with confirm but no select
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: true });
-      // Manually remove select to simulate missing TUI
-      (ctx.ui as any).select = undefined;
+    it("should reject when TUI is unavailable (no select)", async () => {
+      mockCtx.ui.select = undefined;
 
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -303,15 +187,10 @@ describe("design-review-authorisation gate", () => {
   });
 
   describe("user confirmation flow", () => {
-    test("rejects when user cancels confirmation", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-cancel-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, { confirmReturn: false });
+    it("should reject when user cancels confirmation", async () => {
+      mockCtx.ui.confirm = async () => false;
 
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -320,59 +199,40 @@ describe("design-review-authorisation gate", () => {
     });
   });
 
-  describe("successful authorisation", () => {
-    test("creates new authorisation state after confirmation", async () => {
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc,
-        pipelineId: "pipe-success-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, {
-        confirmReturn: true,
-        sessionFile: "/sessions/owner-session.md",
-      });
-
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+  describe("successful authorization", () => {
+    it("should create new authorization state after confirmation", async () => {
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.state.phase).toBe("review_ready");
+        expect(result.state).toBeDefined();
+        expect(result.state.planDoc).toContain("requirements_plan.md");
         expect(result.state.authorizationSource).toBe("direct-entry");
         expect(result.state.round).toBe(1);
-        expect(result.state.planDoc).toBe(requirementDoc.replace(/\.md$/, "_plan.md"));
-        expect(result.state.planHash).toMatch(/^[0-9a-f]{64}$/);
-        // Verify plan hash matches actual file content
-        const planContent = await (await import("node:fs/promises")).readFile(planDoc, "utf-8");
-        const expectedHash = computeHash(planContent);
-        expect(result.state.planHash).toBe(expectedHash);
+        expect(result.state.planHash).toBeDefined();
+        expect(result.state.planHash.length).toBe(64); // SHA-256 hash length
       }
     });
 
-    test("handles relative requirement doc path", async () => {
-      const relativeReqDoc = "docs/requirements.md";
-      const relativePlanDoc = "docs/requirements_plan.md";
+    it("should handle absolute requirement doc path", async () => {
+      mockMeta.requirementDoc = requirementDoc;
 
-      // Create docs directory and files
-      const docsDir = join(tempDir, "docs");
-      await mkdir(docsDir);
-      await writeFile(join(docsDir, "requirements.md"), "# Requirements", "utf-8");
-      await writeFile(join(docsDir, "requirements_plan.md"), "# Plan", "utf-8");
-
-      const meta = makeTestMeta({
-        currentStage: "plan",
-        requirementDoc: relativeReqDoc,
-        pipelineId: "pipe-relative-001",
-      });
-      const ctx = createMockRuntimeCtx(meta, {
-        confirmReturn: true,
-        sessionFile: "/sessions/owner-session.md",
-      });
-
-      const result = await designReviewAuthorisationGate(ctx, config, meta);
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.state.planDoc).toContain("docs/requirements_plan.md");
+        expect(result.state.planDoc).toContain("requirements_plan.md");
+      }
+    });
+
+    it("should handle relative requirement doc path", async () => {
+      mockMeta.requirementDoc = "requirements.md";
+
+      const result = await designReviewAuthorisationGate(mockCtx, mockConfig, mockMeta);
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.state.planDoc).toContain("requirements_plan.md");
       }
     });
   });

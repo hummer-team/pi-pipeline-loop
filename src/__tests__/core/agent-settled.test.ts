@@ -75,7 +75,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -128,7 +128,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -214,7 +214,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -264,7 +264,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -332,7 +332,7 @@ describe("createAgentSettled", () => {
     return makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -412,7 +412,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
@@ -545,7 +545,7 @@ describe("createAgentSettled", () => {
     const config = makeTestConfig({
       projectRoot: stageTmp,
       stages: Object.fromEntries(
-        ["clarify", "plan", "develop", "review", "fix", "awaiting_human", "completed"].map(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
           (s, i, a) => [
             s,
             {
