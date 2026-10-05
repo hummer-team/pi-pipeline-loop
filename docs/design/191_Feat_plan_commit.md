@@ -1,9 +1,11 @@
 # plan & commit id's
 **plan doc**: `docs/design/191_Feat_plan.md`
 
-**dev commit id**: 9939134
+**dev commit id**: a36cbb6,7eccd2a,279df29,d05d409,06ab754,641ca67,7adecfa,59d9f11,3474b62,5c65657,6f296bb,ba9a0b2,9939134
 
-**fix commit id**: b72d04c
+**fix commit id**: (待代码评审修复后追加)
+
+> **Note**: `bf56310`、`b72d04c`、`90e8153` 为 docs/tracking 提交（更新本文件），按模板语义不列入 dev/fix 行。
 
 ---
 
