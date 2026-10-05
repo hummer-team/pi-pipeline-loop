@@ -108,7 +108,7 @@ bun add @earendil-works/pi-pipeline
                     "skillPath": "design/SKILL.md", "nextStage": "plan",
                     "verify": { "require": true, "completionMarker": "## 模型确认" } },
     "plan":       { "agentPath": ".pi/agents/feat-design-plan-agent.md",
-                    "skillPath": "plan/SKILL.md", "nextStage": "design-review",
+                    "skillPath": "plan/SKILL.md", "nextStage": "develop",
                     "verify": { "require": true } },
     "design-review": { "agentPath": ".pi/agents/design-review-agent.md",
                     "skillPath": "design-review/SKILL.md", "nextStage": "develop",
@@ -192,7 +192,7 @@ bun add @earendil-works/pi-pipeline
     "plan": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
       "skillPath": "plan/SKILL.md",
-      "nextStage": "design-review",
+      "nextStage": "develop",
       "allowedWritePaths": ["docs/", "doc/", "documentation/"],
       "verify": { "require": true }
     },

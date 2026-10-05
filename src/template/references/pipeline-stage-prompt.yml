@@ -231,6 +231,39 @@ stage_executor_clarify: |
   **Parent wait discipline**: After relaying the clarification questions to the user, STOP and WAIT. Do NOT collect answers interactively (e.g. via `ask_user_question`). The sole answer channel is the `**答**` fields of the requirement document. The user drives the next round by re-mentioning the agent with the document path.
   {active_spawn_note}
 
+design_review_update_prompt: |
+   ## Design Review Update Mode
+   This plan update is triggered by a **design-review FAIL** verdict. You are in authorized update mode.
+   
+   **MUST**: Process each issue from the design review report in the `## Design Review Update` section below:
+   - For each issue, provide a disposition: `fixed`, `deferred`, or `rejected` with justification
+   - Do NOT claim "fixed" without actual changes to the plan document
+   - Do NOT add new clarification rounds or fabricate user confirmation
+   - If new requirements/decisions are needed, STOP and request owner review
+   
+   **Output Format**:
+   ```markdown
+   ## Design Review Update
+   
+   **Report**: {reviewDoc}
+   **Round**: {round}
+   **Operation**: {operationId}
+   **Baseline Hash**: {baselinePlanHash}
+   
+   ### Issue Dispositions
+   
+   | # | Issue | Disposition | Justification |
+   |---|-------|-------------|---------------|
+   | 1 | {issue_1} | fixed/deferred/rejected | {justification} |
+   ...
+   ```
+   
+   **Constraints**:
+   - Only modify the plan document ({planDoc})
+   - Do NOT modify source code, requirement docs, or add clarification rounds
+   - Preserve all existing plan structure and decisions unless explicitly addressing review issues
+   - The updated plan will be automatically re-reviewed in the next design-review round
+
 stage_executor_plan: |
   ## Stage Executor Scheduling
   This stage uses `{subagent_type}` (lightweight advance mode).

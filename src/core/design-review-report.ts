@@ -203,22 +203,23 @@ function validateReportStructure(
 
     // Parse verdict section
     if (inVerdictSection) {
-      // Check for PASS (supports various formats, including **PASS**, pass, 通过)
-      if (lowerLine.includes("**pass**") || lowerLine === "pass" || 
-          lowerLine.includes("pass") || lowerLine.includes("通过")) {
-        // Exclude false positives in code blocks or quotes
-        if (!line.startsWith("```") && !line.startsWith(">") && !line.startsWith("//")) {
-          passFound = true;
-        }
-      }
-
-      // Check for FAIL (supports various formats)
+      // Check for FAIL first (supports various formats) - MUST check before PASS to avoid false positives
+      // "不通过" (not pass) contains "通过" (pass), so we must check for the negation first
       if (lowerLine.includes("**fail**") || lowerLine === "fail" ||
           lowerLine.includes("fail") || lowerLine.includes("不通过") || 
           lowerLine.includes("待修复")) {
         // Exclude false positives
         if (!line.startsWith("```") && !line.startsWith(">") && !line.startsWith("//")) {
           failFound = true;
+        }
+      }
+      // Check for PASS (supports various formats, including **PASS**, pass, 通过)
+      // Only set passFound if we haven't already found a FAIL (to handle "不通过" correctly)
+      else if (lowerLine.includes("**pass**") || lowerLine === "pass" || 
+          lowerLine.includes("pass") || lowerLine.includes("通过")) {
+        // Exclude false positives in code blocks or quotes
+        if (!line.startsWith("```") && !line.startsWith(">") && !line.startsWith("//")) {
+          passFound = true;
         }
       }
     }

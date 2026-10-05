@@ -32,7 +32,7 @@
     "plan": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
       "skillPath": "plan/SKILL.md",
-      "nextStage": "design-review",
+      "nextStage": "develop",
       "verify": { "require": true },
       "confirm": { "mode": "manual" },
       "guard": { "suppressDuplicateSpawn": true }

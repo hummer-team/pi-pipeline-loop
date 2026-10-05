@@ -698,6 +698,15 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
 
   for (const stageName of VALID_STAGES) {
     const jsonStage = json.stages[stageName];
+    
+    // Phase 4 (191) backward compatibility: design-review is a NEW stage.
+    // If not explicitly in the input config, don't add it to old configs.
+    // This preserves backward compatibility for existing 7-stage configs.
+    if (stageName === "design-review" && !jsonStage) {
+      // Don't create an entry at all - treat as non-existent
+      continue;
+    }
+    
     if (!jsonStage || jsonStage.require === false) {
       disabledStages.add(stageName);
       const reason = !jsonStage ? "not in config" : "require: false";
