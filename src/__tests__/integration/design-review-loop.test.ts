@@ -263,6 +263,72 @@ Report has PASS verdict but also lists issues.
     }
   });
 
+  it("N-1 regression: PASS verdict outside verdict section must be ignored", async () => {
+    // N-1 regression: Contract path must limit verdict extraction to verdict section only
+    // A bare **Design Review: PASS** in Summary section should NOT be judged as pass
+    const planDoc = path.join(tmpDir, "plan.md");
+    await fs.writeFile(planDoc, "# Test Plan\n", "utf-8");
+    const planHash = computeHash(await fs.readFile(planDoc, "utf-8"));
+    
+    const drState = createInitialState(planDoc, "menu", planHash);
+    const meta = makeTestMeta({
+      currentStage: "design-review",
+      pipelineId: "pipe-n1-regression",
+      designReview: { ...drState, phase: "review_running", round: 1 },
+    });
+    
+    const ctx = createCoordinatorContext(meta);
+    
+    // Create report with PASS verdict in Summary (outside verdict section) and FAIL in verdict section
+    const reportDoc = deriveReportPath(planDoc, 1);
+    const reportDir = path.dirname(reportDoc);
+    await fs.mkdir(reportDir, { recursive: true });
+    await fs.writeFile(
+      reportDoc,
+      `# Design Review Report
+
+**pipeline**: pipe-n1-regression
+**plan**: ${planDoc}
+**round**: 1
+
+## Summary
+The review found that **Design Review: PASS** criteria were mostly met.
+
+## Issues
+1. Minor documentation gap
+
+## Verdict
+
+**Design Review: FAIL**
+`,
+      "utf-8"
+    );
+    
+    // N-1: Must return fail (from verdict section), not pass (from summary)
+    const result = await coordinateDesignReview(ctx, meta, "settle");
+    expect(result.status).toBe("handled");
+    
+    // Should route to plan (FAIL behavior)
+    if (result.status === "handled") {
+      expect(["routed", "pending"]).toContain(result.action);
+      
+      // Verify it went to "plan" (FAIL path)
+      if (result.action === "routed" && "toStage" in result) {
+        expect(result.toStage).toBe("plan");
+      }
+      
+      // Verify state is not pass_ready
+      if (result.action === "pending" && "reason" in result) {
+        const currentMeta = ctx.session.getMeta();
+        if (currentMeta) {
+          const currentDrState = currentMeta.designReview;
+          expect(currentDrState?.phase).not.toBe("pass_ready");
+        }
+      }
+    }
+  });
+
+
   it("menu entry authorization: designReview state created with authorizationSource='menu'", async () => {
     // Issue #1: Auto Review Plan menu entry should create authorization state
     // without writing confirmation markers

@@ -119,12 +119,17 @@ export function verifyDesignReviewReport(
   // When contract anchors are available, use them as the single source of truth for verdict parsing.
   // This eliminates the dual source of truth between coordinator self-parsing and verify.md contract.
   // Fix H-1: Apply same priority rules as legacy path (issues priority, conflict detection, section limits)
+  // Fix N-1: Use inVerdictSection to limit verdict extraction to verdict section only
   if (verdictPatterns && verdictPatterns.length > 0) {
     const lines = content.split("\n");
     let passFound = false;
     let failFound = false;
     let inVerdictSection = false;
+    let verdictSectionFound = false;
     let inCodeBlock = false;
+    
+    // Track all verdicts found (in case we need fallback to whole-doc scan)
+    const allVerdicts: Array<"pass" | "fail"> = [];
     
     // Scan all lines to find verdict patterns, respecting section boundaries and code fences
     for (let i = 0; i < lines.length; i++) {
@@ -148,6 +153,7 @@ export function verifyDesignReviewReport(
       if (lowerLine.includes("## verdict") || lowerLine.includes("## 结论") || 
           lowerLine.includes("# verdict") || lowerLine.includes("# 结论")) {
         inVerdictSection = true;
+        verdictSectionFound = true;
         continue;
       }
       
@@ -157,13 +163,27 @@ export function verifyDesignReviewReport(
         continue;
       }
       
-      // Only extract verdict patterns from verdict section (or whole doc if no section marker)
-      // For now, scan whole doc but section detection can be added later if needed
+      // Extract verdict from line
       const verdict = extractVerdictFromContract(line, verdictPatterns);
-      if (verdict === "pass") {
-        passFound = true;
-      } else if (verdict === "fail") {
-        failFound = true;
+      if (verdict === "pass" || verdict === "fail") {
+        // If we're in verdict section, use it immediately
+        if (inVerdictSection) {
+          if (verdict === "pass") {
+            passFound = true;
+          } else {
+            failFound = true;
+          }
+        }
+        // Otherwise, save for potential fallback (backward compatibility)
+        allVerdicts.push(verdict);
+      }
+    }
+    
+    // If no verdict section found, use all verdicts from the document (backward compatibility)
+    if (!verdictSectionFound) {
+      for (const v of allVerdicts) {
+        if (v === "pass") passFound = true;
+        if (v === "fail") failFound = true;
       }
     }
     
