@@ -10,6 +10,7 @@
 
 import { describe, test, expect, beforeEach } from "bun:test";
 import type { PipelineConfig, SessionMeta, DesignReviewState } from "../../types";
+import { isAuthorizationValid } from "../../core/design-review-state";
 
 function makeTestConfig(): PipelineConfig {
   return {
@@ -86,32 +87,33 @@ describe("Phase 4 (191): Entry point authorization checks", () => {
     test("missing authorization bypasses coordinator delegation", () => {
       const meta = makeTestMeta({ designReview: undefined });
 
-      // No designReview state: coordinator delegation should be skipped
+      // No designReview state: isAuthorizationValid returns false, coordinator delegation should be skipped
       expect(meta.designReview).toBeUndefined();
+      expect(isAuthorizationValid(meta.designReview)).toBe(false);
     });
 
-    test("invalid authorization (empty token) bypasses coordinator delegation", () => {
-      const drState = makeDesignReviewState({ authorizationId: "" });
+    test("invalid authorization (finished phase) bypasses coordinator delegation", () => {
+      const drState = makeDesignReviewState({ phase: "finished" });
       const meta = makeTestMeta({ designReview: drState });
 
-      // Empty token: isAuthorizationValid returns false, coordinator not called
-      expect(meta.designReview?.authorizationId).toBe("");
+      // Finished phase: isAuthorizationValid returns false, coordinator not called
+      expect(isAuthorizationValid(meta.designReview)).toBe(false);
     });
 
-    test("invalid authorization (zero timestamp) bypasses coordinator delegation", () => {
-      const drState = makeDesignReviewState({ authorizationSource: "menu" as any, authorizedAt: 0 });
+    test("invalid authorization (authorization-lost) bypasses coordinator delegation", () => {
+      const drState = makeDesignReviewState({ phase: "paused", pauseReason: "authorization-lost" });
       const meta = makeTestMeta({ designReview: drState });
 
-      // Zero timestamp: isAuthorizationValid returns false
-      expect(meta.designReview?.authorizedAt).toBe(0);
+      // Paused with authorization-lost: isAuthorizationValid returns false
+      expect(isAuthorizationValid(meta.designReview)).toBe(false);
     });
 
-    test("invalid authorization (empty user) bypasses coordinator delegation", () => {
-      const drState = makeDesignReviewState({ authorizationSource: "menu" as any, authorizationId: "" });
+    test("valid authorization in active phase enables coordinator delegation", () => {
+      const drState = makeDesignReviewState({ phase: "review_running" });
       const meta = makeTestMeta({ designReview: drState });
 
-      // Empty authorizationId: isAuthorizationValid returns false
-      expect(meta.designReview?.authorizationId).toBe("");
+      // Active phase: isAuthorizationValid returns true, coordinator should be called
+      expect(isAuthorizationValid(meta.designReview)).toBe(true);
     });
   });
 

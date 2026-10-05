@@ -3,9 +3,22 @@
  * Phase 3 / 191: Tests for design-review coordinator routing logic.
  * Validates PASS/FAIL/invalid routing paths through coordinateDesignReview.
  * 
- * No mock.module() used — writeAuditLog is safe (returns early without auditDir),
- * spawnStageSubagent fails gracefully without pi SDK, recordStageVisit is pure,
- * and commitDesignReviewState works with the mock session interface.
+ * Test Environment Constraints (Issue #25 clarification):
+ * - No mock.module() used — writeAuditLog is safe (returns early without auditDir),
+ *   spawnStageSubagent fails gracefully without pi SDK, recordStageVisit is pure,
+ *   and commitDesignReviewState works with the mock session interface.
+ * - In this unit test environment, there is NO real pi SDK event bus, so
+ *   spawnStageSubagent ALWAYS fails gracefully → action="pending", reason="spawn_failed"
+ * - This is CORRECT behavior for the test environment. The assertions accept
+ *   ["routed", "pending"] because:
+ *   - "routed" = production success path (requires real pi SDK)
+ *   - "pending" = test environment path (spawn fails gracefully)
+ * - Attempting to mock spawnStageSubagent with mock.module() causes global module
+ *   cache pollution that breaks 58+ other test files, even with afterAll(() => mock.restore())
+ * - Production success path (action="routed") is verified by integration tests
+ *   with the real pi SDK (see design-review-loop.test.ts)
+ * - We verify the deterministic state transitions (phase/round/planHash updates)
+ *   which test coordinator logic independent of spawn success/failure.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
