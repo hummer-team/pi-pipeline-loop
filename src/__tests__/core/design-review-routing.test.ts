@@ -73,12 +73,13 @@ describe("design-review-coordinator routing", () => {
     };
   }
 
-  function createCoordinatorCtx(meta: SessionMeta): CoordinatorContext {
+  function createCoordinatorCtx(meta: SessionMeta, spawnOverride?: CoordinatorContext['spawnOverride']): CoordinatorContext {
     return {
       config,
       session: createMockSession(meta),
       ui: { notify: () => {} },
       pi: { sendUserMessage: () => {} },
+      spawnOverride,
     };
   }
 
@@ -440,21 +441,25 @@ None
         designReview: { ...drState, phase: "update_running", round: 1 },
         loopCycleCount: 0,
       });
-      const ctx = createCoordinatorCtx(meta);
+      
+      // Issue #25: Use spawnOverride to provide deterministic success assertion
+      // This allows us to verify the success path without relying on real pi SDK
+      const successSpawnOverride = async () => ({
+        spawned: true,
+        fallback: false,
+        deferred: false,
+      });
+      const ctx = createCoordinatorCtx(meta, successSpawnOverride);
 
       const result = await coordinateDesignReview(ctx, meta, "settle");
 
       expect(result.status).toBe("handled");
       if (result.status === "handled") {
-        // In test environment without real pi SDK, spawn fails and returns "pending"
-        // The important thing is that the state transitioned correctly
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          expect(result.reason).toContain("spawn_failed");
-        }
+        // With spawnOverride providing success, we should get "routed" action
+        expect(result.action).toBe("routed");
       }
       
-      // Verify state was updated correctly before spawn attempt
+      // Verify state was updated correctly for next round
       const updatedMeta = ctx.session.getMeta();
       expect(updatedMeta?.designReview?.phase).toBe("review_running");
       expect(updatedMeta?.designReview?.round).toBe(2);

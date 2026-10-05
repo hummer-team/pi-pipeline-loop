@@ -64,6 +64,17 @@ export interface CoordinatorContext {
   pi?: {
     sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void;
   };
+  /**
+   * Optional spawn override for testing (Issue #25).
+   * Allows tests to provide a controllable spawn substitute without mock.module.
+   * When provided, this function is called instead of the real spawnStageSubagent.
+   */
+  spawnOverride?: (
+    config: PipelineConfig,
+    stage: string,
+    meta: SessionMeta,
+    extraArgs?: string,
+  ) => Promise<{ spawned: boolean; fallback: boolean; deferred: boolean }>;
 }
 
 /**
@@ -845,12 +856,16 @@ async function spawnDesignReviewAgent(
     ? `${spawnPrompt}\n\n---\n\n${updatePrompt}`
     : spawnPrompt;
   
-  const spawnResult = await spawnStageSubagent(ctx.pi, ctx.config, stage, freshMeta, {
-    ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
-    session: ctx.session,
-    runtimeCtx: ctx,
-    extraArgs: finalPrompt,
-  });
+  // Use spawnOverride if provided (for testing - Issue #25)
+  // Otherwise use the real spawnStageSubagent
+  const spawnResult = ctx.spawnOverride
+    ? await ctx.spawnOverride(ctx.config, stage, freshMeta, finalPrompt)
+    : await spawnStageSubagent(ctx.pi, ctx.config, stage, freshMeta, {
+        ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
+        session: ctx.session,
+        runtimeCtx: ctx,
+        extraArgs: finalPrompt,
+      });
 
   if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
     // Audit the spawn with description for traceability
