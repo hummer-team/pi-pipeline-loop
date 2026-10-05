@@ -39,6 +39,7 @@ import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-intr
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
 import { coordinateDesignReview } from "./design-review-coordinator";
+import { createInitialState, computeHash } from "./design-review-state";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -992,21 +993,68 @@ export async function maybeHandleConfirmGate(
   }
 
   // Fix for Issue #1: Handle "Auto Review Plan" option for design-review authorization
+  // This handler creates authorization WITHOUT writing human confirmation markers (D02 compliance)
   if (choice === "Auto Review Plan") {
-    // Validate design-review stage is enabled
-    if (!config.stages["design-review"]?.verify?.require) {
+    // Validate design-review stage is enabled and properly configured
+    const drStage = config.stages["design-review"];
+    if (!drStage?.verify?.require) {
       ui.notify(ctx, `Auto Review Plan is not available: design-review stage is not enabled.`);
       return { result: "handled", action: "pending" };
     }
-
-    // Advance to design-review stage with authorization
-    const toStage = "design-review";
-    const ok = await advanceConfirmApproved(config, ctx, meta, currentStage, toStage, ui);
-    if (ok) {
-      return { result: "handled", action: "advanced", toStage };
+    
+    if (!drStage.agentPath || !drStage.skillPath) {
+      ui.notify(ctx, `Auto Review Plan is not available: design-review stage configuration is invalid.`);
+      return { result: "handled", action: "pending" };
     }
-    // Authorization failed — fall through to pending
-    return { result: "handled", action: "pending" };
+
+    // Resolve plan document path
+    const planDocPath = await resolvePlanDocPath(config, meta);
+    if (!planDocPath) {
+      ui.notify(ctx, `Auto Review Plan failed: plan document not found.`);
+      return { result: "handled", action: "pending" };
+    }
+
+    // Compute plan hash
+    try {
+      const planContent = await fs.readFile(planDocPath, "utf-8");
+      const planHash = computeHash(planContent);
+      
+      // Use sessionFile from opts (already available in this context)
+      const ownerSessionFile = sessionFile ?? "";
+      
+      // Create initial authorization state with source="menu" (NOT "direct-entry")
+      const initialState = createInitialState(planDocPath, "menu", planHash, ownerSessionFile);
+      
+      // Update meta with design-review state
+      ctx.session.updateMeta({
+        designReview: initialState,
+      });
+      
+      // Record stage visit to design-review (without writing confirmation markers)
+      const visitResult = recordStageVisit(meta, "design-review", config.maxLoopCycles ?? 3);
+      if (!visitResult.ok) {
+        ui.notify(ctx, `Auto Review Plan failed: max loop cycle limit reached`);
+        return { result: "handled", action: "pending" };
+      }
+      ctx.session.updateMeta(visitResult.patch);
+      
+      // Audit log
+      await writeAuditLog("auto_review_plan_authorised", {
+        pipelineId: meta.pipelineId,
+        fromStage: currentStage,
+        toStage: "design-review",
+        authorizationId: initialState.authorizationId,
+        planDoc: planDocPath,
+        planHash: planHash.substring(0, 12),
+        sessionFile: ownerSessionFile || "unknown",
+      });
+      
+      ui.notify(ctx, `Auto Review Plan authorised. Entering design-review stage.`);
+      return { result: "handled", action: "advanced", toStage: "design-review" };
+    } catch (err) {
+      ui.notify(ctx, `Auto Review Plan failed: ${(err as Error).message}`);
+      return { result: "handled", action: "pending" };
+    }
   }
 
   if (choice.startsWith("Reject")) {
