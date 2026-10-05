@@ -12,7 +12,7 @@
 
 import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation, DesignReviewPhase } from "../types";
 import { verifyDesignReviewReport, extractReportIssues } from "./design-review-report";
-import { validatePlanUpdate } from "./design-review-prompt";
+import { validatePlanUpdate, renderDesignReviewUpdatePrompt, type DesignReviewUpdatePromptParams } from "./design-review-prompt";
 import {
   isValidTransition,
   transitionPhase,
@@ -419,7 +419,30 @@ async function handleFail(
       // Commit operation (this also transitions to update_running)
       const committedState = commitDesignReviewOperation(ctx.session, operation, newState);
       if (committedState) {
-        const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation);
+        // Fix for Issue #7: Render specialized update prompt for FAIL-triggered update
+        const templatePath = path.join(ctx.config.projectRoot, ".pi", "references", "pipeline-stage-prompt.yml");
+        let updatePrompt: string | undefined;
+        try {
+          const issues = extractReportIssues(reportPath);
+          const promptParams: DesignReviewUpdatePromptParams = {
+            pipelineId: meta.pipelineId ?? "unknown",
+            planDoc: drState.planDoc,
+            reviewDoc: reportPath,
+            round: drState.round,
+            operationId: operation.operationId,
+            baselinePlanHash: drState.planHash ?? "",
+            issues: issues,
+          };
+          updatePrompt = renderDesignReviewUpdatePrompt(templatePath, promptParams);
+        } catch (error) {
+          // Fail-closed: if template is missing/broken, log but continue without prompt
+          await safeWriteAuditLog("design_review_coordinator", {
+            action: "update_prompt_render_failed_from_fail",
+            error: String(error),
+          });
+        }
+        
+        const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation, updatePrompt);
         if (spawnResult.ok) {
           writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "dispatched");
           await safeWriteAuditLog("design_review_coordinator", {
@@ -492,8 +515,32 @@ async function handleUpdateReady(
     return { status: "handled", action: "pending", reason: "operation_commit_failed" };
   }
 
-  // Spawn update agent
-  const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation);
+  // Fix for Issue #7: Render specialized update prompt using the YAML template
+  // This provides authorized update mode instructions to the plan agent
+  const templatePath = path.join(ctx.config.projectRoot, ".pi", "references", "pipeline-stage-prompt.yml");
+  let updatePrompt: string | undefined;
+  try {
+    const promptParams: DesignReviewUpdatePromptParams = {
+      pipelineId: meta.pipelineId ?? "unknown",
+      planDoc: drState.planDoc,
+      reviewDoc: reportPath,
+      round: drState.round,
+      operationId: operation.operationId,
+      baselinePlanHash: drState.planHash ?? "",
+      issues: issues,
+    };
+    updatePrompt = renderDesignReviewUpdatePrompt(templatePath, promptParams);
+  } catch (error) {
+    // Fail-closed: if template is missing/broken, we cannot dispatch safely
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "update_prompt_render_failed",
+      error: String(error),
+    });
+    return { status: "handled", action: "pending", reason: "update_prompt_render_failed" };
+  }
+
+  // Spawn update agent with the rendered prompt
+  const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation, updatePrompt);
   if (!spawnResult.ok) {
     writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "failed");
     return { status: "handled", action: "pending", reason: spawnResult.error ?? "spawn_failed" };
@@ -697,6 +744,7 @@ async function spawnDesignReviewAgent(
   meta: SessionMeta,
   drState: DesignReviewState,
   operation: DesignReviewOperation,
+  updatePrompt?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const stage = operation.kind === "review" ? "design-review" : "plan";
   const freshMeta = ctx.session.getMeta() ?? meta;
@@ -707,11 +755,16 @@ async function spawnDesignReviewAgent(
   const spawnPrompt = formatDesignReviewSpawnPrompt(spawnKind, inputPath, drState.round);
   const spawnDescription = `Design review ${operation.kind}: ${inputPath} round ${drState.round}`;
   
+  // For update operations with a rendered prompt, append it to provide authorized update context
+  const finalPrompt = updatePrompt 
+    ? `${spawnPrompt}\n\n---\n\n${updatePrompt}`
+    : spawnPrompt;
+  
   const spawnResult = await spawnStageSubagent(ctx.pi, ctx.config, stage, freshMeta, {
     ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
     session: ctx.session,
     runtimeCtx: ctx,
-    extraArgs: spawnPrompt,
+    extraArgs: finalPrompt,
   });
 
   if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
