@@ -709,7 +709,7 @@ function evaluateConfirmGateDeferral(
  */
 export async function maybeHandleConfirmGate(
   config: PipelineConfig,
-  ctx: { session: { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined }; ui?: { notify: (msg: string) => void; select?: (message: string, options: string[]) => Promise<string | undefined>; transition?: (ctx: unknown, from: string, to: string) => void; clearStage?: (ctx: unknown) => void }; pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } },
+  ctx: { session: { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined }; ui?: { notify: (msg: string) => void; select?: (message: string, options: string[]) => Promise<string | undefined>; transition?: (ctx: unknown, from: string, to: string) => void; clearStage?: (ctx: unknown) => void }; pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void }; spawnOverride?: (config: PipelineConfig, stage: string, meta: SessionMeta, extraArgs?: string) => Promise<{ spawned: boolean; fallback: boolean; deferred: boolean }> },
   meta: SessionMeta,
   ui: { notify: (ctx: unknown, msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void },
   opts: {
@@ -1071,6 +1071,8 @@ export async function maybeHandleConfirmGate(
           session: ctx.session,
           ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
           pi: ctx.pi,
+          // Pass through spawnOverride test hook if provided (for testability)
+          spawnOverride: ctx.spawnOverride,
         };
         const coordinatorResult = await coordinateDesignReview(coordinatorCtx, freshMeta, "advance");
         
