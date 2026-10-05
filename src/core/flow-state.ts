@@ -38,9 +38,15 @@ import { isAuthorizationValid } from "./design-review-state";
  * Degradation: when _ctx or sessionManager is unavailable, detectSessionRole
  * returns isChild=false (conservative — treats as owner), matching the
  * established convention in session-role.ts:14-15.
+ *
+ * Fix for Issue #2: Include ui property to enable authorization gate TUI interaction.
  */
 function buildRoleCtxForGate(ctx: FlowStateCtx): RuntimeCtx {
-  return { _ctx: ctx._ctx } as unknown as RuntimeCtx;
+  return { 
+    _ctx: ctx._ctx,
+    ui: ctx.ui,
+    session: ctx.session
+  } as unknown as RuntimeCtx;
 }
 
 // ─── Context Interface ──────────────────────────────────────────────────────

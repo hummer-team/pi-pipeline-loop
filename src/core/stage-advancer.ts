@@ -991,6 +991,24 @@ export async function maybeHandleConfirmGate(
     return { result: "handled", action: "pending" };
   }
 
+  // Fix for Issue #1: Handle "Auto Review Plan" option for design-review authorization
+  if (choice === "Auto Review Plan") {
+    // Validate design-review stage is enabled
+    if (!config.stages["design-review"]?.verify?.require) {
+      ui.notify(ctx, `Auto Review Plan is not available: design-review stage is not enabled.`);
+      return { result: "handled", action: "pending" };
+    }
+
+    // Advance to design-review stage with authorization
+    const toStage = "design-review";
+    const ok = await advanceConfirmApproved(config, ctx, meta, currentStage, toStage, ui);
+    if (ok) {
+      return { result: "handled", action: "advanced", toStage };
+    }
+    // Authorization failed — fall through to pending
+    return { result: "handled", action: "pending" };
+  }
+
   if (choice.startsWith("Reject")) {
     // Determine reject target stage
     const toStage = currentStage === "plan" ? "clarify" : "fix";

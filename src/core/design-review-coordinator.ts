@@ -539,6 +539,8 @@ async function handleUpdateRunning(
   const newState = transitionPhase(drState, "review_ready");
   newState.round = nextRound;
   newState.planHash = currentPlanHash;
+  // Fix for Issue #4: Update reportDoc for the new round
+  newState.reportDoc = deriveReportPath(drState.planDoc, nextRound);
   
   const commitResult = commitDesignReviewState(ctx.session, newState);
   
