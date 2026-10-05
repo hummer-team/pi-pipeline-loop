@@ -931,8 +931,14 @@ export async function maybeHandleConfirmGate(
 
   // Build dialog options based on stage
   // When defaultReject is true for review, reorder to put Reject first (simulates default selection)
+  // Phase 5 / 191: Add "Auto Review Plan" option for design-review stage when enabled
   const options = currentStage === "plan"
-    ? ["Approve & Advance", "Reject & Rework (back to clarify)", "Cancel"]
+    ? [
+        "Approve & Advance",
+        "Reject & Rework (back to clarify)",
+        ...(config.stages["design-review"]?.verify?.require ? ["Auto Review Plan"] : []),
+        "Cancel"
+      ]
     : defaultReject
       ? ["Reject & Send to Fix", "Approve & Complete"]
       : ["Approve & Complete", "Reject & Send to Fix"];

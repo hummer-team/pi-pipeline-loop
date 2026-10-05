@@ -4,7 +4,7 @@ description: Design Review Expert - Review the plan document and identify design
 model: deepseek/deepseek-v4-flash
 skills: design-review
 inherit_context: false
-tools: read, grep, find, ls
+tools: read, grep, find, ls, write, edit
 thinking: high
 prompt_mode: append
 ---

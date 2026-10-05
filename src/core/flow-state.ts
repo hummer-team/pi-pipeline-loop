@@ -23,6 +23,7 @@ import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { designReviewAuthorisationGate } from "./design-review-authorisation";
+import { isAuthorizationValid } from "./design-review-state";
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
 
@@ -470,9 +471,32 @@ export async function executeDecision(
         return { success: false, message: "choose_stage requires targetStage option." };
       }
 
-      // Phase 4 (191): Preserve design-review authorization when choosing design-review stage.
-      // Authorization will be validated/created by session-starter/coordinator on actual entry.
-      if (target !== "design-review") {
+      // Phase 4 (191): Wire up authorization gate for design-review stage entry.
+      if (target === "design-review") {
+        // Check if there's already a valid authorization
+        if (!isAuthorizationValid(meta.designReview)) {
+          // No valid authorization - invoke gate to create one
+          const gateResult = await designReviewAuthorisationGate(
+            buildRoleCtxForGate(ctx),
+            config,
+            meta,
+          );
+          if (gateResult.ok) {
+            // Authorization granted - persist the new state
+            ctx.session.updateMeta({ designReview: gateResult.state });
+            await safeWriteAuditLog("design_review_authorisation", {
+              pipelineId: meta.pipelineId,
+              action: "gate_passed",
+              authorizationId: gateResult.state.authorizationId,
+              source: "choose_stage",
+            });
+          } else {
+            // Authorization denied - don't proceed
+            return { success: false, message: `Design-review authorization failed: ${gateResult.reason}` };
+          }
+        }
+        // If valid authorization exists, just continue without calling the gate
+      } else {
         // Phase 4 (191): invalidate design-review authorization when choosing a non-design-review stage.
         // Choosing any other stage clears stale authorization to prevent reuse attacks.
         await invalidateDesignReviewAuthorization(ctx, "decision_choose_stage");

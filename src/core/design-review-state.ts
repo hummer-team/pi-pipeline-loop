@@ -132,13 +132,16 @@ export function createInitialState(
   ownerSessionFile?: string,
 ): DesignReviewState {
   const now = Date.now();
+  const round = 1;
+  const reportDoc = deriveReportPath(planDoc, round);
   return {
     schemaVersion: 1,
     planDoc: path.resolve(planDoc),
     authorizationId: generateUUID(),
     authorizationSource,
     ownerSessionFile,
-    round: 1,
+    round,
+    reportDoc,
     planHash,
     phase: "review_ready",
     authorizedAt: now,

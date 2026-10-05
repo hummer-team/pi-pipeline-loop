@@ -25,7 +25,7 @@ import {
   allocateNextRound,
 } from "./design-review-state";
 import { commitDesignReviewState } from "./session-state";
-import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult } from "../utils/design-review-dispatch";
+import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult, formatDesignReviewSpawnPrompt } from "../utils/design-review-dispatch";
 import { recordStageVisit } from "../utils/stage-visit";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { safeWriteAuditLog } from "../utils/auditLog";
@@ -269,9 +269,19 @@ async function handlePass(
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
   }
 
-  // Update state to pass_ready
-  const newState = transitionPhase(drState, "pass_ready");
-  const commitResult = commitDesignReviewState(ctx.session, newState);
+  // Update state to pass_ready with approval receipt
+  const passReadyState = transitionPhase(drState, "pass_ready");
+  const stateWithReceipt = {
+    ...passReadyState,
+    receipt: {
+      authorizationId: drState.authorizationId,
+      round: drState.round,
+      operationId: drState.operation?.operationId ?? "unknown",
+      transition: "advance-develop" as const,
+      at: Date.now(),
+    },
+  };
+  const commitResult = commitDesignReviewState(ctx.session, stateWithReceipt);
   
   if (!commitResult.ok) {
     return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
@@ -297,6 +307,18 @@ async function handlePass(
     planHash: currentPlanHash,
     round: String(drState.round),
   });
+
+  // Transition designReview state to finished after successful advance
+  const currentState = ctx.session.getMeta()?.designReview;
+  if (currentState && currentState.phase === "pass_ready") {
+    const finishedState = transitionPhase(currentState, "finished");
+    commitDesignReviewState(ctx.session, finishedState);
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "state_finished",
+      reason: "pass_advanced_to_develop",
+      round: String(drState.round),
+    });
+  }
 
   // Spawn develop agent
   const freshMeta = ctx.session.getMeta() ?? meta;
@@ -333,6 +355,20 @@ async function handleFail(
   reportHash: string,
   reportPath: string,
 ): Promise<CoordinatorResult> {
+  // Check budget before proceeding
+  const budgetCheck = checkBudget(meta, ctx.config);
+  if (!budgetCheck.ok) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "fail_budget_exceeded",
+      reportHash,
+      reportPath,
+      round: String(drState.round),
+      current: String(budgetCheck.current),
+      max: String(budgetCheck.max),
+    });
+    return { status: "handled", action: "frozen", reason: "budget_exceeded" };
+  }
+
   // Record transition
   const visitResult = recordStageVisit(meta, "plan", ctx.config.maxLoopCycles ?? 3);
   if (!visitResult.ok) {
@@ -340,7 +376,7 @@ async function handleFail(
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
   }
 
-  // Update state to update_ready
+  // Update state to update_ready (do NOT spawn agent here - handleUpdateReady will do it)
   const newState = transitionPhase(drState, "update_ready");
   const commitResult = commitDesignReviewState(ctx.session, newState);
   
@@ -369,22 +405,10 @@ async function handleFail(
     round: String(drState.round),
   });
 
-  // Spawn plan agent for update
-  const freshMeta = ctx.session.getMeta() ?? meta;
-  const spawnResult = await spawnStageSubagent(ctx.pi, ctx.config, "plan", freshMeta, {
-    ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
-    session: ctx.session,
-    runtimeCtx: ctx,
-  });
-
-  if (!spawnResult.spawned && !spawnResult.fallback && !spawnResult.deferred) {
-    ctx.session.updateMeta({ advancedThisTurn: true });
-    if (ctx.pi?.sendUserMessage) {
-      ctx.pi.sendUserMessage(
-        `Design review FAIL. Routing to "plan" for update.`,
-        { deliverAs: "followUp" },
-      );
-    }
+  // Do NOT spawn plan agent here - let handleUpdateReady handle the dispatch
+  // This prevents double-dispatch when agent_settled triggers handleUpdateReady
+  if (ctx.ui?.notify) {
+    ctx.ui.notify(`Design review FAIL. Routing to "plan" for update.`);
   }
 
   if (ctx.ui?.transition) {
@@ -543,6 +567,32 @@ async function handleUpdateRunning(
     round: String(nextRound),
   });
 
+  // Create and commit review operation for the next round
+  const reviewOperation = createOperation("review", meta.stageStartTime ?? Date.now(), 1);
+  const stateWithOperation = transitionPhase(newState, "review_running", reviewOperation);
+  const operationCommitResult = commitDesignReviewState(ctx.session, stateWithOperation);
+  
+  if (!operationCommitResult.ok) {
+    return { status: "handled", action: "pending", reason: `operation_commit_failed: ${operationCommitResult.reason}` };
+  }
+
+  // Spawn the design-review agent for the next round
+  const spawnResult = await spawnDesignReviewAgent(ctx, meta, stateWithOperation, reviewOperation);
+  if (!spawnResult.ok) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "review_spawn_failed",
+      round: String(nextRound),
+      error: spawnResult.error ?? "unknown",
+    });
+    return { status: "handled", action: "pending", reason: spawnResult.error ?? "spawn_failed" };
+  }
+
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "review_dispatched",
+    operationId: reviewOperation.operationId,
+    round: String(nextRound),
+  });
+
   if (ctx.ui?.transition) {
     ctx.ui.transition(ctx, "plan", "design-review");
   }
@@ -615,13 +665,27 @@ async function spawnDesignReviewAgent(
   const stage = operation.kind === "review" ? "design-review" : "plan";
   const freshMeta = ctx.session.getMeta() ?? meta;
   
+  // Generate spawn prompt with plan/report path and round
+  const inputPath = operation.kind === "review" ? drState.planDoc : (drState.reportDoc ?? drState.planDoc);
+  const spawnKind = operation.kind as "review" | "update";
+  const spawnPrompt = formatDesignReviewSpawnPrompt(spawnKind, inputPath, drState.round);
+  const spawnDescription = `Design review ${operation.kind}: ${inputPath} round ${drState.round}`;
+  
   const spawnResult = await spawnStageSubagent(ctx.pi, ctx.config, stage, freshMeta, {
     ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
     session: ctx.session,
     runtimeCtx: ctx,
+    extraArgs: spawnPrompt,
   });
 
   if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
+    // Audit the spawn with description for traceability
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "agent_spawned",
+      operationKind: operation.kind,
+      description: spawnDescription,
+      round: String(drState.round),
+    });
     return { ok: true };
   }
 
