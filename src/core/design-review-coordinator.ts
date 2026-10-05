@@ -453,8 +453,15 @@ async function handleFail(
       const committedState = commitDesignReviewOperation(ctx.session, operation, newState);
       if (committedState) {
         // Fix for Issue #7: Render specialized update prompt for FAIL-triggered update
-        const templatePath = path.join(ctx.config.projectRoot, ".pi", "references", "pipeline-stage-prompt.yml");
-        let updatePrompt: string | undefined;
+        // Use resolvePiWorkDir for proper path resolution
+        const { resolvePiWorkDir } = await import("../utils/work-dir");
+        const templatePath = path.join(
+          ctx.config.projectRoot,
+          resolvePiWorkDir(ctx.config),
+          "references",
+          "design-review-update-prompt.md"
+        );
+        let updatePrompt: string;
         try {
           const issues = extractReportIssues(reportPath);
           const promptParams: DesignReviewUpdatePromptParams = {
@@ -468,11 +475,16 @@ async function handleFail(
           };
           updatePrompt = renderDesignReviewUpdatePrompt(templatePath, promptParams);
         } catch (error) {
-          // Fail-closed: if template is missing/broken, log but continue without prompt
+          // Fail-closed: if template is missing/broken, do NOT dispatch
           await safeWriteAuditLog("design_review_coordinator", {
             action: "update_prompt_render_failed_from_fail",
             error: String(error),
+            templatePath,
           });
+          if (ctx.ui?.notify) {
+            ctx.ui.notify(`Design review update prompt render failed. Cannot dispatch update agent.`);
+          }
+          return { status: "handled", action: "pending", reason: "update_prompt_render_failed" };
         }
         
         const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation, updatePrompt);
@@ -548,10 +560,17 @@ async function handleUpdateReady(
     return { status: "handled", action: "pending", reason: "operation_commit_failed" };
   }
 
-  // Fix for Issue #7: Render specialized update prompt using the YAML template
+  // Fix for Issue #7: Render specialized update prompt using dedicated template
   // This provides authorized update mode instructions to the plan agent
-  const templatePath = path.join(ctx.config.projectRoot, ".pi", "references", "pipeline-stage-prompt.yml");
-  let updatePrompt: string | undefined;
+  // Use resolvePiWorkDir for proper path resolution
+  const { resolvePiWorkDir } = await import("../utils/work-dir");
+  const templatePath = path.join(
+    ctx.config.projectRoot,
+    resolvePiWorkDir(ctx.config),
+    "references",
+    "design-review-update-prompt.md"
+  );
+  let updatePrompt: string;
   try {
     const promptParams: DesignReviewUpdatePromptParams = {
       pipelineId: meta.pipelineId ?? "unknown",
@@ -568,7 +587,11 @@ async function handleUpdateReady(
     await safeWriteAuditLog("design_review_coordinator", {
       action: "update_prompt_render_failed",
       error: String(error),
+      templatePath,
     });
+    if (ctx.ui?.notify) {
+      ctx.ui.notify(`Design review update prompt render failed. Cannot dispatch update agent.`);
+    }
     return { status: "handled", action: "pending", reason: "update_prompt_render_failed" };
   }
 
