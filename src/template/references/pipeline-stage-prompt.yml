@@ -151,6 +151,8 @@ design-review: |
   {{stage_executor}}
   ---
   {{stage_deliverables}}
+  ---
+  {{design_review_context}}
 
 develop: |
   {{context_reference}}
