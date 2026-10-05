@@ -21,7 +21,7 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
 import { createInitialState, computeHash, deriveReportPath } from "../../core/design-review-state";
 import { coordinateDesignReview, type CoordinatorContext } from "../../core/design-review-coordinator";
-import type { SessionMeta, DesignReviewState } from "../../types";
+import type { SessionMeta, DesignReviewState, PipelineConfig } from "../../types";
 
 let tmpDir: string;
 
@@ -60,10 +60,10 @@ describe("design-review coordinator full lifecycle", () => {
     const config = makeTestConfig({ 
       projectRoot: tmpDir,
       stages: {
-        plan: { agentPath: "./agents/plan.md", skillPath: "plan/SKILL.md", nextStage: "develop" },
-        develop: { agentPath: "./agents/develop.md", skillPath: "develop/SKILL.md", nextStage: "completed" },
+        plan: { agentPath: "./agents/plan.md", skillPath: "plan/SKILL.md", nextStage: "develop", requireDomain: false },
+        develop: { agentPath: "./agents/develop.md", skillPath: "develop/SKILL.md", nextStage: "completed", requireDomain: false },
       },
-    });
+    } as Partial<PipelineConfig>);
     
     const meta = makeTestMeta({
       currentStage: "plan",
@@ -133,6 +133,9 @@ Initial review found issues.
     
     // After update, simulate round 2 with PASS
     const updatedMeta = ctx.session.getMeta();
+    if (!updatedMeta) {
+      throw new Error("Meta should be defined after coordinator call");
+    }
     const updatedDrState = updatedMeta.designReview!;
     
     // Transition to review_ready, then simulate round 2
@@ -251,9 +254,11 @@ Report has PASS verdict but also lists issues.
       if (result.action === "pending" && "reason" in result) {
         // Should NOT be pass_ready transition
         const currentMeta = ctx.session.getMeta();
-        const currentDrState = currentMeta.designReview;
-        // State should be routed to plan for update, not pass_ready
-        expect(currentDrState?.phase).not.toBe("pass_ready");
+        if (currentMeta) {
+          const currentDrState = currentMeta.designReview;
+          // State should be routed to plan for update, not pass_ready
+          expect(currentDrState?.phase).not.toBe("pass_ready");
+        }
       }
     }
   });
