@@ -2,6 +2,10 @@
  * @module design-review-report
  * Phase 1 / 191: Design review report verification and verdict logic.
  * Reads review reports, validates structure, and determines pass/fail/invalid verdicts.
+ * 
+ * Phase 3 / 191 fix (#15): Now consumes verify.md groups contract for verdict extraction
+ * when contract anchors are provided. Structural validation (pipeline/plan/round) remains
+ * code-internal. Verdict parsing uses contract patterns as single source of truth.
  */
 
 import * as fs from "node:fs";
@@ -21,18 +25,59 @@ export interface ReportValidationResult {
 }
 
 /**
+ * Maps a captured verdict token to a pass/fail code.
+ * Phase 3 / 191 fix (#15): Reused from review-conclusion.ts logic.
+ * 不通过 / FAIL / fail (case-insensitive) → fail, everything else → pass.
+ */
+function tokenToVerdict(token: string): "pass" | "fail" {
+  if (token === "不通过") return "fail";
+  if (/^fail$/i.test(token)) return "fail";
+  return "pass";
+}
+
+/**
+ * Extracts a verdict from a line using contract anchor patterns.
+ * Phase 3 / 191 fix (#15): Uses verify.md groups contract patterns as single source of truth.
+ * Patterns are tried in declaration order with the `i` flag; the first pattern
+ * whose capture group 1 matches wins.
+ */
+function extractVerdictFromContract(
+  line: string,
+  verdictPatterns: readonly string[]
+): "pass" | "fail" | null {
+  const trimmed = line.trim();
+  
+  for (const pattern of verdictPatterns) {
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, "i");
+    } catch {
+      continue;
+    }
+    const match = re.exec(trimmed);
+    if (match && match[1] !== undefined) {
+      return tokenToVerdict(match[1]);
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Read and validate a design review report file.
  * Returns verdict (pass/fail/invalid) with report hash and reasoning.
  * 
  * @param reportPath - Absolute path to the review report
  * @param planPath - Expected plan path (for attribution validation)
  * @param round - Expected round number
+ * @param verdictPatterns - Optional contract anchor patterns from verify.md (Phase 3 / 191 fix #15)
  * @returns Verdict result with hash and reasoning
  */
 export function verifyDesignReviewReport(
   reportPath: string,
   planPath: string,
-  round: number
+  round: number,
+  verdictPatterns?: readonly string[]
 ): DesignReviewReportVerdict {
   const normalizedPath = path.resolve(reportPath);
   
@@ -70,7 +115,34 @@ export function verifyDesignReviewReport(
     };
   }
 
-  // Step 4: Apply verdict rules (in priority order)
+  // Step 4: Extract verdict using contract patterns if provided (Phase 3 / 191 fix #15)
+  // When contract anchors are available, use them as the single source of truth for verdict parsing.
+  // This eliminates the dual source of truth between coordinator self-parsing and verify.md contract.
+  if (verdictPatterns && verdictPatterns.length > 0) {
+    const lines = content.split("\n");
+    
+    // Scan from bottom for the last verdict line (like review-conclusion.ts)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const verdict = extractVerdictFromContract(lines[i], verdictPatterns);
+      if (verdict !== null) {
+        return {
+          verdict,
+          reportHash,
+          reason: `Report verdict extracted via contract patterns: ${verdict.toUpperCase()}`,
+        };
+      }
+    }
+    
+    // No verdict found via contract patterns
+    return {
+      verdict: "invalid",
+      reportHash,
+      reason: "Report lacks clear verdict matching contract patterns",
+    };
+  }
+
+  // Step 5: Fallback to legacy parsing when contract patterns not provided
+  // This maintains backward compatibility for tests that don't load the contract.
   
   // Rule 1: Valid non-empty issues list → fail (even if PASS also present)
   if (validation.issuesList.length > 0) {

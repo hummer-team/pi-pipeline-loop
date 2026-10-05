@@ -130,7 +130,7 @@ describe("design-review-coordinator routing", () => {
 
   describe("review_running phase", () => {
     test("PASS verdict advances to develop", async () => {
-      // Create a PASS report
+      // Create a PASS report using D06 authoritative format
       const reportDoc = join(tempDir, "review-design-1-plan.md");
       const reportContent = `# Design Review Report
 
@@ -139,7 +139,8 @@ describe("design-review-coordinator routing", () => {
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -166,7 +167,7 @@ None
     });
 
     test("FAIL verdict routes to plan", async () => {
-      // Create a FAIL report
+      // Create a FAIL report using D06 authoritative format
       const reportDoc = join(tempDir, "review-design-1-plan.md");
       const reportContent = `# Design Review Report
 
@@ -175,7 +176,8 @@ None
 **round**: 1
 
 ## Verdict
-FAIL
+
+**Design Review: FAIL**
 
 ## Issues
 1. Missing error handling
@@ -224,7 +226,7 @@ FAIL
     });
 
     test("budget exceeded before routing returns frozen", async () => {
-      // Create a PASS report
+      // Create a PASS report using D06 authoritative format
       const reportDoc = join(tempDir, "review-design-1-plan.md");
       const reportContent = `# Design Review Report
 
@@ -233,7 +235,8 @@ FAIL
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -419,7 +422,8 @@ None
 **round**: 1
 
 ## Verdict
-FAIL
+
+**Design Review: FAIL**
 
 ## Issues
 1. Missing error handling

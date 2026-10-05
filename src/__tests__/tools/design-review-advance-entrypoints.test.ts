@@ -80,7 +80,8 @@ describe("design-review multi-entrypoint consistency", () => {
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -111,7 +112,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -142,7 +144,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -173,7 +176,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -207,7 +211,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -240,7 +245,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -271,7 +277,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -312,7 +319,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -343,7 +351,8 @@ None
 **round**: 1
 
 ## Verdict
-FAIL
+
+**Design Review: FAIL**
 
 ## Issues
 1. Missing validation
@@ -464,7 +473,8 @@ FAIL
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -512,7 +522,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -604,7 +615,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None
@@ -635,7 +647,8 @@ None
 **round**: 1
 
 ## Verdict
-PASS
+
+**Design Review: PASS**
 
 ## Issues
 None

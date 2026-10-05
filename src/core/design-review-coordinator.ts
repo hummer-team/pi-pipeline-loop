@@ -12,6 +12,7 @@
 
 import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation, DesignReviewPhase } from "../types";
 import { verifyDesignReviewReport, extractReportIssues } from "./design-review-report";
+import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { validatePlanUpdate, renderDesignReviewUpdatePrompt, type DesignReviewUpdatePromptParams } from "./design-review-prompt";
 import {
   isValidTransition,
@@ -198,9 +199,27 @@ async function handleReviewRunning(
     return { status: "not-applicable" };
   }
 
+  // Load contract anchors from verify.md (Phase 3 / 191 fix #15)
+  // This ensures the coordinator consumes the verify.md groups contract as the single source
+  // of truth for verdict parsing, eliminating the dual source of truth problem.
+  const contractResult = await loadVerifyContractAnchors(ctx.config, "design-review");
+  const verdictPatterns = contractResult.anchors.verdict?.patterns;
+  
+  if (contractResult.issues.length > 0) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "contract_load_warning",
+      issues: contractResult.issues.join("; "),
+    });
+  }
+
   // Verify report exists and is valid
   const reportPath = deriveReportPath(drState.planDoc, drState.round);
-  const verification = verifyDesignReviewReport(reportPath, drState.planDoc, drState.round);
+  const verification = verifyDesignReviewReport(
+    reportPath, 
+    drState.planDoc, 
+    drState.round,
+    verdictPatterns // Pass contract patterns for verdict extraction
+  );
 
   if (verification.verdict === "invalid") {
     await safeWriteAuditLog("design_review_coordinator", {
