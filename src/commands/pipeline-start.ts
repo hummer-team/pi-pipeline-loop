@@ -607,6 +607,19 @@ export async function dispatchAfterResume(
     return;
   }
 
+  // Fix #1 + N-3 (Round 4): Skip design-review stage here to avoid double dispatch.
+  // Design-review is exclusively dispatched by the coordinator (handleReviewReady)
+  // to prevent race conditions between dispatchAfterResume and coordinator.
+  if (stage === "design-review") {
+    await safeWriteAuditLog("pipeline_resume_dispatch_skipped", {
+      stage,
+      pipelineId: meta.pipelineId,
+      reason: "coordinator_exclusive_dispatch",
+      note: "design-review is dispatched by coordinator only",
+    });
+    return;
+  }
+
   // plan/develop/review/fix: spawn stage subagent via existing helper
   // Phase 0 (182): name-probe check before spawning — if a same-name agent is
   // already live (manual/out-of-band), skip the spawn to avoid duplicate execution.

@@ -992,8 +992,9 @@ export async function maybeHandleConfirmGate(
     return { result: "handled", action: "pending" };
   }
 
-  // Fix for Issue #1: Handle "Auto Review Plan" option for design-review authorization
-  // This handler creates authorization WITHOUT writing human confirmation markers (D02 compliance)
+  // Fix for Issue #1 (Round 4): Handle "Auto Review Plan" option with complete loop
+  // This handler creates authorization AND switches stage AND triggers dispatch
+  // D02 compliance: does NOT write human confirmation markers
   if (choice === "Auto Review Plan") {
     // Validate design-review stage is enabled and properly configured
     const drStage = config.stages["design-review"];
@@ -1025,18 +1026,28 @@ export async function maybeHandleConfirmGate(
       // Create initial authorization state with source="menu" (NOT "direct-entry")
       const initialState = createInitialState(planDocPath, "menu", planHash, ownerSessionFile);
       
-      // Update meta with design-review state
-      ctx.session.updateMeta({
-        designReview: initialState,
-      });
-      
       // Record stage visit to design-review (without writing confirmation markers)
       const visitResult = recordStageVisit(meta, "design-review", config.maxLoopCycles ?? 3);
       if (!visitResult.ok) {
         ui.notify(ctx, `Auto Review Plan failed: max loop cycle limit reached`);
         return { result: "handled", action: "pending" };
       }
-      ctx.session.updateMeta(visitResult.patch);
+      
+      // Fix #1 (Round 4): Complete the loop - switch stage AND set metadata
+      // Update meta with design-review state, stage transition, and reset counters
+      ctx.session.updateMeta({
+        designReview: initialState,
+        previousStage: currentStage,
+        currentStage: "design-review",
+        stageStartTime: Date.now(),
+        // Reset verify/loop counters for the new stage
+        verifyAttempts: 0,
+        verifyFailures: [],
+        verifyConfigError: undefined,
+        violations: [],
+        loopCycleCount: visitResult.patch.loopCycleCount,
+        stageVisitOrder: visitResult.patch.stageVisitOrder,
+      });
       
       // Audit log
       await writeAuditLog("auto_review_plan_authorised", {
@@ -1047,7 +1058,28 @@ export async function maybeHandleConfirmGate(
         planDoc: planDocPath,
         planHash: planHash.substring(0, 12),
         sessionFile: ownerSessionFile || "unknown",
+        action: "stage_switched",
       });
+      
+      // Fix #1 (Round 4): Dispatch review agent via coordinator
+      // Since dispatchAfterResume now skips design-review (N-3 fix),
+      // we must explicitly call coordinator to dispatch the review agent
+      const freshMeta = ctx.session.getMeta();
+      if (freshMeta) {
+        const coordinatorCtx = {
+          config,
+          session: ctx.session,
+          ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+          pi: ctx.pi,
+        };
+        const coordinatorResult = await coordinateDesignReview(coordinatorCtx, freshMeta, "advance");
+        
+        if (coordinatorResult.status === "handled" && coordinatorResult.action === "routed") {
+          ui.notify(ctx, `Design review agent dispatched successfully.`);
+        } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "pending") {
+          ui.notify(ctx, `Design review dispatch pending: ${coordinatorResult.reason}`);
+        }
+      }
       
       ui.notify(ctx, `Auto Review Plan authorised. Entering design-review stage.`);
       return { result: "handled", action: "advanced", toStage: "design-review" };
