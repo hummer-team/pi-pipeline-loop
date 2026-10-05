@@ -112,12 +112,12 @@ function getDesignReviewDynamicTarget(meta: any): string | null {
   const phase = drState.phase;
   const operation = drState.operation;
 
-  // Map design-review phases to effective targets
+  // Map design-review phases to effective targets (use real stage names per Issue #18)
   if (phase === 'review_ready' || phase === 'review_running') {
-    return 'review';
+    return 'design-review';  // Current stage itself
   }
   if (phase === 'update_ready' || phase === 'update_running') {
-    return 'update';
+    return 'plan';  // Actual target is to modify the plan
   }
   if (phase === 'pass_ready') {
     return 'develop';
