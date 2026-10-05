@@ -376,7 +376,7 @@ async function handleFail(
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
   }
 
-  // Update state to update_ready (do NOT spawn agent here - handleUpdateReady will do it)
+  // Update state to update_ready
   const newState = transitionPhase(drState, "update_ready");
   const commitResult = commitDesignReviewState(ctx.session, newState);
   
@@ -405,14 +405,48 @@ async function handleFail(
     round: String(drState.round),
   });
 
-  // Do NOT spawn plan agent here - let handleUpdateReady handle the dispatch
-  // This prevents double-dispatch when agent_settled triggers handleUpdateReady
-  if (ctx.ui?.notify) {
-    ctx.ui.notify(`Design review FAIL. Routing to "plan" for update.`);
+  // Fix for Issue #10: Deterministically dispatch plan agent after FAIL
+  // Create operation and spawn agent immediately to ensure update happens
+  // If dispatch fails, we still route to plan (dispatch can be retried)
+  try {
+    const operation = prepareDesignReviewOperation(
+      newState,
+      "update",
+      meta.stageStartTime ?? Date.now()
+    );
+    
+    if (operation) {
+      // Commit operation (this also transitions to update_running)
+      const committedState = commitDesignReviewOperation(ctx.session, operation, newState);
+      if (committedState) {
+        const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation);
+        if (spawnResult.ok) {
+          writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "dispatched");
+          await safeWriteAuditLog("design_review_coordinator", {
+            action: "update_dispatched_from_fail",
+            operationId: operation.operationId,
+            round: String(drState.round),
+          });
+        } else {
+          // Dispatch failed but we still route - agent can be spawned later
+          await safeWriteAuditLog("design_review_coordinator", {
+            action: "update_dispatch_failed_from_fail",
+            operationId: operation.operationId,
+            reason: spawnResult.error ?? "unknown",
+          });
+        }
+      }
+    }
+  } catch (error) {
+    // Log but don't block routing - dispatch can be retried
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "update_dispatch_exception_from_fail",
+      error: String(error),
+    });
   }
 
-  if (ctx.ui?.transition) {
-    ctx.ui.transition(ctx, "design-review", "plan");
+  if (ctx.ui?.notify) {
+    ctx.ui.notify(`Design review FAIL. Routing to "plan" for update.`);
   }
 
   return { status: "handled", action: "routed", toStage: "plan" };
