@@ -220,7 +220,7 @@ describe("design-review stage — JSON config loader", () => {
   });
 
   describe("design-review disabled (require: false)", () => {
-    test("design-review not in config is undefined (backward compatibility)", () => {
+    test("design-review not in config creates disabled placeholder (Issue #24/R1 fix)", () => {
       const json: PipelineJsonConfig = {
         stages: {
           clarify: {},
@@ -230,9 +230,11 @@ describe("design-review stage — JSON config loader", () => {
         },
       };
       const config = resolvePipelineConfig(json);
-      // Phase 4 (191): design-review is a NEW stage, so old configs without it
-      // should not have it automatically added (backward compatibility)
-      expect(config.stages["design-review"]).toBeUndefined();
+      // Phase 4 (191) fix for Issue #24/R1: design-review is a NEW stage,
+      // old configs without it should have a disabled placeholder created
+      // to ensure checkAgentPaths in pipeline-start.ts can properly skip it
+      expect(config.stages["design-review"]).toBeDefined();
+      expect(config.stages["design-review"].disabled).toBe(true);
     });
 
     test("design-review require: false explicitly disables stage", () => {
@@ -302,7 +304,7 @@ describe("design-review stage — JSON config loader", () => {
   });
 
   describe("backward compatibility", () => {
-    test("existing 7-stage config without design-review still resolves", () => {
+    test("existing 7-stage config without design-review still resolves (Issue #24/R1 fix)", () => {
       const json: PipelineJsonConfig = {
         stages: {
           clarify: { nextStage: "plan" },
@@ -317,7 +319,9 @@ describe("design-review stage — JSON config loader", () => {
       expect(config.stages.clarify.nextStage).toBe("plan");
       expect(config.stages.plan.nextStage).toBe("develop");
       expect(config.stages.develop.nextStage).toBe("review");
-      expect(config.stages["design-review"] === undefined).toBe(true);
+      // Phase 4 (191) fix for Issue #24/R1: design-review gets disabled placeholder
+      expect(config.stages["design-review"]).toBeDefined();
+      expect(config.stages["design-review"].disabled).toBe(true);
     });
 
     test("rewritePiPrefix unchanged for design-review paths with default piWorkDir", () => {
