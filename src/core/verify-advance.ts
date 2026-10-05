@@ -171,14 +171,14 @@ export async function applyVerifyPass(
         fromStage: stageName,
         nextStage,
         method: opts.method,
-        reason: visitResult.reason ?? "budget_exceeded",
+        reason: "budget_exceeded",
       });
 
       if (opts.returnResult) {
         return {
           success: false,
           passed: true,
-          message: `Verification passed for "${stageName}" but advance blocked by budget: ${visitResult.reason ?? "budget_exceeded"}`,
+          message: `Verification passed for "${stageName}" but advance blocked by budget: budget_exceeded`,
           verifyResult: verifyResult?.verifyResult ?? null,
         };
       }

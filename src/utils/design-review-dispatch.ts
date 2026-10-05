@@ -121,8 +121,9 @@ export function prepareDesignReviewOperation(
   // Check if there's an existing operation for this round and stage visit
   const existingOp = state.operation;
   if (existingOp) {
-    // Same round + same stage visit = retry, reuse operation identity
-    if (existingOp.stageVisitId === stageVisitId && state.round === state.round) {
+    // Same stage visit = retry, reuse operation identity
+    // Note: stageVisitId uniquely identifies the round context, so no separate round check needed
+    if (existingOp.stageVisitId === stageVisitId) {
       // Increment attempt counter
       const retryAttempt = (existingOp.attempt || 1) + 1;
       safeWriteAuditLog("design_review_dispatch", {
