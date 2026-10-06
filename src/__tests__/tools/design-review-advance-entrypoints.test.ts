@@ -143,8 +143,76 @@ describe("design-review multi-entrypoint consistency", () => {
     });
   });
 
+  /**
+   * 192 Phase 3 task 10 (issue-1 fix): ready phases must NOT return
+   * not-applicable for verify/handoff triggers — an active authorized loop
+   * consumes those triggers as pending with zero dispatch and zero stage
+   * movement, so pipeline_verify / pipeline_handoff cannot fall through to
+   * their ordinary-stage branches (interface constraint: ready/running/
+   * pass_ready/paused all handled).
+   */
+  describe("ready-phase gating (192 Phase 3 task 10 / F05)", () => {
+    function readyMeta(phase: "review_ready" | "update_ready"): SessionMeta {
+      const drState = createInitialState(planDoc, "menu", planHash, undefined, { pipelineId: "pipe-test-001" });
+      return makeTestMeta({
+        currentStage: phase === "review_ready" ? "design-review" : "plan",
+        designReview: { ...drState, phase, round: 1 },
+        loopCycleCount: 0,
+      });
+    }
+
+    for (const phase of ["review_ready", "update_ready"] as const) {
+      test(`${phase}: verify/handoff are handled as pending — zero dispatch, no state movement`, async () => {
+        let spawnCalls = 0;
+        const meta = readyMeta(phase);
+        const ctx: CoordinatorContext = {
+          config,
+          session: createMockSession(meta),
+          ui: { notify: () => {} },
+          pi: { sendUserMessage: () => {} },
+          spawnOverride: async () => {
+            spawnCalls++;
+            return {
+              spawned: true,
+              fallback: false,
+              deferred: false,
+              agentId: "agent-must-not-spawn",
+              dispatchOutcome: "spawned_id" as const,
+            };
+          },
+        };
+        for (const trigger of ["verify", "handoff"] as const) {
+          const result = await coordinateDesignReview(ctx, meta, trigger);
+          // Explicitly handled/pending — never not-applicable (no ordinary fallback)
+          expect(result.status === "handled" && result.action === "pending").toBe(true);
+        }
+        expect(spawnCalls).toBe(0);
+        // Phase and stage untouched by the gated triggers
+        expect(ctx.session.getMeta()?.designReview?.phase).toBe(phase);
+        expect(ctx.session.getMeta()?.currentStage).toBe(meta.currentStage);
+        // No operation was created by the blocked triggers
+        expect(ctx.session.getMeta()?.designReview?.operation).toBeUndefined();
+      });
+    }
+
+    test("absent designReview state keeps falling through (not this feature)", async () => {
+      // Guard: the gating applies only to an ACTIVE authorized loop; a
+      // session without design-review state must stay not-applicable.
+      const meta = makeTestMeta({ currentStage: "design-review" });
+      const ctx = {
+        config,
+        session: createMockSession(meta),
+        ui: { notify: () => {} },
+        pi: { sendUserMessage: () => {} },
+      };
+      const result = await coordinateDesignReview(ctx, meta, "verify");
+      expect(result.status).toBe("not-applicable");
+    });
+  });
+
   describe("trigger consistency across entries (F05)", () => {
     test("settle/advance/verify/handoff all handle the same report identically", async () => {
+
       await writePassReport();
       const actions: string[] = [];
       for (const trigger of ["settle", "advance", "verify", "handoff"] as const) {

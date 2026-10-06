@@ -201,8 +201,18 @@ async function handleReviewReady(
   drState: DesignReviewState,
   trigger: string,
 ): Promise<CoordinatorResult> {
+  // 192 Phase 3 (task 10 / F05): an active authorized loop must never fall
+  // back to ordinary branches for ANY trigger. In review_ready only
+  // settle/advance may dispatch; verify/handoff are explicitly handled as
+  // pending — zero dispatch, zero advancement — so pipeline_verify /
+  // pipeline_handoff cannot run their normal-stage flow.
   if (trigger !== "settle" && trigger !== "advance") {
-    return { status: "not-applicable" };
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "review_ready_gate_blocked",
+      trigger,
+      round: String(drState.round),
+    });
+    return { status: "handled", action: "pending", reason: "review_ready_settle_or_advance_only" };
   }
 
   // Check budget before dispatch
@@ -1037,8 +1047,16 @@ async function handleUpdateReady(
   drState: DesignReviewState,
   trigger: string,
 ): Promise<CoordinatorResult> {
+  // 192 Phase 3 (task 10 / F05): mirror of review_ready gating — active
+  // update_ready consumes verify/handoff triggers as pending so the normal
+  // verification/handoff branches can never bypass the design-review loop.
   if (trigger !== "settle" && trigger !== "advance") {
-    return { status: "not-applicable" };
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "update_ready_gate_blocked",
+      trigger,
+      round: String(drState.round),
+    });
+    return { status: "handled", action: "pending", reason: "update_ready_settle_or_advance_only" };
   }
 
   // Check budget before dispatch
