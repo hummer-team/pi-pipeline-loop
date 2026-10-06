@@ -403,13 +403,14 @@ export function extractBashFileTargets(command: string): BashTarget[] {
       }
 
       if (fileArgs.length > 0) {
-        // For mv/cp: check both source (first) and destination (last) arguments
-        if ((token === "mv" || token === "cp") && fileArgs.length >= 2) {
-          targets.push({ kind: "file-arg", target: fileArgs[0] });
-          targets.push({ kind: "file-arg", target: fileArgs[fileArgs.length - 1] });
-        } else {
-          // For rm/touch/tee: check first non-flag argument only
-          targets.push({ kind: "file-arg", target: fileArgs[0] });
+        // 192 fix (issue 4, plan Phase 4 task 9): EVERY operand of a
+        // rename/delete-class command is a checkable target — both ends of
+        // `mv a b` (and multi-source forms like `mv a b … dir/`), every
+        // operand of `rm a b c`, `cp a b … dir/`, `touch`/`tee` targets.
+        // Checking only the first (or first+last) left the remaining
+        // operands unvalidated ("rename/delete 两端逐条").
+        for (const arg of fileArgs) {
+          targets.push({ kind: "file-arg", target: arg });
         }
       }
     }

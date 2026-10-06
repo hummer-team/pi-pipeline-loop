@@ -29,7 +29,13 @@ describe("isDestructiveCommand", () => {
     it("detects rm -rf with -- separator targeting root as destructive", () => {
       expect(isDestructiveCommand("rm -rf -- /")).toBe(true);
       expect(isDestructiveCommand("rm -rf -- / ")).toBe(true);
-      expect(isDestructiveCommand("rm -- -rf /")).toBe(false); // Flags after --
+      // 192 fix (issue 4): every operand after -- is a checkable target.
+      // `rm -- -rf /` deletes a file named "-rf" AND the root "/": the old
+      // first-operand-only extraction missed "/", letting a root deletion
+      // pass as "not destructive". It is now detected via the Tier-2 path
+      // heuristic — this is a deliberate STRENGTHENING (plan Phase 4 task 9,
+      // "delete 两端逐条"), not a weakening.
+      expect(isDestructiveCommand("rm -- -rf /")).toBe(true);
     });
 
     it("detects rm -rf with GNU --no-preserve-root as destructive", () => {

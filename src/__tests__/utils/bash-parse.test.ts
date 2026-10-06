@@ -469,3 +469,36 @@ describe("Phase 1 / 177 (D3): heredoc-aware parsing", () => {
     expect(extractBashFileTargets("echo x > src/dir/")[0]?.suspicious).toBeUndefined();
   });
 });
+
+// ─── 192 fix (issue 4): rename/delete BOTH-END per-arg extraction ───────────
+describe("192 issue-4: rename/delete every operand is extracted (plan Phase 4 task 9)", () => {
+  it("rm with multiple operands extracts ALL targets (not just the first)", () => {
+    const targets = extractBashFileTargets("rm keep1.txt keep2.txt keep3.txt").map((t) => t.target);
+    expect(targets).toEqual(["keep1.txt", "keep2.txt", "keep3.txt"]);
+  });
+
+  it("rm with flags still extracts every non-flag operand", () => {
+    const targets = extractBashFileTargets("rm -f docs/a.md -r docs/b.md").map((t) => t.target);
+    expect(targets).toEqual(["docs/a.md", "docs/b.md"]);
+  });
+
+  it("mv two-end form extracts source AND destination", () => {
+    const targets = extractBashFileTargets("mv src.md dst.md").map((t) => t.target);
+    expect(targets).toEqual(["src.md", "dst.md"]);
+  });
+
+  it("mv multi-source form extracts every source plus the destination", () => {
+    const targets = extractBashFileTargets("mv a.md b.md c.md outdir/").map((t) => t.target);
+    expect(targets).toEqual(["a.md", "b.md", "c.md", "outdir/"]);
+  });
+
+  it("cp multi-source form extracts every source plus the destination", () => {
+    const targets = extractBashFileTargets("cp x.txt y.txt backup/").map((t) => t.target);
+    expect(targets).toEqual(["x.txt", "y.txt", "backup/"]);
+  });
+
+  it("operands after -- are all extracted", () => {
+    const targets = extractBashFileTargets("rm -- -weird.md other.md").map((t) => t.target);
+    expect(targets).toEqual(["-weird.md", "other.md"]);
+  });
+});

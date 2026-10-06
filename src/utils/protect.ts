@@ -323,6 +323,12 @@ export function toProjectRelative(
 export const GIT_MODIFY_DEFAULT_MATRIX: Readonly<Partial<Record<PipelineStage, "allow" | "block">>> = {
   clarify: "block",
   plan: "block",
+  // 192 fix (issue 4, plan Phase 4 task 9): explicit design-review entry.
+  // F07/K10 requires git writes BLOCKED by default while the design-review
+  // loop is active (read-only review / plan-scope update only). Previously
+  // this held only via the unknown-stage fallback; it is now declared, so a
+  // future stage-list change cannot silently flip it.
+  "design-review": "block",
   develop: "allow",
   review: "block",
   fix: "allow",
