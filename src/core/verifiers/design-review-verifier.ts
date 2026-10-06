@@ -184,6 +184,44 @@ function sameCanonicalPath(a: string, b: string): boolean {
   }
 }
 
+/** Compile the issues-heading anchor from a contract pattern (built-in default;
+ *  an invalid contract regex falls back to the default, fail-closed downstream). */
+function compileIssueHeadingRe(pattern?: string): RegExp {
+  try {
+    return new RegExp(pattern ?? DEFAULT_ISSUE_HEADING_PATTERN, "i");
+  } catch {
+    return new RegExp(DEFAULT_ISSUE_HEADING_PATTERN, "i");
+  }
+}
+
+/** Keep only valid issue items: exact whole-item "None"/"无"-style sentinels
+ *  drop out; everything else ("无法恢复…", "nonequivalent") stays an issue. */
+function filterValidIssueItems(rawItems: readonly string[]): ReviewIssue[] {
+  const out: ReviewIssue[] = [];
+  for (const item of rawItems) {
+    const normalized = item.replace(/\*\*|__/g, "").trim().toLowerCase();
+    if (NO_ISSUE_SENTINELS.has(normalized)) continue;
+    out.push({ issueId: String(out.length + 1), text: item });
+  }
+  return out;
+}
+
+/**
+ * 192 fix (issue 3): canonical issue extraction over a report SNAPSHOT.
+ * Exposes the SAME semantics the snapshot verdict uses (inert-line exclusion,
+ * heading-scoped section, exact whole-item sentinels) so report-path consumers
+ * (coordinator recovery) never fall back to a second, weaker parser.
+ */
+export function extractDesignReviewIssueItems(
+  content: string,
+  issueHeadingPattern?: string,
+): ReviewIssue[] {
+  const lines = stripInertLines(content);
+  const section = extractSection(lines, compileIssueHeadingRe(issueHeadingPattern));
+  if (!section) return [];
+  return filterValidIssueItems(parseIssueItems(section.lines));
+}
+
 /** Map a captured verdict token to pass/fail (不通过/FAIL/fail → fail). */
 function tokenToVerdict(token: string): "pass" | "fail" {
   if (token === "不通过") return "fail";
@@ -292,26 +330,15 @@ export function verifyDesignReviewReportSnapshot(
   }
 
   // ── 3. Issues section over the SAME cleaned content ───────────────────────
-  const issueHeadingRe = (() => {
-    try {
-      return new RegExp(patterns?.issueHeadingPattern ?? DEFAULT_ISSUE_HEADING_PATTERN, "i");
-    } catch {
-      return new RegExp(DEFAULT_ISSUE_HEADING_PATTERN, "i");
-    }
-  })();
+  const issueHeadingRe = compileIssueHeadingRe(patterns?.issueHeadingPattern);
   const issuesSection = extractSection(lines, issueHeadingRe);
   if (!issuesSection) {
     return { verdict: "invalid", failures: ["missing Issues section heading"], reportHash };
   }
 
   const rawItems = parseIssueItems(issuesSection.lines);
-  const validIssues: ReviewIssue[] = [];
-  for (const item of rawItems) {
-    const normalized = item.replace(/\*\*|__/g, "").trim().toLowerCase();
-    // Exact whole-item sentinel only; "无法恢复…" / "nonequivalent" still count
-    if (NO_ISSUE_SENTINELS.has(normalized)) continue;
-    validIssues.push({ issueId: String(validIssues.length + 1), text: item });
-  }
+  // Exact whole-item sentinel only; "无法恢复…" / "nonequivalent" still count
+  const validIssues = filterValidIssueItems(rawItems);
 
   const sentinelPresent = rawItems.some((i) =>
     NO_ISSUE_SENTINELS.has(i.replace(/\*\*|__/g, "").trim().toLowerCase()),

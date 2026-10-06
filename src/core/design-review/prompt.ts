@@ -316,36 +316,6 @@ export async function buildDesignReviewUpdatePrompt(
 }
 
 /**
- * LEGACY adapter (191): read a template FILE and render it.
- * Kept only for the historical phase-1 tests and any third-party import;
- * production dispatch paths use buildDesignReviewUpdatePrompt instead.
- * The independent Markdown file it reads is NO LONGER a runtime fallback.
- */
-export function renderDesignReviewUpdatePrompt(
-  templatePath: string,
-  params: DesignReviewUpdatePromptParams,
-): string {
-  const normalizedPath = path.resolve(templatePath);
-  if (!fs.existsSync(normalizedPath)) {
-    throw new Error(`Update prompt template not found: ${normalizedPath}`);
-  }
-  let template: string;
-  try {
-    template = fs.readFileSync(normalizedPath, "utf-8");
-  } catch (err) {
-    throw new Error(`Failed to read update prompt template: ${(err as Error).message}`);
-  }
-  try {
-    return renderDesignReviewUpdatePromptText(template, params);
-  } catch (err) {
-    if (err instanceof DesignReviewUpdateConfigError) {
-      throw new Error(err.message);
-    }
-    throw err;
-  }
-}
-
-/**
  * Load and validate issues from a review report for update prompt generation.
  *
  * @param reviewDoc - Path to the review report
