@@ -22,7 +22,12 @@ import type {
 } from "../../types";
 import { verifyDesignReviewReport, extractReportIssues } from "./report";
 import { loadVerifyContractAnchors } from "../../utils/contract-loader";
-import { validatePlanUpdate, renderDesignReviewUpdatePrompt, type DesignReviewUpdatePromptParams } from "./prompt";
+import {
+  buildDesignReviewUpdatePrompt,
+  DesignReviewUpdateConfigError,
+  type DesignReviewUpdatePromptParams,
+} from "./prompt";
+import { validateDesignReviewUpdate } from "../verifiers/design-review-update-verifier";
 import {
   isValidTransition,
   transitionPhase,
@@ -799,15 +804,12 @@ async function handleFail(
   // dispatch — never a fake update_running that could be misread as no-change.
   let updatePrompt: string;
   {
-    const { resolvePiWorkDir } = await import("../../utils/work-dir");
-    const templatePath = path.join(
-      ctx.config.projectRoot,
-      resolvePiWorkDir(ctx.config),
-      "references",
-      "design-review-update-prompt.md",
-    );
+    // 192 Phase 2 (K04/K05): BOTH dispatch paths call the SAME
+    // select+render function. Only missing-file/missing-key falls back to the
+    // constants default; empty/broken/param/token errors block dispatch
+    // (renderFailed below keeps update_ready and performs ZERO RPC).
     try {
-      const promptParams: DesignReviewUpdatePromptParams = {
+      const built = await buildDesignReviewUpdatePrompt(ctx.config, {
         pipelineId: meta.pipelineId ?? "unknown",
         planDoc: drState.planDoc,
         reviewDoc: reportPath,
@@ -815,16 +817,26 @@ async function handleFail(
         operationId: preparedUpdateOp.operationId,
         baselinePlanHash: drState.planHash ?? "",
         issues: issues,
-      };
-      updatePrompt = renderDesignReviewUpdatePrompt(templatePath, promptParams);
+        ...(drState.requirementDoc !== undefined ? { requirementDoc: drState.requirementDoc } : {}),
+      });
+      updatePrompt = built.prompt;
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "update_prompt_source",
+        source: built.selection.source,
+        ...(built.selection.path !== undefined ? { path: built.selection.path } : {}),
+        key: built.selection.key,
+        contentHash: built.selection.contentHash.substring(0, 12),
+        operationId: preparedUpdateOp.operationId,
+      });
     } catch (error) {
       // Fail-closed: prompt not rendered → commit routing WITHOUT operation
       // dispatch below (update_ready), zero external calls.
       updatePrompt = "";
       await safeWriteAuditLog("design_review_coordinator", {
         action: "update_prompt_render_failed_from_fail",
-        error: String(error),
-        templatePath,
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+        ...(error instanceof DesignReviewUpdateConfigError ? { code: error.code, file: error.filePath ?? "", key: error.key ?? "" } : {}),
       });
     }
   }
@@ -974,23 +986,13 @@ async function handleUpdateReady(
     ? operation
     : { ...operation, dispatchEvidence: "confirmed_not_sent", dispatchReason: "prepared_not_dispatched" };
 
-  // Commit operation (this also transitions to update_running)
-  const committedState = commitDesignReviewOperation(ctx.session, preparedOp, drState);
-  if (!committedState) {
-    return { status: "handled", action: "pending", reason: "operation_commit_failed" };
-  }
-
-  // Render specialized update prompt (fail-closed before dispatch).
-  const { resolvePiWorkDir } = await import("../../utils/work-dir");
-  const templatePath = path.join(
-    ctx.config.projectRoot,
-    resolvePiWorkDir(ctx.config),
-    "references",
-    "design-review-update-prompt.md",
-  );
+  // 192 Phase 2: SAME select+render function as the FAIL-consumption path.
+  // Rendering happens BEFORE the operation commit: a configuration error
+  // keeps update_ready and performs ZERO dispatch — never a fake
+  // update_running later misread as no-change.
   let updatePrompt: string;
   try {
-    const promptParams: DesignReviewUpdatePromptParams = {
+    const built = await buildDesignReviewUpdatePrompt(ctx.config, {
       pipelineId: meta.pipelineId ?? "unknown",
       planDoc: drState.planDoc,
       reviewDoc: reportPath,
@@ -998,19 +1000,36 @@ async function handleUpdateReady(
       operationId: preparedOp.operationId,
       baselinePlanHash: drState.planHash ?? "",
       issues: issues,
-    };
-    updatePrompt = renderDesignReviewUpdatePrompt(templatePath, promptParams);
+      ...(drState.requirementDoc !== undefined ? { requirementDoc: drState.requirementDoc } : {}),
+    });
+    updatePrompt = built.prompt;
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "update_prompt_source",
+      source: built.selection.source,
+      ...(built.selection.path !== undefined ? { path: built.selection.path } : {}),
+      key: built.selection.key,
+      contentHash: built.selection.contentHash.substring(0, 12),
+      operationId: preparedOp.operationId,
+    });
   } catch (error) {
-    // Fail-closed: if template is missing/broken, we cannot dispatch safely
+    // Fail-closed: empty/broken YAML, unknown token or missing param blocks
+    // the dispatch (spawn=0); the operation was NOT marked running.
     await safeWriteAuditLog("design_review_coordinator", {
       action: "update_prompt_render_failed",
-      error: String(error),
-      templatePath,
+      error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+      ...(error instanceof DesignReviewUpdateConfigError ? { code: error.code, file: error.filePath ?? "", key: error.key ?? "" } : {}),
     });
     if (ctx.ui?.notify) {
       ctx.ui.notify(`Design review update prompt render failed. Cannot dispatch update agent.`);
     }
     return { status: "handled", action: "pending", reason: "update_prompt_render_failed" };
+  }
+
+  // Commit operation (this also transitions to update_running)
+  const committedState = commitDesignReviewOperation(ctx.session, preparedOp, drState);
+  if (!committedState) {
+    return { status: "handled", action: "pending", reason: "operation_commit_failed" };
   }
 
   // Spawn update agent with the rendered prompt (intent → dispatch → receipt)
@@ -1082,33 +1101,106 @@ async function handleUpdateRunning(
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
   }
 
-  // Extract issues from the review report
-  const reportPath = deriveReportPath(drState.planDoc, drState.round);
-  const issues = extractReportIssues(reportPath);
-  
-  const validation = validatePlanUpdate(drState.planDoc, drState.planHash ?? "", issues);
-  
-  if (!validation.valid) {
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "update_invalid",
-      reasons: validation.reasons.join("; "),
-    });
-    
-    // Fix for Issue #14: Transition to paused state with proper pauseReason
-    const pausedState = transitionPhase(drState, "paused", undefined, "new-decision");
+  // 192 Phase 2 (K08/F03): validate the update against the CURRENT update
+  // identity and the bounded input receipt. NO old heuristic (first-20-chars
+  // / 500-char window) and NO second report extraction: the same receipt
+  // that was consumed is the expected input. Any structural failure is
+  // invalid (no reason-prefix leniency).
+  const receipt = drState.reviewInputReceipt;
+  const reportPath = receipt?.reportDoc ?? deriveReportPath(drState.planDoc, drState.round);
+  let expectedIssueIds: readonly string[];
+  let expectedReportHash: string;
+  let consumedReviewOpId: string;
+
+  if (receipt) {
+    expectedIssueIds = receipt.issueIds;
+    expectedReportHash = receipt.reportHash;
+    consumedReviewOpId = receipt.reviewIdentity.operationId;
+    // The consumed report must still be the exact snapshot we bound inputs
+    // to; a changed file after consumption is drift, not a validation pass.
+    try {
+      const reportNow = await fs.readFile(receipt.reportDoc, "utf-8");
+      if (computeHash(reportNow) !== receipt.reportHash) {
+        const driftState = transitionPhase(drState, "paused", undefined, "drift");
+        const driftCommit = commitDesignReviewState(ctx.session, driftState);
+        await safeWriteAuditLog("design_review_coordinator", {
+          action: "report_drift_after_consume",
+          reportPath: receipt.reportDoc,
+          committed: driftCommit.ok,
+        }, "warn");
+        return { status: "handled", action: "pending", reason: "paused:report_drift" };
+      }
+    } catch (error) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "update_invalid",
+        failures: "consumed report unreadable: " + (error instanceof Error ? error.message : String(error)),
+      }, "warn");
+      const invalidState = transitionPhase(drState, "paused", undefined, "update-invalid");
+      const invalidCommit = commitDesignReviewState(ctx.session, invalidState);
+      if (!invalidCommit.ok) {
+        return { status: "handled", action: "pending", reason: `state_commit_failed: ${invalidCommit.reason}` };
+      }
+      return { status: "handled", action: "pending", reason: "paused:update_invalid" };
+    }
+  } else {
+    // 191-legacy compat read (no receipt on older meta): derive attribution
+    // from the strict-named current report. Never guess an authorization.
+    let legacyIssues: string[] = [];
+    let legacyHash = "";
+    try {
+      const legacyContent = await fs.readFile(reportPath, "utf-8");
+      legacyHash = computeHash(legacyContent);
+      legacyIssues = extractReportIssues(reportPath);
+    } catch {
+      legacyIssues = [];
+    }
+    expectedIssueIds = legacyIssues.map((_issue, idx) => String(idx + 1));
+    expectedReportHash = legacyHash;
+    consumedReviewOpId = "unknown";
+  }
+
+  const verdict = validateDesignReviewUpdate({
+    planContent,
+    baselinePlanHash: drState.planHash ?? "",
+    reportDoc: reportPath,
+    reportHash: expectedReportHash,
+    round: drState.round,
+    reviewOperationId: consumedReviewOpId,
+    updateOperationId: drState.operation?.operationId ?? "",
+    issueIds: expectedIssueIds,
+  });
+
+  if (verdict.status !== "ready") {
+    const pauseReason = verdict.status === "paused"
+      ? (verdict.reason === "new-decision" ? "new-decision" as const : "no-change" as const)
+      : "update-invalid" as const;
+    const failuresText = verdict.status === "invalid" ? verdict.failures.join("; ")
+      : verdict.status === "paused" && verdict.detail !== undefined ? verdict.detail : "";
+
+    if (pauseReason === "no-change") {
+      // Throttle mirrors the pre-existing no-change audit path
+      const throttleKey = `${meta.pipelineId ?? "unknown"}:update_no_change`;
+      if (shouldEmitWithinWindow(throttleKey, 5000)) {
+        await safeWriteAuditLog("design_review_coordinator", { action: "update_no_change" });
+      }
+    } else {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: pauseReason === "update-invalid" ? "update_invalid" : "paused_update_invalid",
+        reasons: failuresText,
+      });
+    }
+
+    const pausedState = transitionPhase(drState, "paused", undefined, pauseReason);
     const commitResult = commitDesignReviewState(ctx.session, pausedState);
     if (!commitResult.ok) {
       return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
     }
-    
     await safeWriteAuditLog("design_review_coordinator", {
-      action: "paused_update_invalid",
-      pauseReason: "new-decision",
+      action: "paused_update_verdict",
+      pauseReason,
       round: String(drState.round),
-      reasons: validation.reasons.join("; "),
     });
-    
-    return { status: "handled", action: "pending", reason: "paused:update_invalid" };
+    return { status: "handled", action: "pending", reason: `paused:${pauseReason}` };
   }
 
   // Record transition

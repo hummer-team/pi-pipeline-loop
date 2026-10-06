@@ -173,13 +173,28 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
     expect(isCurrentOperation(still, reviewOpId, 1)).toBe(false);
 
     // ── 4. Plan updated + settle → NEW round with a NEW review operation.
+    // 192 Phase 2 contract: association fields bound to the CURRENT update
+    // operation + one disposition row per consumed issue.
     fs.writeFileSync(planDoc, [
       "# Plan",
       "",
       "## Design Review Update",
       "",
-      "Missing error handling — fixed: added error handling section.",
-      "Incomplete specification — fixed: expanded specification.",
+      `**Report**: ${reportDoc}`,
+      "**Round**: 1",
+      `**Operation**: ${updateOpId}`,
+      `**Baseline Hash**: ${planHash}`,
+      "",
+      "### Issue Dispositions",
+      "",
+      "| # | Issue | Disposition | Justification |",
+      "|---|-------|-------------|---------------|",
+      "| 1 | Missing error handling | fixed | added error handling section |",
+      "| 2 | Incomplete specification | fixed | expanded specification |",
+      "",
+      "### Changes Made",
+      "",
+      "- New section: error handling; expanded spec details.",
       "",
     ].join("\n"), "utf-8");
 
@@ -249,6 +264,66 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
     expect(state.operation?.dispatchEvidence).toBe("trusted_id");
     expect(state.operation?.agentId).toBe("agent-develop-2");
     expect(spawnLog.length).toBe(2); // review + handoff, no more
+  });
+
+  it("blocked update config (empty key) keeps update_ready with spawn=0 — never a fake update_running", async () => {
+    // 192 Phase 2 (K05): an explicitly EMPTY update key is a configuration
+    // ERROR (not "unconfigured"): dispatch must block with ZERO spawns and
+    // the state must stay update_ready WITHOUT a fabricated update_running.
+    const refDir = path.join(projectRoot, ".pi", "references");
+    fs.mkdirSync(refDir, { recursive: true });
+    fs.writeFileSync(path.join(refDir, "pipeline-stage-prompt.yml"), "design_review_update_prompt: \"\"\n", "utf-8");
+    const { resetPromptConfigCache } = await import("../../core/prompt-config");
+    resetPromptConfigCache();
+    try {
+      const planHashB = computeHash(fs.readFileSync(planDoc, "utf-8"));
+      const drB = createInitialState(planDoc, "menu", planHashB, undefined, { pipelineId: "pipe-test-001" });
+      const metaB = makeTestMeta({ currentStage: "design-review", designReview: drB });
+      const spawnLogB: Array<{ stage: string; prompt?: string }> = [];
+      const { ctx, session } = makeCtx(metaB, spawnLogB);
+
+      await coordinateDesignReview(ctx, session.getMeta()!, "advance"); // review dispatch
+
+      const reportDocB = deriveReportPath(planDoc, 1);
+      fs.writeFileSync(reportDocB, [
+        "# Design Review Report",
+        "",
+        `**pipeline**: ${metaB.pipelineId}`,
+        `**plan**: ${planDoc}`,
+        "**round**: 1",
+        "",
+        "## Verdict",
+        "",
+        "**Design Review: FAIL**",
+        "",
+        "## Issues",
+        "1. Missing error handling",
+        "",
+      ].join("\n"), "utf-8");
+
+      const r = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
+      expect(r.status === "handled" && r.action === "pending").toBe(true);
+      if (r.status === "handled" && r.action === "pending") {
+        expect(r.reason).toBe("update_prompt_render_failed");
+      }
+      const state = session.getMeta()!.designReview!;
+      expect(state.phase).toBe("update_ready");
+      expect(state.operation).toBeUndefined(); // never a fake update_running
+      expect(spawnLogB.length).toBe(1); // ONLY the review — zero update spawn
+      // Attribution survived for a later retry after config repair
+      expect(state.reviewInputReceipt?.issueIds).toEqual(["1"]);
+
+      // Repair the config -> retry from update_ready dispatches exactly once
+      fs.writeFileSync(path.join(refDir, "pipeline-stage-prompt.yml"), "design_review_update_prompt: |\n  REPAIRED TEXT {planDoc}\n", "utf-8");
+      resetPromptConfigCache();
+      const r2 = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
+      expect(r2.status === "handled" && r2.action === "routed").toBe(true);
+      expect(spawnLogB.length).toBe(2);
+      expect(session.getMeta()!.designReview!.operation?.kind).toBe("update");
+      expect(session.getMeta()!.designReview!.phase).toBe("update_running");
+    } finally {
+      resetPromptConfigCache();
+    }
   });
 
   it("handoff: receipt persisted but finished-commit failure → re-entry finishes with ZERO extra RPC", async () => {

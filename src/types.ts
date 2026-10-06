@@ -743,7 +743,8 @@ export type DesignReviewPauseReason =
   | "unavailable"        // Develop stage disabled or no agent configured
   | "authorization-lost" // Authorization invalidated (quit/disable/manual choice)
   | "budget-exhausted"   // maxLoopCycles reached
-  | "unknown-dispatch";  // 192 Phase 1: dispatch outcome unprovable (pause & verify)
+  | "unknown-dispatch"   // 192 Phase 1: dispatch outcome unprovable (pause & verify)
+  | "update-invalid";    // 192 Phase 2: structural update validation failed
 
 /**
  * Phase 1 / 191: Design review report verdict result.

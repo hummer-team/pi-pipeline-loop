@@ -438,12 +438,29 @@ None
 
   describe("update_running phase", () => {
     test("valid update with new hash triggers re-review", async () => {
-      // Update the plan content with required Design Review Update section
+      // 192 Phase 2: the update section follows the CURRENT contract — exact
+      // association fields bound to this update operation + one disposition
+      // row per consumed-report issue (K08 structural gate).
+      const updateOpId = "op-legacy-update-1";
+      const reportDocPath = join(tempDir, "review-design-1-plan.md");
       const newPlanContent = `# Updated Plan
 
 ## Design Review Update
 
-- Missing error handling: Addressed by adding try-catch blocks.`;
+**Report**: ${reportDocPath}
+**Round**: 1
+**Operation**: ${updateOpId}
+**Baseline Hash**: ${planHash}
+
+### Issue Dispositions
+
+| # | Issue | Disposition | Justification |
+|---|-------|-------------|---------------|
+| 1 | Missing error handling | fixed | added try-catch blocks to the loader |
+
+### Changes Made
+
+- Loader section: error handling added.`;
       await writeFile(planDoc, newPlanContent, "utf-8");
 
       // Create a report with issues
@@ -466,7 +483,22 @@ None
       const drState = createInitialState(planDoc, "menu", planHash);
       const meta = makeTestMeta({
         currentStage: "design-review",
-        designReview: { ...drState, phase: "update_running", round: 1 },
+        designReview: {
+          ...drState,
+          phase: "update_running",
+          round: 1,
+          operation: {
+            operationId: updateOpId,
+            kind: "update" as const,
+            stageVisitId: Date.now(),
+            attempt: 1,
+            dispatchState: "dispatched" as const,
+            agentId: "agent-legacy-update",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            round: 1,
+          },
+        },
         loopCycleCount: 0,
       });
       

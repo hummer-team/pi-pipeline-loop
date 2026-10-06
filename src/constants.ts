@@ -292,6 +292,68 @@ export const DEFAULT_COMPACT_INSTRUCTIONS = `Pipeline completed. Preserve the fo
  */
 export const DEFAULT_READONLY_WRITE_PATHS = ["docs/", "doc/", "documentation/"];
 
+/**
+ * 192 Phase 2 (K04/K05): built-in default for the design-review authorized
+ * UPDATE prompt. Used ONLY when the YAML file or the
+ * `design_review_update_prompt` key is ABSENT (missing-file / missing-key).
+ * Explicit empty values, non-strings, or YAML read/parse errors BLOCK the
+ * update dispatch instead of silently falling back to this default.
+ *
+ * Runtime tokens use the SAME declared set as YAML templates:
+ * {pipelineId} {planDoc} {reviewDoc} {round} {operationId} {baselinePlanHash}
+ * ({requirementDoc} and {issues} are also declared for custom templates).
+ * Example fields are written WITHOUT braces so they are never treated as
+ * runtime tokens. The independent
+ * `.pi/references/design-review-update-prompt.md` file is a historical asset
+ * and is NOT a runtime fallback.
+ */
+export const DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT = `## Design Review Update Mode
+This plan update is triggered by a **design-review FAIL** verdict. You are in authorized update mode.
+
+**Context**
+- Pipeline: {pipelineId}
+- Plan document (the ONLY writable target): {planDoc}
+- Review report (read it fully first): {reviewDoc}
+- Review round: {round}
+- Update operation id: {operationId}
+- Baseline plan hash (before your change): {baselinePlanHash}
+
+**MUST**: Process every issue of the review report inside a single
+\`## Design Review Update\` section of the EXISTING plan document:
+- Provide one disposition per issue: \`fixed\`, \`deferred\`, or \`rejected\`, each with a concrete justification
+- \`fixed\` requires actual changes in the plan document — do NOT claim "fixed" without them
+- Do NOT add new clarification rounds and do NOT fabricate user confirmation
+- Do NOT modify source code, the requirement document, or any other file
+- If an issue needs a NEW requirement or decision you cannot make alone, set its disposition to \`new-decision\` and STOP for owner review
+- If an issue is provably unfixable in this plan, set its disposition to \`unfixable\` and explain why
+
+**Output Format** (the section header and the four association fields are exact):
+
+\`\`\`markdown
+## Design Review Update
+
+**Report**: <absolute path of the review report you consumed>
+**Round**: <review round number>
+**Operation**: <the update operation id given above>
+**Baseline Hash**: <the baseline plan hash given above>
+
+### Issue Dispositions
+
+| # | Issue | Disposition | Justification |
+|---|-------|-------------|---------------|
+| 1 | <short issue summary from the report> | fixed / deferred / rejected / new-decision / unfixable | <one-line rationale> |
+...
+
+### Changes Made
+
+- <where in the plan each fixed issue was addressed, for the next review round>
+\`\`\`
+
+**Constraints**
+- Only modify the plan document ({planDoc}); keep all existing structure and decisions unless explicitly addressing review issues
+- The disposition table must cover EVERY issue of the consumed report exactly once; missing or duplicate entries invalidate the update
+- The updated plan is automatically re-reviewed in the next design-review round; final fix QUALITY is judged there, not by this step`;
+
 /** Default path templates for stage resources (use {stage} placeholder) */
 export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";

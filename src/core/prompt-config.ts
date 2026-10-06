@@ -255,6 +255,8 @@ export async function getConflictCheckPrompt(
 export function resetPromptConfigCache(): void {
   cache = null;
   cacheRoot = null;
+  // 192 Phase 2: keep the strict-read cache in the same isolation boundary
+  strictParseCache.clear();
 }
 
 /**
@@ -381,4 +383,112 @@ export function renderStageTemplate(
     status: "ok",
     prompt: renderedSegments.join("\n\n---\n\n"),
   };
+}
+
+// ─── 192 Phase 2: strict single-key reading (design-review update source) ───
+
+/**
+ * Outcome of a STRICT key read. Unlike the ordinary loadPromptConfig
+ * (which folds every failure into {}), this distinguishes:
+ * - missing-file / missing-key  → "not configured" (constants default allowed)
+ * - empty / non-string          → configuration ERROR (blocking, K05)
+ * - read / parse / shape errors → configuration ERROR (blocking, K05)
+ */
+export type StrictPromptKeyResult =
+  | { status: "found"; value: string; filePath: string; key: string }
+  | { status: "missing-file"; filePath: string; key: string }
+  | { status: "missing-key"; filePath: string; key: string }
+  | { status: "invalid-value"; reason: "empty" | "non-string"; filePath: string; key: string }
+  | { status: "read-error"; error: Error; filePath: string; key: string }
+  | { status: "parse-error"; error: Error; filePath: string; key: string }
+  | { status: "shape-error"; filePath: string; key: string };
+
+/**
+ * Strict parse cache keyed by the ACTUAL resolved file path (never shared
+ * across different workDir configurations — F06 cache correctness).
+ */
+const strictParseCache = new Map<string,
+  | { kind: "parsed"; value: Record<string, unknown> }
+  | { kind: "read"; error: Error }
+  | { kind: "parse"; error: Error }
+  | { kind: "shape" }
+>();
+
+/**
+ * Read ONE key from `{workDir}/references/pipeline-stage-prompt.yml` with
+ * explicit error taxonomy. The ordinary loader/cache behavior is untouched;
+ * this is a narrow, strict sibling used ONLY by the design-review update
+ * prompt selection (K04/K05).
+ *
+ * @param projectRoot - Absolute project root
+ * @param key - Top-level YAML key to read
+ * @param workDir - Plugin asset dir (relative to projectRoot or absolute);
+ *   defaults to CONFIG_DIR_NAME. Callers MUST pass the resolved piWorkDir so
+ *   custom asset directories are honored (F06).
+ */
+export async function readStrictPromptKey(
+  projectRoot: string,
+  key: string,
+  workDir?: string,
+): Promise<StrictPromptKeyResult> {
+  const dir = workDir ?? CONFIG_DIR_NAME;
+  const filePath = path.resolve(projectRoot, dir, "references", PROMPT_CONFIG_FILE);
+
+  let cached = strictParseCache.get(filePath);
+  if (!cached) {
+    let content: string | undefined;
+    let readError: Error | undefined;
+    try {
+      content = await fs.readFile(filePath, "utf-8");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        // Absent file is "not configured", not a failure — do NOT cache so a
+        // later-created file is picked up.
+        return { status: "missing-file", filePath, key };
+      }
+      readError = err instanceof Error ? err : new Error(String(err));
+    }
+    if (readError) {
+      cached = { kind: "read", error: readError };
+      strictParseCache.set(filePath, cached);
+    } else if (content !== undefined) {
+      try {
+        const parsed = yamlParse(content);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          cached = { kind: "shape" };
+        } else {
+          cached = { kind: "parsed", value: parsed as Record<string, unknown> };
+        }
+      } catch (err) {
+        cached = { kind: "parse", error: err instanceof Error ? err : new Error(String(err)) };
+      }
+      strictParseCache.set(filePath, cached);
+    }
+  }
+
+  if (!cached) {
+    // Unreachable unless an unexpected control flow happens; treat as read error.
+    return {
+      status: "read-error",
+      error: new Error(`strict prompt read produced no outcome for ${filePath}`),
+      filePath,
+      key,
+    };
+  }
+  if (cached.kind === "read") return { status: "read-error", error: cached.error, filePath, key };
+  if (cached.kind === "parse") return { status: "parse-error", error: cached.error, filePath, key };
+  if (cached.kind === "shape") return { status: "shape-error", filePath, key };
+
+  const raw = cached.value[key];
+  if (raw === undefined) {
+    return { status: "missing-key", filePath, key };
+  }
+  if (typeof raw !== "string") {
+    return { status: "invalid-value", reason: "non-string", filePath, key };
+  }
+  if (raw.trim() === "") {
+    return { status: "invalid-value", reason: "empty", filePath, key };
+  }
+  return { status: "found", value: raw, filePath, key };
 }
