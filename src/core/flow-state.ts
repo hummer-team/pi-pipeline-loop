@@ -23,6 +23,7 @@ import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { designReviewAuthorisationGate } from "./design-review/authorization";
+import { strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { isAuthorizationValid } from "./design-review/state";
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
@@ -492,8 +493,32 @@ export async function executeDecision(
           refreshedMeta,
         );
         if (gateResult.ok) {
-          // Authorization granted - persist the new state
-          ctx.session.updateMeta({ designReview: gateResult.state });
+          // Authorization granted - persist the new state.
+          // 192 fix (issue 7, plan Phase 4 task 3): RELIABLE commit — if the
+          // strict path conflicts or is unavailable, entry FAILS closed with
+          // the new authorization unpersisted; the loop never runs on a
+          // silently-dropped write.
+          const authCommit = strictCommitMeta(
+            ctx.session,
+            { designReview: gateResult.state },
+            expectedFromCurrent(refreshedMeta),
+          );
+          if (authCommit.status !== "persisted") {
+            await safeWriteAuditLog("design_review_authorisation", {
+              pipelineId: refreshedMeta.pipelineId,
+              action: "gate_commit_failed",
+              status: authCommit.status,
+              reason: authCommit.reason,
+              authorizationId: gateResult.state.authorizationId,
+              source: "choose_stage",
+            }, "error");
+            return {
+              success: false,
+              message:
+                `Design-review authorization commit failed: ${authCommit.status} (${authCommit.reason}). ` +
+                `The pipeline stays frozen; no authorization was persisted.`,
+            };
+          }
           await safeWriteAuditLog("design_review_authorisation", {
             pipelineId: refreshedMeta.pipelineId,
             action: "gate_passed",

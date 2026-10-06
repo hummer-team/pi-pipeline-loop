@@ -25,7 +25,7 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn, ConfirmM
 import { createPipelineUI } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
 import { autoAdvanceAfterVerify } from "./verify-advance";
-import { extractAssistantMessages, extractToolCallRecords } from "./session-state";
+import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
 import { safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { checkStageSummaryHash } from "../utils/summary-hash";
@@ -1067,21 +1067,49 @@ export async function maybeHandleConfirmGate(
         return { result: "handled", action: "pending" };
       }
       
-      // Fix #1 (Round 4): Complete the loop - switch stage AND set metadata
-      // Update meta with design-review state, stage transition, and reset counters
-      ctx.session.updateMeta({
-        designReview: initialState,
-        previousStage: currentStage,
-        currentStage: "design-review",
-        stageStartTime: Date.now(),
-        // Reset verify/loop counters for the new stage
-        verifyAttempts: 0,
-        verifyFailures: [],
-        verifyConfigError: undefined,
-        violations: [],
-        loopCycleCount: visitResult.patch.loopCycleCount,
-        stageVisitOrder: visitResult.patch.stageVisitOrder,
-      });
+      // Fix #1 (Round 4): Complete the loop - switch stage AND set metadata.
+      // 192 fix (issue 7, plan Phase 4 task 3): authorization establishment
+      // uses a RELIABLE commit (strict dual-write + read-back + expectation
+      // anchor). On conflict/unavailability the entry reports pending and
+      // dispatches NOTHING — a shared-write failure can never leave the loop
+      // running on unpersisted authorization.
+      // 192 fix (issue 5 chain): the popup durable-trace stamp
+      // (confirmGateDeferredAt) is cleared here exactly like the Approve
+      // path does — the menu choice resolved the gate. Leaving it would make
+      // the later authorized FAIL→plan update dispatch bounce off the G2
+      // confirm-gate deferral guard (stage_spawn_skipped).
+      const freshForExpect = ctx.session.getMeta() ?? meta;
+      const authCommit = strictCommitMeta(
+        ctx.session,
+        {
+          designReview: initialState,
+          previousStage: currentStage,
+          currentStage: "design-review" as PipelineStage,
+          stageStartTime: Date.now(),
+          // Reset verify/loop counters for the new stage
+          verifyAttempts: 0,
+          verifyFailures: [],
+          verifyConfigError: undefined,
+          violations: [],
+          loopCycleCount: visitResult.patch.loopCycleCount,
+          stageVisitOrder: visitResult.patch.stageVisitOrder,
+          confirmGateDeferredAt: undefined,
+        },
+        expectedFromCurrent(freshForExpect),
+      );
+      if (authCommit.status !== "persisted") {
+        ui.notify(
+          ctx,
+          `Auto Review Plan failed: authorization commit ${authCommit.status} (${authCommit.reason}); nothing was dispatched.`,
+        );
+        await writeAuditLog("auto_review_plan_commit_failed", {
+          pipelineId: meta.pipelineId,
+          status: authCommit.status,
+          reason: authCommit.reason,
+          authorizationId: initialState.authorizationId,
+        }, "error");
+        return { result: "handled", action: "pending" };
+      }
       
       // Audit log
       await writeAuditLog("auto_review_plan_authorised", {

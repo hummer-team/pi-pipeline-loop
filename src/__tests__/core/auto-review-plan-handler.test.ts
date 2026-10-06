@@ -300,3 +300,109 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     expect((result as { result: "handled"; action: string }).action).toBe("pending");
   });
 });
+
+
+// ─── 192 fix (issue 7): authorization establishment uses a RELIABLE commit ──
+describe("192 issue-7: Auto Review Plan authorization commits reliably (fail-closed)", () => {
+  /**
+   * A menu ctx whose session adapter LACKS updateMetaVerified (legacy).
+   * The strict path must refuse the establishment: return pending, dispatch
+   * NOTHING, and leave the plan stage/meta untouched (plan Phase 4 task 3:
+   * "字段/授权建立…用可靠提交"; never a silent fail-open continuation).
+   */
+  function legacyAdapterCtx(meta: SessionMeta, selectReturn: string) {
+    let current = { ...meta };
+    const dispatched: string[] = [];
+    return {
+      ctx: {
+        session: {
+          getMeta: () => current,
+          updateMeta: (patch: Partial<SessionMeta>) => {
+            current = { ...current, ...patch };
+            return current;
+          },
+          // NOTE: deliberately NO updateMetaVerified — legacy adapter
+        },
+        ui: {
+          notify: (_m: string) => {},
+          select: async (_msg: string, _opts: string[]) => selectReturn,
+        },
+        pi: { sendUserMessage: (_m: string) => {} },
+        spawnOverride: async (_c: unknown, stage: string) => {
+          dispatched.push(stage);
+          return { spawned: true, fallback: false, deferred: false, agentId: "a-x", dispatchOutcome: "spawned_id" as const };
+        },
+        _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      },
+      getMeta: () => current,
+      dispatched,
+    };
+  }
+
+  it("legacy adapter (no strict interface) → pending, ZERO dispatch, plan stage unchanged", async () => {
+    const planPath = await createPlanDoc();
+    const config = makeDesignReviewConfig(tmpDir);
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config_plan.md",
+      pipelineId: "pipe-issue7-legacy",
+    });
+    const harness = legacyAdapterCtx(meta, "Auto Review Plan");
+
+    const result = await maybeHandleConfirmGate(
+      config,
+      harness.ctx as never,
+      harness.getMeta() as never,
+      { notify: () => {} } as never,
+      { mode: "manual", sessionFile: tmpDir + "/session.json" },
+    );
+
+    expect(result.result).toBe("handled");
+    expect((result as { result: "handled"; action: string }).action).toBe("pending");
+    // Nothing dispatched (no half-authorized loop on an unpersisted write)
+    expect(harness.dispatched).toEqual([]);
+    // Stage/authorization NOT switched: the failed strict commit left no trace
+    const after = harness.getMeta();
+    expect(after.currentStage).toBe("plan");
+    expect(after.designReview).toBeUndefined();
+    // The plan doc still carries no confirmation marker (unchanged)
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(planPath, "utf-8")).not.toContain("## 用户确认");
+  });
+
+  it("healthy strict adapter → authorization PERSISTS and dispatches exactly once", async () => {
+    await createPlanDoc();
+    const config = makeDesignReviewConfig(tmpDir);
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config_plan.md",
+      pipelineId: "pipe-issue7-ok",
+    });
+    const ctx = createMockCtx(meta, { selectReturn: "Auto Review Plan" });
+    let dispatched = 0;
+    (ctx as { spawnOverride?: unknown }).spawnOverride = async () => {
+      dispatched++;
+      return { spawned: true, fallback: false, deferred: false, agentId: "a-ok", dispatchOutcome: "spawned_id" as const };
+    };
+
+    const result = await maybeHandleConfirmGate(
+      config,
+      ctx as never,
+      meta,
+      { notify: () => {} } as never,
+      { mode: "manual", sessionFile: tmpDir + "/session.json" },
+    );
+
+    expect(result.result).toBe("handled");
+    expect((result as { result: "handled"; action: string; toStage?: string }).action).toBe("advanced");
+    expect((result as { result: "handled"; action: string; toStage?: string }).toStage).toBe("design-review");
+    const after = ctx.session.getMeta() as SessionMeta;
+    expect(after.designReview?.authorizationSource).toBe("menu");
+    expect(after.designReview?.phase).toBe("review_running");
+    expect(dispatched).toBe(1);
+    // 192 issue-5 chain fix: the popup durable-trace stamp is cleared by the
+    // resolved gate, so the later authorized FAIL→plan update dispatch is not
+    // bounced by the G2 confirm-gate deferral guard.
+    expect(after.confirmGateDeferredAt).toBeUndefined();
+  });
+});

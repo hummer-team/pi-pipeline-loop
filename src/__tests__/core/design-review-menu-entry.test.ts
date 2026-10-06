@@ -170,4 +170,105 @@ describe("192 Phase 4: entry pre-checks", () => {
       expect(res.state.reportDoc).toContain("review-design-1-");
     }
   });
+
+// ─── 192 fix (issue 7): direct-gate establishment commits RELIABLY ─────────
+describe("192 issue-7: choose_stage direct gate strict commit (fail-closed)", () => {
+  it("gate ok but legacy adapter (no strict interface) → entry refused, nothing persisted", async () => {
+    const config = baseConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/190_Feat.md",
+      pipelineId: "pipe-entry-7",
+      flowState: "blocked" as const,
+      blockedReason: "loop_overflow" as never,
+    });
+    // Legacy session WITHOUT updateMetaVerified: strict commit unavailable.
+    const legacyCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Record<string, unknown>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        notify: () => {},
+        setStatus: () => {},
+        select: async () => undefined,
+        confirm: async () => true, // owner confirms the authorization
+      },
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [],
+          getEntries: () => [],
+          getSessionFile: () => path.join(projectRoot, "owner.jsonl"),
+          getSessionName: () => "owner",
+          getHeader: () => undefined,
+        },
+      },
+    } as never;
+
+    const { executeDecision } = await import("../../core/flow-state");
+    const res = await executeDecision(legacyCtx, meta, "choose_stage", config, {
+      targetStage: "design-review",
+    });
+
+    // Fail-closed: the entry is REFUSED when the authorization cannot be
+    // reliably persisted (plan Phase 4 task 3: never silently continue).
+    expect(res.success).toBe(false);
+    expect(res.message).toContain("authorization commit failed");
+    // The new authorization was NOT persisted and the stage was NOT switched.
+    expect(meta.designReview).toBeUndefined();
+    expect(meta.currentStage).toBe("plan");
+    expect(meta.flowState).toBe("blocked"); // pipeline stays frozen untouched
+  });
+
+  it("gate ok with strict adapter → authorization persisted + stage switched", async () => {
+    const config = baseConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/190_Feat.md",
+      pipelineId: "pipe-entry-8",
+      flowState: "blocked" as const,
+      blockedReason: "loop_overflow" as never,
+    });
+    const strictCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Record<string, unknown>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+        updateMetaVerified: (patch: Record<string, unknown>) => {
+          Object.assign(meta, patch);
+          return { status: "persisted", meta };
+        },
+      },
+      ui: {
+        notify: () => {},
+        setStatus: () => {},
+        select: async () => undefined,
+        confirm: async () => true,
+      },
+      _ctx: {
+        sessionManager: {
+          getBranch: () => [],
+          getEntries: () => [],
+          getSessionFile: () => path.join(projectRoot, "owner.jsonl"),
+          getSessionName: () => "owner",
+          getHeader: () => undefined,
+        },
+      },
+    } as never;
+
+    const { executeDecision } = await import("../../core/flow-state");
+    const res = await executeDecision(strictCtx, meta, "choose_stage", config, {
+      targetStage: "design-review",
+    });
+    expect(res.success).toBe(true);
+    expect(meta.designReview?.authorizationSource).toBeDefined();
+    expect(meta.currentStage).toBe("design-review");
+    expect(meta.flowState).toBe("running");
+  });
+});
 });
