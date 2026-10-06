@@ -15,9 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { computeHash, createInitialState } from "../../core/design-review-state";
-import type { CoordinatorContext } from "../../core/design-review-coordinator";
-import { coordinateDesignReview } from "../../core/design-review-coordinator";
+import { computeHash, createInitialState } from "../../core/design-review/state";
+import type { CoordinatorContext } from "../../core/design-review/coordinator";
+import { coordinateDesignReview } from "../../core/design-review/coordinator";
 
 describe("design-review multi-entrypoint consistency", () => {
   let tempDir: string;

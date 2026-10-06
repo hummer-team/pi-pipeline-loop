@@ -22,8 +22,8 @@ import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
-import { designReviewAuthorisationGate } from "./design-review-authorisation";
-import { isAuthorizationValid } from "./design-review-state";
+import { designReviewAuthorisationGate } from "./design-review/authorization";
+import { isAuthorizationValid } from "./design-review/state";
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
 

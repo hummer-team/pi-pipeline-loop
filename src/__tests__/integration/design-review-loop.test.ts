@@ -19,8 +19,8 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
-import { createInitialState, computeHash, deriveReportPath } from "../../core/design-review-state";
-import { coordinateDesignReview, type CoordinatorContext } from "../../core/design-review-coordinator";
+import { createInitialState, computeHash, deriveReportPath } from "../../core/design-review/state";
+import { coordinateDesignReview, type CoordinatorContext } from "../../core/design-review/coordinator";
 import type { SessionMeta, DesignReviewState, PipelineConfig } from "../../types";
 
 let tmpDir: string;

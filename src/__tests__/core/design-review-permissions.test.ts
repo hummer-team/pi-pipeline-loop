@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { isAuthorizationValid } from "../../core/design-review-state";
+import { isAuthorizationValid } from "../../core/design-review/state";
 import type { DesignReviewState, DesignReviewPhase, DesignReviewPauseReason } from "../../types";
 
 function makeValidState(phase: DesignReviewPhase = "review_ready"): DesignReviewState {

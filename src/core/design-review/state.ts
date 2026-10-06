@@ -1,8 +1,13 @@
 /**
- * @module design-review-state
- * Phase 0 / 191: Pure functions for design-review state management.
+ * @module design-review/state
+ * 191 + 192 Phase 0: Pure functions for design-review state management.
  * Handles report path derivation, round allocation, authorization validity,
- * and state transitions. No I/O or storage — all functions are pure.
+ * identity comparison and lifecycle transitions.
+ *
+ * I/O boundary: this module performs NO file system I/O. Round allocation
+ * consumes only the caller-provided history of existing round numbers; the
+ * directory scan that produces that history lives in the dispatch/entry I/O
+ * layer (see `entry.ts` / `dispatch.ts`), never here.
  */
 
 import * as crypto from "node:crypto";
@@ -15,7 +20,9 @@ import type {
   DesignReviewDispatchState,
   DesignReviewOperation,
   DesignReviewPauseReason,
-} from "../types";
+  DesignReviewIdentity,
+  SessionMeta,
+} from "../../types";
 
 /**
  * Generate a UUID v4 for operation/authorization IDs.
@@ -130,9 +137,10 @@ export function createInitialState(
   authorizationSource: DesignReviewAuthorizationSource,
   planHash: string,
   ownerSessionFile?: string,
+  attribution?: { pipelineId?: string; requirementDoc?: string; round?: number },
 ): DesignReviewState {
   const now = Date.now();
-  const round = 1;
+  const round = attribution?.round ?? 1;
   const reportDoc = deriveReportPath(planDoc, round);
   return {
     schemaVersion: 1,
@@ -144,6 +152,10 @@ export function createInitialState(
     reportDoc,
     planHash,
     phase: "review_ready",
+    ...(attribution?.pipelineId !== undefined ? { pipelineId: attribution.pipelineId } : {}),
+    ...(attribution?.requirementDoc !== undefined
+      ? { requirementDoc: path.resolve(attribution.requirementDoc) }
+      : {}),
     authorizedAt: now,
     updatedAt: now,
   };
@@ -342,4 +354,211 @@ export function isSameAuthorizationContext(
     state1.round === state2.round &&
     state1.planHash === state2.planHash
   );
+}
+
+// ─── 192 Phase 0: identity predicates and flow classification ────────────────
+
+/**
+ * Result of narrowing a design-review flow classification.
+ * - "ordinary": this feature is not involved; existing pipeline behavior applies.
+ * - "authorized": an active, identity-complete closed loop is present; the
+ *   domain consumer MUST handle it (never fall back to ordinary branches).
+ * - "blocked": the feature exists but identity narrowing failed (invalid or
+ *   incomplete state); must be handled as takeover/pending, never ordinary.
+ */
+export type DesignReviewFlowKind = "ordinary" | "authorized" | "blocked";
+
+export interface DesignReviewFlowClassification {
+  kind: DesignReviewFlowKind;
+  /** Narrowed state when present (authorized/blocked); undefined for ordinary */
+  state?: DesignReviewState;
+  /** Machine-readable reason for "blocked" */
+  reason?: string;
+}
+
+/**
+ * Runtime completeness check for a persisted design-review state.
+ * Validity is decided by FULL field validation, not by the numeric
+ * schemaVersion (old meta with schemaVersion=1 is read compatibly; whether it
+ * is usable depends on these fields).
+ *
+ * Required: authorizationId, planDoc, round (>=1), phase (known value).
+ */
+export function hasCompleteDesignReviewIdentity(state: unknown): state is DesignReviewState {
+  if (typeof state !== "object" || state === null) {
+    return false;
+  }
+  const s = state as Partial<DesignReviewState>;
+  if (typeof s.authorizationId !== "string" || s.authorizationId.length === 0) {
+    return false;
+  }
+  if (typeof s.planDoc !== "string" || s.planDoc.length === 0) {
+    return false;
+  }
+  if (typeof s.round !== "number" || !Number.isInteger(s.round) || s.round < 1) {
+    return false;
+  }
+  const phases: DesignReviewPhase[] = [
+    "review_ready",
+    "review_running",
+    "update_ready",
+    "update_running",
+    "pass_ready",
+    "paused",
+    "finished",
+  ];
+  if (!phases.includes(s.phase as DesignReviewPhase)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Build the full business identity for the CURRENT operation of a narrowed
+ * state. Document paths are canonicalized against the process/project root.
+ *
+ * @param meta - Current session meta (pipelineId source)
+ * @param state - Narrowed design-review state
+ * @param operation - The operation to bind identity to (defaults to state.operation)
+ * @returns Identity tuple, or undefined when the state has no operation to bind.
+ */
+export function buildDesignReviewIdentity(
+  meta: SessionMeta,
+  state: DesignReviewState,
+  operation?: DesignReviewOperation,
+): DesignReviewIdentity | undefined {
+  const op = operation ?? state.operation;
+  if (!op) {
+    return undefined;
+  }
+  const identity: DesignReviewIdentity = {
+    pipelineId: meta.pipelineId ?? "unknown",
+    ...(state.requirementDoc !== undefined ? { requirementDoc: state.requirementDoc } : {}),
+    planDoc: state.planDoc,
+    authorizationId: state.authorizationId,
+    round: state.round,
+    kind: op.kind,
+    operationId: op.operationId,
+    stageVisitId: op.stageVisitId,
+    ...(op.inputHash !== undefined ? { inputHash: op.inputHash } : {}),
+  };
+  return identity;
+}
+
+/**
+ * Full identity comparison over the complete tuple.
+ * Any single differing component (kind, round, stageVisitId included — even
+ * for same-millisecond visits) makes the identities unequal. Undefined vs
+ * defined optional fields are also unequal: no field-omission guessing.
+ */
+export function identityEquals(
+  a: DesignReviewIdentity | undefined,
+  b: DesignReviewIdentity | undefined,
+): boolean {
+  if (!a || !b) {
+    return false;
+  }
+  if (a === b) {
+    return true;
+  }
+  return (
+    a.pipelineId === b.pipelineId &&
+    a.requirementDoc === b.requirementDoc &&
+    path.resolve(a.planDoc) === path.resolve(b.planDoc) &&
+    a.authorizationId === b.authorizationId &&
+    a.round === b.round &&
+    a.kind === b.kind &&
+    a.operationId === b.operationId &&
+    a.stageVisitId === b.stageVisitId &&
+    a.inputHash === b.inputHash
+  );
+}
+
+/**
+ * Check whether the given identity refers to the CURRENT run's active
+ * design-review operation: same authorization/round/kind/operation as stored
+ * in the state, plus matching inputHash when both sides carry one.
+ *
+ * This is the runtime ownership gate — a pure type assertion is never used
+ * as an ownership check elsewhere.
+ */
+export function isAuthorizedCurrentRun(
+  meta: SessionMeta,
+  state: DesignReviewState,
+  candidate: DesignReviewIdentity,
+): boolean {
+  const current = buildDesignReviewIdentity(meta, state);
+  if (!current) {
+    // No operation bound: only a candidate with matching authorization/round
+    // and a kind-less comparison is NOT accepted — absence of operation means
+    // there is no current run identity to authorize.
+    return false;
+  }
+  return identityEquals(current, candidate);
+}
+
+/**
+ * True when the current operation is a develop-handoff that has not been
+ * reliably finalized (dispatch receipt + finished both missing). Such a state
+ * must NEVER be classified ordinary, regardless of currentStage=develop.
+ */
+export function isDevelopHandoffOperation(meta: SessionMeta): boolean {
+  const state = meta.designReview;
+  if (!state || !state.operation) {
+    return false;
+  }
+  if (state.operation.kind !== "develop-handoff") {
+    return false;
+  }
+  // A handoff is "unfinished" until it reaches a terminal dispatch state.
+  return !["completed", "cancelled"].includes(state.operation.dispatchState);
+}
+
+/**
+ * Classify the design-review flow for hook/tool entry points.
+ *
+ * Distinguishes "no involvement of this feature (ordinary)" from "this
+ * feature exists but identity is invalid (blocked)" and "active authorized
+ * loop (authorized)". pass_ready / paused states — including an unfinished
+ * develop-handoff while currentStage is already develop — remain
+ * authorized/blocked and are never released to ordinary branches.
+ *
+ * Behavior note (Phase 0): "finished" is currently treated as ordinary
+ * (terminal, released). Phase 4 tightens this to require the current
+ * handoff's persisted success receipt before release.
+ */
+export function classifyDesignReviewFlow(meta: SessionMeta | undefined): DesignReviewFlowClassification {
+  const state = meta?.designReview;
+  if (!state) {
+    return { kind: "ordinary" };
+  }
+  if (!hasCompleteDesignReviewIdentity(state)) {
+    return { kind: "blocked", state, reason: "identity_incomplete" };
+  }
+  if (state.phase === "finished") {
+    // 191-compat terminal release; Phase 4 adds receipt evidence requirement.
+    return { kind: "ordinary" };
+  }
+  if (state.phase === "paused" && state.pauseReason === "authorization-lost") {
+    return { kind: "ordinary" };
+  }
+  return { kind: "authorized", state };
+}
+
+/**
+ * 192 Phase 0 (task 4): allocate the next round from a caller-provided set of
+ * existing round numbers. Pure: the directory scan that gathers the history
+ * lives in the entry/dispatch I/O layer, never here.
+ *
+ * @param existingRounds - Round numbers already occupied (strictly-named files
+ *   in the plan directory). Empty array means the next round is 1.
+ */
+export function allocateNextRoundSafe(existingRounds: readonly number[]): number {
+  let max = 0;
+  for (const r of existingRounds) {
+    if (Number.isInteger(r) && r > max) {
+      max = r;
+    }
+  }
+  return max + 1;
 }

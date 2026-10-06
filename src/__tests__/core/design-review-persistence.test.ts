@@ -8,8 +8,8 @@ import {
   isCurrentOperation,
   formatDesignReviewSpawnDescription,
   formatDesignReviewSpawnPrompt,
-} from "../../utils/design-review-dispatch";
-import { createInitialState } from "../../core/design-review-state";
+} from "../../core/design-review/dispatch";
+import { createInitialState } from "../../core/design-review/state";
 
 describe("Phase 2: Design Review Persistence", () => {
   describe("commitDesignReviewState", () => {

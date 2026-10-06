@@ -1,5 +1,5 @@
 /**
- * @module design-review-dispatch
+ * @module design-review/dispatch
  * Phase 2 / 191: Operation-aware dispatch logic for design review stage.
  *
  * Extracted from subagent-rpc.ts to provide design-review-specific spawn context
@@ -12,16 +12,16 @@
  * - Old operations/queues cannot overwrite new rounds
  *
  * Dependencies:
- * - design-review-state: pure functions for state transitions and validation
+ * - state (this directory): pure functions for state transitions and validation
  * - subagent-rpc: existing RPC mechanism (reused, not duplicated)
  * - spawn-cleanup: existing cleanup helpers (extended for operation awareness)
  */
 
 import crypto from "node:crypto";
-import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation } from "../types";
-import type { SessionState } from "../core/session-state";
+import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation } from "../../types";
+import type { SessionState } from "../session-state";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { safeWriteAuditLog } from "./auditLog";
+import { safeWriteAuditLog } from "../../utils/auditLog";
 import {
   isValidTransition,
   updateDispatchState,
@@ -29,7 +29,7 @@ import {
   isAuthorizationValid,
   computeHash,
   generateUUID,
-} from "../core/design-review-state";
+} from "./state";
 
 /**
  * Dispatch context for design review operations.

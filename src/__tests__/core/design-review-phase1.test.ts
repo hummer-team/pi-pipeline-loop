@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import * as fs from "fs/promises";
 import * as path from "path";
-import { verifyDesignReviewReport } from "../../core/design-review-report";
-import { renderDesignReviewUpdatePrompt } from "../../core/design-review-prompt";
+import { verifyDesignReviewReport } from "../../core/design-review/report";
+import { renderDesignReviewUpdatePrompt } from "../../core/design-review/prompt";
 
 describe("Phase 1: Design Review Report Verification", () => {
   const testDir = "/tmp/pi-pipeline-test-design-review-phase1";

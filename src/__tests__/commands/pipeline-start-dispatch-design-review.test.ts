@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dispatchAfterResume } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
-import { createInitialState, computeHash } from "../../core/design-review-state";
+import { createInitialState, computeHash } from "../../core/design-review/state";
 import type { SessionMeta } from "../../types";
 
 let tmpDir: string;

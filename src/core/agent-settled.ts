@@ -40,7 +40,7 @@ import { escapeRegExp } from "../utils/regex-utils";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen re-popup
 import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
 import type { SessionMeta as AgentSettledSessionMeta } from "../types";
-import { coordinateDesignReview } from "./design-review-coordinator";
+import { coordinateDesignReview } from "./design-review/coordinator";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes

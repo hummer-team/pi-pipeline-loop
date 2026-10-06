@@ -14,7 +14,7 @@ import { extractAssistantMessages } from "../core/session-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
 import { isDormant } from "../core/dormancy";
-import { coordinateDesignReview } from "../core/design-review-coordinator";
+import { coordinateDesignReview } from "../core/design-review/coordinator";
 
 /**
  * Options injected into the pipeline_verify tool via closure.

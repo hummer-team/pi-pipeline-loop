@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { coordinateDesignReview } from "../../core/design-review-coordinator";
+import { coordinateDesignReview } from "../../core/design-review/coordinator";
 import type { SessionMeta, DesignReviewState, PipelineConfig } from "../../types";
 import { writeAuditLog } from "../../utils/auditLog";
 import { shouldEmitWithinWindow, __resetMemoryThrottle } from "../../utils/audit-throttle";

@@ -18,7 +18,7 @@ import { isDormant } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { maybeHandleConfirmGate, formatConfirmGatePendingCopy } from "../core/stage-advancer";
 import { detectSessionRole } from "../core/session-role";
-import { coordinateDesignReview } from "../core/design-review-coordinator";
+import { coordinateDesignReview } from "../core/design-review/coordinator";
 
 /**
  * Creates the `pipeline_handoff` tool.

@@ -1,5 +1,5 @@
 /**
- * @module design-review-report
+ * @module design-review/report
  * Phase 1 / 191: Design review report verification and verdict logic.
  * Reads review reports, validates structure, and determines pass/fail/invalid verdicts.
  * 
@@ -10,8 +10,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { computeHash } from "./design-review-state";
-import type { DesignReviewReportVerdict } from "../types";
+import { computeHash } from "./state";
+import type { DesignReviewReportVerdict } from "../../types";
 
 /**
  * Report structure validation result

@@ -38,7 +38,7 @@ import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
 // Round 5 (N-3): coordinator for design-review dispatch
-import { coordinateDesignReview } from "../core/design-review-coordinator";
+import { coordinateDesignReview } from "../core/design-review/coordinator";
 
 /**
  * Checks that all 5 active stages have agentPath configured.

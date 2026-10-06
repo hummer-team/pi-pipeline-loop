@@ -14,9 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PipelineConfig, SessionMeta, ConfirmMode } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { computeHash, createInitialState } from "../../core/design-review-state";
-import type { CoordinatorContext } from "../../core/design-review-coordinator";
-import { coordinateDesignReview } from "../../core/design-review-coordinator";
+import { computeHash, createInitialState } from "../../core/design-review/state";
+import type { CoordinatorContext } from "../../core/design-review/coordinator";
+import { coordinateDesignReview } from "../../core/design-review/coordinator";
 import { initAuditLog } from "../../utils/auditLog";
 
 // All trigger types supported by the coordinator

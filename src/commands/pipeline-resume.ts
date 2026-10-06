@@ -27,8 +27,8 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
 import { staleConfigNotice } from "../utils/config-staleness";
-import { coordinateDesignReview, type CoordinatorResult } from "../core/design-review-coordinator";
-import { isAuthorizationValid } from "../core/design-review-state";
+import { coordinateDesignReview, type CoordinatorResult } from "../core/design-review/coordinator";
+import { isAuthorizationValid } from "../core/design-review/state";
 
 /**
  * Idempotent stage dispatch helper (Phase 1 / 182).

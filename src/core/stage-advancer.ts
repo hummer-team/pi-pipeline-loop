@@ -38,8 +38,8 @@ import { isDormant } from "./dormancy";
 import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
-import { coordinateDesignReview } from "./design-review-coordinator";
-import { createInitialState, computeHash } from "./design-review-state";
+import { coordinateDesignReview } from "./design-review/coordinator";
+import { createInitialState, computeHash } from "./design-review/state";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -997,12 +997,13 @@ export async function maybeHandleConfirmGate(
   // D02 compliance: does NOT write human confirmation markers
   if (choice === "Auto Review Plan") {
     // Validate design-review stage is enabled and properly configured
+    // (menu-side checks; unified pre-check via entry.ts lands in Phase 4)
     const drStage = config.stages["design-review"];
     if (!drStage?.verify?.require) {
       ui.notify(ctx, `Auto Review Plan is not available: design-review stage is not enabled.`);
       return { result: "handled", action: "pending" };
     }
-    
+
     if (!drStage.agentPath || !drStage.skillPath) {
       ui.notify(ctx, `Auto Review Plan is not available: design-review stage configuration is invalid.`);
       return { result: "handled", action: "pending" };
@@ -1024,7 +1025,11 @@ export async function maybeHandleConfirmGate(
       const ownerSessionFile = sessionFile ?? "";
       
       // Create initial authorization state with source="menu" (NOT "direct-entry")
-      const initialState = createInitialState(planDocPath, "menu", planHash, ownerSessionFile);
+      // 192 Phase 0: attribution fields recorded for identity binding.
+      const initialState = createInitialState(planDocPath, "menu", planHash, ownerSessionFile, {
+        pipelineId: meta.pipelineId,
+        requirementDoc: meta.requirementDoc,
+      });
       
       // Record stage visit to design-review (without writing confirmation markers)
       const visitResult = recordStageVisit(meta, "design-review", config.maxLoopCycles ?? 3);

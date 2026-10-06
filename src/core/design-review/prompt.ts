@@ -1,13 +1,13 @@
 /**
- * @module design-review-prompt
+ * @module design-review/prompt
  * Phase 1 / 191: Design review prompt template rendering.
  * Renders update prompts for plan modification based on review issues.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { extractReportIssues } from "./design-review-report";
-import { computeHash } from "./design-review-state";
+import { extractReportIssues } from "./report";
+import { computeHash } from "./state";
 
 /**
  * Parameters required for rendering an update prompt

@@ -10,7 +10,7 @@
 
 import { describe, test, expect, beforeEach } from "bun:test";
 import type { PipelineConfig, SessionMeta, DesignReviewState } from "../../types";
-import { isAuthorizationValid } from "../../core/design-review-state";
+import { isAuthorizationValid } from "../../core/design-review/state";
 
 function makeTestConfig(): PipelineConfig {
   return {

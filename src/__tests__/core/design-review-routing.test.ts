@@ -27,9 +27,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PipelineConfig, SessionMeta, DesignReviewState } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { computeHash, createInitialState } from "../../core/design-review-state";
-import type { CoordinatorContext, CoordinatorResult } from "../../core/design-review-coordinator";
-import { coordinateDesignReview } from "../../core/design-review-coordinator";
+import { computeHash, createInitialState } from "../../core/design-review/state";
+import type { CoordinatorContext, CoordinatorResult } from "../../core/design-review/coordinator";
+import { coordinateDesignReview } from "../../core/design-review/coordinator";
 
 describe("design-review-coordinator routing", () => {
   let tempDir: string;

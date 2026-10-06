@@ -1,5 +1,5 @@
 /**
- * @module design-review-coordinator
+ * @module design-review/coordinator
  * Phase 3 / 191: Unified decision/routing/authorization/recovery entry point for design-review stage.
  * 
  * Coordinates all design-review transitions:
@@ -10,10 +10,10 @@
  * Returns handled/pending/transitioned/not-applicable. Only not-applicable proceeds to original logic.
  */
 
-import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation, DesignReviewPhase } from "../types";
-import { verifyDesignReviewReport, extractReportIssues } from "./design-review-report";
-import { loadVerifyContractAnchors } from "../utils/contract-loader";
-import { validatePlanUpdate, renderDesignReviewUpdatePrompt, type DesignReviewUpdatePromptParams } from "./design-review-prompt";
+import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation, DesignReviewPhase } from "../../types";
+import { verifyDesignReviewReport, extractReportIssues } from "./report";
+import { loadVerifyContractAnchors } from "../../utils/contract-loader";
+import { validatePlanUpdate, renderDesignReviewUpdatePrompt, type DesignReviewUpdatePromptParams } from "./prompt";
 import {
   isValidTransition,
   transitionPhase,
@@ -24,13 +24,14 @@ import {
   computeHash,
   deriveReportPath,
   allocateNextRound,
-} from "./design-review-state";
-import { commitDesignReviewState } from "./session-state";
-import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult, formatDesignReviewSpawnPrompt } from "../utils/design-review-dispatch";
-import { recordStageVisit } from "../utils/stage-visit";
-import { spawnStageSubagent } from "../utils/subagent-rpc";
-import { safeWriteAuditLog } from "../utils/auditLog";
-import { shouldEmitWithinWindow } from "../utils/audit-throttle";
+} from "./state";
+import { commitDesignReviewState } from "../session-state";
+import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult, formatDesignReviewSpawnPrompt } from "./dispatch";
+import { narrowDesignReviewState } from "./verification-context";
+import { recordStageVisit } from "../../utils/stage-visit";
+import { spawnStageSubagent } from "../../utils/subagent-rpc";
+import { safeWriteAuditLog } from "../../utils/auditLog";
+import { shouldEmitWithinWindow } from "../../utils/audit-throttle";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -91,14 +92,23 @@ export async function coordinateDesignReview(
   meta: SessionMeta,
   trigger: "settle" | "advance" | "verify" | "handoff",
 ): Promise<CoordinatorResult> {
-  const drState = meta.designReview;
-  
-  // Not in design-review flow
-  if (!drState) {
-    return { status: "not-applicable" };
+  // 192 Phase 0: strict narrowing distinguishes "not this feature" (absent)
+  // from "this feature present but identity invalid" (blocked). A blocked
+  // loop must never fall back to ordinary branches.
+  const narrowed = narrowDesignReviewState(meta);
+  if (!narrowed.ok) {
+    if (narrowed.reason === "absent") {
+      return { status: "not-applicable" };
+    }
+    await safeWriteAuditLog("design_review_coordinator", {
+      trigger,
+      action: "identity_incomplete",
+    });
+    return { status: "handled", action: "pending", reason: "identity_incomplete" };
   }
+  const drState = narrowed.state;
 
-  // Authorization invalid
+  // Authorization invalid (finished / authorization-lost)
   if (!isAuthorizationValid(drState)) {
     await safeWriteAuditLog("design_review_coordinator", {
       trigger,
@@ -465,7 +475,7 @@ async function handleFail(
       if (committedState) {
         // Fix for Issue #7: Render specialized update prompt for FAIL-triggered update
         // Use resolvePiWorkDir for proper path resolution
-        const { resolvePiWorkDir } = await import("../utils/work-dir");
+        const { resolvePiWorkDir } = await import("../../utils/work-dir");
         const templatePath = path.join(
           ctx.config.projectRoot,
           resolvePiWorkDir(ctx.config),
@@ -574,7 +584,7 @@ async function handleUpdateReady(
   // Fix for Issue #7: Render specialized update prompt using dedicated template
   // This provides authorized update mode instructions to the plan agent
   // Use resolvePiWorkDir for proper path resolution
-  const { resolvePiWorkDir } = await import("../utils/work-dir");
+  const { resolvePiWorkDir } = await import("../../utils/work-dir");
   const templatePath = path.join(
     ctx.config.projectRoot,
     resolvePiWorkDir(ctx.config),

@@ -21,7 +21,7 @@ import {
   isSameOperation,
   hasPlanDrifted,
   isSameAuthorizationContext,
-} from "../../core/design-review-state";
+} from "../../core/design-review/state";
 import type { DesignReviewState, DesignReviewOperation } from "../../types";
 
 describe("design-review-state pure functions", () => {

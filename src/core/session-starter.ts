@@ -29,8 +29,8 @@ import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen replay
 import { dispatchAfterResume } from "../commands/pipeline-start";
 // Phase 4 (191): design-review recovery on session start/reload
-import { coordinateDesignReview, type CoordinatorResult } from "./design-review-coordinator";
-import { isAuthorizationValid } from "./design-review-state";
+import { coordinateDesignReview, type CoordinatorResult } from "./design-review/coordinator";
+import { isAuthorizationValid } from "./design-review/state";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 

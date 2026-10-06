@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { designReviewAuthorisationGate } from "../../core/design-review-authorisation";
+import { designReviewAuthorisationGate } from "../../core/design-review/authorization";
 import type { RuntimeCtx } from "../../core/runtime-ctx";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";

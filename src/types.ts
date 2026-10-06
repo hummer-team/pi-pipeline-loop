@@ -534,7 +534,7 @@ export interface SessionMeta {
    * - Cleared on resume/restart (buildResumeMeta/buildStartMeta/buildRestartMeta)
    * - 30min stale entries treated as absent (fail-open)
    */
-   activeSpawns?: Partial<Record<PipelineStage, { agentName: string; agentId?: string; startedAt: number; reserved?: boolean }>>;
+   activeSpawns?: Partial<Record<PipelineStage, { agentName: string; agentId?: string; startedAt: number; reserved?: boolean; /** 192 Phase 0: operation identity attached when the spawn was dispatched as a design-review operation; absent for ordinary spawns (original fields unchanged). */ operationContext?: SpawnOperationContext }>>;
 
   /**
    * Phase 2 / 177 (D4③): Owner-routed pending spawn requests.
@@ -549,7 +549,7 @@ export interface SessionMeta {
    * - Consumed (and cleared) by the owner session in `agent_settled`
    * - `attempts` bounds idempotent re-delivery (max 1 re-delivery per stage)
    */
-  pendingSpawns?: Partial<Record<PipelineStage, { agentName: string; requestedAt: number; attempts: number; extraArgs?: string }>>;
+  pendingSpawns?: Partial<Record<PipelineStage, { agentName: string; requestedAt: number; attempts: number; extraArgs?: string; /** 192 Phase 0: operation identity carried with the request; dequeue must validate stage/operation/round before consuming. */ operationContext?: SpawnOperationContext }>>;
 
   /**
    * Phase 3 / 177 (D5b): Bounded auto re-ask bookkeeping for an unresolved
@@ -799,12 +799,163 @@ export type DesignReviewState = {
   /** Reason for pause (when phase === "paused") */
   pauseReason?: DesignReviewPauseReason;
 
+  /**
+   * 192 Phase 0: owning pipeline id (attribution).
+   * Optional for backward-compatible reads of older meta; a state without a
+   * pipelineId is treated as identity-incomplete at runtime, never assumed valid.
+   */
+  pipelineId?: string;
+
+  /**
+   * 192 Phase 0: owning requirement document path (attribution, resolved
+   * against projectRoot). Optional for backward-compatible reads.
+   */
+  requirementDoc?: string;
+
+  /**
+   * 192 Phase 0: bounded receipt of the review report consumed by the current
+   * update operation. Keeps the review identity/reportDoc/reportHash/input plan
+   * hash and issue ids of the consumed report so the update operation does not
+   * lose the attribution of its input FAIL report. Not a full report copy.
+   */
+  reviewInputReceipt?: DesignReviewInputReceipt;
+
   /** Timestamp when authorization was granted */
   authorizedAt: number;
 
   /** Timestamp when state was last updated */
   updatedAt: number;
 };
+
+// ─── Design Review Contracts (192 Phase 0) ───────────────────────────────────
+
+/**
+ * 192 Phase 0: single business identity for one design-review operation.
+ * Identity is the tuple (pipelineId, requirementDoc, planDoc, authorizationId,
+ * round, operation.kind, operationId, stageVisitId, inputHash).
+ * Document paths are canonical absolute paths resolved against projectRoot.
+ * stageStartTime alone is NOT an operation identity; stageVisitId keeps its
+ * existing visit-guard role only as one component of this tuple.
+ */
+export interface DesignReviewIdentity {
+  /** Pipeline this identity belongs to */
+  pipelineId: string;
+  /** Requirement document (canonical absolute path); absent when not tracked by the run */
+  requirementDoc?: string;
+  /** Plan document (canonical absolute path) under review/update */
+  planDoc: string;
+  /** Authorization that established this closed loop */
+  authorizationId: string;
+  /** Round number (1-based; new round means new operations) */
+  round: number;
+  /** Operation kind — review/update/develop-handoff are distinct kinds */
+  kind: DesignReviewOperationKind;
+  /** Unique operation id (new kind or new round always means new id) */
+  operationId: string;
+  /** Stage visit id (stageStartTime at dispatch) */
+  stageVisitId: number;
+  /** Input hash: review = SHA-256 of the authorized plan content;
+   * update = bound to baselinePlanHash/reportHash/issue ids */
+  inputHash?: string;
+}
+
+/**
+ * 192 Phase 0: one valid issue extracted from a review report.
+ * `issueId` is a stable id when present in the report, otherwise the
+ * 1-based ordinal within the CURRENT report snapshot.
+ */
+export interface ReviewIssue {
+  /** Stable issue id or current-report ordinal as string */
+  issueId: string;
+  /** Issue text (trimmed, code fences/quotes/examples already excluded) */
+  text: string;
+}
+
+/**
+ * 192 Phase 0: trusted domain outcome returned alongside the shared
+ * verification run result. Consumers must never generate approval from raw
+ * `rulePassed`, skipped, model self-reported conclusion, summary or markers.
+ *
+ * - "report": a verified design-review report with a bound identity and verdict.
+ * - "update": a verified authorized plan update (structure complete, plan changed).
+ * - "invalid": contract/attribution/format failures (goes to the normal
+ *   verification-failure budget).
+ * - "paused": a domain pause (drift/no-change/new-decision/unknown dispatch).
+ */
+export type DesignReviewVerificationOutcome =
+  | {
+      kind: "report";
+      verdict: "pass" | "fail";
+      identity: DesignReviewIdentity;
+      planHash: string;
+      reportHash: string;
+      issues: readonly ReviewIssue[];
+    }
+  | {
+      kind: "update";
+      status: "ready";
+      identity: DesignReviewIdentity;
+      reportHash: string;
+      baselinePlanHash: string;
+      newPlanHash: string;
+    }
+  | { kind: "invalid"; failures: readonly VerifyFailureItem[] }
+  | { kind: "paused"; reason: DesignReviewPauseReason };
+
+/**
+ * 192 Phase 0: result of a strict (fail-closed) meta commit against the real
+ * session-state adapter. `persisted` means the local AND shared writes were
+ * verified by read-back. `conflict` means the expected identity/revision no
+ * longer matches the current state. `unavailable` means shared storage is
+ * missing/corrupt/stale or a write/read-back failed — callers must stop and
+ * must NOT treat a local snapshot as shared success.
+ */
+export type ReliableMetaCommitResult =
+  | { status: "persisted"; meta: SessionMeta }
+  | { status: "conflict" | "unavailable"; reason: string };
+
+/**
+ * 192 Phase 0: bounded receipt of a consumed review report, stored on the
+ * update operation's state. The update identity is NOT the review identity;
+ * this receipt keeps the consumed review's attribution so the report's original
+ * operationId/inputHash can still be validated against it while the update
+ * operation fields are validated against the current update id.
+ */
+export interface DesignReviewInputReceipt {
+  /** Full identity of the consumed review operation */
+  reviewIdentity: DesignReviewIdentity;
+  /** Canonical report document path that was consumed */
+  reportDoc: string;
+  /** Content hash of the consumed report */
+  reportHash: string;
+  /** Plan hash the consumed review was run against */
+  inputPlanHash: string;
+  /** Issue ids extracted from the consumed report (bounded, no full text) */
+  issueIds: readonly string[];
+}
+
+/**
+ * 192 Phase 0: operation identity carried by active/pending spawn entries.
+ * Lets RPC reservations, queue consumption and late callbacks compare the
+ * CURRENT operation instead of only the stage+timestamp, so a same-millisecond
+ * new operation is never swallowed by the old stamp.
+ */
+export interface SpawnOperationContext {
+  /** Owning pipeline id */
+  pipelineId: string;
+  /** Design-review authorization id */
+  authorizationId: string;
+  /** Design-review round */
+  round: number;
+  /** Design-review operation kind */
+  kind: DesignReviewOperationKind;
+  /** Design-review operation id */
+  operationId: string;
+  /** Stage visit id captured at dispatch */
+  stageVisitId: number;
+  /** Operation input hash (when computed) */
+  inputHash?: string;
+}
 
 // ─── Protect Configuration ───────────────────────────────────────────────────
 
@@ -934,6 +1085,20 @@ export interface PipelineConfig {
    * once the takeover behavior is validated (all-stage takeover is off by default).
    */
   takeoverStages?: PipelineStage[];
+
+  /**
+   * 192 Phase 0: diagnostic record of the ORIGINAL configured nextStage targets
+   * for the "plan" and "design-review" stages, captured by the JSON loader
+   * BEFORE disabled-target reconnection rewrites them. Used to detect a
+   * design-review activation target conflict (e.g. plan was originally meant to
+   * advance somewhere else) without rewriting the configuration for display.
+   * Code-configured callers may supply this from their existing targets;
+   * old callers are not required to add the field.
+   */
+  designReviewOriginalTargets?: {
+    plan?: PipelineStage;
+    "design-review"?: PipelineStage;
+  };
 
   /**
    * TUI output configuration.
