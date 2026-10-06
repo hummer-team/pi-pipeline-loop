@@ -20,6 +20,7 @@ import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 import type { VerifyRules, FileContentRule, VerifyGroupRuleNode } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
+import { escapeRegExp } from "../utils/regex-utils";
 // 192 Phase 3: canonical report path derivation for the design-review stage
 // (state is a pure leaf module — no import cycle through this edge).
 import { deriveReportPath } from "./design-review/state";
@@ -229,7 +230,12 @@ export async function applyConcreteStageDocPaths(
     if (dr) {
       const reportPath = dr.reportDoc ?? deriveReportPath(dr.planDoc, dr.round);
       const rel = path.relative(config.projectRoot, reportPath);
-      return replaceGlobInRules(result, (p) => /review-design-.*\.md$/.test(p) || p === rel, rel);
+      const concretes = replaceGlobInRules(result, (p) => /review-design-.*\.md$/.test(p) || p === rel, rel);
+      // 192 Phase 3 (task 5, issue-2 fix): identity placeholders inside
+      // design-review contract patterns are substituted from the SAME
+      // authoritative meta state (never from tool args), so the groups
+      // really enforce pipeline/plan/round/operation/input-hash binding.
+      return substituteDesignReviewIdentityPlaceholders(concretes, dr);
     }
     return rules;
   }
@@ -301,4 +307,75 @@ export function isCommitDocGlob(pattern: string): boolean {
  */
 export function isReviewDocGlob(pattern: string): boolean {
   return pattern === "docs/review/code_review_*.md" || pattern === "docs\\review\\code_review_*.md";
+}
+
+/**
+ * 192 Phase 3 (task 5, issue-2 fix): substitute design-review identity
+ * placeholders in verification patterns from the AUTHORITATIVE narrowed meta
+ * state only (never tool args / overrides):
+ *
+ *   {planDoc}     → canonical absolute plan document path
+ *   {round}       → current review round
+ *   {operationId} → current operation id (when bound)
+ *   {inputHash}   → operation inputHash, else the authorized planHash (when known)
+ *
+ * Pattern fields receive regex-escaped values (paths contain metacharacters);
+ * plain path fields (requiredFiles / node path) receive raw values. A
+ * placeholder whose value is unknown stays unresolved so the auto-verifier's
+ * fail-closed guard turns it into an explicit verification failure instead of
+ * a silently-literal non-match.
+ */
+export function substituteDesignReviewIdentityPlaceholders(
+  rules: VerifyRules,
+  dr: NonNullable<SessionMeta["designReview"]>,
+): VerifyRules {
+  const values: Record<string, string | undefined> = {
+    planDoc: dr.planDoc,
+    round: String(dr.round),
+    operationId: dr.operation?.operationId,
+    inputHash: dr.operation?.inputHash ?? dr.planHash,
+  };
+
+  /** Raw substitution for plain path strings. */
+  const subRaw = (s: string): string => {
+    let out = s;
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined && value !== "") out = out.replaceAll(`{${key}}`, value);
+    }
+    return out;
+  };
+  /** Regex-escaped substitution for pattern strings. */
+  const subPattern = (s: string): string => {
+    let out = s;
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined && value !== "") out = out.replaceAll(`{${key}}`, escapeRegExp(value));
+    }
+    return out;
+  };
+
+  const resolved: VerifyRules = { ...rules };
+
+  if (resolved.requiredFiles) {
+    resolved.requiredFiles = resolved.requiredFiles.map(subRaw);
+  }
+  if (resolved.fileContentPattern) {
+    resolved.fileContentPattern = resolved.fileContentPattern.map((rule) => ({
+      ...rule,
+      path: subRaw(rule.path),
+      pattern: subPattern(rule.pattern),
+    }));
+  }
+  if (resolved.groups) {
+    resolved.groups = resolved.groups.map((group) => ({
+      ...group,
+      when: group.when !== undefined ? subPattern(group.when) : group.when,
+      rules: group.rules.map((node) => {
+        const nextNode: VerifyGroupRuleNode = { ...node };
+        if (node.path) nextNode.path = subRaw(node.path);
+        if (node.patterns) nextNode.patterns = node.patterns.map(subPattern);
+        return nextNode;
+      }),
+    }));
+  }
+  return resolved;
 }

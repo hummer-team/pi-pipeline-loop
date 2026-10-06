@@ -39,6 +39,15 @@ export interface GroupEvalOptions {
   stageStartTime?: number;
   /** Stage name for audit logging. */
   stageName?: string;
+  /**
+   * 192 Phase 3 (task 4): optional exact-path snapshot lookup.
+   * When provided and the lookup RETURNS content for a rule's resolved
+   * absolute path, groups evaluation uses that captured content instead of
+   * re-reading the file — the domain verdict and the groups rules then judge
+   * ONE snapshot (no double-read window). Paths not present in the capture
+   * (and glob paths, which are never exact) fall back to normal file reads.
+   */
+  snapshotLookup?: (absPath: string) => string | undefined;
 }
 
 /** Result of groups evaluation. */
@@ -89,7 +98,7 @@ async function evaluateGroup(
   const rawFailures: VerifyFailure[] = [];
 
   if (group.when) {
-    const gate = await resolveGate(group, groupPath, projectRoot, options?.logError);
+    const gate = await resolveGate(group, groupPath, projectRoot, options?.logError, options?.snapshotLookup);
     // No gate match → the group always passes (empty-match pass-through).
     if (!gate.matched) return [];
 
@@ -159,7 +168,10 @@ async function evaluateNode(
     }
     case "fileContentPattern": {
       if (!effectivePath) return [];
-      return evaluateFileContentNode(node, effectivePath, projectRoot, options?.logError, sectionText);
+      // 192 Phase 3 (task 4): whole-document nodes evaluate against the
+      // shared snapshot when the capture covers this exact path; section
+      // scope keeps its per-section text (takes precedence).
+      return evaluateFileContentNode(node, effectivePath, projectRoot, options?.logError, sectionText, options?.snapshotLookup);
     }
     case "requiredCommand": {
       if (!node.cmd) return [];
@@ -209,6 +221,10 @@ async function evaluateNode(
 /**
  * Evaluates a fileContentPattern node against its patterns using node `mode`.
  * Each pattern is checked independently so OR semantics can be honored.
+ *
+ * 192 Phase 3 (task 4): when no section slice is provided and the exact
+ * (non-glob) path is covered by the shared snapshot capture, all patterns
+ * run against the captured content — same bytes as the domain verdict.
  */
 async function evaluateFileContentNode(
   node: VerifyGroupRuleNode,
@@ -216,11 +232,17 @@ async function evaluateFileContentNode(
   projectRoot: string,
   logError: AuditLogFn | undefined,
   sectionText: string | undefined,
+  snapshotLookup?: (absPath: string) => string | undefined,
 ): Promise<VerifyFailure[]> {
   const patterns = node.patterns ?? [];
   if (patterns.length === 0) return [];
 
-  const override = sectionText !== undefined ? { textOverride: sectionText } : undefined;
+  let override = sectionText !== undefined ? { textOverride: sectionText } : undefined;
+  if (!override && snapshotLookup && !/[*?]/.test(effectivePath)) {
+    const abs = path.isAbsolute(effectivePath) ? effectivePath : path.join(projectRoot, effectivePath);
+    const captured = snapshotLookup(abs);
+    if (captured !== undefined) override = { textOverride: captured };
+  }
   const results = await Promise.all(
     patterns.map((pattern) =>
       // Phase 3 / 179 (G4): forward the node-level `example` so pattern
@@ -253,6 +275,7 @@ async function resolveGate(
   groupPath: string | undefined,
   projectRoot: string,
   logError: AuditLogFn | undefined,
+  snapshotLookup?: (absPath: string) => string | undefined,
 ): Promise<{ matched: boolean; content: string; re: RegExp }> {
   const fallback = { matched: false, content: "", re: /(?:)/ };
 
@@ -273,7 +296,7 @@ async function resolveGate(
 
   let content: string;
   try {
-    content = await readGroupDoc(groupPath, projectRoot);
+    content = await readGroupDoc(groupPath, projectRoot, snapshotLookup);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     await logError?.("verify_error", {
@@ -291,8 +314,16 @@ async function resolveGate(
 /**
  * Reads the group's target document. Supports glob paths by selecting the
  * most recently modified match (mirrors fileContentPattern glob behavior).
+ *
+ * 192 Phase 3 (task 4): for an EXACT (non-glob) path present in the shared
+ * snapshot capture, the captured content is reused — groups then judge the
+ * same bytes the domain verifier did, closing the double-read window.
  */
-async function readGroupDoc(docPath: string, projectRoot: string): Promise<string> {
+async function readGroupDoc(
+  docPath: string,
+  projectRoot: string,
+  snapshotLookup?: (absPath: string) => string | undefined,
+): Promise<string> {
   if (docPath.includes("*") || docPath.includes("?")) {
     const matches = await globMatchFiles(docPath, projectRoot);
     if (matches.length === 0) {
@@ -317,5 +348,7 @@ async function readGroupDoc(docPath: string, projectRoot: string): Promise<strin
   }
 
   const abs = path.isAbsolute(docPath) ? docPath : path.join(projectRoot, docPath);
+  const captured = snapshotLookup?.(abs);
+  if (captured !== undefined) return captured;
   return fs.readFile(abs, "utf-8");
 }

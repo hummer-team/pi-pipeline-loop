@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -286,4 +287,117 @@ describe("192 Phase 3: runVerification domain outcome wiring", () => {
       expect(vr.designReviewOutcome.verdict).toBe("fail");
     }
   });
+
+// ─── 192 fix (issue 2): groups enforce FULL identity + shared snapshot ──────
+describe("192 Phase 3 tasks 4/5: groups identity contract (issue-2 fix)", () => {
+  const TEMPLATE_VERIFY_MD = path.join(
+    __dirname, "..", "..", "template", "references", "design-review_spec", "verify.md",
+  );
+
+  /** Config with design-review verification ENABLED over the shipped template. */
+  function templateVerifyConfig() {
+    const base = makeTestConfig({ projectRoot });
+    return {
+      ...base,
+      stages: {
+        ...base.stages,
+        "design-review": { ...base.stages["design-review"]!, verify: { require: true } },
+      },
+    };
+  }
+
+  function designReviewMeta(state: DesignReviewState): SessionMeta {
+    return makeTestMeta({
+      currentStage: "design-review",
+      requirementDoc: path.relative(projectRoot, planDoc),
+      designReview: state,
+    });
+  }
+
+  it("valid report passes ordinary groups: every identity row (incl. operation/input-hash) matches substituted values", async () => {
+    writePassReport();
+    const meta = designReviewMeta(reviewRunningState(true));
+    const vr = await runVerification(templateVerifyConfig(), meta, [], { verifyFile: TEMPLATE_VERIFY_MD });
+    // All groups identity rows pass ONLY because {planDoc}/{round}/
+    // {operationId}/{inputHash} were substituted from the authoritative state
+    // and the report carries the matching values (single snapshot, shared).
+    expect(vr.rulePassed).toBe(true);
+    expect(vr.structuredResult?.failures ?? []).toEqual([]);
+    expect(vr.designReviewOutcome?.kind).toBe("report");
+  });
+
+  it("stale operation id fails the groups operation row AND the domain outcome", async () => {
+    fs.writeFileSync(deriveReportPath(planDoc, 1), reviewReportContent({
+      pipelineId: "pipe-test-001",
+      planDoc,
+      round: 1,
+      operationId: "op-OTHER-stale",
+      inputHash: planHash,
+      verdict: "PASS",
+    }), "utf-8");
+    const meta = designReviewMeta(reviewRunningState(true));
+    const vr = await runVerification(templateVerifyConfig(), meta, [], { verifyFile: TEMPLATE_VERIFY_MD });
+    // Groups: the operation identity row must fail (ruleMode and → group fails)
+    expect(vr.rulePassed).toBe(false);
+    expect(
+      vr.structuredResult?.failures.some((f) => f.group === "design-review-report-ready"),
+    ).toBe(true);
+    // Domain: invalid on operation identity mismatch — never a fake PASS
+    expect(vr.designReviewOutcome?.kind).toBe("invalid");
+  });
+
+  it("input-hash drift fails the groups input-hash row", async () => {
+    fs.writeFileSync(deriveReportPath(planDoc, 1), reviewReportContent({
+      pipelineId: "pipe-test-001",
+      planDoc,
+      round: 1,
+      operationId: OP_ID,
+      inputHash: "f".repeat(64),
+      verdict: "PASS",
+    }), "utf-8");
+    const meta = designReviewMeta(reviewRunningState(true));
+    const vr = await runVerification(templateVerifyConfig(), meta, [], { verifyFile: TEMPLATE_VERIFY_MD });
+    expect(vr.rulePassed).toBe(false);
+    expect(
+      vr.structuredResult?.failures.some(
+        (f) => f.group === "design-review-report-ready" && /baselinePlanHash|input hash/i.test(f.detail),
+      ),
+    ).toBe(true);
+  });
+
+  it("unresolvable identity placeholder is FAIL-CLOSED (never a literal silent non-match)", async () => {
+    writePassReport();
+    // Running phase WITHOUT a bound operation: {operationId} cannot be
+    // substituted from authoritative state → explicit fail-closed failure.
+    const meta = designReviewMeta(reviewRunningState(false));
+    const vr = await runVerification(templateVerifyConfig(), meta, [], { verifyFile: TEMPLATE_VERIFY_MD });
+    expect(vr.rulePassed).toBe(false);
+    expect(
+      vr.structuredResult?.failures.some((f) => /unresolvable from authoritative/i.test(f.detail)),
+    ).toBe(true);
+    // No domain outcome for identity-incomplete running (blocked upstream)
+    expect(vr.designReviewOutcome).toBeUndefined();
+  });
+
+  it("groups judge the SAME snapshot the domain verdict did (exact-path lookup wired)", async () => {
+    // The capture is wired in runVerification: with an active review context
+    // the groups fileContentPattern rows are evaluated through the captured
+    // content. Prove the wiring end-to-end: an otherwise-passing report whose
+    // GROUP-relevant identity rows exist only in the captured bytes — here a
+    // valid report (passing) plus domain verdict from the same run: both must
+    // agree, and neither may re-derive paths from globs.
+    writePassReport();
+    const meta = designReviewMeta(reviewRunningState(true));
+    const vr = await runVerification(templateVerifyConfig(), meta, [], { verifyFile: TEMPLATE_VERIFY_MD });
+    const outcome = vr.designReviewOutcome;
+    expect(vr.rulePassed).toBe(true);
+    if (outcome?.kind !== "report") throw new Error("expected report outcome");
+    expect(outcome.verdict).toBe("pass");
+    expect(outcome.identity.operationId).toBe(OP_ID);
+    // reportHash comes from the captured content (sha256 of file bytes)
+    const raw = fs.readFileSync(deriveReportPath(planDoc, 1), "utf-8");
+    const expectedHash = createHash("sha256").update(raw, "utf-8").digest("hex");
+    expect(outcome.reportHash).toBe(expectedHash);
+  });
+});
 });

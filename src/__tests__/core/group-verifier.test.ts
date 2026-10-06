@@ -316,3 +316,107 @@ describe("Phase 1 / 176: [group:name][ruleType] failure reflow", () => {
     expect(result.systemPrompt!).toContain("[deliverable][fileContentPattern] missing artifact");
   });
 });
+
+// ─── 192 Phase 3 (task 4): exact-path snapshot lookup ───────────────────────
+describe("snapshot lookup (192 Phase 3 task 4)", () => {
+  function snapshotRules(needle: string): VerifyRules {
+    return {
+      keywords: [],
+      mode: "and",
+      path: "doc.md",
+      groups: [
+        {
+          name: "snap",
+          ruleMode: "and",
+          rules: [{ type: "fileContentPattern", patterns: [needle] }],
+        },
+      ],
+    };
+  }
+
+  it("fileContentPattern nodes judge the CAPTURED snapshot, not disk bytes", async () => {
+    await writeDoc("doc.md", "DISK-MARK only");
+    const docAbs = path.resolve(TMP, "doc.md");
+    const res = await evaluateGroups(
+      snapshotRules("SNAPSHOT-MARK"),
+      TMP,
+      [],
+      { snapshotLookup: (abs) => (abs === docAbs ? "SNAPSHOT-MARK captured" : undefined) },
+    );
+    expect(res.passed).toBe(true);
+
+    // Without the lookup the same rules read disk and fail — proving the
+    // snapshot (not the file) was consumed above.
+    const without = await evaluateGroups(snapshotRules("SNAPSHOT-MARK"), TMP, [], {});
+    expect(without.passed).toBe(false);
+  });
+
+  it("section scope keeps priority over the whole-document snapshot", async () => {
+    await writeDoc("doc.md", "# Round 1\nOPTION-LINE disk\n# Round 2\nnothing disk");
+    const docAbs = path.resolve(TMP, "doc.md");
+    // The snapshot CONTAINS the needle once (round 1). If whole-document
+    // snapshot content were wrongly used as the override, every section
+    // would pass. Correct behavior: each round is judged on ITS OWN slice,
+    // so round 2 must fail.
+    const rules: VerifyRules = {
+      keywords: [],
+      mode: "and",
+      path: "doc.md",
+      groups: [
+        {
+          name: "scoped",
+          when: "^#\\s+Round\\s+(?<roundEn>\\d+)",
+          scope: "section",
+          ruleMode: "and",
+          rules: [{ type: "fileContentPattern", patterns: ["OPTION-LINE"] }],
+        },
+      ],
+    };
+    const res = await evaluateGroups(rules, TMP, [], {
+      snapshotLookup: (abs) =>
+        abs === docAbs ? "# Round 1\nOPTION-LINE snapshot\n# Round 2\nnothing snapshot" : undefined,
+    });
+    expect(res.passed).toBe(false);
+    expect(res.failures.some((f) => f.detail.includes("round 2"))).toBe(true);
+    expect(res.failures.some((f) => f.group === "scoped")).toBe(true);
+  });
+
+  it("the when-gate read also consumes the snapshot for exact paths", async () => {
+    await writeDoc("doc.md", "GATE-ABSENT body");
+    const docAbs = path.resolve(TMP, "doc.md");
+    const rules: VerifyRules = {
+      keywords: [],
+      mode: "and",
+      path: "doc.md",
+      groups: [
+        {
+          name: "gated",
+          when: "GATE-PRESENT",
+          ruleMode: "and",
+          rules: [{ type: "fileContentPattern", patterns: ["NEVER-MATCHES"] }],
+        },
+      ],
+    };
+    // Disk has no gate → group passes through (empty-match). With the
+    // snapshot carrying the gate, the group is ACTIVE and its failing
+    // pattern surfaces — proving the gate read used the snapshot.
+    const diskOnly = await evaluateGroups(rules, TMP, [], {});
+    expect(diskOnly.passed).toBe(true);
+    const snap = await evaluateGroups(rules, TMP, [], {
+      snapshotLookup: (abs) => (abs === docAbs ? "GATE-PRESENT body" : undefined),
+    });
+    expect(snap.passed).toBe(false);
+    expect(snap.failures.some((f) => f.group === "gated")).toBe(true);
+  });
+
+  it("paths NOT covered by the capture fall back to disk reads", async () => {
+    await writeDoc("doc.md", "DISK-MARK only");
+    const res = await evaluateGroups(
+      snapshotRules("DISK-MARK"),
+      TMP,
+      [],
+      { snapshotLookup: () => undefined }, // capture covers other files only
+    );
+    expect(res.passed).toBe(true);
+  });
+});

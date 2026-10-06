@@ -54,8 +54,15 @@ export interface VerifyConfigDiagnosis {
   errors: VerifyConfigError[];
 }
 
-/** Valid node-level runtime anchor names (Phase 2 / 176). */
-const DIAG_NODE_RUNTIME_KEYS = new Set(["answerField", "modelConfirm", "verdict"]);
+/**
+ * Valid node-level runtime anchor names (Phase 2 / 176).
+ * 192 fix (issue 2): must stay in sync with contract-loader NODE_RUNTIME_KEYS
+ * — `issueHeading` (192 Phase 3 task 3) was declared there and shipped in the
+ * design-review template, but missing here made diagnoseVerifyConfig reject
+ * the shipped contract itself (config-error skip on every design-review
+ * verification). Keep the two sets identical.
+ */
+const DIAG_NODE_RUNTIME_KEYS = new Set(["answerField", "modelConfirm", "verdict", "issueHeading"]);
 
 /**
  * Validates the groups schema and runtime anchor contracts (Phase 2 / 176).

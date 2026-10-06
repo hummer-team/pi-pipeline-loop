@@ -175,6 +175,7 @@ export async function executeStructuredRules(
   selfVerifySkip?: boolean,
   stageStartTime?: number,
   stageName?: string,
+  snapshotLookup?: (absPath: string) => string | undefined,
 ): Promise<StructuredVerifyResult> {
   const failures: VerifyFailure[] = [];
 
@@ -188,6 +189,8 @@ export async function executeStructuredRules(
       selfVerifySkip: selfVerifySkip === true,
       stageStartTime,
       stageName,
+      // 192 Phase 3 (task 4): share the captured snapshot with groups rules.
+      snapshotLookup,
     });
     failures.push(...groupResult.failures);
   }
@@ -217,9 +220,35 @@ export async function executeStructuredRules(
   }
 
   // 4. File content pattern check
-  const fcResult = await verifyFileContentPattern(rules.fileContentPattern, projectRoot, logError);
-  if (!fcResult.passed) {
-    failures.push({ ruleType: "fileContentPattern", detail: fcResult.detail });
+  // 192 Phase 3 (task 4): split flat rules by exact-path snapshot coverage —
+  // covered rules judge the SAME captured bytes as the domain verdict;
+  // uncovered/disk rules keep the original read path.
+  const flatRules = rules.fileContentPattern;
+  if (flatRules && flatRules.length > 0 && snapshotLookup) {
+    const diskRules: NonNullable<typeof flatRules> = [];
+    for (const rule of flatRules) {
+      const abs = path.isAbsolute(rule.path) ? rule.path : path.join(projectRoot, rule.path);
+      const captured = !/[*?]/.test(rule.path) ? snapshotLookup(abs) : undefined;
+      if (captured !== undefined) {
+        const r = await verifyFileContentPattern([rule], projectRoot, logError, { textOverride: captured });
+        if (!r.passed) {
+          failures.push({ ruleType: "fileContentPattern", detail: r.detail });
+        }
+      } else {
+        diskRules.push(rule);
+      }
+    }
+    if (diskRules.length > 0) {
+      const fcResult = await verifyFileContentPattern(diskRules, projectRoot, logError);
+      if (!fcResult.passed) {
+        failures.push({ ruleType: "fileContentPattern", detail: fcResult.detail });
+      }
+    }
+  } else {
+    const fcResult = await verifyFileContentPattern(flatRules, projectRoot, logError);
+    if (!fcResult.passed) {
+      failures.push({ ruleType: "fileContentPattern", detail: fcResult.detail });
+    }
   }
 
   // 5. Keyword check (legacy)
@@ -256,6 +285,15 @@ export interface RunVerificationOptions {
    * the confirm gate (C2 ordering fix). Does NOT modify verify.md or hasCustom.
    */
   deferContentPatterns?: { path: string; pattern: string }[];
+  /**
+   * 192 Phase 3 (task 4): optional exact-path snapshot lookup forwarded to
+   * the groups engine and flat fileContentPattern evaluation. When the
+   * lookup returns content for a rule's resolved absolute path, that captured
+   * snapshot is judged instead of re-reading the file — domain verdict and
+   * groups share ONE snapshot (no double-read window). Internally produced
+   * by runVerification for active design-review contexts.
+   */
+  snapshotLookup?: (absPath: string) => string | undefined;
 }
 
 /**
@@ -371,10 +409,58 @@ export async function runVerification(
   assistantMessages: string[],
   options?: RunVerificationOptions,
 ): Promise<VerificationRunResult> {
-  const base = await runVerificationBase(config, meta, assistantMessages, options);
-  const designReviewOutcome = await computeDesignReviewDomainOutcome(config, meta);
+  // 192 Phase 3 (task 4, issue-2 fix): capture the active design-review
+  // deliverable ONCE and share the snapshot between the domain validator and
+  // the groups/flat rule engine (exact-path lookup) — closing the double-read
+  // window where groups judged bytes different from the domain verdict.
+  const capture = await captureDesignReviewSnapshot(meta);
+  const baseOptions: RunVerificationOptions | undefined = capture
+    ? {
+        ...options,
+        snapshotLookup: options?.snapshotLookup
+          ? (p: string) => options.snapshotLookup!(p) ?? capture.lookup(p)
+          : capture.lookup,
+      }
+    : options;
+  const base = await runVerificationBase(config, meta, assistantMessages, baseOptions);
+  const designReviewOutcome = await computeDesignReviewDomainOutcome(config, meta, capture);
   if (!designReviewOutcome) return base;
   return { ...base, designReviewOutcome };
+}
+
+/**
+ * 192 Phase 3 (task 4): one snapshot per consumed deliverable, shared by the
+ * domain validator and the groups engine via an exact-path lookup.
+ */
+interface DesignReviewSnapshotCapture {
+  /** Resolved absolute path of the captured deliverable. */
+  absPath: string;
+  /** Captured content; null when the file was unreadable at capture time. */
+  content: string | null;
+  /** Exact-path lookup consumed by groups / flat fileContentPattern rules. */
+  lookup: (absPath: string) => string | undefined;
+}
+
+async function captureDesignReviewSnapshot(
+  meta: SessionMeta,
+): Promise<DesignReviewSnapshotCapture | undefined> {
+  const ctx = deriveDomainVerificationContext(meta);
+  if (!ctx) return undefined;
+  const target = ctx.kind === "review" ? ctx.reportPath : ctx.planDoc;
+  const absPath = path.resolve(target);
+  let content: string | null = null;
+  try {
+    content = await fs.readFile(absPath, "utf-8");
+  } catch {
+    // Unreadable at capture time: groups fall back to their own reads and the
+    // domain outcome re-reads to surface the precise invalid failure detail.
+    content = null;
+  }
+  return {
+    absPath,
+    content,
+    lookup: (p: string) => (content !== null && path.resolve(p) === absPath ? content : undefined),
+  };
 }
 
 /**
@@ -385,6 +471,7 @@ export async function runVerification(
 async function computeDesignReviewDomainOutcome(
   config: PipelineConfig,
   meta: SessionMeta,
+  capture?: DesignReviewSnapshotCapture,
 ): Promise<DesignReviewVerificationOutcome | undefined> {
   const ctx = deriveDomainVerificationContext(meta);
   if (!ctx) return undefined;
@@ -392,15 +479,21 @@ async function computeDesignReviewDomainOutcome(
   const operation = state.operation!;
 
   if (ctx.kind === "review") {
-    let content: string;
-    try {
-      content = await fs.readFile(ctx.reportPath, "utf-8");
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      return {
-        kind: "invalid",
-        failures: [{ ruleType: "designReviewReport", detail: `current report snapshot unreadable: ${ctx.reportPath} (${detail})`, timestamp: Date.now() }],
-      };
+    // Prefer the shared capture (task 4: ONE snapshot for domain + groups).
+    let content: string | undefined =
+      capture && capture.content !== null && capture.absPath === path.resolve(ctx.reportPath)
+        ? capture.content
+        : undefined;
+    if (content === undefined) {
+      try {
+        content = await fs.readFile(ctx.reportPath, "utf-8");
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+          kind: "invalid",
+          failures: [{ ruleType: "designReviewReport", detail: `current report snapshot unreadable: ${ctx.reportPath} (${detail})`, timestamp: Date.now() }],
+        };
+      }
     }
     // Contract anchors (single source): verdict/issue shapes are DECLARED in
     // the deployed verify.md; unusable anchors fall back to built-in defaults
@@ -437,15 +530,21 @@ async function computeDesignReviewDomainOutcome(
   }
 
   // kind === "update"
-  let planContent: string;
-  try {
-    planContent = await fs.readFile(ctx.planDoc, "utf-8");
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    return {
-      kind: "invalid",
-      failures: [{ ruleType: "designReviewUpdate", detail: `plan snapshot unreadable: ${ctx.planDoc} (${detail})`, timestamp: Date.now() }],
-    };
+  // Prefer the shared capture (task 4: ONE snapshot for domain + groups).
+  let planContent: string | undefined =
+    capture && capture.content !== null && capture.absPath === path.resolve(ctx.planDoc)
+      ? capture.content
+      : undefined;
+  if (planContent === undefined) {
+    try {
+      planContent = await fs.readFile(ctx.planDoc, "utf-8");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        kind: "invalid",
+        failures: [{ ruleType: "designReviewUpdate", detail: `plan snapshot unreadable: ${ctx.planDoc} (${detail})`, timestamp: Date.now() }],
+      };
+    }
   }
   const verdict = validateDesignReviewUpdate({
     planContent,
@@ -673,6 +772,42 @@ async function runVerificationBase(
     };
   }
 
+  // 192 Phase 3 (task 4, issue-2 fix): fail-closed identity-placeholder guard
+  // for design-review. Identity patterns are substituted from the AUTHORITATIVE
+  // narrowed meta state (see substituteDesignReviewIdentityPlaceholders); a
+  // leftover {planDoc}/{round}/{operationId}/{inputHash} means the state cannot
+  // provide that value — explicit verification failure (missing contract →
+  // invalid), never a silently-matching-as-literal non-match.
+  if (meta.currentStage === "design-review" && meta.designReview) {
+    const unresolvedDr = /\{(?:planDoc|round|operationId|inputHash)\}/;
+    const drPlaceholderHit =
+      (resolvedRules.requiredFiles?.some((p) => unresolvedDr.test(p)) ? "requiredFiles" : null) ??
+      (resolvedRules.fileContentPattern?.some((r) => unresolvedDr.test(r.pattern) || unresolvedDr.test(r.path)) ? "fileContentPattern" : null) ??
+      (resolvedRules.groups?.some((g) =>
+        (g.when !== undefined && unresolvedDr.test(g.when)) ||
+        g.rules.some((n) =>
+          (n.path !== undefined && unresolvedDr.test(n.path)) ||
+          (n.patterns?.some((p) => unresolvedDr.test(p)) ?? false),
+        ),
+      ) ? "fileContentPattern" : null);
+    if (drPlaceholderHit) {
+      const structuredResult: StructuredVerifyResult = {
+        passed: false,
+        failures: [{
+          ruleType: drPlaceholderHit,
+          detail: "design-review identity placeholder unresolvable from authoritative session state (fail-closed)",
+        }],
+      };
+      const verifyResult: VerifyResult = { structured: structuredResult, overallPassed: false };
+      return {
+        rulePassed: false,
+        ruleMissing: [],
+        structuredResult,
+        verifyResult,
+      };
+    }
+  }
+
   // Check if any structured (non-keyword) rules are defined
   const hasStructuredRules =
     (resolvedRules.requiredFiles && resolvedRules.requiredFiles.length > 0) ||
@@ -700,6 +835,8 @@ async function runVerificationBase(
       verifyConfig.selfVerifySkip === true,
       meta.stageStartTime,
       meta.currentStage,
+      // 192 Phase 3 (task 4): shared exact-path snapshot for groups/flat rules
+      options?.snapshotLookup,
     );
   } else {
     // Legacy path: keyword-only rules
@@ -981,6 +1118,7 @@ export {
   resolvePlanDocPath,
   planDocHasConfirmMarker,
   applyConcreteStageDocPaths,
+  substituteDesignReviewIdentityPlaceholders,
   isPlanDocGlob,
   isCommitDocGlob,
   isReviewDocGlob,
