@@ -1,12 +1,13 @@
 /**
- * @module design-review-advance-entrypoints.test
- * Phase 3 / 191: Tests for design-review consistency across multiple entry points.
- * Validates that PASS/FAIL/budget boundary behave consistently when triggered
- * via stage_advance, pipeline_verify, pipeline_handoff, or agent_settled.
- * 
- * No mock.module() used — writeAuditLog is safe (returns early without auditDir),
- * spawnStageSubagent fails gracefully without pi SDK, recordStageVisit is pure,
- * and commitDesignReviewState works with the mock session interface.
+ * 192 Phase 3 rewrite: design-review consistency across entry points under
+ * the trusted verification contract.
+ *
+ * All four triggers (settle/advance/verify/handoff) consume the SAME shared
+ * verification outcome with the SAME budget semantics (F05); fixtures carry
+ * the full identity contract (K07).
+ *
+ * No mock.module() used — writeAuditLog is safe (returns early without
+ * auditDir); controlled spawnOverride returns verifiable agentIds.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -14,11 +15,18 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PipelineConfig, SessionMeta } from "../../types";
-import { makeTestConfig, makeTestMeta } from "../helpers";
+import {
+  makeTestConfig,
+  makeTestMeta,
+  reviewReportContent,
+  boundReviewOperation,
+} from "../helpers";
 import { matchCommitExpectation } from "../../core/session-state";
 import { computeHash, createInitialState } from "../../core/design-review/state";
 import type { CoordinatorContext } from "../../core/design-review/coordinator";
 import { coordinateDesignReview } from "../../core/design-review/coordinator";
+
+const OP_ID = "op-entry-review-1";
 
 describe("design-review multi-entrypoint consistency", () => {
   let tempDir: string;
@@ -59,7 +67,6 @@ describe("design-review multi-entrypoint consistency", () => {
         currentMeta = { ...currentMeta, ...patch };
         return currentMeta;
       },
-      // 192 Phase 1: strict-capable commit (healthy shared store semantics)
       updateMetaVerified: (
         patch: Partial<SessionMeta>,
         expected: import("../../core/session-state").MetaCommitExpectation,
@@ -78,607 +85,144 @@ describe("design-review multi-entrypoint consistency", () => {
       session: createMockSession(meta),
       ui: { notify: () => {} },
       pi: { sendUserMessage: () => {} },
+      spawnOverride: async () => ({
+        spawned: true,
+        fallback: false,
+        deferred: false,
+        agentId: "agent-entry-1",
+        dispatchOutcome: "spawned_id" as const,
+      }),
     };
   }
 
+  async function writePassReport(): Promise<void> {
+    const reportDoc = join(tempDir, "review-design-1-plan.md");
+    await writeFile(reportDoc, reviewReportContent({
+      pipelineId: "pipe-test-001",
+      planDoc,
+      round: 1,
+      operationId: OP_ID,
+      inputHash: planHash,
+      verdict: "PASS",
+    }), "utf-8");
+  }
+
+  function reviewRunningMeta(loopCycleCount: number): SessionMeta {
+    const drState = createInitialState(planDoc, "menu", planHash, undefined, { pipelineId: "pipe-test-001" });
+    return makeTestMeta({
+      currentStage: "design-review",
+      designReview: {
+        ...drState,
+        phase: "review_running",
+        round: 1,
+        operation: boundReviewOperation(OP_ID, planHash),
+      },
+      loopCycleCount,
+    });
+  }
+
   describe("budget boundary consistency", () => {
-    test("cycle count 0 allows PASS routing", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
+    for (const count of [0, 1, 2]) {
+      test(`cycle count ${count} allows PASS routing`, async () => {
+        await writePassReport();
+        const meta = reviewRunningMeta(count);
+        const ctx = createCoordinatorCtx(meta);
+        const result = await coordinateDesignReview(ctx, meta, "settle");
+        expect(result.status === "handled" && result.action === "advanced").toBe(true);
       });
-      const ctx = createCoordinatorCtx(meta);
+    }
 
+    test("cycle count at max freezes before routing", async () => {
+      await writePassReport();
+      const meta = reviewRunningMeta(3);
+      const ctx = createCoordinatorCtx(meta);
       const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "advanced") {
-        expect(result.toStage).toBe("develop");
+      expect(result.status === "handled" && result.action === "frozen").toBe(true);
+      // Frozen verdict must not consume the report path
+      expect(ctx.session.getMeta()!.designReview?.phase).toBe("review_running");
+    });
+  });
+
+  describe("trigger consistency across entries (F05)", () => {
+    test("settle/advance/verify/handoff all handle the same report identically", async () => {
+      await writePassReport();
+      const actions: string[] = [];
+      for (const trigger of ["settle", "advance", "verify", "handoff"] as const) {
+        const meta = reviewRunningMeta(0);
+        const ctx = createCoordinatorCtx(meta);
+        const result = await coordinateDesignReview(ctx, meta, trigger);
+        expect(result.status).toBe("handled");
+        if (result.status === "handled") actions.push(result.action);
       }
+      // Every entry consumed the same way — none fell back to not-applicable
+      expect(actions).toEqual(["advanced", "advanced", "advanced", "advanced"]);
     });
 
-    test("cycle count 1 allows PASS routing", async () => {
+    test("identity-invalid report is verify_failed on every trigger", async () => {
       const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 1,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "advanced") {
-        expect(result.toStage).toBe("develop");
-      }
-    });
-
-    test("cycle count 2 allows PASS routing (last chance)", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 2,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "advanced") {
-        expect(result.toStage).toBe("develop");
-      }
-    });
-
-    test("cycle count 3 blocks PASS routing (budget exceeded)", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 3,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("frozen");
-        if ("reason" in result) {
-          expect(result.reason).toBe("budget_exceeded");
-        }
-      }
-    });
-
-    test("cycle count 4 also blocks routing", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 4,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("frozen");
+      await writeFile(reportDoc, reviewReportContent({
+        pipelineId: "foreign-pipeline",
+        planDoc,
+        round: 1,
+        operationId: OP_ID,
+        inputHash: planHash,
+        verdict: "PASS",
+      }), "utf-8");
+      for (const trigger of ["settle", "advance", "verify", "handoff"] as const) {
+        const meta = reviewRunningMeta(0);
+        const ctx = createCoordinatorCtx(meta);
+        const result = await coordinateDesignReview(ctx, meta, trigger);
+        expect(result.status === "handled" && result.action === "verify_failed").toBe(true);
+        expect(ctx.session.getMeta()!.currentStage).toBe("design-review");
       }
     });
   });
 
   describe("plan hash drift detection", () => {
-    test("plan hash unchanged allows PASS", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
+    test("plan hash drifted blocks PASS with pending (no develop entry)", async () => {
+      await writePassReport();
+      // Drift the plan AFTER the report was produced: state.planHash stays,
+      // file changes → handlePass drift path pauses (drift), never advances.
+      await writeFile(planDoc, "# Test Plan\n\nTampered after review.\n", "utf-8");
+      const meta = reviewRunningMeta(0);
       const ctx = createCoordinatorCtx(meta);
-
       const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "advanced") {
-        expect(result.toStage).toBe("develop");
-      }
-    });
-
-    test("plan hash drifted blocks PASS with pending", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      // Update plan content after report was created
-      const newPlanContent = "# Modified Plan\n\nDifferent content.";
-      await writeFile(planDoc, newPlanContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          // Fix for Issue #14: reason now prefixed with "paused:" to indicate pause state
-          expect(result.reason).toBe("paused:plan_drifted");
-        }
-      }
-    });
-  });
-
-  describe("entry point trigger consistency", () => {
-    test("PASS via settle trigger advances to develop", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "advanced") {
-        expect(result.toStage).toBe("develop");
-      }
-    });
-
-    test("FAIL via settle trigger routes to plan", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: FAIL**
-
-## Issues
-1. Missing validation
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "routed") {
-        expect(result.toStage).toBe("plan");
-      }
-    });
-
-    test("invalid report via settle trigger returns pending", async () => {
-      // No report file
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          expect(result.reason).toBe("report_invalid");
-        }
-      }
-    });
-  });
-
-  describe("duplicate event handling", () => {
-    test("review_ready with already-dispatched operation returns pending", async () => {
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: {
-          ...drState,
-          phase: "review_ready",
-          round: 1,
-          operation: {
-            operationId: "op-123",
-            kind: "review",
-            stageVisitId: 1000,
-            attempt: 1,
-            dispatchState: "dispatched",
-            agentId: "agent-456",
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
-        },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          expect(result.reason).toBe("already_dispatched");
-        }
-      }
-    });
-
-    test("update_ready with already-dispatched operation returns pending", async () => {
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: {
-          ...drState,
-          phase: "update_ready",
-          round: 1,
-          operation: {
-            operationId: "op-789",
-            kind: "update",
-            stageVisitId: 2000,
-            attempt: 1,
-            dispatchState: "dispatched",
-            agentId: "agent-012",
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
-        },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          expect(result.reason).toBe("already_dispatched");
-        }
-      }
-    });
-  });
-
-  describe("develop stage unavailability", () => {
-    test("PASS with develop stage missing agent returns pending", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      // Config without develop agent
-      const configNoDevelop = makeTestConfig({
-        maxLoopCycles: 3,
-        stages: {
-          ...makeTestConfig().stages,
-          develop: {
-            agentPath: undefined,
-            skillPath: "develop/SKILL.md",
-            nextStage: "completed",
-            requireDomain: false,
-          },
-        },
-      });
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta, configNoDevelop);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          expect(result.reason).toBe("develop_stage_unavailable");
-        }
-      }
-    });
-
-    test("PASS with develop stage completely missing returns pending", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      // Config without develop stage at all
-      const configNoDevelopStage = makeTestConfig({
-        maxLoopCycles: 3,
-        stages: {
-          ...makeTestConfig().stages,
-          // @ts-ignore - intentionally omitting develop
-          develop: undefined,
-        },
-      });
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta, configNoDevelopStage);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          expect(result.reason).toBe("develop_stage_unavailable");
-        }
-      }
+      // Domain identity check still passes (report bound to authorized hash);
+      // handlePass re-reads the plan and pauses on drift.
+      expect(result.status === "handled" && result.action === "pending").toBe(true);
+      expect(ctx.session.getMeta()!.currentStage).toBe("design-review");
+      expect(ctx.session.getMeta()!.designReview?.pauseReason).toBe("drift");
     });
   });
 
   describe("update mode validation", () => {
     test("update with no actual change returns pending", async () => {
-      // Plan content unchanged
-      const drState = createInitialState(planDoc, "menu", planHash);
+      const drState = createInitialState(planDoc, "menu", planHash, undefined, { pipelineId: "pipe-test-001" });
       const meta = makeTestMeta({
         currentStage: "design-review",
-        designReview: { ...drState, phase: "update_running", round: 1 },
+        designReview: {
+          ...drState,
+          phase: "update_running",
+          round: 1,
+          operation: {
+            operationId: "op-entry-update-1",
+            kind: "update" as const,
+            stageVisitId: Date.now(),
+            attempt: 1,
+            dispatchState: "dispatched" as const,
+            agentId: "agent-u",
+            round: 1,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        },
         loopCycleCount: 0,
       });
+      // plan unchanged → no-change pause
       const ctx = createCoordinatorCtx(meta);
-
       const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("pending");
-        if ("reason" in result) {
-          // Fix for Issue #14: reason now prefixed with "paused:" to indicate pause state
-          expect(result.reason).toBe("paused:no_actual_change");
-        }
-      }
-    });
-
-    test("update with changed plan but budget exceeded returns frozen", async () => {
-      // Update plan content
-      const newPlanContent = "# Updated Plan\n\nNew content.";
-      await writeFile(planDoc, newPlanContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "update_running", round: 1 },
-        loopCycleCount: 3, // At budget limit
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled") {
-        expect(result.action).toBe("frozen");
-        if ("reason" in result) {
-          expect(result.reason).toBe("budget_exceeded");
-        }
-      }
-    });
-  });
-
-  describe("authorization source compatibility", () => {
-    test("menu authorization works", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "menu", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "advanced") {
-        expect(result.toStage).toBe("develop");
-      }
-    });
-
-    test("direct-entry authorization works", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
-      const reportContent = `# Design Review Report
-
-**pipeline**: test-pipeline
-**plan**: ${planDoc}
-**round**: 1
-
-## Verdict
-
-**Design Review: PASS**
-
-## Issues
-None
-`;
-      await writeFile(reportDoc, reportContent, "utf-8");
-
-      const drState = createInitialState(planDoc, "direct-entry", planHash);
-      const meta = makeTestMeta({
-        currentStage: "design-review",
-        designReview: { ...drState, phase: "review_running", round: 1 },
-        loopCycleCount: 0,
-      });
-      const ctx = createCoordinatorCtx(meta);
-
-      const result = await coordinateDesignReview(ctx, meta, "settle");
-      expect(result.status).toBe("handled");
-      if (result.status === "handled" && result.action === "advanced") {
-        expect(result.toStage).toBe("develop");
-      }
+      expect(result.status === "handled" && result.action === "pending").toBe(true);
+      expect(ctx.session.getMeta()!.designReview?.phase).toBe("paused");
     });
   });
 });

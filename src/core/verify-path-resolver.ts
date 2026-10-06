@@ -20,6 +20,9 @@ import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 import type { VerifyRules, FileContentRule, VerifyGroupRuleNode } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
+// 192 Phase 3: canonical report path derivation for the design-review stage
+// (state is a pure leaf module — no import cycle through this edge).
+import { deriveReportPath } from "./design-review/state";
 
 /**
  * Replaces `{requirementDoc}` and `{pipelineId}` placeholders in rule paths
@@ -214,6 +217,21 @@ export async function applyConcreteStageDocPaths(
     // Narrow review doc glob to requirementDoc basename
     concreteGlob = `docs/review/code_review_${reqBase}*.md`;
     return replaceGlobInRules(result, isReviewDocGlob, concreteGlob);
+  }
+
+  if (stage === "design-review") {
+    // 192 Phase 3 (task 2): the design-review report path comes ONLY from the
+    // narrowed meta state (canonical derivation for the current round). No
+    // glob/mtime discovery — a different round/plan report can never be
+    // selected implicitly. Without an active design-review state the rules
+    // stay as authored (ordinary flows unaffected).
+    const dr = meta.designReview;
+    if (dr) {
+      const reportPath = dr.reportDoc ?? deriveReportPath(dr.planDoc, dr.round);
+      const rel = path.relative(config.projectRoot, reportPath);
+      return replaceGlobInRules(result, (p) => /review-design-.*\.md$/.test(p) || p === rel, rel);
+    }
+    return rules;
   }
 
   // Other stages (clarify, awaiting_human, completed): no narrowing

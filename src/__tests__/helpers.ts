@@ -366,3 +366,72 @@ export function createMockEventBus() {
     handlers,
   };
 }
+
+// ─── 192 Phase 3: bound design-review report fixtures ─────────────────────────
+
+/**
+ * Build a design-review report content that satisfies the CURRENT trusted
+ * identity contract (pipeline/plan/round/operation/input-hash rows + anchored
+ * verdict + Issues section). Used by coordinator tests so fixtures deliver
+ * the same contract the production verifier enforces.
+ */
+export function reviewReportContent(opts: {
+  pipelineId: string;
+  planDoc: string;
+  round?: number;
+  operationId: string;
+  inputHash: string;
+  verdict: "PASS" | "FAIL";
+  /** Issue bullet lines (used for FAIL); for PASS use [] with noIssuesSentinel */
+  issues?: string[];
+  /** Set false to produce a structurally invalid report */
+  includeIssuesSection?: boolean;
+  /** Override the verdict row (e.g. omit to simulate no conclusion) */
+  verdictRow?: string | null;
+}): string {
+  const round = opts.round ?? 1;
+  const lines = [
+    "# Design Review Report",
+    "",
+    `**pipeline**: ${opts.pipelineId}`,
+    `**plan**: ${opts.planDoc}`,
+    `**round**: ${round}`,
+    `**operation**: ${opts.operationId}`,
+    `**input hash**: ${opts.inputHash}`,
+    "",
+    "## Verdict",
+    "",
+  ];
+  if (opts.verdictRow !== null) {
+    lines.push(opts.verdictRow ?? `**Design Review: ${opts.verdict}**`);
+  }
+  if (opts.includeIssuesSection !== false) {
+    lines.push("", "## Issues");
+    if (opts.verdict === "PASS" || (opts.issues ?? []).length === 0) {
+      lines.push("None");
+    } else {
+      for (const [i, issue] of (opts.issues ?? []).entries()) {
+        lines.push(`${i + 1}. ${issue}`);
+      }
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+/** A review operation bound to a fixture report (dispatched state). */
+export function boundReviewOperation(operationId: string, inputHash: string, round?: number) {
+  const now = Date.now();
+  return {
+    operationId,
+    kind: "review" as const,
+    stageVisitId: now,
+    attempt: 1,
+    dispatchState: "dispatched" as const,
+    agentId: "agent-fixture-review",
+    inputHash,
+    round: round ?? 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+}

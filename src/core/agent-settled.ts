@@ -41,6 +41,8 @@ import { escapeRegExp } from "../utils/regex-utils";
 import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
 import type { SessionMeta as AgentSettledSessionMeta } from "../types";
 import { coordinateDesignReview } from "./design-review/coordinator";
+// 192 Phase 3: flow classification for the shared verification wiring (K02)
+import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "./design-review/state";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -82,20 +84,11 @@ export function createAgentSettled(
       if (!rawMeta || isDormant(rawMeta)) return;
       const meta: SessionMeta = rawMeta;
 
-      // Phase 3 (191): Design-review coordinator delegation
-      // When design-review is active, delegate routing decisions to coordinator
-      const coordinatorCtx = {
-        config,
-        session: ctx.session,
-        ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
-        pi: ctx.pi,
-      };
-      const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "settle");
-      if (coordinatorResult.status === "handled") {
-        // Coordinator handled the routing, return early
-        return;
-      }
-      // coordinatorResult.status === "not-applicable" → continue with original flow
+      // 192 Phase 3 (K02/F05): the design-review coordinator delegation is NO
+      // LONGER executed before the ordinary guards. It now runs AFTER the
+      // frozen/pending-spawn/source/health/liveness guards and BEFORE the
+      // confirm-marker/menu/ordinary-advance branches, consuming the SAME
+      // shared runVerification service (no pre-hook report bypass).
 
       // 1. Write audit log
       await writeAuditLog("agent_settled", {
@@ -326,6 +319,91 @@ export function createAgentSettled(
           stage: meta.currentStage,
           error: errMsg,
         }, "warn");
+      }
+
+      // ─── 192 Phase 3: authorized design-review flow — shared verification
+      // then domain consumption. ready/running/pass_ready/paused are ALL
+      // handled here (never fall back to ordinary branches, F05). Ordinary
+      // flows continue untouched below (K06).
+      try {
+        const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+        const drFlow = classifyDesignReviewFlow(freshMeta);
+        if (drFlow.kind === "blocked") {
+          // Feature present but identity invalid → pending takeover, never ordinary.
+          await writeAuditLog("design_review_blocked_takeover", {
+            pipelineId: freshMeta.pipelineId,
+            stage: freshMeta.currentStage,
+            reason: drFlow.reason ?? "identity_incomplete",
+          }, "warn");
+          ui.notify(ctx, `Design-review loop identity incomplete — awaiting owner takeover.`);
+          return;
+        }
+        if (drFlow.kind === "authorized") {
+          // child sessions NEVER consume reports or change phases (D11/F05)
+          const { isChild } = detectSessionRole(ctx);
+          if (isChild) {
+            await writeAuditLog("design_review_child_settle_deferred", {
+              pipelineId: freshMeta.pipelineId,
+              stage: freshMeta.currentStage,
+              round: String(drFlow.state?.round ?? 0),
+            });
+            return;
+          }
+          const coordinatorCtx = {
+            config,
+            session: ctx.session,
+            ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+            pi: ctx.pi,
+          };
+          const runningPhase = drFlow.state?.phase === "review_running" || drFlow.state?.phase === "update_running";
+          let vrForCoordinator: Awaited<ReturnType<typeof runVerification>> | undefined;
+          if (runningPhase) {
+            // Hook-level shared verification: agent-settled → runVerification
+            // → domain consumption (the ONLY consumption path).
+            const assistantMessages = extractAssistantMessages(ctx._ctx);
+            const toolCallRecords = extractToolCallRecords(ctx._ctx);
+            vrForCoordinator = await runVerification(config, freshMeta, assistantMessages, {
+              ...verifyOptions,
+              toolCallRecords,
+            });
+          }
+          const coordinatorResult = await coordinateDesignReview(
+            { ...coordinatorCtx, ...(vrForCoordinator ? { verificationResult: vrForCoordinator } : {}) },
+            freshMeta,
+            "settle",
+          );
+          if (coordinatorResult.status === "handled") {
+            if (coordinatorResult.action === "verify_failed" && runningPhase) {
+              // invalid deliverable → NORMAL verification-failure budget
+              // (paused/no-change etc. are NOT format failures).
+              await applyVerifyFail(
+                { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof applyVerifyFail>[0],
+                freshMeta,
+                freshMeta.currentStage,
+                {
+                  structuredResult: { failures: [...coordinatorResult.failures] },
+                  ruleMissing: [],
+                  verifyResult: { structured: { passed: false }, overallPassed: false },
+                },
+                "rule",
+                ui,
+                config,
+              );
+            }
+            return;
+          }
+          // not-applicable (identity released/terminal) → continue ordinary path
+        }
+      } catch (err) {
+        // Fail-open at the hook boundary: an unexpected wiring error must not
+        // kill the ordinary settle; domain safety relies on fail-closed commits.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await writeAuditLog("design_review_hook_flow_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: errMsg,
+          stack: err instanceof Error && err.stack !== undefined ? err.stack : "",
+        }, "error");
       }
 
       // 163 Goal 2: audit when review stage settles without a reviewConclusion declaration.

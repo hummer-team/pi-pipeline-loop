@@ -15,7 +15,7 @@ import type {
   DesignReviewIdentity,
   DesignReviewOperationKind,
 } from "../../types";
-import { hasCompleteDesignReviewIdentity, buildDesignReviewIdentity } from "./state";
+import { hasCompleteDesignReviewIdentity, buildDesignReviewIdentity, deriveReportPath } from "./state";
 
 /**
  * Narrowed read-only context for the current design-review operation.
@@ -82,4 +82,106 @@ export function narrowDesignReviewState(
     return { ok: false, reason: "identity_incomplete" };
   }
   return { ok: true, state };
+}
+
+// ─── 192 Phase 3: trusted domain verification context (meta-narrowing only) ──
+
+/**
+ * Narrowed context under which the SHARED verification engine must produce a
+ * trusted design-review outcome. Derived EXCLUSIVELY from persisted, meta-
+ * narrowed state — never from tool args or overrideFile values (a verify
+ * override may only affect ordinary overridable rules, not this binding).
+ */
+export type TrustedDomainVerificationContext =
+  | {
+      kind: "review";
+      /** Canonical absolute path of the CURRENT report snapshot */
+      reportPath: string;
+      /** Canonical plan doc */
+      planDoc: string;
+      /** Pipeline id binding */
+      pipelineId: string;
+      /** Round binding */
+      round: number;
+      /** Review operation id binding (required in the report) */
+      operationId: string;
+      /** Review inputHash binding (authorized plan content hash) */
+      inputHash: string;
+    }
+  | {
+      kind: "update";
+      /** Canonical plan doc (the updated deliverable) */
+      planDoc: string;
+      /** Current update operation id (disposition section must match) */
+      updateOperationId: string;
+      /** Consumed report path from the bounded input receipt */
+      reportDoc: string;
+      /** Consumed report hash from the receipt */
+      reportHash: string;
+      /** Baseline plan hash (pre-update) */
+      baselinePlanHash: string;
+      /** Round of the consumed report */
+      round: number;
+      /** Consumed review operation id */
+      reviewOperationId: string;
+      /** Issue ids of the consumed report */
+      issueIds: readonly string[];
+    };
+
+/**
+ * Derive the domain verification context from the CURRENT meta, when an
+ * authorized review/update is RUNNING for the current stage. Returns null
+ * when this feature is not the active context (ordinary flows never gain
+ * domain semantics) — invalid identity is also null here: BLOCKED loops are
+ * consumed by the domain consumer (never treated as ordinary and never
+ * verified through this path).
+ */
+export function deriveDomainVerificationContext(
+  meta: SessionMeta | undefined,
+): TrustedDomainVerificationContext | null {
+  const state = meta?.designReview;
+  if (!state || !meta) return null;
+  if (!hasCompleteDesignReviewIdentity(state)) return null;
+  const op = state.operation;
+
+  if (
+    meta.currentStage === "design-review"
+    && state.phase === "review_running"
+    && op
+    && op.kind === "review"
+  ) {
+    return {
+      kind: "review",
+      reportPath: state.reportDoc ?? deriveReportPath(state.planDoc, state.round),
+      planDoc: state.planDoc,
+      pipelineId: meta.pipelineId ?? "unknown",
+      round: state.round,
+      operationId: op.operationId,
+      // Review inputHash is the authorized plan content hash; legacy ops may
+      // lack the explicit field and fall back to the state binding.
+      inputHash: op.inputHash ?? state.planHash ?? "",
+    };
+  }
+
+  if (
+    meta.currentStage === "plan"
+    && state.phase === "update_running"
+    && op
+    && op.kind === "update"
+  ) {
+    const receipt = state.reviewInputReceipt;
+    return {
+      kind: "update",
+      planDoc: state.planDoc,
+      updateOperationId: op.operationId,
+      reportDoc: receipt?.reportDoc ?? deriveReportPath(state.planDoc, state.round),
+      reportHash: receipt?.reportHash ?? "",
+      baselinePlanHash: receipt?.inputPlanHash ?? state.planHash ?? "",
+      round: state.round,
+      reviewOperationId: receipt?.reviewIdentity.operationId ?? "unknown",
+      issueIds: receipt?.issueIds ?? [],
+    };
+  }
+
+  return null;
 }

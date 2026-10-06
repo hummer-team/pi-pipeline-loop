@@ -26,6 +26,11 @@ import { evaluateGroups } from "./verifiers/group-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { parseFrontmatter, type VerifyRules, type VerifyGroupRuleNode } from "./verify-frontmatter";
 import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
+import { deriveDomainVerificationContext } from "./design-review/verification-context";
+import { buildDesignReviewIdentity } from "./design-review/state";
+import { verifyDesignReviewReportSnapshot } from "./verifiers/design-review-verifier";
+import { validateDesignReviewUpdate } from "./verifiers/design-review-update-verifier";
+import type { DesignReviewVerificationOutcome } from "../types";
 import { diagnoseVerifyConfig } from "./verify-config-diagnosis";
 import { resolveVerifyFilePath, loadVerifyContractAnchors } from "../utils/contract-loader";
 import { escapeRegExp } from "../utils/regex-utils";
@@ -330,12 +335,12 @@ export function parseVerifiedCommands(
  * @param assistantMessages - Aggregated assistant messages
  * @param options - Optional LLM verification options
  */
-export async function runVerification(
-  config: PipelineConfig,
-  meta: SessionMeta,
-  assistantMessages: string[],
-  options?: RunVerificationOptions,
-): Promise<{
+/**
+ * 192 Phase 3: shared verification run result. The domain outcome is produced
+ * by the SAME normal entry (agent-settled → runVerification → verifiers);
+ * consumers route on `designReviewOutcome`, NEVER on raw `rulePassed`.
+ */
+export interface VerificationRunResult {
   rulePassed: boolean;
   ruleMissing: string[];
   structuredResult?: StructuredVerifyResult;
@@ -344,7 +349,143 @@ export async function runVerification(
   skipped?: boolean;
   /** 148 Phase 2: human-readable config error details (present when skipped=true) */
   configErrors?: string[];
-}> {
+  /**
+   * 192 Phase 3: trusted design-review/update domain outcome, present ONLY
+   * when an active design-review context is running for the current stage.
+   * Produced from a single content snapshot per consumed deliverable.
+   */
+  designReviewOutcome?: DesignReviewVerificationOutcome;
+}
+
+/**
+ * Normal verification entry (192 Phase 3 wiring): runs the ordinary rule
+ * engine exactly as before, then — when meta carries an ACTIVE running
+ * design-review context — produces the trusted domain outcome from the
+ * canonical snapshot. A `verify.require=false`, a config-error skip, or a
+ * verify override may relax ORDINARY rules but can NEVER skip or replace
+ * the trusted domain contract (acceptance: skip cannot fabricate PASS).
+ */
+export async function runVerification(
+  config: PipelineConfig,
+  meta: SessionMeta,
+  assistantMessages: string[],
+  options?: RunVerificationOptions,
+): Promise<VerificationRunResult> {
+  const base = await runVerificationBase(config, meta, assistantMessages, options);
+  const designReviewOutcome = await computeDesignReviewDomainOutcome(config, meta);
+  if (!designReviewOutcome) return base;
+  return { ...base, designReviewOutcome };
+}
+
+/**
+ * 192 Phase 3: trusted domain outcome over the CURRENT running context.
+ * Purely read-only: no meta writes, no dispatch, no stage changes — the
+ * owner consumer decides transitions.
+ */
+async function computeDesignReviewDomainOutcome(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<DesignReviewVerificationOutcome | undefined> {
+  const ctx = deriveDomainVerificationContext(meta);
+  if (!ctx) return undefined;
+  const state = meta.designReview!;
+  const operation = state.operation!;
+
+  if (ctx.kind === "review") {
+    let content: string;
+    try {
+      content = await fs.readFile(ctx.reportPath, "utf-8");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        kind: "invalid",
+        failures: [{ ruleType: "designReviewReport", detail: `current report snapshot unreadable: ${ctx.reportPath} (${detail})`, timestamp: Date.now() }],
+      };
+    }
+    // Contract anchors (single source): verdict/issue shapes are DECLARED in
+    // the deployed verify.md; unusable anchors fall back to built-in defaults
+    // mirroring the shipped template. Invalid regex is fail-closed downstream.
+    const anchors = await loadVerifyContractAnchors(config, "design-review");
+    const v = verifyDesignReviewReportSnapshot(content, {
+      pipelineId: ctx.pipelineId,
+      planDoc: ctx.planDoc,
+      round: ctx.round,
+      operationId: ctx.operationId,
+      inputHash: ctx.inputHash,
+    }, {
+      verdictPatterns: anchors.anchors.verdict?.patterns,
+      issueHeadingPattern: anchors.anchors.issueHeading?.patterns[0],
+    });
+    if (v.verdict === "invalid") {
+      return {
+        kind: "invalid",
+        failures: v.failures.map((detail) => ({ ruleType: "designReviewReport", detail, timestamp: Date.now() })),
+      };
+    }
+    const identity = buildDesignReviewIdentity(meta, state, operation);
+    if (!identity) {
+      return { kind: "invalid", failures: [{ ruleType: "designReviewReport", detail: "current review identity is unresolvable", timestamp: Date.now() }] };
+    }
+    return {
+      kind: "report",
+      verdict: v.verdict,
+      identity,
+      planHash: state.planHash ?? "",
+      reportHash: v.reportHash,
+      issues: v.issues,
+    };
+  }
+
+  // kind === "update"
+  let planContent: string;
+  try {
+    planContent = await fs.readFile(ctx.planDoc, "utf-8");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      kind: "invalid",
+      failures: [{ ruleType: "designReviewUpdate", detail: `plan snapshot unreadable: ${ctx.planDoc} (${detail})`, timestamp: Date.now() }],
+    };
+  }
+  const verdict = validateDesignReviewUpdate({
+    planContent,
+    baselinePlanHash: ctx.baselinePlanHash,
+    reportDoc: ctx.reportDoc,
+    reportHash: ctx.reportHash,
+    round: ctx.round,
+    reviewOperationId: ctx.reviewOperationId,
+    updateOperationId: ctx.updateOperationId,
+    issueIds: ctx.issueIds,
+  });
+  if (verdict.status === "invalid") {
+    return {
+      kind: "invalid",
+      failures: verdict.failures.map((detail) => ({ ruleType: "designReviewUpdate", detail, timestamp: Date.now() })),
+    };
+  }
+  if (verdict.status === "paused") {
+    return { kind: "paused", reason: verdict.reason };
+  }
+  const identity = buildDesignReviewIdentity(meta, state, operation);
+  if (!identity) {
+    return { kind: "invalid", failures: [{ ruleType: "designReviewUpdate", detail: "current update identity is unresolvable", timestamp: Date.now() }] };
+  }
+  return {
+    kind: "update",
+    status: "ready",
+    identity,
+    reportHash: ctx.reportHash,
+    baselinePlanHash: ctx.baselinePlanHash,
+    newPlanHash: verdict.newPlanHash,
+  };
+}
+
+async function runVerificationBase(
+  config: PipelineConfig,
+  meta: SessionMeta,
+  assistantMessages: string[],
+  options?: RunVerificationOptions,
+): Promise<VerificationRunResult> {
   const stageConfig = config.stages[meta.currentStage];
   const verifyConfig = stageConfig.verify;
 

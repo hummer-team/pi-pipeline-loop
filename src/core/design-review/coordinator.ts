@@ -18,10 +18,14 @@ import type {
   DesignReviewPhase,
   DesignReviewIdentity,
   DesignReviewInputReceipt,
+  ReviewIssue,
   SpawnOperationContext,
+  VerifyFailureItem,
 } from "../../types";
-import { verifyDesignReviewReport, extractReportIssues } from "./report";
-import { loadVerifyContractAnchors } from "../../utils/contract-loader";
+import { extractReportIssues } from "./report";
+import { runVerification, type VerificationRunResult } from "../auto-verifier";
+import type { RunVerificationOptions } from "../auto-verifier";
+import type { DesignReviewPauseReason } from "../../types";
 import {
   buildDesignReviewUpdatePrompt,
   DesignReviewUpdateConfigError,
@@ -69,6 +73,8 @@ export type CoordinatorResult =
   | { status: "handled"; action: "routed"; toStage: string }
   | { status: "handled"; action: "pending"; reason: string }
   | { status: "handled"; action: "frozen"; reason: string }
+  /** 192 Phase 3: invalid deliverable → caller applies the normal verify-fail budget */
+  | { status: "handled"; action: "verify_failed"; failures: readonly VerifyFailureItem[] }
   | { status: "not-applicable" };
 
 /**
@@ -81,6 +87,14 @@ export type CoordinatorResult =
 export interface CoordinatorContext {
   config: PipelineConfig;
   session: StrictCommitSession;
+  /**
+   * 192 Phase 3: outcome produced by the SHARED runVerification entry when
+   * the caller already verified this turn (agent-settled / tools). Consumed
+   * instead of re-parsing; absent consumers invoke the same service.
+   */
+  verificationResult?: VerificationRunResult | undefined;
+  /** Optional passthrough verification options (execFn/logError DI). */
+  verificationOptions?: RunVerificationOptions | undefined;
   ui?: {
     notify: (msg: string) => void;
     transition?: (ctx: unknown, from: string, to: string) => void;
@@ -305,7 +319,20 @@ async function pauseForUnknownDispatch(
 }
 
 /**
- * Handle review_running phase: verify report and route based on verdict.
+ * Handle review_running phase: consume the TRUSTED verification outcome from
+ * the shared entry (runVerification → design-review verifier).
+ *
+ * 192 Phase 3 (K02/F02/F05):
+ * - No second report parser here: loadVerifyContractAnchors +
+ *   verifyDesignReviewReport self-parsing is removed. The consumer receives
+ *   the outcome produced by the shared engine over one snapshot; if the
+ *   caller (a tool entry) has none, the SAME shared runVerification service
+ *   is invoked first. There is never a hook-vs-coordinator dual consumption
+ *   path.
+ * - ALL triggers are handled (settle/advance/verify/handoff): an active
+ *   authorized loop must not fall back to ordinary branches (F05).
+ * - invalid → verify_failed (the normal verification-failure budget is
+ *   applied by the hook/tools); valid FAIL is NOT a verify failure.
  */
 async function handleReviewRunning(
   ctx: CoordinatorContext,
@@ -313,39 +340,56 @@ async function handleReviewRunning(
   drState: DesignReviewState,
   trigger: string,
 ): Promise<CoordinatorResult> {
-  if (trigger !== "settle") {
-    return { status: "not-applicable" };
+  // Obtain the trusted outcome through the SHARED verification service.
+  let outcome = ctx.verificationResult?.designReviewOutcome;
+  if (!outcome) {
+    const vr = await runVerification(ctx.config, meta, [], ctx.verificationOptions);
+    outcome = vr.designReviewOutcome;
   }
+  const reportPath = drState.reportDoc ?? deriveReportPath(drState.planDoc, drState.round);
 
-  // Load contract anchors from verify.md (Phase 3 / 191 fix #15)
-  // This ensures the coordinator consumes the verify.md groups contract as the single source
-  // of truth for verdict parsing, eliminating the dual source of truth problem.
-  const contractResult = await loadVerifyContractAnchors(ctx.config, "design-review");
-  const verdictPatterns = contractResult.anchors.verdict?.patterns;
-  
-  if (contractResult.issues.length > 0) {
+  if (!outcome) {
+    // Active review_running must produce a domain outcome; absence means the
+    // context narrowed away (identity lost) — stay pending, never ordinary.
     await safeWriteAuditLog("design_review_coordinator", {
-      action: "contract_load_warning",
-      issues: contractResult.issues.join("; "),
-    });
+      action: "verification_outcome_missing",
+      trigger,
+      round: String(drState.round),
+    }, "error");
+    return { status: "handled", action: "pending", reason: "verification_outcome_missing" };
   }
 
-  // Verify report exists and is valid
-  const reportPath = deriveReportPath(drState.planDoc, drState.round);
-  const verification = verifyDesignReviewReport(
-    reportPath, 
-    drState.planDoc, 
-    drState.round,
-    verdictPatterns // Pass contract patterns for verdict extraction
-  );
-
-  if (verification.verdict === "invalid") {
+  if (outcome.kind === "invalid") {
     await safeWriteAuditLog("design_review_coordinator", {
       action: "report_invalid",
       reportPath,
-      reason: verification.reason,
+      reason: outcome.failures.map((f) => f.detail).join("; "),
     });
-    return { status: "handled", action: "pending", reason: "report_invalid" };
+    // Route through the NORMAL verification-failure budget (task 9).
+    return { status: "handled", action: "verify_failed", failures: outcome.failures };
+  }
+
+  if (outcome.kind === "paused") {
+    return await pauseDomainOutcome(ctx, meta, drState, outcome.reason, `paused:${outcome.reason}`);
+  }
+
+  if (outcome.kind !== "report") {
+    // update outcome cannot occur in review_running; treat as unverified.
+    return { status: "handled", action: "pending", reason: "unexpected_domain_outcome" };
+  }
+
+  // Fresh-identity guard: the outcome must bind to the CURRENT operation.
+  if (
+    outcome.identity.operationId !== drState.operation?.operationId
+    || outcome.identity.round !== drState.round
+    || outcome.identity.authorizationId !== drState.authorizationId
+  ) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "report_identity_stale",
+      outcomeOp: outcome.identity.operationId,
+      currentOp: drState.operation?.operationId ?? "none",
+    }, "warn");
+    return { status: "handled", action: "pending", reason: "report_identity_stale" };
   }
 
   // Check budget before transition
@@ -353,18 +397,47 @@ async function handleReviewRunning(
   if (!budgetCheck.ok) {
     await safeWriteAuditLog("design_review_coordinator", {
       action: "budget_exceeded_before_routing",
-      verdict: verification.verdict,
+      verdict: outcome.verdict,
       currentCycle: String(meta.loopCycleCount ?? 0),
       maxCycles: String(budgetCheck.max),
     });
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
   }
 
-  if (verification.verdict === "pass") {
-    return await handlePass(ctx, meta, drState, verification.reportHash ?? "");
-  } else {
-    // fail
-    return await handleFail(ctx, meta, drState, verification.reportHash ?? "", reportPath);
+  if (outcome.verdict === "pass") {
+    return await handlePass(ctx, meta, drState, outcome.reportHash);
+  }
+  return await handleFail(ctx, meta, drState, outcome.reportHash, reportPath, outcome.issues);
+}
+
+/**
+ * Commit a domain `paused` outcome (drift/no-change/new-decision) and return
+ * pending. pauseReason comes from the trusted outcome, never guessed here.
+ */
+async function pauseDomainOutcome(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  reason: DesignReviewPauseReason,
+  resultReason: string,
+): Promise<CoordinatorResult> {
+  if (drState.phase === "paused" && drState.pauseReason === reason) {
+    return { status: "handled", action: "pending", reason: resultReason };
+  }
+  try {
+    const pausedState = transitionPhase(drState, "paused", undefined, reason);
+    const commit = commitDesignReviewState(ctx.session, pausedState);
+    if (!commit.ok) {
+      return { status: "handled", action: "pending", reason: `state_commit_failed: ${commit.reason}` };
+    }
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "paused_domain_outcome",
+      pauseReason: reason,
+      round: String(drState.round),
+    });
+    return { status: "handled", action: "pending", reason: resultReason };
+  } catch {
+    return { status: "handled", action: "pending", reason: resultReason };
   }
 }
 
@@ -727,6 +800,7 @@ async function handleFail(
   drState: DesignReviewState,
   reportHash: string,
   reportPath: string,
+  verifiedIssues?: readonly ReviewIssue[],
 ): Promise<CoordinatorResult> {
   // Check budget before proceeding
   const budgetCheck = checkBudget(meta, ctx.config);
@@ -749,9 +823,16 @@ async function handleFail(
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
   }
 
-  // Extract issues from the consumed report (bounded receipt ids).
-  const issues = extractReportIssues(reportPath);
-  const issueIds = issues.map((_issue, idx) => String(idx + 1));
+  // Issues come from the SAME trusted snapshot (verifiedIssues) whenever the
+  // shared verification produced them; re-extraction is only a legacy
+  // fallback for callers without a domain outcome. No second file read of a
+  // different report (task 6: same snapshot feeds the FAIL update).
+  const issues = verifiedIssues
+    ? verifiedIssues.map((i) => i.text)
+    : extractReportIssues(reportPath);
+  const issueIds = verifiedIssues
+    ? verifiedIssues.map((i) => i.issueId)
+    : issues.map((_issue, idx) => String(idx + 1));
 
   const newVisit = Date.now();
   const reviewOp = drState.operation;
@@ -1061,13 +1142,42 @@ async function handleUpdateRunning(
   drState: DesignReviewState,
   trigger: string,
 ): Promise<CoordinatorResult> {
-  if (trigger !== "settle") {
-    return { status: "not-applicable" };
+  // 192 Phase 3 (F05): ALL triggers are consumed through the shared
+  // verification outcome — advance/verify/handoff must not fall back to the
+  // ordinary plan-confirm/auto-advance branches for an authorized update.
+  let outcome = ctx.verificationResult?.designReviewOutcome;
+  if (!outcome) {
+    const vr = await runVerification(ctx.config, meta, [], ctx.verificationOptions);
+    outcome = vr.designReviewOutcome;
   }
 
-  // Validate plan update
-  const planContent = await fs.readFile(drState.planDoc, "utf-8");
-  const currentPlanHash = computeHash(planContent);
+  if (outcome && outcome.kind === "paused") {
+    return await pauseDomainOutcome(ctx, meta, drState, outcome.reason, `paused:${outcome.reason}`);
+  }
+  if (outcome && outcome.kind === "invalid") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "update_invalid",
+      reasons: outcome.failures.map((f) => f.detail).join("; "),
+    });
+    return { status: "handled", action: "verify_failed", failures: outcome.failures };
+  }
+
+  // Plan snapshot for the transition below. When the shared outcome is
+  // present and ready, its newPlanHash is authoritative (same snapshot);
+  // a legacy/local path re-reads here (single read per consumption).
+  let planContent: string;
+  try {
+    planContent = await fs.readFile(drState.planDoc, "utf-8");
+  } catch (err) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "update_invalid",
+      reasons: `plan snapshot unreadable: ${drState.planDoc}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return { status: "handled", action: "verify_failed", failures: [{
+      ruleType: "designReviewUpdate", detail: "plan snapshot unreadable", timestamp: Date.now(),
+    }] };
+  }
+  const currentPlanHash = outcome && outcome.kind === "update" ? outcome.newPlanHash : computeHash(planContent);
   
   // Check if plan actually changed first (before validation)
   if (currentPlanHash === drState.planHash) {
@@ -1287,19 +1397,19 @@ async function handleUpdateRunning(
   });
 
   // Dispatch the next-round review exactly once (intent → spawn → receipt).
-  const outcome = await dispatchOperation(ctx, commitRes.meta, stateWithOperation, preparedReviewOp);
+  const dispatchResult = await dispatchOperation(ctx, commitRes.meta, stateWithOperation, preparedReviewOp);
 
   await safeWriteAuditLog("design_review_coordinator", {
     action: "review_dispatch_attempted",
     operationId: preparedReviewOp.operationId,
     round: String(nextRound),
-    outcome,
+    outcome: dispatchResult,
   });
 
-  if (outcome === "blocked") {
+  if (dispatchResult === "blocked") {
     return { status: "handled", action: "pending", reason: "operation_state_commit_failed" };
   }
-  if (outcome === "unknown") {
+  if (dispatchResult === "unknown") {
     return await pauseForUnknownDispatch(ctx, commitRes.meta, stateWithOperation, "review_dispatch_unverified");
   }
 

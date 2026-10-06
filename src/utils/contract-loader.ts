@@ -43,6 +43,12 @@ export interface VerifyContractAnchors {
   modelConfirm?: VerifyContractPatternSet;
   /** Node-level verdict anchor (each pattern must expose capture group 1). */
   verdict?: VerifyContractPatternSet;
+  /**
+   * 192 Phase 3: issue-heading anchor (node `runtime: issueHeading`).
+   * Declares the Issues section heading pattern the report parser must use;
+   * declaration is behavior — no dedicated file search elsewhere.
+   */
+  issueHeading?: VerifyContractPatternSet;
 }
 
 /** Result of loading runtime anchors. */
@@ -53,7 +59,7 @@ export interface LoadVerifyContractAnchorsResult {
 }
 
 /** Valid node-level runtime anchor names. */
-const NODE_RUNTIME_KEYS = new Set(["answerField", "modelConfirm", "verdict"]);
+const NODE_RUNTIME_KEYS = new Set(["answerField", "modelConfirm", "verdict", "issueHeading"]);
 
 /** Valid group-level runtime anchor names. */
 const GROUP_RUNTIME_KEYS = new Set(["roundHeading"]);
@@ -183,6 +189,8 @@ export async function loadVerifyContractAnchors(
         anchors.answerField = set;
       } else if (node.runtime === "modelConfirm") {
         anchors.modelConfirm = set;
+      } else if (node.runtime === "issueHeading") {
+        anchors.issueHeading = set;
       }
     }
   }
