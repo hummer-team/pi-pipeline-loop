@@ -31,11 +31,20 @@ type Harness = {
   planDoc: string;
   config: PipelineConfig;
   session: ReturnType<typeof createSessionState>;
+  hook: ReturnType<typeof createAgentSettled>;
+  hookCtx: Record<string, unknown>;
+  /** Owner identity switcher for the child→owner matrix (192 issue-6). */
+  sessionIdentity: { file: string; name: string; header?: Record<string, unknown> };
   rpcCount: () => number;
   lastPrompt: () => string;
   failFinishOnce: { value: boolean };
-  /** "reply" = normal; "silent" = never answer; "reject" = explicit rejection */
-  busMode: { value: "reply" | "silent" | "reject" };
+  /** 192 issue-6: one-shot strict-commit failure for ANY designReview patch. */
+  failAnyCommitOnce: { value: boolean };
+  /** "reply" = normal; "silent" = never answer; "reject" = explicit rejection;
+   *  "late" = reply queued until flushLateReplies() (late callback). */
+  busMode: { value: "reply" | "silent" | "reject" | "late" };
+  /** Deliver all queued "late" replies and let timers settle. */
+  flushLateReplies: () => Promise<void>;
   settle: (userMessage?: string) => Promise<void>;
   cleanup: () => void;
 };
@@ -47,6 +56,9 @@ function makeHarness(): Harness {
   fs.mkdirSync(path.join(projectRoot, ".pi", "audit"), { recursive: true });
   const planDoc = path.join(projectRoot, "docs", "191_Feat_plan.md");
   fs.writeFileSync(planDoc, "# Plan\ninitial design\n", "utf-8");
+  // 192 issue-6: the requirement doc must exist for the direct-entry gate
+  // (drift owner-confirm re-authorisation runs the production gate).
+  fs.writeFileSync(path.join(projectRoot, "docs", "191_Feat.md"), "# Requirements\nx\n", "utf-8");
 
   const config = makeTestConfig({ projectRoot }) as PipelineConfig;
   for (const [stage, agent] of [
@@ -68,7 +80,13 @@ function makeHarness(): Harness {
   let nextId = 0;
   const handlers = new Map<string, Array<(p: unknown) => void>>();
   const failFinishOnce = { value: false };
-  const busMode = { value: "reply" as "reply" | "silent" | "reject" };
+  // 192 issue-6: one-shot STRICT-COMMIT failure for ANY designReview patch.
+  // Simulates the shared meta store write failing (unavailable) so the
+  // fail-closed window and later recovery are exercised in the real chain.
+  const failAnyCommitOnce = { value: false };
+  const busMode = { value: "reply" as "reply" | "silent" | "reject" | "late" };
+  // "late": replies are QUEUED until flushLateReplies() delivers them.
+  const lateQueue: Array<{ channel: string; payload: unknown }> = [];
 
   // REAL session adapter (local entries + shared meta.json under .pi/audit)
   const entries: unknown[] = [];
@@ -82,7 +100,16 @@ function makeHarness(): Harness {
           rpcCount++;
           const id = `agent-rpc-${++nextId}`;
           rpcPrompts.push(String(payload.prompt ?? ""));
-          if (busMode.value === "silent") return; // never replies → unknown window
+          if (busMode.value === "silent") return; // never answers → unknown window
+          if (busMode.value === "late") {
+            // The bus goes quiet for now; the reply is delivered only when
+            // the test flushes it (late callback semantics).
+            lateQueue.push({
+              channel: `subagents:rpc:spawn:reply:${payload.requestId}`,
+              payload: { success: true, data: { id } },
+            });
+            return;
+          }
           const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
           if (busMode.value === "reject") {
             // explicit rejection: provably not dispatched via RPC; the
@@ -121,11 +148,16 @@ function makeHarness(): Harness {
     auditDir: ".pi/audit",
   });
   // Wrap to allow injecting a ONE-SHOT terminal-commit failure (DR192-01 B)
+  // and a ONE-SHOT any-designReview-commit failure (192 issue-6 shared failure).
   const origVerified = session.updateMetaVerified!;
   session.updateMetaVerified = (patch, expected) => {
     if (patch.designReview?.phase === "finished" && failFinishOnce.value) {
       failFinishOnce.value = false;
       return { status: "unavailable", reason: "injected_finish_failure" };
+    }
+    if (patch.designReview !== undefined && failAnyCommitOnce.value) {
+      failAnyCommitOnce.value = false;
+      return { status: "unavailable", reason: "injected_shared_failure" };
     }
     return origVerified.call(session, patch, expected);
   };
@@ -139,6 +171,9 @@ function makeHarness(): Harness {
   session.updateMeta(initial);
 
   let branchUserMessage = "docs/191_Feat.md 1 答";
+  // Overridable owner identity (192 issue-6: child→owner matrix switches the
+  // session file/role between settles on the SAME shared meta store).
+  const sessionIdentity = { file: path.join(projectRoot, "owner.jsonl"), name: "owner", header: undefined as Record<string, unknown> | undefined };
   const hookCtx = {
     session,
     pi,
@@ -154,9 +189,9 @@ function makeHarness(): Harness {
         getBranch: () => [
           { type: "message", message: { role: "user", content: branchUserMessage } },
         ],
-        getSessionFile: () => path.join(projectRoot, "owner.jsonl"),
-        getSessionName: () => "owner",
-        getHeader: () => undefined,
+        getSessionFile: () => sessionIdentity.file,
+        getSessionName: () => sessionIdentity.name,
+        getHeader: () => sessionIdentity.header,
       },
     },
   };
@@ -168,10 +203,22 @@ function makeHarness(): Harness {
     planDoc,
     config,
     session,
+    hook,
+    hookCtx,
+    sessionIdentity,
     rpcCount: () => rpcCount,
     lastPrompt: () => rpcPrompts[rpcPrompts.length - 1] ?? "",
     failFinishOnce,
+    failAnyCommitOnce,
     busMode,
+    flushLateReplies: () => {
+      const pending = lateQueue.splice(0, lateQueue.length);
+      for (const { channel, payload } of pending) {
+        for (const h of handlers.get(channel) ?? []) h(payload);
+      }
+      // let any writeback/terminal timers run
+      return new Promise((r) => setTimeout(r, 5));
+    },
     settle: async (userMessage?: string) => {
       if (userMessage !== undefined) branchUserMessage = userMessage;
       // ONE hook run; the RPC reply (setTimeout 0) is awaited inside the
@@ -423,5 +470,388 @@ describe("192 Phase 5: continuous hook-driven design-review loop", () => {
     expect(h.session.getMeta()!.flowState).toBe("blocked");
     expect(stateOf(h).phase).toBe("review_ready");
     expect(h.rpcCount()).toBe(0);
+  });
+});
+
+
+// ─── 192 fix (issue 6): extended real-hook-chain matrices (plan Phase 5 task 4) ─
+describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-ms / shared-fail / late-callback", () => {
+  let h: Harness;
+
+  beforeEach(() => {
+    markSubagentsReady();
+    h = makeHarness();
+  });
+
+  afterEach(() => {
+    h.cleanup();
+  });
+
+  // Budget-accounting reference for BOTH tests below, per recordStageVisit
+  // semantics (src/utils/stage-visit.ts:42-74): loopCycleCount is a GLOBAL
+  // counter that increments on every REVISIT of the target stage (already in
+  // stageVisitOrder) and resets to 0 on a first visit. The chain starts with
+  // an empty order, so the round-1 FAIL's "plan" transition and the round-2
+  // review's "design-review" transition are first visits (count 0); the
+  // round-2 FAIL / round-3 review revisits push it to 1 / 2, and the round-3
+  // FAIL's "plan" REVISIT is the third increment → 3, exactly where the
+  // default cap 3 freezes (cycleCount >= max) and cap 5 continues.
+  it("configured maxLoopCycles=5 survives FOUR consecutive rounds (FAIL, FAIL, FAIL, PASS at round 4) — the exact chain default 3 freezes", async () => {
+    // The paired default-3 test below freezes THIS chain at the round-3 FAIL;
+    // proving continuation here is only meaningful against cap 3, so the
+    // counters and the visit order are asserted at every step.
+    h.config.maxLoopCycles = 5;
+    authorizeReview(h);
+
+    // round 1: review (rpc1) → FAIL → update (rpc2)
+    await h.settle();
+    expect(h.rpcCount()).toBe(1);
+    writeReport(h, "FAIL", ["Defect one"]);
+    await h.settle();
+    expect(h.rpcCount()).toBe(2);
+    expect(stateOf(h).round).toBe(1);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(0); // first "plan" visit
+    const updateOp1 = stateOf(h).operation!.operationId;
+    writePlanUpdate(h);
+
+    // round 2: review (rpc3) → FAIL → update (rpc4)
+    await h.settle();
+    expect(h.rpcCount()).toBe(3);
+    expect(stateOf(h).round).toBe(2);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(0); // first "design-review" visit
+    writeReport(h, "FAIL", ["Defect two"]);
+    await h.settle();
+    expect(h.rpcCount()).toBe(4);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(1); // "plan" revisit #1
+    const updateOp2 = stateOf(h).operation!.operationId;
+    expect(updateOp2).not.toBe(updateOp1); // fresh update operation per round
+    writePlanUpdate(h);
+
+    // round 3: review (rpc5) → FAIL → update (rpc6) — cap 3 would freeze here
+    await h.settle();
+    expect(h.rpcCount()).toBe(5);
+    expect(stateOf(h).round).toBe(3);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(2); // "design-review" revisit #1
+    const reviewOp3 = stateOf(h).operation!.operationId;
+    writeReport(h, "FAIL", ["Defect three"]);
+    await h.settle();
+    expect(h.rpcCount()).toBe(6); // NOT frozen: count 3 < configured cap 5
+    const metaR3Fail = h.session.getMeta()!;
+    expect(metaR3Fail.loopCycleCount).toBe(3); // "plan" revisit #2
+    expect(metaR3Fail.flowState).not.toBe("blocked");
+    expect(stateOf(h).phase).toBe("update_running");
+    expect(stateOf(h).operation?.kind).toBe("update");
+    const updateOp3 = stateOf(h).operation!.operationId;
+    expect(updateOp3).not.toBe(updateOp2);
+    writePlanUpdate(h);
+
+    // round 4: review (rpc7) → PASS → handoff (rpc8) → finished
+    await h.settle();
+    expect(h.rpcCount()).toBe(7);
+    expect(stateOf(h).round).toBe(4);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(4); // "design-review" revisit #2
+    const reviewOp4 = stateOf(h).operation!.operationId;
+    expect(reviewOp4).not.toBe(reviewOp3);
+    writeReport(h, "PASS");
+    await h.settle();
+    expect(h.rpcCount()).toBe(8);
+    // The terminal "develop" transition is a FIRST visit: it resets the global
+    // counter to exactly 0 and appends the stage once (src/utils/stage-visit.ts:66-73).
+    const metaEnd = h.session.getMeta()!;
+    expect(stateOf(h).phase).toBe("finished");
+    expect(metaEnd.currentStage).toBe("develop");
+    expect(metaEnd.loopCycleCount).toBe(0);
+    expect(metaEnd.stageVisitOrder).toEqual([
+      "plan", "design-review", "plan", "design-review", "plan", "design-review", "develop",
+    ]);
+    expect(metaEnd.flowState).not.toBe("blocked");
+    // approval bound to the round-4 review; every round's report kept distinct
+    expect(stateOf(h).approval?.reviewOperationId).toBe(reviewOp4);
+    for (const r of [1, 2, 3, 4]) {
+      expect(fs.existsSync(deriveReportPath(h.planDoc, r))).toBe(true);
+    }
+    expect(classifyDesignReviewFlow(metaEnd).kind).toBe("ordinary");
+  });
+
+  it("default cap 3: the SAME real chain REALLY freezes at the round-3 FAIL revisit (no injected counter)", async () => {
+    // No config override → coordinator's `?? 3` default applies
+    // (src/core/design-review/coordinator.ts:844). This is the discriminating
+    // pair for the configured-5 test above.
+    authorizeReview(h);
+    await h.settle(); // review r1 (rpc1)
+    writeReport(h, "FAIL", ["Defect one"]);
+    await h.settle(); // update r1 (rpc2)
+    writePlanUpdate(h);
+    await h.settle(); // review r2 (rpc3)
+    writeReport(h, "FAIL", ["Defect two"]);
+    await h.settle(); // update r2 (rpc4)
+    writePlanUpdate(h);
+    await h.settle(); // review r3 (rpc5)
+    expect(stateOf(h).round).toBe(3);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(2);
+
+    // Round-3 FAIL: the "plan" REVISIT reaches cycleCount 3 >= cap 3 →
+    // recordStageVisit refuses, coordinator returns frozen, and the hook
+    // applies the REAL freeze (agent-settled.ts:376-385 → freezeAndPrompt).
+    writeReport(h, "FAIL", ["Defect three"]);
+    await h.settle();
+    const metaFrozen = h.session.getMeta()!;
+    expect(metaFrozen.flowState).toBe("blocked");
+    expect(metaFrozen.loopCycleCount).toBe(3); // counted for audit, transition refused
+    expect(metaFrozen.stageVisitOrder).toEqual(["plan", "design-review", "plan", "design-review", "plan"]);
+    expect(metaFrozen.currentStage).toBe("design-review"); // never moved to plan
+    expect(h.rpcCount()).toBe(5); // NO update dispatch after the freeze
+    // The round-3 FAIL state remains explainable/recoverable: the report is
+    // still on disk UNCONSUMED and the review operation stays as it was.
+    expect(fs.existsSync(deriveReportPath(h.planDoc, 3))).toBe(true);
+    expect(stateOf(h).phase).toBe("review_running");
+    expect(stateOf(h).operation?.kind).toBe("review");
+    expect(stateOf(h).operation?.dispatchEvidence).toBe("trusted_id");
+    expect(stateOf(h).reviewInputReceipt).toBeUndefined(); // receipt NOT forged on freeze
+
+    // Automatic re-entry must not dispatch or double-count.
+    await h.settle();
+    expect(h.rpcCount()).toBe(5);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(3);
+  });
+
+  it("drift: PASS blocked → paused(drift) zero handoff; owner confirm → recompute hash/new operation/safe round → re-review PASS", async () => {
+    const { executeDecision } = await import("../../core/flow-state");
+    authorizeReview(h);
+    await h.settle(); // review dispatch (rpc 1)
+    const oldAuthId = stateOf(h).authorizationId;
+    const oldPlanHash = stateOf(h).planHash!;
+    const reviewOp1 = stateOf(h).operation!.operationId;
+    writeReport(h, "PASS");
+
+    // Owner edits the plan AFTER the review PASSed → plan-hash drift.
+    const drifted = "# Plan\nOWNER-NEW DESIGN\n";
+    fs.writeFileSync(h.planDoc, drifted, "utf-8");
+    const driftedHash = computeHash(drifted);
+
+    await h.settle(); // PASS consume → drift detected → paused(drift)
+    const stP = stateOf(h);
+    expect(stP.phase).toBe("paused");
+    expect(stP.pauseReason).toBe("drift");
+    expect(stP.operation?.kind).toBe("review"); // NEVER transitioned to develop
+    expect(stP.operation?.dispatchEvidence).toBe("trusted_id");
+    expect(h.rpcCount()).toBe(1); // ZERO handoff/develop RPCs
+    expect(h.session.getMeta()!.currentStage).toBe("design-review");
+    // the PASS report must NOT be deleted by the drift pause
+    expect(fs.existsSync(deriveReportPath(h.planDoc, 1))).toBe(true);
+
+    // Owner confirms a NEW re-review of the drifted plan through the
+    // production decision path. choose_stage requires the frozen pipeline,
+    // so the owner first aborts (decision menu "Abort & Exit" — which also
+    // invalidates the old authorization), then re-enters design-review: the
+    // direct gate recomputes hash, new authorization, safe round 2.
+    const decisionCtx = {
+      session: h.session,
+      ui: {
+        notify: () => {},
+        select: async () => undefined,
+        confirm: async () => true, // owner confirms "re-review new version"
+      },
+      _ctx: (h as unknown as { hookCtx: { _ctx: unknown } }).hookCtx._ctx,
+    } as never;
+    const metaPaused = h.session.getMeta()!;
+    const abortRes = await executeDecision(decisionCtx, metaPaused, "abort", h.config, {});
+    expect(abortRes.success).toBe(true);
+    const afterAbort = h.session.getMeta()!;
+    expect(afterAbort.designReview).toBeUndefined(); // old authorization fully invalidated
+    expect(afterAbort.flowState).toBe("aborted");
+
+    const res = await executeDecision(
+      decisionCtx,
+      afterAbort,
+      "choose_stage",
+      h.config,
+      { targetStage: "design-review" } as never,
+    );
+    expect(res.success).toBe(true);
+    const stNew = stateOf(h);
+    expect(stNew.phase).toBe("review_ready");
+    expect(stNew.authorizationId).not.toBe(oldAuthId); // NEW authorization
+    expect(stNew.planHash).toBe(driftedHash); // hash RECOMPUTED from current bytes
+    expect(stNew.planHash).not.toBe(oldPlanHash);
+    expect(stNew.round).toBe(2); // safe round: scans existing round-1 report
+    expect(stNew.reportDoc).toBe(deriveReportPath(h.planDoc, 2));
+    expect(stNew.operation).toBeUndefined(); // no fabricated operation yet
+    expect(h.rpcCount()).toBe(1); // entry alone dispatched nothing
+
+    // Owner settle dispatches the NEW review bound to the recomputed hash.
+    await h.settle();
+    expect(h.rpcCount()).toBe(2);
+    const stR2 = stateOf(h);
+    expect(stR2.phase).toBe("review_running");
+    expect(stR2.operation?.kind).toBe("review");
+    expect(stR2.operation?.inputHash).toBe(driftedHash);
+    expect(stR2.operation!.operationId).not.toBe(reviewOp1); // NEW operation
+
+    // Round-2 PASS closes the loop.
+    writeReport(h, "PASS");
+    await h.settle(); // handoff (rpc 3) → finished
+    expect(stateOf(h).phase).toBe("finished");
+    expect(stateOf(h).approval?.reviewOperationId).toBe(stR2.operation!.operationId);
+    expect(h.session.getMeta()!.currentStage).toBe("develop");
+    expect(h.rpcCount()).toBe(3);
+  });
+
+  it("child settle is inert on the shared store; the owner settle then consumes (child→owner)", async () => {
+    authorizeReview(h);
+    await h.settle(); // owner dispatches review (rpc 1)
+    writeReport(h, "FAIL", ["Missing error handling"]);
+
+    // Switch the settle identity to a CHILD session pointing at the SAME
+    // shared store: the child must not consume or mutate. (The hookCtx
+    // closures read sessionIdentity's FIELDS, so mutate in place.)
+    h.sessionIdentity.file = path.join(h.projectRoot, "kid.jsonl");
+    h.sessionIdentity.name = "kid-runner";
+    h.sessionIdentity.header = { parentSession: path.join(h.projectRoot, "owner.jsonl") };
+    const beforeJson = JSON.stringify(stateOf(h));
+    await h.settle();
+    expect(JSON.stringify(stateOf(h))).toBe(beforeJson); // ZERO mutation
+    expect(h.rpcCount()).toBe(1); // ZERO dispatch
+    expect(stateOf(h).phase).toBe("review_running"); // not consumed by the child
+
+    // Restore the owner identity (same shared store): exactly one
+    // consumption, one update dispatch.
+    h.sessionIdentity.file = path.join(h.projectRoot, "owner.jsonl");
+    h.sessionIdentity.name = "owner";
+    h.sessionIdentity.header = undefined;
+    await h.settle();
+    expect(h.rpcCount()).toBe(2);
+    expect(stateOf(h).phase).toBe("update_running");
+    expect(stateOf(h).operation?.kind).toBe("update");
+  });
+
+  it("same-millisecond visits: distinct operationIds with identical stageVisitId, no dedup swallow, correct rounds", async () => {
+    // Pin the clock so the review visit and the plan/update visit land in the
+    // SAME millisecond (stageVisitId collision). Identity (kind+operationId),
+    // never the timestamp, must separate operations.
+    const fixedNow = h.session.getMeta()!.stageStartTime ?? Date.now();
+    const realNow = Date.now;
+    Date.now = () => fixedNow;
+    try {
+      authorizeReview(h);
+      await h.settle(); // review dispatch (rpc 1)
+      const reviewOp = stateOf(h).operation!;
+      writeReport(h, "FAIL", ["Defect A"]);
+      await h.settle(); // FAIL consumed → update dispatch (rpc 2), same-ms visit
+      const updateOp = stateOf(h).operation!;
+      expect(updateOp.stageVisitId).toBe(reviewOp.stageVisitId); // genuinely same-ms
+      expect(updateOp.operationId).not.toBe(reviewOp.operationId); // distinct identities
+      expect(updateOp.kind).toBe("update");
+      expect(h.rpcCount()).toBe(2);
+      writePlanUpdate(h);
+      await h.settle(); // update consumed → round-2 review dispatch (rpc 3)
+      expect(h.rpcCount()).toBe(3);
+      expect(stateOf(h).round).toBe(2);
+      expect(stateOf(h).phase).toBe("review_running");
+      expect(stateOf(h).operation!.operationId).not.toBe(reviewOp.operationId);
+    } finally {
+      Date.now = realNow;
+    }
+    // Real clock resumes and the chain still finishes.
+    writeReport(h, "PASS");
+    await h.settle(); // handoff (rpc 4)
+    expect(stateOf(h).phase).toBe("finished");
+    expect(h.rpcCount()).toBe(4);
+  });
+
+  it("shared-store commit failure → zero dispatch and unchanged state; next settle dispatches exactly once", async () => {
+    authorizeReview(h);
+    h.failAnyCommitOnce.value = true; // strict commit fails (shared store down)
+    await h.settle();
+    expect(h.rpcCount()).toBe(0); // fail-closed BEFORE any RPC
+    expect(stateOf(h).phase).toBe("review_ready"); // nothing half-committed
+    expect(stateOf(h).operation).toBeUndefined();
+    // Recovery: the next settle performs the full commit + one dispatch.
+    await h.settle();
+    expect(h.rpcCount()).toBe(1);
+    expect(stateOf(h).phase).toBe("review_running");
+    expect(stateOf(h).operation?.agentId).toBe("agent-rpc-1");
+  });
+
+  it("late RPC callback: unknown-dispatch pause survives flush with ZERO re-dispatch and no fabricated trust", async () => {
+    authorizeReview(h);
+    // Bus goes quiet; the RPC reply arrives only AFTER the dispatch window
+    // closed. A timed-out attempt is UNCONFIRMABLE → production records
+    // evidence "unknown" and pauses for owner verification (K09/DR192-01).
+    // The matrix point is what the LATE callback may NOT do.
+    h.busMode.value = "late";
+    await h.settle();
+    const st = stateOf(h);
+    expect(st.phase).toBe("paused");
+    expect(st.pauseReason).toBe("unknown-dispatch");
+    expect(st.operation?.dispatchEvidence).toBe("unknown");
+    const rpcsAtPause = h.rpcCount();
+    expect(rpcsAtPause).toBe(1); // exactly one emitted attempt
+
+    // Late reply arrives: must NOT fabricate trusted_id, resume, or re-send.
+    await h.flushLateReplies();
+    expect(stateOf(h).phase).toBe("paused");
+    expect(stateOf(h).pauseReason).toBe("unknown-dispatch");
+    expect(stateOf(h).operation?.dispatchEvidence).toBe("unknown"); // never rewritten
+    expect(stateOf(h).operation?.agentId).toBeUndefined(); // no id inferred from late bytes
+    expect(h.rpcCount()).toBe(rpcsAtPause); // no re-dispatch on flush
+
+    // Automatic re-entry also performs zero further dispatch (K09).
+    await h.settle();
+    expect(h.rpcCount()).toBe(rpcsAtPause);
+    expect(stateOf(h).phase).toBe("paused");
+  }, 30_000);
+
+  it("three production entries share ONE live loop: resume(advance) dispatches the ready review, settle consumes PASS, resume takes over the not-sent handoff exactly once", async () => {
+    // Plan Phase 5 task 4 "三种入口": the RESUME command entry
+    // (dispatchAfterResume, src/commands/pipeline-start.ts:598) and the hook
+    // settle entry must drive the SAME single business identity — no second
+    // executor, no re-approval, no extra visit.
+    const { dispatchAfterResume } = await import("../../commands/pipeline-start");
+    authorizeReview(h);
+    const notices: string[] = [];
+    const fakeUi = { notify: (_c: unknown, msg: string) => { notices.push(String(msg)); } };
+
+    // Entry 1 — production resume/advance on review_ready: dispatches exactly
+    // one review (coordinator handleReviewReady accepts settle/advance,
+    // src/core/design-review/coordinator.ts:209).
+    await dispatchAfterResume(h.hookCtx as never, h.config, fakeUi as never, h.session.getMeta()!, h.planDoc);
+    expect(h.rpcCount()).toBe(1);
+    const stR = stateOf(h);
+    expect(stR.phase).toBe("review_running");
+    expect(stR.operation?.kind).toBe("review");
+    expect(stR.operation?.agentId).toBe("agent-rpc-1");
+
+    // Entry 2 — real hook settle consumes the PASS. The develop channel is
+    // broken first, so the handoff is provably NOT sent (DR192-01 window A).
+    writeReport(h, "PASS");
+    const goodAgent = h.config.stages["develop"]!.agentPath;
+    h.config.stages["develop"] = { ...h.config.stages["develop"]!, agentPath: "agents/deleted-192.md" };
+    await h.settle();
+    expect(h.rpcCount()).toBe(1); // zero handoff RPC while the channel is broken
+    const stP = stateOf(h);
+    expect(stP.phase).toBe("pass_ready");
+    expect(stP.operation?.kind).toBe("develop-handoff");
+    expect(stP.operation?.dispatchEvidence).toBe("confirmed_not_sent");
+    expect(h.session.getMeta()!.currentStage).toBe("develop"); // transition stands
+    const handoffId = stP.operation!.operationId;
+    const approvalId = stP.approval?.reviewOperationId;
+    const visits = JSON.stringify(h.session.getMeta()!.stageVisitOrder ?? null);
+
+    // Entry 3 — production resume takeover on the develop stage with an
+    // unfinished handoff operation: dispatches the SAME handoff exactly once
+    // (pipeline-start.ts:613-646) and the ordinary develop spawn must NOT run.
+    h.config.stages["develop"] = { ...h.config.stages["develop"]!, agentPath: goodAgent };
+    await dispatchAfterResume(h.hookCtx as never, h.config, fakeUi as never, h.session.getMeta()!, h.planDoc);
+    expect(h.rpcCount()).toBe(2); // one recovery dispatch, no second channel
+    const stEnd = stateOf(h);
+    expect(stEnd.phase).toBe("finished");
+    expect(stEnd.operation?.operationId).toBe(handoffId); // SAME op
+    expect(stEnd.approval?.reviewOperationId).toBe(approvalId); // no re-approval
+    expect(stEnd.round).toBe(1); // no round bump
+    expect(JSON.stringify(h.session.getMeta()!.stageVisitOrder ?? null)).toBe(visits); // no extra visit
+    expect(classifyDesignReviewFlow(h.session.getMeta()!).kind).toBe("ordinary");
+    // The resume entry reported the takeover through its own notify path.
+    expect(notices.length).toBeGreaterThan(0);
   });
 });
