@@ -688,6 +688,20 @@ async function finishCurrentHandoffReliably(ctx: CoordinatorContext): Promise<bo
   let finishedState: DesignReviewState;
   try {
     finishedState = transitionPhase(state, "finished");
+    // Terminal: the handoff operation itself reaches "completed" alongside
+    // finished, so takeover predicates (isDevelopHandoffOperation) and any
+    // later inspection see ONE coherent terminal record.
+    if (finishedState.operation?.kind === "develop-handoff") {
+      finishedState = {
+        ...finishedState,
+        operation: {
+          ...finishedState.operation,
+          dispatchState: "completed",
+          settledAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      };
+    }
   } catch {
     return false;
   }

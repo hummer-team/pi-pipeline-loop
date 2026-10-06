@@ -183,15 +183,19 @@ describe("Phase 4 (191): Dynamic write scope (isWithinDesignReviewScope)", () =>
 });
 
 describe("Phase 4 (191): Symlink resolution (resolveSymlinkPath)", () => {
-  it("resolves absolute symlink to target path", async () => {
-    // This test verifies the function signature and behavior
-    // Actual symlink testing requires filesystem setup
+  it("resolves absolute symlink to target path (canonical, 192 Phase 4)", async () => {
+    // 192 Phase 4 (F07): resolution is CANONICAL — ancestors that are real
+    // symlinks (e.g. macOS /tmp → /private/tmp) are followed even when the
+    // leaf does not exist yet.
+    const fs = await import("node:fs");
     const result = await resolveSymlinkPath("/tmp/nonexistent");
     expect(typeof result).toBe("string");
-    expect(result).toBe("/tmp/nonexistent");
+    expect(result).toBe(fs.realpathSync("/tmp") + "/nonexistent");
   });
 
-  it("returns original path for non-symlink", async () => {
+  it("returns lexical path when no existing ancestor can be found or errors", async () => {
+    // /project does not exist anywhere: the nearest existing ancestor is "/"
+    // itself → canonicalized to "/" + remainder (same lexical path).
     const result = await resolveSymlinkPath("/project/regular/file.txt");
     expect(typeof result).toBe("string");
     expect(result).toBe("/project/regular/file.txt");

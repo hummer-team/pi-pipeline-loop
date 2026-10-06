@@ -761,6 +761,16 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     };
   }
 
+  // 192 Phase 4 (task 2): record the ORIGINAL configured nextStage targets of
+  // plan / design-review BEFORE disabled-target reconnection rewrites them.
+  // Diagnostics only — used to surface an activation target conflict; the
+  // effective config is NOT rewritten for display purposes.
+  const drOriginalTargets: { plan?: PipelineStage; "design-review"?: PipelineStage } = {};
+  if (stages["plan"]?.nextStage) drOriginalTargets.plan = stages["plan"].nextStage!;
+  if (stages["design-review"]?.nextStage) {
+    drOriginalTargets["design-review"] = stages["design-review"].nextStage!;
+  }
+
   // Post-process: reconnect nextStage chains around disabled stages
   if (disabledStages.size > 0) {
     const STAGE_ORDER: PipelineStage[] = [
@@ -851,5 +861,10 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       json.maxConfirmRejections ?? DEFAULT_CONFIRM_MAX_REJECTIONS,
     confirmOverflow: parseConfirmOverflow(json.confirmOverflow),
     compact: json.compact,
+    // 192 Phase 4 (task 2): pre-reconnection original targets of the
+    // design-review chain, captured BEFORE any disabled-target reconnection
+    // (diagnostic only). Attached ONLY when non-empty so existing deep-equality
+    // assertions on the config shape stay untouched.
+    ...(Object.keys(drOriginalTargets).length > 0 ? { designReviewOriginalTargets: drOriginalTargets } : {}),
   };
 }

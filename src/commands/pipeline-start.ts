@@ -39,6 +39,7 @@ import { staleConfigNotice } from "../utils/config-staleness";
 import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
 // Round 5 (N-3): coordinator for design-review dispatch
 import { coordinateDesignReview } from "../core/design-review/coordinator";
+import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "../core/design-review/state";
 
 /**
  * Checks that all 5 active stages have agentPath configured.
@@ -609,6 +610,41 @@ export async function dispatchAfterResume(
     return;
   }
 
+  // 192 Phase 4 (DR192-01): resume of an UNFINISHED develop-handoff stays under
+  // domain takeover even though currentStage already equals "develop". The
+  // ordinary develop spawn below must never re-dispatch the executor while the
+  // handoff receipt/finished protocol is incomplete.
+  if (stage === "develop") {
+    const freshMetaD = ctx.session?.getMeta?.() ?? meta;
+    if (
+      freshMetaD
+      && classifyDesignReviewFlow(freshMetaD).kind !== "ordinary"
+      && isDevelopHandoffOperation(freshMetaD)
+    ) {
+      const takeoverCtx: any = {
+        config,
+        session: ctx.session,
+        ui: ui ? { notify: (msg: string) => ui.notify(ctx, msg) } : undefined,
+        pi: ctx.pi,
+        spawnOverride: ctx.spawnOverride,
+      };
+      try {
+        const takeoverResult = await coordinateDesignReview(takeoverCtx, freshMetaD, "advance");
+        await safeWriteAuditLog("design_review_handoff_takeover_resume", {
+          pipelineId: freshMetaD.pipelineId,
+          action: takeoverResult.status === "handled" ? takeoverResult.action : takeoverResult.status,
+          trigger: "dispatch_after_resume",
+        });
+      } catch (err) {
+        await safeWriteAuditLog("design_review_handoff_takeover_error", {
+          pipelineId: freshMetaD.pipelineId,
+          error: err instanceof Error ? err.message : String(err),
+        }, "error");
+      }
+      return;
+    }
+  }
+
   // Round 5 (N-3): Dispatch design-review via coordinator instead of skipping.
   // This ensures choose_stage → design-review immediately dispatches the review agent
   // in the current session, rather than waiting for next settle/resume compensation.
@@ -653,8 +689,24 @@ export async function dispatchAfterResume(
           action: "pending",
           reason: coordinatorResult.reason,
         });
+      } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "frozen") {
+        // 192 Phase 4 (task 8): real freeze on budget exhaustion at resume
+        const { freezeAndPrompt } = await import("../core/flow-state");
+        await freezeAndPrompt(
+          { session: ctx.session, ui, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
+          ctx.session.getMeta() ?? freshMeta,
+          coordinatorResult.reason,
+          config,
+          { ui },
+        );
+        await safeWriteAuditLog("design_review_coordinator_dispatch", {
+          stage,
+          pipelineId: meta.pipelineId,
+          trigger: "dispatch_after_resume",
+          action: "frozen",
+        });
       } else if (coordinatorResult.status === "handled") {
-        // Other handled actions: advanced, frozen
+        // Other handled actions: advanced
         await safeWriteAuditLog("design_review_coordinator_dispatch", {
           stage,
           pipelineId: meta.pipelineId,

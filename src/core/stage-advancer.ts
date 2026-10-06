@@ -996,16 +996,40 @@ export async function maybeHandleConfirmGate(
   // This handler creates authorization AND switches stage AND triggers dispatch
   // D02 compliance: does NOT write human confirmation markers
   if (choice === "Auto Review Plan") {
-    // Validate design-review stage is enabled and properly configured
-    // (menu-side checks; unified pre-check via entry.ts lands in Phase 4)
+    // 192 Phase 4 (task 1/2): menu enablement uses the STAGE disabled flag plus
+    // the ORIGINAL require:false→disabled mapping (F06) — NOT "verify.require
+    // must be truthy" as an enablement switch. The JSON loader maps
+    // require:false → disabled; code configs keep the explicit false meaning.
     const drStage = config.stages["design-review"];
-    if (!drStage?.verify?.require) {
+    if (!drStage || drStage.disabled || drStage.verify?.require === false) {
       ui.notify(ctx, `Auto Review Plan is not available: design-review stage is not enabled.`);
       return { result: "handled", action: "pending" };
     }
-
     if (!drStage.agentPath || !drStage.skillPath) {
-      ui.notify(ctx, `Auto Review Plan is not available: design-review stage configuration is invalid.`);
+      ui.notify(ctx, `Auto Review Plan is not available: design-review stage configuration is invalid (stages["design-review"].agentPath/skillPath).`);
+      return { result: "handled", action: "pending" };
+    }
+
+    // Activation only accepts a dispatchable develop target (DR192-01 chain).
+    // A reconnected/foreign nextStage (diagnosed via original targets) or a
+    // disabled/agentless develop stage BLOCKS instead of silently advancing
+    // somewhere else.
+    const configuredTarget = config.designReviewOriginalTargets?.["design-review"] ?? drStage.nextStage;
+    const developStage = config.stages["develop"];
+    if (
+      (configuredTarget && configuredTarget !== "develop")
+      || !developStage
+      || developStage.disabled
+      || !developStage.agentPath
+    ) {
+      const detail = configuredTarget && configuredTarget !== "develop"
+        ? `stages["design-review"].nextStage resolves to "${configuredTarget}" (develop required)`
+        : `stages["develop"] is missing/disabled/agentless`;
+      ui.notify(ctx, `Auto Review Plan is not available: ${detail}.`);
+      await writeAuditLog("auto_review_plan_blocked", {
+        pipelineId: meta.pipelineId,
+        reason: detail,
+      });
       return { result: "handled", action: "pending" };
     }
 
@@ -1025,10 +1049,15 @@ export async function maybeHandleConfirmGate(
       const ownerSessionFile = sessionFile ?? "";
       
       // Create initial authorization state with source="menu" (NOT "direct-entry")
-      // 192 Phase 0: attribution fields recorded for identity binding.
+      // 192 Phase 0/4: attribution recorded; round allocation scans the STRICT
+      // historical report names of this plan so a new authorization never
+      // re-occupies an existing report path (F02/K07).
+      const { pickSafeNextRound } = await import("./design-review/entry");
+      const safeRound = pickSafeNextRound(planDocPath);
       const initialState = createInitialState(planDocPath, "menu", planHash, ownerSessionFile, {
         pipelineId: meta.pipelineId,
         requirementDoc: meta.requirementDoc,
+        round: safeRound,
       });
       
       // Record stage visit to design-review (without writing confirmation markers)
@@ -1356,6 +1385,17 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         pi: ctx.pi,
       };
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "advance");
+      if (coordinatorResult.status === "handled" && coordinatorResult.action === "frozen") {
+        // 192 Phase 4 (task 8): budget freeze must be real (idempotent helper)
+        const { freezeAndPrompt: freezePrompt } = await import("./flow-state");
+        await freezePrompt(
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof freezePrompt>[0],
+          ctx.session.getMeta() ?? meta,
+          coordinatorResult.reason,
+          config,
+          { ui: ctx.ui },
+        );
+      }
       if (coordinatorResult.status === "handled") {
         // Coordinator handled the routing, return its result
         const result: any = {

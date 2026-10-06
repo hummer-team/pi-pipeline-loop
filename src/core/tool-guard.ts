@@ -38,6 +38,7 @@ import {
   toProjectRelative,
   isWithinDesignReviewScope,
   resolveSymlinkPath,
+  resolveSymlinkPathStrict,
   type ProtectState,
 } from "../utils/protect";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
@@ -409,9 +410,25 @@ async function checkBashFileTargets(
       // Allows `rm -f .git/index.lock` etc. when gitPolicy="allow" (develop/fix).
       if (opts?.allowGitLockFiles && isGitLockFile(relPath)) continue;
 
-      // Phase 4 (191): Design-review dynamic scope enforcement
+      // Phase 4 (191) + 192 Phase 4 (F07): Design-review dynamic scope
+      // enforcement over the CANONICAL path (parent-directory links of
+      // not-yet-existing leaves included). Resolution errors BLOCK — broken
+      // links / ELOOP / permission problems are never "file does not exist"
+      // pass-throughs.
       if (hasDesignReviewScope && drState.operation) {
-        const resolvedAbsTarget = await resolveSymlinkPath(absTarget);
+        const strictRes = await resolveSymlinkPathStrict(absTarget);
+        if (!strictRes.ok) {
+          const reason = `FORBIDDEN: cannot canonicalize bash target '${relPath}' (${strictRes.reason}); design-review scope requires a resolvable path.`;
+          await trackViolation({
+            type: "write_protected",
+            tool: "bash",
+            detail: reason,
+            suggestion: "Resolve or remove the broken/looping symlink before writing.",
+          });
+          ui.notify(ctx, reason);
+          return { block: true, reason };
+        }
+        const resolvedAbsTarget = strictRes.resolved;
         const resolvedRelPath = toProjectRelative(config.projectRoot, resolvedAbsTarget);
         const checkPath = resolvedRelPath || relPath;
         
@@ -1083,8 +1100,21 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             const reportDoc = drState.reportDoc;
             const planDoc = drState.planDoc;
             
-            // Resolve symlinks to actual paths for security
-            const resolvedAbsPath = await resolveSymlinkPath(absPath);
+            // 192 Phase 4 (F07): canonical resolution covering parent dirs of
+            // not-yet-existing files; a resolution error BLOCKS (fail-closed).
+            const strictRes = await resolveSymlinkPathStrict(absPath);
+            if (!strictRes.ok) {
+              const reason = `FORBIDDEN: cannot canonicalize '${relPath}' (${strictRes.reason}); refusing to guess scope from a lexical path.`;
+              await trackViolation({
+                type: "write_protected",
+                tool: toolName,
+                detail: reason,
+                suggestion: "Resolve or remove the broken/looping symlink before writing.",
+              });
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
+            const resolvedAbsPath = strictRes.resolved;
             const resolvedRelPath = toProjectRelative(config.projectRoot, resolvedAbsPath);
             const checkPath = resolvedRelPath || relPath;
             

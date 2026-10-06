@@ -29,7 +29,10 @@ export function validateDesignReviewStageAssets(
   config: PipelineConfig,
 ): { ok: true; stage: StageConfig } | { ok: false; error: "design_review_disabled" | "design_review_config_invalid" } {
   const drStage = config.stages["design-review"];
-  if (!drStage || drStage.disabled) {
+  // 192 Phase 4: disabled flag OR original require:false mapping → disabled
+  // (JSON loader maps require:false → disabled:true; code configs keep the
+  // explicit-false meaning). Absence of `require` does NOT disable.
+  if (!drStage || drStage.disabled || drStage.verify?.require === false) {
     return { ok: false, error: "design_review_disabled" };
   }
   if (!drStage.agentPath || !drStage.skillPath) {

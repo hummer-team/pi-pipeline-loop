@@ -477,31 +477,33 @@ export async function executeDecision(
         return { success: false, message: "choose_stage requires targetStage option." };
       }
 
-      // Phase 4 (191): Wire up authorization gate for design-review stage entry.
+      // Phase 4 (191) + 192 Phase 4 (task 1/F05): human direct entry ALWAYS
+      // runs the owner gate. A pre-existing authorization — even a "valid"
+      // one — is FIRST invalidated: manual re-entry must not silently reuse
+      // an earlier closed loop (the old loop keeps its takeover duties).
       if (target === "design-review") {
-        // Check if there's already a valid authorization
-        if (!isAuthorizationValid(meta.designReview)) {
-          // No valid authorization - invoke gate to create one
-          const gateResult = await designReviewAuthorisationGate(
-            buildRoleCtxForGate(ctx),
-            config,
-            meta,
-          );
-          if (gateResult.ok) {
-            // Authorization granted - persist the new state
-            ctx.session.updateMeta({ designReview: gateResult.state });
-            await safeWriteAuditLog("design_review_authorisation", {
-              pipelineId: meta.pipelineId,
-              action: "gate_passed",
-              authorizationId: gateResult.state.authorizationId,
-              source: "choose_stage",
-            });
-          } else {
-            // Authorization denied - don't proceed
-            return { success: false, message: `Design-review authorization failed: ${gateResult.reason}` };
-          }
+        if (meta.designReview && isAuthorizationValid(meta.designReview)) {
+          await invalidateDesignReviewAuthorization(ctx, "decision_choose_stage_reentry");
         }
-        // If valid authorization exists, just continue without calling the gate
+        const refreshedMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+        const gateResult = await designReviewAuthorisationGate(
+          buildRoleCtxForGate(ctx),
+          config,
+          refreshedMeta,
+        );
+        if (gateResult.ok) {
+          // Authorization granted - persist the new state
+          ctx.session.updateMeta({ designReview: gateResult.state });
+          await safeWriteAuditLog("design_review_authorisation", {
+            pipelineId: refreshedMeta.pipelineId,
+            action: "gate_passed",
+            authorizationId: gateResult.state.authorizationId,
+            source: "choose_stage",
+          });
+        } else {
+          // Authorization denied - don't proceed
+          return { success: false, message: `Design-review authorization failed: ${gateResult.reason}` };
+        }
       } else {
         // Phase 4 (191): invalidate design-review authorization when choosing a non-design-review stage.
         // Choosing any other stage clears stale authorization to prevent reuse attacks.

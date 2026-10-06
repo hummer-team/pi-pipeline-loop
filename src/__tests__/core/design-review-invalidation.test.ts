@@ -128,7 +128,7 @@ describe("Phase 4-2 (191): Authorization invalidation", () => {
       expect(meta.designReview).toBeUndefined();
     });
 
-    it("choose_stage (design-review): does NOT invalidate existing authorization", async () => {
+    it("choose_stage (design-review): 192 Phase 4 — stale authorization is INVALIDATED and the owner gate always re-runs", async () => {
       const authState = makeDesignReviewState();
       const meta = makeTestMeta({
         flowState: "blocked",
@@ -143,11 +143,12 @@ describe("Phase 4-2 (191): Authorization invalidation", () => {
         targetStage: "design-review",
       });
 
-      expect(result.success).toBe(true);
-      // Authorization should NOT be invalidated when choosing design-review stage
-      // (new authorization will be required by session-starter/coordinator)
-      expect(meta.designReview).toBeDefined();
-      expect(meta.designReview?.authorizationId).toBe(authState.authorizationId);
+      // 192 replaced the 191 "reuse valid authorization" shortcut: manual
+      // direct entry must establish a NEW owner authorization. The stale one
+      // is invalidated first; without a TUI the gate then REFUSES entry —
+      // the old authorizationId can never survive a human re-entry.
+      expect(result.success).toBe(false);
+      expect(meta.designReview?.authorizationId).not.toBe(authState.authorizationId);
     });
 
     it("resume: does NOT invalidate design-review authorization", async () => {

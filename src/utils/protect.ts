@@ -465,21 +465,74 @@ export function isWithinDesignReviewScope(
  * @param absPath - Absolute path to resolve
  * @returns Resolved actual path (follows symlinks)
  */
-export async function resolveSymlinkPath(absPath: string): Promise<string> {
-  try {
-    const fs = await import("node:fs/promises");
-    const stat = await fs.lstat(absPath);
-    if (stat.isSymbolicLink()) {
-      const target = await fs.readlink(absPath);
-      // Resolve relative symlink targets against parent directory
-      const resolved = path.isAbsolute(target) 
-        ? target 
-        : path.resolve(path.dirname(absPath), target);
-      return resolveSymlinkPath(resolved); // Recursively resolve chained symlinks
+/**
+ * 192 Phase 4 (F07): canonical resolution that COVERS PARENT DIRECTORIES of
+ * not-yet-existing targets, using the standard-library `realpath`.
+ *
+ * Algorithm: find the nearest EXISTING ancestor, realpath() it (chained and
+ * directory symlinks included), then re-append the non-existing remainder.
+ * A file created under `linked/future.md` therefore resolves through the
+ * real target directory of `linked`, instead of a lexical path that would
+ * let a symlinked directory expand the effective write scope.
+ *
+ * Fail-closed semantics: broken links / ELOOP / permission errors are NOT
+ * treated as "file does not exist" — the error is reported so callers must
+ * BLOCK instead of trusting the lexical path.
+ */
+export type SymlinkResolution =
+  | { ok: true; resolved: string }
+  | { ok: false; reason: string };
+
+export async function resolveSymlinkPathStrict(absPath: string): Promise<SymlinkResolution> {
+  const fs = await import("node:fs");
+  const lexical = path.resolve(absPath);
+  // Walk up to the nearest existing ancestor (max depth guard for loops in
+  // the lexical path itself).
+  let current = lexical;
+  const missing: string[] = [];
+  for (let depth = 0; depth < 64; depth++) {
+    let exists = false;
+    try {
+      fs.lstatSync(current);
+      exists = true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        exists = false;
+      } else {
+        // EACCES / ELOOP etc. on an existing-looking component: unsafe.
+        return { ok: false, reason: `${code ?? "fs_error"} at ${current}` };
+      }
     }
-    return absPath;
-  } catch {
-    // If stat fails (file doesn't exist yet), return original path
-    return absPath;
+    if (exists) {
+      try {
+        const real = fs.realpathSync(current);
+        const remainder = missing.length > 0 ? path.join(...missing.slice().reverse()) : "";
+        return { ok: true, resolved: remainder ? path.resolve(real, remainder) : real };
+      } catch (err) {
+        // Nearest ancestor exists but cannot be canonicalized (broken link,
+        // ELOOP, permission) — never pass as "does not exist".
+        const code = (err as NodeJS.ErrnoException)?.code ?? "realpath_failed";
+        return { ok: false, reason: `${code} at ${current}` };
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return { ok: false, reason: `cannot locate existing ancestor for ${lexical}` };
+    }
+    missing.push(path.basename(current));
+    current = parent;
   }
+  return { ok: false, reason: `path depth limit reached for ${lexical}` };
+}
+
+/**
+ * Backward-compatible wrapper: resolves symlinks including PARENT directory
+ * links of not-yet-existing leaves. On resolution errors the ORIGINAL lexical
+ * path is returned (callers that previously got a pass now still proceed) —
+ * guards that must fail-closed use resolveSymlinkPathStrict directly.
+ */
+export async function resolveSymlinkPath(absPath: string): Promise<string> {
+  const res = await resolveSymlinkPathStrict(absPath);
+  return res.ok ? res.resolved : path.resolve(absPath);
 }

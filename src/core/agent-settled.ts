@@ -373,6 +373,18 @@ export function createAgentSettled(
             "settle",
           );
           if (coordinatorResult.status === "handled") {
+            if (coordinatorResult.action === "frozen") {
+              // 192 Phase 4 (task 8): budget exhaustion must ACTUALLY freeze
+              // the pipeline (flowState blocked + decision menu) — a returned
+              // "frozen" string alone leaves the loop running.
+              await freezeAndPrompt(
+                { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
+                ctx.session.getMeta() ?? freshMeta,
+                coordinatorResult.reason,
+                config,
+                { ui: ctx.ui },
+              );
+            }
             if (coordinatorResult.action === "verify_failed" && runningPhase) {
               // invalid deliverable → NORMAL verification-failure budget
               // (paused/no-change etc. are NOT format failures).
