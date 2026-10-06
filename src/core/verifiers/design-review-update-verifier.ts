@@ -13,6 +13,14 @@
  *   (= the baseline plan hash). Old-round sections (different Operation)
  *   are ignored; a second section claiming the CURRENT operation is a
  *   duplicate → invalid.
+ * - Report ATTRIBUTION to the consumed review identity (plan Phase 2 task 6)
+ *   is enforced HERE whenever the caller hands over the read-only report
+ *   snapshot (`reportContent`, the exact bytes the caller already bound
+ *   inputs to — never a second file read): the snapshot must still hash to
+ *   the consumed `reportHash`, and its declared `**operation**` row must
+ *   equal the consumed `reviewOperationId`. Without a snapshot the verdict
+ *   stays structural; the authoritative coordinator consumption additionally
+ *   fail-closes on an unreadable/drifted consumed report.
  * - Every valid issue id of the consumed report appears EXACTLY ONCE with a
  *   disposition of fixed/deferred/rejected and a non-empty justification.
  *   Missing, duplicate, or unknown ids, or association mismatches are
@@ -36,12 +44,22 @@ export interface DesignReviewUpdateValidationInput {
   baselinePlanHash: string;
   /** Canonical path of the consumed review report */
   reportDoc: string;
-  /** Hash of the consumed report (attribution display check only) */
+  /** Hash of the consumed report. Enforced against `reportContent` when a
+   *  snapshot is supplied; carried as receipt attribution otherwise. */
   reportHash: string;
   /** Review round the consumed report belongs to */
   round: number;
-  /** Operation id of the CONSUMED review (kept for diagnostics) */
+  /** Operation id of the CONSUMED review. Enforced against the consumed
+   *  report's declared `**operation**` row when `reportContent` is supplied
+   *  (a snapshot whose ownership row names a different review is invalid).
+   *  The sentinel "unknown" (191-legacy meta without a receipt) skips the
+   *  ownership comparison — there is no consumed identity to compare to. */
   reviewOperationId: string;
+  /** Optional read-only snapshot of the consumed report — the exact bytes the
+   *  caller already bound inputs to. When present, report attribution
+   *  (snapshot hash vs `reportHash`, declared operation vs
+   *  `reviewOperationId`) is verified inside this evaluator. */
+  reportContent?: string;
   /** Operation id of the CURRENT update operation (the section must match THIS) */
   updateOperationId: string;
   /** Valid issue ids of the consumed report (1-based ordinals as strings) */
@@ -254,6 +272,41 @@ export function validateDesignReviewUpdate(
   }
 
   const section = current[0]!;
+
+  // ── Report attribution to the consumed review identity (Phase 2 task 6) ──
+  // Only verified when the caller supplies the read-only report snapshot it
+  // already bound inputs to (no second file read here). A snapshot that no
+  // longer matches the consumed hash, or whose ownership row names a
+  // different review operation, proves the section is NOT attributed to the
+  // review this update answers → invalid.
+  if (input.reportContent !== undefined) {
+    if (input.reportHash !== "") {
+      const snapshotHash = computePlanHash(input.reportContent);
+      if (snapshotHash !== input.reportHash) {
+        failures.push(
+          "consumed report snapshot no longer matches the receipt reportHash (report was replaced after consumption)",
+        );
+      }
+    }
+    if (input.reviewOperationId !== "" && input.reviewOperationId !== "unknown") {
+      // Same label parity as the report verifier (design-review-verifier.ts
+      // "operation" + shipped-template alias "operationId", 192 Phase 5).
+      const reportLines = input.reportContent.split("\n");
+      const declared = extractField(reportLines, "operation") ?? extractField(reportLines, "operationId");
+      if (declared === undefined) {
+        failures.push(
+          `consumed report snapshot does not declare its review operation (expected "${input.reviewOperationId}")`,
+        );
+      } else if (declared !== input.reviewOperationId) {
+        failures.push(
+          `consumed report belongs to review operation "${declared}", not the consumed review operation "${input.reviewOperationId}"`,
+        );
+      }
+    } else if (input.reviewOperationId === "") {
+      // Empty review operation id cannot match anything: fail closed.
+      failures.push("consumed review operation id is empty — report ownership cannot be established");
+    }
+  }
 
   // ── Association fields ────────────────────────────────────────────────────
   const report = extractField(section.lines, "Report");

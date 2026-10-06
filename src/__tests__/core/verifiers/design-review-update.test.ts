@@ -369,3 +369,132 @@ describe("192 Phase 2: purity (read/update separation)", () => {
     expect(fnSrc).not.toMatch(/session-state|subagent/);
   });
 });
+
+describe("192 issue 8: report attribution vs the consumed review identity (Phase 2 task 6)", () => {
+  /** Well-formed current-round plan section for attribution tests. */
+  function validPlan(): string {
+    return planWithSection({
+      rows: [
+        "| 1 | Missing error handling | fixed | added try/catch in loader |",
+        "| 2 | Incomplete specification | fixed | expanded API spec |",
+      ],
+    });
+  }
+
+  /** A consumed report snapshot declaring review operation op-review-1. */
+  function reportSnapshot(op: string = "op-review-1"): string {
+    return [
+      "# Design Review Report",
+      "",
+      "**operation**: " + op,
+      "",
+      "## Verdict",
+      "",
+      "**Design Review: FAIL**",
+      "",
+    ].join("\n");
+  }
+
+  it("snapshot matches reportHash AND declares the consumed review operation → ready", () => {
+    const report = reportSnapshot();
+    const verdict = validateDesignReviewUpdate(
+      input({ planContent: validPlan(), reportContent: report, reportHash: computePlanHash(report) }),
+    );
+    expect(verdict.status).toBe("ready");
+  });
+
+  it("swapped report snapshot (content no longer matches the receipt hash) → invalid", () => {
+    const verdict = validateDesignReviewUpdate(
+      input({
+        planContent: validPlan(),
+        reportContent: reportSnapshot("op-review-TAMPERED"),
+        reportHash: REPORT_HASH, // receipt-bound hash of the ORIGINAL consumed report
+      }),
+    );
+    expect(verdict.status).toBe("invalid");
+    if (verdict.status === "invalid") {
+      expect(verdict.failures.join(" ")).toContain("report was replaced after consumption");
+    }
+  });
+
+  it("matching snapshot that declares a DIFFERENT review operation → invalid (ownership enforced here)", () => {
+    const report = reportSnapshot("op-review-OTHER");
+    const verdict = validateDesignReviewUpdate(
+      input({ planContent: validPlan(), reportContent: report, reportHash: computePlanHash(report) }),
+    );
+    expect(verdict.status).toBe("invalid");
+    if (verdict.status === "invalid") {
+      expect(verdict.failures.join(" ")).toContain("belongs to review operation \"op-review-OTHER\"");
+      expect(verdict.failures.join(" ")).toContain("not the consumed review operation \"op-review-1\"");
+    }
+  });
+
+  it("shipped-template alias label **operationId** is accepted (report-verifier label parity)", () => {
+    const report = reportSnapshot().replace("**operation**:", "**operationId**:");
+    const verdict = validateDesignReviewUpdate(
+      input({ planContent: validPlan(), reportContent: report, reportHash: computePlanHash(report) }),
+    );
+    expect(verdict.status).toBe("ready");
+  });
+
+  it("snapshot without any operation label while a consumed review id is known → invalid", () => {
+    const report = "# Design Review Report\n\nno identity rows here\n";
+    const verdict = validateDesignReviewUpdate(
+      input({ planContent: validPlan(), reportContent: report, reportHash: computePlanHash(report) }),
+    );
+    expect(verdict.status).toBe("invalid");
+    if (verdict.status === "invalid") {
+      expect(verdict.failures.join(" ")).toContain("does not declare its review operation");
+    }
+  });
+
+  it("legacy \"unknown\" consumed review id skips the ownership comparison (hash gate still applies)", () => {
+    const report = reportSnapshot("op-whatever");
+    const okVerdict = validateDesignReviewUpdate(
+      input({
+        planContent: validPlan(),
+        reportContent: report,
+        reportHash: computePlanHash(report),
+        reviewOperationId: "unknown",
+      }),
+    );
+    expect(okVerdict.status).toBe("ready");
+
+    const badHash = validateDesignReviewUpdate(
+      input({
+        planContent: validPlan(),
+        reportContent: report,
+        reportHash: "f".repeat(64),
+        reviewOperationId: "unknown",
+      }),
+    );
+    expect(badHash.status).toBe("invalid");
+    if (badHash.status === "invalid") {
+      expect(badHash.failures.join(" ")).toContain("report was replaced after consumption");
+    }
+  });
+
+  it("empty consumed review id with a supplied snapshot fails closed", () => {
+    const report = reportSnapshot();
+    const verdict = validateDesignReviewUpdate(
+      input({
+        planContent: validPlan(),
+        reportContent: report,
+        reportHash: computePlanHash(report),
+        reviewOperationId: "",
+      }),
+    );
+    expect(verdict.status).toBe("invalid");
+    if (verdict.status === "invalid") {
+      expect(verdict.failures.join(" ")).toContain("ownership cannot be established");
+    }
+  });
+
+  it("no snapshot supplied → attribution checks are skipped (structural verdict unchanged)", () => {
+    // Default input() carries a reportHash that matches NOTHING (no content).
+    // Without a snapshot the verdict stays purely structural — the omitted
+    // read never fabricates an attribution failure.
+    const verdict = validateDesignReviewUpdate(input({ planContent: validPlan() }));
+    expect(verdict.status).toBe("ready");
+  });
+});

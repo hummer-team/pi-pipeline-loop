@@ -546,6 +546,19 @@ async function computeDesignReviewDomainOutcome(
       };
     }
   }
+  // 192 issue 8: consume a read-only snapshot of the CONSUMED report so the
+  // update validator enforces attribution itself (snapshot hash vs receipt
+  // reportHash + declared **operation** vs the consumed review identity —
+  // plan Phase 2 task 6). One read per deliverable (the report, distinct
+  // from the captured plan snapshot). Unreadable ⇒ omitted here; the
+  // authoritative coordinator consumption fail-closes on an unreadable or
+  // drifted consumed report (handleUpdateRunning), so nothing silently passes.
+  let reportContent: string | undefined;
+  try {
+    reportContent = await fs.readFile(ctx.reportDoc, "utf-8");
+  } catch {
+    reportContent = undefined;
+  }
   const verdict = validateDesignReviewUpdate({
     planContent,
     baselinePlanHash: ctx.baselinePlanHash,
@@ -553,6 +566,7 @@ async function computeDesignReviewDomainOutcome(
     reportHash: ctx.reportHash,
     round: ctx.round,
     reviewOperationId: ctx.reviewOperationId,
+    ...(reportContent !== undefined ? { reportContent } : {}),
     updateOperationId: ctx.updateOperationId,
     issueIds: ctx.issueIds,
   });

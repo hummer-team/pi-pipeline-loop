@@ -1253,6 +1253,10 @@ async function handleUpdateRunning(
   let expectedIssueIds: readonly string[];
   let expectedReportHash: string;
   let consumedReviewOpId: string;
+  // Read-only snapshot of the consumed report, from the SAME read that backs
+  // the drift check below (192 issue 8: attribution is enforced inside the
+  // update validator, never through a second file read).
+  let reportSnapshot: string | undefined;
 
   if (receipt) {
     expectedIssueIds = receipt.issueIds;
@@ -1262,6 +1266,7 @@ async function handleUpdateRunning(
     // to; a changed file after consumption is drift, not a validation pass.
     try {
       const reportNow = await fs.readFile(receipt.reportDoc, "utf-8");
+      reportSnapshot = reportNow;
       if (computeHash(reportNow) !== receipt.reportHash) {
         const driftState = transitionPhase(drState, "paused", undefined, "drift");
         const driftCommit = commitDesignReviewState(ctx.session, driftState);
@@ -1292,12 +1297,15 @@ async function handleUpdateRunning(
     try {
       const legacyContent = await fs.readFile(reportPath, "utf-8");
       legacyHash = computeHash(legacyContent);
+      reportSnapshot = legacyContent;
       legacyIssues = extractReportIssues(reportPath);
     } catch {
       legacyIssues = [];
     }
     expectedIssueIds = legacyIssues.map((_issue, idx) => String(idx + 1));
     expectedReportHash = legacyHash;
+    // No receipt: nothing proves WHICH review operation was consumed, so the
+    // validator's ownership comparison is skipped ("unknown" sentinel).
     consumedReviewOpId = "unknown";
   }
 
@@ -1308,6 +1316,11 @@ async function handleUpdateRunning(
     reportHash: expectedReportHash,
     round: drState.round,
     reviewOperationId: consumedReviewOpId,
+    // Attribution snapshot (192 issue 8): the exact bytes the drift check
+    // above read — the validator enforces hash + consumed-review ownership
+    // against them. Unreadable consumed reports never reach here in the
+    // receipt branch (fail-closed paused above); legacy keeps it undefined.
+    ...(reportSnapshot !== undefined ? { reportContent: reportSnapshot } : {}),
     updateOperationId: drState.operation?.operationId ?? "",
     issueIds: expectedIssueIds,
   });
