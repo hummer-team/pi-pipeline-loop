@@ -1676,7 +1676,13 @@ function markSendIntent(
  * - trusted agentId → strict "dispatched" receipt writeback;
  * - fallback/ambiguous → evidence "unknown" (verify on resume, no re-dispatch);
  * - provably not sent → evidence "confirmed_not_sent" (retryable);
- * - owner-queued/deferred/strict-blocked → the send-intent marker remains.
+ * - strict_blocked (the PRE-RPC strict reserved write refused: adapter lacks
+ *   the strict interface / stale operation identity / reserved commit not
+ *   persisted) is ALSO provably not sent — subagent-rpc.ts:908-913 returns it
+ *   only when ZERO external calls happened, so the same operation stays
+ *   retryable (plan Phase 1 tasks 9/10) instead of an unnecessary unknown
+ *   pause; a failed not-sent writeback still falls through to "unknown";
+ * - owner-queued/deferred → the send-intent marker remains.
  */
 async function recordDispatchOutcome(
   ctx: CoordinatorContext,
@@ -1692,8 +1698,16 @@ async function recordDispatchOutcome(
     // Receipt write failed → fall through to unknown marking below: the child
     // MAY exist; never claim success.
   }
-  if (outcome === "not_sent") {
+  if (outcome === "not_sent" || outcome === "strict_blocked") {
     // Provable not-sent: mark evidence so a same-operation retry is permitted.
+    // 192 issue 9: "strict_blocked" is returned by the pre-RPC strict reserved
+    // write ONLY when zero external calls happened (subagent-rpc.ts:908-913),
+    // which is exactly as provable as a transport rejection — classifying it
+    // as unknown would needlessly pause a recoverable operation (Phase 1
+    // tasks 9/10). If the evidence write itself fails, fall through honestly
+    // to "unknown" below (persisted not-sent cannot be claimed).
+    const notSentReason =
+      outcome === "strict_blocked" ? "strict_blocked_before_send" : "transport_confirmed_not_sent";
     const cur = ctx.session.getMeta();
     const st = cur?.designReview;
     if (st?.operation?.operationId === operationId) {
@@ -1702,7 +1716,7 @@ async function recordDispatchOutcome(
         operation: {
           ...st.operation,
           dispatchEvidence: "confirmed_not_sent",
-          dispatchReason: "transport_confirmed_not_sent",
+          dispatchReason: notSentReason,
           updatedAt: Date.now(),
         },
         updatedAt: Date.now(),
@@ -1724,8 +1738,9 @@ async function recordDispatchOutcome(
     // evidence remains and blocks blind re-dispatch (canDispatch).
     return "pending_queue";
   }
-  // fallback_no_id / unknown / strict_blocked / receipt-write-failure:
-  // outcome unverifiable → evidence "unknown".
+  // fallback_no_id / unknown / skipped_duplicate / receipt-write-failure:
+  // outcome unverifiable → evidence "unknown". (strict_blocked is handled as
+  // provable not-sent above, 192 issue 9.)
   const cur = ctx.session.getMeta();
   const st = cur?.designReview;
   if (st?.operation?.operationId === operationId) {
