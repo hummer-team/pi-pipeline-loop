@@ -10,7 +10,16 @@
  * Returns handled/pending/transitioned/not-applicable. Only not-applicable proceeds to original logic.
  */
 
-import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation, DesignReviewPhase } from "../../types";
+import type {
+  PipelineConfig,
+  SessionMeta,
+  DesignReviewState,
+  DesignReviewOperation,
+  DesignReviewPhase,
+  DesignReviewIdentity,
+  DesignReviewInputReceipt,
+  SpawnOperationContext,
+} from "../../types";
 import { verifyDesignReviewReport, extractReportIssues } from "./report";
 import { loadVerifyContractAnchors } from "../../utils/contract-loader";
 import { validatePlanUpdate, renderDesignReviewUpdatePrompt, type DesignReviewUpdatePromptParams } from "./prompt";
@@ -22,14 +31,22 @@ import {
   isAuthorizationValid,
   hasPlanDrifted,
   computeHash,
+  computeUpdateInputHash,
+  computeHandoffInputHash,
   deriveReportPath,
   allocateNextRound,
+  buildDesignReviewIdentity,
 } from "./state";
-import { commitDesignReviewState } from "../session-state";
+import {
+  commitDesignReviewState,
+  strictCommitMeta,
+  type MetaCommitExpectation,
+  type StrictCommitSession,
+} from "../session-state";
 import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult, formatDesignReviewSpawnPrompt } from "./dispatch";
 import { narrowDesignReviewState } from "./verification-context";
 import { recordStageVisit } from "../../utils/stage-visit";
-import { spawnStageSubagent } from "../../utils/subagent-rpc";
+import { spawnStageSubagent, type DesignReviewTerminalEvent } from "../../utils/subagent-rpc";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { shouldEmitWithinWindow } from "../../utils/audit-throttle";
 import * as fs from "node:fs/promises";
@@ -51,13 +68,14 @@ export type CoordinatorResult =
 
 /**
  * Context required for coordinator operations.
+ *
+ * 192 Phase 1: `session` is a StrictCommitSession — production passes the
+ * real createSessionState adapter (which exposes updateMetaVerified); the
+ * domain commit paths are fail-closed without it.
  */
 export interface CoordinatorContext {
   config: PipelineConfig;
-  session: {
-    getMeta: () => SessionMeta | undefined;
-    updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
-  };
+  session: StrictCommitSession;
   ui?: {
     notify: (msg: string) => void;
     transition?: (ctx: unknown, from: string, to: string) => void;
@@ -69,13 +87,22 @@ export interface CoordinatorContext {
    * Optional spawn override for testing (Issue #25).
    * Allows tests to provide a controllable spawn substitute without mock.module.
    * When provided, this function is called instead of the real spawnStageSubagent.
+   * 192 Phase 1: the override may return a trusted agentId + dispatchOutcome;
+   * a success WITHOUT agentId is recorded as an unknown outcome, never a
+   * fabricated dispatched receipt.
    */
   spawnOverride?: (
     config: PipelineConfig,
     stage: string,
     meta: SessionMeta,
     extraArgs?: string,
-  ) => Promise<{ spawned: boolean; fallback: boolean; deferred: boolean }>;
+  ) => Promise<{
+    spawned: boolean;
+    fallback: boolean;
+    deferred?: boolean;
+    agentId?: string;
+    dispatchOutcome?: import("../../utils/subagent-rpc").StageDispatchOutcome;
+  }>;
 }
 
 /**
@@ -170,41 +197,106 @@ async function handleReviewReady(
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
   }
 
-  // Check if can dispatch
+  // Check if can dispatch (blocks dispatched AND unknown-window operations)
   if (!canDispatch(drState)) {
+    // 192 Phase 1: an operation stuck in the send-intent/unknown window must
+    // pause for outcome verification — never re-dispatch blindly (K09/D04).
+    if (
+      drState.operation?.dispatchEvidence === "send_intent" ||
+      drState.operation?.dispatchEvidence === "unknown"
+    ) {
+      return await pauseForUnknownDispatch(ctx, meta, drState, "review_dispatch_unverified");
+    }
     return { status: "handled", action: "pending", reason: "already_dispatched" };
   }
 
-  // Create operation
-  const operation = prepareDesignReviewOperation(drState, "review", meta.stageStartTime ?? Date.now());
+  // 192 Phase 1 (F01): review inputHash is the SHA-256 of the authorized plan
+  // content — the same value planHash was derived from at authorization.
+  const operation = prepareDesignReviewOperation(
+    drState,
+    "review",
+    meta.stageStartTime ?? Date.now(),
+    drState.planHash,
+  );
   if (!operation) {
     return { status: "handled", action: "pending", reason: "operation_creation_failed" };
   }
 
-  // Commit operation to state (this also transitions to review_running)
-  const committedState = commitDesignReviewOperation(ctx.session, operation, drState);
+  // New/prepared operations carry explicit not-sent evidence until proven.
+  const preparedOp: DesignReviewOperation = operation.dispatchEvidence
+    ? operation
+    : { ...operation, dispatchEvidence: "confirmed_not_sent", dispatchReason: "prepared_not_dispatched" };
+
+  // Commit operation to state (this also transitions to review_running) —
+  // STRICT commit; failure means zero external calls happened.
+  const committedState = commitDesignReviewOperation(ctx.session, preparedOp, drState);
   if (!committedState) {
     return { status: "handled", action: "pending", reason: "operation_commit_failed" };
   }
 
-  // Spawn review agent
-  const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation);
-  if (!spawnResult.ok) {
-    // Spawn failed, writeback failure
-    writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "failed");
-    return { status: "handled", action: "pending", reason: spawnResult.error ?? "spawn_failed" };
-  }
-
-  // Writeback success
-  writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "dispatched");
+  const outcome = await dispatchOperation(ctx, meta, committedState, preparedOp);
 
   await safeWriteAuditLog("design_review_coordinator", {
-    action: "review_dispatched",
-    operationId: operation.operationId,
+    action: "review_dispatch_attempted",
+    operationId: preparedOp.operationId,
     round: String(drState.round),
+    outcome,
   });
 
+  if (outcome === "blocked") {
+    return { status: "handled", action: "pending", reason: "operation_state_commit_failed" };
+  }
+  if (outcome === "unknown") {
+    return await pauseForUnknownDispatch(ctx, meta, committedState, "review_dispatch_unverified");
+  }
+
   return { status: "handled", action: "routed", toStage: "design-review" };
+}
+
+/**
+ * 192 Phase 1 (task 9): an unverifiable dispatch window parks the loop in
+ * paused/unknown-dispatch so no entry point blindly re-dispatches.
+ */
+async function pauseForUnknownDispatch(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  state: DesignReviewState,
+  reason: string,
+): Promise<CoordinatorResult> {
+  // Re-read fresh state: an earlier outcome-write may already have advanced
+  // the revision; committing against the stale snapshot would conflict.
+  const freshMeta = ctx.session.getMeta() ?? meta;
+  const currentState = freshMeta.designReview ?? state;
+  if (currentState.phase === "paused" && currentState.pauseReason === "unknown-dispatch") {
+    // Already paused for this reason — stay pending, do not rewrite.
+    return { status: "handled", action: "pending", reason };
+  }
+  let pausedState: DesignReviewState | undefined;
+  try {
+    if (isValidTransition(currentState.phase, "paused")) {
+      pausedState = transitionPhase(currentState, "paused", undefined, "unknown-dispatch");
+    }
+  } catch {
+    pausedState = undefined;
+  }
+  if (!pausedState) {
+    return { status: "handled", action: "pending", reason };
+  }
+  const res = strictCommitOperationState(ctx, freshMeta, pausedState, {
+    pipelineId: freshMeta.pipelineId ?? "unknown",
+    authorizationId: currentState.authorizationId,
+    round: currentState.round,
+    operationId: currentState.operation?.operationId ?? null,
+    phase: currentState.phase,
+    stateUpdatedAt: currentState.updatedAt,
+  });
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "paused_unknown_dispatch",
+    reason,
+    commit: res.ok ? "persisted" : res.reason,
+    round: String(state.round),
+  }, "warn");
+  return { status: "handled", action: "pending", reason };
 }
 
 /**
@@ -272,7 +364,13 @@ async function handleReviewRunning(
 }
 
 /**
- * Handle PASS verdict: validate and advance to develop.
+ * Handle PASS verdict — 192 Phase 1 (DR192-01): three separate milestones.
+ *
+ * Order (fixed): verify → approval → create NEW develop-handoff operation +
+ * reliable transition to develop (phase stays pass_ready, takeover retained)
+ * → dispatch handoff once under the Phase 1 intent/receipt protocol → ONLY
+ * after the trusted success receipt is persisted may finished be committed.
+ * Never: stage=develop alone, or a finished written before the receipt.
  */
 async function handlePass(
   ctx: CoordinatorContext,
@@ -309,7 +407,7 @@ async function handlePass(
 
   // Check develop stage availability
   const developConfig = ctx.config.stages["develop"];
-  if (!developConfig || !developConfig.agentPath || !developConfig.skillPath) {
+  if (!developConfig || !developConfig.agentPath || !developConfig.skillPath || developConfig.disabled) {
     await safeWriteAuditLog("design_review_coordinator", {
       action: "develop_unavailable",
     });
@@ -323,84 +421,300 @@ async function handlePass(
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
   }
 
-  // Update state to pass_ready with approval receipt
-  const passReadyState = transitionPhase(drState, "pass_ready");
-  const stateWithReceipt = {
-    ...passReadyState,
+  // Milestone 1: approval bound to the CONSUMED review identity + hashes.
+  const reviewOpId = drState.operation?.operationId ?? "unknown";
+  const approval: NonNullable<DesignReviewState["approval"]> = {
+    reviewOperationId: reviewOpId,
+    round: drState.round,
+    planHash: currentPlanHash,
+    reportHash,
+    authorizedAt: Date.now(),
+  };
+
+  // Milestone 2 preparation: NEW develop-handoff operation (its own id),
+  // bound to the FRESH develop visit. Evidence starts as confirmed not-sent.
+  const newVisit = Date.now();
+  const handoffOp = createOperation(
+    "develop-handoff",
+    newVisit,
+    1,
+    computeHandoffInputHash({
+      reviewOperationId: reviewOpId,
+      round: drState.round,
+      planHash: currentPlanHash,
+      reportHash,
+    }),
+    drState.round,
+  );
+  const preparedHandoff: DesignReviewOperation = {
+    ...handoffOp,
+    dispatchEvidence: "confirmed_not_sent",
+    dispatchReason: "prepared_not_dispatched",
+  };
+
+  // SINGLE strict commit: approval + handoff + currentStage=develop + visit.
+  // The design-review phase REMAINS pass_ready: takeover is retained until
+  // the trusted receipt + finished are both persisted (DR192-01).
+  const passReadyState: DesignReviewState = {
+    ...transitionPhase(drState, "pass_ready"),
+    approval,
+    operation: preparedHandoff,
     receipt: {
       authorizationId: drState.authorizationId,
       round: drState.round,
-      operationId: drState.operation?.operationId ?? "unknown",
-      transition: "advance-develop" as const,
+      operationId: preparedHandoff.operationId,
+      transition: "advance-develop",
       at: Date.now(),
     },
   };
-  const commitResult = commitDesignReviewState(ctx.session, stateWithReceipt);
-  
-  if (!commitResult.ok) {
-    return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
-  }
-
-  // Update meta for stage transition
-  ctx.session.updateMeta({
+  const stagePatch: Partial<SessionMeta> = {
     ...visitResult.patch,
     previousStage: "design-review",
     currentStage: "develop",
-    stageStartTime: Date.now(),
+    stageStartTime: newVisit,
     loopCount: 0,
     currentStepIndex: 0,
     verifyFailures: [],
     verifyAttempts: 0,
     violations: [],
     advancedThisTurn: undefined,
+    designReview: passReadyState,
+  };
+  const commitRes = strictCommitMeta(ctx.session, stagePatch, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: drState.authorizationId,
+    round: drState.round,
+    operationId: drState.operation?.operationId ?? null,
+    phase: drState.phase,
+    stateUpdatedAt: drState.updatedAt,
   });
+  if (commitRes.status !== "persisted") {
+    // Handoff intent NOT reliably persisted → zero external calls (row 1 of
+    // the DR192-01 matrix): stay pass_ready/developable-safe, retry later.
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "handoff_transition_commit_failed",
+      status: commitRes.status,
+      reason: commitRes.reason,
+      round: String(drState.round),
+    }, "error");
+    return {
+      status: "handled",
+      action: "pending",
+      reason: `pass_commit_failed:${commitRes.status}:${commitRes.reason}`,
+    };
+  }
 
   await safeWriteAuditLog("design_review_coordinator", {
     action: "pass_approved",
     reportHash,
     planHash: currentPlanHash,
     round: String(drState.round),
+    reviewOperationId: reviewOpId,
+    handoffOperationId: preparedHandoff.operationId,
   });
 
-  // Transition designReview state to finished after successful advance
-  const currentState = ctx.session.getMeta()?.designReview;
-  if (currentState && currentState.phase === "pass_ready") {
-    const finishedState = transitionPhase(currentState, "finished");
-    commitDesignReviewState(ctx.session, finishedState);
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "state_finished",
-      reason: "pass_advanced_to_develop",
-      round: String(drState.round),
-    });
-  }
-
-  // Spawn develop agent
-  const freshMeta = ctx.session.getMeta() ?? meta;
-  const spawnResult = await spawnStageSubagent(ctx.pi, ctx.config, "develop", freshMeta, {
-    ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
-    session: ctx.session,
-    runtimeCtx: ctx,
-  });
-
-  if (!spawnResult.spawned && !spawnResult.fallback && !spawnResult.deferred) {
-    ctx.session.updateMeta({ advancedThisTurn: true });
-    if (ctx.pi?.sendUserMessage) {
-      ctx.pi.sendUserMessage(
-        `Design review PASS. Routing to "develop" stage.`,
-        { deliverAs: "followUp" },
-      );
-    }
-  }
-
-  if (ctx.ui?.transition) {
-    ctx.ui.transition(ctx, "design-review", "develop");
-  }
-
-  return { status: "handled", action: "advanced", toStage: "develop" };
+  // Milestone 3: dispatch the handoff exactly once, persist the trusted
+  // receipt, THEN finish. Any failure keeps pass_ready takeover (recoverable).
+  return await dispatchHandoffOnce(ctx, commitRes.meta, passReadyState, preparedHandoff);
 }
 
 /**
- * Handle FAIL verdict: route to plan for update.
+ * 192 Phase 1 (DR192-01): dispatch (or re-dispatch when provably not sent)
+ * the CURRENT develop-handoff operation exactly once, then persist receipt,
+ * then finish. Never re-approves, never records a second visit, never
+ * increments round.
+ */
+async function dispatchHandoffOnce(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  state: DesignReviewState,
+  handoffOp: DesignReviewOperation,
+): Promise<CoordinatorResult> {
+  // Reliable send-intent BEFORE the external call; failure → zero RPC.
+  const intent = markSendIntent(ctx, meta, state, handoffOp.operationId);
+  if (!intent.ok) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "handoff_blocked_no_intent",
+      operationId: handoffOp.operationId,
+      reason: intent.reason,
+    }, "error");
+    return { status: "handled", action: "pending", reason: "handoff_intent_commit_failed" };
+  }
+
+  const spawnResult = await spawnDesignReviewAgent(ctx, meta, intent.state, handoffOp);
+
+  if (spawnResult.outcome === "spawned_id" && spawnResult.agentId) {
+    // Persist the trusted dispatch success receipt for THIS handoff.
+    const receiptState = writebackDesignReviewResult(
+      ctx.session,
+      handoffOp.operationId,
+      spawnResult.agentId,
+      "dispatched",
+      "trusted_id",
+    );
+    if (receiptState) {
+      // Milestone 4: only now may finished be committed.
+      const finish = await finishCurrentHandoffReliably(ctx);
+      if (finish) {
+        if (ctx.ui?.transition) {
+          ctx.ui.transition(ctx, "design-review", "develop");
+        }
+        return { status: "handled", action: "advanced", toStage: "develop" };
+      }
+      // Receipt persisted but finished failed → still takeover-able; resume
+      // completes ONLY the terminal commit (RPC delta 0).
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "handoff_finish_deferred",
+        operationId: handoffOp.operationId,
+      }, "warn");
+      return { status: "handled", action: "pending", reason: "handoff_finish_pending" };
+    }
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "handoff_receipt_write_failed",
+      operationId: handoffOp.operationId,
+    }, "error");
+  }
+
+  // Any other outcome: unknown/not-sent/queued — NO second channel dispatch.
+  const recorded = await recordDispatchOutcome(
+    ctx,
+    meta,
+    intent.state,
+    handoffOp.operationId,
+    spawnResult.outcome,
+    spawnResult.agentId,
+  );
+  if (recorded === "not_sent") {
+    return { status: "handled", action: "pending", reason: "handoff_not_sent_retryable" };
+  }
+  if (recorded === "pending_queue") {
+    return { status: "handled", action: "pending", reason: "handoff_owner_queued" };
+  }
+  return await pauseForUnknownDispatch(ctx, meta, intent.state, "handoff_dispatch_unverified");
+}
+
+/**
+ * 192 Phase 1 (DR192-01): reliable finished terminal commit for the CURRENT
+ * handoff. Requires FRESH state re-read, a persisted trusted receipt on the
+ * CURRENT handoff operation, and a strict commit. No spawn, no approval,
+ * no visit.
+ */
+async function finishCurrentHandoffReliably(ctx: CoordinatorContext): Promise<boolean> {
+  const freshMeta = ctx.session.getMeta();
+  const state = freshMeta?.designReview;
+  if (!freshMeta || !state) return false;
+  if (state.phase === "finished") return true;
+  if (state.phase !== "pass_ready") return false;
+  if (!hasPersistedHandoffSuccess(state)) return false;
+
+  let finishedState: DesignReviewState;
+  try {
+    finishedState = transitionPhase(state, "finished");
+  } catch {
+    return false;
+  }
+  const res = strictCommitMeta(ctx.session, { designReview: finishedState }, {
+    pipelineId: freshMeta.pipelineId ?? "unknown",
+    authorizationId: state.authorizationId,
+    round: state.round,
+    operationId: state.operation?.operationId ?? null,
+    phase: state.phase,
+    stateUpdatedAt: state.updatedAt,
+  });
+  if (res.status !== "persisted") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "handoff_finish_commit_failed",
+      status: res.status,
+      reason: res.reason,
+      round: String(state.round),
+    }, "error");
+    return false;
+  }
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "state_finished",
+    reason: "pass_handoff_completed",
+    round: String(state.round),
+    handoffOperationId: state.operation?.operationId ?? "none",
+  });
+  return true;
+}
+
+/**
+ * Handle pass_ready — 192 Phase 1 (DR192-01 recovery matrix).
+ * pass_ready + develop-handoff is ALWAYS takeover (never ordinary), even
+ * when currentStage already equals develop. Recovery actions are strictly
+ * bounded by the persisted evidence:
+ * - trusted receipt persisted, not finished → finish ONLY (RPC delta 0);
+ * - confirmed not-sent → re-dispatch the SAME handoff once;
+ * - send-intent only / unknown → pause for verification (no blind RPC).
+ */
+async function handlePassReady(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  trigger: string,
+): Promise<CoordinatorResult> {
+  const op = drState.operation;
+
+  if (!op || op.kind !== "develop-handoff") {
+    // No handoff operation recorded: if the approval milestone exists we can
+    // rebuild the handoff operation WITHOUT re-approving/re-visiting (the
+    // visit is proven by currentStage=develop + unchanged round).
+    if (drState.approval && meta.currentStage === "develop") {
+      // 191-legacy or partially-committed PASS: cannot prove dispatch state;
+      // pause for owner verification instead of guessing.
+      if (op?.dispatchEvidence !== "trusted_id") {
+        return await pauseForUnknownDispatch(ctx, meta, drState, "handoff_evidence_missing");
+      }
+    }
+    const throttleKey = `${meta.pipelineId ?? "unknown"}:unexpected_pass_ready`;
+    if (shouldEmitWithinWindow(throttleKey, 5000)) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "unexpected_pass_ready",
+        trigger,
+      });
+    }
+    return { status: "handled", action: "pending", reason: "unexpected_state" };
+  }
+
+  // Row: success receipt persisted but finished missing → terminal-only fix.
+  if (hasPersistedHandoffSuccess(drState)) {
+    const done = await finishCurrentHandoffReliably(ctx);
+    if (done) {
+      return { status: "handled", action: "advanced", toStage: "develop" };
+    }
+    return { status: "handled", action: "pending", reason: "handoff_finish_pending" };
+  }
+
+  // Row: unambiguous intent/unknown → pause & verify (zero RPC).
+  if (
+    op.dispatchEvidence === "send_intent" ||
+    op.dispatchEvidence === "unknown" ||
+    op.dispatchEvidence === undefined
+  ) {
+    return await pauseForUnknownDispatch(ctx, meta, drState, "handoff_dispatch_unverified");
+  }
+
+  // Row: confirmed not-sent → re-dispatch the SAME handoff once
+  // (no new approval, no extra round/visit).
+  if (op.dispatchEvidence === "confirmed_not_sent" && op.dispatchState === "pending") {
+    return await dispatchHandoffOnce(ctx, meta, drState, op);
+  }
+
+  return { status: "handled", action: "pending", reason: "handoff_state_unhandled" };
+}
+
+/**
+ * Handle FAIL verdict: consume the report, keep its attribution, create the
+ * UPDATE operation (new kind, fresh visit) and dispatch it exactly once.
+ *
+ * 192 Phase 1 (F01):
+ * - The consumed review operation is marked terminal and its bounded receipt
+ *   (identity/reportDoc/reportHash/inputPlanHash/issueIds) is persisted; the
+ *   update operation gets its OWN operationId — kinds are never conflated.
+ * - The update operation binds a fresh stage visit (the new plan-stage
+ *   stageStartTime), never the old review meta.stageStartTime.
+ * - Stage/count/operation/receipt travel in ONE strict commit.
  */
 async function handleFail(
   ctx: CoordinatorContext,
@@ -430,109 +744,175 @@ async function handleFail(
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
   }
 
-  // Update state to update_ready
-  const newState = transitionPhase(drState, "update_ready");
-  const commitResult = commitDesignReviewState(ctx.session, newState);
-  
-  if (!commitResult.ok) {
-    return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
-  }
+  // Extract issues from the consumed report (bounded receipt ids).
+  const issues = extractReportIssues(reportPath);
+  const issueIds = issues.map((_issue, idx) => String(idx + 1));
 
-  // Update meta for stage transition
-  ctx.session.updateMeta({
+  const newVisit = Date.now();
+  const reviewOp = drState.operation;
+  const reviewIdentity: DesignReviewIdentity | undefined = reviewOp
+    ? buildDesignReviewIdentity(meta, drState, reviewOp)
+    : undefined;
+
+  const inputReceipt: DesignReviewInputReceipt = {
+    reviewIdentity: reviewIdentity ?? {
+      // review op missing (legacy meta): record what IS known without guessing
+      // a valid identity — consumers still validate against this receipt.
+      pipelineId: meta.pipelineId ?? "unknown",
+      planDoc: drState.planDoc,
+      authorizationId: drState.authorizationId,
+      round: drState.round,
+      kind: "review",
+      operationId: "unknown",
+      stageVisitId: 0,
+    },
+    reportDoc: reportPath,
+    reportHash,
+    inputPlanHash: drState.planHash ?? "",
+    issueIds,
+  };
+
+  // Build the update operation bound to the FRESH plan visit (identity
+  // material; attempt/operationId fixed here, persisted only after the
+  // prompt renders successfully).
+  // NOTE: the FAIL path is review_running → update_ready → dispatch; prepare()
+  // validates against the intermediate update_ready phase because the unified
+  // commit lands in dispatchPhase in ONE step.
+  const updateBaseState: DesignReviewState = { ...drState, phase: "update_ready" };
+  const updateInputHash = computeUpdateInputHash({
+    baselinePlanHash: drState.planHash ?? "",
+    reportHash,
+    issueIds,
+  });
+  const updateOp = prepareDesignReviewOperation(updateBaseState, "update", newVisit, updateInputHash);
+  if (!updateOp) {
+    return { status: "handled", action: "pending", reason: "operation_creation_failed" };
+  }
+  const preparedUpdateOp: DesignReviewOperation = {
+    ...updateOp,
+    dispatchEvidence: "confirmed_not_sent",
+    dispatchReason: "prepared_not_dispatched",
+  };
+
+  // Render the update prompt BEFORE marking update_running: a render failure
+  // routes to plan in update_ready (dispatchable later) and performs ZERO
+  // dispatch — never a fake update_running that could be misread as no-change.
+  let updatePrompt: string;
+  {
+    const { resolvePiWorkDir } = await import("../../utils/work-dir");
+    const templatePath = path.join(
+      ctx.config.projectRoot,
+      resolvePiWorkDir(ctx.config),
+      "references",
+      "design-review-update-prompt.md",
+    );
+    try {
+      const promptParams: DesignReviewUpdatePromptParams = {
+        pipelineId: meta.pipelineId ?? "unknown",
+        planDoc: drState.planDoc,
+        reviewDoc: reportPath,
+        round: drState.round,
+        operationId: preparedUpdateOp.operationId,
+        baselinePlanHash: drState.planHash ?? "",
+        issues: issues,
+      };
+      updatePrompt = renderDesignReviewUpdatePrompt(templatePath, promptParams);
+    } catch (error) {
+      // Fail-closed: prompt not rendered → commit routing WITHOUT operation
+      // dispatch below (update_ready), zero external calls.
+      updatePrompt = "";
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "update_prompt_render_failed_from_fail",
+        error: String(error),
+        templatePath,
+      });
+    }
+  }
+  const renderFailed = updatePrompt === "";
+  const dispatchPhase: DesignReviewPhase = renderFailed ? "update_ready" : "update_running";
+
+  // One consistent target state: review op consumed (terminal evidence in the
+  // receipt), update op created, dispatch phase. The consumed review operation
+  // is REMOVED from the current-operation slot (its attribution travels with
+  // the bounded input receipt) so no path can treat it as still-running.
+  const failState: DesignReviewState = {
+    ...drState,
+    phase: dispatchPhase,
+    ...(renderFailed ? { operation: undefined } : { operation: preparedUpdateOp }),
+    outcome: {
+      reportHash,
+      verdict: "fail",
+      verdictReason: "report_consumed_for_update",
+      recordedAt: Date.now(),
+    },
+    reviewInputReceipt: inputReceipt,
+    updatedAt: Date.now(),
+  };
+
+  // SINGLE strict commit: design-review state + stage switch + visit counters.
+  const stagePatch: Partial<SessionMeta> = {
     ...visitResult.patch,
     previousStage: "design-review",
     currentStage: "plan",
-    stageStartTime: Date.now(),
+    stageStartTime: newVisit,
     loopCount: 0,
     currentStepIndex: 0,
     verifyFailures: [],
     verifyAttempts: 0,
     violations: [],
     advancedThisTurn: undefined,
+    designReview: failState,
+  };
+  const commitRes = strictCommitMeta(ctx.session, stagePatch, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: drState.authorizationId,
+    round: drState.round,
+    operationId: reviewOp?.operationId ?? null,
+    phase: drState.phase,
+    stateUpdatedAt: drState.updatedAt,
   });
+  if (commitRes.status !== "persisted") {
+    // Stage/operation/receipt NOT reliably persisted → no dispatch happened.
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "fail_routing_commit_failed",
+      status: commitRes.status,
+      reason: commitRes.reason,
+      round: String(drState.round),
+    }, "error");
+    return {
+      status: "handled",
+      action: "pending",
+      reason: `fail_commit_failed:${commitRes.status}:${commitRes.reason}`,
+    };
+  }
 
   await safeWriteAuditLog("design_review_coordinator", {
     action: "fail_routed",
     reportHash,
     reportPath,
     round: String(drState.round),
+    reviewOperationId: reviewOp?.operationId ?? "none",
+    updateOperationId: preparedUpdateOp.operationId,
   });
 
-  // Fix for Issue #10: Deterministically dispatch plan agent after FAIL
-  // Create operation and spawn agent immediately to ensure update happens
-  // If dispatch fails, we still route to plan (dispatch can be retried)
-  try {
-    const operation = prepareDesignReviewOperation(
-      newState,
-      "update",
-      meta.stageStartTime ?? Date.now()
-    );
-    
-    if (operation) {
-      // Commit operation (this also transitions to update_running)
-      const committedState = commitDesignReviewOperation(ctx.session, operation, newState);
-      if (committedState) {
-        // Fix for Issue #7: Render specialized update prompt for FAIL-triggered update
-        // Use resolvePiWorkDir for proper path resolution
-        const { resolvePiWorkDir } = await import("../../utils/work-dir");
-        const templatePath = path.join(
-          ctx.config.projectRoot,
-          resolvePiWorkDir(ctx.config),
-          "references",
-          "design-review-update-prompt.md"
-        );
-        let updatePrompt: string;
-        try {
-          const issues = extractReportIssues(reportPath);
-          const promptParams: DesignReviewUpdatePromptParams = {
-            pipelineId: meta.pipelineId ?? "unknown",
-            planDoc: drState.planDoc,
-            reviewDoc: reportPath,
-            round: drState.round,
-            operationId: operation.operationId,
-            baselinePlanHash: drState.planHash ?? "",
-            issues: issues,
-          };
-          updatePrompt = renderDesignReviewUpdatePrompt(templatePath, promptParams);
-        } catch (error) {
-          // Fail-closed: if template is missing/broken, do NOT dispatch
-          await safeWriteAuditLog("design_review_coordinator", {
-            action: "update_prompt_render_failed_from_fail",
-            error: String(error),
-            templatePath,
-          });
-          if (ctx.ui?.notify) {
-            ctx.ui.notify(`Design review update prompt render failed. Cannot dispatch update agent.`);
-          }
-          return { status: "handled", action: "pending", reason: "update_prompt_render_failed" };
-        }
-        
-        const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation, updatePrompt);
-        if (spawnResult.ok) {
-          writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "dispatched");
-          await safeWriteAuditLog("design_review_coordinator", {
-            action: "update_dispatched_from_fail",
-            operationId: operation.operationId,
-            round: String(drState.round),
-          });
-        } else {
-          // Dispatch failed but we still route - agent can be spawned later
-          await safeWriteAuditLog("design_review_coordinator", {
-            action: "update_dispatch_failed_from_fail",
-            operationId: operation.operationId,
-            reason: spawnResult.error ?? "unknown",
-          });
-        }
-      }
+  if (renderFailed) {
+    // Routing persisted; dispatch deferred to update_ready handling.
+    if (ctx.ui?.notify) {
+      ctx.ui.notify(`Design review FAIL. Routing to "plan" for update.`);
     }
-  } catch (error) {
-    // Log but don't block routing - dispatch can be retried
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "update_dispatch_exception_from_fail",
-      error: String(error),
-    });
+    return { status: "handled", action: "pending", reason: "update_prompt_render_failed" };
   }
+
+  // Deterministically dispatch the plan update exactly once.
+  const failMeta = commitRes.meta;
+  const outcome = await dispatchOperation(ctx, failMeta, failState, preparedUpdateOp, updatePrompt);
+
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "update_dispatch_attempted_from_fail",
+    operationId: preparedUpdateOp.operationId,
+    round: String(drState.round),
+    outcome,
+  });
 
   if (ctx.ui?.notify) {
     ctx.ui.notify(`Design review FAIL. Routing to "plan" for update.`);
@@ -560,36 +940,53 @@ async function handleUpdateReady(
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
   }
 
-  // Check if can dispatch
+  // Check if can dispatch (also blocks unknown-window operations)
   if (!canDispatch(drState)) {
+    if (
+      drState.operation?.dispatchEvidence === "send_intent" ||
+      drState.operation?.dispatchEvidence === "unknown"
+    ) {
+      return await pauseForUnknownDispatch(ctx, meta, drState, "update_dispatch_unverified");
+    }
     return { status: "handled", action: "pending", reason: "already_dispatched" };
   }
 
   // Extract issues from report
-  const reportPath = deriveReportPath(drState.planDoc, drState.round);
+  const reportPath = drState.reviewInputReceipt?.reportDoc ?? deriveReportPath(drState.planDoc, drState.round);
   const issues = extractReportIssues(reportPath);
+  const issueIds = issues.map((_issue, idx) => String(idx + 1));
+  const reportHash = drState.reviewInputReceipt?.reportHash ?? "";
 
-  // Create operation
-  const operation = prepareDesignReviewOperation(drState, "update", meta.stageStartTime ?? Date.now());
+  // Fresh visit = the CURRENT plan-stage visit (never a stale review stamp).
+  const visitId = meta.stageStartTime ?? Date.now();
+  const updateInputHash = computeUpdateInputHash({
+    baselinePlanHash: drState.planHash ?? "",
+    reportHash,
+    issueIds,
+  });
+
+  // Create operation (same-identity retry only increments attempt)
+  const operation = prepareDesignReviewOperation(drState, "update", visitId, updateInputHash);
   if (!operation) {
     return { status: "handled", action: "pending", reason: "operation_creation_failed" };
   }
+  const preparedOp: DesignReviewOperation = operation.dispatchEvidence
+    ? operation
+    : { ...operation, dispatchEvidence: "confirmed_not_sent", dispatchReason: "prepared_not_dispatched" };
 
   // Commit operation (this also transitions to update_running)
-  const committedState = commitDesignReviewOperation(ctx.session, operation, drState);
+  const committedState = commitDesignReviewOperation(ctx.session, preparedOp, drState);
   if (!committedState) {
     return { status: "handled", action: "pending", reason: "operation_commit_failed" };
   }
 
-  // Fix for Issue #7: Render specialized update prompt using dedicated template
-  // This provides authorized update mode instructions to the plan agent
-  // Use resolvePiWorkDir for proper path resolution
+  // Render specialized update prompt (fail-closed before dispatch).
   const { resolvePiWorkDir } = await import("../../utils/work-dir");
   const templatePath = path.join(
     ctx.config.projectRoot,
     resolvePiWorkDir(ctx.config),
     "references",
-    "design-review-update-prompt.md"
+    "design-review-update-prompt.md",
   );
   let updatePrompt: string;
   try {
@@ -598,7 +995,7 @@ async function handleUpdateReady(
       planDoc: drState.planDoc,
       reviewDoc: reportPath,
       round: drState.round,
-      operationId: operation.operationId,
+      operationId: preparedOp.operationId,
       baselinePlanHash: drState.planHash ?? "",
       issues: issues,
     };
@@ -616,20 +1013,22 @@ async function handleUpdateReady(
     return { status: "handled", action: "pending", reason: "update_prompt_render_failed" };
   }
 
-  // Spawn update agent with the rendered prompt
-  const spawnResult = await spawnDesignReviewAgent(ctx, meta, committedState, operation, updatePrompt);
-  if (!spawnResult.ok) {
-    writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "failed");
-    return { status: "handled", action: "pending", reason: spawnResult.error ?? "spawn_failed" };
-  }
-
-  writebackDesignReviewResult(ctx.session, operation.operationId, undefined, "dispatched");
+  // Spawn update agent with the rendered prompt (intent → dispatch → receipt)
+  const outcome = await dispatchOperation(ctx, meta, committedState, preparedOp, updatePrompt);
 
   await safeWriteAuditLog("design_review_coordinator", {
-    action: "update_dispatched",
-    operationId: operation.operationId,
+    action: "update_dispatch_attempted",
+    operationId: preparedOp.operationId,
     round: String(drState.round),
+    outcome,
   });
+
+  if (outcome === "blocked") {
+    return { status: "handled", action: "pending", reason: "operation_state_commit_failed" };
+  }
+  if (outcome === "unknown") {
+    return await pauseForUnknownDispatch(ctx, meta, committedState, "update_dispatch_unverified");
+  }
 
   return { status: "handled", action: "routed", toStage: "plan" };
 }
@@ -721,92 +1120,102 @@ async function handleUpdateRunning(
 
   // Allocate next round
   const nextRound = allocateNextRound(drState);
-  
-  // Update state to review_ready with new round
-  const newState = transitionPhase(drState, "review_ready");
-  newState.round = nextRound;
-  newState.planHash = currentPlanHash;
-  // Fix for Issue #4: Update reportDoc for the new round
-  newState.reportDoc = deriveReportPath(drState.planDoc, nextRound);
-  
-  const commitResult = commitDesignReviewState(ctx.session, newState);
-  
-  if (!commitResult.ok) {
-    return { status: "handled", action: "pending", reason: `state_commit_failed: ${commitResult.reason}` };
-  }
 
-  // Update meta for stage transition
-  ctx.session.updateMeta({
+  // 192 Phase 1: the next-round review operation is bound to the FRESH
+  // design-review visit and the NEW plan hash (inputHash), replacing the
+  // consumed update operation. Receipt/outcome stay finite per round.
+  const newVisit = Date.now();
+  const reviewOperation = createOperation("review", newVisit, 1, currentPlanHash, nextRound);
+  const preparedReviewOp: DesignReviewOperation = {
+    ...reviewOperation,
+    dispatchEvidence: "confirmed_not_sent",
+    dispatchReason: "prepared_not_dispatched",
+  };
+
+  // One consistent target state: next round, new plan hash, new report doc,
+  // review_running with the fresh operation. The consumed update operation is
+  // replaced; its terminal fact is the plan change (newPlanHash) itself.
+  const stateWithOperation: DesignReviewState = {
+    ...drState,
+    phase: "review_running",
+    round: nextRound,
+    planHash: currentPlanHash,
+    reportDoc: deriveReportPath(drState.planDoc, nextRound),
+    operation: preparedReviewOp,
+    // Round-scoped transients cleared for the NEW round; authorization and
+    // budget are preserved (Phase 4 task 8 semantics).
+    outcome: undefined,
+    reviewInputReceipt: undefined,
+    pauseReason: undefined,
+    updatedAt: Date.now(),
+  };
+
+  // SINGLE strict commit: state + stage switch + visit counters + operation.
+  const stagePatch: Partial<SessionMeta> = {
     ...visitResult.patch,
     previousStage: "plan",
     currentStage: "design-review",
-    stageStartTime: Date.now(),
+    stageStartTime: newVisit,
     loopCount: 0,
     currentStepIndex: 0,
     verifyFailures: [],
     verifyAttempts: 0,
     violations: [],
     advancedThisTurn: undefined,
+    designReview: stateWithOperation,
+  };
+  const commitRes = strictCommitMeta(ctx.session, stagePatch, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: drState.authorizationId,
+    round: drState.round,
+    operationId: drState.operation?.operationId ?? null,
+    phase: drState.phase,
+    stateUpdatedAt: drState.updatedAt,
   });
+  if (commitRes.status !== "persisted") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "update_complete_commit_failed",
+      status: commitRes.status,
+      reason: commitRes.reason,
+      round: String(nextRound),
+    }, "error");
+    return {
+      status: "handled",
+      action: "pending",
+      reason: `state_commit_failed:${commitRes.status}:${commitRes.reason}`,
+    };
+  }
 
   await safeWriteAuditLog("design_review_coordinator", {
     action: "update_complete_rerun",
     previousPlanHash: drState.planHash ?? "",
     newPlanHash: currentPlanHash,
     round: String(nextRound),
+    operationId: preparedReviewOp.operationId,
   });
 
-  // Create and commit review operation for the next round
-  const reviewOperation = createOperation("review", meta.stageStartTime ?? Date.now(), 1);
-  const stateWithOperation = transitionPhase(newState, "review_running", reviewOperation);
-  const operationCommitResult = commitDesignReviewState(ctx.session, stateWithOperation);
-  
-  if (!operationCommitResult.ok) {
-    return { status: "handled", action: "pending", reason: `operation_commit_failed: ${operationCommitResult.reason}` };
-  }
-
-  // Spawn the design-review agent for the next round
-  const spawnResult = await spawnDesignReviewAgent(ctx, meta, stateWithOperation, reviewOperation);
-  if (!spawnResult.ok) {
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "review_spawn_failed",
-      round: String(nextRound),
-      error: spawnResult.error ?? "unknown",
-    });
-    return { status: "handled", action: "pending", reason: spawnResult.error ?? "spawn_failed" };
-  }
+  // Dispatch the next-round review exactly once (intent → spawn → receipt).
+  const outcome = await dispatchOperation(ctx, commitRes.meta, stateWithOperation, preparedReviewOp);
 
   await safeWriteAuditLog("design_review_coordinator", {
-    action: "review_dispatched",
-    operationId: reviewOperation.operationId,
+    action: "review_dispatch_attempted",
+    operationId: preparedReviewOp.operationId,
     round: String(nextRound),
+    outcome,
   });
+
+  if (outcome === "blocked") {
+    return { status: "handled", action: "pending", reason: "operation_state_commit_failed" };
+  }
+  if (outcome === "unknown") {
+    return await pauseForUnknownDispatch(ctx, commitRes.meta, stateWithOperation, "review_dispatch_unverified");
+  }
 
   if (ctx.ui?.transition) {
     ctx.ui.transition(ctx, "plan", "design-review");
   }
 
   return { status: "handled", action: "routed", toStage: "design-review" };
-}
-
-/**
- * Handle pass_ready phase: should not reach here in normal flow.
- */
-async function handlePassReady(
-  ctx: CoordinatorContext,
-  meta: SessionMeta,
-  drState: DesignReviewState,
-  trigger: string,
-): Promise<CoordinatorResult> {
-  // Throttle non-critical repeated event: unexpected pass_ready state
-  const throttleKey = `${meta.pipelineId ?? "unknown"}:unexpected_pass_ready`;
-  if (shouldEmitWithinWindow(throttleKey, 5000)) {
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "unexpected_pass_ready",
-      trigger,
-    });
-  }
-  return { status: "handled", action: "pending", reason: "unexpected_state" };
 }
 
 /**
@@ -830,6 +1239,96 @@ async function handlePaused(
   return { status: "handled", action: "pending", reason: drState.pauseReason ?? "paused" };
 }
 
+// ─── 192 Phase 1: operation terminal evidence consumer (task 8) ─────────────
+
+/**
+ * Record lifecycle terminal evidence for a design-review operation.
+ * Registered at the composition root and invoked from the subagent-RPC
+ * lifecycle watcher when a spawn bound to an operation completes/fails.
+ *
+ * Guarantees:
+ * - Fresh identity check: only the CURRENT operation receives terminal
+ *   evidence; late events of superseded operations are ignored.
+ * - Requires a trusted dispatched receipt (agentId match) — pure chat or
+ *   untracked completions never fabricate completion.
+ * - Records evidence only: the CHILD never advances stages; the OWNER's
+ *   normal settle/verification path consumes the result afterwards. A
+ *   followUp wake is sent through the existing owner wake channel.
+ */
+export async function handleDesignReviewOperationTerminal(
+  pi: unknown,
+  config: PipelineConfig,
+  session: StrictCommitSession,
+  evt: DesignReviewTerminalEvent,
+): Promise<void> {
+  const meta = session.getMeta();
+  const state = meta?.designReview;
+  const oc = evt.operationContext;
+  if (!meta || !state || !state.operation) {
+    return;
+  }
+  const op = state.operation;
+  if (
+    op.operationId !== oc.operationId
+    || op.kind !== oc.kind
+    || state.authorizationId !== oc.authorizationId
+    || state.round !== oc.round
+  ) {
+    await safeWriteAuditLog("design_review_terminal", {
+      action: "late_event_ignored",
+      eventOperationId: oc.operationId,
+      currentOperationId: op.operationId,
+      event: evt.event,
+    }, "warn");
+    return;
+  }
+
+  // Terminal evidence may only attach to a TRUSTED dispatched operation with
+  // the SAME agent id. An operation with unknown dispatch stays unverifiable.
+  if (op.dispatchState !== "dispatched" || !op.agentId || (evt.agentId && op.agentId !== evt.agentId)) {
+    await safeWriteAuditLog("design_review_terminal", {
+      action: "event_unverified",
+      operationId: op.operationId,
+      event: evt.event,
+      dispatchState: op.dispatchState,
+      reason: "no_trusted_dispatch_receipt",
+    }, "warn");
+    return;
+  }
+
+  const updated = writebackDesignReviewResult(
+    session,
+    op.operationId,
+    evt.agentId ?? op.agentId,
+    evt.event === "completed" ? "completed" : "failed",
+    "trusted_id",
+  );
+  await safeWriteAuditLog("design_review_terminal", {
+    action: updated ? "operation_terminal_recorded" : "operation_terminal_write_failed",
+    operationId: op.operationId,
+    kind: op.kind,
+    event: evt.event,
+    agentId: op.agentId,
+    round: String(state.round),
+  }, updated ? undefined : "error");
+
+  // Wake the OWNER through the existing followUp channel so the settle chain
+  // re-verifies via the shared entry points. Never spawn a second review.
+  const sendUserMessage = (pi as {
+    sendUserMessage?: (msg: string, opts?: { deliverAs?: string }) => void;
+  })?.sendUserMessage;
+  if (typeof sendUserMessage === "function" && op.kind !== "develop-handoff") {
+    try {
+      sendUserMessage(
+        `[plugin auto-settle] Design-review ${op.kind} round ${state.round} finished (${evt.event}). Re-verify the stage result now.`,
+        { deliverAs: "followUp" },
+      );
+    } catch {
+      // Wake is best-effort; the settle path still verifies on next turn.
+    }
+  }
+}
+
 /**
  * Check budget against maxLoopCycles.
  */
@@ -842,8 +1341,225 @@ function checkBudget(
   return { ok: current < max, current, max };
 }
 
+// ─── 192 Phase 1: operation-aware dispatch protocol helpers (F01/F04, DR192-01) ──
+
+/**
+ * Build the SpawnOperationContext that binds an external dispatch to the
+ * CURRENT design-review operation identity.
+ */
+function makeOperationContext(
+  meta: SessionMeta,
+  state: DesignReviewState,
+  operation: DesignReviewOperation,
+): SpawnOperationContext {
+  return {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: state.authorizationId,
+    round: state.round,
+    kind: operation.kind,
+    operationId: operation.operationId,
+    stageVisitId: operation.stageVisitId,
+    ...(operation.inputHash !== undefined ? { inputHash: operation.inputHash } : {}),
+  };
+}
+
+/**
+ * Reliable operation-state commit through the strict path.
+ * Returns the persisted meta on success; failure returns the reason.
+ */
+function strictCommitOperationState(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  nextState: DesignReviewState,
+  expected: MetaCommitExpectation,
+): { ok: true; meta: SessionMeta } | { ok: false; reason: string } {
+  const res = strictCommitMeta(ctx.session, { designReview: nextState }, expected);
+  if (res.status === "persisted") {
+    return { ok: true, meta: res.meta };
+  }
+  return { ok: false, reason: `${res.status}:${res.reason}` };
+}
+
+/**
+ * 192 Phase 1 (task 10): reliably mark send-intent BEFORE any external
+ * RPC/followUp boundary. A failed intent commit means ZERO external calls.
+ */
+function markSendIntent(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  state: DesignReviewState,
+  operationId: string,
+): { ok: true; state: DesignReviewState } | { ok: false; reason: string } {
+  const op = state.operation;
+  if (!op || op.operationId !== operationId) {
+    return { ok: false, reason: "intent_operation_mismatch" };
+  }
+  const intentOp: DesignReviewOperation = {
+    ...op,
+    dispatchEvidence: "send_intent",
+    updatedAt: Date.now(),
+  };
+  const nextState: DesignReviewState = {
+    ...state,
+    operation: intentOp,
+    updatedAt: Date.now(),
+  };
+  const expected: MetaCommitExpectation = {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: state.authorizationId,
+    round: state.round,
+    operationId,
+    phase: state.phase,
+    stateUpdatedAt: state.updatedAt,
+  };
+  const res = strictCommitOperationState(ctx, meta, nextState, expected);
+  if (!res.ok) {
+    void safeWriteAuditLog("design_review_coordinator", {
+      action: "send_intent_commit_failed",
+      operationId,
+      reason: res.reason,
+    }, "error");
+    return { ok: false, reason: res.reason };
+  }
+  return { ok: true, state: nextState };
+}
+
+/**
+ * Record the dispatch outcome against the operation identity (task 9):
+ * - trusted agentId → strict "dispatched" receipt writeback;
+ * - fallback/ambiguous → evidence "unknown" (verify on resume, no re-dispatch);
+ * - provably not sent → evidence "confirmed_not_sent" (retryable);
+ * - owner-queued/deferred/strict-blocked → the send-intent marker remains.
+ */
+async function recordDispatchOutcome(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  state: DesignReviewState,
+  operationId: string,
+  outcome: "spawned_id" | "fallback_no_id" | "deferred" | "queued_owner" | "not_sent" | "unknown" | "strict_blocked" | "skipped_duplicate" | undefined,
+  agentId?: string,
+): Promise<"trusted" | "unknown" | "not_sent" | "pending_queue" > {
+  if (outcome === "spawned_id" && agentId) {
+    const wb = writebackDesignReviewResult(ctx.session, operationId, agentId, "dispatched", "trusted_id");
+    if (wb) return "trusted";
+    // Receipt write failed → fall through to unknown marking below: the child
+    // MAY exist; never claim success.
+  }
+  if (outcome === "not_sent") {
+    // Provable not-sent: mark evidence so a same-operation retry is permitted.
+    const cur = ctx.session.getMeta();
+    const st = cur?.designReview;
+    if (st?.operation?.operationId === operationId) {
+      const nextState: DesignReviewState = {
+        ...st,
+        operation: {
+          ...st.operation,
+          dispatchEvidence: "confirmed_not_sent",
+          dispatchReason: "transport_confirmed_not_sent",
+          updatedAt: Date.now(),
+        },
+        updatedAt: Date.now(),
+      };
+      const res = strictCommitOperationState(ctx, meta, nextState, {
+        pipelineId: meta.pipelineId ?? "unknown",
+        authorizationId: st.authorizationId,
+        round: st.round,
+        operationId,
+        phase: st.phase,
+        stateUpdatedAt: st.updatedAt,
+      });
+      if (!res.ok) return "unknown";
+    }
+    return "not_sent";
+  }
+  if (outcome === "deferred" || outcome === "queued_owner") {
+    // Owner queue / deferred watcher holds the record; the send-intent
+    // evidence remains and blocks blind re-dispatch (canDispatch).
+    return "pending_queue";
+  }
+  // fallback_no_id / unknown / strict_blocked / receipt-write-failure:
+  // outcome unverifiable → evidence "unknown".
+  const cur = ctx.session.getMeta();
+  const st = cur?.designReview;
+  if (st?.operation?.operationId === operationId) {
+    const nextState: DesignReviewState = {
+      ...st,
+      operation: {
+        ...st.operation,
+        dispatchEvidence: "unknown",
+        dispatchReason: outcome ?? "receipt_write_failed",
+        updatedAt: Date.now(),
+      },
+      updatedAt: Date.now(),
+    };
+    const res = strictCommitOperationState(ctx, meta, nextState, {
+      pipelineId: meta.pipelineId ?? "unknown",
+      authorizationId: st.authorizationId,
+      round: st.round,
+      operationId,
+      phase: st.phase,
+      stateUpdatedAt: st.updatedAt,
+    });
+    if (!res.ok) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "dispatch_outcome_unknown_commit_failed",
+        operationId,
+        reason: res.reason,
+      }, "error");
+    }
+  }
+  return "unknown";
+}
+
+/**
+ * Shared dispatch for review/update operations:
+ * commit operation → send-intent → dispatch → record outcome.
+ * A failed operation commit or intent commit performs ZERO external calls.
+ */
+async function dispatchOperation(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  committedState: DesignReviewState,
+  operation: DesignReviewOperation,
+  updatePrompt?: string,
+): Promise<"trusted" | "unknown" | "not_sent" | "pending_queue" | "blocked"> {
+  const intent = markSendIntent(ctx, meta, committedState, operation.operationId);
+  if (!intent.ok) {
+    // Intent commit failed → NO external call may happen (F04/D04).
+    return "blocked";
+  }
+  const spawnResult = await spawnDesignReviewAgent(ctx, meta, intent.state, operation, updatePrompt);
+  return recordDispatchOutcome(
+    ctx,
+    meta,
+    intent.state,
+    operation.operationId,
+    spawnResult.outcome,
+    spawnResult.agentId,
+  );
+}
+
+/**
+ * 192 Phase 1 (DR192-01): True when the CURRENT handoff operation already
+ * carries a reliably persisted trusted dispatch receipt.
+ */
+function hasPersistedHandoffSuccess(state: DesignReviewState): boolean {
+  const op = state.operation;
+  return (
+    !!op
+    && op.kind === "develop-handoff"
+    && op.dispatchState === "dispatched"
+    && !!op.agentId
+    && op.dispatchEvidence === "trusted_id"
+  );
+}
+
 /**
  * Spawn design-review agent (review or update).
+ *
+ * 192 Phase 1: returns the explicit dispatch outcome + trusted agentId when
+ * available. The real spawn path receives exactPrompt/description and the
+ * operation identity; the test override may emulate any outcome shape.
  */
 async function spawnDesignReviewAgent(
   ctx: CoordinatorContext,
@@ -851,42 +1567,72 @@ async function spawnDesignReviewAgent(
   drState: DesignReviewState,
   operation: DesignReviewOperation,
   updatePrompt?: string,
-): Promise<{ ok: boolean; error?: string }> {
-  const stage = operation.kind === "review" ? "design-review" : "plan";
+): Promise<{
+  ok: boolean;
+  error?: string;
+  agentId?: string;
+  outcome?: import("../../utils/subagent-rpc").StageDispatchOutcome;
+}> {
+  const stage: "design-review" | "plan" | "develop" =
+    operation.kind === "review" ? "design-review" : operation.kind === "update" ? "plan" : "develop";
   const freshMeta = ctx.session.getMeta() ?? meta;
-  
+
   // Generate spawn prompt with plan/report path and round
   const inputPath = operation.kind === "review" ? drState.planDoc : (drState.reportDoc ?? drState.planDoc);
   const spawnKind = operation.kind as "review" | "update";
   const spawnPrompt = formatDesignReviewSpawnPrompt(spawnKind, inputPath, drState.round);
   const spawnDescription = `Design review ${operation.kind}: ${inputPath} round ${drState.round}`;
-  
+
   // For update operations with a rendered prompt, append it to provide authorized update context
-  const finalPrompt = updatePrompt 
+  const finalPrompt = updatePrompt
     ? `${spawnPrompt}\n\n---\n\n${updatePrompt}`
     : spawnPrompt;
-  
+
+  const operationContext = makeOperationContext(freshMeta, drState, operation);
+
   // Use spawnOverride if provided (for testing - Issue #25)
-  // Otherwise use the real spawnStageSubagent
+  // Otherwise use the real spawnStageSubagent with the operation identity and
+  // the exact rendered prompt (never re-composed on top of the generic text).
   const spawnResult = ctx.spawnOverride
     ? await ctx.spawnOverride(ctx.config, stage, freshMeta, finalPrompt)
     : await spawnStageSubagent(ctx.pi, ctx.config, stage, freshMeta, {
         ui: { notify: (msg: string) => { ctx.ui?.notify?.(msg); } },
         session: ctx.session,
         runtimeCtx: ctx,
-        extraArgs: finalPrompt,
+        exactPrompt: finalPrompt,
+        description: spawnDescription,
+        operationContext,
       });
+
+  const outcome = spawnResult.dispatchOutcome ?? (
+    spawnResult.spawned && !spawnResult.fallback
+      ? "spawned_id"
+      : spawnResult.spawned && spawnResult.fallback
+        ? "fallback_no_id"
+        : spawnResult.deferred
+          ? "deferred"
+          : "not_sent"
+  );
 
   if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
     // Audit the spawn with description for traceability
     await safeWriteAuditLog("design_review_coordinator", {
       action: "agent_spawned",
       operationKind: operation.kind,
+      operationId: operation.operationId,
       description: spawnDescription,
+      dispatchOutcome: outcome,
+      agentId: spawnResult.agentId ?? "none",
       round: String(drState.round),
     });
-    return { ok: true };
+    return { ok: true, agentId: spawnResult.agentId, outcome };
   }
 
-  return { ok: false, error: "spawn_failed" };
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "agent_spawn_not_dispatched",
+    operationKind: operation.kind,
+    operationId: operation.operationId,
+    dispatchOutcome: outcome,
+  }, "warn");
+  return { ok: false, error: "spawn_failed", outcome };
 }

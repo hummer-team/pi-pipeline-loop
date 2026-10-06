@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+import { matchCommitExpectation } from "../../core/session-state";
 import { computeHash, createInitialState } from "../../core/design-review/state";
 import type { CoordinatorContext } from "../../core/design-review/coordinator";
 import { coordinateDesignReview } from "../../core/design-review/coordinator";
@@ -57,6 +58,16 @@ describe("design-review multi-entrypoint consistency", () => {
       updateMeta: (patch: Partial<SessionMeta>) => {
         currentMeta = { ...currentMeta, ...patch };
         return currentMeta;
+      },
+      // 192 Phase 1: strict-capable commit (healthy shared store semantics)
+      updateMetaVerified: (
+        patch: Partial<SessionMeta>,
+        expected: import("../../core/session-state").MetaCommitExpectation,
+      ): import("../../types").ReliableMetaCommitResult => {
+        const conflict = matchCommitExpectation(currentMeta, expected);
+        if (conflict) return { status: "conflict", reason: conflict };
+        currentMeta = { ...currentMeta, ...patch };
+        return { status: "persisted", meta: currentMeta };
       },
     };
   }

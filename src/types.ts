@@ -673,6 +673,8 @@ export interface DesignReviewOperation {
   stageVisitId: number;
   /** Attempt number within this round (retry does not increment round) */
   attempt: number;
+  /** 192 Phase 1: design-review round this operation belongs to (identity component) */
+  round?: number;
   /** Current dispatch state */
   dispatchState: DesignReviewDispatchState;
   /** Subagent ID from RPC reply (absent until dispatched) */
@@ -681,6 +683,17 @@ export interface DesignReviewOperation {
   inputHash?: string;
   /** Hash of operation outputs (report hash for review; new plan hash for update) */
   outputHash?: string;
+  /**
+   * 192 Phase 1: bounded dispatch evidence for this operation.
+   * - "confirmed_not_sent": transport evidence proves NOTHING was dispatched; retry allowed.
+   * - "send_intent": reliable intent marker written BEFORE an external call; after a
+   *   restart this alone never permits an automatic RPC (unknown window).
+   * - "trusted_id": dispatch succeeded with a real, returned agentId.
+   * - "unknown": dispatched (or attempted) but outcome cannot be proven — pause & verify.
+   */
+  dispatchEvidence?: "confirmed_not_sent" | "send_intent" | "trusted_id" | "unknown";
+  /** 192 Phase 1: machine-readable reason when evidence is confirmed_not_sent/unknown */
+  dispatchReason?: string;
   /** Timestamp when operation was created */
   createdAt: number;
   /** Timestamp when operation completed/failed (absent until settled) */
@@ -729,7 +742,8 @@ export type DesignReviewPauseReason =
   | "drift"              // External plan modification detected
   | "unavailable"        // Develop stage disabled or no agent configured
   | "authorization-lost" // Authorization invalidated (quit/disable/manual choice)
-  | "budget-exhausted";  // maxLoopCycles reached
+  | "budget-exhausted"   // maxLoopCycles reached
+  | "unknown-dispatch";  // 192 Phase 1: dispatch outcome unprovable (pause & verify)
 
 /**
  * Phase 1 / 191: Design review report verdict result.
@@ -753,6 +767,26 @@ export interface DesignReviewPlanUpdateValidation {
   reasons: string[];
   /** New hash of the updated plan */
   newHash?: string;
+}
+
+/**
+ * 192 Phase 1 (DR192-01): approval milestone of a verified PASS.
+ * Bound to the CONSUMED review identity plus the plan/report hashes it
+ * certified. The later develop-handoff operation references this approval;
+ * approval, handoff dispatch receipt and finished are three separate
+ * milestones and must never be conflated.
+ */
+export interface DesignReviewApproval {
+  /** Operation id of the consumed review that produced the PASS */
+  reviewOperationId: string;
+  /** Round of the consumed review */
+  round: number;
+  /** Plan hash that was reviewed (== review inputHash) */
+  planHash: string;
+  /** Hash of the PASS report content */
+  reportHash: string;
+  /** When the approval was recorded */
+  authorizedAt: number;
 }
 
 /**
@@ -798,6 +832,13 @@ export type DesignReviewState = {
 
   /** Reason for pause (when phase === "paused") */
   pauseReason?: DesignReviewPauseReason;
+
+  /**
+   * 192 Phase 1 (DR192-01): PASS approval milestone bound to the consumed
+   * review identity. Written BEFORE the develop-handoff operation is created;
+   * the handoff operation is linked through this record.
+   */
+  approval?: DesignReviewApproval;
 
   /**
    * 192 Phase 0: owning pipeline id (attribution).

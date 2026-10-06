@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { SessionMeta } from "../types";
+import type { SessionMeta, ReliableMetaCommitResult, DesignReviewState } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { resolveAuditDir } from "../utils/work-dir";
 import type { PipelineConfig } from "../types";
@@ -55,6 +55,52 @@ export interface SessionState {
    * Uses pi.appendEntry() for persistence. Failures are logged but not thrown (fail-open).
    */
   updateMeta(patch: Partial<SessionMeta>): SessionMeta | undefined;
+
+  /**
+   * 192 Phase 1 (F04): STRICT, fail-closed meta commit for the design-review
+   * closed loop. Unlike updateMeta this NEVER reports success unless BOTH the
+   * local appendEntry and the shared meta.json write were performed and the
+   * shared file was read back and verified.
+   *
+   * Explicit failure modes reported as `{status:"unavailable"}`:
+   * - shared state base dir not configured;
+   * - shared meta.json unreadable/corrupt or bound to a foreign pipeline (stale);
+   * - local appendEntry failure;
+   * - shared write failure;
+   * - read-back failure or identity mismatch after read-back.
+   *
+   * `{status:"conflict"}` is returned when the current persisted state does not
+   * match `expected` (pipeline/auth/round/operation/phase/revision), including
+   * a concurrent stale callback carrying the same authorization and round but
+   * an older operation/revision.
+   *
+   * A successful getMeta() local snapshot (with `_sharedStale` stripped) is
+   * NEVER treated as shared success.
+   */
+  updateMetaVerified?(patch: Partial<SessionMeta>, expected: MetaCommitExpectation): ReliableMetaCommitResult;
+}
+
+/**
+ * 192 Phase 1: expectation compared against the CURRENT persisted state
+ * before a strict commit is allowed to proceed. All optional fields are
+ * compared only when provided (undefined = don't check).
+ *
+ * Single-writer model: comparison is synchronous against the current owner
+ * state; this makes no cross-process CAS/transaction claim.
+ */
+export interface MetaCommitExpectation {
+  /** Current run pipeline id — must match the persisted state */
+  pipelineId: string;
+  /** Expected design-review authorizationId of the CURRENT state */
+  authorizationId?: string;
+  /** Expected design-review round of the CURRENT state */
+  round?: number;
+  /** Expected current operationId; `null` asserts there is NO current operation */
+  operationId?: string | null;
+  /** Expected design-review phase of the CURRENT state */
+  phase?: import("../types").DesignReviewPhase;
+  /** Expected state.updatedAt (finite revision anchor for same-auth same-round conflicts) */
+  stateUpdatedAt?: number;
 }
 
 /**
@@ -89,6 +135,120 @@ function resolveSharedStateBaseDir(options?: SessionStateOptions): string {
     return resolved;
   }
   return sharedStateBaseDir;
+}
+
+/**
+ * 192 Phase 1: raw read of the shared meta.json for strict-commit purposes.
+ * Unlike getMeta() this does NOT fall back to local snapshots and does NOT
+ * strip staleness markers — it reports exactly what shared storage says.
+ */
+function readSharedRaw(baseDir: string, pipelineId: string): {
+  meta?: SessionMeta;
+  error?: "missing" | "read_failed" | "corrupt" | "foreign_pipeline";
+} {
+  const metaPath = path.join(baseDir, pipelineId, "meta.json");
+  let text: string;
+  try {
+    text = fs.readFileSync(metaPath, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return { error: "missing" };
+    // ENOTDIR (base path occupied by a plain file), EACCES, ELOOP etc.
+    // are shared-storage health failures, never "file does not exist".
+    return { error: "read_failed" };
+  }
+  try {
+    const parsed = JSON.parse(text) as SessionMeta;
+    if (!parsed || typeof parsed !== "object") return { error: "corrupt" };
+    if (parsed.pipelineId !== pipelineId) return { error: "foreign_pipeline" };
+    return { meta: parsed };
+  } catch {
+    return { error: "corrupt" };
+  }
+}
+
+/**
+ * 192 Phase 1: compare the CURRENT persisted state against a commit
+ * expectation. Returns a conflict reason string, or null when the patch may
+ * proceed. Synchronous single-writer comparison — no cross-process CAS claim.
+ *
+ * Exported so strict-capable test fixtures share the EXACT production
+ * comparison semantics (no second implementation).
+ */
+export function matchCommitExpectation(
+  current: SessionMeta,
+  expected: MetaCommitExpectation,
+): string | null {
+  if (current.pipelineId !== expected.pipelineId) {
+    return `pipeline_mismatch:${current.pipelineId ?? "none"}`;
+  }
+  const dr = current.designReview;
+  if (expected.authorizationId !== undefined && dr?.authorizationId !== expected.authorizationId) {
+    return "authorization_mismatch";
+  }
+  if (expected.round !== undefined && dr?.round !== expected.round) {
+    return "round_mismatch";
+  }
+  if (expected.operationId !== undefined) {
+    const curOpId = dr?.operation?.operationId;
+    if (expected.operationId === null) {
+      if (curOpId !== undefined) return "operation_expected_absent";
+    } else if (curOpId !== expected.operationId) {
+      return "operation_mismatch";
+    }
+  }
+  if (expected.phase !== undefined && dr?.phase !== expected.phase) {
+    return "phase_mismatch";
+  }
+  // Finite revision anchor: a stale callback that carries the SAME auth and
+  // round but an older revision must still conflict.
+  if (expected.stateUpdatedAt !== undefined && dr?.updatedAt !== expected.stateUpdatedAt) {
+    return "revision_mismatch";
+  }
+  return null;
+}
+
+/**
+ * 192 Phase 1: shared strict-commit for design-review consumers.
+ * Requires the adapter to expose `updateMetaVerified`; adapters without a
+ * reliable interface get `unavailable` — a local read-back is NEVER
+ * substituted as shared success.
+ */
+export function strictCommitMeta(
+  session: {
+    getMeta: () => SessionMeta | undefined;
+    updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
+    updateMetaVerified?(patch: Partial<SessionMeta>, expected: MetaCommitExpectation): ReliableMetaCommitResult;
+  },
+  patch: Partial<SessionMeta>,
+  expected: MetaCommitExpectation,
+): ReliableMetaCommitResult {
+  if (typeof session.updateMetaVerified !== "function") {
+    safeWriteAuditLog("design_review_commit", {
+      reason: "adapter_lacks_strict_interface",
+    }, "error");
+    return { status: "unavailable", reason: "adapter_lacks_strict_interface" };
+  }
+  return session.updateMetaVerified(patch, expected);
+}
+
+/**
+ * 192 Phase 1: convenience — build a commit expectation from the CURRENT
+ * design-review state so callers that simply want "no concurrent change since
+ * my read" get the revision anchor automatically.
+ */
+export function expectedFromCurrent(
+  meta: SessionMeta,
+): MetaCommitExpectation {
+  const dr = meta.designReview;
+  return {
+    pipelineId: meta.pipelineId ?? "unknown",
+    ...(dr?.authorizationId !== undefined ? { authorizationId: dr.authorizationId } : {}),
+    ...(dr?.round !== undefined ? { round: dr.round } : {}),
+    ...(dr ? { operationId: dr.operation?.operationId ?? null as string | null } : {}),
+    ...(dr?.phase !== undefined ? { phase: dr.phase } : {}),
+    ...(dr?.updatedAt !== undefined ? { stateUpdatedAt: dr.updatedAt } : {}),
+  };
 }
 
 /**
@@ -221,6 +381,113 @@ export function createSessionState(
       }
     },
 
+    /**
+     * 192 Phase 1 (F04): strict, fail-closed dual commit with read-back
+     * verification. Success is reported ONLY when the shared meta.json write
+     * succeeded AND the read-back content carries the patched identity.
+     */
+    updateMetaVerified(patch: Partial<SessionMeta>, expected: MetaCommitExpectation): ReliableMetaCommitResult {
+      const unavailable = (reason: string, err?: unknown): ReliableMetaCommitResult => {
+        safeWriteAuditLog("session_state_strict", {
+          operation: "updateMetaVerified",
+          outcome: "unavailable",
+          reason,
+          ...(err !== undefined
+            ? { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }
+            : {}),
+        }, "error");
+        return { status: "unavailable", reason };
+      };
+      try {
+        // Explicit shared-configuration check: no strict commit without it.
+        if (!instanceBaseDir) {
+          return unavailable("shared_not_configured");
+        }
+        const current = this.getMeta();
+        if (!current) {
+          return unavailable("no_current_state");
+        }
+        if (current.pipelineId !== expected.pipelineId) {
+          safeWriteAuditLog("session_state_strict", {
+            operation: "updateMetaVerified", outcome: "conflict", reason: "pipeline_mismatch",
+          }, "warn");
+          return { status: "conflict", reason: `pipeline_mismatch:${current.pipelineId ?? "none"}` };
+        }
+
+        // Shared health precheck. "missing" is tolerated (first strict write
+        // creates the file); every other read problem is a health failure.
+        const pre = readSharedRaw(instanceBaseDir, expected.pipelineId);
+        if (pre.error === "read_failed") return unavailable("shared_read_failed");
+        if (pre.error === "corrupt") return unavailable("shared_corrupt");
+        if (pre.error === "foreign_pipeline") return unavailable("shared_pipeline_stale");
+
+        // Expectation comparison against the freshest authoritative snapshot
+        // (shared when healthy; getMeta() result otherwise — never used as
+        // shared-success proof, only as pre-write comparison).
+        const authoritative = pre.meta ?? current;
+        const conflictReason = matchCommitExpectation(authoritative, expected);
+        if (conflictReason) {
+          safeWriteAuditLog("session_state_strict", {
+            operation: "updateMetaVerified", outcome: "conflict", reason: conflictReason,
+          }, "warn");
+          return { status: "conflict", reason: conflictReason };
+        }
+
+        const merged = { ...current, ...patch };
+
+        // Write 1: local appendEntry must succeed.
+        try {
+          pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, merged);
+        } catch (err) {
+          return unavailable("local_append_failed", err);
+        }
+
+        // Write 2: shared meta.json must succeed (NO fail-open here).
+        try {
+          const metaDir = path.join(instanceBaseDir, expected.pipelineId);
+          fs.mkdirSync(metaDir, { recursive: true });
+          fs.writeFileSync(path.join(metaDir, "meta.json"), JSON.stringify(merged, null, 2), "utf-8");
+        } catch (err) {
+          // Stamp staleness best-effort for the ordinary fail-open reader,
+          // but the strict caller never sees success from this path.
+          try {
+            pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, {
+              ...merged, _sharedStale: true, _sharedStaleAt: Date.now(),
+            });
+          } catch { /* best-effort */ }
+          return unavailable("shared_write_failed", err);
+        }
+
+        // Read-back verification from SHARED storage. A local snapshot (even
+        // after _sharedStale stripping) is never accepted as proof.
+        const back = readSharedRaw(instanceBaseDir, expected.pipelineId);
+        if (back.error || !back.meta) {
+          return unavailable(`shared_readback_${back.error ?? "missing"}`);
+        }
+        const rb = back.meta;
+        if (rb.pipelineId !== expected.pipelineId) {
+          return unavailable("readback_pipeline_mismatch");
+        }
+        if (patch.designReview) {
+          const want = patch.designReview;
+          const got = rb.designReview;
+          if (
+            !got
+            || got.authorizationId !== want.authorizationId
+            || got.round !== want.round
+            || got.phase !== want.phase
+            || (want.operation?.operationId ?? undefined) !== (got.operation?.operationId ?? undefined)
+          ) {
+            return unavailable("readback_identity_mismatch");
+          }
+        }
+
+        return { status: "persisted", meta: rb };
+      } catch (err) {
+        return unavailable("strict_commit_exception", err);
+      }
+    },
+
   };
 }
 
@@ -267,31 +534,49 @@ export function extractAssistantMessages(ctx: ExtensionContext): string[] {
 }
 
 /**
- * Phase 2 (191): Commit result for design review state.
+ * Session interface accepted by strict design-review commits.
+ * `updateMetaVerified` is provided by the real adapter (createSessionState)
+ * and by compatible test fixtures; adapters without it are reported
+ * `unavailable` — never a fake success.
  */
-export type DesignReviewCommitResult =
-  | { ok: true; state: import("../types").DesignReviewState }
-  | { ok: false; reason: "no_meta" | "write_failed" | "verification_failed" | "conflict" };
+export interface StrictCommitSession {
+  getMeta(): SessionMeta | undefined;
+  updateMeta(patch: Partial<SessionMeta>): SessionMeta | undefined;
+  updateMetaVerified?(patch: Partial<SessionMeta>, expected: MetaCommitExpectation): ReliableMetaCommitResult;
+}
 
 /**
- * Phase 2 (191): Reliably commits design review state to session meta.
+ * Phase 2 (191) + 192 Phase 1: Commit result for design review state.
+ */
+export type DesignReviewCommitResult =
+  | { ok: true; state: DesignReviewState }
+  | {
+      ok: false;
+      reason: "no_meta" | "write_failed" | "verification_failed" | "conflict" | "unavailable";
+      detail?: string;
+    };
+
+/**
+ * 192 Phase 1 (F04): Reliably commits design review state via the STRICT
+ * dual-write path (see SessionState.updateMetaVerified).
  *
- * This function ensures:
- * - State is written before any RPC call (prevents orphaned RPC)
- * - Write is verified by reading back (prevents silent failures)
- * - Operation identity is preserved (prevents stale writes)
- * - Authorization validity is checked (prevents invalid transitions)
+ * Guarantees:
+ * - Authorization identity guards (same auth, no round regression)
+ * - Caller-supplied expectation (pipeline/auth/round/operation/phase/revision)
+ *   is compared against the current persisted state BEFORE writing
+ * - Local appendEntry AND shared meta.json write AND shared read-back must
+ *   all succeed; a local-only snapshot is never reported as committed
+ * - Adapters without the strict interface yield "unavailable" (fail-closed)
  *
- * @param session - Session with getMeta/updateMeta interface
+ * @param session - Strict-commit-capable session (or legacy adapter)
  * @param state - Design review state to commit
- * @returns Commit result with success/failure and reason
+ * @param expected - Optional explicit expectation; defaults to "current state
+ *   unchanged since this read" (single-writer revision anchor)
  */
 export function commitDesignReviewState(
-  session: {
-    getMeta: () => import("../types").SessionMeta | undefined;
-    updateMeta: (patch: Partial<import("../types").SessionMeta>) => import("../types").SessionMeta | undefined;
-  },
-  state: import("../types").DesignReviewState,
+  session: StrictCommitSession,
+  state: DesignReviewState,
+  expected?: MetaCommitExpectation,
 ): DesignReviewCommitResult {
   // Read current meta
   const meta = session.getMeta();
@@ -302,10 +587,10 @@ export function commitDesignReviewState(
     return { ok: false, reason: "no_meta" };
   }
 
-  // Check for conflicts (different authorization or round)
+  // Structural conflict guards (kept from 191): authorization switch and
+  // round regression are always conflicts, independent of `expected`.
   const currentDR = meta.designReview;
   if (currentDR) {
-    // Conflict if authorization changed
     if (currentDR.authorizationId !== state.authorizationId) {
       safeWriteAuditLog("design_review_commit", {
         reason: "authorization_conflict",
@@ -314,8 +599,6 @@ export function commitDesignReviewState(
       }, "warn");
       return { ok: false, reason: "conflict" };
     }
-
-    // Conflict if round regressed (new round should never be less than current)
     if (state.round < currentDR.round) {
       safeWriteAuditLog("design_review_commit", {
         reason: "round_regression",
@@ -326,50 +609,31 @@ export function commitDesignReviewState(
     }
   }
 
-  // Write new state
-  const updatedMeta = session.updateMeta({
-    designReview: state,
-  });
+  const exp = expected ?? expectedFromCurrent(meta);
+  const res = strictCommitMeta(session, { designReview: state }, exp);
 
-  if (!updatedMeta) {
+  if (res.status === "persisted") {
     safeWriteAuditLog("design_review_commit", {
-      reason: "write_failed",
+      action: "committed",
       phase: state.phase,
-    }, "error");
-    return { ok: false, reason: "write_failed" };
+      round: String(state.round),
+      operationId: state.operation?.operationId || "none",
+    });
+    return { ok: true, state: res.meta.designReview ?? state };
   }
-
-  // Verify write by reading back
-  const verifyMeta = session.getMeta();
-  if (!verifyMeta?.designReview) {
+  if (res.status === "conflict") {
     safeWriteAuditLog("design_review_commit", {
-      reason: "verification_failed",
-      phase: state.phase,
-    }, "error");
-    return { ok: false, reason: "verification_failed" };
+      reason: "expected_conflict",
+      detail: res.reason,
+    }, "warn");
+    return { ok: false, reason: "conflict", detail: res.reason };
   }
-
-  // Verify operation identity if present
-  if (state.operation) {
-    const verifyOp = verifyMeta.designReview.operation;
-    if (!verifyOp || verifyOp.operationId !== state.operation.operationId) {
-      safeWriteAuditLog("design_review_commit", {
-        reason: "operation_verification_failed",
-        expectedOpId: state.operation.operationId,
-        actualOpId: verifyOp?.operationId || "none",
-      }, "error");
-      return { ok: false, reason: "verification_failed" };
-    }
-  }
-
   safeWriteAuditLog("design_review_commit", {
-    action: "committed",
+    reason: "strict_unavailable",
+    detail: res.reason,
     phase: state.phase,
-    round: String(state.round),
-    operationId: state.operation?.operationId || "none",
-  });
-
-  return { ok: true, state: verifyMeta.designReview };
+  }, "error");
+  return { ok: false, reason: "unavailable", detail: res.reason };
 }
 
 /**

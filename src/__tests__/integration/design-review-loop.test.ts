@@ -18,6 +18,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+import { matchCommitExpectation } from "../../core/session-state";
 import { initAuditLog } from "../../utils/auditLog";
 import { createInitialState, computeHash, deriveReportPath } from "../../core/design-review/state";
 import { coordinateDesignReview, type CoordinatorContext } from "../../core/design-review/coordinator";
@@ -32,6 +33,16 @@ function createMockSession(meta: SessionMeta) {
     updateMeta: (patch: Partial<SessionMeta>) => {
       currentMeta = { ...currentMeta, ...patch };
       return currentMeta;
+    },
+    // 192 Phase 1: strict-capable commit (healthy shared store semantics)
+    updateMetaVerified: (
+      patch: Partial<SessionMeta>,
+      expected: import("../../core/session-state").MetaCommitExpectation,
+    ): import("../../types").ReliableMetaCommitResult => {
+      const conflict = matchCommitExpectation(currentMeta, expected);
+      if (conflict) return { status: "conflict", reason: conflict };
+      currentMeta = { ...currentMeta, ...patch };
+      return { status: "persisted", meta: currentMeta };
     },
   };
 }

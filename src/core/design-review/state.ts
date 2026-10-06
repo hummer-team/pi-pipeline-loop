@@ -175,6 +175,7 @@ export function createOperation(
   stageVisitId: number,
   attempt: number,
   inputHash?: string,
+  round?: number,
 ): DesignReviewOperation {
   const now = Date.now();
   return {
@@ -184,6 +185,7 @@ export function createOperation(
     attempt,
     dispatchState: "pending",
     inputHash,
+    ...(round !== undefined ? { round } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -296,6 +298,15 @@ export function canDispatch(state: DesignReviewState | undefined): boolean {
     return false;
   }
   if (state.operation && state.operation.dispatchState === "dispatched") {
+    return false;
+  }
+  // 192 Phase 1 (K09): an operation already inside the send-intent/unknown
+  // window must NEVER be blindly re-dispatched — it needs outcome verification
+  // (resume path) first.
+  if (
+    state.operation?.dispatchEvidence === "send_intent" ||
+    state.operation?.dispatchEvidence === "unknown"
+  ) {
     return false;
   }
   return true;
@@ -543,6 +554,38 @@ export function classifyDesignReviewFlow(meta: SessionMeta | undefined): DesignR
     return { kind: "ordinary" };
   }
   return { kind: "authorized", state };
+}
+
+/**
+ * 192 Phase 1: compute the input hash for an update operation.
+ * Update inputs are bound to (baselinePlanHash, reportHash, sorted issue ids)
+ * so the same consumed FAIL report always yields the same identity material.
+ */
+export function computeUpdateInputHash(input: {
+  baselinePlanHash: string;
+  reportHash: string;
+  issueIds: readonly string[];
+}): string {
+  const payload = JSON.stringify({
+    baselinePlanHash: input.baselinePlanHash,
+    reportHash: input.reportHash,
+    issueIds: [...input.issueIds].sort(),
+  });
+  return computeHash(payload);
+}
+
+/**
+ * 192 Phase 1: compute the input hash for a develop-handoff operation.
+ * Bound to the approval milestone it implements (review operation, round,
+ * plan hash, report hash).
+ */
+export function computeHandoffInputHash(input: {
+  reviewOperationId: string;
+  round: number;
+  planHash: string;
+  reportHash: string;
+}): string {
+  return computeHash(JSON.stringify(input));
 }
 
 /**

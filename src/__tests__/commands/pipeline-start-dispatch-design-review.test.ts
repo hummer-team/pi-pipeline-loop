@@ -63,7 +63,7 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
     let spawnCallCount = 0;
     const spawnOverride = async () => {
       spawnCallCount++;
-      return { spawned: true, fallback: false, deferred: false };
+      return { spawned: true, fallback: false, deferred: false, agentId: "test-agent-start-001", dispatchOutcome: "spawned_id" as const };
     };
     
     const ctx = createMockCtx(meta);
@@ -104,7 +104,7 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
     let spawnCallCount = 0;
     const spawnOverride = async () => {
       spawnCallCount++;
-      return { spawned: true, fallback: false, deferred: false };
+      return { spawned: true, fallback: false, deferred: false, agentId: "test-agent-start-001", dispatchOutcome: "spawned_id" as const };
     };
     
     const ctx = createMockCtx(meta);
@@ -134,7 +134,7 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
     let spawnCallCount = 0;
     const spawnOverride = async () => {
       spawnCallCount++;
-      return { spawned: true, fallback: false, deferred: false };
+      return { spawned: true, fallback: false, deferred: false, agentId: "test-agent-start-001", dispatchOutcome: "spawned_id" as const };
     };
     
     const ctx = createMockCtx(meta);

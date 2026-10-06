@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, mock } from "bun:test";
 import type { DesignReviewState, SessionMeta, DesignReviewOperation } from "../../types";
-import { commitDesignReviewState } from "../../core/session-state";
+import { commitDesignReviewState, matchCommitExpectation } from "../../core/session-state";
 import {
   prepareDesignReviewOperation,
   commitDesignReviewOperation,
@@ -16,9 +16,23 @@ describe("Phase 2: Design Review Persistence", () => {
     let mockSession: {
       getMeta: () => SessionMeta | undefined;
       updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
+      updateMetaVerified?: (
+        patch: Partial<SessionMeta>,
+        expected: import("../../core/session-state").MetaCommitExpectation,
+      ) => import("../../types").ReliableMetaCommitResult;
     };
     let testMeta: SessionMeta;
     let testState: DesignReviewState;
+
+    /** 192 Phase 1: strict-capable mock (healthy shared store semantics) */
+    function attachStrict(session: typeof mockSession) {
+      session.updateMetaVerified = mock((patch, expected) => {
+        const conflict = matchCommitExpectation(testMeta, expected);
+        if (conflict) return { status: "conflict" as const, reason: conflict };
+        testMeta = { ...testMeta, ...patch };
+        return { status: "persisted" as const, meta: testMeta };
+      });
+    }
 
     beforeEach(() => {
       testMeta = {
@@ -45,6 +59,7 @@ describe("Phase 2: Design Review Persistence", () => {
           return testMeta;
         }),
       };
+      attachStrict(mockSession);
     });
 
     test("should commit state successfully", () => {
@@ -69,14 +84,41 @@ describe("Phase 2: Design Review Persistence", () => {
       }
     });
 
-    test("should fail when write fails", () => {
-      mockSession.updateMeta = mock(() => undefined);
+    test("192 Phase 1: adapters WITHOUT the strict interface are unavailable (fail-closed)", () => {
+      delete mockSession.updateMetaVerified;
 
       const result = commitDesignReviewState(mockSession, testState);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.reason).toBe("write_failed");
+        expect(result.reason).toBe("unavailable");
+      }
+    });
+
+    test("192 Phase 1: shared-write failure surfaces as unavailable, never success", () => {
+      mockSession.updateMetaVerified = mock(() => ({
+        status: "unavailable" as const,
+        reason: "shared_write_failed",
+      }));
+
+      const result = commitDesignReviewState(mockSession, testState);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("unavailable");
+        expect(result.detail).toBe("shared_write_failed");
+      }
+    });
+
+    test("192 Phase 1: stale expectation (same auth/round, older revision) conflicts", () => {
+      const result = commitDesignReviewState(mockSession, testState, {
+        pipelineId: "test-pipeline",
+        stateUpdatedAt: testState.updatedAt - 10_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("conflict");
       }
     });
 
@@ -196,6 +238,10 @@ describe("Phase 2: Design Review Persistence", () => {
     let mockSession: {
       getMeta: () => SessionMeta | undefined;
       updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
+      updateMetaVerified?: (
+        patch: Partial<SessionMeta>,
+        expected: import("../../core/session-state").MetaCommitExpectation,
+      ) => import("../../types").ReliableMetaCommitResult;
     };
     let testMeta: SessionMeta;
     let testState: DesignReviewState;
@@ -237,6 +283,13 @@ describe("Phase 2: Design Review Persistence", () => {
         updateMeta: mock((patch) => {
           testMeta = { ...testMeta, ...patch };
           return testMeta;
+        }),
+        // 192 Phase 1: strict-capable writeback needs the strict interface
+        updateMetaVerified: mock((patch, expected) => {
+          const conflict = matchCommitExpectation(testMeta, expected);
+          if (conflict) return { status: "conflict" as const, reason: conflict };
+          testMeta = { ...testMeta, ...patch };
+          return { status: "persisted" as const, meta: testMeta };
         }),
       };
     });

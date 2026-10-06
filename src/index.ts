@@ -15,8 +15,10 @@ import { parseCommandArgs } from "./utils/command-args";
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
-import { setFixExecutorCompletedHandler } from "./utils/subagent-rpc";
+import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler } from "./utils/subagent-rpc";
 import { handleFixExecutorCompleted } from "./core/fix-executor-completion";
+// 192 Phase 1: DI handler for design-review operation terminal evidence
+import { handleDesignReviewOperationTerminal } from "./core/design-review/coordinator";
 
 
 // Session lifecycle and prompt injection
@@ -104,6 +106,12 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // Phase 0 (189): register fix-executor-completion handler via DI.
     // Breaks circular dependency: utils/subagent-rpc no longer imports core modules.
     setFixExecutorCompletedHandler(handleFixExecutorCompleted);
+
+    // 192 Phase 1 (task 8): register the design-review operation-terminal
+    // handler via the same DI precedent. The RPC lifecycle watcher records
+    // completion evidence for the CURRENT operation only; the child never
+    // advances stages itself — the owner settle chain re-verifies.
+    setDesignReviewTerminalHandler(handleDesignReviewOperationTerminal);
 
     // G4 (188): validate spawned subagent type against pipeline stage config.
     // subagents:created fires for Agent-tool spawns only (not RPC spawns from this plugin).

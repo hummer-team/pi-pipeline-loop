@@ -18,10 +18,18 @@
  */
 
 import crypto from "node:crypto";
-import type { PipelineConfig, SessionMeta, DesignReviewState, DesignReviewOperation } from "../../types";
-import type { SessionState } from "../session-state";
+import type {
+  PipelineConfig,
+  SessionMeta,
+  DesignReviewState,
+  DesignReviewOperation,
+  DesignReviewOperationKind,
+  DesignReviewPhase,
+} from "../../types";
+import type { SessionState, StrictCommitSession, MetaCommitExpectation } from "../session-state";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { safeWriteAuditLog } from "../../utils/auditLog";
+import { commitDesignReviewState, strictCommitMeta } from "../session-state";
 import {
   isValidTransition,
   updateDispatchState,
@@ -78,23 +86,67 @@ interface DispatchSessionLike {
 }
 
 /**
+ * Map an operation kind to the phase its dispatch moves the loop into.
+ * 192 Phase 1: develop-handoff is recorded while the loop is pass_ready, so
+ * its "running" phase is pass_ready itself (the handoff op is bound to the
+ * pass_ready commit; finalization to "finished" happens ONLY after the
+ * trusted dispatch receipt is persisted — DR192-01).
+ */
+export function kindToDispatchPhase(kind: DesignReviewOperationKind): DesignReviewPhase {
+  if (kind === "review") return "review_running";
+  if (kind === "update") return "update_running";
+  return "pass_ready";
+}
+
+/**
+ * 192 Phase 1 (F01): true ONLY when `existing` is the exact same operation
+ * the request re-issues (same kind, same round, same stage visit) AND it has
+ * not yet been confirmed dispatched with a trusted id. Anything else — a new
+ * kind, a new round, or a different visit — MUST become a new operationId.
+ * Retrying a confirmed-not-sent or intent-only operation increments attempt,
+ * never round.
+ */
+export function isConfirmedSameOperationRetry(
+  existing: DesignReviewOperation | undefined,
+  request: { kind: DesignReviewOperationKind; round: number; stageVisitId: number },
+): boolean {
+  if (!existing) return false;
+  if (existing.kind !== request.kind) return false;
+  // Older 191 operations may not carry round; when absent, fall back to
+  // requiring the same stageVisitId AND same kind only if the persisted
+  // state's round matches the operation's recorded visit context. A missing
+  // round means we cannot prove the same round → do NOT reuse (conservative).
+  if (existing.round === undefined) return false;
+  if (existing.round !== request.round) return false;
+  if (existing.stageVisitId !== request.stageVisitId) return false;
+  if (existing.dispatchState === "dispatched" || existing.dispatchState === "completed") {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Prepares a design review operation for dispatch.
  * Creates a new operation record and validates the state transition.
  *
- * Key invariants:
- * - Operation identity is bound to (authorizationId, round, stageVisitId)
- * - Retry attempts within same round share operation identity
- * - New round = new operation identity
+ * 192 Phase 1 key invariants (F01):
+ * - Identity is the tuple (authorizationId, round, kind, stageVisitId).
+ *   A new kind or a new round ALWAYS creates a new operationId.
+ * - Retry only for the exact same operation (isConfirmedSameOperationRetry):
+ *   attempt increments, round does not.
+ * - Same-millisecond visits with a different kind/round never reuse.
  *
  * @param state - Current design review state
  * @param kind - Operation kind (review or update)
- * @param stageVisitId - Stage visit ID for idempotency
- * @returns New operation or undefined if transition is invalid
+ * @param stageVisitId - Stage visit ID for the CURRENT stage visit
+ * @param inputHash - Optional operation input hash (bound into identity)
+ * @returns New/retried operation, or undefined if transition is invalid
  */
 export function prepareDesignReviewOperation(
   state: DesignReviewState,
-  kind: "review" | "update",
+  kind: DesignReviewOperationKind,
   stageVisitId: number,
+  inputHash?: string,
 ): DesignReviewOperation | undefined {
   // Validate authorization is still valid
   if (!isAuthorizationValid(state)) {
@@ -106,7 +158,7 @@ export function prepareDesignReviewOperation(
   }
 
   // Determine target phase based on operation kind
-  const targetPhase = kind === "review" ? "review_running" : "update_running";
+  const targetPhase = kindToDispatchPhase(kind);
 
   // Validate state transition
   if (!isValidTransition(state.phase, targetPhase)) {
@@ -118,58 +170,61 @@ export function prepareDesignReviewOperation(
     return undefined;
   }
 
-  // Check if there's an existing operation for this round and stage visit
   const existingOp = state.operation;
-  if (existingOp) {
-    // Same stage visit = retry, reuse operation identity
-    // Note: stageVisitId uniquely identifies the round context, so no separate round check needed
-    if (existingOp.stageVisitId === stageVisitId) {
-      // Increment attempt counter
-      const retryAttempt = (existingOp.attempt || 1) + 1;
-      safeWriteAuditLog("design_review_dispatch", {
-        action: "retry_existing_operation",
-        operationId: existingOp.operationId,
-        attempt: String(retryAttempt),
-        round: String(state.round),
-      });
-      return {
-        ...existingOp,
-        attempt: retryAttempt,
-        updatedAt: Date.now(),
-      };
-    }
 
-    // Different stage visit = new operation, old one is stale
-    if (existingOp.stageVisitId !== stageVisitId) {
-      safeWriteAuditLog("design_review_dispatch", {
-        action: "supersede_stale_operation",
-        oldOperationId: existingOp.operationId,
-        oldStageVisitId: String(existingOp.stageVisitId),
-        newStageVisitId: String(stageVisitId),
-      }, "warn");
-    }
+  // Confirmed same-operation retry: increment attempt, keep identity.
+  if (isConfirmedSameOperationRetry(existingOp, { kind, round: state.round, stageVisitId })) {
+    const retryAttempt = (existingOp!.attempt || 1) + 1;
+    safeWriteAuditLog("design_review_dispatch", {
+      action: "retry_existing_operation",
+      operationId: existingOp!.operationId,
+      attempt: String(retryAttempt),
+      round: String(state.round),
+      kind,
+    });
+    return {
+      ...existingOp!,
+      attempt: retryAttempt,
+      ...(inputHash !== undefined ? { inputHash } : {}),
+      updatedAt: Date.now(),
+    };
   }
 
-  // Create new operation
-  return createOperation(kind, stageVisitId, 1);
+  // Any other situation is a NEW operation (new kind / new round / new visit).
+  if (existingOp && (existingOp.kind !== kind || existingOp.stageVisitId !== stageVisitId)) {
+    safeWriteAuditLog("design_review_dispatch", {
+      action: "supersede_stale_operation",
+      oldOperationId: existingOp.operationId,
+      oldKind: existingOp.kind,
+      newKind: kind,
+      oldStageVisitId: String(existingOp.stageVisitId),
+      newStageVisitId: String(stageVisitId),
+    }, "warn");
+  }
+
+  // Create new operation — new operationId, attempt 1, bound round.
+  return createOperation(kind, stageVisitId, 1, inputHash, state.round);
 }
 
 /**
- * Commits design review operation state to session meta.
- * This is the "reliably save intent" step in the dispatch sequence.
+ * Commits design review operation state to session meta via the STRICT path.
+ * This is the "reliably save intent" step in the dispatch sequence: the
+ * operation (phase + record) is persisted through commitDesignReviewState —
+ * local AND shared writes with read-back verification — before any RPC.
  *
- * Key invariants:
- * - Operation state is written before RPC call
- * - If write fails, dispatch is aborted (no orphaned RPC)
- * - Operation identity is preserved across retries
+ * 192 Phase 1 (F01/F04):
+ * - Expectation is derived from the PRE-commit state (auth/round/operation/
+ *   phase/revision), so a stale concurrent callback with the same auth and
+ *   round conflicts instead of overwriting.
+ * - Adapters without the strict interface return undefined (fail-closed).
  *
- * @param session - Session with getMeta/updateMeta interface
+ * @param session - Strict-commit-capable session
  * @param operation - Operation to commit
- * @param state - Current design review state
+ * @param state - Current (pre-commit) design review state
  * @returns Updated state or undefined if commit failed
  */
 export function commitDesignReviewOperation(
-  session: DispatchSessionLike,
+  session: StrictCommitSession,
   operation: DesignReviewOperation,
   state: DesignReviewState,
 ): DesignReviewState | undefined {
@@ -181,10 +236,10 @@ export function commitDesignReviewOperation(
     return undefined;
   }
 
-  // Determine target phase
-  const targetPhase = operation.kind === "review" ? "review_running" : "update_running";
+  // Determine target phase from the operation kind (identity-aware)
+  const targetPhase = kindToDispatchPhase(operation.kind);
 
-  // Validate transition
+  // Validate transition from the CURRENT (pre-commit) phase
   if (!isValidTransition(state.phase, targetPhase)) {
     safeWriteAuditLog("design_review_dispatch", {
       reason: "invalid_transition_at_commit",
@@ -194,7 +249,7 @@ export function commitDesignReviewOperation(
     return undefined;
   }
 
-  // Update state with new operation
+  // Build the new state (same phase target but with the operation record)
   const updatedState: DesignReviewState = {
     ...state,
     phase: targetPhase,
@@ -202,25 +257,24 @@ export function commitDesignReviewOperation(
     updatedAt: Date.now(),
   };
 
-  // Write to session meta
-  const updatedMeta = session.updateMeta({
-    designReview: updatedState,
-  });
+  // Expectation against the pre-commit state; operationId may already have
+  // moved if a concurrent writer replaced it → conflict.
+  const expected: MetaCommitExpectation = {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: state.authorizationId,
+    round: state.round,
+    operationId: state.operation?.operationId ?? null,
+    phase: state.phase,
+    stateUpdatedAt: state.updatedAt,
+  };
 
-  if (!updatedMeta) {
+  const result = commitDesignReviewState(session, updatedState, expected);
+  if (!result.ok) {
     safeWriteAuditLog("design_review_dispatch", {
-      reason: "meta_write_failed",
+      reason: "operation_commit_failed",
       operationId: operation.operationId,
-    }, "error");
-    return undefined;
-  }
-
-  // Verify write succeeded by reading back
-  const verifyMeta = session.getMeta();
-  if (!verifyMeta?.designReview || verifyMeta.designReview.operation?.operationId !== operation.operationId) {
-    safeWriteAuditLog("design_review_dispatch", {
-      reason: "meta_write_verification_failed",
-      operationId: operation.operationId,
+      commitReason: result.reason,
+      ...(result.detail !== undefined ? { detail: result.detail } : {}),
     }, "error");
     return undefined;
   }
@@ -233,29 +287,37 @@ export function commitDesignReviewOperation(
     attempt: String(operation.attempt),
   });
 
-  return updatedState;
+  return result.state;
 }
 
 /**
- * Writes back RPC result to design review state.
+ * Writes back RPC result to design review state via the STRICT path.
  * This is the "writeback or conditional cleanup" step.
  *
- * Key invariants:
- * - Only writes back if operation identity matches (prevents stale writes)
- * - Clears operation on completion/failure
- * - Preserves round and authorization across retries
+ * 192 Phase 1 key invariants (F01/F04):
+ * - Only writes back if the CURRENT operation identity matches (prevents stale
+ *   writes from late callbacks of superseded operations).
+ * - "dispatched" REQUIRES a trusted agentId; a fallback send without a real id
+ *   must be recorded as evidence "unknown" (status kept pending for
+ *   verification) — never a fabricated dispatched receipt.
+ * - Round and authorization are preserved across retries.
+ * - A failed strict writeback aborts the caller: no finished, no routed
+ *   success.
  *
- * @param session - Session with getMeta/updateMeta interface
+ * @param session - Strict-commit-capable session
  * @param operationId - Operation ID to match
- * @param agentId - Agent ID if spawned successfully
+ * @param agentId - Trusted agent ID from the RPC reply (dispatched only)
  * @param status - Dispatch status (dispatched, completed, failed)
+ * @param evidence - Optional dispatch evidence; defaults trusted_id when a
+ *   real agentId is provided for "dispatched"
  * @returns Updated state or undefined if writeback failed
  */
 export function writebackDesignReviewResult(
-  session: DispatchSessionLike,
+  session: StrictCommitSession,
   operationId: string,
   agentId: string | undefined,
   status: "dispatched" | "completed" | "failed",
+  evidence?: DesignReviewOperation["dispatchEvidence"],
 ): DesignReviewState | undefined {
   const meta = session.getMeta();
   if (!meta?.designReview) {
@@ -278,9 +340,7 @@ export function writebackDesignReviewResult(
     return undefined;
   }
 
-  // Update operation dispatch state
-  let updatedState: DesignReviewState;
-
+  let resolvedEvidence = evidence;
   if (status === "dispatched") {
     if (!agentId) {
       safeWriteAuditLog("design_review_dispatch", {
@@ -289,41 +349,59 @@ export function writebackDesignReviewResult(
       }, "error");
       return undefined;
     }
+    // A trusted id from the RPC reply is the "trusted_id" evidence.
+    if (!resolvedEvidence) resolvedEvidence = "trusted_id";
+  }
 
+  // Update operation dispatch state
+  let updatedState: DesignReviewState;
+
+  if (status === "dispatched") {
     updatedState = {
       ...state,
       operation: {
         ...currentOp,
         dispatchState: "dispatched",
         agentId,
+        dispatchEvidence: resolvedEvidence ?? "trusted_id",
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
     };
   } else {
-    // completed or failed - clear operation but preserve state
+    // completed or failed - terminal evidence but preserve state for recovery
     updatedState = {
       ...state,
       operation: {
         ...currentOp,
         dispatchState: status,
         settledAt: Date.now(),
+        ...(agentId ? { agentId } : {}),
+        ...(resolvedEvidence ? { dispatchEvidence: resolvedEvidence } : {}),
         updatedAt: Date.now(),
       },
       updatedAt: Date.now(),
     };
   }
 
-  // Write to session meta
-  const updatedMeta = session.updateMeta({
-    designReview: updatedState,
-  });
-
-  if (!updatedMeta) {
+  // Strict commit with the pre-writeback expectation (single-writer revision
+  // anchor: same auth/round/operation/revision, else conflict).
+  const expected: MetaCommitExpectation = {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: state.authorizationId,
+    round: state.round,
+    operationId: currentOp.operationId,
+    phase: state.phase,
+    stateUpdatedAt: state.updatedAt,
+  };
+  const result = commitDesignReviewState(session, updatedState, expected);
+  if (!result.ok) {
     safeWriteAuditLog("design_review_dispatch", {
       reason: "writeback_failed",
       operationId,
       status,
+      commitReason: result.reason,
+      ...(result.detail !== undefined ? { detail: result.detail } : {}),
     }, "error");
     return undefined;
   }
@@ -335,7 +413,7 @@ export function writebackDesignReviewResult(
     agentId: agentId || "none",
   });
 
-  return updatedState;
+  return result.state;
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { PipelineConfig, SessionMeta, PipelineStage } from "../types";
 import type { RuntimeCtx } from "../core/runtime-ctx";
+import { matchCommitExpectation } from "../core/session-state";
 import { PROTECTED_PATHS } from "../constants";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -58,10 +59,76 @@ export function makeTestMeta(overrides?: Partial<SessionMeta>): SessionMeta {
   };
 }
 
+/**
+ * 192 Phase 1: strict-capable in-memory session fixture for design-review
+ * tests. Mirrors the production `updateMetaVerified` semantics using the
+ * SAME production expectation-comparison (matchCommitExpectation) — the
+ * fixture simulates a HEALTHY shared store (persisted read-back) and honest
+ * conflict reporting. Adapters without this interface are reported
+ * `unavailable` by the domain commit paths (fail-closed), so any test
+ * exercising strict commits must use this (or the real adapter).
+ */
+export function makeStrictSession(
+  initial: SessionMeta,
+  opts?: { appendFails?: boolean; writeFails?: boolean },
+) {
+  let meta: SessionMeta = { ...initial };
+  const session = {
+    getMeta: () => meta,
+    updateMeta: (patch: Partial<SessionMeta>) => {
+      meta = { ...meta, ...patch };
+      return meta;
+    },
+    updateMetaVerified(
+      patch: Partial<SessionMeta>,
+      expected: import("../core/session-state").MetaCommitExpectation,
+    ): import("../types").ReliableMetaCommitResult {
+      // Simulated local append failure
+      if (opts?.appendFails) {
+        return { status: "unavailable", reason: "local_append_failed" };
+      }
+      if (opts?.writeFails) {
+        return { status: "unavailable", reason: "shared_write_failed" };
+      }
+      const conflict = matchCommitExpectation(meta, expected);
+      if (conflict) {
+        return { status: "conflict", reason: conflict };
+      }
+      const merged: SessionMeta = { ...meta, ...patch };
+      meta = merged;
+      // read-back verification (healthy shared store echoes the write)
+      const readBack: SessionMeta = { ...meta };
+      meta = readBack;
+      if (patch.designReview) {
+        const want = patch.designReview;
+        const got = readBack.designReview;
+        if (
+          !got
+          || got.authorizationId !== want.authorizationId
+          || got.round !== want.round
+          || got.phase !== want.phase
+          || (want.operation?.operationId ?? undefined) !== (got.operation?.operationId ?? undefined)
+        ) {
+          return { status: "unavailable", reason: "readback_identity_mismatch" };
+        }
+      }
+      return { status: "persisted", meta: readBack };
+    },
+  };
+  return session;
+}
+
+export type StrictMockSession = ReturnType<typeof makeStrictSession>;
+
 export type MockCtx = {
   session: {
     getMeta: () => SessionMeta;
     updateMeta: (patch: Partial<SessionMeta>) => SessionMeta;
+    /** 192 Phase 1: strict-capable commit used by design-review domain paths */
+    updateMetaVerified: (
+      patch: Partial<SessionMeta>,
+      expected: import("../core/session-state").MetaCommitExpectation,
+    ) => import("../types").ReliableMetaCommitResult;
   };
   ui: {
     notify: (msg: string) => void;
@@ -126,6 +193,21 @@ export function createMockCtx(
         metadataUpdates.push(merged);
         Object.assign(meta, merged);
         return merged;
+      },
+      // 192 Phase 1: strict-capable commit with the SAME production
+      // expectation comparison; simulates a healthy shared store.
+      updateMetaVerified: (
+        patch: Partial<SessionMeta>,
+        expected: import("../core/session-state").MetaCommitExpectation,
+      ): import("../types").ReliableMetaCommitResult => {
+        const conflict = matchCommitExpectation(meta, expected);
+        if (conflict) {
+          return { status: "conflict", reason: conflict };
+        }
+        const merged = { ...meta, ...patch };
+        metadataUpdates.push(merged);
+        Object.assign(meta, merged);
+        return { status: "persisted", meta };
       },
     },
     ui: {

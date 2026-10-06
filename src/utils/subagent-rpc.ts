@@ -22,7 +22,7 @@ import { findLatestReviewReport } from "./review-conclusion";
 import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
-import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
+import type { PipelineConfig, PipelineStage, SessionMeta, SpawnOperationContext } from "../types";
 import type { FixExecutorCompletedCtx, FixExecutorCompletedHandler } from "../core/fix-executor-completion";
 
 /**
@@ -417,10 +417,59 @@ function hasSendUserMessage(pi: unknown): pi is PiWithSend {
 /**
  * Session interface for the idempotency guard.
  * When provided, spawnStageSubagent reads/writes spawnedStages in meta.
+ * 192 Phase 1: may also expose the strict commit interface — operation-aware
+ * design-review spawns REQUIRE it (fail-closed).
  */
 interface SpawnSession {
   getMeta: () => SessionMeta | undefined;
   updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
+  updateMetaVerified?: import("../core/session-state").StrictCommitSession["updateMetaVerified"];
+}
+
+// ─── Design-review operation terminal handler registry (192 Phase 1, task 8) ──
+
+/**
+ * 192 Phase 1: terminal lifecycle evidence for a design-review operation,
+ * routed to the OWNER (child sessions never finalize operations themselves).
+ */
+export interface DesignReviewTerminalEvent {
+  /** The operation this spawn was bound to */
+  operationContext: SpawnOperationContext;
+  /** Lifecycle event */
+  event: "completed" | "failed";
+  /** Trusted subagent id from the RPC reply */
+  agentId?: string;
+}
+
+export type DesignReviewTerminalHandler = (
+  pi: unknown,
+  config: PipelineConfig,
+  session: SpawnSession,
+  evt: DesignReviewTerminalEvent,
+) => Promise<void>;
+
+/**
+ * Module-level handler registered by the composition root (`index.ts`),
+ * mirroring the `setFixExecutorCompletedHandler` precedent. When null the
+ * lifecycle callback only performs conditional cleanup — no second dispatch,
+ * no fabricated completion.
+ */
+let designReviewTerminalHandler: DesignReviewTerminalHandler | null = null;
+
+/**
+ * Register the design-review operation-terminal handler. Pass null to
+ * unregister (test cleanup).
+ */
+export function setDesignReviewTerminalHandler(handler: DesignReviewTerminalHandler | null): void {
+  designReviewTerminalHandler = handler;
+}
+
+/**
+ * Test-only: peek the currently registered design-review terminal handler.
+ * @internal Exported for unit testing only
+ */
+export function __peekDesignReviewTerminalHandler(): DesignReviewTerminalHandler | null {
+  return designReviewTerminalHandler;
 }
 
 // ─── Fix-executor-completion handler registry (Phase 0 / 189 DI) ─────────────
@@ -463,6 +512,29 @@ export function __peekFixExecutorCompletedHandler(): FixExecutorCompletedHandler
 export type { FixExecutorCompletedCtx, FixExecutorCompletedHandler };
 
 /**
+ * 192 Phase 1: dispatch outcome taxonomy for operation-aware spawns.
+ * Only meaningful together with `operationContext`; ordinary spawns may leave
+ * it undefined (backward compatible).
+ */
+export type StageDispatchOutcome =
+  /** RPC returned a trusted agentId */
+  | "spawned_id"
+  /** followUp fallback delivered but no agentId exists — outcome unknown, verify */
+  | "fallback_no_id"
+  /** deferred: live same-agent twin, queued in pendingSpawns, watcher armed */
+  | "deferred"
+  /** child context: routed to owner pendingSpawns queue */
+  | "queued_owner"
+  /** provably NOT dispatched (transport rejection/unavailable) — retryable */
+  | "not_sent"
+  /** RPC timeout/ambiguous envelope — window unknown, must NOT auto re-dispatch */
+  | "unknown"
+  /** strict identity/commit check failed BEFORE any external call — zero RPC */
+  | "strict_blocked"
+  /** duplicate guard: this exact operation was already dispatched */
+  | "skipped_duplicate";
+
+/**
  * Spawns a subagent for the given stage after stage transition.
  *
  * Three-tier dispatch (mirrors clarify auto-launch pattern):
@@ -476,47 +548,106 @@ export type { FixExecutorCompletedCtx, FixExecutorCompletedHandler };
  * On success (RPC or fallback), writes the guard: spawnedStages[stage] = stageStartTime.
  * When session is not provided, the guard is skipped (backward compatible).
  *
+ * 192 Phase 1 (F01/F04) additions:
+ * - opts.exactPrompt replaces the composed generic prompt verbatim (used by
+ *   design-review update dispatch where the rendered YAML prompt is the input).
+ * - opts.description overrides the composed spawn description.
+ * - opts.operationContext binds the spawn to a design-review operation:
+ *   fresh identity is checked before any external call; the reserved guard
+ *   write must succeed strictly (otherwise ZERO RPC); the duplicate guard
+ *   compares the CURRENT operation so a same-millisecond new operation is not
+ *   swallowed by the old stamp; results carry the real agentId and an
+ *   explicit dispatchOutcome; ambiguous RPC windows do NOT fall through to a
+ *   parallel second dispatch channel.
+ *
  * @param pi - pi SDK ExtensionAPI handle
  * @param config - Pipeline configuration
  * @param stage - Target stage to spawn subagent for
  * @param meta - Current session metadata
  * @param opts - Optional UI notify handle, session for idempotency guard,
- *   extraArgs, and runtimeCtx (for sessionFile audit correlation)
- * @returns { spawned, fallback, deferred? } indicating outcome. `deferred` is
- *   true when a live same-agent child in another stage postponed the spawn.
+ *   extraArgs, runtimeCtx (for sessionFile audit correlation), exactPrompt,
+ *   description and operationContext
+ * @returns { spawned, fallback, deferred?, agentId?, dispatchOutcome? }
+ *   indicating outcome. `deferred` is true when a live same-agent child in
+ *   another stage postponed the spawn.
  */
 export async function spawnStageSubagent(
   pi: unknown,
   config: PipelineConfig,
   stage: PipelineStage,
   meta: SessionMeta,
-  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; extraArgs?: string; runtimeCtx?: unknown },
-): Promise<{ spawned: boolean; fallback: boolean; deferred?: boolean }> {
+  opts?: {
+    ui?: { notify: (msg: string) => void };
+    session?: SpawnSession;
+    extraArgs?: string;
+    runtimeCtx?: unknown;
+    /** 192 Phase 1: use this prompt verbatim instead of the composed text */
+    exactPrompt?: string;
+    /** 192 Phase 1: override the spawn description */
+    description?: string;
+    /** 192 Phase 1: design-review operation identity to bind this spawn to */
+    operationContext?: SpawnOperationContext;
+  },
+): Promise<{
+  spawned: boolean;
+  fallback: boolean;
+  deferred?: boolean;
+  /** Trusted subagent id — only set when the RPC reply carried a real id */
+  agentId?: string;
+  /** 192 Phase 1: explicit outcome taxonomy (only for operation-aware spawns) */
+  dispatchOutcome?: StageDispatchOutcome;
+}> {
   // 1. Non-spawnable stage → skip silently
   if (!isSpawnableStage(config, stage)) {
-    return { spawned: false, fallback: false };
+    return {
+      spawned: false,
+      fallback: false,
+      ...(opts?.operationContext ? { dispatchOutcome: "not_sent" as StageDispatchOutcome } : {}),
+    };
   }
 
   // 2. Idempotency guard: skip if already spawned for this visit
   if (opts?.session) {
     const freshMeta = opts.session.getMeta();
     if (freshMeta && freshMeta.spawnedStages?.[stage] === freshMeta.stageStartTime) {
-      // Phase 2 / 175 (R1Q5A/R2Q5A): check if there's a reserved in-flight spawn (<60s)
-      const existingSpawn = freshMeta.activeSpawns?.[stage];
-      if (existingSpawn?.reserved && (Date.now() - existingSpawn.startedAt) < 60_000) {
-        await safeWriteAuditLog("stage_spawn_skipped", {
-          pipelineId: meta.pipelineId,
-          stage,
-          reason: "spawn_in_flight",
-        });
+      // 192 Phase 1: operation-aware duplicate check. With an
+      // operationContext the guard only fires for the SAME operation id —
+      // a new operation at the same millisecond/visit must not be swallowed
+      // by the old stamp (the time gate keeps protecting ordinary paths).
+      if (opts.operationContext) {
+        const existingEntry = freshMeta.activeSpawns?.[stage];
+        const sameOperation =
+          existingEntry?.operationContext?.operationId === opts.operationContext.operationId;
+        if (sameOperation) {
+          await safeWriteAuditLog("stage_spawn_skipped", {
+            pipelineId: meta.pipelineId,
+            stage,
+            reason: "duplicate_operation_spawn_guarded",
+            operationId: opts.operationContext.operationId,
+          });
+          return { spawned: false, fallback: false, dispatchOutcome: "skipped_duplicate" };
+        }
+        // Different (or untracked) operation for the same visit stamp: the
+        // time-based guard does not apply — continue to dispatch for the
+        // CURRENT operation. Ordinary path (no operationContext) below.
       } else {
-        await safeWriteAuditLog("stage_spawn_skipped", {
-          pipelineId: meta.pipelineId,
-          stage,
-          reason: "duplicate_spawn_guarded",
-        });
+        // Phase 2 / 175 (R1Q5A/R2Q5A): check if there's a reserved in-flight spawn (<60s)
+        const existingSpawn = freshMeta.activeSpawns?.[stage];
+        if (existingSpawn?.reserved && (Date.now() - existingSpawn.startedAt) < 60_000) {
+          await safeWriteAuditLog("stage_spawn_skipped", {
+            pipelineId: meta.pipelineId,
+            stage,
+            reason: "spawn_in_flight",
+          });
+        } else {
+          await safeWriteAuditLog("stage_spawn_skipped", {
+            pipelineId: meta.pipelineId,
+            stage,
+            reason: "duplicate_spawn_guarded",
+          });
+        }
+        return { spawned: false, fallback: false };
       }
-      return { spawned: false, fallback: false };
     }
   }
 
@@ -531,7 +662,11 @@ export async function spawnStageSubagent(
         stage,
         reason: "confirm_gate_deferred",
       });
-      return { spawned: false, fallback: false };
+      return {
+        spawned: false,
+        fallback: false,
+        ...(opts.operationContext ? { dispatchOutcome: "not_sent" as StageDispatchOutcome } : {}),
+      };
     }
   }
 
@@ -544,46 +679,58 @@ export async function spawnStageSubagent(
       stage,
       reason: "agentName_unresolvable",
     });
-    return { spawned: false, fallback: false };
+    return {
+      spawned: false,
+      fallback: false,
+      ...(opts?.operationContext ? { dispatchOutcome: "not_sent" as StageDispatchOutcome } : {}),
+    };
   }
 
   // 3b. Phase 2 / 177 (D4③): child/clone contexts must not spawn in place.
   // Enqueue for the owner session, which consumes pendingSpawns on agent_settled.
   if (opts?.session && isChildRuntimeCtx(opts.runtimeCtx)) {
-    enqueuePendingSpawn(opts.session, stage, agentName, opts.extraArgs);
+    enqueuePendingSpawn(opts.session, stage, agentName, opts.extraArgs, opts.operationContext);
     await safeWriteAuditLog("stage_spawn_routed_to_owner", {
       pipelineId: meta.pipelineId,
       stage,
       agentName,
       ...(extractSessionFile(opts.runtimeCtx) ? { sessionFile: extractSessionFile(opts.runtimeCtx)! } : {}),
     });
-    return { spawned: false, fallback: false };
+    return {
+      spawned: false,
+      fallback: false,
+      ...(opts?.operationContext ? { dispatchOutcome: "queued_owner" as StageDispatchOutcome } : {}),
+    };
   }
 
   // 3c. Phase 2 / 179 (G3): wait-and-settle pre-check.
   // If a same-agent subagent in ANOTHER stage is still live, defer this spawn
   // instead of creating a cross-stage twin.
   if (await maybeDeferSpawnForLiveTwin(pi, config, stage, agentName, meta, opts)) {
-    return { spawned: false, fallback: false, deferred: true };
+    return {
+      spawned: false,
+      fallback: false,
+      deferred: true,
+      ...(opts?.operationContext ? { dispatchOutcome: "deferred" as StageDispatchOutcome } : {}),
+    };
   }
 
   // Phase 1 (169): spawn prompt includes requirementDoc pointer for context passing
   const reqDocHint = meta.requirementDoc ?? "(unset)";
   // Phase 2 / 177 (D4⑥): sessionFile for audit correlation (171 precedent).
   const sessionFile = extractSessionFile(opts?.runtimeCtx);
-  let prompt = `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}. Requirement doc: ${reqDocHint} — read it first (contains clarification conclusions)`;
-  // Phase 3 (171) High B: append extraArgs (User focus) when provided by caller
-  if (opts?.extraArgs) {
+  // 192 Phase 1: exactPrompt wins verbatim (design-review update dispatch must
+  // send exactly the rendered configuration prompt, nothing composed).
+  let prompt = opts?.exactPrompt !== undefined
+    ? opts.exactPrompt
+    : `Begin the ${stage} stage work now. Pipeline: ${meta.pipelineId ?? ""}. Requirement doc: ${reqDocHint} — read it first (contains clarification conclusions)`;
+  if (opts?.exactPrompt === undefined && opts?.extraArgs) {
+    // Phase 3 (171) High B: append extraArgs (User focus) when provided by caller
     prompt += opts.extraArgs;
   }
-  // Phase 7 (172) G1: description for spawn RPC.
-  // Note: clarify stage description derivation happens in pipeline-start.ts
-  // (maybeAutoLaunchClarify → spawnClarifySubagent with explicit description).
-  // This path only handles spawnable stages (plan/develop/review/fix) via
-  // spawnStageSubagent — clarify is NOT in isSpawnableStage (L436 early return).
-  // G8 (188): fix stage uses review report path as description for TUI clarity.
-  let description = `${stage}: ${meta.requirementDoc ?? ""}`;
-  if (stage === "fix") {
+  // Phase 7 (188) G8 / 192 Phase 1: description override support.
+  let description = opts?.description ?? `${stage}: ${meta.requirementDoc ?? ""}`;
+  if (opts?.description === undefined && stage === "fix") {
     const reviewReport = await findLatestReviewReport(config.projectRoot);
     if (reviewReport) {
       description = reviewReport;
@@ -606,10 +753,17 @@ export async function spawnStageSubagent(
     // (sendUserMessage) has no agentId — writing an entry without agentId would
     // hang in activeSpawns up to 30min (no lifecycle listener on fallback) and
     // cause false-positive blocks via the time-based check.
+    // 192 Phase 1: operationContext rides along so cleanup/callbacks can be
+    // bound to the operation identity.
     if (subagentId) {
       patch.activeSpawns = {
         ...(currentMeta.activeSpawns ?? {}),
-        [stage]: { agentName, agentId: subagentId, startedAt: Date.now() },
+        [stage]: {
+          agentName,
+          agentId: subagentId,
+          startedAt: Date.now(),
+          ...(opts.operationContext ? { operationContext: opts.operationContext } : {}),
+        },
       };
     }
     opts.session.updateMeta(patch);
@@ -618,23 +772,120 @@ export async function spawnStageSubagent(
   /** Helper to clear activeSpawns entry on lifecycle settle (delegates to shared utility) */
   const clearActiveSpawn = (): void => {
     if (!opts?.session) return;
-    clearActiveSpawnRecord(opts.session, stage);
+    // 192 Phase 1: conditional cleanup — when bound to an operation/agent id,
+    // only delete the entry that actually matches. A late callback from a
+    // superseded operation must not wipe the CURRENT spawn record.
+    clearActiveSpawnRecord(
+      opts.session,
+      stage,
+      opts.operationContext || subagentIdForCleanup
+        ? {
+            ...(opts.operationContext ? { operationId: opts.operationContext.operationId } : {}),
+            ...(subagentIdForCleanup ? { agentId: subagentIdForCleanup } : {}),
+          }
+        : undefined,
+    );
   };
 
-  // Phase 2 / 175 (R1Q5A/R2Q5A): write reserved placeholder before ping.
-  // This allows concurrent spawn attempts to detect in-flight spawns (<60s).
+  /** Agent id captured on the RPC success path (scoped for the cleanup closure) */
+  let subagentIdForCleanup: string | undefined;
+
+  /** Helper to write the reserved placeholder (strict when operation-bound) */
   const writeReserved = (): void => {
     if (!opts?.session) return;
     const currentMeta = opts.session.getMeta();
     if (!currentMeta) return;
     // Only write if no existing entry (avoid overwriting a live spawn)
     if (currentMeta.activeSpawns?.[stage]?.agentId) return;
+    const entry = {
+      agentName,
+      startedAt: Date.now(),
+      reserved: true,
+      ...(opts.operationContext ? { operationContext: opts.operationContext } : {}),
+    };
     opts.session.updateMeta({
       activeSpawns: {
         ...(currentMeta.activeSpawns ?? {}),
-        [stage]: { agentName, startedAt: Date.now(), reserved: true },
+        [stage]: entry,
       },
     });
+  };
+
+  /**
+   * 192 Phase 1: strict reserved write for operation-bound spawns.
+   * Requires the session's strict interface, a fresh identity match against
+   * the CURRENT design-review operation, and a persisted commit — otherwise
+   * NO external call may happen (fail-closed before RPC).
+   */
+  const writeReservedStrict = (): boolean => {
+    const oc = opts?.operationContext;
+    const session = opts?.session;
+    if (!oc || !session) return true;
+    if (typeof session.updateMetaVerified !== "function") {
+      void safeWriteAuditLog("stage_spawn_strict_blocked", {
+        pipelineId: oc.pipelineId,
+        stage,
+        operationId: oc.operationId,
+        reason: "adapter_lacks_strict_interface",
+      }, "error");
+      return false;
+    }
+    // Fresh identity check: current design-review operation must still be the
+    // operation this spawn belongs to (same auth/round/operation).
+    const fresh = session.getMeta();
+    const dr = fresh?.designReview;
+    const op = dr?.operation;
+    if (
+      !fresh
+      || fresh.pipelineId !== oc.pipelineId
+      || !dr
+      || !op
+      || op.operationId !== oc.operationId
+      || op.kind !== oc.kind
+      || dr.authorizationId !== oc.authorizationId
+      || dr.round !== oc.round
+    ) {
+      void safeWriteAuditLog("stage_spawn_strict_blocked", {
+        pipelineId: oc.pipelineId,
+        stage,
+        operationId: oc.operationId,
+        reason: "stale_operation_identity",
+        currentOperationId: op?.operationId ?? "none",
+        currentRound: String(dr?.round ?? "none"),
+      }, "error");
+      return false;
+    }
+    const res = session.updateMetaVerified(
+      {
+        activeSpawns: {
+          ...(fresh.activeSpawns ?? {}),
+          [stage]: {
+            agentName,
+            startedAt: Date.now(),
+            reserved: true,
+            operationContext: oc,
+          },
+        },
+      },
+      {
+        pipelineId: oc.pipelineId,
+        authorizationId: dr.authorizationId,
+        round: dr.round,
+        operationId: op.operationId,
+        stateUpdatedAt: dr.updatedAt,
+      },
+    );
+    if (res.status !== "persisted") {
+      void safeWriteAuditLog("stage_spawn_strict_blocked", {
+        pipelineId: oc.pipelineId,
+        stage,
+        operationId: oc.operationId,
+        reason: `reserved_commit_${res.status}`,
+        detail: res.reason,
+      }, "error");
+      return false;
+    }
+    return true;
   };
 
   /** Helper to clear reserved flag (on any failure path) */
@@ -654,8 +905,16 @@ export async function spawnStageSubagent(
   // The latch is set by `subagents:ready`; when it is false we skip the ping
   // entirely and fall back immediately (zero dead wait).
   if (hasEventBus(pi) && isSubagentsReady()) {
-    // Write reserved before spawn to mark in-flight spawn
-    writeReserved();
+    // 192 Phase 1: operation-bound spawns use the STRICT reserved write —
+    // a failed strict commit means ZERO RPC calls happened.
+    if (opts?.operationContext) {
+      if (!writeReservedStrict()) {
+        return { spawned: false, fallback: false, dispatchOutcome: "strict_blocked" };
+      }
+    } else {
+      // Phase 2 / 175: write reserved before spawn to mark in-flight spawn
+      writeReserved();
+    }
     const spawnResult = await spawnClarifySubagent(pi, {
       agentName,
       prompt,
@@ -663,12 +922,14 @@ export async function spawnStageSubagent(
     });
 
     if (spawnResult.ok) {
+      subagentIdForCleanup = spawnResult.id;
       await safeWriteAuditLog("stage_spawn_rpc", {
         pipelineId: meta.pipelineId,
         stage,
         agentName,
         subagentId: spawnResult.id,
         ...(sessionFile ? { sessionFile } : {}),
+        ...(opts?.operationContext ? { operationId: opts.operationContext.operationId } : {}),
       });
       // Watch lifecycle (self-unregistering) with timeout guard to prevent leak.
       // On settle: clear activeSpawns entry so duplicate-spawn guard does not misfire.
@@ -686,10 +947,29 @@ export async function spawnStageSubagent(
             });
           }
         }
+        // 192 Phase 1 (task 8): design-review operation terminal evidence.
+        // The OWNER-routed handler records completion for the CURRENT
+        // operation only (fresh identity check inside the handler); children
+        // never advance stages here.
+        if (opts?.operationContext && designReviewTerminalHandler) {
+          await designReviewTerminalHandler(pi, config, opts.session ?? {
+            getMeta: () => undefined,
+            updateMeta: () => undefined,
+          }, {
+            operationContext: opts.operationContext,
+            event,
+            agentId: spawnResult.id,
+          });
+        }
         cleanup();
       }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
       await writeGuard(spawnResult.id);
-      return { spawned: true, fallback: false };
+      return {
+        spawned: true,
+        fallback: false,
+        agentId: spawnResult.id,
+        ...(opts?.operationContext ? { dispatchOutcome: "spawned_id" as StageDispatchOutcome } : {}),
+      };
     }
     // Spawn rejected/failed → log failure reason before falling back
     await safeWriteAuditLog("stage_spawn_rpc_failed", {
@@ -701,6 +981,26 @@ export async function spawnStageSubagent(
     }, "warn");
     // Phase 2 / 175: clear reserved on spawn failure
     clearReserved();
+    // 192 Phase 1: for operation-bound spawns an AMBIGUOUS RPC window must
+    // not silently fall through to a parallel second dispatch channel.
+    // - "spawn_timeout"/"empty_reply"/"unexpected_envelope"/"missing_id_in_reply":
+    //   the child may or may not exist → outcome "unknown", verify on resume.
+    // - explicit rejection (success:false, e.g. "spawn_rejected"): provably
+    //   not dispatched → fall through to the fallback channel is allowed.
+    if (opts?.operationContext) {
+      const ambiguous = ["spawn_timeout", "empty_reply", "unexpected_envelope", "missing_id_in_reply"].includes(
+        spawnResult.error,
+      );
+      if (ambiguous) {
+        await safeWriteAuditLog("stage_spawn_dispatch_unknown", {
+          pipelineId: meta.pipelineId,
+          stage,
+          operationId: opts.operationContext.operationId,
+          error: spawnResult.error,
+        }, "warn");
+        return { spawned: false, fallback: false, dispatchOutcome: "unknown" };
+      }
+    }
     // Fall through to fallback
   }
 
@@ -718,13 +1018,20 @@ export async function spawnStageSubagent(
         ...(sessionFile ? { sessionFile } : {}),
       });
       await writeGuard();
-      return { spawned: true, fallback: true };
+      // 192 Phase 1 (task 5): the followUp channel HAS no agentId — record
+      // "fallback_no_id". Callers must treat this as an unknown outcome for
+      // operation-bound dispatches and NEVER fabricate a trusted id.
+      return {
+        spawned: true,
+        fallback: true,
+        ...(opts?.operationContext ? { dispatchOutcome: "fallback_no_id" as StageDispatchOutcome } : {}),
+      };
     } catch {
       // sendUserMessage failure is non-fatal; fall through to notify
     }
   }
 
-  // Final fallback: just notify
+  // Final fallback: just notify — provably nothing was dispatched (retryable)
   opts?.ui?.notify?.(`Next: run @${agentName} manually for ${stage} stage.`);
   await safeWriteAuditLog("stage_spawn_fallback", {
     pipelineId: meta.pipelineId,
@@ -733,7 +1040,11 @@ export async function spawnStageSubagent(
     notify_only: "true",
     ...(sessionFile ? { sessionFile } : {}),
   });
-  return { spawned: false, fallback: false };
+  return {
+    spawned: false,
+    fallback: false,
+    ...(opts?.operationContext ? { dispatchOutcome: "not_sent" as StageDispatchOutcome } : {}),
+  };
 }
 
 // ─── Owner-routed pending spawns (Phase 2 / 177 D4③/D4④) ────────────────────
@@ -775,30 +1086,41 @@ export function isChildRuntimeCtx(runtimeCtx: unknown): boolean {
  * Child/clone sessions have no owner `pi` handle or UI, so they must not spawn
  * in place. The owner consumes `pendingSpawns[stage]` on `agent_settled`.
  *
- * Idempotent: re-enqueuing the same stage preserves `requestedAt`/`attempts`.
+ * Idempotent: re-enqueuing the SAME operation preserves `requestedAt`/`attempts`.
+ * 192 Phase 1 (task 7): when an `operationContext` is provided the entry
+ * carries the same identity as the dispatch request; a re-enqueue with a
+ * DIFFERENT operation replaces the stale request (exact prompt/source travel
+ * with the entry via `extraArgs`).
  *
  * @param session - Session handle exposing meta read/write
  * @param stage - Stage to spawn
  * @param agentName - Resolved agent mention for the stage
  * @param extraArgs - 189 Bug 1: Optional breakpoint prompt for transient re-spawn
+ * @param operationContext - 192 Phase 1: design-review operation identity
  */
 export function enqueuePendingSpawn(
   session: SpawnSession,
   stage: PipelineStage,
   agentName: string,
   extraArgs?: string,
+  operationContext?: SpawnOperationContext,
 ): void {
   const meta = session.getMeta();
   if (!meta) return;
   const existing = meta.pendingSpawns?.[stage];
+  const sameOperation =
+    !!existing?.operationContext &&
+    !!operationContext &&
+    existing.operationContext.operationId === operationContext.operationId;
   session.updateMeta({
     pendingSpawns: {
       ...(meta.pendingSpawns ?? {}),
       [stage]: {
         agentName,
-        requestedAt: existing?.requestedAt ?? Date.now(),
-        attempts: existing?.attempts ?? 0,
+        requestedAt: sameOperation ? existing!.requestedAt : Date.now(),
+        attempts: sameOperation ? existing!.attempts : 0,
         extraArgs: extraArgs ?? existing?.extraArgs,
+        ...(operationContext ? { operationContext } : {}),
       },
     },
   });
@@ -807,12 +1129,28 @@ export function enqueuePendingSpawn(
 /**
  * Phase 2 / 177 (D4③): Removes a consumed pendingSpawns entry.
  *
+ * 192 Phase 1 (task 7): when `expected` is provided the entry is only deleted
+ * if its operationContext still matches — a late callback must NOT delete a
+ * queue entry that a NEWER operation has replaced.
+ *
  * @param session - Session handle exposing meta read/write
  * @param stage - Stage entry to clear
+ * @param expected - Optional identity that must match the entry
  */
-export function clearPendingSpawn(session: SpawnSession, stage: PipelineStage): void {
+export function clearPendingSpawn(
+  session: SpawnSession,
+  stage: PipelineStage,
+  expected?: { operationId?: string },
+): void {
   const meta = session.getMeta();
   if (!meta?.pendingSpawns?.[stage]) return;
+  const entry = meta.pendingSpawns[stage]!;
+  if (expected?.operationId !== undefined) {
+    if (entry.operationContext?.operationId !== expected.operationId) {
+      // The queue slot now belongs to a DIFFERENT operation — leave it intact.
+      return;
+    }
+  }
   const next = { ...meta.pendingSpawns };
   delete next[stage];
   session.updateMeta({ pendingSpawns: next });
@@ -857,12 +1195,42 @@ export async function consumePendingSpawns(
   const consumed: PipelineStage[] = [];
   const entries = Object.entries(pending) as [
     PipelineStage,
-    { agentName: string; requestedAt: number; attempts: number; extraArgs?: string },
+    { agentName: string; requestedAt: number; attempts: number; extraArgs?: string; operationContext?: SpawnOperationContext },
   ][];
 
   for (const [stage, entry] of entries) {
     const fresh = opts.session.getMeta();
     if (!fresh?.pendingSpawns?.[stage]) continue;
+    const freshEntry = fresh.pendingSpawns[stage]!;
+
+    // 192 Phase 1 (task 7): operation-bound queue entries are consumed ONLY
+    // when the CURRENT design-review operation matches the entry identity
+    // (authorization/round/kind/operationId). A stale entry cannot trigger a
+    // spawn for a new operation, and its cleanup must not delete a newer one.
+    if (freshEntry.operationContext) {
+      const oc = freshEntry.operationContext;
+      const dr = fresh.designReview;
+      const op = dr?.operation;
+      const identityMatches =
+        !!dr
+        && !!op
+        && op.operationId === oc.operationId
+        && op.kind === oc.kind
+        && dr.authorizationId === oc.authorizationId
+        && dr.round === oc.round
+        && fresh.pipelineId === oc.pipelineId;
+      if (!identityMatches) {
+        clearPendingSpawn(opts.session, stage, { operationId: oc.operationId });
+        await safeWriteAuditLog("pending_spawn_discarded", {
+          stage,
+          reason: "stale_operation_identity",
+          operationId: oc.operationId,
+          currentOperationId: op?.operationId ?? "none",
+          requestedAt: String(freshEntry.requestedAt),
+        });
+        continue;
+      }
+    }
 
     // 187: stage-consistency guard — discard any pending entry whose stage does not
     // match the current pipeline stage. This is the direct-cause fix for the
@@ -878,7 +1246,7 @@ export async function consumePendingSpawns(
     // a legitimate deferred spawn. All other callers (agent-settled consume) must keep
     // the guard to discard stale cross-run / cross-stage residue (187_Bug.md Q3 方案 B).
     if (!skipStageGuard && stage !== currentStage) {
-      clearPendingSpawn(opts.session, stage);
+      clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
       await safeWriteAuditLog("pending_spawn_discarded", {
         stage,
         currentStage,
@@ -891,13 +1259,13 @@ export async function consumePendingSpawns(
 
     // Already spawned for this visit → nothing to do; drop the pending entry.
     if (fresh.spawnedStages?.[stage] === fresh.stageStartTime) {
-      clearPendingSpawn(opts.session, stage);
+      clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
       continue;
     }
 
     // Re-delivery bound reached → stop to avoid a settle loop.
     if (entry.attempts >= PENDING_SPAWN_MAX_ATTEMPTS) {
-      clearPendingSpawn(opts.session, stage);
+      clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
       continue;
     }
 
@@ -913,7 +1281,8 @@ export async function consumePendingSpawns(
           ui: opts.ui,
           session: opts.session,
           runtimeCtx: opts.runtimeCtx,
-          extraArgs: entry.extraArgs,
+          extraArgs: freshEntry.extraArgs,
+          ...(freshEntry.operationContext ? { operationContext: freshEntry.operationContext } : {}),
         });
 
     if (result.deferred) {
@@ -935,7 +1304,7 @@ export async function consumePendingSpawns(
           clearActiveSpawnRecord(opts.session, stage);
         }
       }
-      clearPendingSpawn(opts.session, stage);
+      clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
       consumed.push(stage);
     } else {
       // Record the failed attempt so the next settle does not re-deliver forever.
@@ -1012,7 +1381,13 @@ async function maybeDeferSpawnForLiveTwin(
   stage: PipelineStage,
   agentName: string,
   meta: SessionMeta,
-  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
+  opts?: {
+    ui?: { notify: (msg: string) => void };
+    session?: SpawnSession;
+    runtimeCtx?: unknown;
+    extraArgs?: string;
+    operationContext?: SpawnOperationContext;
+  },
 ): Promise<boolean> {
   if (!opts?.session) return false;
 
@@ -1062,7 +1437,9 @@ async function maybeDeferSpawnForLiveTwin(
   if (activeDeferredSpawns.has(key)) {
     return true;
   }
-  enqueuePendingSpawn(opts.session, stage, agentName);
+  // 192 Phase 1: the queued entry carries the same operation identity and
+  // exact prompt/source as the dispatch request (task 7).
+  enqueuePendingSpawn(opts.session, stage, agentName, opts.extraArgs, opts.operationContext);
   const cleanup = scheduleDeferredSpawn(pi, config, stage, agentName, hit, opts);
   activeDeferredSpawns.set(key, cleanup);
   await safeWriteAuditLog("stage_spawn_deferred", {
@@ -1093,7 +1470,13 @@ function scheduleDeferredSpawn(
   stage: PipelineStage,
   agentName: string,
   evidence: SpawnEvidenceHit,
-  opts: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
+  opts: {
+    ui?: { notify: (msg: string) => void };
+    session?: SpawnSession;
+    runtimeCtx?: unknown;
+    extraArgs?: string;
+    operationContext?: SpawnOperationContext;
+  },
 ): () => void {
   const session = opts.session;
   if (!session) return () => { /* noop */ };
@@ -1159,7 +1542,11 @@ function scheduleDeferredSpawn(
     if (!fresh?.pendingSpawns?.[stage]) return;
     // Escalate to manual. The wait is not a spawn failure → do not consume an
     // attempt; clear the pending entry so it cannot loop.
-    clearPendingSpawn(session, stage);
+    // 192 Phase 1: only clear OUR operation's entry — a newer operation may
+    // have replaced the queue slot, and stale escalation must not delete it.
+    clearPendingSpawn(session, stage, opts.operationContext
+      ? { operationId: opts.operationContext.operationId }
+      : undefined);
     const probeStatus = evidence.agentId ? probeAgentState(evidence.agentId) : "unknown";
     opts.ui?.notify?.(
       `Deferred spawn for "${stage}" timed out after ${timeoutMs}ms ` +

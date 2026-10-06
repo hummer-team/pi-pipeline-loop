@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PipelineConfig, SessionMeta, DesignReviewState } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+import { matchCommitExpectation } from "../../core/session-state";
 import { computeHash, createInitialState } from "../../core/design-review/state";
 import type { CoordinatorContext, CoordinatorResult } from "../../core/design-review/coordinator";
 import { coordinateDesignReview } from "../../core/design-review/coordinator";
@@ -69,6 +70,16 @@ describe("design-review-coordinator routing", () => {
       updateMeta: (patch: Partial<SessionMeta>) => {
         currentMeta = { ...currentMeta, ...patch };
         return currentMeta;
+      },
+      // 192 Phase 1: strict-capable commit (healthy shared store semantics)
+      updateMetaVerified: (
+        patch: Partial<SessionMeta>,
+        expected: import("../../core/session-state").MetaCommitExpectation,
+      ): import("../../types").ReliableMetaCommitResult => {
+        const conflict = matchCommitExpectation(currentMeta, expected);
+        if (conflict) return { status: "conflict", reason: conflict };
+        currentMeta = { ...currentMeta, ...patch };
+        return { status: "persisted", meta: currentMeta };
       },
     };
   }
@@ -154,7 +165,18 @@ None
         designReview: { ...drState, phase: "review_running", round: 1 },
         loopCycleCount: 0,
       });
-      const ctx = createCoordinatorCtx(meta);
+      // 192 Phase 1 (DR192-01): "advanced" is only returned after the
+      // develop-handoff got a TRUSTED dispatch receipt (real agentId) that
+      // was reliably persisted, and the finished commit succeeded. The test
+      // stand-in therefore returns a verifiable agentId.
+      const trustedHandoff = async () => ({
+        spawned: true,
+        fallback: false,
+        deferred: false,
+        agentId: "test-develop-agent-001",
+        dispatchOutcome: "spawned_id" as const,
+      });
+      const ctx = createCoordinatorCtx(meta, trustedHandoff);
 
       const result = await coordinateDesignReview(ctx, meta, "settle");
 
@@ -165,6 +187,12 @@ None
           expect(result.toStage).toBe("develop");
         }
       }
+      // finished + trusted handoff receipt must both be persisted
+      const after = ctx.session.getMeta();
+      expect(after?.designReview?.phase).toBe("finished");
+      expect(after?.designReview?.operation?.kind).toBe("develop-handoff");
+      expect(after?.designReview?.operation?.dispatchEvidence).toBe("trusted_id");
+      expect(after?.currentStage).toBe("develop");
     });
 
     test("FAIL verdict routes to plan", async () => {
@@ -448,6 +476,11 @@ None
         spawned: true,
         fallback: false,
         deferred: false,
+        // 192 Phase 1: the test RPC stand-in returns a verifiable agentId
+        // (a bare spawned=true without id is an UNKNOWable outcome and must
+        // not be recorded as a trusted dispatch receipt).
+        agentId: "test-agent-routed-001",
+        dispatchOutcome: "spawned_id" as const,
       });
       const ctx = createCoordinatorCtx(meta, successSpawnOverride);
 
