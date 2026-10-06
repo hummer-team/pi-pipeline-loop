@@ -278,7 +278,7 @@ stage_executor_plan: |
   This stage uses `{subagent_type}` (lightweight advance mode).
   **Scheduling**: User @`{subagent_type}` in chat; main thread receives `nextStage: develop` and calls stage_advance.
   **Context**: {context_arg}
-  **Checkpoint**: Do NOT call `stage_advance` until the plan document is complete and user-confirmed.
+  **Checkpoint**: Do NOT call `stage_advance` until the plan document is complete and user-confirmed. This checkpoint applies to ORDINARY plan mode ONLY: in authorized design-review update mode (the `design_review_update_prompt` section governs), do NOT wait for or fabricate user confirmation — the plugin re-reviews the updated plan automatically.
   {active_spawn_note}
 
 stage_executor_design-review: |

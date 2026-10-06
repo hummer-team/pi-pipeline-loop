@@ -55,3 +55,19 @@ disable-model-invocation: true
 ### 7. Checkpoint discipline (crash-resilient output)
 - Create the deliverable file early (skeleton with section headers), then append content in ≤2KB chunks.
 - Never accumulate the full result for a single final write — at any crash point, the sunk cost is at most the last unwritten chunk.
+
+### 8. Authorized design-review update mode (distinct from ordinary plan mode)
+When the plugin dispatches plan work with a `design_review_update_prompt` section
+(YAML-configured; built-in default when the key is absent), you are in
+AUTHORIZED UPDATE mode, not fresh-planning mode:
+- Read the referenced review report; modify ONLY the existing plan document.
+- Do NOT modify source code or the requirement document; do NOT add
+  clarification rounds or fabricate user confirmation.
+- Produce the exact `## Design Review Update` section with the four
+  association fields (Report / Round / Operation / Baseline Hash) and one
+  disposition row (`fixed` / `deferred` / `rejected`, or the owner sentinels
+  `new-decision` / `unfixable`) per report issue, each with justification.
+- Record concrete change points under `### Changes Made` for the next review
+  round; fix QUALITY is judged by the next design-review, not by this step.
+The plugin verifies the section structurally and re-reviews automatically —
+no manual confirm checkpoint applies in this mode.

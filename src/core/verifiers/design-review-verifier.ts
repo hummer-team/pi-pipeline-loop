@@ -235,7 +235,9 @@ export function verifyDesignReviewReportSnapshot(
   }
 
   if (expectation.operationId !== undefined) {
-    const opField = findField(lines, "operation");
+    // Accept the canonical **operation** label and the shipped-template alias
+    // **operationId** (template/report contract parity, 192 Phase 5).
+    const opField = findField(lines, "operation") ?? findField(lines, "operationId");
     if (opField === undefined) {
       failures.push("missing **operation** identity field");
     } else if (opField !== expectation.operationId) {
@@ -244,7 +246,8 @@ export function verifyDesignReviewReportSnapshot(
   }
 
   if (expectation.inputHash !== undefined) {
-    const hashField = findField(lines, "input hash") ?? findField(lines, "input\\s*hash") ?? findField(lines, "输入版本") ?? findField(lines, "计划\\s*hash");
+    // Canonical "**input hash**" plus shipped-template alias "**baselinePlanHash**"
+    const hashField = findField(lines, "input hash") ?? findField(lines, "input\\s*hash") ?? findField(lines, "输入版本") ?? findField(lines, "计划\\s*hash") ?? findField(lines, "baselinePlanHash");
     if (hashField === undefined) {
       failures.push("missing **input hash** identity field");
     } else if (hashField !== expectation.inputHash) {

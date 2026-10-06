@@ -12,6 +12,7 @@
 
 ## Issues
 
+<!-- When there are NO issues, write exactly `None` as the only entry. -->
 {issues}
 
 ## Recommendations

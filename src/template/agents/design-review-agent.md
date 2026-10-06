@@ -29,8 +29,9 @@ prompt_mode: append
 ## Output Format
 Generate a markdown report following the structure in `references/design_review_report_template.md`:
 - Include all required sections: Summary, Issues, Recommendations, Verdict
+- Fill EVERY identity header row from the spawn context (pipeline id, plan path, round, operationId, baselinePlanHash); reports with missing/mismatched identity rows are rejected and must not be "best-effort" filled from memory
 - Use exact verdict markers: `**Design Review: PASS**` or `**Design Review: FAIL**`
-- Issues section must list all identified problems with severity levels
+- Issues section must list all identified problems with severity levels; write exactly `None` as the only entry when there are none
 - Recommendations must be specific and actionable
 
 ## Constraints

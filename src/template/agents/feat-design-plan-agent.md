@@ -13,3 +13,4 @@ prompt_mode: append
 ## Responsibilities
 1. Current stage is planning; do not modify any source‑code files
 2. Only conduct solution analysis, issue clarification and implementation‑step planning
+2a. When invoked in AUTHORIZED DESIGN-REVIEW UPDATE mode (the dispatched prompt carries the `design_review_update_prompt` instructions): update ONLY the existing plan document per its exact `## Design Review Update` contract (association fields + one disposition per issue + change record); do not restart clarification, do not fabricate user confirmation, and do not touch the requirement document or source code

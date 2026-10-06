@@ -33,10 +33,18 @@ Validate the plan document against requirements and ensure it's ready for implem
 
 ### Report Structure
 Follow the template in `references/design_review_report_template.md`:
+- Identity header rows (ALL required, exact labels): `**pipeline**`, `**plan**`,
+  `**round**`, `**operationId**`, `**baselinePlanHash**` — they bind the report to
+  the current review operation and plan version; a report that misses or differs
+  on any of them is rejected by the plugin verifier
 - Summary section
-- Issues section (with severity levels)
+- Issues section (`## Issues`): one entry per problem; when there are NO issues
+  write exactly `None` as the single entry (partial phrases do not count)
 - Recommendations section
-- Verdict section (with exact markers)
+- Verdict section (with exact markers): `**Design Review: PASS**` or
+  `**Design Review: FAIL**`
+- Valid Issues entries take precedence: a PASS verdict alongside non-empty
+  Issues is FAILed by the verifier
 
 ### Tools
 - read: Read plan and requirements documents
