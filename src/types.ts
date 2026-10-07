@@ -14,6 +14,7 @@ import type {
   SmartPlanRevisionDecision,
   HumanDecision,
   DesignReviewApprovalBasis,
+  DesignReviewRecheckMarker,
 } from "./core/design-review/decision-types";
 export type {
   SmartPlanRevisionAction,
@@ -27,6 +28,8 @@ export type {
   DesignReviewActorRole,
   DesignReviewActorEvidence,
   DesignReviewActorInput,
+  DesignReviewInteractionSource,
+  DesignReviewRecheckMarker,
 } from "./core/design-review/decision-types";
 
 /**
@@ -637,6 +640,15 @@ export interface SessionMeta {
    * All fields are backward-compatible (optional) to preserve existing meta.
    */
   designReview?: DesignReviewState;
+  /**
+   * 193 Phase 3 (task 6): RECHECK barrier marker left when an upstream
+   * rollback clears an unfinished design-review authorization. While this
+   * marker belongs to the current pipeline and no active designReview state
+   * exists, ordinary forward release (advance/verify/handoff/generic
+   * decisions) toward develop/review/fix/awaiting_human/completed is refused
+   * until a NEW review authorization atomically clears it.
+   */
+  designReviewRecheck?: DesignReviewRecheckMarker;
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────

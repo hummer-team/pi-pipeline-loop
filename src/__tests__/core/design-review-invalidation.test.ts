@@ -57,11 +57,35 @@ describe("Phase 4-2 (191): Authorization invalidation", () => {
   });
 
   describe("executeDecision", () => {
-    it("skip: invalidates design-review authorization", async () => {
+    // 193 Phase 3 (task 5): while the design-review loop is ACTIVE (not
+    // legitimately ended), the generic `skip` decision is REFUSED at the
+    // executor barrier — it used to drop the authorization and jump the
+    // stage chain, bypassing the human decision contract. Upstream exits
+    // (rollback/abort) and re-review remain the legitimate escapes.
+    it("skip: REFUSED while the design-review loop is active (authorization kept)", async () => {
       const meta = makeTestMeta({
         flowState: "blocked",
         currentStage: "design-review",
         designReview: makeDesignReviewState(),
+      });
+      const ctx = makeCtx(meta);
+
+      expect(meta.designReview).toBeDefined();
+
+      const result = await executeDecision(ctx, meta, "skip", config);
+
+      expect(result.success).toBe(false);
+      // Authorization untouched — a refused decision has zero side effects
+      expect(meta.designReview).toBeDefined();
+    });
+
+    // 193 Phase 3 (task 5): a FINISHED loop is no longer domain-owned, so the
+    // pre-193 semantics (skip clears the finished authorization) are restored.
+    it("skip: invalidates authorization when the loop legitimately finished", async () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        currentStage: "design-review",
+        designReview: makeDesignReviewState({ phase: "finished" }),
       });
       const ctx = makeCtx(meta);
 

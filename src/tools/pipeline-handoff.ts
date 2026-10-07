@@ -6,7 +6,7 @@
  */
 
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types";
-import { writeAuditLog } from "../utils/auditLog";
+import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { freezeAndPrompt } from "../core/flow-state";
 import { checkStageSummaryHash } from "../utils/summary-hash";
@@ -19,8 +19,12 @@ import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { maybeHandleConfirmGate, formatConfirmGatePendingCopy } from "../core/stage-advancer";
 import { detectSessionRole } from "../core/session-role";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
+// 193 Phase 3 (task 1): shared safe coordinator-context builder
+import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "../core/design-review/entry-result";
+// 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
+import { checkRecheckForwardRelease } from "../core/design-review/flow-decision-guard";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -74,12 +78,17 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
 
       // Phase 3 (191): Design-review coordinator delegation
       // When design-review is active, delegate routing decisions to coordinator
-      const coordinatorCtx = {
+      // 193 Phase 3 (task 1): shared safe builder (select + actor evidence +
+      // provenance). Children keep waiting for the owner — the coordinator
+      // fails closed on non-owner evidence, never a guessed authority.
+      const coordinatorCtx = createDesignReviewRuntimeContext({
         config,
         session: ctx.session,
-        ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+        interactionSource: "tool",
+        roleCtx: ctx,
+        rawUi: ctx.ui,
         pi: ctx.pi,
-      };
+      });
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "handoff");
       if (coordinatorResult.status === "handled") {
         // 193 Phase 0 (task 5): ONE honest consumer. A child subagent defers to
@@ -104,6 +113,23 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       const currentStage = meta.currentStage;
       const nextStage = args.nextStage as PipelineStage;
       const note = (args.note as string) ?? "";
+
+      // 193 Phase 3 (task 6): RECHECK barrier — after an upstream rollback
+      // cleared the design-review state but left the recheck marker armed, a
+      // handoff toward develop/review/fix/awaiting_human/completed is a
+      // forward release past the owed re-review: refuse it BEFORE any other
+      // precondition (the active domain itself was already intercepted by
+      // the coordinator above).
+      const recheck = checkRecheckForwardRelease(ctx.session.getMeta() ?? meta, nextStage);
+      if (recheck.blocked) {
+        await safeWriteAuditLog("design_review_recheck_forward_release_blocked", {
+          pipelineId: meta.pipelineId ?? "unknown",
+          fromStage: currentStage,
+          nextStage,
+          entry: "pipeline_handoff",
+        }, "warn");
+        return { success: false, error: recheck.reason, message: recheck.reason };
+      }
 
       // Precondition: current stage summary must be validated
       const currentSummary = meta.summaries[currentStage];

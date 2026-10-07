@@ -40,6 +40,9 @@ import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
 // Round 5 (N-3): coordinator for design-review dispatch
 import { coordinateDesignReview } from "../core/design-review/coordinator";
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "../core/design-review/state";
+// 193 Phase 3 (tasks 1/2): shared safe coordinator builder + single consumer
+import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
+import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/design-review/entry-result";
 
 /**
  * Checks that all 5 active stages have agentPath configured.
@@ -309,6 +312,9 @@ function buildRestartMeta(
     // Phase 4 (191): clear designReview authorization on restart — new pipeline must not
     // inherit stale authorization from previous run (prevents authorization reuse attacks)
     designReview: undefined,
+    // 193 Phase 3 (task 6): a restart is a NEW pipeline — drop any armed
+    // RECHECK marker from the old run together with the authorization.
+    designReviewRecheck: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -386,6 +392,9 @@ export function buildStartMeta(
     // Phase 4 (191): clear designReview authorization on start — new pipeline must not
     // inherit stale authorization from previous run (prevents authorization reuse attacks)
     designReview: undefined,
+    // 193 Phase 3 (task 6): a fresh pipeline never inherits an armed RECHECK
+    // marker from a previous run.
+    designReviewRecheck: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -621,15 +630,39 @@ export async function dispatchAfterResume(
       && classifyDesignReviewFlow(freshMetaD).kind !== "ordinary"
       && isDevelopHandoffOperation(freshMetaD)
     ) {
-      const takeoverCtx: any = {
+      // 193 Phase 3 (task 1): shared safe builder (receiver-preserving UI
+      // binding + honest role evidence + provenance "resume").
+      const takeoverCtx = createDesignReviewRuntimeContext({
         config,
         session: ctx.session,
-        ui: ui ? { notify: (msg: string) => ui.notify(ctx, msg) } : undefined,
+        interactionSource: "resume",
+        roleCtx: ctx,
+        rawUi: ctx.ui,
+        pipelineUi: ui,
+        pipelineUiCtx: ctx,
         pi: ctx.pi,
         spawnOverride: ctx.spawnOverride,
-      };
+      });
       try {
         const takeoverResult = await coordinateDesignReview(takeoverCtx, freshMetaD, "advance");
+        if (takeoverResult.status === "handled" && takeoverResult.action === "verify_failed") {
+          // 193 Phase 3 (task 2): ONE shared honest consumption at the
+          // command entry (tool method: proactive guidance, no wake), then
+          // an IMMEDIATE return — never generic fallthrough.
+          const freshAfter = ctx.session?.getMeta?.() ?? freshMetaD;
+          const outcome = await consumeDesignReviewResult({
+            result: takeoverResult,
+            meta: freshAfter,
+            entry: "command",
+            ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx } as DesignReviewConsumeCtx,
+            config,
+            ui,
+            runtimeCtx: ctx,
+          });
+          if (outcome.message) {
+            ui.notify(ctx, outcome.message);
+          }
+        }
         await safeWriteAuditLog("design_review_handoff_takeover_resume", {
           pipelineId: freshMetaD.pipelineId,
           action: takeoverResult.status === "handled" ? takeoverResult.action : takeoverResult.status,
@@ -659,15 +692,21 @@ export async function dispatchAfterResume(
       return;
     }
 
-    // Build coordinator context with same shape as stage-advancer Auto Review Plan handler
-    const coordinatorCtx: any = {
+    // Build coordinator context — 193 Phase 3 (task 1): shared safe builder
+    // (same shape everywhere: receiver-preserving UI, actor evidence,
+    // provenance "resume").
+    const coordinatorCtx = createDesignReviewRuntimeContext({
       config,
       session: ctx.session,
-      ui: ui ? { notify: (msg: string) => ui.notify(ctx, msg) } : undefined,
+      interactionSource: "resume",
+      roleCtx: ctx,
+      rawUi: ctx.ui,
+      pipelineUi: ui,
+      pipelineUiCtx: ctx,
       pi: ctx.pi,
       // Pass through spawnOverride test hook if provided (for testability)
       spawnOverride: ctx.spawnOverride,
-    };
+    });
 
     try {
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, freshMeta, "advance");
@@ -705,6 +744,33 @@ export async function dispatchAfterResume(
           trigger: "dispatch_after_resume",
           action: "frozen",
         });
+      } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "verify_failed") {
+        // 193 Phase 3 (task 2): dispatchAfterResume consumes the obtained
+        // `verify_failed` through the ONE shared honest consumer (tool
+        // method: format/identity/template guidance shown proactively, one
+        // budget attempt, NO model wake) and RETURNS immediately — never a
+        // followUp send, never the generic dispatch fallthrough.
+        const freshAfter = ctx.session?.getMeta?.() ?? freshMeta;
+        const outcome = await consumeDesignReviewResult({
+          result: coordinatorResult,
+          meta: freshAfter,
+          entry: "command",
+          ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx } as DesignReviewConsumeCtx,
+          config,
+          ui,
+          runtimeCtx: ctx,
+        });
+        if (outcome.message) {
+          ui.notify(ctx, outcome.message);
+        }
+        await safeWriteAuditLog("design_review_coordinator_dispatch", {
+          stage,
+          pipelineId: meta.pipelineId,
+          trigger: "dispatch_after_resume",
+          action: "verify_failed",
+          failureRecorded: String(outcome.failureRecorded),
+        });
+        return;
       } else if (coordinatorResult.status === "handled") {
         // Other handled actions: advanced
         await safeWriteAuditLog("design_review_coordinator_dispatch", {

@@ -23,6 +23,7 @@ import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { designReviewAuthorisationGate } from "./design-review/authorization";
+import { guardGenericFlowDecision } from "./design-review/flow-decision-guard";
 import { strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { isAuthorizationValid } from "./design-review/state";
 
@@ -194,6 +195,31 @@ export async function executeDecision(
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
 
+  // 193 Phase 3 (task 5): SINGLE executor-level barrier — consulted BEFORE
+  // any state touch (invalidate / updateMeta / onStageChanged) and against
+  // the AUTHORITATIVE re-read. The first menu, a re-prompt, shortcut keys,
+  // replay and --force-resume all funnel through this one guard, so no entry
+  // can smuggle a skip/forward-jump past an unfinished design-review loop —
+  // and a stale menu snapshot cannot override fresher shared state.
+  const authoritative = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+  const guardVerdict = guardGenericFlowDecision({
+    decision,
+    meta: authoritative,
+    config,
+    ...(opts?.targetStage !== undefined ? { targetStage: opts.targetStage } : {}),
+  });
+  if (!guardVerdict.ok) {
+    await safeWriteAuditLog("design_review_flow_decision_guard", {
+      pipelineId: authoritative.pipelineId ?? "unknown",
+      stage: authoritative.currentStage,
+      decision,
+      ...(opts?.targetStage !== undefined ? { targetStage: opts.targetStage } : {}),
+      code: guardVerdict.code,
+      ...(opts?.source !== undefined ? { source: opts.source } : {}),
+    }, "warn");
+    return { success: false, message: guardVerdict.message };
+  }
+
   switch (decision) {
     case "resume": {
       const toStage = meta.currentStage === "awaiting_human"
@@ -304,7 +330,10 @@ export async function executeDecision(
       }
 
       // Phase 4 (191): invalidate design-review authorization on rollback
-      await invalidateDesignReviewAuthorization(ctx, "decision_rollback");
+      // 193 Phase 3 (task 6): rollback is an upstream exit — the same strict
+      // transaction leaves the RECHECK marker armed; forward release stays
+      // refused until a NEW review authorization takes over and clears it.
+      await invalidateDesignReviewAuthorization(ctx, "decision_rollback", { leaveRecheck: true });
 
       const toStage: PipelineStage = meta.previousStage ?? "clarify";
       const prevStage = meta.currentStage;
@@ -387,6 +416,9 @@ export async function executeDecision(
         pendingSpawns: {},
         spawnedStages: undefined,
         activeSpawns: undefined,
+        // 193 Phase 3 (task 6): a truly NEW pipeline never inherits an old
+        // RECHECK marker (the marker additionally binds to its pipelineId).
+        designReviewRecheck: undefined,
         // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
 
@@ -500,7 +532,9 @@ export async function executeDecision(
           // silently-dropped write.
           const authCommit = strictCommitMeta(
             ctx.session,
-            { designReview: gateResult.state },
+            // 193 Phase 3 (task 6): a NEW review authorization takes over the
+            // loop — the recheck barrier clears in the SAME atomic commit.
+            { designReview: gateResult.state, designReviewRecheck: undefined },
             expectedFromCurrent(refreshedMeta),
           );
           if (authCommit.status !== "persisted") {
@@ -532,7 +566,19 @@ export async function executeDecision(
       } else {
         // Phase 4 (191): invalidate design-review authorization when choosing a non-design-review stage.
         // Choosing any other stage clears stale authorization to prevent reuse attacks.
-        await invalidateDesignReviewAuthorization(ctx, "decision_choose_stage");
+        // 193 Phase 3 (task 6): a jump to an UPSTREAM stage (before design-review)
+        // is an upstream rollback with the loop UNFINISHED — the SAME strict
+        // transaction that clears the authorization arms the RECHECK barrier so
+        // no ordinary forward release can bypass the owed re-review. Any other
+        // target keeps the plain clear (marker dropped too).
+        const upstreamTarget =
+          CANONICAL_STAGE_ORDER.indexOf(target) !== -1 &&
+          CANONICAL_STAGE_ORDER.indexOf(target) < CANONICAL_STAGE_ORDER.indexOf("design-review");
+        await invalidateDesignReviewAuthorization(
+          ctx,
+          "decision_choose_stage",
+          upstreamTarget ? { leaveRecheck: true } : undefined,
+        );
       }
 
       const frozenStage = meta.currentStage;
@@ -659,10 +705,17 @@ export async function executeDecision(
  *
  * @param ctx - FlowStateCtx with session access
  * @param reason - Machine-readable reason for audit (e.g., "user_quit", "session_shutdown")
+ * @param opts - 193 Phase 3 (task 6): `leaveRecheck` ARM the RECHECK barrier —
+ *   the marker is written in the SAME exclusive strict transaction that clears
+ *   the authorization (never a separate clear-then-write step), so an upstream
+ *   rollback can never leave a half-state that releases develop/review/fix
+ *   forward. Without it, any existing marker is cleared too (abort/quit/new
+ *   runs are explicit exits; old markers never survive into a new pipeline).
  */
 export async function invalidateDesignReviewAuthorization(
   ctx: FlowStateCtx,
   reason: string,
+  opts?: { leaveRecheck?: boolean },
 ): Promise<void> {
   const meta = ctx.session.getMeta();
   if (!meta?.designReview) {
@@ -672,6 +725,22 @@ export async function invalidateDesignReviewAuthorization(
   const authorizationId = meta.designReview.authorizationId;
   const phase = meta.designReview.phase;
 
+  // Build the clear patch for ONE strict commit: either arm the recheck
+  // marker from the state being dropped (upstream rollback), or clear both
+  // the authorization and any stale marker (explicit exits).
+  const clearPatch = (base: SessionMeta): Partial<SessionMeta> => {
+    if (opts?.leaveRecheck && base.designReview) {
+      return {
+        designReview: undefined,
+        designReviewRecheck: {
+          pipelineId: base.pipelineId ?? "unknown",
+          planDoc: base.designReview.planDoc,
+        },
+      };
+    }
+    return { designReview: undefined, designReviewRecheck: undefined };
+  };
+
   // 193 Phase 2 (task 2): an authorization CLEAR is a protected-field patch
   // and must go through the exclusive strict commit with an expectation —
   // never a plain whole-object overwrite that could race a newer shared
@@ -680,7 +749,7 @@ export async function invalidateDesignReviewAuthorization(
   // write (existing fallback, no new authority).
   const attemptClear = (base: SessionMeta): "persisted" | "retry" | "legacy" => {
     const expected = expectedFromCurrent(base);
-    const res = strictCommitMeta(ctx.session, { designReview: undefined }, expected);
+    const res = strictCommitMeta(ctx.session, clearPatch(base), expected);
     if (res.status === "persisted") return "persisted";
     if (res.status === "conflict") return "retry";
     if (res.reason === "adapter_lacks_strict_interface") return "legacy";
@@ -705,9 +774,7 @@ export async function invalidateDesignReviewAuthorization(
     }
   }
   if (outcome === "legacy") {
-    ctx.session.updateMeta({
-      designReview: undefined,
-    });
+    ctx.session.updateMeta(clearPatch(meta));
   }
 
   await safeWriteAuditLog("design_review_authorization_invalidated", {
@@ -716,6 +783,8 @@ export async function invalidateDesignReviewAuthorization(
     authorizationId,
     phase,
     reason,
+    // 193 Phase 3 (task 6): honest barrier bookkeeping for audits.
+    recheck: opts?.leaveRecheck ? "armed" : "cleared",
   });
 }
 

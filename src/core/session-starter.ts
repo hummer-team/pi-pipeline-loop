@@ -30,7 +30,10 @@ import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe
 import { dispatchAfterResume } from "../commands/pipeline-start";
 // Phase 4 (191): design-review recovery on session start/reload
 import { coordinateDesignReview, type CoordinatorResult } from "./design-review/coordinator";
-import { isAuthorizationValid } from "./design-review/state";
+import { classifyDesignReviewFlow } from "./design-review/state";
+// 193 Phase 3 (tasks 1/3): shared safe builder + single honest consumer at startup
+import { createDesignReviewRuntimeContext } from "./design-review/runtime-context";
+import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "./design-review/entry-result";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -430,16 +433,39 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           }
         }
 
-        // Phase 4 (191): design-review recovery on session start/reload
-        // If the pipeline has a design-review state with valid authorization,
-        // delegate to coordinator for recovery before other resume logic.
-        if (meta.designReview && isAuthorizationValid(meta.designReview)) {
-          const coordCtx = {
+        // Phase 4 (191): design-review recovery on session start/reload.
+        // 193 Phase 3 (task 3): startup delegates through the shared safe
+        // builder with provenance "startup" — it NEVER re-presents a decision
+        // menu (only an explicit resume does), verifies a running report as
+        // before, consumes a obtained `verify_failed` through the shared
+        // tool-method consumer (ONE budget attempt, no automatic wake, the
+        // corrective template is shown proactively) and then RETURNS; a
+        // decision-pending/drift pause is read-only early-return so the
+        // stale_startup abort below can never clobber a human-owned state.
+        const drStartup = classifyDesignReviewFlow(meta);
+        if (drStartup.kind === "blocked") {
+          // Feature present but identity invalid → owner takeover pending.
+          // Startup neither resumes ordinary logic nor aborts a domain run.
+          await writeAuditLog("design_review_blocked_takeover", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            reason: drStartup.reason ?? "identity_incomplete",
+            trigger: "session_start",
+          }, "warn");
+          ui.notify(ctx, `Design-review loop identity incomplete — awaiting owner takeover (run /pipeline-resume).`);
+          return;
+        }
+        if (drStartup.kind === "authorized") {
+          const coordCtx = createDesignReviewRuntimeContext({
             config,
             session: ctx.session,
-            ui: { notify: (msg: string) => ui.notify(ctx, msg), transition: (ctx as any).ui?.transition },
+            interactionSource: "startup",
+            roleCtx: ctx,
+            rawUi: (ctx as any).ui,
+            pipelineUi: ui,
+            pipelineUiCtx: ctx,
             pi: (ctx as any).pi,
-          };
+          });
           const coordResult: CoordinatorResult = await coordinateDesignReview(coordCtx, meta, "settle");
           if (coordResult.status === "handled") {
             syncStageStatusBar(ui, ctx);
@@ -447,9 +473,50 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
               ui.notify(ctx, `Design-review recovered on session start: ${coordResult.action} to "${coordResult.toStage}".`);
               return;
             }
-            if (coordResult.action === "pending" || coordResult.action === "frozen") {
-              // Notify but continue to other recovery logic
+            if (coordResult.action === "verify_failed") {
+              // ONE shared honest consumption (entry "command" = tool method:
+              // never wakes the model; guidance shown proactively). Then an
+              // IMMEDIATE return — never stale_startup abort / ordinary
+              // recovery on a domain-consumed failure.
+              const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+              const outcome = await consumeDesignReviewResult({
+                result: coordResult,
+                meta: freshMeta,
+                entry: "command",
+                ctx: {
+                  session: ctx.session,
+                  ui: (ctx as any).ui,
+                  pi: (ctx as any).pi,
+                  _ctx: (ctx as any)._ctx,
+                } as DesignReviewConsumeCtx,
+                config,
+                ui,
+                runtimeCtx: ctx,
+              });
+              if (outcome.message) {
+                ui.notify(ctx, outcome.message);
+              }
+              return;
+            }
+            if (coordResult.action === "pending") {
               ui.notify(ctx, `Design-review recovery: ${coordResult.reason}`);
+              const pausedDr = ((ctx.session.getMeta() as SessionMeta | undefined) ?? meta).designReview;
+              if (pausedDr && pausedDr.phase === "paused") {
+                // Read-only pause (decision pending / drift park): no verify,
+                // no menu, and the stale_startup abort below MUST NOT fire.
+                return;
+              }
+              // Other pending reasons keep the historical continue semantics.
+            } else if (coordResult.action === "frozen") {
+              // Notify but continue to other recovery logic (frozen states are
+              // not "running", so the stale_startup gate below cannot abort them).
+              ui.notify(ctx, `Design-review recovery: ${coordResult.reason}`);
+            } else {
+              // Fail-closed honesty: a handled-but-unrecognized action must
+              // never fall through to ordinary startup recovery (the union is
+              // exhaustive — defensive branch for future actions).
+              ui.notify(ctx, "Design-review recovery: unrecognized handled action.");
+              return;
             }
           }
           // If not-applicable, continue with normal session-start logic

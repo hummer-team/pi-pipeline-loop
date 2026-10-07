@@ -15,6 +15,8 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
 import { isDormant } from "../core/dormancy";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
+// 193 Phase 3 (task 1): shared safe coordinator-context builder
+import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "../core/design-review/entry-result";
 
@@ -95,12 +97,17 @@ export function createPipelineVerify(
 
       // Phase 3 (191): Design-review coordinator delegation
       // When design-review is active, delegate routing decisions to coordinator
-      const coordinatorCtx = {
+      // 193 Phase 3 (task 1): shared safe builder — now carries the raw select
+      // control and honest role evidence (the old literal omitted both, so a
+      // tool entry could never present a decision even when eligible).
+      const coordinatorCtx = createDesignReviewRuntimeContext({
         config,
         session: sessionCtx.session,
-        ui: sessionCtx.ui ? { notify: (msg: string) => { sessionCtx.ui?.notify?.(msg); } } : undefined,
+        interactionSource: "tool",
+        roleCtx: ctx,
+        rawUi: sessionCtx.ui,
         pi: (sessionCtx as any).pi,
-      };
+      });
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "verify");
       if (coordinatorResult.status === "handled") {
         // 193 Phase 0 (task 5): ONE honest consumer. `verify_failed` records

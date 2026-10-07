@@ -75,6 +75,7 @@ import {
 } from "./develop-transition";
 import type {
   DesignReviewActorInput,
+  DesignReviewInteractionSource,
   HumanDecision,
   HumanDecisionReviewIdentity,
 } from "./decision-types";
@@ -135,6 +136,13 @@ export interface CoordinatorContext {
    * conservatively — anything but a verified non-child owner stays pending.
    */
   actor?: DesignReviewActorInput;
+  /**
+   * 193 Phase 3 (tasks 1/4): interaction provenance assigned by the PLUGIN
+   * ENTRY (never a model tool argument). Only "resume" may re-present a
+   * pending decision menu; all other sources keep the pause read-only.
+   * Absent = treated as "auto" (the most conservative interactive policy).
+   */
+  interactionSource?: DesignReviewInteractionSource;
   pi?: {
     sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void;
   };
@@ -1211,14 +1219,32 @@ async function handleHumanDecisionRequest(
     reportHash: outcome.reportHash,
   });
 
+  return await presentHumanDecisionForPendingState(ctx, createCommit.meta, pendingDr, pending);
+}
+
+/**
+ * 193 Phase 3 (task 4): ONE shared present-menu-and-act flow over an ALREADY
+ * PERSISTED pending decision. Used by the creation path (right after the
+ * pending commit) and by an EXPLICIT resume entry re-presenting a pending
+ * pause. Eligibility, single-flight, snapshot revalidation (before AND after
+ * the menu) and the decision-pinned strict choice commit are identical in
+ * both cases — a stale/drifted snapshot can never be acted on, and any
+ * non-affirmative outcome keeps the decision pending with ZERO side effects.
+ */
+async function presentHumanDecisionForPendingState(
+  ctx: CoordinatorContext,
+  baseMeta: SessionMeta,
+  drState: DesignReviewState,
+  decision: HumanDecision,
+): Promise<CoordinatorResult> {
   // ── interaction eligibility (task 8): verified non-child owner only ──────
-  const ownerFile = pendingDr.ownerSessionFile ?? pending.ownerSessionFile;
+  const ownerFile = drState.ownerSessionFile ?? decision.ownerSessionFile;
   const evidence = resolveDesignReviewActorEvidence(ctx.actor, ownerFile);
   const select = ctx.ui?.select;
   if (evidence.role !== "owner") {
     await safeWriteAuditLog("design_review_coordinator", {
       action: "decision_menu_skipped",
-      decisionId: pending.decisionId,
+      decisionId: decision.decisionId,
       role: evidence.role,
       source: evidence.source,
       reason: evidence.reason ?? "role not verified",
@@ -1228,7 +1254,7 @@ async function handleHumanDecisionRequest(
   if (typeof select !== "function") {
     await safeWriteAuditLog("design_review_coordinator", {
       action: "decision_menu_skipped",
-      decisionId: pending.decisionId,
+      decisionId: decision.decisionId,
       role: "owner",
       source: "absent",
       reason: "no select control available",
@@ -1236,25 +1262,25 @@ async function handleHumanDecisionRequest(
     return { status: "handled", action: "pending", reason: "decision_pending" };
   }
   // In-process single-flight: never two overlapping menus for one decision.
-  if (!beginHumanDecisionMenu(pending.decisionId)) {
+  if (!beginHumanDecisionMenu(decision.decisionId)) {
     return { status: "handled", action: "pending", reason: "decision_menu_in_flight" };
   }
   try {
     // Re-check the snapshot THROUGH the shared engine before presenting.
-    const before = await revalidateHumanDecisionSnapshot(ctx, createCommit.meta, pending);
+    const before = await revalidateHumanDecisionSnapshot(ctx, baseMeta, decision);
     if (!before.ok) {
       return await parkHumanDecisionDrift(
-        ctx, createCommit.meta, pendingDr, pending, "pending", before.reason, "before_menu",
+        ctx, baseMeta, drState, decision, "pending", before.reason, "before_menu",
       );
     }
     // ONE menu presentation.
-    const choice = await presentHumanDecisionMenu(select, ctx.ui?.notify, pending);
+    const choice = await presentHumanDecisionMenu(select, ctx.ui?.notify, decision);
     if (!choice) {
       // Cancel / unknown / exception: stay pending. Zero visit/retry/RPC and
       // NO automatic re-popup — an explicit resume re-opens it (Phase 3).
       await safeWriteAuditLog("design_review_coordinator", {
         action: "decision_menu_cancelled",
-        decisionId: pending.decisionId,
+        decisionId: decision.decisionId,
         round: String(drState.round),
       });
       return { status: "handled", action: "pending", reason: "decision_pending" };
@@ -1268,12 +1294,12 @@ async function handleHumanDecisionRequest(
       || !afterDr
       || afterDr.phase !== "paused"
       || afterDr.pauseReason !== "decision-pending"
-      || afterDr.decision?.decisionId !== pending.decisionId
+      || afterDr.decision?.decisionId !== decision.decisionId
       || afterDr.decision.state !== "pending"
     ) {
       await safeWriteAuditLog("design_review_coordinator", {
         action: "decision_state_changed_after_menu",
-        decisionId: pending.decisionId,
+        decisionId: decision.decisionId,
         currentDecisionId: afterDr?.decision?.decisionId ?? "none",
         currentDecisionState: afterDr?.decision?.state ?? "none",
       }, "warn");
@@ -1298,13 +1324,13 @@ async function handleHumanDecisionRequest(
       operationId: afterDr.operation?.operationId ?? null,
       phase: "paused",
       stateUpdatedAt: afterDr.updatedAt,
-      decisionId: pending.decisionId,
+      decisionId: decision.decisionId,
       decisionState: "pending",
     });
     if (chosenCommit.status !== "persisted") {
       await safeWriteAuditLog("design_review_coordinator", {
         action: "decision_choice_commit_failed",
-        decisionId: pending.decisionId,
+        decisionId: decision.decisionId,
         choice,
         status: chosenCommit.status,
         reason: chosenCommit.reason,
@@ -1317,7 +1343,7 @@ async function handleHumanDecisionRequest(
     }
     await safeWriteAuditLog("design_review_coordinator", {
       action: "decision_choice_persisted",
-      decisionId: pending.decisionId,
+      decisionId: decision.decisionId,
       choice,
       round: String(afterDr.round),
       operationId: afterDr.operation?.operationId ?? "none",
@@ -1333,7 +1359,7 @@ async function handleHumanDecisionRequest(
       ctx, chosenCommit.meta, chosenCommit.meta.designReview!, persistedDecision,
     );
   } finally {
-    endHumanDecisionMenu(pending.decisionId);
+    endHumanDecisionMenu(decision.decisionId);
   }
 }
 
@@ -1503,6 +1529,16 @@ async function handleDecisionPending(
     return { status: "handled", action: "pending", reason: "decision_record_missing" };
   }
   if (decision.state === "pending") {
+    // 193 Phase 3 (task 4): an EXPLICIT resume (/pipeline-resume, source
+    // assigned by the entry via runtime-context — never a model parameter)
+    // re-presents the menu through the SAME shared present-and-act flow:
+    // eligibility, single-flight, pre/post-menu revalidation and the
+    // decision-pinned strict choice commit. Every other source (ordinary
+    // settle, tools, startup) stays a read-only wait — no popup, no
+    // re-verification, no budget.
+    if (ctx.interactionSource === "resume") {
+      return await presentHumanDecisionForPendingState(ctx, meta, drState, decision);
+    }
     // Waiting notice only (task 9): no re-verification, no popup, no budget.
     const throttleKey = `${meta.pipelineId ?? "unknown"}:decision_wait`;
     if (shouldEmitWithinWindow(throttleKey, 5000)) {

@@ -137,3 +137,31 @@ export interface DesignReviewActorInput {
   isChild: boolean;
   sessionFile?: string;
 }
+
+/**
+ * 193 Phase 3 (task 1): which entry produced a coordinator interaction.
+ * Assigned by the PLUGIN ENTRIES only (never a model tool argument):
+ * - "auto"    — hooks / automatic advance (agent-settled, stage-advancer auto);
+ * - "tool"    — model-invoked tools (stage_advance, pipeline_verify, pipeline_handoff);
+ * - "resume"  — explicit human commands (/pipeline-resume, /pipeline-start re-dispatch);
+ * - "startup" — session_start recovery (session-starter).
+ * Only "resume" may re-present a pending decision menu (task 4); every other
+ * source keeps the pending pause read-only.
+ */
+export type DesignReviewInteractionSource = "auto" | "tool" | "resume" | "startup";
+
+/**
+ * 193 Phase 3 (task 6): the RECHECK barrier left behind when an upstream
+ * rollback clears an unfinished design-review authorization. Written in the
+ * SAME strict transaction that clears `designReview` (never a separate step),
+ * and cleared atomically when a NEW review authorization is created. While
+ * the marker belongs to the CURRENT pipeline and no active design-review
+ * state exists, every ordinary forward release toward develop/review/fix/
+ * awaiting_human/completed is refused — the loop must be re-reviewed.
+ */
+export interface DesignReviewRecheckMarker {
+  /** Pipeline the barrier was set for (old markers never cross pipelines) */
+  pipelineId: string;
+  /** Plan document that must be re-reviewed before any forward release */
+  planDoc: string;
+}

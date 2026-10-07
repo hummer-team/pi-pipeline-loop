@@ -43,6 +43,8 @@ import type { SessionMeta as AgentSettledSessionMeta } from "../types";
 import { coordinateDesignReview } from "./design-review/coordinator";
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "./design-review/entry-result";
+// 193 Phase 3 (task 1): ONE safe builder for coordinator ctx at every entry
+import { createDesignReviewRuntimeContext } from "./design-review/runtime-context";
 // 192 Phase 3: flow classification for the shared verification wiring (K02)
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "./design-review/state";
 
@@ -351,27 +353,16 @@ export function createAgentSettled(
             });
             return;
           }
-          const coordinatorCtx = {
+          const coordinatorCtx = createDesignReviewRuntimeContext({
             config,
             session: ctx.session,
-            ui: ctx.ui ? {
-              notify: (msg: string) => { ctx.ui?.notify?.(msg); },
-              // 193 Phase 2 (task 7): the human decision menu control —
-              // absence keeps any pending decision unpresented (never a
-              // guessed human choice).
-              select: typeof ctx.ui.select === "function"
-                ? (title: string, options: readonly string[]): Promise<string | undefined> =>
-                    ctx.ui!.select!(title, [...options])
-                : undefined,
-            } : undefined,
-            // 193 Phase 2 (task 8): role evidence for decision interaction
-            // (conservative resolution happens inside the coordinator).
-            actor: (() => {
-              const r = detectSessionRole(ctx);
-              return { isChild: r.isChild, sessionFile: r.sessionFile || undefined };
-            })(),
+            // 193 Phase 3 (task 1): UI/actor assembly lives in ONE builder —
+            // receiver-preserving notify/select binding + role evidence.
+            interactionSource: "auto",
+            roleCtx: ctx,
+            rawUi: ctx.ui,
             pi: ctx.pi,
-          };
+          });
           const runningPhase = drFlow.state?.phase === "review_running" || drFlow.state?.phase === "update_running";
           let vrForCoordinator: Awaited<ReturnType<typeof runVerification>> | undefined;
           if (runningPhase) {
@@ -428,8 +419,15 @@ export function createAgentSettled(
           // not-applicable (identity released/terminal) → continue ordinary path
         }
       } catch (err) {
-        // Fail-open at the hook boundary: an unexpected wiring error must not
-        // kill the ordinary settle; domain safety relies on fail-closed commits.
+        // 193 Phase 3 (task 3): the error is audited against the taken-over
+        // domain first; then the ownership of the CURRENT authoritative
+        // state decides the boundary:
+        // - domain still owns the flow (active/blocked design-review loop):
+        //   FAIL CLOSED — fall through to the ordinary settle could advance
+        //   or re-verify stages the loop owes, so the handler RETURNS.
+        // - no domain involvement: keep the historical fail-open boundary
+        //   (an unexpected wiring error must not kill ordinary settles;
+        //   frozen decisions for other features stay unchanged).
         const errMsg = err instanceof Error ? err.message : String(err);
         await writeAuditLog("design_review_hook_flow_error", {
           pipelineId: meta.pipelineId,
@@ -437,6 +435,17 @@ export function createAgentSettled(
           error: errMsg,
           stack: err instanceof Error && err.stack !== undefined ? err.stack : "",
         }, "error");
+        let domainOwnsFlow = false;
+        try {
+          const latestMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+          domainOwnsFlow = classifyDesignReviewFlow(latestMeta).kind !== "ordinary";
+        } catch {
+          // Unreadable state: preserve the pre-existing fail-open boundary.
+          domainOwnsFlow = false;
+        }
+        if (domainOwnsFlow) {
+          return;
+        }
       }
 
       // 163 Goal 2: audit when review stage settles without a reviewConclusion declaration.

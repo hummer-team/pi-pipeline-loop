@@ -39,6 +39,10 @@ import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-intr
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
 import { coordinateDesignReview } from "./design-review/coordinator";
+// 193 Phase 3 (task 1): shared safe coordinator-context builder
+import { createDesignReviewRuntimeContext } from "./design-review/runtime-context";
+// 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
+import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard";
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "./design-review/entry-result";
 import { createInitialState, computeHash } from "./design-review/state";
@@ -323,6 +327,24 @@ async function routeConfirmReject(
   nextCount: number,
   opts?: { reason?: string; auditEvent?: string },
 ): Promise<boolean> {
+  // 193 Phase 3 (task 6): RECHECK barrier — while an upstream rollback left
+  // the recheck marker armed (and no active design-review state exists), a
+  // reject routing toward develop/review/fix/awaiting_human/completed is a
+  // forward release past the owed re-review: refuse BEFORE any side effect.
+  const freshForBarrier = (ctx.session as { getMeta?: () => SessionMeta | undefined }).getMeta?.() ?? meta;
+  const rejectBarrier = checkRecheckForwardRelease(freshForBarrier, toStage);
+  if (rejectBarrier.blocked) {
+    await writeAuditLog("design_review_recheck_forward_release_blocked", {
+      pipelineId: meta.pipelineId ?? "unknown",
+      stage: meta.currentStage,
+      fromStage,
+      toStage,
+      entry: "confirm_reject_routing",
+    }, "warn");
+    ctx.ui?.notify?.(rejectBarrier.reason);
+    return false;
+  }
+
   // Clear old confirmation markers from the source stage doc to prevent
   // bypass on re-entry (e.g. plan→clarify→plan round trip).
   const sourceDocPath = await resolveStageDocPath(config, meta, fromStage);
@@ -1085,6 +1107,10 @@ export async function maybeHandleConfirmGate(
         ctx.session,
         {
           designReview: initialState,
+          // 193 Phase 3 (task 6): a NEW design-review authorization ALWAYS
+          // takes over — the pending RECHECK marker (if any) is cleared in
+          // this SAME strict commit.
+          designReviewRecheck: undefined,
           previousStage: currentStage,
           currentStage: "design-review" as PipelineStage,
           stageStartTime: Date.now(),
@@ -1130,23 +1156,18 @@ export async function maybeHandleConfirmGate(
       // we must explicitly call coordinator to dispatch the review agent
       const freshMeta = ctx.session.getMeta();
       if (freshMeta) {
-        const coordinatorCtx = {
+        // 193 Phase 3 (task 1): ONE builder binds UI controls receiver-safe
+        // and records role evidence identically at every entry.
+        const coordinatorCtx = createDesignReviewRuntimeContext({
           config,
           session: ctx.session,
-          ui: ctx.ui ? {
-            notify: (msg: string) => { ctx.ui?.notify?.(msg); },
-            // 193 Phase 2 (task 7): human decision menu control.
-            select: ctx.ui.select
-              ? (title: string, options: readonly string[]): Promise<string | undefined> =>
-                  ctx.ui!.select!(title, [...options])
-              : undefined,
-          } : undefined,
-          // 193 Phase 2 (task 8): role evidence (conservative in coordinator).
-          actor: { isChild, sessionFile: sessionFile || undefined },
+          interactionSource: "auto",
+          roleCtx: ctx,
+          rawUi: ctx.ui,
           pi: ctx.pi,
           // Pass through spawnOverride test hook if provided (for testability)
           spawnOverride: ctx.spawnOverride,
-        };
+        });
         const coordinatorResult = await coordinateDesignReview(coordinatorCtx, freshMeta, "advance");
         
         if (coordinatorResult.status === "handled" && coordinatorResult.action === "routed") {
@@ -1417,24 +1438,17 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       // Phase 3 (191): Design-review coordinator delegation
       // When design-review is active, delegate routing decisions to coordinator
-      const coordinatorCtx = {
+      // 193 Phase 3 (task 1): shared safe builder — UI bound receiver-preserving,
+      // role evidence recorded honestly (unknown/child fail closed inside the
+      // coordinator), provenance = "tool" (never a model parameter).
+      const coordinatorCtx = createDesignReviewRuntimeContext({
         config,
         session: ctx.session,
-        ui: ctx.ui ? {
-          notify: (msg: string) => { ctx.ui?.notify?.(msg); },
-          // 193 Phase 2 (task 7): human decision menu control.
-          select: ctx.ui.select
-            ? (title: string, options: readonly string[]): Promise<string | undefined> =>
-                ctx.ui!.select!(title, [...options])
-            : undefined,
-        } : undefined,
-        // 193 Phase 2 (task 8): role evidence (conservative in coordinator).
-        actor: (() => {
-          const r = detectSessionRole(ctx);
-          return { isChild: r.isChild, sessionFile: r.sessionFile || undefined };
-        })(),
+        interactionSource: "tool",
+        roleCtx: ctx,
+        rawUi: ctx.ui,
         pi: ctx.pi,
-      };
+      });
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "advance");
       if (coordinatorResult.status === "handled" && coordinatorResult.action === "frozen") {
         // 192 Phase 4 (task 8): budget freeze must be real (idempotent helper)

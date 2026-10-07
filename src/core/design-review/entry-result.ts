@@ -62,6 +62,13 @@ export interface DesignReviewEntryOutcome {
 /** Session context forwarded to the shared failure consumer. */
 type ApplyFailCtx = Parameters<typeof applyVerifyFail>[0];
 
+/**
+ * 193 Phase 3: public alias of the shared failure-consumer context
+ * (session/ui/pi/_ctx shape) so command/startup entries can consume a
+ * `verify_failed` WITHOUT importing applyVerifyFail just for the cast.
+ */
+export type DesignReviewConsumeCtx = ApplyFailCtx;
+
 /** Input for consuming exactly one coordinator result. */
 export interface ConsumeDesignReviewResultInput {
   /** The coordinator result for THIS call (never a cached/older one) */

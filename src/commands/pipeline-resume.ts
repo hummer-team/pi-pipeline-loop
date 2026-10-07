@@ -28,7 +28,11 @@ import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { coordinateDesignReview, type CoordinatorResult } from "../core/design-review/coordinator";
-import { isAuthorizationValid } from "../core/design-review/state";
+// 193 Phase 3 (tasks 1/2/4): shared safe builder, flow classification and the
+// ONE honest consumer at the explicit-resume entry.
+import { classifyDesignReviewFlow } from "../core/design-review/state";
+import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
+import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/design-review/entry-result";
 
 /**
  * Idempotent stage dispatch helper (Phase 1 / 182).
@@ -109,22 +113,69 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         return { error: "No active pipeline. Run /pipeline-start <doc_file> to begin." };
       }
 
-      // Phase 4 (191): design-review recovery on resume
-      // If the pipeline has a design-review state with valid authorization,
-      // delegate to coordinator for recovery before normal resume logic.
-      if (meta.designReview && isAuthorizationValid(meta.designReview)) {
-        const coordCtx = {
+      // Phase 4 (191): design-review recovery on resume.
+      // 193 Phase 3 (tasks 1/2/4): explicit resume is the ONLY entry allowed
+      // to re-present a pending decision menu (provenance "resume", assigned
+      // here — never a model parameter). A obtained `verify_failed` is
+      // consumed EXACTLY ONCE through the shared honest consumer (tool
+      // method: concrete guidance shown proactively, no followUp wake, and
+      // NO fallthrough into generic running/force recovery). An identity-
+      // blocked domain never leaks into generic resume either —
+      // --force-resume cannot replace a human choice or domain verification.
+      const drResume = classifyDesignReviewFlow(meta);
+      if (drResume.kind === "blocked") {
+        await safeWriteAuditLog("design_review_blocked_takeover", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          reason: drResume.reason ?? "identity_incomplete",
+          trigger: "pipeline_resume",
+        }, "warn");
+        syncStageStatusBar(ui, ctx);
+        const blockedMsg =
+          `Design-review loop identity incomplete — awaiting owner takeover. ` +
+          `Generic resume/--force-resume do not replace domain verification or the human decision.`;
+        ui.notify(ctx, blockedMsg);
+        return { message: blockedMsg };
+      }
+      if (drResume.kind === "authorized") {
+        const coordCtx = createDesignReviewRuntimeContext({
           config,
           session: ctx.session,
-          ui: ctx.ui ? { notify: (msg: string) => ui.notify(ctx, msg), transition: ctx.ui.transition } : undefined,
+          interactionSource: "resume",
+          roleCtx: ctx,
+          rawUi: ctx.ui,
+          pipelineUi: ui,
+          pipelineUiCtx: ctx,
           pi: ctx.pi,
-        };
+        });
         const coordResult: CoordinatorResult = await coordinateDesignReview(coordCtx, meta, "settle");
         if (coordResult.status === "handled") {
           syncStageStatusBar(ui, ctx);
           if (coordResult.action === "advanced" || coordResult.action === "routed") {
             ui.notify(ctx, `Design-review recovered: ${coordResult.action} to "${coordResult.toStage}".`);
             return { message: `Design-review recovered: ${coordResult.action} to "${coordResult.toStage}".` };
+          }
+          if (coordResult.action === "verify_failed") {
+            // ONE shared honest consumption; the command only displays/returns
+            // the already-consumed result (never a second applyVerifyFail).
+            const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+            const outcome = await consumeDesignReviewResult({
+              result: coordResult,
+              meta: freshMeta,
+              entry: "command",
+              ctx: {
+                session: ctx.session,
+                ui: ctx.ui,
+                pi: ctx.pi,
+                _ctx: ctx._ctx,
+              } as DesignReviewConsumeCtx,
+              config,
+              ui,
+              runtimeCtx: ctx,
+            });
+            const failMsg = outcome.message || "Design-review verification failed — see the corrective guidance.";
+            ui.notify(ctx, failMsg);
+            return { message: failMsg };
           }
           if (coordResult.action === "pending") {
             ui.notify(ctx, `Design-review recovery pending: ${coordResult.reason}`);
@@ -134,8 +185,14 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             ui.notify(ctx, `Design-review frozen: ${coordResult.reason}`);
             return { message: `Design-review frozen: ${coordResult.reason}` };
           }
+          // Fail-closed honesty: any other handled action still never falls
+          // through to generic resume recovery (the union is exhaustive —
+          // defensive branch for future actions).
+          const unknownMsg = "Design-review recovery: unrecognized handled action.";
+          ui.notify(ctx, unknownMsg);
+          return { message: unknownMsg };
         }
-        // If not-applicable, continue with normal resume logic
+        // not-applicable → continue with normal resume logic
       }
 
       const flowState = getFlowState(meta);

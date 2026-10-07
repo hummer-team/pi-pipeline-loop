@@ -15,6 +15,8 @@ import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 // 193 Phase 0: report-domain failures carry the complete corrective template
 import { buildDesignReviewReportFeedback } from "./design-review/report-feedback";
+// 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
+import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard";
 import { recordStageVisit } from "../utils/stage-visit";
 import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
@@ -159,6 +161,31 @@ export async function applyVerifyPass(
   opts: ApplyVerifyPassOpts,
 ): Promise<VerifyPassReturn | void> {
   if (nextStage) {
+    // 193 Phase 3 (task 6): RECHECK barrier — an upstream rollback cleared
+    // the design-review state but left the recheck marker armed; a verify
+    // PASS may not release the pipeline toward develop/review/fix/
+    // awaiting_human/completed until a NEW review authorization takes over.
+    // Consulted BEFORE the stage visit is counted (a refused release must
+    // not consume budget).
+    const recheck = checkRecheckForwardRelease(ctx.session.getMeta() ?? meta, nextStage);
+    if (recheck.blocked) {
+      await writeAuditLog("design_review_recheck_forward_release_blocked", {
+        pipelineId: meta.pipelineId ?? "unknown",
+        fromStage: stageName,
+        nextStage,
+        method: opts.method,
+      }, "warn");
+      if (opts.returnResult) {
+        return {
+          success: false,
+          passed: true,
+          message: recheck.reason,
+          verifyResult: verifyResult?.verifyResult ?? null,
+        };
+      }
+      return;
+    }
+
     // Record stage visit via shared helper before updateMeta (DRY with handoff,
     // stage-advancer, routeConfirmReject). Max cycles from meta with default 3.
     const maxCycles = meta.maxLoopCycles ?? 3;

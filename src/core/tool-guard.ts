@@ -62,6 +62,8 @@ import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // Phase 0 (182): secondary name-probe for manual/out-of-band agent detection
 import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { isDormant, DORMANT_KEEP_PROTECTION } from "./dormancy";
+// 193 Phase 3 (task 8): paused/decision-pending read-only enforcement
+import { designReviewPendingWriteBlockReason } from "./design-review/decision-guard";
 
 /** Dependencies for tool-guard (execFn for git dry-run) */
 export interface ToolGuardDeps {
@@ -367,6 +369,28 @@ async function checkBashFileTargets(
   opts?: { skipGitDirTargets?: boolean; allowGitLockFiles?: boolean },
 ): Promise<{ block: true; reason: string } | undefined> {
   const targets = extractBashFileTargets(segment);
+
+  // 193 Phase 3 (task 8): a PENDING design-review human decision puts the
+  // session in READ-ONLY mode. The check runs right after the EXISTING bash
+  // classification (no new shell parser) and BEFORE the git-scope exception
+  // and every permission opening: any command with a file-mutation target
+  // (redirect, tee, install, git file writes, ...) is refused while a
+  // decision waits. Pure reads (no classified targets) continue to the
+  // regular chain.
+  if (targets.length > 0) {
+    const pendingReason = designReviewPendingWriteBlockReason(meta);
+    if (pendingReason) {
+      await trackViolation({
+        type: "write_protected",
+        tool: "bash",
+        detail: pendingReason,
+        suggestion: "Resolve the pending human decision via /pipeline-resume (owner session) first.",
+      });
+      ui.notify(ctx, pendingReason);
+      return { block: true, reason: pendingReason };
+    }
+  }
+
   const sessionPaths = meta.sessionAllowedWritePaths || [];
   // Phase 1 (190) Fix-A extension: detect session role once for child hard-block checks
   const { isChild } = detectSessionRole(ctx);
@@ -1080,6 +1104,23 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
       // 4. File write protection for write/edit tools
       if (toolName === "write" || toolName === "edit") {
+        // 193 Phase 3 (task 8): a PENDING design-review human decision makes
+        // the session READ-ONLY — refuse mutating tools at the OPENING of the
+        // permission chain (before any whitelist/scope "opening"), while the
+        // corrective window of an INVALID running report (phase still
+        // running) and every non-design-review flow keep working normally.
+        const pendingReason = designReviewPendingWriteBlockReason(meta);
+        if (pendingReason) {
+          await trackViolation({
+            type: "write_protected",
+            tool: toolName,
+            detail: pendingReason,
+            suggestion: "Resolve the pending human decision via /pipeline-resume (owner session) first.",
+          });
+          ui.notify(ctx, pendingReason);
+          return { block: true, reason: pendingReason };
+        }
+
         const filePath = (args.file_path || args.path) as string;
         // Resolve relative paths against projectRoot to avoid cwd dependency (Problem 11)
         const absPath = path.isAbsolute(filePath)
