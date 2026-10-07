@@ -92,6 +92,11 @@ function templateFormReport(opts: {
     opts.verdictRow,
     ...(opts.extraLines ?? []),
     "",
+    // 193 Phase 0: Recommendations is part of the complete-report contract.
+    "## Recommendations",
+    "",
+    "Proceed with the plan as written.",
+    "",
   ].join("\n");
 }
 
@@ -190,9 +195,19 @@ describe("Phase 1 successor A: domain snapshot verdict (single contract)", () =>
       "",
       "No verdict here.",
       "",
+      // 193 Phase 0: the Verdict section EXISTS but carries no canonical
+      // conclusion row, so the defect is exactly the unrecognised conclusion.
+      "## Verdict",
+      "",
+      "The reviewers discussed the trade-offs at length.",
+      "",
       "## Issues",
       "",
       "None",
+      "",
+      "## Recommendations",
+      "",
+      "Record an explicit conclusion next round.",
     ].join("\n");
     const v = verifyDesignReviewReportSnapshot(content, expectation(planDoc));
     expect(v.verdict).toBe("invalid");

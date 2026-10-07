@@ -12,7 +12,8 @@
  * real hook verification chain.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
+import { clearAllDecisionTimers } from "../../core/flow-state";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -113,6 +114,16 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
       "**round**: 1",
       `**operation**: ${session.getMeta()!.designReview!.operation!.operationId}`,
       `**input hash**: ${session.getMeta()!.designReview!.operation!.inputHash}`,
+      "",
+      // 193 Phase 0: a complete report carries all four contract sections.
+      "## Summary",
+      "",
+      "Reviewed the plan against the requirement document; findings are listed in",
+      "the Issues section below.",
+      "",
+      "## Recommendations",
+      "",
+      "Resolve every listed issue before the next phase starts.",
       "",
       "## Verdict",
       "",
@@ -243,6 +254,16 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
       `**operation**: ${session.getMeta()!.designReview!.operation!.operationId}`,
       `**input hash**: ${session.getMeta()!.designReview!.operation!.inputHash}`,
       "",
+      // 193 Phase 0: a complete report carries all four contract sections.
+      "## Summary",
+      "",
+      "Reviewed the plan against the requirement document; findings are listed in",
+      "the Issues section below.",
+      "",
+      "## Recommendations",
+      "",
+      "Resolve every listed issue before the next phase starts.",
+      "",
       "## Verdict",
       "",
       "**Design Review: PASS**",
@@ -299,6 +320,16 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
         `**input hash**: ${session.getMeta()!.designReview!.operation!.inputHash}`,
       `**operation**: ${session.getMeta()!.designReview!.operation!.operationId}`,
       `**input hash**: ${session.getMeta()!.designReview!.operation!.inputHash}`,
+        "",
+        // 193 Phase 0: a complete report carries all four contract sections.
+        "## Summary",
+        "",
+        "Reviewed the plan against the requirement document; findings are listed",
+        "in the Issues section below.",
+        "",
+        "## Recommendations",
+        "",
+        "Resolve every listed issue before the next phase starts.",
         "",
         "## Verdict",
         "",
@@ -394,6 +425,16 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
       `**operation**: ${session.getMeta()!.designReview!.operation!.operationId}`,
       `**input hash**: ${session.getMeta()!.designReview!.operation!.inputHash}`,
       "",
+      // 193 Phase 0: a complete report carries all four contract sections.
+      "## Summary",
+      "",
+      "Reviewed the plan against the requirement document; findings are listed in",
+      "the Issues section below.",
+      "",
+      "## Recommendations",
+      "",
+      "Resolve every listed issue before the next phase starts.",
+      "",
       "## Verdict",
       "",
       "**Design Review: PASS**",
@@ -432,4 +473,11 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
     expect(after.designReview?.approval?.reviewOperationId).toBe(reviewOpId);
     expect(after.designReview?.operation?.operationId).toBe(handoffOpId);
   });
+});
+
+// 193 Phase 0 (test hygiene): frozen-with-pending fixtures arm real-timer
+// decision-retry backoff chains (5s→60s). Clear them at file end so they can
+// never leak across test files in the single `bun test` process.
+afterAll(() => {
+  clearAllDecisionTimers();
 });

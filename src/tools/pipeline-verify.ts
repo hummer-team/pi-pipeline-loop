@@ -15,6 +15,8 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
 import { isDormant } from "../core/dormancy";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
+// 193 Phase 0: single honest consumer for design-review coordinator results
+import { consumeDesignReviewResult } from "../core/design-review/entry-result";
 
 /**
  * Options injected into the pipeline_verify tool via closure.
@@ -101,20 +103,22 @@ export function createPipelineVerify(
       };
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "verify");
       if (coordinatorResult.status === "handled") {
-        // Coordinator handled the routing, return early
-        const result: any = {
-          success: coordinatorResult.action !== "frozen" && coordinatorResult.action !== "pending",
-          action: coordinatorResult.action,
-        };
-        if ("reason" in coordinatorResult) {
-          result.message = coordinatorResult.reason;
-        } else {
-          result.message = `Design review ${coordinatorResult.action}`;
-        }
-        if ("toStage" in coordinatorResult) {
-          result.toStage = coordinatorResult.toStage;
-        }
-        return result;
+        // 193 Phase 0 (task 5): ONE honest consumer. `verify_failed` records
+        // exactly one retry-budget attempt through the shared fail path and the
+        // result is reported honestly (an invalid report is NEVER success).
+        const outcome = await consumeDesignReviewResult({
+          result: coordinatorResult,
+          meta: sessionCtx.session.getMeta() ?? meta,
+          entry: "tool",
+          ctx: {
+            session: sessionCtx.session,
+            ui: sessionCtx.ui,
+            pi: (sessionCtx as { pi?: { sendUserMessage?: (m: string, o?: Record<string, unknown>) => void } }).pi,
+          },
+          config,
+          runtimeCtx: ctx,
+        });
+        return outcome.toolResult ?? { success: false, action: coordinatorResult.action, message: outcome.message };
       }
       // coordinatorResult.status === "not-applicable" → continue with original flow
 

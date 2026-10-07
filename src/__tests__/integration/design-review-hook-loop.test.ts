@@ -11,7 +11,8 @@
  *   round and visit counts — never "any of pending/advanced".
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
+import { clearAllDecisionTimers } from "../../core/flow-state";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -262,12 +263,23 @@ function writeReport(h: Harness, verdict: "PASS" | "FAIL", issues: string[] = []
     `**operation**: ${op.operationId}`,
     `**input hash**: ${op.inputHash}`,
     "",
+    // 193 Phase 0: a valid report must be COMPLETE (four contract sections).
+    "## Summary",
+    "",
+    `Round ${st.round}: reviewed ${st.planDoc} against the requirement document;`,
+    "phase split, acceptance criteria and regression coverage are addressed.",
+    "",
     "## Verdict",
     "",
     `**Design Review: ${verdict}**`,
     "",
     "## Issues",
     ...(issues.length > 0 ? issues.map((t, i) => `${i + 1}. ${t}`) : ["None"]),
+    "",
+    "## Recommendations",
+    "",
+    "Proceed with the plan as written; keep the per-phase acceptance criteria as",
+    "the regression checklist.",
     "",
   ];
   fs.writeFileSync(deriveReportPath(st.planDoc, st.round), lines.join("\n"), "utf-8");
@@ -854,4 +866,11 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     // The resume entry reported the takeover through its own notify path.
     expect(notices.length).toBeGreaterThan(0);
   });
+});
+
+// 193 Phase 0 (test hygiene): frozen-with-pending fixtures arm real-timer
+// decision-retry backoff chains (5s→60s). Clear them at file end so they can
+// never leak across test files in the single `bun test` process.
+afterAll(() => {
+  clearAllDecisionTimers();
 });

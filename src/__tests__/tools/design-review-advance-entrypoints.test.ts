@@ -10,7 +10,7 @@
  * auditDir); controlled spawnOverride returns verifiable agentIds.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, afterAll } from "bun:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,11 +22,21 @@ import {
   boundReviewOperation,
 } from "../helpers";
 import { matchCommitExpectation } from "../../core/session-state";
+import { clearAllDecisionTimers } from "../../core/flow-state";
 import { computeHash, createInitialState } from "../../core/design-review/state";
 import type { CoordinatorContext } from "../../core/design-review/coordinator";
 import { coordinateDesignReview } from "../../core/design-review/coordinator";
+import { createPipelineVerify } from "../../tools/pipeline-verify";
+import { createPipelineHandoff } from "../../tools/pipeline-handoff";
+import { createStageAdvancer } from "../../core/stage-advancer";
 
 const OP_ID = "op-entry-review-1";
+
+afterAll(() => {
+  // 193: tests here may freeze with a pending decision; clear retry timers so
+  // real-timer backoff chains never leak across test files in one bun process.
+  clearAllDecisionTimers();
+});
 
 describe("design-review multi-entrypoint consistency", () => {
   let tempDir: string;
@@ -260,6 +270,112 @@ describe("design-review multi-entrypoint consistency", () => {
       expect(result.status === "handled" && result.action === "pending").toBe(true);
       expect(ctx.session.getMeta()!.currentStage).toBe("design-review");
       expect(ctx.session.getMeta()!.designReview?.pauseReason).toBe("drift");
+    });
+  });
+
+  /**
+   * 193 Phase 0 (task 5, acceptance "每入口一次预算、工具 success=false"):
+   * every wired tool entry must report an invalid design-review report
+   * HONESTLY — success=false, exactly ONE retry-budget attempt for the call,
+   * the corrective guidance shown proactively, zero dispatch and zero stage
+   * movement. The old mapping (`success = action !== frozen && !== pending`)
+   * reported these failures as success and silently stopped the loop.
+   */
+  describe("honest failure results across tool entries (193 Phase 0)", () => {
+    function makeToolCtx(meta: SessionMeta) {
+      const session = createMockSession(meta);
+      const notifications: string[] = [];
+      return {
+        session,
+        ui: {
+          notify: (msg: string) => {
+            notifications.push(msg);
+          },
+          setStatus: () => {},
+          select: async () => {
+            throw new Error("a tool entry must not open the human menu below budget");
+          },
+        },
+        pi: {
+          sendUserMessage: () => {
+            throw new Error("a tool entry must never wake the model");
+          },
+        },
+        _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+        notifications,
+      };
+    }
+
+    /** Report that parses as a review report but breaks the 193 structure contract. */
+    async function writeContractInvalidReport(): Promise<void> {
+      await writeFile(
+        join(tempDir, "review-design-1-plan.md"),
+        reviewReportContent({
+          pipelineId: "pipe-test-001",
+          planDoc,
+          round: 1,
+          operationId: OP_ID,
+          inputHash: planHash,
+          verdict: "PASS",
+          includeSummarySection: false,
+        }),
+        "utf-8",
+      );
+    }
+
+    function expectHonestFailure(
+      result: Record<string, unknown>,
+      session: ReturnType<typeof createMockSession>,
+      notifications: string[],
+    ): void {
+      expect(result.success).toBe(false);
+      expect(result.passed).toBe(false);
+      expect(result.action).toBe("verify_failed");
+      const message = String(result.message);
+      // concrete defect AND the corrective template render through the result
+      expect(message).toContain("missing Summary section heading");
+      expect(message).toContain("Identity this report MUST carry");
+      expect(message).not.toContain("SKILL output format requirements");
+      // exactly one budget attempt for this one call
+      expect(session.getMeta()?.verifyAttempts).toBe(1);
+      // zero dispatch, zero stage movement, review stays running
+      expect(session.getMeta()?.currentStage).toBe("design-review");
+      expect(session.getMeta()?.designReview?.phase).toBe("review_running");
+      // tool entries never wake the model: guidance is shown proactively
+      expect(notifications.some((n) => n.includes("Identity this report MUST carry"))).toBe(true);
+    }
+
+    test("pipeline_verify reports a contract-invalid report honestly", async () => {
+      await writeContractInvalidReport();
+      const ctx = makeToolCtx(reviewRunningMeta(0));
+      const tool = createPipelineVerify(config);
+      const result = (await tool.execute({}, ctx as never)) as Record<string, unknown>;
+      expectHonestFailure(result, ctx.session, ctx.notifications);
+    });
+
+    test("stage_advance reports a contract-invalid report honestly", async () => {
+      await writeContractInvalidReport();
+      const ctx = makeToolCtx(reviewRunningMeta(0));
+      const tool = createStageAdvancer(config);
+      const result = (await tool.execute({}, ctx as never)) as Record<string, unknown>;
+      expectHonestFailure(result, ctx.session, ctx.notifications);
+    });
+
+    test("pipeline_handoff reports a contract-invalid report honestly", async () => {
+      await writeContractInvalidReport();
+      const ctx = makeToolCtx(reviewRunningMeta(0));
+      const tool = createPipelineHandoff(config);
+      const result = (await tool.execute({ nextStage: "develop" }, ctx as never)) as Record<string, unknown>;
+      expectHonestFailure(result, ctx.session, ctx.notifications);
+    });
+
+    test("a NEW call is a NEW attempt; the same call never double-counts", async () => {
+      await writeContractInvalidReport();
+      const ctx = makeToolCtx(reviewRunningMeta(0));
+      const tool = createPipelineVerify(config);
+      await tool.execute({}, ctx as never);
+      await tool.execute({}, ctx as never);
+      expect(ctx.session.getMeta()?.verifyAttempts).toBe(2);
     });
   });
 

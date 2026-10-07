@@ -41,6 +41,8 @@ import { escapeRegExp } from "../utils/regex-utils";
 import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
 import type { SessionMeta as AgentSettledSessionMeta } from "../types";
 import { coordinateDesignReview } from "./design-review/coordinator";
+// 193 Phase 0: single honest consumer for design-review coordinator results
+import { consumeDesignReviewResult } from "./design-review/entry-result";
 // 192 Phase 3: flow classification for the shared verification wiring (K02)
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "./design-review/state";
 
@@ -386,21 +388,25 @@ export function createAgentSettled(
               );
             }
             if (coordinatorResult.action === "verify_failed" && runningPhase) {
-              // invalid deliverable → NORMAL verification-failure budget
-              // (paused/no-change etc. are NOT format failures).
-              await applyVerifyFail(
-                { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof applyVerifyFail>[0],
-                freshMeta,
-                freshMeta.currentStage,
-                {
-                  structuredResult: { failures: [...coordinatorResult.failures] },
-                  ruleMissing: [],
-                  verifyResult: { structured: { passed: false }, overallPassed: false },
-                },
-                "rule",
-                ui,
+              // 193 Phase 0 (task 5): ONE shared, honest consumer. The hook entry
+              // consumes with method="rule" (ordinary retry budget + wake policy)
+              // and never reports success for a non-advanced action. Report-domain
+              // failures carry the complete corrective template; every other
+              // failure keeps its existing feedback text.
+              await consumeDesignReviewResult({
+                result: coordinatorResult,
+                meta: ctx.session.getMeta() ?? freshMeta,
+                entry: "hook",
+                ctx: {
+                  session: ctx.session,
+                  ui: ctx.ui,
+                  pi: ctx.pi,
+                  _ctx: ctx._ctx,
+                } as Parameters<typeof applyVerifyFail>[0],
                 config,
-              );
+                ui,
+                runtimeCtx: ctx,
+              });
             }
             return;
           }

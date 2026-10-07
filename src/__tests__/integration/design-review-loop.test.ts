@@ -23,7 +23,8 @@
  * the coordinator with bound operations — no any-of results.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
+import { clearAllDecisionTimers } from "../../core/flow-state";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -225,12 +226,23 @@ function writeReport(h: LoopHarness, verdict: "PASS" | "FAIL", issues: string[] 
     `**operation**: ${op.operationId}`,
     `**input hash**: ${op.inputHash}`,
     "",
+    // 193 Phase 0: a valid report must be COMPLETE (four contract sections).
+    "## Summary",
+    "",
+    `Round ${st.round}: reviewed ${st.planDoc} against the requirement document;`,
+    "phase split, acceptance criteria and regression coverage are addressed.",
+    "",
     "## Verdict",
     "",
     `**Design Review: ${verdict}**`,
     "",
     "## Issues",
     ...(issues.length > 0 ? issues.map((t, i) => `${i + 1}. ${t}`) : ["None"]),
+    "",
+    "## Recommendations",
+    "",
+    "Proceed with the plan as written; keep the per-phase acceptance criteria as",
+    "the regression checklist.",
     "",
   ];
   fs.writeFileSync(deriveReportPath(st.planDoc, st.round), lines.join("\n"), "utf-8");
@@ -470,6 +482,11 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
       "**operation**: op-successor-1",
       `**input hash**: ${planHash}`,
       "",
+      "## Summary",
+      "",
+      "Reviewed the plan against the requirement document; the two open problems",
+      "below are concrete defects, not preferences.",
+      "",
       "## Verdict",
       "",
       "**Design Review: PASS**",
@@ -478,6 +495,10 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
       "",
       "1. Critical bug in implementation",
       "2. Missing documentation",
+      "",
+      "## Recommendations",
+      "",
+      "Fix both issues before implementation starts.",
       "",
     ].join("\n");
     fs.writeFileSync(deriveReportPath(planDoc, 1), report, "utf-8");
@@ -513,6 +534,10 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
       "",
       "1. Minor documentation gap",
       "",
+      "## Recommendations",
+      "",
+      "Close the documentation gap before the next phase starts.",
+      "",
     ].join("\n");
     fs.writeFileSync(deriveReportPath(planDoc, 1), report, "utf-8");
     const result = await coordinateDesignReview(ctx, meta, "settle");
@@ -534,9 +559,19 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
       "## Summary",
       "The review concluded the criteria are acceptable.",
       "",
+      // 193 Phase 0: the Verdict section is present but carries NO canonical
+      // conclusion row, so the defect is exactly "no recognized conclusion".
+      "## Verdict",
+      "",
+      "Overall acceptable, subject to the noted follow-ups.",
+      "",
       "## Issues",
       "",
       "None",
+      "",
+      "## Recommendations",
+      "",
+      "Keep the current plan structure.",
       "",
     ].join("\n");
     fs.writeFileSync(deriveReportPath(planDoc, 1), report, "utf-8");
@@ -570,4 +605,11 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
     // The frozen verdict must not consume the report or dispatch.
     expect(after.designReview!.operation?.kind).toBe("review");
   });
+});
+
+// 193 Phase 0 (test hygiene): frozen-with-pending fixtures arm real-timer
+// decision-retry backoff chains (5s→60s). Clear them at file end so they can
+// never leak across test files in the single `bun test` process.
+afterAll(() => {
+  clearAllDecisionTimers();
 });

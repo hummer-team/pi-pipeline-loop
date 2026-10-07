@@ -1,6 +1,8 @@
 /**
  * @module verifiers/design-review-verifier
  * 192 Phase 3 (K07/F02): trusted semantic verifier for design-review REPORTS.
+ * 193 Phase 0 (Q5-A / final plan item 5): the SAME snapshot now also satisfies
+ * the COMPLETE report structure contract before any routing verdict is derived.
  *
  * Pure over a caller-provided content SNAPSHOT (single read upstream): this
  * module never reads files, globs directories, writes meta or dispatches.
@@ -14,6 +16,9 @@
  *     **operation**: {review operationId}
  *     **input hash**: {review inputHash == authorized plan content hash}
  *   Attribution/contract unverifiable ⇒ invalid.
+ * - structure contract (193): Summary / Issues / Recommendations / Verdict each
+ *   present EXACTLY ONCE with substantive content (order and spacing free);
+ *   unfilled placeholders, blank bodies and inert examples never count.
  * - verdict: taken ONLY from verdict-pattern matches on content lines outside
  *   fenced code / blockquotes / HTML comments. A "PASS" word in a Summary
  *   body is NOT a verdict line (patterns are anchored). Unknown capture
@@ -23,15 +28,36 @@
  *   "None"/"无"; "无法恢复…" is still a real issue.
  * - decision order:
  *     1. attribution/version unverifiable → invalid
- *     2. valid non-empty issues → fail (even when a PASS line also exists)
- *     3. no issues + mutually exclusive PASS & FAIL → invalid
- *     4. canonical single PASS → pass; single FAIL → fail
- *     5. empty issues heading / unknown token / no conclusion → invalid
+ *     2. incomplete structure (missing/empty/duplicated section) → invalid
+ *     3. valid non-empty issues → fail (even when a PASS line also exists)
+ *     4. no issues + mutually exclusive PASS & FAIL → invalid
+ *     5. canonical single PASS → pass; single FAIL → fail
+ *     6. empty issues heading / unknown token / no conclusion → invalid
+ *
+ * The mechanical inert-line cleaning and section extraction live in
+ * `design-review/report-sections.ts` and the section/identity policy in
+ * `design-review/report-contract.ts` — this module keeps re-exporting the
+ * historical helpers so existing consumers stay source-compatible, and never
+ * grows a second, weaker parser.
  */
 
 import { createHash } from "node:crypto";
 import * as path from "node:path";
 import type { ReviewIssue } from "../../types";
+import {
+  DEFAULT_ISSUE_HEADING_PATTERN,
+  compileHeadingRe,
+  extractReportSection,
+  stripInertLines,
+} from "../design-review/report-sections";
+import {
+  checkDesignReviewReportIdentity,
+  checkDesignReviewReportSections,
+  findDesignReviewIdentityValue,
+} from "../design-review/report-contract";
+
+/** Historical export (192): inert-line cleaning shared with the contract. */
+export { DEFAULT_ISSUE_HEADING_PATTERN, stripInertLines };
 
 /** Expected identity binding for the CURRENT review operation. */
 export interface DesignReviewReportExpectation {
@@ -68,72 +94,8 @@ export const DEFAULT_DESIGN_REVIEW_VERDICT_PATTERNS: readonly string[] = [
   "\\*\\*设计评审[:：]\\s*(通过|不通过)\\*\\*",
 ];
 
-/** Default issue heading anchor (matches `## Issues` / `## 问题`). */
-export const DEFAULT_ISSUE_HEADING_PATTERN = "^#{1,4}\\s*(Issues|问题列表|问题)\\s*$";
-
-/** Exact whole-item sentinels meaning "no issues". */
-const NO_ISSUE_SENTINELS = new Set(["none", "无", "n/a", "not applicable"]);
-
 export function computeReportHash(content: string): string {
   return createHash("sha256").update(content, "utf-8").digest("hex");
-}
-
-/**
- * Clean report content for semantic scanning: remove fenced code blocks
- * (both ``` and ~~~), block-quote lines and HTML comments. Returns lines
- * with original indices preserved for heading scans.
- */
-export function stripInertLines(content: string): string[] {
-  const out: string[] = [];
-  let fence: string | null = null;
-  let inHtmlComment = false;
-  for (const raw of content.split("\n")) {
-    const line = raw;
-    const fenceMatch = line.match(/^\s*(```|~~~)/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1]!;
-      if (!fence) {
-        fence = marker;
-        continue; // fence open line is inert too
-      }
-      if (marker === fence) {
-        fence = null;
-        continue;
-      }
-      continue; // different marker inside a fence
-    }
-    if (fence) continue;
-    if (inHtmlComment) {
-      if (line.includes("-->")) inHtmlComment = false;
-      continue;
-    }
-    if (/^\s*<!--/.test(line) && !/-->\s*$/.test(line)) {
-      inHtmlComment = true;
-      continue;
-    }
-    if (/^\s*<!--.*-->\s*$/.test(line)) continue; // single-line comment
-    if (/^\s*>/.test(line)) continue; // blockquotes
-    out.push(line);
-  }
-  return out;
-}
-
-/** Extract the section under a heading matching headingRe until the next
- *  heading of same-or-higher level. Returns null when the heading is absent. */
-function extractSection(lines: readonly string[], headingRe: RegExp): { lines: string[]; empty: boolean } | null {
-  const idx = lines.findIndex((l) => headingRe.test(l));
-  if (idx === -1) return null;
-  const levelMatch = lines[idx]!.match(/^(#+)/);
-  const level = levelMatch ? levelMatch[1]!.length : 2;
-  const section: string[] = [];
-  for (let i = idx + 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    const h = line.match(/^(#+)\s/);
-    if (h && h[1]!.length <= level) break;
-    section.push(line);
-  }
-  const bodyLines = section.filter((l) => l.trim() !== "");
-  return { lines: section, empty: bodyLines.length === 0 };
 }
 
 /** Extract list/table issue items from the Issues section body. */
@@ -166,16 +128,6 @@ function parseIssueItems(sectionLines: readonly string[]): string[] {
   return items;
 }
 
-/** Locate an identity field row (case-insensitive label, full-line match). */
-function findField(lines: readonly string[], label: string): string | undefined {
-  const re = new RegExp(`^\\s*\\*{0,2}${label}\\*{0,2}\\s*[:：]\\s*(.+?)\\s*\\*{0,2}\\s*$`, "i");
-  for (const line of lines) {
-    const m = line.match(re);
-    if (m) return m[1]!.replace(/\*+$/, "").trim();
-  }
-  return undefined;
-}
-
 function sameCanonicalPath(a: string, b: string): boolean {
   try {
     return path.resolve(a) === path.resolve(b);
@@ -184,15 +136,8 @@ function sameCanonicalPath(a: string, b: string): boolean {
   }
 }
 
-/** Compile the issues-heading anchor from a contract pattern (built-in default;
- *  an invalid contract regex falls back to the default, fail-closed downstream). */
-function compileIssueHeadingRe(pattern?: string): RegExp {
-  try {
-    return new RegExp(pattern ?? DEFAULT_ISSUE_HEADING_PATTERN, "i");
-  } catch {
-    return new RegExp(DEFAULT_ISSUE_HEADING_PATTERN, "i");
-  }
-}
+/** Exact whole-item sentinels meaning "no issues". */
+const NO_ISSUE_SENTINELS = new Set(["none", "无", "n/a", "not applicable"]);
 
 /** Keep only valid issue items: exact whole-item "None"/"无"-style sentinels
  *  drop out; everything else ("无法恢复…", "nonequivalent") stays an issue. */
@@ -217,7 +162,7 @@ export function extractDesignReviewIssueItems(
   issueHeadingPattern?: string,
 ): ReviewIssue[] {
   const lines = stripInertLines(content);
-  const section = extractSection(lines, compileIssueHeadingRe(issueHeadingPattern));
+  const section = extractReportSection(lines, compileHeadingRe(issueHeadingPattern, DEFAULT_ISSUE_HEADING_PATTERN));
   if (!section) return [];
   return filterValidIssueItems(parseIssueItems(section.lines));
 }
@@ -249,46 +194,49 @@ export function verifyDesignReviewReportSnapshot(
   const reportHash = computeReportHash(content);
   const failures: string[] = [];
   const lines = stripInertLines(content);
+  const contractOptions = {
+    issueHeadingPattern: patterns?.issueHeadingPattern,
+    requireOperation: expectation.operationId !== undefined,
+    requireInputHash: expectation.inputHash !== undefined,
+  };
 
-  // ── 1. Identity/attribution (full canonical field comparison) ─────────────
-  const pipelineField = findField(lines, "pipeline");
-  if (pipelineField === undefined) {
-    failures.push("missing **pipeline** identity field");
-  } else if (pipelineField !== expectation.pipelineId) {
-    failures.push(`pipeline identity mismatch: report="${pipelineField}" current="${expectation.pipelineId}"`);
+  // ── 1. Identity/attribution ────────────────────────────────────────────────
+  // 193 Phase 0: presence, alias acceptance and duplicate-row ambiguity are
+  // POLICY and live in design-review/report-contract.ts (single alias table);
+  // this module keeps only the canonical VALUE comparison, because only it
+  // knows the CURRENT run's values.
+  const identityFailures = checkDesignReviewReportIdentity(lines, contractOptions);
+  if (identityFailures.length > 0) {
+    return { verdict: "invalid", failures: identityFailures, reportHash };
   }
 
-  const planField = findField(lines, "plan");
-  if (planField === undefined) {
-    failures.push("missing **plan** identity field");
-  } else if (!sameCanonicalPath(planField, expectation.planDoc)) {
+  const pipelineField = findDesignReviewIdentityValue(lines, "pipeline");
+  if (pipelineField !== expectation.pipelineId) {
+    failures.push(
+      `pipeline identity mismatch: report="${pipelineField ?? ""}" current="${expectation.pipelineId}"`,
+    );
+  }
+
+  const planField = findDesignReviewIdentityValue(lines, "plan");
+  if (planField === undefined || !sameCanonicalPath(planField, expectation.planDoc)) {
     failures.push("plan identity mismatch: report references a different plan document");
   }
 
-  const roundField = findField(lines, "round");
-  if (roundField === undefined) {
-    failures.push("missing **round** identity field");
-  } else if (roundField !== String(expectation.round)) {
-    failures.push(`round identity mismatch: report="${roundField}" current="${expectation.round}"`);
+  const roundField = findDesignReviewIdentityValue(lines, "round");
+  if (roundField !== String(expectation.round)) {
+    failures.push(`round identity mismatch: report="${roundField ?? ""}" current="${expectation.round}"`);
   }
 
   if (expectation.operationId !== undefined) {
-    // Accept the canonical **operation** label and the shipped-template alias
-    // **operationId** (template/report contract parity, 192 Phase 5).
-    const opField = findField(lines, "operation") ?? findField(lines, "operationId");
-    if (opField === undefined) {
-      failures.push("missing **operation** identity field");
-    } else if (opField !== expectation.operationId) {
+    const opField = findDesignReviewIdentityValue(lines, "operation");
+    if (opField !== expectation.operationId) {
       failures.push("operation identity mismatch: report belongs to a different review operation");
     }
   }
 
   if (expectation.inputHash !== undefined) {
-    // Canonical "**input hash**" plus shipped-template alias "**baselinePlanHash**"
-    const hashField = findField(lines, "input hash") ?? findField(lines, "input\\s*hash") ?? findField(lines, "输入版本") ?? findField(lines, "计划\\s*hash") ?? findField(lines, "baselinePlanHash");
-    if (hashField === undefined) {
-      failures.push("missing **input hash** identity field");
-    } else if (hashField !== expectation.inputHash) {
+    const hashField = findDesignReviewIdentityValue(lines, "inputHash");
+    if (hashField !== expectation.inputHash) {
       failures.push("input hash mismatch: report was produced against a different plan version");
     }
   }
@@ -297,7 +245,13 @@ export function verifyDesignReviewReportSnapshot(
     return { verdict: "invalid", failures, reportHash };
   }
 
-  // ── 2. Verdict candidates (anchored patterns only) ────────────────────────
+  // ── 2. 193 Phase 0: complete structure contract over the SAME snapshot ────
+  const structureFailures = checkDesignReviewReportSections(lines, contractOptions);
+  if (structureFailures.length > 0) {
+    return { verdict: "invalid", failures: structureFailures, reportHash };
+  }
+
+  // ── 3. Verdict candidates (anchored patterns only) ────────────────────────
   const verdictPatterns = patterns?.verdictPatterns && patterns.verdictPatterns.length > 0
     ? patterns.verdictPatterns
     : DEFAULT_DESIGN_REVIEW_VERDICT_PATTERNS;
@@ -329,10 +283,11 @@ export function verifyDesignReviewReportSnapshot(
     }
   }
 
-  // ── 3. Issues section over the SAME cleaned content ───────────────────────
-  const issueHeadingRe = compileIssueHeadingRe(patterns?.issueHeadingPattern);
-  const issuesSection = extractSection(lines, issueHeadingRe);
+  // ── 4. Issues section over the SAME cleaned content ───────────────────────
+  const issueHeadingRe = compileHeadingRe(patterns?.issueHeadingPattern, DEFAULT_ISSUE_HEADING_PATTERN);
+  const issuesSection = extractReportSection(lines, issueHeadingRe);
   if (!issuesSection) {
+    // Unreachable while the structure contract runs first, kept fail-closed.
     return { verdict: "invalid", failures: ["missing Issues section heading"], reportHash };
   }
 
@@ -352,7 +307,7 @@ export function verifyDesignReviewReportSnapshot(
     };
   }
 
-  // ── 4. Decision order ──────────────────────────────────────────────────────
+  // ── 5. Decision order ──────────────────────────────────────────────────────
   if (validIssues.length > 0) {
     // Issues take precedence: even a PASS conclusion cannot mask valid issues
     const passAlsoPresent = seen.some((s) => s.value === "pass");

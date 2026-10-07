@@ -388,6 +388,10 @@ export function reviewReportContent(opts: {
   includeIssuesSection?: boolean;
   /** Override the verdict row (e.g. omit to simulate no conclusion) */
   verdictRow?: string | null;
+  /** 193 Phase 0: set false to omit the Summary section (structural negative case) */
+  includeSummarySection?: boolean;
+  /** 193 Phase 0: set false to omit the Recommendations section */
+  includeRecommendationsSection?: boolean;
 }): string {
   const round = opts.round ?? 1;
   const lines = [
@@ -399,9 +403,19 @@ export function reviewReportContent(opts: {
     `**operation**: ${opts.operationId}`,
     `**input hash**: ${opts.inputHash}`,
     "",
-    "## Verdict",
-    "",
   ];
+  // 193 Phase 0: the shared fixture produces a COMPLETE report (all four
+  // contract sections) so existing behaviour tests keep exercising valid input.
+  if (opts.includeSummarySection !== false) {
+    lines.push(
+      "## Summary",
+      "",
+      "Reviewed the plan against the requirement document; phase split, acceptance",
+      "criteria and regression coverage are all addressed.",
+      "",
+    );
+  }
+  lines.push("## Verdict", "");
   if (opts.verdictRow !== null) {
     lines.push(opts.verdictRow ?? `**Design Review: ${opts.verdict}**`);
   }
@@ -414,6 +428,15 @@ export function reviewReportContent(opts: {
         lines.push(`${i + 1}. ${issue}`);
       }
     }
+  }
+  if (opts.includeRecommendationsSection !== false) {
+    lines.push(
+      "",
+      "## Recommendations",
+      "",
+      "Proceed with the plan as written; keep the per-phase acceptance criteria as",
+      "the regression checklist.",
+    );
   }
   lines.push("");
   return lines.join("\n");

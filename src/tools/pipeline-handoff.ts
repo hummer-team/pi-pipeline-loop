@@ -19,6 +19,8 @@ import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { maybeHandleConfirmGate, formatConfirmGatePendingCopy } from "../core/stage-advancer";
 import { detectSessionRole } from "../core/session-role";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
+// 193 Phase 0: single honest consumer for design-review coordinator results
+import { consumeDesignReviewResult } from "../core/design-review/entry-result";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -80,20 +82,22 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       };
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "handoff");
       if (coordinatorResult.status === "handled") {
-        // Coordinator handled the routing, return early
-        const result: any = {
-          success: coordinatorResult.action !== "frozen" && coordinatorResult.action !== "pending",
-          action: coordinatorResult.action,
-        };
-        if ("reason" in coordinatorResult) {
-          result.message = coordinatorResult.reason;
-        } else {
-          result.message = `Design review ${coordinatorResult.action}`;
-        }
-        if ("toStage" in coordinatorResult) {
-          result.toStage = coordinatorResult.toStage;
-        }
-        return result;
+        // 193 Phase 0 (task 5): ONE honest consumer. A child subagent defers to
+        // its owner (zero budget recorded) and an invalid report is NEVER
+        // reported as success.
+        const outcome = await consumeDesignReviewResult({
+          result: coordinatorResult,
+          meta: ctx.session.getMeta() ?? meta,
+          entry: "tool",
+          ctx: {
+            session: ctx.session,
+            ui: ctx.ui,
+            pi: ctx.pi,
+          },
+          config,
+          runtimeCtx: ctx,
+        });
+        return outcome.toolResult ?? { success: false, action: coordinatorResult.action, message: outcome.message };
       }
       // coordinatorResult.status === "not-applicable" → continue with original flow
 

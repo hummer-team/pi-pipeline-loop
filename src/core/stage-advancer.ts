@@ -39,6 +39,8 @@ import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-intr
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
 import { coordinateDesignReview } from "./design-review/coordinator";
+// 193 Phase 0: single honest consumer for design-review coordinator results
+import { consumeDesignReviewResult } from "./design-review/entry-result";
 import { createInitialState, computeHash } from "./design-review/state";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
@@ -1425,20 +1427,34 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         );
       }
       if (coordinatorResult.status === "handled") {
-        // Coordinator handled the routing, return its result
-        const result: any = {
-          success: coordinatorResult.action !== "frozen" && coordinatorResult.action !== "pending",
-          action: coordinatorResult.action,
-        };
-        if ("reason" in coordinatorResult) {
-          result.message = coordinatorResult.reason;
-        } else {
-          result.message = `Design review ${coordinatorResult.action}`;
-        }
-        if ("toStage" in coordinatorResult) {
-          result.toStage = coordinatorResult.toStage;
-        }
-        return result;
+        // 193 Phase 0 (task 5): ONE honest consumer shared with the hook and the
+        // other tool entries. `verify_failed` records exactly one retry-budget
+        // attempt (and never reports success); a child subagent defers to its
+        // owner with zero budget.
+        const outcome = await consumeDesignReviewResult({
+          result: coordinatorResult,
+          meta: ctx.session.getMeta() ?? meta,
+          entry: "tool",
+          ctx: {
+            session: ctx.session,
+            ui: ctx.ui
+              ? {
+                  notify: (msg: string) => { ctx.ui?.notify?.(msg); },
+                  ...(typeof (ctx.ui as { select?: unknown }).select === "function"
+                    ? {
+                        select: (msg: string, options: string[]) =>
+                          (ctx.ui as { select: (m: string, o: string[]) => Promise<string | undefined> }).select(msg, options),
+                      }
+                    : {}),
+                }
+              : undefined,
+            pi: ctx.pi,
+          },
+          config,
+          ui,
+          runtimeCtx: ctx,
+        });
+        return outcome.toolResult ?? { success: false, action: coordinatorResult.action, message: outcome.message };
       }
       // coordinatorResult.status === "not-applicable" → continue with original flow
 

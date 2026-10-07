@@ -36,7 +36,17 @@ function expectation(overrides?: Partial<DesignReviewReportExpectation>): Design
   };
 }
 
-function identityHead(extra?: string): string {
+/**
+ * 193 Phase 0: the four contract sections. `identityHead` carries the two
+ * sections that every case needs but rarely rewrites (Summary + Recommendations),
+ * so a case only appends the Verdict/Issues tail it is actually testing.
+ * `identityHeadOnly` stays available for cases that must control those sections
+ * themselves (e.g. the duplicate/absent-heading negatives).
+ */
+const SUMMARY_SECTION = ["## Summary", "", "Reviewed the plan against the requirement document; phase split,", "acceptance criteria and regression coverage are addressed."];
+const RECOMMENDATIONS_SECTION = ["## Recommendations", "", "Proceed with the plan as written; keep the per-phase acceptance", "criteria as the regression checklist."];
+
+function identityHeadOnly(extra?: string): string {
   return [
     "# Design Review Report",
     "",
@@ -47,6 +57,10 @@ function identityHead(extra?: string): string {
     `**input hash**: ${HASH}`,
     extra ?? "",
   ].filter((l) => l !== "").join("\n");
+}
+
+function identityHead(extra?: string): string {
+  return [identityHeadOnly(extra), "", ...SUMMARY_SECTION, "", ...RECOMMENDATIONS_SECTION].join("\n");
 }
 
 describe("192 Phase 3: identity binding (full fields, canonical)", () => {
@@ -256,8 +270,11 @@ describe("192 Phase 3: issues precedence and verdict semantics", () => {
   });
 
   it("Summary prose containing PASS does not act as verdict", () => {
+    // Raw head on purpose: this case must control the Summary body itself and
+    // carry NO verdict conclusion line (193 Phase 0: missing Verdict section or
+    // missing conclusion line is invalid, never a silent pass).
     const content = [
-      identityHead(),
+      identityHeadOnly(),
       "",
       "## Summary",
       "",
@@ -302,7 +319,10 @@ describe("192 Phase 3: inert content exclusion", () => {
 
 describe("192 Phase 3: unknown tokens / contract errors", () => {
   it("custom contract verdict patterns drive extraction", () => {
-    const content = identityHead() + "\n\nVERDICT>>MAYBE<<\n\n## Issues\nNone\n";
+    // 193 Phase 0: the report stays structurally complete (all four sections) so
+    // the assertion actually reaches the verdict phase and tests the TOKEN, not
+    // the section contract.
+    const content = identityHead() + "\n\n## Verdict\n\nVERDICT>>MAYBE<<\n\n## Issues\nNone\n";
     const v = verifyDesignReviewReportSnapshot(content, expectation(), {
       verdictPatterns: ["VERDICT>>(MAYBE)<<"],
     });

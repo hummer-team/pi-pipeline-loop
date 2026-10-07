@@ -10,9 +10,11 @@
  */
 
 import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } from "../types";
-import { writeAuditLog, writeStageAudit } from "../utils/auditLog";
+import { writeAuditLog, writeStageAudit, safeWriteAuditLog } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
+// 193 Phase 0: report-domain failures carry the complete corrective template
+import { buildDesignReviewReportFeedback } from "./design-review/report-feedback";
 import { recordStageVisit } from "../utils/stage-visit";
 import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
@@ -382,8 +384,29 @@ export async function applyVerifyFail(
     .map((f) => formatFailure(f))
     .join("; ");
 
+  // 193 Phase 0 (task 4): a design-review REPORT format defect carries the full
+  // corrective template (identity rows + four required sections + shape example)
+  // instead of the generic "follow the SKILL format" hint, which never told the
+  // model WHAT the current report was missing. Identity values come from the
+  // TRUSTED persisted context, never reverse-inferred from failure prose.
+  const reportFeedback = buildDesignReviewReportFeedback({
+    meta,
+    stageName,
+    failures: verifyFailures,
+  });
+  if (reportFeedback) {
+    await safeWriteAuditLog("design_review_report_feedback", {
+      pipelineId: meta.pipelineId,
+      stage: "report_contract",
+      method,
+      reportDoc: reportFeedback.reportDoc,
+      defectCount: String(reportFeedback.failures.length),
+      defects: reportFeedback.failures.join("; ").slice(0, 500),
+    }, "warn");
+  }
+
   // TUI failure output (gated by output.pipelineStage)
-  ui?.fail(ctx, stageName, "verify failed");
+  ui?.fail(ctx, stageName, reportFeedback ? "report format invalid" : "verify failed");
 
   // Circuit breaker: if verifyAttempts reaches maxVerifyAttempts, freeze pipeline
   if (config) {
@@ -407,10 +430,14 @@ export async function applyVerifyFail(
       // H2 fix: return immediately after freeze to prevent fall-through
       // to the wake-model code block below. Overflow freeze hands control
       // to the user (decision menu); waking the model would interfere.
+      // 193 Phase 0: the frozen menu hands control to the human, so the report
+      // template is surfaced through the return message only (never a wake).
       return {
         success: false,
         passed: false,
-        message: `Verification failed for "${stageName}" (attempt overflow — frozen): ${failureSummary}`,
+        message: reportFeedback
+          ? `Design-review report is invalid and the verify budget is exhausted — pipeline frozen. ${reportFeedback.message}`
+          : `Verification failed for "${stageName}" (attempt overflow — frozen): ${failureSummary}`,
         failures: verifyFailures,
       };
     }
@@ -422,7 +449,9 @@ export async function applyVerifyFail(
   if (method === "rule" && ctx.pi && typeof ctx.pi.sendUserMessage === "function") {
     try {
       ctx.pi.sendUserMessage(
-        `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification. Please strictly follow the SKILL output format requirements.`,
+        reportFeedback
+          ? reportFeedback.message
+          : `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification. Please strictly follow the SKILL output format requirements.`,
         { deliverAs: "followUp" },
       );
       await writeAuditLog("verify_fail_wake", {
@@ -438,12 +467,18 @@ export async function applyVerifyFail(
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  } else if (method === "rule" && reportFeedback) {
+    // Hook path with no pi wake channel: the corrective template would otherwise
+    // never reach the model, so surface it through the UI notification path.
+    ctx.ui?.notify(reportFeedback.message);
   }
 
   return {
     success: false,
     passed: false,
-    message: `Verification failed for "${stageName}": ${failureSummary}. Please strictly follow the SKILL output format requirements.`,
+    message: reportFeedback
+      ? `${reportFeedback.message}`
+      : `Verification failed for "${stageName}": ${failureSummary}. Please strictly follow the SKILL output format requirements.`,
     failures: verifyFailures,
   };
 }
