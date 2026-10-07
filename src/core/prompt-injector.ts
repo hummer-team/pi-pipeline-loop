@@ -32,6 +32,9 @@ import { detectLastRunHealth, extractLastUserMessageText } from "./session-state
 import { parseClarifyTurnArgs } from "../utils/clarify-args";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
+// 193 Phase 1 (task 4): the smart decision guidance builder is the SAME one
+// the review-dispatch exact prompt uses — one protocol source of truth.
+import { buildDesignReviewSmartGuidanceSection } from "./design-review/smart-prompt";
 import { resolvePiWorkDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
 import { isWithinDesignReviewScope } from "../utils/protect";
@@ -694,10 +697,18 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
       // Track rendering path for snapshot source label
       let snapshotSource: "yml" | "fallback" | "default" = "default";
 
+      // 193 Phase 1 (task 4): design-review smart decision guidance — ONE
+      // shared builder (prompt-template selection) with the review-dispatch
+      // exact prompt, so the injected stage prompt and the dispatched prompt
+      // always state the SAME protocol. Null outside smart review mode.
+      const smartGuidance = meta.currentStage === "design-review"
+        ? await buildDesignReviewSmartGuidanceSection(config, meta)
+        : null;
+
       // Try yml template path
       const template = await getStagePrompt(config.projectRoot, meta.currentStage);
       if (template !== null) {
-        const values = await buildDynamicValues(config, meta, stageConfig, base);
+        const values = await buildDynamicValues(config, meta, stageConfig, base, smartGuidance);
         const rendered = renderStageTemplate(template, meta.currentStage, values);
         if (rendered.status === "missing_critical") {
           await safeWriteAuditLog("prompt_injector_missing_placeholder", {
@@ -714,6 +725,15 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         // Default path: no yml template → use 10-part assembly
         pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig, base);
         snapshotSource = "default";
+      }
+
+      // 193 Phase 1 (task 4): a custom stage template that predates the
+      // {{design_review_smart_guidance}} placeholder still receives the
+      // smart decision protocol — appended exactly once (never duplicated
+      // when the template already rendered it). Ordinary plan/review smart
+      // confirm guidance is untouched.
+      if (smartGuidance !== null && !pluginPrompt.includes(smartGuidance)) {
+        pluginPrompt = `${pluginPrompt}\n\n---\n\n${smartGuidance}`;
       }
 
       // Phase 3 (170) ⑤: inject PIPELINE STATE section for frozen pipelines
@@ -950,7 +970,9 @@ async function buildDefaultPrompt(
 
 /**
  * Builds the dynamic placeholder values map for template rendering.
- * Maps each of the 11 known placeholder keys to its computed value.
+ * Maps each of the known placeholder keys to its computed value (193 Phase 1:
+ * smart guidance is pre-computed by the caller so the same text serves both
+ * template substitution and the append-once safety net).
  * Null values trigger paragraph-level removal in renderStageTemplate.
  *
  * @param config - Pipeline configuration
@@ -964,6 +986,8 @@ async function buildDynamicValues(
   meta: SessionMeta,
   stageConfig: StageConfig,
   base: string,
+  /** 193 Phase 1: pre-computed smart review guidance (shared with append-once) */
+  designReviewSmartGuidance: string | null = null,
 ): Promise<Record<string, string | null>> {
   const isLoopStage = meta.currentStage === "develop" || meta.currentStage === "fix";
 
@@ -988,6 +1012,9 @@ async function buildDynamicValues(
     smart_confirm_guidance: buildSmartConfirmGuidance(stageConfig, meta),
     // Phase 4 (191): Design-review dynamic context (null when not in design-review flow → paragraph removed)
     design_review_context: buildDesignReviewContext(meta, config),
+    // Phase 1 (193): Design-review smart plan-revision decision protocol
+    // (null outside smart review mode → paragraph removed)
+    design_review_smart_guidance: designReviewSmartGuidance,
   };
 }
 

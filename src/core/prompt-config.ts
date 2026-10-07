@@ -73,6 +73,8 @@ const KNOWN_PLACEHOLDER_KEYS = [
   "stage_executor", // Phase 4 (139): stage executor scheduling
   "stage_deliverables", // Phase 0 (146): plugin default deliverables (optional, not critical)
   "smart_confirm_guidance", // Phase 5 (162): smart confirm protocol (plan/review smart mode only)
+  "design_review_context", // Phase 4 (191): design-review dynamic context
+  "design_review_smart_guidance", // Phase 1 (193): smart plan-revision decision protocol
 ];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────
@@ -415,6 +417,26 @@ const strictParseCache = new Map<string,
 >();
 
 /**
+ * Resolve the ACTUAL strict prompt config file path for a project + plugin
+ * asset dir. Exported so recovery flows (e.g. re-preparing a smart review
+ * dispatch after a config fix) can target cache invalidation at the exact
+ * path without guessing.
+ */
+export function strictPromptFilePath(projectRoot: string, workDir?: string): string {
+  const dir = workDir ?? CONFIG_DIR_NAME;
+  return path.resolve(projectRoot, dir, "references", PROMPT_CONFIG_FILE);
+}
+
+/**
+ * 193 Phase 1 (task 4): invalidate the strict-parse cache for ONE actual
+ * file path — explicit recovery after a config fix re-reads that file
+ * WITHOUT globally clearing other projects' caches.
+ */
+export function invalidateStrictPromptCache(filePath: string): void {
+  strictParseCache.delete(filePath);
+}
+
+/**
  * Read ONE key from `{workDir}/references/pipeline-stage-prompt.yml` with
  * explicit error taxonomy. The ordinary loader/cache behavior is untouched;
  * this is a narrow, strict sibling used ONLY by the design-review update
@@ -431,8 +453,7 @@ export async function readStrictPromptKey(
   key: string,
   workDir?: string,
 ): Promise<StrictPromptKeyResult> {
-  const dir = workDir ?? CONFIG_DIR_NAME;
-  const filePath = path.resolve(projectRoot, dir, "references", PROMPT_CONFIG_FILE);
+  const filePath = strictPromptFilePath(projectRoot, workDir);
 
   let cached = strictParseCache.get(filePath);
   if (!cached) {

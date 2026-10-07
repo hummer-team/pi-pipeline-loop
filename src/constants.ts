@@ -354,6 +354,52 @@ This plan update is triggered by a **design-review FAIL** verdict. You are in au
 - The disposition table must cover EVERY issue of the consumed report exactly once; missing or duplicate entries invalidate the update
 - The updated plan is automatically re-reviewed in the next design-review round; final fix QUALITY is judged there, not by this step`;
 
+/**
+ * 193 Phase 1: built-in default guidance appended to a REVIEW dispatch when
+ * the design-review stage runs in SMART confirmation mode.
+ *
+ * Selection policy (identical to the update prompt, K04/K05): the ONLY custom
+ * source is the YAML key `design_review_smart_decision_prompt` in
+ * `{piWorkDir}/references/pipeline-stage-prompt.yml`; only a genuinely absent
+ * file/key falls back to this constant, while explicit empty/non-string values
+ * and read/parse/token errors BLOCK the dispatch (never a silent default swap).
+ *
+ * Declared runtime tokens: {pipelineId} {planDoc} {round} {operationId}
+ * {inputHash} {reportDoc}. Example fields are written WITHOUT braces so they
+ * are never treated as runtime tokens. The guidance is appended ONLY to the
+ * exact review prompt; update and develop-handoff dispatches never carry it.
+ */
+export const DEFAULT_DESIGN_REVIEW_SMART_DECISION_PROMPT = `## Design Review Smart Plan-Revision Decision
+
+This review runs under SMART confirmation mode for pipeline {pipelineId}.
+Identity: plan {planDoc}, round {round}, review operation {operationId},
+input hash {inputHash}, report {reportDoc}.
+
+- If your verdict is PASS: ignore this section entirely and never write a
+  Plan Revision Decision into a PASS report.
+- If your verdict is FAIL: append EXACTLY ONE section to the report:
+
+\`\`\`markdown
+## Plan Revision Decision
+
+**action**: revise-plan
+**reason**: <replace this line with one real justification>
+\`\`\`
+
+- **action** accepts ONLY these two lowercase tokens:
+  - revise-plan — every issue is fixable inside the plan document by an
+    authorized autonomous revision pass.
+  - request-human — at least one issue needs a human call (requirement
+    conflict, product direction, missing authority, or information only the
+    owner can supply).
+- proceed-develop is NOT a valid action: a FAIL verdict can never ask to
+  enter development; smart mode does not release FAIL automatically.
+- **reason** must be a real justification line — never blank, never left as the
+  angle-bracket instruction or any other copied template placeholder.
+- A FAIL report without this exact section (or with a duplicated,
+  contradictory, empty or placeholder variant) is rejected as INVALID and
+  returned to you for correction — it is never routed anywhere.`;
+
 /** Default path templates for stage resources (use {stage} placeholder) */
 export const DEFAULT_SKILL_PATH = "{stage}/SKILL.md";
 export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";

@@ -153,6 +153,8 @@ design-review: |
   {{stage_deliverables}}
   ---
   {{design_review_context}}
+  ---
+  {{design_review_smart_guidance}}
 
 develop: |
   {{context_reference}}
@@ -233,6 +235,15 @@ stage_executor_clarify: |
   **Parent wait discipline**: After relaying the clarification questions to the user, STOP and WAIT. Do NOT collect answers interactively (e.g. via `ask_user_question`). The sole answer channel is the `**答**` fields of the requirement document. The user drives the next round by re-mentioning the agent with the document path.
   {active_spawn_note}
 
+# ─── Design-review strict prompt keys (192 / 193) ────────────────────────────
+# `design_review_update_prompt` (192) and `design_review_smart_decision_prompt`
+# (193) are read STRICTLY: ONLY a missing file or missing key falls back to
+# the plugin's built-in default; an explicit empty/non-string value or a
+# broken YAML BLOCKS the corresponding dispatch (never a silent default swap).
+# Tokens: update → {pipelineId} {planDoc} {reviewDoc} {round} {operationId}
+# {baselinePlanHash} {issues} {requirementDoc}; smart decision → {pipelineId}
+# {planDoc} {round} {operationId} {inputHash} {reportDoc}. Any other brace
+# identifier in the text blocks the dispatch. Example fields: no braces.
 design_review_update_prompt: |
    ## Design Review Update Mode
    This plan update is triggered by a **design-review FAIL** verdict. You are in authorized update mode.

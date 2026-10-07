@@ -8,6 +8,13 @@
 import type { ExtensionAPI, BeforeAgentStartEventResult, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 export type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RuntimeCtx } from "./core/runtime-ctx";
+// 193 Phase 1: design-review decision payloads are defined in the domain
+// module (import-free); types.ts only bridges them into persisted shapes.
+import type { SmartPlanRevisionDecision } from "./core/design-review/decision-types";
+export type {
+  SmartPlanRevisionAction,
+  SmartPlanRevisionDecision,
+} from "./core/design-review/decision-types";
 
 /**
  * Local structural equivalent of the SDK's ToolResultEventResult.
@@ -694,6 +701,13 @@ export interface DesignReviewOperation {
   dispatchEvidence?: "confirmed_not_sent" | "send_intent" | "trusted_id" | "unknown";
   /** 192 Phase 1: machine-readable reason when evidence is confirmed_not_sent/unknown */
   dispatchReason?: string;
+  /**
+   * 193 Phase 1: confirmation mode PINNED at review-dispatch preparation time
+   * (resolved from `stages["design-review"].confirm.mode`, default "auto").
+   * Operations created before 193 carry no field; readers must fall back to
+   * the stage-resolved config value — the field never FABRICATES authority.
+   */
+  reviewConfirmMode?: ConfirmMode;
   /** Timestamp when operation was created */
   createdAt: number;
   /** Timestamp when operation completed/failed (absent until settled) */
@@ -932,6 +946,13 @@ export type DesignReviewVerificationOutcome =
       planHash: string;
       reportHash: string;
       issues: readonly ReviewIssue[];
+      /**
+       * 193 Phase 1: machine plan-revision decision verified from the SAME
+       * report snapshot. Present only on a VALID FAIL under smart review mode
+       * (the verifier rejects the report as `invalid` when it is missing or
+       * malformed there); never present on PASS or in auto/manual modes.
+       */
+      smartDecision?: SmartPlanRevisionDecision;
     }
   | {
       kind: "update";

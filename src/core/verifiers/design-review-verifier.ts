@@ -33,6 +33,11 @@
  *     4. no issues + mutually exclusive PASS & FAIL → invalid
  *     5. canonical single PASS → pass; single FAIL → fail
  *     6. empty issues heading / unknown token / no conclusion → invalid
+ *   193 Phase 1: at step 3/5 a FAIL additionally passes the SMART decision
+ *   gate — under `smartDecisionMode` the SAME snapshot must carry exactly
+ *   one valid `## Plan Revision Decision` (binary action + real reason),
+ *   otherwise the verdict becomes INVALID (correction, never routing).
+ *   PASS is exempt; non-smart consumers keep the historical behaviour.
  *
  * The mechanical inert-line cleaning and section extraction live in
  * `design-review/report-sections.ts` and the section/identity policy in
@@ -55,6 +60,8 @@ import {
   checkDesignReviewReportSections,
   findDesignReviewIdentityValue,
 } from "../design-review/report-contract";
+import { parseDesignReviewSmartDecision } from "../design-review/smart-decision";
+import type { SmartPlanRevisionDecision } from "../design-review/decision-types";
 
 /** Historical export (192): inert-line cleaning shared with the contract. */
 export { DEFAULT_ISSUE_HEADING_PATTERN, stripInertLines };
@@ -77,6 +84,13 @@ export type DesignReviewReportVerdict =
       reportHash: string;
       issues: ReviewIssue[];
       reason: string;
+      /**
+       * 193 Phase 1: machine plan-revision decision verified from the SAME
+       * snapshot. Present ONLY on a FAIL verdict when `smartDecisionMode`
+       * was requested and the section parsed cleanly; never present on PASS
+       * or for non-smart consumers.
+       */
+      smartDecision?: SmartPlanRevisionDecision;
     }
   | { verdict: "invalid"; failures: string[]; reportHash?: string };
 
@@ -181,21 +195,48 @@ function isKnownVerdictToken(token: string): boolean {
 }
 
 /**
+ * 193 Phase 1 (tasks 5/6): SMART-mode FAIL gate applied to the SAME cleaned
+ * snapshot the verdict was decided from. A FAIL under smart decision mode
+ * MUST carry exactly one valid `## Plan Revision Decision`; missing or
+ * malformed ⇒ INVALID (corrective feedback path), never routed. Non-smart
+ * consumers get the historical FAIL untouched. PASS never calls this gate.
+ */
+function applySmartDecisionGate(
+  fail: { reportHash: string; issues: ReviewIssue[]; reason: string },
+  lines: readonly string[],
+  smartDecisionMode: boolean | undefined,
+): DesignReviewReportVerdict {
+  if (!smartDecisionMode) {
+    return { verdict: "fail", ...fail };
+  }
+  const parsed = parseDesignReviewSmartDecision(lines);
+  if (!parsed.ok) {
+    return { verdict: "invalid", failures: parsed.failures, reportHash: fail.reportHash };
+  }
+  return { verdict: "fail", ...fail, smartDecision: parsed.decision };
+}
+
+/**
  * Verify a design-review report SNAPSHOT against the current review identity.
  * verdictPatterns/issueHeadingPattern let the loaded verify.md contract drive
  * the shapes (declaration is behavior); when omitted the built-in defaults
- * (mirroring the shipped template) apply.
+ * (mirroring the shipped template) apply. smartDecisionMode (193 Phase 1)
+ * additionally requires a valid plan-revision decision on FAIL verdicts.
  */
 export function verifyDesignReviewReportSnapshot(
   content: string,
   expectation: DesignReviewReportExpectation,
-  patterns?: { verdictPatterns?: readonly string[]; issueHeadingPattern?: string },
+  options?: {
+    verdictPatterns?: readonly string[];
+    issueHeadingPattern?: string;
+    smartDecisionMode?: boolean;
+  },
 ): DesignReviewReportVerdict {
   const reportHash = computeReportHash(content);
   const failures: string[] = [];
   const lines = stripInertLines(content);
   const contractOptions = {
-    issueHeadingPattern: patterns?.issueHeadingPattern,
+    issueHeadingPattern: options?.issueHeadingPattern,
     requireOperation: expectation.operationId !== undefined,
     requireInputHash: expectation.inputHash !== undefined,
   };
@@ -252,8 +293,8 @@ export function verifyDesignReviewReportSnapshot(
   }
 
   // ── 3. Verdict candidates (anchored patterns only) ────────────────────────
-  const verdictPatterns = patterns?.verdictPatterns && patterns.verdictPatterns.length > 0
-    ? patterns.verdictPatterns
+  const verdictPatterns = options?.verdictPatterns && options.verdictPatterns.length > 0
+    ? options.verdictPatterns
     : DEFAULT_DESIGN_REVIEW_VERDICT_PATTERNS;
 
   const seen: Array<{ value: "pass" | "fail"; token: string; line: string }> = [];
@@ -284,7 +325,7 @@ export function verifyDesignReviewReportSnapshot(
   }
 
   // ── 4. Issues section over the SAME cleaned content ───────────────────────
-  const issueHeadingRe = compileHeadingRe(patterns?.issueHeadingPattern, DEFAULT_ISSUE_HEADING_PATTERN);
+  const issueHeadingRe = compileHeadingRe(options?.issueHeadingPattern, DEFAULT_ISSUE_HEADING_PATTERN);
   const issuesSection = extractReportSection(lines, issueHeadingRe);
   if (!issuesSection) {
     // Unreachable while the structure contract runs first, kept fail-closed.
@@ -311,14 +352,17 @@ export function verifyDesignReviewReportSnapshot(
   if (validIssues.length > 0) {
     // Issues take precedence: even a PASS conclusion cannot mask valid issues
     const passAlsoPresent = seen.some((s) => s.value === "pass");
-    return {
-      verdict: "fail",
-      reportHash,
-      issues: validIssues,
-      reason: passAlsoPresent
-        ? "valid issues present — issues take precedence over PASS conclusion"
-        : "valid issues present",
-    };
+    return applySmartDecisionGate(
+      {
+        reportHash,
+        issues: validIssues,
+        reason: passAlsoPresent
+          ? "valid issues present — issues take precedence over PASS conclusion"
+          : "valid issues present",
+      },
+      lines,
+      options?.smartDecisionMode,
+    );
   }
 
   const hasPass = seen.some((s) => s.value === "pass");
@@ -331,16 +375,19 @@ export function verifyDesignReviewReportSnapshot(
     return { verdict: "pass", reportHash, issues: [], reason: "canonical single PASS conclusion" };
   }
   if (hasFail) {
-    return {
-      verdict: "fail",
-      reportHash,
-      // A FAIL conclusion with no issue items: issues MUST have been provided —
-      // the section was empty of real items; FAIL without items is ambiguous
-      // unless the section carried only the sentinel (then it would be PASS-side
-      // exclusive) — keep fail with empty issues (consumer requires items).
-      issues: [],
-      reason: "FAIL conclusion without issue items",
-    };
+    return applySmartDecisionGate(
+      {
+        reportHash,
+        // A FAIL conclusion with no issue items: issues MUST have been provided —
+        // the section was empty of real items; FAIL without items is ambiguous
+        // unless the section carried only the sentinel (then it would be PASS-side
+        // exclusive) — keep fail with empty issues (consumer requires items).
+        issues: [],
+        reason: "FAIL conclusion without issue items",
+      },
+      lines,
+      options?.smartDecisionMode,
+    );
   }
   if (hasPass) {
     if (!sentinelPresent && rawItems.length === 0) {

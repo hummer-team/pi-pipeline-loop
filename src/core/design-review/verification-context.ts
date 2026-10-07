@@ -14,6 +14,8 @@ import type {
   DesignReviewOperation,
   DesignReviewIdentity,
   DesignReviewOperationKind,
+  PipelineConfig,
+  ConfirmMode,
 } from "../../types";
 import { hasCompleteDesignReviewIdentity, buildDesignReviewIdentity, deriveReportPath } from "./state";
 
@@ -184,4 +186,32 @@ export function deriveDomainVerificationContext(
   }
 
   return null;
+}
+
+/**
+ * 193 Phase 1 (task 6): resolve the confirmation mode that GOVERNS the
+ * current design-review run.
+ *
+ * Order (fixed):
+ * 1. the mode PINNED on the current operation at dispatch-preparation time
+ *    (`reviewConfirmMode`) — the value the reviewer was actually told;
+ * 2. the stage-resolved config value `stages["design-review"].confirm.mode`
+ *    (json-config-loader already validates/normalizes it) for LEGACY
+ *    operations that carry no pinned field;
+ * 3. "auto" — the default, never a fabricated authority.
+ *
+ * The returned mode only selects REPORT-CONTRACT strictness (whether a valid
+ * FAIL must carry a machine plan-revision decision); routing authority itself
+ * stays with the coordinator + confirm gate.
+ */
+export function resolveDesignReviewConfirmMode(
+  meta: SessionMeta | undefined,
+  config: PipelineConfig | undefined,
+): ConfirmMode {
+  const pinned = meta?.designReview?.operation?.reviewConfirmMode;
+  if (pinned === "auto" || pinned === "manual" || pinned === "smart") {
+    return pinned;
+  }
+  const stageMode = config?.stages?.["design-review"]?.confirm?.mode;
+  return stageMode === "smart" || stageMode === "manual" ? stageMode : "auto";
 }

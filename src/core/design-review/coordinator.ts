@@ -21,6 +21,8 @@ import type {
   ReviewIssue,
   SpawnOperationContext,
   VerifyFailureItem,
+  ConfirmMode,
+  SmartPlanRevisionDecision,
 } from "../../types";
 import { extractReportIssues } from "./report";
 import { runVerification, type VerificationRunResult } from "../auto-verifier";
@@ -31,6 +33,10 @@ import {
   DesignReviewUpdateConfigError,
   type DesignReviewUpdatePromptParams,
 } from "./prompt";
+import {
+  buildDesignReviewSmartPrompt,
+  DesignReviewSmartPromptError,
+} from "./smart-prompt";
 import { validateDesignReviewUpdate } from "../verifiers/design-review-update-verifier";
 import {
   isValidTransition,
@@ -195,6 +201,72 @@ export async function coordinateDesignReview(
 /**
  * Handle review_ready phase: dispatch review agent.
  */
+/**
+ * 193 Phase 1 (tasks 1/3): the SINGLE review-dispatch preparation used by
+ * BOTH the first review and the next-round review after a plan update.
+ *
+ * - Resolves the confirmation mode from the SAME stage config the confirm
+ *   gate uses (`stages["design-review"].confirm.mode`, loader-normalized,
+ *   default "auto") and pins it on the operation candidate.
+ * - In SMART mode renders the plan-revision decision guidance from the
+ *   strict YAML/default source BEFORE any commit or send intent; the
+ *   selection source (yaml/default + hash) is audited for provenance.
+ * - An explicit configuration problem returns a blocking reason with ZERO
+ *   meta changes, ZERO RPCs and NO consumed visit — the state stays
+ *   recoverable and the next attempt re-reads the config (cache invalidated
+ *   per actual file path), so a fixed file recovers without a restart.
+ */
+async function prepareReviewDispatchContext(
+  ctx: CoordinatorContext,
+  candidate: {
+    pipelineId: string;
+    planDoc: string;
+    round: number;
+    operationId: string;
+    inputHash: string;
+    reportDoc: string;
+  },
+): Promise<{ ok: true; mode: ConfirmMode; guidance?: string } | { ok: false; reason: string }> {
+  const stageMode = ctx.config.stages?.["design-review"]?.confirm?.mode;
+  const mode: ConfirmMode = stageMode === "smart" || stageMode === "manual" ? stageMode : "auto";
+  if (mode !== "smart") {
+    return { ok: true, mode };
+  }
+  try {
+    const built = await buildDesignReviewSmartPrompt(ctx.config, {
+      pipelineId: candidate.pipelineId,
+      planDoc: candidate.planDoc,
+      round: candidate.round,
+      operationId: candidate.operationId,
+      inputHash: candidate.inputHash,
+      reportDoc: candidate.reportDoc,
+    }, { reloadFile: true });
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "smart_prompt_source",
+      source: built.selection.source,
+      ...(built.selection.path !== undefined ? { path: built.selection.path } : {}),
+      key: built.selection.key,
+      contentHash: built.selection.contentHash.substring(0, 12),
+      operationId: candidate.operationId,
+      round: String(candidate.round),
+    });
+    return { ok: true, mode, guidance: built.guidance };
+  } catch (error) {
+    // Fail-closed: explicit smart-config problems BLOCK the real dispatch.
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "smart_prompt_blocked",
+      reason: error instanceof Error ? error.message : String(error),
+      ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+      ...(error instanceof DesignReviewSmartPromptError
+        ? { code: error.code, file: error.filePath ?? "", key: error.key ?? "" }
+        : {}),
+      operationId: candidate.operationId,
+      round: String(candidate.round),
+    }, "warn");
+    return { ok: false, reason: "smart_decision_config_invalid" };
+  }
+}
+
 async function handleReviewReady(
   ctx: CoordinatorContext,
   meta: SessionMeta,
@@ -252,9 +324,26 @@ async function handleReviewReady(
   }
 
   // New/prepared operations carry explicit not-sent evidence until proven.
-  const preparedOp: DesignReviewOperation = operation.dispatchEvidence
+  const baseOp: DesignReviewOperation = operation.dispatchEvidence
     ? operation
     : { ...operation, dispatchEvidence: "confirmed_not_sent", dispatchReason: "prepared_not_dispatched" };
+
+  // 193 Phase 1 (tasks 1/3): pin the resolved confirmation mode and (smart
+  // only) render the plan-revision decision guidance BEFORE any commit or
+  // send intent. A blocked config keeps review_ready recoverable with zero
+  // meta changes, zero RPCs and no consumed visit.
+  const prep = await prepareReviewDispatchContext(ctx, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    planDoc: drState.planDoc,
+    round: drState.round,
+    operationId: baseOp.operationId,
+    inputHash: baseOp.inputHash ?? drState.planHash ?? "",
+    reportDoc: drState.reportDoc ?? deriveReportPath(drState.planDoc, drState.round),
+  });
+  if (!prep.ok) {
+    return { status: "handled", action: "pending", reason: prep.reason };
+  }
+  const preparedOp: DesignReviewOperation = { ...baseOp, reviewConfirmMode: prep.mode };
 
   // Commit operation to state (this also transitions to review_running) —
   // STRICT commit; failure means zero external calls happened.
@@ -263,7 +352,7 @@ async function handleReviewReady(
     return { status: "handled", action: "pending", reason: "operation_commit_failed" };
   }
 
-  const outcome = await dispatchOperation(ctx, meta, committedState, preparedOp);
+  const outcome = await dispatchOperation(ctx, meta, committedState, preparedOp, undefined, prep.guidance);
 
   await safeWriteAuditLog("design_review_coordinator", {
     action: "review_dispatch_attempted",
@@ -417,7 +506,15 @@ async function handleReviewRunning(
   if (outcome.verdict === "pass") {
     return await handlePass(ctx, meta, drState, outcome.reportHash);
   }
-  return await handleFail(ctx, meta, drState, outcome.reportHash, reportPath, outcome.issues);
+  return await handleFail(
+    ctx,
+    meta,
+    drState,
+    outcome.reportHash,
+    reportPath,
+    outcome.issues,
+    outcome.smartDecision,
+  );
 }
 
 /**
@@ -825,6 +922,8 @@ async function handleFail(
   reportHash: string,
   reportPath: string,
   verifiedIssues?: readonly ReviewIssue[],
+  /** 193 Phase 1: trusted plan-revision decision from the SAME snapshot */
+  smartDecision?: SmartPlanRevisionDecision,
 ): Promise<CoordinatorResult> {
   // Check budget before proceeding
   const budgetCheck = checkBudget(meta, ctx.config);
@@ -838,6 +937,22 @@ async function handleFail(
       max: String(budgetCheck.max),
     });
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
+  }
+
+  // 193 Phase 1 (task 6): smart mode NEVER releases FAIL itself. A valid
+  // FAIL under smart mode carries exactly one binary decision; while the
+  // human decision menu (Phase 2) is not wired yet, `request-human` parks
+  // CONSERVATIVELY — it must never fall through to the legacy automatic
+  // plan update. `revise-plan` keeps the existing authorized routing.
+  if (smartDecision?.action === "request-human") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "smart_request_human_parked",
+      decisionReason: smartDecision.reason,
+      reportHash,
+      round: String(drState.round),
+      operationId: drState.operation?.operationId ?? "none",
+    });
+    return { status: "handled", action: "pending", reason: "smart_request_human" };
   }
 
   // Record transition
@@ -1358,13 +1473,6 @@ async function handleUpdateRunning(
     return { status: "handled", action: "pending", reason: `paused:${pauseReason}` };
   }
 
-  // Record transition
-  const visitResult = recordStageVisit(meta, "design-review", ctx.config.maxLoopCycles ?? 3);
-  if (!visitResult.ok) {
-    ctx.session.updateMeta(visitResult.patch);
-    return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
-  }
-
   // Allocate next round
   const nextRound = allocateNextRound(drState);
 
@@ -1373,11 +1481,39 @@ async function handleUpdateRunning(
   // consumed update operation. Receipt/outcome stay finite per round.
   const newVisit = Date.now();
   const reviewOperation = createOperation("review", newVisit, 1, currentPlanHash, nextRound);
-  const preparedReviewOp: DesignReviewOperation = {
+  const baseReviewOp: DesignReviewOperation = {
     ...reviewOperation,
     dispatchEvidence: "confirmed_not_sent",
     dispatchReason: "prepared_not_dispatched",
   };
+
+  // 193 Phase 1 (task 3): the SAME preparation as the first review — the
+  // guidance renders against the CANDIDATE next-round operation/round/
+  // planHash/reportDoc (never old meta) and runs BEFORE the visit is
+  // recorded, so a blocked smart config consumes no visit and leaves the
+  // state recoverable with zero RPCs.
+  const reviewPrep = await prepareReviewDispatchContext(ctx, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    planDoc: drState.planDoc,
+    round: nextRound,
+    operationId: baseReviewOp.operationId,
+    inputHash: currentPlanHash,
+    reportDoc: deriveReportPath(drState.planDoc, nextRound),
+  });
+  if (!reviewPrep.ok) {
+    return { status: "handled", action: "pending", reason: reviewPrep.reason };
+  }
+  const preparedReviewOp: DesignReviewOperation = {
+    ...baseReviewOp,
+    reviewConfirmMode: reviewPrep.mode,
+  };
+
+  // Record transition
+  const visitResult = recordStageVisit(meta, "design-review", ctx.config.maxLoopCycles ?? 3);
+  if (!visitResult.ok) {
+    ctx.session.updateMeta(visitResult.patch);
+    return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
+  }
 
   // One consistent target state: next round, new plan hash, new report doc,
   // review_running with the fresh operation. The consumed update operation is
@@ -1442,7 +1578,14 @@ async function handleUpdateRunning(
   });
 
   // Dispatch the next-round review exactly once (intent → spawn → receipt).
-  const dispatchResult = await dispatchOperation(ctx, commitRes.meta, stateWithOperation, preparedReviewOp);
+  const dispatchResult = await dispatchOperation(
+    ctx,
+    commitRes.meta,
+    stateWithOperation,
+    preparedReviewOp,
+    undefined,
+    reviewPrep.guidance,
+  );
 
   await safeWriteAuditLog("design_review_coordinator", {
     action: "review_dispatch_attempted",
@@ -1784,13 +1927,22 @@ async function dispatchOperation(
   committedState: DesignReviewState,
   operation: DesignReviewOperation,
   updatePrompt?: string,
+  /** 193 Phase 1: smart plan-revision decision guidance (REVIEW dispatches only) */
+  reviewGuidance?: string,
 ): Promise<"trusted" | "unknown" | "not_sent" | "pending_queue" | "blocked"> {
   const intent = markSendIntent(ctx, meta, committedState, operation.operationId);
   if (!intent.ok) {
     // Intent commit failed → NO external call may happen (F04/D04).
     return "blocked";
   }
-  const spawnResult = await spawnDesignReviewAgent(ctx, meta, intent.state, operation, updatePrompt);
+  const spawnResult = await spawnDesignReviewAgent(
+    ctx,
+    meta,
+    intent.state,
+    operation,
+    updatePrompt,
+    reviewGuidance,
+  );
   return recordDispatchOutcome(
     ctx,
     meta,
@@ -1829,6 +1981,8 @@ async function spawnDesignReviewAgent(
   drState: DesignReviewState,
   operation: DesignReviewOperation,
   updatePrompt?: string,
+  /** 193 Phase 1: smart plan-revision decision guidance (REVIEW dispatches only) */
+  reviewGuidance?: string,
 ): Promise<{
   ok: boolean;
   error?: string;
@@ -1846,9 +2000,16 @@ async function spawnDesignReviewAgent(
   const spawnDescription = `Design review ${operation.kind}: ${inputPath} round ${drState.round}`;
 
   // For update operations with a rendered prompt, append it to provide authorized update context
-  const finalPrompt = updatePrompt
+  let finalPrompt = updatePrompt
     ? `${spawnPrompt}\n\n---\n\n${updatePrompt}`
     : spawnPrompt;
+
+  // 193 Phase 1 (task 3): smart plan-revision decision guidance is appended
+  // to the EXACT REVIEW prompt only — update and develop-handoff dispatches
+  // never carry it (they have no report-verdict decision to make).
+  if (reviewGuidance !== undefined && operation.kind === "review") {
+    finalPrompt = `${finalPrompt}\n\n---\n\n${reviewGuidance}`;
+  }
 
   const operationContext = makeOperationContext(freshMeta, drState, operation);
 

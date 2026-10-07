@@ -26,7 +26,10 @@ import { evaluateGroups } from "./verifiers/group-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { parseFrontmatter, type VerifyRules, type VerifyGroupRuleNode } from "./verify-frontmatter";
 import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
-import { deriveDomainVerificationContext } from "./design-review/verification-context";
+import {
+  deriveDomainVerificationContext,
+  resolveDesignReviewConfirmMode,
+} from "./design-review/verification-context";
 import { buildDesignReviewIdentity } from "./design-review/state";
 import { verifyDesignReviewReportSnapshot } from "./verifiers/design-review-verifier";
 import { validateDesignReviewUpdate } from "./verifiers/design-review-update-verifier";
@@ -499,6 +502,11 @@ async function computeDesignReviewDomainOutcome(
     // the deployed verify.md; unusable anchors fall back to built-in defaults
     // mirroring the shipped template. Invalid regex is fail-closed downstream.
     const anchors = await loadVerifyContractAnchors(config, "design-review");
+    // 193 Phase 1 (task 6): the confirmation mode governing THIS run is
+    // resolved once (operation-pinned first) and drives the smart decision
+    // gate over the SAME snapshot; the decision is handed to consumers
+    // through this outcome so the coordinator never re-reads the report.
+    const reviewConfirmMode = resolveDesignReviewConfirmMode(meta, config);
     const v = verifyDesignReviewReportSnapshot(content, {
       pipelineId: ctx.pipelineId,
       planDoc: ctx.planDoc,
@@ -508,6 +516,7 @@ async function computeDesignReviewDomainOutcome(
     }, {
       verdictPatterns: anchors.anchors.verdict?.patterns,
       issueHeadingPattern: anchors.anchors.issueHeading?.patterns[0],
+      smartDecisionMode: reviewConfirmMode === "smart",
     });
     if (v.verdict === "invalid") {
       return {
@@ -526,6 +535,9 @@ async function computeDesignReviewDomainOutcome(
       planHash: state.planHash ?? "",
       reportHash: v.reportHash,
       issues: v.issues,
+      // 193 Phase 1: smart plan-revision decision verified from the SAME
+      // reportHash snapshot (present only on a valid FAIL under smart mode).
+      ...(v.verdict === "fail" && v.smartDecision !== undefined ? { smartDecision: v.smartDecision } : {}),
     };
   }
 

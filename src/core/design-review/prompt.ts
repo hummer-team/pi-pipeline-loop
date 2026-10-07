@@ -1,7 +1,7 @@
 /**
  * @module design-review/prompt
- * Phase 1 / 191 + 192 Phase 2: Design review update-prompt SELECTION and
- * rendering.
+ * Phase 1 / 191 + 192 Phase 2 + 193 Phase 1: Design review update-prompt
+ * SELECTION and rendering.
  *
  * Source policy (K04/K05, final decisions):
  * - The project YAML key `design_review_update_prompt`
@@ -17,14 +17,23 @@
  *
  * Both production dispatch paths (FAIL-consumption and update_ready retry)
  * call the SAME select+render functions — no path-local template logic.
+ *
+ * 193 Phase 1: the MECHANICAL strict selection/render engine moved to
+ * `prompt-template.ts` so the smart decision prompt reuses ONE engine. The
+ * update-specific API surface, error class and REQUIRED-issues validation
+ * stay here and are unchanged for callers.
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { PipelineConfig } from "../../types";
-import { computeHash } from "./state";
-import { readStrictPromptKey } from "../prompt-config";
 import { DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT } from "../../constants";
+import {
+  renderStrictPromptTemplate,
+  selectStrictPromptTemplate,
+  type StrictPromptErrorCode,
+  type StrictPromptErrorInit,
+  type StrictPromptErrorFactory,
+  type StrictPromptTemplateSelection,
+} from "./prompt-template";
 
 /** YAML key holding the authorized update prompt. */
 export const DESIGN_REVIEW_UPDATE_PROMPT_KEY = "design_review_update_prompt";
@@ -60,17 +69,15 @@ export interface DesignReviewUpdatePromptParams {
  * can report the concrete file and key (Phase 4 pre-check reuses the codes).
  */
 export class DesignReviewUpdateConfigError extends Error {
-  readonly code:
-    | "empty-value" | "non-string" | "read-error" | "parse-error" | "shape-error"
-    | "missing-param" | "unknown-token" | "residual-token";
+  readonly code: StrictPromptErrorCode;
   readonly filePath?: string;
   readonly key?: string;
   readonly detail?: string;
 
   constructor(
-    code: DesignReviewUpdateConfigError["code"],
+    code: StrictPromptErrorCode,
     message: string,
-    init?: { filePath?: string; key?: string; detail?: string; cause?: unknown },
+    init?: StrictPromptErrorInit,
   ) {
     super(message);
     this.name = "DesignReviewUpdateConfigError";
@@ -85,19 +92,15 @@ export class DesignReviewUpdateConfigError extends Error {
   }
 }
 
-/** Auditable result of selecting the update template text. */
-export interface DesignReviewUpdateTemplateSelection {
-  /** "yaml" = project custom config; "default" = constants built-in */
-  source: "yaml" | "default";
-  /** Resolved YAML file path (absent for the constants default) */
-  path?: string;
-  /** Config key consulted */
-  key: string;
-  /** SHA-256 of the template TEXT actually used for this dispatch */
-  contentHash: string;
-  /** The template text */
-  templateText: string;
-}
+const updateErrorFor: StrictPromptErrorFactory = (code, message, init) =>
+  new DesignReviewUpdateConfigError(code, message, init);
+
+/**
+ * Auditable result of selecting the update template text. 193 Phase 1: the
+ * shape is the shared strict selection type (same fields, same semantics);
+ * the named alias is kept for existing callers.
+ */
+export type DesignReviewUpdateTemplateSelection = StrictPromptTemplateSelection;
 
 /**
  * Declared runtime token names. Templates may reference these as `{name}`
@@ -115,84 +118,36 @@ const RUNTIME_TOKENS = [
   "requirementDoc",
 ] as const;
 
-type RuntimeToken = (typeof RUNTIME_TOKENS)[number];
-
 /**
  * 192 Phase 2 (task 1/2): select the update template from the project YAML,
  * located at the RESOLVED piWorkDir. missing-file / missing-key fall to the
  * constants default (recorded auditable source); every other problem throws
  * DesignReviewUpdateConfigError and the caller must BLOCK dispatch.
+ *
+ * 193 Phase 1: the status→selection mechanics live in prompt-template.ts.
  */
 export async function selectDesignReviewUpdateTemplate(
   config: PipelineConfig,
 ): Promise<DesignReviewUpdateTemplateSelection> {
-  // Resolve the plugin asset dir the same way dispatch does today
-  const { resolvePiWorkDir } = await import("../../utils/work-dir");
-  const workDir = resolvePiWorkDir(config);
-  const res = await readStrictPromptKey(config.projectRoot, DESIGN_REVIEW_UPDATE_PROMPT_KEY, workDir);
-
-  switch (res.status) {
-    case "found":
-      return {
-        source: "yaml",
-        path: res.filePath,
-        key: DESIGN_REVIEW_UPDATE_PROMPT_KEY,
-        contentHash: computeHash(res.value),
-        templateText: res.value,
-      };
-    case "missing-file":
-    case "missing-key":
-      // Genuinely not configured → constants default (K04).
-      return {
-        source: "default",
-        key: DESIGN_REVIEW_UPDATE_PROMPT_KEY,
-        contentHash: computeHash(DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT),
-        templateText: DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT,
-      };
-    case "invalid-value":
-      throw new DesignReviewUpdateConfigError(
-        res.reason === "empty" ? "empty-value" : "non-string",
-        `Design review update prompt key "${DESIGN_REVIEW_UPDATE_PROMPT_KEY}" is ${res.reason} in ${res.filePath}. ` +
-          `Fix the YAML value or remove the key to use the built-in default.`,
-        { filePath: res.filePath, key: DESIGN_REVIEW_UPDATE_PROMPT_KEY },
-      );
-    case "read-error":
-      throw new DesignReviewUpdateConfigError(
-        "read-error",
-        `Failed to read design review update prompt config ${res.filePath}: ${res.error.message}`,
-        { filePath: res.filePath, key: DESIGN_REVIEW_UPDATE_PROMPT_KEY, cause: res.error },
-      );
-    case "parse-error":
-      throw new DesignReviewUpdateConfigError(
-        "parse-error",
-        `Failed to parse design review update prompt config ${res.filePath}: ${res.error.message}`,
-        { filePath: res.filePath, key: DESIGN_REVIEW_UPDATE_PROMPT_KEY, cause: res.error },
-      );
-    case "shape-error":
-    default:
-      throw new DesignReviewUpdateConfigError(
-        "shape-error",
-        `Design review update prompt config ${res.filePath} is not a YAML mapping at the top level`,
-        { filePath: res.filePath, key: DESIGN_REVIEW_UPDATE_PROMPT_KEY },
-      );
-  }
+  return selectStrictPromptTemplate({
+    config,
+    key: DESIGN_REVIEW_UPDATE_PROMPT_KEY,
+    nameLabel: "update",
+    defaultText: DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT,
+    errorFor: updateErrorFor,
+  });
 }
 
 /**
  * 192 Phase 2 (task 4): strict text renderer.
  *
- * Rules:
- * - Supports EXACTLY the declared runtime tokens in `{field}` and
- *   `{{field}}` form. Where both occur, double-brace is replaced first;
- *   both render the same value.
- * - A SINGLE scanning pass replaces tokens; substituted VALUES are never
- *   re-scanned (no recursive substitution), and string-replace `$`
- *   interpolation semantics are avoided by using a function replacer.
- * - Required params must be non-empty; a declared token PRESENT in the
- *   template whose param is empty blocks ("missing-param").
- * - After rendering, any leftover bare-identifier brace token is reported:
- *   known name → residual-token; unknown name → unknown-token. JSON/code
- *   literals with non-identifier brace contents are NOT touched.
+ * Update-specific rules (kept HERE, never shared with the smart prompt):
+ * - REQUIRED params: pipelineId/planDoc/reviewDoc/round/operationId/
+ *   baselinePlanHash/issues must all be provided (issues is REQUIRED to be
+ *   an array — an EMPTY list renders "No issues found.").
+ * - The issues list renders as a numbered block token value.
+ * Token mechanics ({name}/{{name}}, single pass, no re-scan of values,
+ * residual/unknown brace blocking) are the shared engine semantics.
  *
  * @throws DesignReviewUpdateConfigError on any blocking condition.
  */
@@ -200,13 +155,6 @@ export function renderDesignReviewUpdatePromptText(
   templateText: string,
   params: DesignReviewUpdatePromptParams,
 ): string {
-  if (typeof templateText !== "string" || templateText.trim() === "") {
-    throw new DesignReviewUpdateConfigError(
-      "empty-value",
-      "Design review update template text is empty; refusing to dispatch an empty prompt",
-    );
-  }
-
   // Core param validation (fail-closed, same spirit as 191 renderer)
   const checks: Record<string, boolean> = {
     pipelineId: !!params.pipelineId,
@@ -229,75 +177,22 @@ export function renderDesignReviewUpdatePromptText(
     ? params.issues.map((issue, idx) => `${idx + 1}. ${issue}`).join("\n")
     : "No issues found.";
 
-  const tokenValues: Record<RuntimeToken, string> = {
-    pipelineId: params.pipelineId,
-    planDoc: params.planDoc,
-    reviewDoc: params.reviewDoc,
-    round: String(params.round),
-    operationId: params.operationId,
-    baselinePlanHash: params.baselinePlanHash,
-    issues: issuesText,
-    requirementDoc: params.requirementDoc ?? "",
-  };
-
-  // Optional-but-referenced tokens: block when template asks for a token the
-  // caller cannot provide (requirementDoc absence is otherwise tolerated).
-  const referenced = new Set<string>();
-  const scanRe = /\{\{?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}?\}/g;
-  let scanMatch: RegExpExecArray | null;
-  while ((scanMatch = scanRe.exec(templateText)) !== null) {
-    referenced.add(scanMatch[1]!);
-  }
-  const blocked = [...referenced].filter(
-    (name) => RUNTIME_TOKENS.includes(name as RuntimeToken) && tokenValues[name as RuntimeToken] === "",
-  );
-  if (blocked.length > 0) {
-    throw new DesignReviewUpdateConfigError(
-      "missing-param",
-      `Update template references runtime tokens without provided values: ${blocked.join(", ")}`,
-    );
-  }
-
-  // Single-pass replacement — double-brace alternative first so {{x}} is not
-  // partially eaten by {x}; function replacer avoids `$&`/`$$` semantics and
-  // never re-scans substituted values.
-  const replaceRe = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}|\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}/g;
-  const rendered = templateText.replace(replaceRe, (whole, doubleName?: string, singleName?: string) => {
-    const name = doubleName ?? singleName ?? "";
-    if (RUNTIME_TOKENS.includes(name as RuntimeToken)) {
-      return tokenValues[name as RuntimeToken];
-    }
-    // Unknown brace token: leave it in place; residual scan below blocks.
-    return whole;
+  return renderStrictPromptTemplate({
+    templateText,
+    tokens: RUNTIME_TOKENS,
+    values: {
+      pipelineId: params.pipelineId,
+      planDoc: params.planDoc,
+      reviewDoc: params.reviewDoc,
+      round: String(params.round),
+      operationId: params.operationId,
+      baselinePlanHash: params.baselinePlanHash,
+      issues: issuesText,
+      requirementDoc: params.requirementDoc ?? "",
+    },
+    label: "Update template",
+    errorFor: updateErrorFor,
   });
-
-  // Post-render residual scan: any surviving declared token means something
-  // went wrong; any surviving UNKNOWN bare-identifier token is a template
-  // error (example fields must not use braces).
-  const residualRe = /\{\{?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}?\}/g;
-  const residualKnown: string[] = [];
-  const residualUnknown: string[] = [];
-  let rm: RegExpExecArray | null;
-  while ((rm = residualRe.exec(rendered)) !== null) {
-    const name = rm[1]!;
-    if (RUNTIME_TOKENS.includes(name as RuntimeToken)) residualKnown.push(name);
-    else residualUnknown.push(name);
-  }
-  if (residualKnown.length > 0) {
-    throw new DesignReviewUpdateConfigError(
-      "residual-token",
-      `Update template produced unconsumed runtime tokens: ${[...new Set(residualKnown)].join(", ")}`,
-    );
-  }
-  if (residualUnknown.length > 0) {
-    throw new DesignReviewUpdateConfigError(
-      "unknown-token",
-      `Update template contains unknown runtime tokens: ${[...new Set(residualUnknown)].join(", ")}. ` +
-        `Only declared tokens (${RUNTIME_TOKENS.join(", ")}) may use brace syntax; write example fields without braces.`,
-    );
-  }
-
-  return rendered;
 }
 
 /**

@@ -70,7 +70,12 @@ export function buildDesignReviewReportFeedback(opts: {
   const context = deriveDomainVerificationContext(opts.meta);
   if (!context || context.kind !== "review") return null;
 
-  const message = renderReportFeedback(context, opts.failures);
+  // 193 Phase 1: when the CURRENT review operation was prepared in smart
+  // mode, the corrective feedback also states the conditional plan-revision
+  // decision requirement (legacy unpinned operations resolve honestly: the
+  // verifier's concrete failure line remains the authoritative hint).
+  const smartMode = opts.meta.designReview?.operation?.reviewConfirmMode === "smart";
+  const message = renderReportFeedback(context, opts.failures, smartMode);
   return { reportDoc: context.reportPath, failures: opts.failures.map((f) => f.detail), message };
 }
 
@@ -107,6 +112,7 @@ function renderReportFeedback(
     inputHash: string;
   },
   failures: readonly VerifyFailureItem[],
+  smartMode: boolean,
 ): string {
   const identity = identityRows(context);
   const block: string[] = [];
@@ -158,6 +164,21 @@ function renderReportFeedback(
   push("**Design Review: PASS**");
   push("[Use FAIL whenever any valid issue exists — valid issues always mean FAIL.]");
   push("```");
+
+  if (smartMode) {
+    push();
+    push("SMART decision mode governs this review: a FAIL verdict must additionally carry");
+    push("EXACTLY ONE decision section (a PASS report never includes it):");
+    push("```markdown");
+    push("## Plan Revision Decision");
+    push();
+    push("**action**: revise-plan");
+    push("**reason**: <replace this line with one real justification>");
+    push("```");
+    push('Allowed actions: revise-plan | request-human ("proceed-develop" is NEVER valid —');
+    push("a FAIL cannot release development; an ambiguous, duplicated, empty or placeholder");
+    push("variant keeps the report INVALID).");
+  }
 
   return block.join("\n");
 }
