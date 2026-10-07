@@ -672,9 +672,43 @@ export async function invalidateDesignReviewAuthorization(
   const authorizationId = meta.designReview.authorizationId;
   const phase = meta.designReview.phase;
 
-  ctx.session.updateMeta({
-    designReview: undefined,
-  });
+  // 193 Phase 2 (task 2): an authorization CLEAR is a protected-field patch
+  // and must go through the exclusive strict commit with an expectation —
+  // never a plain whole-object overwrite that could race a newer shared
+  // state (e.g. a just-committed human decision). One fresh retry on
+  // conflict; adapters WITHOUT the strict interface keep the legacy plain
+  // write (existing fallback, no new authority).
+  const attemptClear = (base: SessionMeta): "persisted" | "retry" | "legacy" => {
+    const expected = expectedFromCurrent(base);
+    const res = strictCommitMeta(ctx.session, { designReview: undefined }, expected);
+    if (res.status === "persisted") return "persisted";
+    if (res.status === "conflict") return "retry";
+    if (res.reason === "adapter_lacks_strict_interface") return "legacy";
+    return "retry";
+  };
+
+  const outcome = attemptClear(meta);
+  if (outcome === "retry") {
+    const fresh = ctx.session.getMeta();
+    if (fresh?.designReview) {
+      const second = attemptClear(fresh);
+      if (second === "retry") {
+        // Fail-closed honesty: a commit that cannot be confirmed leaves the
+        // authorization in place and is audited — the user can retry quit.
+        await safeWriteAuditLog("design_review_authorization_invalidate_failed", {
+          pipelineId: fresh.pipelineId ?? "unknown",
+          authorizationId,
+          reason,
+        }, "error");
+        return;
+      }
+    }
+  }
+  if (outcome === "legacy") {
+    ctx.session.updateMeta({
+      designReview: undefined,
+    });
+  }
 
   await safeWriteAuditLog("design_review_authorization_invalidated", {
     pipelineId: meta.pipelineId ?? "unknown",

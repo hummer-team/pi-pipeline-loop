@@ -165,6 +165,34 @@ export function deriveDomainVerificationContext(
     };
   }
 
+  // 193 Phase 2 (task 9): a paused design-review WAITING ON A HUMAN DECISION
+  // is the one extra LEGAL report context: same stage, same CURRENT review
+  // operation, and a decision record FULLY bound to it (id + operation +
+  // non-empty report hash). This lets the before/after-menu revalidation run
+  // through the same shared-snapshot verification. Every OTHER paused/ready/
+  // override combination stays context-free — they must never masquerade as
+  // an approval-bearing review.
+  if (
+    meta.currentStage === "design-review"
+    && state.phase === "paused"
+    && state.pauseReason === "decision-pending"
+    && op
+    && op.kind === "review"
+    && state.decision
+    && state.decision.reviewIdentity.operationId === op.operationId
+    && state.decision.reportHash !== ""
+  ) {
+    return {
+      kind: "review",
+      reportPath: state.decision.reportDoc,
+      planDoc: state.planDoc,
+      pipelineId: meta.pipelineId ?? "unknown",
+      round: state.round,
+      operationId: op.operationId,
+      inputHash: op.inputHash ?? state.decision.planHash,
+    };
+  }
+
   if (
     meta.currentStage === "plan"
     && state.phase === "update_running"

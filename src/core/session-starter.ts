@@ -188,7 +188,31 @@ async function handleSubagentJoin(
 
   // Merge parent meta into current session
   // pipelineId/currentStage/stageStartTime inherit from parent (not reset)
-  ctx.session.updateMeta({ ...parentMeta });
+  //
+  // 193 Phase 2: this whole-object write runs under the SAME exclusive commit
+  // lock. If the owner advanced the shared state between our read and our
+  // write (e.g. a dispatch receipt or a human decision landed), the plain
+  // writer REJECTS this stale overwrite — re-read the parent meta.json once
+  // and echo the FRESH snapshot; a second rejection is audited honestly.
+  if (ctx.session.updateMeta({ ...parentMeta }) === undefined) {
+    let recovered = false;
+    try {
+      const raw2 = await fs.readFile(parentMetaPath, "utf-8");
+      const fresh = JSON.parse(raw2) as SessionMeta;
+      if (fresh && fresh.pipelineId === parentPipelineId) {
+        recovered = ctx.session.updateMeta({ ...fresh }) !== undefined;
+      }
+    } catch {
+      // Fall through to the honest audit below.
+    }
+    if (!recovered) {
+      await safeWriteAuditLog("session_join_meta_rejected", {
+        parentPipelineId,
+        parentMetaPath,
+        sessionFile,
+      }, "warn");
+    }
+  }
 
   // Register this session too (supports nested subagents)
   await registerSession(config, sessionFile, parentPipelineId);

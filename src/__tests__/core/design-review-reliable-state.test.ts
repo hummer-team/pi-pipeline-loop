@@ -281,22 +281,29 @@ describe("192 Phase 1: real adapter strict updateMetaVerified", () => {
     // Now block ONLY the shared WRITE (file stays readable): a strict commit
     // must report unavailable, never a fake success. (Skip when running as
     // root, where read-only bits are not enforced.)
+    // 193 Phase 2: publishing writes a fresh temp file in the pipeline dir
+    // then renames it atomically, so the block must target the DIRECTORY's
+    // write bit (the meta.json file permission no longer gates replacement —
+    // that is the point of atomic publishing, readers never see a half-write).
+    // With the directory unwritable the exclusive commit boundary itself
+    // cannot be established → the honest strict failure is the lock reason.
     if (typeof process.getuid === "function" && process.getuid() === 0) {
       return;
     }
-    fs.chmodSync(h.sharedMetaPath, 0o444);
+    const pipelineDir = path.dirname(h.sharedMetaPath);
+    fs.chmodSync(pipelineDir, 0o555);
     try {
       const res2 = h.session.updateMetaVerified!(
         { currentStage: "completed" },
         { pipelineId: "pipe-strict-1" },
       );
       expect(res2.status).toBe("unavailable");
-      if (res2.status === "unavailable") expect(res2.reason).toBe("shared_write_failed");
+      if (res2.status === "unavailable") expect(res2.reason).toBe("lock_lock_create_failed");
       // Shared still shows the PREVIOUS successful state (no partial apply)
       const still = JSON.parse(fs.readFileSync(h.sharedMetaPath, "utf-8")) as SessionMeta;
       expect(still.currentStage).toBe("plan");
     } finally {
-      fs.chmodSync(h.sharedMetaPath, 0o644);
+      fs.chmodSync(pipelineDir, 0o755);
     }
   });
 });

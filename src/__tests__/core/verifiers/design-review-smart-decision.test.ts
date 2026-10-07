@@ -443,7 +443,7 @@ describe("193 Phase 1: coordinator smart FAIL routing (revise-plan routes, reque
     expect(spawnLog[1].prompt).not.toContain("## Design Review Smart Plan-Revision Decision");
   });
 
-  it("request-human decision parks with pending smart_request_human — zero update dispatch", async () => {
+  it("request-human decision persists the PENDING record and stays pending — zero update dispatch", async () => {
     const meta = makeTestMeta({
       currentStage: "design-review",
       designReview: createInitialState(planDoc, "menu", computeHash(fs.readFileSync(planDoc, "utf-8")), undefined, { pipelineId: PIPE }),
@@ -454,14 +454,32 @@ describe("193 Phase 1: coordinator smart FAIL routing (revise-plan routes, reque
     const { reviewOpId, planHash } = await dispatchReview(ctx, session);
     writeFailReport(reviewOpId, planHash, actionReason("request-human", "The requirement conflict needs the owner."));
 
+    // 193 Phase 2 (tasks 5/6): the pure policy routes smart `request-human`
+    // to the human decision flow. The Phase-1 conservative park is REPLACED
+    // by a persisted pending decision. Without an owner actor or a select
+    // control the menu is NEVER shown (fail-closed, never a guessed choice),
+    // so the settle returns decision_pending with ZERO further dispatches.
     const r2 = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
-    expect(r2.status === "handled" && r2.action === "pending" && r2.reason === "smart_request_human").toBe(true);
+    expect(r2.status === "handled" && r2.action === "pending" && r2.reason === "decision_pending").toBe(true);
 
     const after = session.getMeta()!.designReview!;
-    // NEVER falls through to the legacy automatic update: still review_running
-    expect(after.phase).toBe("review_running");
+    // NEVER falls through to the legacy automatic update: paused decision-pending
+    expect(after.phase).toBe("paused");
+    expect(after.pauseReason).toBe("decision-pending");
+    // the review operation is still the CURRENT one (nothing consumed)
     expect(after.operation?.kind).toBe("review");
+    // the REAL FAIL verdict is persisted, not laundered into a PASS
+    expect(after.outcome?.verdict).toBe("fail");
+    // a pending decision bound to this exact review identity + snapshot
+    expect(after.decision?.state).toBe("pending");
+    expect(after.decision?.mode).toBe("smart");
+    expect(after.decision?.reviewIdentity.operationId).toBe(after.operation?.operationId);
+    expect(after.decision?.reviewIdentity.round).toBe(after.round);
+    expect(after.decision?.reportHash.length).toBeGreaterThan(0);
+    expect(after.decision?.issues.length).toBeGreaterThan(0);
+    // no update operation, no second spawn, no stage switch
     expect(spawnLog.length).toBe(1);
+    expect(session.getMeta()!.currentStage).toBe("design-review");
   });
 
   it("FAIL without the decision section becomes a corrective verify_failed (not a routed FAIL)", async () => {

@@ -10,10 +10,23 @@ export type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { RuntimeCtx } from "./core/runtime-ctx";
 // 193 Phase 1: design-review decision payloads are defined in the domain
 // module (import-free); types.ts only bridges them into persisted shapes.
-import type { SmartPlanRevisionDecision } from "./core/design-review/decision-types";
+import type {
+  SmartPlanRevisionDecision,
+  HumanDecision,
+  DesignReviewApprovalBasis,
+} from "./core/design-review/decision-types";
 export type {
   SmartPlanRevisionAction,
   SmartPlanRevisionDecision,
+  HumanDecision,
+  HumanDecisionChoice,
+  HumanDecisionReviewIdentity,
+  HumanDecisionIssue,
+  HumanDecisionRecordBase,
+  DesignReviewApprovalBasis,
+  DesignReviewActorRole,
+  DesignReviewActorEvidence,
+  DesignReviewActorInput,
 } from "./core/design-review/decision-types";
 
 /**
@@ -758,7 +771,8 @@ export type DesignReviewPauseReason =
   | "authorization-lost" // Authorization invalidated (quit/disable/manual choice)
   | "budget-exhausted"   // maxLoopCycles reached
   | "unknown-dispatch"   // 192 Phase 1: dispatch outcome unprovable (pause & verify)
-  | "update-invalid";    // 192 Phase 2: structural update validation failed
+  | "update-invalid"     // 192 Phase 2: structural update validation failed
+  | "decision-pending";  // 193 Phase 2: a human plan-revision decision awaits a choice
 
 /**
  * Phase 1 / 191: Design review report verdict result.
@@ -802,6 +816,12 @@ export interface DesignReviewApproval {
   reportHash: string;
   /** When the approval was recorded */
   authorizedAt: number;
+  /**
+   * 193 Phase 2: WHAT authorized this approval. Absent on pre-193 records —
+   * legacy approvals are compatible ONLY as PASS certifications and must
+   * never be used to authorize a FAIL release into develop.
+   */
+  basis?: DesignReviewApprovalBasis;
 }
 
 /**
@@ -847,6 +867,13 @@ export type DesignReviewState = {
 
   /** Reason for pause (when phase === "paused") */
   pauseReason?: DesignReviewPauseReason;
+
+  /**
+   * 193 Phase 2: the pending/chosen human plan-revision decision bound to a
+   * REAL FAIL review outcome. Present only while the loop waits for (or has
+   * received) the human call; a new round clears it.
+   */
+  decision?: HumanDecision;
 
   /**
    * 192 Phase 1 (DR192-01): PASS approval milestone bound to the consumed

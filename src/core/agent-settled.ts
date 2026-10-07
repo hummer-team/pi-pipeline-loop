@@ -354,7 +354,22 @@ export function createAgentSettled(
           const coordinatorCtx = {
             config,
             session: ctx.session,
-            ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+            ui: ctx.ui ? {
+              notify: (msg: string) => { ctx.ui?.notify?.(msg); },
+              // 193 Phase 2 (task 7): the human decision menu control —
+              // absence keeps any pending decision unpresented (never a
+              // guessed human choice).
+              select: typeof ctx.ui.select === "function"
+                ? (title: string, options: readonly string[]): Promise<string | undefined> =>
+                    ctx.ui!.select!(title, [...options])
+                : undefined,
+            } : undefined,
+            // 193 Phase 2 (task 8): role evidence for decision interaction
+            // (conservative resolution happens inside the coordinator).
+            actor: (() => {
+              const r = detectSessionRole(ctx);
+              return { isChild: r.isChild, sessionFile: r.sessionFile || undefined };
+            })(),
             pi: ctx.pi,
           };
           const runningPhase = drFlow.state?.phase === "review_running" || drFlow.state?.phase === "update_running";

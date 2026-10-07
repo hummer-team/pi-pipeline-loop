@@ -34,3 +34,106 @@ export interface SmartPlanRevisionDecision {
   /** Non-empty, non-placeholder justification line captured from the report */
   reason: string;
 }
+
+// ─── 193 Phase 2: human plan-revision decision records ──────────────────────
+
+/** The ONLY two choices the human decision menu may persist. */
+export const HUMAN_DECISION_CHOICES = ["revise-plan", "proceed-develop"] as const;
+
+export type HumanDecisionChoice = (typeof HUMAN_DECISION_CHOICES)[number];
+
+/**
+ * Full review-identity binding of the FAIL a human decision belongs to.
+ * Declared structurally here (this file must stay import-free so `types.ts`
+ * can bridge it without a module cycle) and kept field-compatible with
+ * `DesignReviewIdentity`.
+ */
+export interface HumanDecisionReviewIdentity {
+  pipelineId: string;
+  planDoc: string;
+  authorizationId: string;
+  round: number;
+  operationId: string;
+  stageVisitId: number;
+}
+
+/** One bounded issue carried by the decision (same snapshot as the verdict). */
+export interface HumanDecisionIssue {
+  issueId: string;
+  text: string;
+}
+
+/** Fields shared by every decision state (immutable once created). */
+export interface HumanDecisionRecordBase {
+  /** Fresh UUID bound 1:1 to the pending FAIL the menu was created for */
+  decisionId: string;
+  /** Trusted identity of the consumed review operation */
+  reviewIdentity: HumanDecisionReviewIdentity;
+  /** Canonical FAIL report path (the exact snapshot the decision binds) */
+  reportDoc: string;
+  /** Content hash of that report snapshot */
+  reportHash: string;
+  /** Plan hash the reviewed round was bound to */
+  planHash: string;
+  /** Bounded, finite issue list from the SAME verified snapshot */
+  issues: readonly HumanDecisionIssue[];
+  /** Confirmation mode PINNED for this review (never re-resolved later) */
+  mode: "manual" | "smart";
+  /** Session file of the owner that created the pending decision */
+  ownerSessionFile?: string;
+  /** Creation timestamp of the pending record */
+  createdAt: number;
+}
+
+/**
+ * 193 Phase 2: the discriminated human decision record persisted inside the
+ * design-review state. A `pending` record has NO choice; a `chosen` record
+ * is the ONLY human authority that can release a FAIL into develop, and it
+ * must carry the exact selection, source and timestamp.
+ */
+export type HumanDecision =
+  | (HumanDecisionRecordBase & { state: "pending" })
+  | (HumanDecisionRecordBase & {
+      state: "chosen";
+      choice: HumanDecisionChoice;
+      source: "human";
+      decidedAt: number;
+    });
+
+/**
+ * 193 Phase 2: approval basis extending `DesignReviewApproval`.
+ * - `report-pass` — the classic verified-PASS certification.
+ * - `human-override` — a persisted human `proceed-develop` choice releasing a
+ *   REAL FAIL; bound to the decision, its issue ids and the choice time.
+ * Legacy approvals without `basis` pre-date this feature and are compatible
+ * ONLY as PASS certifications; they must never authorize a new FAIL release.
+ */
+export type DesignReviewApprovalBasis =
+  | { kind: "report-pass" }
+  | {
+      kind: "human-override";
+      decisionId: string;
+      issueIds: readonly string[];
+      decidedAt: number;
+    };
+
+/**
+ * 193 Phase 2: role evidence for design-review interactions (menu display,
+ * choice persistence). Phase 3 consumes this interface; Phase 2 resolves it
+ * conservatively: anything but a verified non-child owner stays `pending`.
+ */
+export type DesignReviewActorRole = "owner" | "child" | "unknown";
+
+export interface DesignReviewActorEvidence {
+  role: DesignReviewActorRole;
+  /** Where the evidence came from (audit honesty: never a guessed owner) */
+  source: "session-file" | "child-flag" | "absent";
+  sessionFile?: string;
+  reason?: string;
+}
+
+/** Raw actor input the coordinator receives from entry points (may be absent). */
+export interface DesignReviewActorInput {
+  isChild: boolean;
+  sessionFile?: string;
+}

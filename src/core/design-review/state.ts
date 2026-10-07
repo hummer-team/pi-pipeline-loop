@@ -578,12 +578,19 @@ export function computeUpdateInputHash(input: {
  * 192 Phase 1: compute the input hash for a develop-handoff operation.
  * Bound to the approval milestone it implements (review operation, round,
  * plan hash, report hash).
+ *
+ * 193 Phase 2 (task 10): a FAIL released by a persisted human override binds
+ * its approval basis into the hash via `authorizationBasisHash`. It is
+ * OPTIONAL and omitted for PASS (`JSON.stringify` drops `undefined` keys),
+ * so every pre-193 PASS handoff payload hashes EXACTLY as before.
  */
 export function computeHandoffInputHash(input: {
   reviewOperationId: string;
   round: number;
   planHash: string;
   reportHash: string;
+  /** 193 Phase 2: hash of the canonical human-override approval basis (FAIL release only) */
+  authorizationBasisHash?: string;
 }): string {
   return computeHash(JSON.stringify(input));
 }

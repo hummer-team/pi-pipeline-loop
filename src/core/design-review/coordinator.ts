@@ -22,7 +22,7 @@ import type {
   SpawnOperationContext,
   VerifyFailureItem,
   ConfirmMode,
-  SmartPlanRevisionDecision,
+  DesignReviewVerificationOutcome,
 } from "../../types";
 import { extractReportIssues } from "./report";
 import { runVerification, type VerificationRunResult } from "../auto-verifier";
@@ -47,7 +47,6 @@ import {
   hasPlanDrifted,
   computeHash,
   computeUpdateInputHash,
-  computeHandoffInputHash,
   deriveReportPath,
   allocateNextRound,
   buildDesignReviewIdentity,
@@ -59,7 +58,26 @@ import {
   type StrictCommitSession,
 } from "../session-state";
 import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult, formatDesignReviewSpawnPrompt } from "./dispatch";
-import { narrowDesignReviewState } from "./verification-context";
+import { narrowDesignReviewState, resolveDesignReviewConfirmMode } from "./verification-context";
+import { decideDesignReviewRoute } from "./decision-policy";
+import {
+  applyHumanDecisionChoice,
+  beginHumanDecisionMenu,
+  buildPendingHumanDecision,
+  endHumanDecisionMenu,
+  presentHumanDecisionMenu,
+  resolveDesignReviewActorEvidence,
+  type HumanDecisionSelectFn,
+} from "./human-decision";
+import {
+  buildHumanOverrideBasis,
+  prepareDevelopTransition,
+} from "./develop-transition";
+import type {
+  DesignReviewActorInput,
+  HumanDecision,
+  HumanDecisionReviewIdentity,
+} from "./decision-types";
 import { recordStageVisit } from "../../utils/stage-visit";
 import { spawnStageSubagent, type DesignReviewTerminalEvent } from "../../utils/subagent-rpc";
 import { safeWriteAuditLog } from "../../utils/auditLog";
@@ -104,7 +122,19 @@ export interface CoordinatorContext {
   ui?: {
     notify: (msg: string) => void;
     transition?: (ctx: unknown, from: string, to: string) => void;
+    /**
+     * 193 Phase 2 (task 7): the human decision menu control. Absent (or any
+     * failure/unknown selection) keeps the decision `pending` — never a
+     * guessed human choice.
+     */
+    select?: HumanDecisionSelectFn;
   };
+  /**
+   * 193 Phase 2 (task 8): raw role evidence from the entry point. Phase 3
+   * wires every entry through runtime-context; Phase 2 resolves it
+   * conservatively — anything but a verified non-child owner stays pending.
+   */
+  actor?: DesignReviewActorInput;
   pi?: {
     sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void;
   };
@@ -503,18 +533,49 @@ async function handleReviewRunning(
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
   }
 
-  if (outcome.verdict === "pass") {
+  // 193 Phase 2 (task 5): ONE pure routing decision over the TRUSTED,
+  // contract-valid snapshot. The coordinator only executes the returned
+  // route with its existing receipts/visits/dispatch machinery.
+  const mode = resolveDesignReviewConfirmMode(meta, ctx.config);
+  const route = decideDesignReviewRoute({
+    mode,
+    verdict: outcome.verdict,
+    ...(outcome.smartDecision !== undefined ? { smartAction: outcome.smartDecision.action } : {}),
+  });
+
+  if (route === "pass-develop") {
     return await handlePass(ctx, meta, drState, outcome.reportHash);
   }
-  return await handleFail(
-    ctx,
-    meta,
-    drState,
-    outcome.reportHash,
-    reportPath,
-    outcome.issues,
-    outcome.smartDecision,
-  );
+  if (route === "revise-plan") {
+    return await handleFail(ctx, meta, drState, outcome.reportHash, reportPath, outcome.issues);
+  }
+  if (route === "request-human") {
+    return await handleHumanDecisionRequest(
+      ctx,
+      meta,
+      drState,
+      outcome,
+      reportPath,
+      mode === "smart" ? "smart" : "manual",
+    );
+  }
+  // Defensive `invalid` route: a smart FAIL without a usable binary decision
+  // is correction-only (the Phase-1 contract gate normally prevents this at
+  // verification time). Never routed to develop, never silently revised.
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "route_invalid_no_decision",
+    round: String(drState.round),
+    operationId: drState.operation?.operationId ?? "none",
+  }, "warn");
+  return {
+    status: "handled",
+    action: "verify_failed",
+    failures: [{
+      ruleType: "designReviewReport",
+      detail: "smart-mode FAIL without a usable Plan Revision Decision — correction only",
+      timestamp: Date.now(),
+    }],
+  };
 }
 
 /**
@@ -590,117 +651,24 @@ async function handlePass(
     return { status: "handled", action: "pending", reason: "paused:plan_drifted" };
   }
 
-  // Check develop stage availability
-  const developConfig = ctx.config.stages["develop"];
-  if (!developConfig || !developConfig.agentPath || !developConfig.skillPath || developConfig.disabled) {
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "develop_unavailable",
-    });
-    return { status: "handled", action: "pending", reason: "develop_stage_unavailable" };
-  }
-
-  // Record transition
-  const visitResult = recordStageVisit(meta, "develop", ctx.config.maxLoopCycles ?? 3);
-  if (!visitResult.ok) {
-    ctx.session.updateMeta(visitResult.patch);
-    return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
-  }
-
-  // Milestone 1: approval bound to the CONSUMED review identity + hashes.
-  const reviewOpId = drState.operation?.operationId ?? "unknown";
-  const approval: NonNullable<DesignReviewState["approval"]> = {
-    reviewOperationId: reviewOpId,
-    round: drState.round,
-    planHash: currentPlanHash,
-    reportHash,
-    authorizedAt: Date.now(),
-  };
-
-  // Milestone 2 preparation: NEW develop-handoff operation (its own id),
-  // bound to the FRESH develop visit. Evidence starts as confirmed not-sent.
-  const newVisit = Date.now();
-  const handoffOp = createOperation(
-    "develop-handoff",
-    newVisit,
-    1,
-    computeHandoffInputHash({
-      reviewOperationId: reviewOpId,
-      round: drState.round,
-      planHash: currentPlanHash,
-      reportHash,
-    }),
-    drState.round,
-  );
-  const preparedHandoff: DesignReviewOperation = {
-    ...handoffOp,
-    dispatchEvidence: "confirmed_not_sent",
-    dispatchReason: "prepared_not_dispatched",
-  };
-
-  // SINGLE strict commit: approval + handoff + currentStage=develop + visit.
-  // The design-review phase REMAINS pass_ready: takeover is retained until
-  // the trusted receipt + finished are both persisted (DR192-01).
-  const passReadyState: DesignReviewState = {
-    ...transitionPhase(drState, "pass_ready"),
-    approval,
-    operation: preparedHandoff,
-    receipt: {
-      authorizationId: drState.authorizationId,
-      round: drState.round,
-      operationId: preparedHandoff.operationId,
-      transition: "advance-develop",
-      at: Date.now(),
-    },
-  };
-  const stagePatch: Partial<SessionMeta> = {
-    ...visitResult.patch,
-    previousStage: "design-review",
-    currentStage: "develop",
-    stageStartTime: newVisit,
-    loopCount: 0,
-    currentStepIndex: 0,
-    verifyFailures: [],
-    verifyAttempts: 0,
-    violations: [],
-    advancedThisTurn: undefined,
-    designReview: passReadyState,
-  };
-  const commitRes = strictCommitMeta(ctx.session, stagePatch, {
-    pipelineId: meta.pipelineId ?? "unknown",
-    authorizationId: drState.authorizationId,
-    round: drState.round,
-    operationId: drState.operation?.operationId ?? null,
-    phase: drState.phase,
-    stateUpdatedAt: drState.updatedAt,
-  });
-  if (commitRes.status !== "persisted") {
-    // Handoff intent NOT reliably persisted → zero external calls (row 1 of
-    // the DR192-01 matrix): stay pass_ready/developable-safe, retry later.
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "handoff_transition_commit_failed",
-      status: commitRes.status,
-      reason: commitRes.reason,
-      round: String(drState.round),
-    }, "error");
-    return {
-      status: "handled",
-      action: "pending",
-      reason: `pass_commit_failed:${commitRes.status}:${commitRes.reason}`,
-    };
-  }
-
-  await safeWriteAuditLog("design_review_coordinator", {
-    action: "pass_approved",
+  // 193 Phase 2 (task 10): the develop-transition preparation (availability
+  // check, fresh visit, approval milestone, NEW develop-handoff operation and
+  // the single strict commit) is SHARED with a persisted human FAIL override.
+  // PASS keeps the explicit report-pass basis.
+  const prep = await prepareDevelopTransition({
+    ctx,
+    meta,
+    drState,
     reportHash,
     planHash: currentPlanHash,
-    round: String(drState.round),
-    reviewOperationId: reviewOpId,
-    handoffOperationId: preparedHandoff.operationId,
   });
+  if (!prep.ok) {
+    return prep.result;
+  }
 
   // Milestone 3: dispatch the handoff exactly once, persist the trusted
   // receipt, THEN finish. Any failure keeps pass_ready takeover (recoverable).
-  return await dispatchHandoffOnce(ctx, commitRes.meta, passReadyState, preparedHandoff);
+  return await dispatchHandoffOnce(ctx, prep.meta, prep.state, prep.handoffOp);
 }
 
 /**
@@ -715,8 +683,12 @@ async function dispatchHandoffOnce(
   state: DesignReviewState,
   handoffOp: DesignReviewOperation,
 ): Promise<CoordinatorResult> {
+  // 193 Phase 2 (task 4): anchor the claim on the PERSISTED revision (the
+  // in-lock bump can stale the proposal), same rule as dispatchOperation.
+  const freshMeta = ctx.session.getMeta() ?? meta;
+  const anchorState = freshMeta.designReview ?? state;
   // Reliable send-intent BEFORE the external call; failure → zero RPC.
-  const intent = markSendIntent(ctx, meta, state, handoffOp.operationId);
+  const intent = markSendIntent(ctx, freshMeta, anchorState, handoffOp.operationId);
   if (!intent.ok) {
     await safeWriteAuditLog("design_review_coordinator", {
       action: "handoff_blocked_no_intent",
@@ -922,8 +894,6 @@ async function handleFail(
   reportHash: string,
   reportPath: string,
   verifiedIssues?: readonly ReviewIssue[],
-  /** 193 Phase 1: trusted plan-revision decision from the SAME snapshot */
-  smartDecision?: SmartPlanRevisionDecision,
 ): Promise<CoordinatorResult> {
   // Check budget before proceeding
   const budgetCheck = checkBudget(meta, ctx.config);
@@ -939,21 +909,11 @@ async function handleFail(
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
   }
 
-  // 193 Phase 1 (task 6): smart mode NEVER releases FAIL itself. A valid
-  // FAIL under smart mode carries exactly one binary decision; while the
-  // human decision menu (Phase 2) is not wired yet, `request-human` parks
-  // CONSERVATIVELY — it must never fall through to the legacy automatic
-  // plan update. `revise-plan` keeps the existing authorized routing.
-  if (smartDecision?.action === "request-human") {
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "smart_request_human_parked",
-      decisionReason: smartDecision.reason,
-      reportHash,
-      round: String(drState.round),
-      operationId: drState.operation?.operationId ?? "none",
-    });
-    return { status: "handled", action: "pending", reason: "smart_request_human" };
-  }
+  // 193 Phase 2 (task 5): the pure decision policy already filtered smart
+  // `request-human` and manual FAILs to handleHumanDecisionRequest. Reaching
+  // this function IS the authorized revise-plan route — it reuses this
+  // report-receipt/visit/dispatch closed loop for BOTH auto mode and a
+  // persisted human `revise-plan` choice (never a copied loop).
 
   // Record transition
   const visitResult = recordStageVisit(meta, "plan", ctx.config.maxLoopCycles ?? 3);
@@ -1151,6 +1111,429 @@ async function handleFail(
   }
 
   return { status: "handled", action: "routed", toStage: "plan" };
+}
+
+// ─── 193 Phase 2: human plan-revision decision flow (tasks 6-10) ────────────
+
+/**
+ * 193 Phase 2 (task 6): persist the PENDING decision for a valid FAIL routed
+ * `request-human`, then — only for a verified owner with a real select
+ * control — present the English menu EXACTLY once, persist the chosen record
+ * through the exclusive strict commit (full-field read-back), and only then
+ * act. Before creation and before every action the report/plan snapshots are
+ * re-checked through the SHARED verification engine (task 8): drift,
+ * unreadable reports, verdict flips or stale authorization park the state
+ * with zero stage-action visits and zero RPCs.
+ *
+ * Guarantees:
+ * - the pending commit keeps the CURRENT review operation and
+ *   currentStage=design-review; it records the REAL FAIL outcome and adds NO
+ *   visit, update operation, handoff or budget increment;
+ * - Cancel / Esc / unknown / exceptions / absent select / unknown role /
+ *   child: the decision stays pending, nothing else changes, no re-popup;
+ * - a concurrent writer that lands first makes our expectation conflict —
+ *   the persisted choice of the winner is never overwritten (task 8).
+ */
+async function handleHumanDecisionRequest(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  outcome: Extract<DesignReviewVerificationOutcome, { kind: "report" }>,
+  reportPath: string,
+  mode: "manual" | "smart",
+): Promise<CoordinatorResult> {
+  const op = drState.operation;
+  if (!op) {
+    // Defensive: a routed FAIL must carry the current review operation.
+    return { status: "handled", action: "pending", reason: "decision_no_operation" };
+  }
+  const reviewIdentity: HumanDecisionReviewIdentity = {
+    pipelineId: meta.pipelineId ?? "unknown",
+    planDoc: drState.planDoc,
+    authorizationId: drState.authorizationId,
+    round: drState.round,
+    operationId: op.operationId,
+    stageVisitId: op.stageVisitId,
+  };
+  const pending = buildPendingHumanDecision({
+    reviewIdentity,
+    reportDoc: reportPath,
+    reportHash: outcome.reportHash,
+    planHash: drState.planHash ?? outcome.planHash,
+    issues: outcome.issues,
+    mode,
+    ...(ctx.actor?.sessionFile !== undefined ? { ownerSessionFile: ctx.actor.sessionFile } : {}),
+  });
+
+  // Real FAIL outcome + paused(decision-pending) + pending record in ONE
+  // strict commit. The review operation stays the current operation; NO
+  // visit/stage/update/handoff side effects happen before this save.
+  const pendingState: DesignReviewState = {
+    ...transitionPhase(drState, "paused", undefined, "decision-pending"),
+    outcome: {
+      reportHash: outcome.reportHash,
+      verdict: "fail",
+      verdictReason: mode === "smart" ? "smart_fail_request_human" : "report_fail_awaiting_human_decision",
+      recordedAt: Date.now(),
+    },
+    decision: pending,
+  };
+  const createCommit = strictCommitMeta(ctx.session, { designReview: pendingState }, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: drState.authorizationId,
+    round: drState.round,
+    operationId: op.operationId,
+    phase: drState.phase,
+    stateUpdatedAt: drState.updatedAt,
+    ...(drState.decision === undefined ? { decisionState: "absent" as const } : {}),
+  });
+  if (createCommit.status !== "persisted") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "decision_pending_commit_failed",
+      status: createCommit.status,
+      reason: createCommit.reason,
+      decisionId: pending.decisionId,
+      round: String(drState.round),
+    }, "error");
+    return {
+      status: "handled",
+      action: "pending",
+      reason: `decision_commit_failed:${createCommit.status}:${createCommit.reason}`,
+    };
+  }
+  const pendingDr = createCommit.meta.designReview!;
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "decision_pending_created",
+    decisionId: pending.decisionId,
+    mode,
+    round: String(drState.round),
+    operationId: op.operationId,
+    reportHash: outcome.reportHash,
+  });
+
+  // ── interaction eligibility (task 8): verified non-child owner only ──────
+  const ownerFile = pendingDr.ownerSessionFile ?? pending.ownerSessionFile;
+  const evidence = resolveDesignReviewActorEvidence(ctx.actor, ownerFile);
+  const select = ctx.ui?.select;
+  if (evidence.role !== "owner") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "decision_menu_skipped",
+      decisionId: pending.decisionId,
+      role: evidence.role,
+      source: evidence.source,
+      reason: evidence.reason ?? "role not verified",
+    }, "warn");
+    return { status: "handled", action: "pending", reason: "decision_pending" };
+  }
+  if (typeof select !== "function") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "decision_menu_skipped",
+      decisionId: pending.decisionId,
+      role: "owner",
+      source: "absent",
+      reason: "no select control available",
+    }, "warn");
+    return { status: "handled", action: "pending", reason: "decision_pending" };
+  }
+  // In-process single-flight: never two overlapping menus for one decision.
+  if (!beginHumanDecisionMenu(pending.decisionId)) {
+    return { status: "handled", action: "pending", reason: "decision_menu_in_flight" };
+  }
+  try {
+    // Re-check the snapshot THROUGH the shared engine before presenting.
+    const before = await revalidateHumanDecisionSnapshot(ctx, createCommit.meta, pending);
+    if (!before.ok) {
+      return await parkHumanDecisionDrift(
+        ctx, createCommit.meta, pendingDr, pending, "pending", before.reason, "before_menu",
+      );
+    }
+    // ONE menu presentation.
+    const choice = await presentHumanDecisionMenu(select, ctx.ui?.notify, pending);
+    if (!choice) {
+      // Cancel / unknown / exception: stay pending. Zero visit/retry/RPC and
+      // NO automatic re-popup — an explicit resume re-opens it (Phase 3).
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "decision_menu_cancelled",
+        decisionId: pending.decisionId,
+        round: String(drState.round),
+      });
+      return { status: "handled", action: "pending", reason: "decision_pending" };
+    }
+    // After the menu: meta MUST still hold OUR pending record (another
+    // process may have committed a choice or cleared the pause meanwhile).
+    const after = ctx.session.getMeta();
+    const afterDr = after?.designReview;
+    if (
+      !after
+      || !afterDr
+      || afterDr.phase !== "paused"
+      || afterDr.pauseReason !== "decision-pending"
+      || afterDr.decision?.decisionId !== pending.decisionId
+      || afterDr.decision.state !== "pending"
+    ) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "decision_state_changed_after_menu",
+        decisionId: pending.decisionId,
+        currentDecisionId: afterDr?.decision?.decisionId ?? "none",
+        currentDecisionState: afterDr?.decision?.state ?? "none",
+      }, "warn");
+      return { status: "handled", action: "pending", reason: "decision_pending" };
+    }
+    const afterPending = afterDr.decision;
+    const again = await revalidateHumanDecisionSnapshot(ctx, after, afterPending);
+    if (!again.ok) {
+      return await parkHumanDecisionDrift(
+        ctx, after, afterDr, afterPending, "pending", again.reason, "after_menu",
+      );
+    }
+    // Persist the choice through the exclusive strict commit. The in-lock
+    // expectation (identity/revision + decisionId + pending) plus the
+    // full-field decision read-back decide whether we may act.
+    const chosen = applyHumanDecisionChoice(afterPending, choice, Date.now());
+    const chosenState: DesignReviewState = { ...afterDr, decision: chosen };
+    const chosenCommit = strictCommitMeta(ctx.session, { designReview: chosenState }, {
+      pipelineId: after.pipelineId ?? "unknown",
+      authorizationId: afterDr.authorizationId,
+      round: afterDr.round,
+      operationId: afterDr.operation?.operationId ?? null,
+      phase: "paused",
+      stateUpdatedAt: afterDr.updatedAt,
+      decisionId: pending.decisionId,
+      decisionState: "pending",
+    });
+    if (chosenCommit.status !== "persisted") {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "decision_choice_commit_failed",
+        decisionId: pending.decisionId,
+        choice,
+        status: chosenCommit.status,
+        reason: chosenCommit.reason,
+      }, "error");
+      return {
+        status: "handled",
+        action: "pending",
+        reason: `decision_choice_commit_failed:${chosenCommit.status}:${chosenCommit.reason}`,
+      };
+    }
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "decision_choice_persisted",
+      decisionId: pending.decisionId,
+      choice,
+      round: String(afterDr.round),
+      operationId: afterDr.operation?.operationId ?? "none",
+    });
+    // Act ONLY on the read-back-verified persisted record.
+    const persistedDecision = chosenCommit.meta.designReview?.decision;
+    if (!persistedDecision || persistedDecision.state !== "chosen") {
+      // Read-back proved fields, but stay defensive: no action without a
+      // verified chosen record.
+      return { status: "handled", action: "pending", reason: "decision_readback_missing" };
+    }
+    return await actOnHumanDecision(
+      ctx, chosenCommit.meta, chosenCommit.meta.designReview!, persistedDecision,
+    );
+  } finally {
+    endHumanDecisionMenu(pending.decisionId);
+  }
+}
+
+/**
+ * 193 Phase 2 (task 8): re-check the decision's report/plan snapshot through
+ * the SAME shared verification engine (runVerification → the legal
+ * paused/decision-pending review context from verification-context). A verdict
+ * flip (new PASS), a report hash change, identity drift, an unreadable report
+ * or plan, or a plan content change are ALL refusals — the old choice never
+ * approves a different snapshot.
+ */
+async function revalidateHumanDecisionSnapshot(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  decision: HumanDecision,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const vr = await runVerification(ctx.config, meta, [], ctx.verificationOptions);
+  const outcome = vr.designReviewOutcome;
+  if (!outcome) return { ok: false, reason: "verification_unavailable" };
+  if (outcome.kind === "invalid") return { ok: false, reason: "report_invalid" };
+  if (outcome.kind === "paused") return { ok: false, reason: `domain_paused_${outcome.reason}` };
+  if (outcome.kind !== "report") return { ok: false, reason: "unexpected_domain_outcome" };
+  // The decision binds a FAIL. A PASS now means the snapshot changed — and a
+  // fresh PASS must NOT be treated as the old choice having been granted.
+  if (outcome.verdict !== "fail") return { ok: false, reason: "verdict_not_fail" };
+  if (outcome.reportHash !== decision.reportHash) return { ok: false, reason: "report_hash_drift" };
+  const id = outcome.identity;
+  if (
+    id.operationId !== decision.reviewIdentity.operationId
+    || id.round !== decision.reviewIdentity.round
+    || id.authorizationId !== decision.reviewIdentity.authorizationId
+    || id.pipelineId !== decision.reviewIdentity.pipelineId
+  ) {
+    return { ok: false, reason: "identity_drift" };
+  }
+  try {
+    const planContent = await fs.readFile(decision.reviewIdentity.planDoc, "utf-8");
+    if (computeHash(planContent) !== decision.planHash) return { ok: false, reason: "plan_drift" };
+  } catch {
+    return { ok: false, reason: "plan_unreadable" };
+  }
+  return { ok: true };
+}
+
+/**
+ * 193 Phase 2 (task 8): drift/unreadable/invalid revalidation parks the state
+ * to paused("drift") and CLEARS the stale decision (guidance: run a new
+ * review round). The clear is itself a strict commit pinned on the decision
+ * id/state — a racing writer makes it conflict instead of clobbering.
+ */
+async function parkHumanDecisionDrift(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  decision: HumanDecision,
+  decisionState: "pending" | "chosen",
+  driftReason: string,
+  stage: string,
+): Promise<CoordinatorResult> {
+  // SAME phase (paused), only the pause reason flips to "drift" and the
+  // stale decision is cleared: transitionPhase would reject paused→paused,
+  // so the drift state is built directly (immutable update, fresh revision).
+  const driftState: DesignReviewState = {
+    ...drState,
+    pauseReason: "drift",
+    decision: undefined,
+    updatedAt: Date.now(),
+  };
+  const res = strictCommitMeta(ctx.session, { designReview: driftState }, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: drState.authorizationId,
+    round: drState.round,
+    operationId: drState.operation?.operationId ?? null,
+    phase: "paused",
+    stateUpdatedAt: drState.updatedAt,
+    decisionId: decision.decisionId,
+    decisionState,
+  });
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "decision_revalidation_failed",
+    stage,
+    reason: driftReason,
+    decisionId: decision.decisionId,
+    commitStatus: res.status,
+    ...(res.status !== "persisted" ? { commitReason: res.reason } : {}),
+  }, "warn");
+  if (ctx.ui?.notify) {
+    try {
+      ctx.ui.notify(
+        `Design-review human decision paused (${driftReason}) at ${stage}. The report/plan no longer matches the reviewed snapshot — run a new review round.`,
+      );
+    } catch {
+      // Notification is best-effort; the pause decision stands either way.
+    }
+  }
+  return { status: "handled", action: "pending", reason: `decision_drift:${driftReason}` };
+}
+
+/**
+ * 193 Phase 2 (tasks 5/10): execute a PERSISTED, read-back-verified choice.
+ * - `revise-plan` REUSES handleFail's receipt/visit/dispatch loop (no copied
+ *   closed loop, at most one action visit);
+ * - `proceed-develop` goes through the SHARED develop-transition preparation
+ *   with a human-override basis bound into the handoff hash, then the normal
+ *   dispatchHandoffOnce/receipt/finished machinery. The real FAIL outcome and
+ *   issues stay persisted; nothing here fabricates a PASS.
+ */
+async function actOnHumanDecision(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  decision: HumanDecision & { state: "chosen" },
+): Promise<CoordinatorResult> {
+  if (decision.choice === "revise-plan") {
+    return await handleFail(
+      ctx,
+      meta,
+      drState,
+      decision.reportHash,
+      decision.reportDoc,
+      decision.issues,
+    );
+  }
+  const prep = await prepareDevelopTransition({
+    ctx: { config: ctx.config, session: ctx.session },
+    meta,
+    drState,
+    reportHash: decision.reportHash,
+    planHash: decision.planHash,
+    approvalBasis: buildHumanOverrideBasis(decision),
+    decisionAnchor: { decisionId: decision.decisionId },
+  });
+  if (!prep.ok) {
+    return prep.result;
+  }
+  return await dispatchHandoffOnce(ctx, prep.meta, prep.state, prep.handoffOp);
+}
+
+/**
+ * 193 Phase 2 (tasks 8/9): consume the paused/decision-pending state.
+ * - pending: throttled "awaiting human decision" notice ONLY — no
+ *   re-verification, no menu re-popup, no budget counting;
+ * - chosen: recovery after a crash/failure — revalidate, then act on the
+ *   SAME persisted operation without re-approving or showing the menu again.
+ */
+async function handleDecisionPending(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  trigger: string,
+): Promise<CoordinatorResult> {
+  const decision = drState.decision;
+  if (!decision) {
+    // Malformed decision-pending pause (no record): NEVER fall through to
+    // ordinary flows — stay paused and tell the operator.
+    const throttleKey = `${meta.pipelineId ?? "unknown"}:decision_missing`;
+    if (shouldEmitWithinWindow(throttleKey, 5000)) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "decision_record_missing",
+        trigger,
+        round: String(drState.round),
+      }, "warn");
+      if (ctx.ui?.notify) {
+        ctx.ui.notify("Design-review is paused for a human decision but no decision record exists. Re-run authorization or use /pipeline-resume.");
+      }
+    }
+    return { status: "handled", action: "pending", reason: "decision_record_missing" };
+  }
+  if (decision.state === "pending") {
+    // Waiting notice only (task 9): no re-verification, no popup, no budget.
+    const throttleKey = `${meta.pipelineId ?? "unknown"}:decision_wait`;
+    if (shouldEmitWithinWindow(throttleKey, 5000)) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "decision_awaiting_human",
+        decisionId: decision.decisionId,
+        mode: decision.mode,
+        trigger,
+        round: String(drState.round),
+      });
+      if (ctx.ui?.notify) {
+        ctx.ui.notify(
+          `Design review FAILED and awaits a human plan-revision decision (report: ${decision.reportDoc}). Use /pipeline-resume to present the decision menu.`,
+        );
+      }
+    }
+    return { status: "handled", action: "pending", reason: "decision_pending" };
+  }
+  // chosen → recovery: revalidate first, act only on a matching snapshot.
+  const rv = await revalidateHumanDecisionSnapshot(ctx, meta, decision);
+  if (!rv.ok) {
+    return await parkHumanDecisionDrift(ctx, meta, drState, decision, "chosen", rv.reason, "recovery");
+  }
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "decision_chosen_recovery_acting",
+    decisionId: decision.decisionId,
+    choice: decision.choice,
+    trigger,
+    round: String(drState.round),
+  });
+  return await actOnHumanDecision(ctx, meta, drState, decision);
 }
 
 /**
@@ -1529,6 +1912,9 @@ async function handleUpdateRunning(
     // budget are preserved (Phase 4 task 8 semantics).
     outcome: undefined,
     reviewInputReceipt: undefined,
+    // 193 Phase 2 (task 10): a NEW round invalidates any previous human
+    // decision record — old choices never carry across rounds.
+    decision: undefined,
     pauseReason: undefined,
     updatedAt: Date.now(),
   };
@@ -1617,6 +2003,13 @@ async function handlePaused(
   drState: DesignReviewState,
   trigger: string,
 ): Promise<CoordinatorResult> {
+  // 193 Phase 2 (tasks 8/9): a paused design-review WAITING ON the human
+  // plan-revision decision is consumed HERE — it must never behave like an
+  // ordinary pause. Once the chosen action has committed, the phase is no
+  // longer decision-pending, so a completed revise/update never re-fires.
+  if (drState.pauseReason === "decision-pending") {
+    return await handleDecisionPending(ctx, meta, drState, trigger);
+  }
   // Throttle non-critical repeated event: paused state check
   const throttleKey = `${meta.pipelineId ?? "unknown"}:paused_state`;
   if (shouldEmitWithinWindow(throttleKey, 5000)) {
@@ -1801,6 +2194,11 @@ function markSendIntent(
     operationId,
     phase: state.phase,
     stateUpdatedAt: state.updatedAt,
+    // 193 Phase 2 (task 4): the claim itself is checked INSIDE the exclusive
+    // lock — only a still-pending, provably-not-sent operation can be
+    // claimed. send_intent / unknown / trusted_id windows can NEVER be
+    // re-claimed by a second dispatcher (no blind re-dispatch).
+    operationClaimable: true,
   };
   const res = strictCommitOperationState(ctx, meta, nextState, expected);
   if (!res.ok) {
@@ -1811,7 +2209,11 @@ function markSendIntent(
     }, "error");
     return { ok: false, reason: res.reason };
   }
-  return { ok: true, state: nextState };
+  // 193 Phase 2 (task 4): callers MUST continue from the PERSISTED state —
+  // the in-lock revision bump (max(now, auth+1)) makes the old proposal's
+  // updatedAt stale, and every later expectation anchors on the persisted
+  // revision.
+  return { ok: true, state: res.meta.designReview ?? nextState };
 }
 
 /**
@@ -1927,17 +2329,22 @@ async function dispatchOperation(
   committedState: DesignReviewState,
   operation: DesignReviewOperation,
   updatePrompt?: string,
-  /** 193 Phase 1: smart plan-revision decision guidance (REVIEW dispatches only) */
+  /** 193 Phase 2: smart plan-revision decision guidance (REVIEW dispatches only) */
   reviewGuidance?: string,
 ): Promise<"trusted" | "unknown" | "not_sent" | "pending_queue" | "blocked"> {
-  const intent = markSendIntent(ctx, meta, committedState, operation.operationId);
+  // 193 Phase 2 (task 4): the in-lock revision bump makes the CALLER'S
+  // proposal potentially stale; the claim must anchor on the PERSISTED
+  // authoritative record, so re-read before marking send-intent.
+  const freshMeta = ctx.session.getMeta() ?? meta;
+  const anchorState = freshMeta.designReview ?? committedState;
+  const intent = markSendIntent(ctx, freshMeta, anchorState, operation.operationId);
   if (!intent.ok) {
     // Intent commit failed → NO external call may happen (F04/D04).
     return "blocked";
   }
   const spawnResult = await spawnDesignReviewAgent(
     ctx,
-    meta,
+    freshMeta,
     intent.state,
     operation,
     updatePrompt,
@@ -1945,7 +2352,7 @@ async function dispatchOperation(
   );
   return recordDispatchOutcome(
     ctx,
-    meta,
+    freshMeta,
     intent.state,
     operation.operationId,
     spawnResult.outcome,

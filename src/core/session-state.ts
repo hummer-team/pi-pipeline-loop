@@ -17,9 +17,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { SessionMeta, ReliableMetaCommitResult, DesignReviewState } from "../types";
+import type { SessionMeta, ReliableMetaCommitResult, DesignReviewState, DesignReviewPhase, DesignReviewPauseReason } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { resolveAuditDir } from "../utils/work-dir";
+import {
+  tryAcquireMetaLock,
+  releaseMetaLock,
+  publishSharedMeta,
+  sharedPipelineDir,
+  type MetaLockAcquisition,
+} from "./pipeline-meta-transaction";
 import type { PipelineConfig } from "../types";
 
 /** CustomEntry type identifier for pipeline metadata persistence. */
@@ -101,6 +108,18 @@ export interface MetaCommitExpectation {
   phase?: import("../types").DesignReviewPhase;
   /** Expected state.updatedAt (finite revision anchor for same-auth same-round conflicts) */
   stateUpdatedAt?: number;
+  /**
+   * 193 Phase 2 (task 4): in-lock dispatch-claim guard. When true, the
+   * authoritative operation must STILL be `dispatchState === "pending"` with
+   * `dispatchEvidence === "confirmed_not_sent"`. An operation already inside
+   * the send-intent / unknown / trusted-id window can NEVER be claimed again
+   * (no blind re-dispatch, exactly-once dispatch ownership).
+   */
+  operationClaimable?: true;
+  /** 193 Phase 2 (task 8): the authoritative decision must carry this exact decisionId */
+  decisionId?: string;
+  /** 193 Phase 2 (task 8): the authoritative decision must be in this state */
+  decisionState?: "pending" | "chosen" | "absent";
 }
 
 /**
@@ -204,6 +223,90 @@ export function matchCommitExpectation(
   // round but an older revision must still conflict.
   if (expected.stateUpdatedAt !== undefined && dr?.updatedAt !== expected.stateUpdatedAt) {
     return "revision_mismatch";
+  }
+  // 193 Phase 2 (task 4): in-lock dispatch-claim guard — only a still-pending,
+  // provably-not-sent operation may be claimed for dispatch.
+  if (expected.operationClaimable === true) {
+    const op = dr?.operation;
+    if (!op || op.dispatchState !== "pending" || op.dispatchEvidence !== "confirmed_not_sent") {
+      return "operation_not_claimable";
+    }
+  }
+  // 193 Phase 2 (task 8): human-decision anchor — the decision the caller
+  // acted on must still be the authoritative one (id + state).
+  if (expected.decisionId !== undefined && dr?.decision?.decisionId !== expected.decisionId) {
+    return "decision_id_mismatch";
+  }
+  if (expected.decisionState !== undefined) {
+    const cur = dr?.decision?.state;
+    if (expected.decisionState === "absent" ? cur !== undefined : cur !== expected.decisionState) {
+      return "decision_state_mismatch";
+    }
+  }
+  return null;
+}
+
+/**
+ * 193 Phase 2: canonical JSON with sorted object keys — used ONLY for
+ * equality comparisons of persisted sub-documents (deep "did this value
+ * change?" test). Insertion-order differences never mask a real change.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(",")}}`;
+}
+
+/**
+ * 193 Phase 2 (task 2): the design-review takeover phases that form an
+ * active write barrier. `finished` is terminal (never a barrier). A `paused`
+ * state is a barrier ONLY while a human plan-revision decision is in play
+ * (pending or chosen) — plain writers must not roll back `chosen` state,
+ * while pre-existing pause flows (drift/no-change/…) keep their legacy
+ * behaviour (minimum intervention, no new authority either way).
+ */
+export function isDesignReviewBarrierActive(meta: SessionMeta | undefined): boolean {
+  const dr = meta?.designReview;
+  if (!dr || dr.phase === "finished") return false;
+  if (dr.phase === "paused") {
+    return dr.pauseReason === "decision-pending" || dr.decision !== undefined;
+  }
+  return true;
+}
+
+/**
+ * 193 Phase 2 (task 2): violation reason when a PLAIN (expectation-less)
+ * patch tries to change protected shared state under an active barrier, or
+ * null when the patch is harmless. Whole-snapshot writers (e.g. a subagent
+ * JOIN echo of a just-read parent meta whose designReview is unchanged) are
+ * allowed; STALE or changed values are rejected because they would overwrite
+ * a newer authoritative record (most importantly a persisted human choice).
+ * Such patches must migrate to strict commits with expectations.
+ */
+export function plainPatchBarrierViolation(
+  patch: Partial<SessionMeta>,
+  authoritative: SessionMeta,
+): string | null {
+  if (!isDesignReviewBarrierActive(authoritative)) return null;
+  const authDr = authoritative.designReview!;
+  if ("designReview" in patch) {
+    if (patch.designReview === undefined) {
+      return "authorization_clear_requires_strict";
+    }
+    if (canonicalJson(patch.designReview) !== canonicalJson(authDr)) {
+      // Changed designReview payload (incl. any decision carried inside it).
+      return "design_review_overwrite_requires_strict";
+    }
+  }
+  if (
+    "currentStage" in patch
+    && patch.currentStage !== undefined
+    && patch.currentStage !== authoritative.currentStage
+  ) {
+    return "current_stage_barrier_requires_strict";
   }
   return null;
 }
@@ -331,44 +434,139 @@ export function createSessionState(
       }
     },
 
+    /**
+     * 193 Phase 2 (tasks 1-3): the plain shared writer now runs under the
+     * SAME exclusive commit lock as strict commits and merges onto the
+     * authoritative shared snapshot re-read INSIDE the lock. Guarantees:
+     * - Busy lock → returns undefined and writes NOTHING (no local fake
+     *   success, no shared bypass).
+     * - Changed designReview payloads, authorization clears, or a stale
+     *   currentStage rollback under an active design-review barrier are
+     *   REJECTED with zero effect: such patches must migrate to strict
+     *   commits with expectations — serialization by the lock alone never
+     *   accepts an expired whole-object overwrite.
+     * - Shared-storage health failures keep the pre-existing fail-open
+     *   behaviour (local write + _sharedStale stamp): the legacy fallback
+     *   stays exactly as wide as it was, it is NOT a new authority.
+     * - Publishing uses a unique temp file + fsync + atomic rename, so
+     *   readers never observe half-written meta.json.
+     */
     updateMeta(patch: Partial<SessionMeta>): SessionMeta | undefined {
       try {
         const current = this.getMeta();
-        const merged = current ? { ...current, ...patch } : (patch as SessionMeta);
+        const preliminary = current ? { ...current, ...patch } : (patch as SessionMeta);
 
-        // Write 1: appendEntry (local session)
-        pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, merged);
+        // No shared storage configured → legacy local-only behaviour (unchanged).
+        if (!preliminary.pipelineId || !instanceBaseDir) {
+          pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, preliminary);
+          return preliminary;
+        }
 
-        // Write 2: meta.json (shared source, fail-open; use per-instance base dir)
-        if (merged.pipelineId && instanceBaseDir) {
+        const acq = tryAcquireMetaLock(instanceBaseDir, preliminary.pipelineId);
+        if (acq.status === "busy") {
+          // Another writer owns the commit boundary. NEVER fake success:
+          // zero writes, honest conflict, and evidence of WHO holds the lock
+          // (same-machine evidence — this is not a lease to be stolen).
+          safeWriteAuditLog("session_state_plain", {
+            operation: "updateMeta",
+            outcome: "rejected",
+            reason: "lock_busy",
+            lockDir: acq.lockDir,
+            ...(acq.owner
+              ? {
+                  lockPid: String(acq.owner.pid),
+                  lockHost: acq.owner.host,
+                  lockToken: acq.owner.token.slice(0, 8),
+                  lockCreatedAt: String(acq.owner.createdAt),
+                }
+              : { lockOwner: "missing" }),
+            guidance: "Remove the exact residual lock only after ALL writers for this pipeline are confirmed stopped, then resume.",
+          }, "warn");
+          return undefined;
+        }
+        if (acq.status === "unavailable") {
+          // Lock machinery itself failed → existing fail-open fallback (local
+          // write + stale stamp). Never bypasses the lock into a shared write.
+          safeWriteAuditLog("session_state_error", {
+            operation: "updateMeta_shared",
+            error: acq.error ?? acq.reason,
+          }, "warn");
           try {
-            const metaDir = path.join(instanceBaseDir, merged.pipelineId);
-            fs.mkdirSync(metaDir, { recursive: true });
-            const metaPath = path.join(metaDir, "meta.json");
-            fs.writeFileSync(metaPath, JSON.stringify(merged, null, 2), "utf-8");
-          } catch (sharedErr) {
-            // Fail-open: log but don't block pipeline.
-            // Mark shared source as stale in the local entry so that getMeta
-            // can detect and fall back to local entries on next read,
-            // preventing partial-failure amplification (old shared source
-            // overriding newer local state).
-            const errMsg = sharedErr instanceof Error ? sharedErr.message : String(sharedErr);
+            pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, {
+              ...preliminary, _sharedStale: true, _sharedStaleAt: Date.now(),
+            });
+          } catch {
+            // Best-effort: local state stays consistent either way
+          }
+          return preliminary;
+        }
+
+        try {
+          // 193 Phase 2: authoritative re-read INSIDE the lock. A healthy
+          // shared snapshot is the merge base — a stale local meta (even one
+          // flagged _sharedStale) never overwrites healthy shared state.
+          // Only a genuinely absent file may fall back to the local state.
+          const raw = readSharedRaw(instanceBaseDir, preliminary.pipelineId);
+          const base = raw.meta ?? current ?? preliminary;
+          if (raw.meta) {
+            const violation = plainPatchBarrierViolation(patch, raw.meta);
+            if (violation) {
+              safeWriteAuditLog("session_state_plain", {
+                operation: "updateMeta",
+                outcome: "rejected",
+                reason: violation,
+                pipelineId: preliminary.pipelineId,
+              }, "warn");
+              // Zero-effect rejection: no local write, no shared write.
+              return undefined;
+            }
+          }
+          const merged = { ...base, ...patch };
+
+          // Write 1: appendEntry (local session)
+          pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, merged);
+
+          // Write 2: meta.json (shared source, atomic publish, fail-open stamp)
+          const pipelineDir = sharedPipelineDir(instanceBaseDir, preliminary.pipelineId);
+          const pub = publishSharedMeta(pipelineDir, JSON.stringify(merged, null, 2));
+          if (!pub.ok) {
+            // Fail-open: log but don't block pipeline (pre-193 behaviour).
             safeWriteAuditLog("session_state_error", {
               operation: "updateMeta_shared",
-              error: errMsg,
+              error: pub.error,
             }, "warn");
-
-            // Stamp local entry with sharedStale flag so getMeta detects it
+            // Stamp local entry with sharedStale flag so getMeta detects it.
             try {
-              const staleMerged = { ...merged, _sharedStale: true, _sharedStaleAt: Date.now() };
-              pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, staleMerged);
+              pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, {
+                ...merged, _sharedStale: true, _sharedStaleAt: Date.now(),
+              });
             } catch {
               // Best-effort: if even this fails, local state is still consistent
             }
           }
-        }
 
-        return merged;
+          return merged;
+        } catch (err) {
+          // Fail-open: log but don't throw to avoid blocking the pipeline
+          const errMsg = err instanceof Error ? err.message : String(err);
+          safeWriteAuditLog("session_state_error", {
+            error: errMsg,
+            operation: "updateMeta",
+          }, "error");
+          return undefined;
+        } finally {
+          const rel = releaseMetaLock(acq.lockDir, acq.token);
+          if (!rel.ok) {
+            safeWriteAuditLog("session_state_plain", {
+              operation: "updateMeta_release",
+              outcome: "release_failed",
+              reason: rel.reason,
+              lockDir: acq.lockDir,
+              ...(rel.error !== undefined ? { error: rel.error } : {}),
+              guidance: "Lock intentionally left in place (fail-closed). Stop every writer for this pipeline, then remove this exact directory before resuming.",
+            }, "error");
+          }
+        }
       } catch (err) {
         // Fail-open: log but don't throw to avoid blocking the pipeline
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -421,68 +619,147 @@ export function createSessionState(
         if (pre.error === "corrupt") return unavailable("shared_corrupt");
         if (pre.error === "foreign_pipeline") return unavailable("shared_pipeline_stale");
 
-        // Expectation comparison against the freshest authoritative snapshot
-        // (shared when healthy; getMeta() result otherwise — never used as
-        // shared-success proof, only as pre-write comparison).
-        const authoritative = pre.meta ?? current;
-        const conflictReason = matchCommitExpectation(authoritative, expected);
-        if (conflictReason) {
+        // 193 Phase 2 (tasks 1-4): the protected sequence
+        //   authoritative read → expectation compare → merge → publish → read-back
+        // runs under the EXCLUSIVE per-pipeline commit lock. Acquisition is a
+        // single non-spinning attempt; a competing holder is an honest
+        // conflict, never something to wait out. Menus and RPC dispatches
+        // never happen inside this critical section.
+        const acq = tryAcquireMetaLock(instanceBaseDir, expected.pipelineId);
+        if (acq.status === "busy") {
           safeWriteAuditLog("session_state_strict", {
-            operation: "updateMetaVerified", outcome: "conflict", reason: conflictReason,
+            operation: "updateMetaVerified",
+            outcome: "conflict",
+            reason: "lock_busy",
+            lockDir: acq.lockDir,
+            ...(acq.owner
+              ? {
+                  lockPid: String(acq.owner.pid),
+                  lockHost: acq.owner.host,
+                  lockToken: acq.owner.token.slice(0, 8),
+                  lockCreatedAt: String(acq.owner.createdAt),
+                }
+              : { lockOwner: "missing" }),
+            guidance: "Residual locks are fail-closed: stop every writer for this pipeline, then remove this exact directory manually and resume.",
           }, "warn");
-          return { status: "conflict", reason: conflictReason };
+          return { status: "conflict", reason: "lock_busy" };
+        }
+        if (acq.status === "unavailable") {
+          return unavailable(`lock_${acq.reason}`, acq.error);
         }
 
-        const merged = { ...current, ...patch };
-
-        // Write 1: local appendEntry must succeed.
         try {
-          pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, merged);
-        } catch (err) {
-          return unavailable("local_append_failed", err);
-        }
+          // Expectation comparison against the authoritative snapshot RE-READ
+          // inside the lock (shared when healthy; getMeta() result otherwise —
+          // never used as shared-success proof, only as pre-write comparison).
+          const pre2 = readSharedRaw(instanceBaseDir, expected.pipelineId);
+          if (pre2.error === "read_failed") return unavailable("shared_read_failed");
+          if (pre2.error === "corrupt") return unavailable("shared_corrupt");
+          if (pre2.error === "foreign_pipeline") return unavailable("shared_pipeline_stale");
+          const authoritative = pre2.meta ?? current;
+          const conflictReason = matchCommitExpectation(authoritative, expected);
+          if (conflictReason) {
+            safeWriteAuditLog("session_state_strict", {
+              operation: "updateMetaVerified", outcome: "conflict", reason: conflictReason,
+            }, "warn");
+            return { status: "conflict", reason: conflictReason };
+          }
 
-        // Write 2: shared meta.json must succeed (NO fail-open here).
-        try {
-          const metaDir = path.join(instanceBaseDir, expected.pipelineId);
-          fs.mkdirSync(metaDir, { recursive: true });
-          fs.writeFileSync(path.join(metaDir, "meta.json"), JSON.stringify(merged, null, 2), "utf-8");
-        } catch (err) {
-          // Stamp staleness best-effort for the ordinary fail-open reader,
-          // but the strict caller never sees success from this path.
+          // 193 Phase 2 (task 2): merge on the AUTHORITATIVE shared snapshot,
+          // never on a stale local one (which could roll back a committed
+          // human choice via an unrelated whole-object patch).
+          const merged = { ...authoritative, ...patch };
+
+          // 193 Phase 2 (task 4): every design-review state write inside the
+          // lock gets a UNIQUE, monotonic revision: max(now, auth + 1). Two
+          // writes within the same millisecond still produce distinct
+          // revisions; callers must use the PERSISTED state we read back.
+          if (merged.designReview) {
+            merged.designReview = {
+              ...merged.designReview,
+              updatedAt: Math.max(Date.now(), (authoritative.designReview?.updatedAt ?? 0) + 1),
+            };
+          }
+
+          // Write 1: local appendEntry must succeed.
           try {
-            pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, {
-              ...merged, _sharedStale: true, _sharedStaleAt: Date.now(),
-            });
-          } catch { /* best-effort */ }
-          return unavailable("shared_write_failed", err);
-        }
+            pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, merged);
+          } catch (err) {
+            return unavailable("local_append_failed", err);
+          }
 
-        // Read-back verification from SHARED storage. A local snapshot (even
-        // after _sharedStale stripping) is never accepted as proof.
-        const back = readSharedRaw(instanceBaseDir, expected.pipelineId);
-        if (back.error || !back.meta) {
-          return unavailable(`shared_readback_${back.error ?? "missing"}`);
-        }
-        const rb = back.meta;
-        if (rb.pipelineId !== expected.pipelineId) {
-          return unavailable("readback_pipeline_mismatch");
-        }
-        if (patch.designReview) {
-          const want = patch.designReview;
-          const got = rb.designReview;
-          if (
-            !got
-            || got.authorizationId !== want.authorizationId
-            || got.round !== want.round
-            || got.phase !== want.phase
-            || (want.operation?.operationId ?? undefined) !== (got.operation?.operationId ?? undefined)
-          ) {
-            return unavailable("readback_identity_mismatch");
+          // Write 2: shared meta.json must be published ATOMICALLY (temp file
+          // + fsync + rename) and must succeed — NO fail-open here.
+          const pub = publishSharedMeta(
+            sharedPipelineDir(instanceBaseDir, expected.pipelineId),
+            JSON.stringify(merged, null, 2),
+          );
+          if (!pub.ok) {
+            // Stamp staleness best-effort for the ordinary fail-open reader,
+            // but the strict caller never sees success from this path.
+            try {
+              pi.appendEntry(PIPELINE_META_CUSTOM_TYPE, {
+                ...merged, _sharedStale: true, _sharedStaleAt: Date.now(),
+              });
+            } catch { /* best-effort */ }
+            return unavailable("shared_write_failed", pub.error);
+          }
+
+          // Read-back verification from SHARED storage. A local snapshot (even
+          // after _sharedStale stripping) is never accepted as proof.
+          const back = readSharedRaw(instanceBaseDir, expected.pipelineId);
+          if (back.error || !back.meta) {
+            return unavailable(`shared_readback_${back.error ?? "missing"}`);
+          }
+          const rb = back.meta;
+          if (rb.pipelineId !== expected.pipelineId) {
+            return unavailable("readback_pipeline_mismatch");
+          }
+          if (patch.designReview) {
+            const want = patch.designReview;
+            const got = rb.designReview;
+            if (
+              !got
+              || got.authorizationId !== want.authorizationId
+              || got.round !== want.round
+              || got.phase !== want.phase
+              || (want.operation?.operationId ?? undefined) !== (got.operation?.operationId ?? undefined)
+            ) {
+              return unavailable("readback_identity_mismatch");
+            }
+            // 193 Phase 2 (tasks 8/10): the human decision and the approval
+            // basis are acted upon ONLY after EVERY field reads back intact.
+            if (
+              want.decision !== undefined
+              && canonicalJson(got?.decision) !== canonicalJson(want.decision)
+            ) {
+              return unavailable("readback_decision_mismatch");
+            }
+            if (
+              want.approval !== undefined
+              && canonicalJson(got?.approval) !== canonicalJson(want.approval)
+            ) {
+              return unavailable("readback_approval_mismatch");
+            }
+          }
+
+          return { status: "persisted", meta: rb };
+        } finally {
+          // Release ONLY with our own token; a failed release is fail-closed
+          // (the lock stays) and audited — the holder must not proceed to any
+          // further action it cannot confirm.
+          const rel = releaseMetaLock(acq.lockDir, acq.token);
+          if (!rel.ok) {
+            safeWriteAuditLog("session_state_strict", {
+              operation: "updateMetaVerified",
+              outcome: "release_failed",
+              reason: rel.reason,
+              lockDir: acq.lockDir,
+              ...(rel.error !== undefined ? { error: rel.error } : {}),
+              guidance: "Lock intentionally left in place (fail-closed). Stop every writer for this pipeline, then remove this exact directory before resuming.",
+            }, "error");
           }
         }
-
-        return { status: "persisted", meta: rb };
       } catch (err) {
         return unavailable("strict_commit_exception", err);
       }

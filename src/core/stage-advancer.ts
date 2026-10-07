@@ -1133,7 +1133,16 @@ export async function maybeHandleConfirmGate(
         const coordinatorCtx = {
           config,
           session: ctx.session,
-          ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+          ui: ctx.ui ? {
+            notify: (msg: string) => { ctx.ui?.notify?.(msg); },
+            // 193 Phase 2 (task 7): human decision menu control.
+            select: ctx.ui.select
+              ? (title: string, options: readonly string[]): Promise<string | undefined> =>
+                  ctx.ui!.select!(title, [...options])
+              : undefined,
+          } : undefined,
+          // 193 Phase 2 (task 8): role evidence (conservative in coordinator).
+          actor: { isChild, sessionFile: sessionFile || undefined },
           pi: ctx.pi,
           // Pass through spawnOverride test hook if provided (for testability)
           spawnOverride: ctx.spawnOverride,
@@ -1411,7 +1420,19 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       const coordinatorCtx = {
         config,
         session: ctx.session,
-        ui: ctx.ui ? { notify: (msg: string) => { ctx.ui?.notify?.(msg); } } : undefined,
+        ui: ctx.ui ? {
+          notify: (msg: string) => { ctx.ui?.notify?.(msg); },
+          // 193 Phase 2 (task 7): human decision menu control.
+          select: ctx.ui.select
+            ? (title: string, options: readonly string[]): Promise<string | undefined> =>
+                ctx.ui!.select!(title, [...options])
+            : undefined,
+        } : undefined,
+        // 193 Phase 2 (task 8): role evidence (conservative in coordinator).
+        actor: (() => {
+          const r = detectSessionRole(ctx);
+          return { isChild: r.isChild, sessionFile: r.sessionFile || undefined };
+        })(),
         pi: ctx.pi,
       };
       const coordinatorResult = await coordinateDesignReview(coordinatorCtx, meta, "advance");
