@@ -661,14 +661,16 @@ describe("prompt-config", () => {
         "verify_extract",
         "conflict_check_prompt",
         "design_review_update_prompt",
+        "design_review_smart_decision_prompt",
       ];
       for (const key of expectedKeys) {
         expect(parsed[key]).toBeDefined();
         expect(typeof parsed[key]).toBe("string");
         expect((parsed[key] as string).trim().length).toBeGreaterThan(0);
       }
-      // Ensure total key count matches final target (33 keys)
-      expect(Object.keys(parsed).length).toBe(33);
+      // Ensure total key count matches final target (34 keys: 33 + the
+      // 193 shipped strict smart decision prompt key)
+      expect(Object.keys(parsed).length).toBe(34);
     });
 
     it("clarify template contains all 7 non-loop placeholders (no requirement_doc)", () => {

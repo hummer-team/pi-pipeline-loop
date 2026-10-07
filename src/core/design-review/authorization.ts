@@ -4,7 +4,9 @@
  *
  * Implements the authorisation requirements from Task 6:
  * - Old authorisation must be invalidated before new entry
- * - Clear prompt: "FAIL automatically updates and re-reviews, PASS automatically proceeds to development"
+ * - 193 Phase 4 (task 3): the stage-entry prompt is MODE-AWARE — a trusted
+ *   PASS always proceeds to develop, but FAIL handling differs per
+ *   confirmation mode and entering the loop NEVER pre-approves a future FAIL
  * - Only establish new authorisation after confirmation AND validation
  * - Cancel/no UI/missing docs → don't spawn
  * - child/tool sessions cannot authorise
@@ -12,7 +14,7 @@
  * - New run/quit/manual stage change CANNOT inherit authorisation
  */
 
-import type { PipelineConfig, SessionMeta, DesignReviewState } from "../../types";
+import type { PipelineConfig, SessionMeta, DesignReviewState, ConfirmMode } from "../../types";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { detectSessionRole } from "../session-role";
@@ -71,6 +73,45 @@ async function validateDesignReviewPrerequisites(
  * @param meta - Current session metadata
  * @returns Authorisation gate result
  */
+/**
+ * 193 Phase 4 (task 3): mode-aware stage-entry guidance for the
+ * authorisation confirm. The old text hardcoded the AUTO mode's FAIL
+ * behaviour ("automatically update plan and re-review") for every mode,
+ * which contradicted the confirmed decision semantics:
+ * - a trusted, contract-complete PASS releases to develop in EVERY mode;
+ * - auto: a valid FAIL routes an authorized plan-revision pass;
+ * - manual: a valid FAIL goes to the human decision menu;
+ * - smart: the reviewer declares exactly one binary action
+ *   (revise-plan / request-human) — smart NEVER releases a FAIL on its own.
+ * Entering the loop also never means a future FAIL is pre-approved.
+ */
+export function buildDesignReviewAuthorisationPrompt(mode: ConfirmMode): string {
+  const failBehaviour =
+    mode === "manual"
+      ? "• FAIL: the report is preserved and YOU are asked to decide — " +
+        "Revise Plan / Proceed to Develop / Cancel (nothing is released automatically)"
+      : mode === "smart"
+        ? "• FAIL: the reviewer declares exactly one action — revise-plan " +
+          "(authorized automatic plan revision) or request-human (the human " +
+          "decision menu). Smart mode NEVER releases a FAIL automatically"
+        : "• FAIL: the plan is revised by an authorized automatic update " +
+          "pass, then the new plan is re-reviewed";
+  return [
+    "You are about to enter the design-review stage.",
+    "",
+    "Behaviour:",
+    "• PASS: a contract-complete PASS report → automatically proceed to develop",
+    failBehaviour,
+    "",
+    "This process will loop until the design is approved or budget is exhausted.",
+    "",
+    "Note: authorising stage entry now does NOT pre-approve any future FAIL —",
+    "every valid FAIL follows the mode-specific handling above.",
+    "",
+    "Do you want to proceed?",
+  ].join("\n");
+}
+
 export async function designReviewAuthorisationGate(
   ctx: RuntimeCtx,
   config: PipelineConfig,
@@ -119,19 +160,13 @@ export async function designReviewAuthorisationGate(
     return { ok: false, reason: "tui_unavailable" };
   }
 
-  // Step 4: Prompt user with clear PASS/FAIL behavior
+  // Step 4: Prompt user with MODE-AWARE PASS/FAIL behavior (193 Phase 4
+  // task 3): the mode that will be pinned at the first review dispatch —
+  // the confirm text must match what the loop actually enforces.
   const promptTitle = "Design Review Stage Entry";
-  const promptMessage = [
-    "You are about to enter the design-review stage.",
-    "",
-    "Behaviour:",
-    "• PASS: Review report passes → automatically proceed to develop stage",
-    "• FAIL: Review report fails → automatically update plan and re-review",
-    "",
-    "This process will loop until the design is approved or budget is exhausted.",
-    "",
-    "Do you want to proceed?",
-  ].join("\n");
+  const confirmMode: ConfirmMode =
+    config.stages?.["design-review"]?.confirm?.mode ?? "auto";
+  const promptMessage = buildDesignReviewAuthorisationPrompt(confirmMode);
 
   const confirmed = await ctx.ui.confirm(promptTitle, promptMessage);
   if (!confirmed) {

@@ -42,6 +42,7 @@
       "skillPath": "design-review/SKILL.md",
       "nextStage": "develop",
       "verify": { "require": true },
+      "confirm": { "mode": "auto" },
       "allowedWritePaths": ["docs/"]
     },
     "develop": {

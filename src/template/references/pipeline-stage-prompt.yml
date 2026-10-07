@@ -52,7 +52,7 @@
 #   Placeholders use the format {{key}} and are replaced at runtime with
 #   dynamic values built from pipeline state.
 #
-# Available placeholders (11 total):
+# Available placeholders (13 total):
 #   {{context_reference}}       — Part 1: previous summary + context files + requirement doc path
 #   {{domain_skill}}            — Part 2: business domain rules
 #   {{stage_skill}}             — Part 3: current stage skill content (.pi/skills/{skillPath})
@@ -64,6 +64,8 @@
 #   {{stage_executor}}          — Part 9: stage executor scheduling (all 5 stages; clarify optional)
 #   {{stage_deliverables}}      — Part 10: plugin default deliverables (all 5 stages; optional for clarify/plan)
 #   {{smart_confirm_guidance}}  — Part 11: smart confirm complexity protocol (plan/review smart mode only)
+#   {{design_review_context}}        — design-review stage: authoritative plan/report binding context (191)
+#   {{design_review_smart_guidance}} — design-review stage: smart plan-revision decision protocol (193, smart mode only)
 #
 # Paragraph Format:
 #   Each placeholder occupies its own paragraph. Paragraphs separated by
@@ -72,7 +74,7 @@
 #   the rendered output.
 #
 # Unknown Placeholders:
-#   Any {{xxx}} not in the 11 known keys above is preserved as-is (not replaced).
+#   Any {{xxx}} not in the 13 known keys above is preserved as-is (not replaced).
 #
 # Critical Placeholder Missing:
 #   If a critical placeholder is absent from the template, the entire stage
@@ -284,6 +286,45 @@ design_review_update_prompt: |
    - The disposition table must cover EVERY issue of the consumed report exactly once (by the report's issue numbering); missing or duplicate entries invalidate the update
    - The updated plan will be automatically re-reviewed in the next design-review round; fix quality is judged there, not by this step
 
+# 193 Phase 4 (task 1): shipped as an explicit entry so businesses can
+# customise the smart decision protocol. The text below is KEPT IN SYNC with
+# DEFAULT_DESIGN_REVIEW_SMART_DECISION_PROMPT (asserted by the asset test).
+# Strict-read semantics: only a missing FILE/KEY falls back to the built-in
+# default; an explicit empty/non-string value or broken YAML BLOCKS the
+# smart review dispatch. Only declared tokens may appear in braces; the
+# fenced example fields carry NO braces so they are never token-substituted.
+design_review_smart_decision_prompt: |
+   ## Design Review Smart Plan-Revision Decision
+
+   This review runs under SMART confirmation mode for pipeline {pipelineId}.
+   Identity: plan {planDoc}, round {round}, review operation {operationId},
+   input hash {inputHash}, report {reportDoc}.
+
+   - If your verdict is PASS: ignore this section entirely and never write a
+     Plan Revision Decision into a PASS report.
+   - If your verdict is FAIL: append EXACTLY ONE section to the report:
+
+   ```markdown
+   ## Plan Revision Decision
+
+   **action**: revise-plan
+   **reason**: <replace this line with one real justification>
+   ```
+
+   - **action** accepts ONLY these two lowercase tokens:
+     - revise-plan — every issue is fixable inside the plan document by an
+       authorized autonomous revision pass.
+     - request-human — at least one issue needs a human call (requirement
+       conflict, product direction, missing authority, or information only the
+       owner can supply).
+   - proceed-develop is NOT a valid action: a FAIL verdict can never ask to
+     enter development; smart mode does not release FAIL automatically.
+   - **reason** must be a real justification line — never blank, never left as the
+     angle-bracket instruction or any other copied template placeholder.
+   - A FAIL report without this exact section (or with a duplicated,
+     contradictory, empty or placeholder variant) is rejected as INVALID and
+     returned to you for correction — it is never routed anywhere.
+
 stage_executor_plan: |
   ## Stage Executor Scheduling
   This stage uses `{subagent_type}` (lightweight advance mode).
@@ -296,9 +337,9 @@ stage_executor_design-review: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
   **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
-  **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
+  **Return protocol**: The reviewer ONLY writes/updates the current design-review report file and stops. It never approves stages, never calls `stage_advance`, and never routes its own verdict — the plugin validates the report (identity + completeness) and owns every transition.
   **Context**: {context_arg}
-  **Checkpoint**: Design review report must contain a verdict line (PASS/FAIL) before `stage_advance`. On PASS, advance to develop. On FAIL, advance to plan for revision.
+  **Verdict routing (plugin-enforced, 193)**: a trusted, contract-complete PASS proceeds to develop in EVERY confirmation mode. A valid FAIL is handled by the configured mode: auto = an authorized plan-revision pass then re-review; manual = the human decision menu (Revise Plan / Proceed to Develop / Cancel); smart = the reviewer's binary declaration (`revise-plan` / `request-human`) — smart NEVER releases a FAIL automatically. Any valid `## Issues` entry forces FAIL regardless of the conclusion line; entry authorization never pre-approves a future FAIL.
   {active_spawn_note}
 
 stage_executor_develop: |
@@ -352,11 +393,14 @@ stage_deliverable_plan: |
   - **MUST** end the plan document with `## 用户确认` / `## User Confirmation` section for user sign-off
 
 stage_deliverable_design-review: |
-  - **MUST** include `**pipeline**: {pipelineId}` in the artifact file header
-  - **MUST** perform design review and produce a review report
-  - **MUST** include a verdict line in bilingual+bold-tolerant form: `结论：(通过|不通过)` / `Verdict: (PASS|FAIL)` / `Conclusion: (pass|fail)` — bold/italic markup (`**`/`_`) tolerated
-  - **MUST** verify that the plan document addresses all requirements
-  - **MUST** provide clear reasoning for the verdict (PASS or FAIL)
+  - **MUST** perform design review and produce a review report containing ALL four sections exactly once (any order): `## Summary`, `## Recommendations`, `## Verdict`, `## Issues`
+  - **MUST** include the five identity header rows binding the report to this review — `**pipeline**: {pipelineId}`, plan path, round, operation, input hash — copied verbatim from the spawn context, never from memory
+  - **MUST** write exactly `None` as the only `## Issues` entry when there are no issues (an empty Issues section is never "no issues")
+  - **MUST** include a verdict line in bilingual+bold-tolerant form: `结论：(通过|不通过)` / `Verdict: (PASS|FAIL)` / `**Design Review: (PASS|FAIL)**` — bold/italic markup (`**`/`_`) tolerated
+  - **MUST** provide clear reasoning for the verdict (PASS or FAIL) and actionable recommendations
+  - **MUST NOT** conclude PASS while any valid `## Issues` entry exists — issues take precedence; any real issue forces FAIL regardless of severity labels
+  - **MUST NOT** self-approve or drive stage transitions — the plugin validates the report and routes PASS/FAIL by the configured confirmation mode
+  - In SMART confirmation mode a FAIL verdict **MUST** additionally carry exactly one `## Plan Revision Decision` section with `**action**: revise-plan` or `**action**: request-human` and a non-placeholder `**reason**` line; PASS reports never include it and `proceed-develop` is never a valid action
 
 stage_deliverable_develop: |
   - **MUST** run the project build command and confirm it passes (command determined by project tech stack)
