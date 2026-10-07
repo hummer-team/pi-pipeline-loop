@@ -1,3 +1,10 @@
+---
+name: design-review
+description: Translate whether the plan complies with the design and propose modification suggestions
+userInvocable: false
+disable-model-invocation: true
+---
+
 # Design Review Skill
 
 This skill defines the design review stage of the pipeline, where plan documents are reviewed for completeness, consistency, and feasibility before proceeding to development.
