@@ -36,6 +36,11 @@ import { resetPromptConfigCache } from "../../core/prompt-config";
 import { makeTestConfig } from "../helpers";
 import { computeHash } from "../../core/design-review/state";
 import type { ConfirmMode } from "../../types";
+// 193 fix (review issue 3): heading-tolerance parity between the deployed
+// verify.md declarations and the trusted domain contract.
+import { parseFrontmatter } from "../../core/verify-frontmatter";
+import { DESIGN_REVIEW_REPORT_SECTIONS } from "../../core/design-review/report-contract";
+import { DEFAULT_ISSUE_HEADING_PATTERN } from "../../core/design-review/report-sections";
 
 const TEMPLATE_ROOT = path.join(__dirname, "..", "..", "template");
 
@@ -104,7 +109,13 @@ describe("192 Phase 5: shipped design-review assets", () => {
         const re = new RegExp(`${p}|`);
         expect(re.exec("")!.length - 1).toBeGreaterThanOrEqual(1);
       }
-      expect(anchors.issueHeading?.patterns[0]).toContain("Issues");
+      // 193 fix (review issue 3): the anchor carries the contract's tolerance
+      // (levels 1–4 + bilingual aliases) — assert it BEHAVES like the default,
+      // not that it contains a literal label.
+      const anchor = anchors.issueHeading?.patterns[0] ?? "";
+      expect(new RegExp(anchor, "im").test("## Issues")).toBe(true);
+      expect(new RegExp(anchor, "im").test("### 问题")).toBe(true);
+      expect(new RegExp(anchor, "im").test("## 问题列表")).toBe(true);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -303,5 +314,78 @@ describe("193 Phase 4: decision-contract asset consistency", () => {
     for (const label of ["Summary", "Recommendations", "Verdict", "Issues"]) {
       expect(verifyText).toContain(label);
     }
+  });
+});
+
+// ─── 193 fix (review issue 3): heading-tolerance parity ──────────────────────
+// The deployed verify.md declarations are evaluated by the groups engine with
+// the "m" flag ONLY, while the trusted domain contract compiles its patterns
+// with "i". A heading accepted by the contract but rejected by the declaration
+// would degrade the corrective guidance to the generic template (the ruleType
+// would be fileContentPattern, not designReviewReport) — so both sides MUST
+// accept exactly the same set of headings.
+describe("193 fix (review issue 3): deployed heading declarations match the domain contract tolerance", () => {
+  /** Heading forms spanning levels 1–5, casing, spacing and every alias. */
+  const HEADING_SAMPLES: readonly string[] = [
+    "# Summary", "## Summary", "### Summary", "#### Summary", "##### Summary",
+    "## summary", "## SUMMARY", "##SuMmArY", "## 摘要", "## 总结", "## 概要", "Summary",
+    "## Recommendations", "## Recommendation", "### recommendations", "## Suggestions",
+    "## suggestion", "## SUGGESTIONS", "## 建议", "## 修改建议", "## 改进建议", "## 意见",
+    "## Verdict", "## verdict", "### VERDICT", "## Conclusion", "## conclusion",
+    "## 结论", "## 判定", "## Judgement",
+    "## Issues", "## issues", "### Issues", "#### ISSUESS", "## 问题", "## 问题列表",
+    "## Issue", "## Problems",
+  ];
+
+  async function deployedHeadingNodes(): Promise<
+    Array<{ patterns?: string[]; runtime?: string; type: string }>
+  > {
+    const raw = readTemplate(path.join("references", "design-review_spec", "verify.md"));
+    const frontmatter = raw.split(/^---\s*$/m)[1]?.trim() ?? "";
+    const rules = await parseFrontmatter(frontmatter);
+    if (!rules) throw new Error("verify.md frontmatter unparsable");
+    const group = rules.groups?.[0];
+    if (!group) throw new Error("verify.md groups missing");
+    return group.rules.filter(
+      (n) => n.type === "fileContentPattern" && (n.patterns?.length ?? 0) > 0,
+    );
+  }
+
+  it("each mandatory section: the deployed pattern (engine 'm') agrees with the contract pattern ('i') on every sampled heading", async () => {
+    const nodes = await deployedHeadingNodes();
+    for (const spec of DESIGN_REVIEW_REPORT_SECTIONS.filter((s) => s.key !== "issues")) {
+      const contractRe = new RegExp(spec.headingPattern, "i");
+      const canonical = `## ${spec.label}`;
+      const matches = nodes.filter((n) => {
+        if (n.runtime !== undefined) return false;
+        return new RegExp(n.patterns![0]!, "m").test(canonical);
+      });
+      expect(matches.length).toBe(1);
+      const deployedRe = new RegExp(matches[0]!.patterns![0]!, "m");
+      for (const heading of HEADING_SAMPLES) {
+        expect(deployedRe.test(heading)).toBe(contractRe.test(heading));
+      }
+    }
+  });
+
+  it("the issueHeading anchor keeps the contract default's full tolerance (levels 1–4 + bilingual aliases)", async () => {
+    const nodes = await deployedHeadingNodes();
+    const anchors = nodes.filter((n) => n.runtime === "issueHeading");
+    expect(anchors.length).toBe(1);
+    const deployedRe = new RegExp(anchors[0]!.patterns![0]!, "m");
+    const defaultRe = new RegExp(DEFAULT_ISSUE_HEADING_PATTERN, "i");
+    for (const heading of HEADING_SAMPLES) {
+      expect(deployedRe.test(heading)).toBe(defaultRe.test(heading));
+    }
+  });
+
+  it("the review's reproduction case — '### Summary' — is now accepted by the deployed declaration", async () => {
+    const nodes = await deployedHeadingNodes();
+    const summaryNode = nodes.find(
+      (n) => n.runtime === undefined && new RegExp(n.patterns![0]!, "m").test("## Summary"),
+    );
+    expect(summaryNode).toBeDefined();
+    expect(new RegExp(summaryNode!.patterns![0]!, "m").test("### Summary")).toBe(true);
+    expect(new RegExp(summaryNode!.patterns![0]!, "m").test("##### Summary")).toBe(false);
   });
 });
