@@ -9,6 +9,11 @@ import { buildStageSequence } from "../utils/stage-sequence";
 import { safeWriteStageAudit } from "../utils/auditLog";
 import { verifySummaryHash } from "../utils/summary-hash";
 import { isDormant } from "./dormancy";
+// 193 Phase 3 (task 8): read-only pending-decision display (shared view).
+import {
+  buildDesignReviewPendingDecisionView,
+  DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
+} from "./design-review/decision-display";
 
 /**
  * Creates the `pipeline_state` tool.
@@ -48,12 +53,18 @@ export function createPipelineState(config: PipelineConfig): Tool {
 
       const stageSequence = buildStageSequence(config, meta.currentStage);
 
+      // 193 Phase 3 (task 8): while a human plan-revision decision is pending,
+      // this tool shows ONLY the pending/mode/report/resume guidance below —
+      // the automatic next step is deliberately suppressed (READ-ONLY window;
+      // advertising "develop" here would encourage self-execution).
+      const pendingDecision = buildDesignReviewPendingDecisionView(meta);
+
       const result = {
         pipelineId: meta.pipelineId,
         stage: {
           current: currentStage,
           previous: meta.previousStage ?? null,
-          next: nextStage,
+          next: pendingDecision !== null ? null : nextStage,
           sequence: stageSequence,
         },
         domain: {
@@ -77,6 +88,19 @@ export function createPipelineState(config: PipelineConfig): Tool {
           planDoc: meta.designReview.planDoc,
           reportDoc: meta.designReview.reportDoc ?? null,
           pauseReason: meta.designReview.pauseReason ?? null,
+          // 193 Phase 3 (task 8): pending human decision — read-only mode,
+          // decision (state/mode/report/issues) and the resume instruction.
+          ...(pendingDecision !== null ? {
+            readOnly: true,
+            decision: {
+              state: pendingDecision.state,
+              choice: pendingDecision.choice,
+              mode: pendingDecision.mode,
+              reportDoc: pendingDecision.reportDoc,
+              issueCount: pendingDecision.issueCount,
+            },
+            resume: DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
+          } : {}),
         } : null,
       };
 

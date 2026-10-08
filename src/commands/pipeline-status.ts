@@ -9,6 +9,13 @@ import { checkTemplateDrift } from "../utils/template-drift";
 import { resolvePiWorkDir } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
 import { isDormant } from "../core/dormancy";
+// 193 Phase 3 (task 8): read-only pending-decision display (shared view).
+import {
+  buildDesignReviewPendingDecisionView,
+  formatDesignReviewPendingDecision,
+  DESIGN_REVIEW_PENDING_READONLY_NOTICE,
+  DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
+} from "../core/design-review/decision-display";
 
 /**
  * Creates the `/pipeline-status` command.
@@ -56,6 +63,8 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
         // Fail-open: drift check failure should not break status display
       }
 
+      const pendingDecision = buildDesignReviewPendingDecisionView(meta);
+
       const content =
         `# Pipeline Status\n` +
         `- ID: ${meta.pipelineId}\n` +
@@ -73,7 +82,14 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
           `- Operation: ${meta.designReview.operation?.kind || "N/A"}\n` +
           `- Plan: ${meta.designReview.planDoc}\n` +
           (meta.designReview.reportDoc ? `- Report: ${meta.designReview.reportDoc}\n` : "") +
-          (meta.designReview.pauseReason ? `- Pause Reason: ${meta.designReview.pauseReason}\n` : "")
+          (meta.designReview.pauseReason ? `- Pause Reason: ${meta.designReview.pauseReason}\n` : "") +
+          // 193 Phase 3 (task 8): pending human decision shows ONLY the
+          // pending/mode/report/resume guidance — never an automatic next step.
+          (pendingDecision !== null
+            ? `- Status: ${DESIGN_REVIEW_PENDING_READONLY_NOTICE}\n` +
+              `- Decision: ${formatDesignReviewPendingDecision(pendingDecision)}\n` +
+              `- Resume: ${DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION}\n`
+            : "")
           : "");
 
       return { success: true, content };

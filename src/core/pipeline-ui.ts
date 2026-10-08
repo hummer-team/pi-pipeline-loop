@@ -7,6 +7,12 @@
 
 import type { PipelineConfig } from "../types";
 import { toProjectRelative } from "../utils/path-display";
+// 193 Phase 3 (task 8): the decision-pending pause renders its own status token
+// (shared display view) instead of any next-stage hint.
+import {
+  buildDesignReviewPendingDecisionView,
+  DESIGN_REVIEW_PENDING_TARGET,
+} from "./design-review/decision-display";
 
 /** Status bar key for pipeline stage display */
 export const STAGE_STATUS_KEY = "pipeline-stage";
@@ -123,7 +129,12 @@ function getDesignReviewDynamicTarget(meta: any): string | null {
     return 'develop';
   }
   if (phase === 'paused') {
-    return 'paused';
+    // 193 Phase 3 (task 8): a pending human plan-revision decision shows its
+    // own READ-ONLY status token — the bar must never advertise an automatic
+    // next step while the decision executor awaits a human choice.
+    return buildDesignReviewPendingDecisionView(meta) !== null
+      ? DESIGN_REVIEW_PENDING_TARGET
+      : 'paused';
   }
   if (phase === 'finished') {
     return 'completed';

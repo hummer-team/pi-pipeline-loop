@@ -35,6 +35,14 @@ import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-
 // 193 Phase 1 (task 4): the smart decision guidance builder is the SAME one
 // the review-dispatch exact prompt uses — one protocol source of truth.
 import { buildDesignReviewSmartGuidanceSection } from "./design-review/smart-prompt";
+// 193 Phase 3 (task 8): ONE read-only view for the decision-pending pause,
+// shared with pipeline-state / pipeline-status / pipeline-ui displays.
+import {
+  buildDesignReviewPendingDecisionView,
+  formatDesignReviewPendingDecision,
+  DESIGN_REVIEW_PENDING_READONLY_NOTICE,
+  DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
+} from "./design-review/decision-display";
 import { resolvePiWorkDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
 import { isWithinDesignReviewScope } from "../utils/protect";
@@ -832,6 +840,32 @@ function buildDesignReviewContext(
 ): string | null {
   const drState = meta.designReview;
   if (!drState) return null;
+
+  // 193 Phase 3 (task 8): while a human plan-revision decision is pending the
+  // dynamic context is READ-ONLY guidance only — pending state, pinned mode,
+  // bound report and the explicit /pipeline-resume instruction. The operation
+  // write-scope blocks below advertise a writable report, which directly
+  // contradicts the tool-guard read-only enforcement (decision-guard), so the
+  // decision-pending branch must be rendered INSTEAD of them, never after.
+  const pendingView = buildDesignReviewPendingDecisionView(meta);
+  if (pendingView !== null) {
+    return [
+      `# DESIGN-REVIEW DYNAMIC CONTEXT`,
+      `- Status: ${DESIGN_REVIEW_PENDING_READONLY_NOTICE}`,
+      `- Decision: ${formatDesignReviewPendingDecision(pendingView)}`,
+      `- Plan Document: ${drState.planDoc}`,
+      `- Round: ${drState.round}`,
+      ``,
+      `**Write Scope**: NOTHING is writable while this decision is pending. This`,
+      `section OVERRIDES any STAGE WRITE SCOPE or report write-visibility text`,
+      `above: write/edit tools and file-mutating bash commands are blocked by the`,
+      `permission guard. Do NOT edit the report or the plan, and do NOT advance`,
+      `the pipeline yourself — there is NO automatic next step until a human`,
+      `records the decision.`,
+      ``,
+      `**How to continue**: ${DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION}`,
+    ].join("\n");
+  }
 
   const operation = drState.operation;
   if (!operation) return null;
