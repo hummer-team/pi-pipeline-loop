@@ -22,6 +22,9 @@
 
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { DEFAULT_DESIGN_REVIEW_SMART_DECISION_PROMPT } from "../../constants";
+// 193 round-2 fix (review issue 1): the decision-pending window is read-only;
+// the injected smart review protocol must not advertise writing the report.
+import { isDesignReviewDecisionPending } from "./decision-guard";
 import {
   renderStrictPromptTemplate,
   selectStrictPromptTemplate,
@@ -187,7 +190,11 @@ export async function buildDesignReviewSmartPrompt(
  *
  * Returns null when smart review guidance does not apply: not a design-review
  * stage, no current review operation, a phase without a bound operation
- * identity, or a non-smart mode. A blocked template read also returns null
+ * identity, a non-smart mode, or the decision-pending READ-ONLY window (193
+ * round-2 fix, review issue 1: while a human plan-revision decision awaits a
+ * choice, the injected protocol must NOT tell the model to append sections to
+ * the report — that contradicts the read-only dynamic context and would
+ * encourage self-execution). A blocked template read also returns null
  * HERE (injection is not the enforcement point) — the dispatch preparation
  * path is what BLOCKS the real RPC on invalid config.
  */
@@ -198,6 +205,12 @@ export async function buildDesignReviewSmartGuidanceSection(
   const state = meta?.designReview;
   const operation = state?.operation;
   if (meta?.currentStage !== "design-review" || !state || !operation || operation.kind !== "review") {
+    return null;
+  }
+  // 193 round-2 fix (review issue 1): suppress the whole smart protocol during
+  // the decision-pending read-only window (the report is frozen at the FAIL
+  // snapshot the human decision binds to; only /pipeline-resume moves forward).
+  if (isDesignReviewDecisionPending(meta)) {
     return null;
   }
   // Mode: prefer the mode PINNED on the running operation; legacy unpinned

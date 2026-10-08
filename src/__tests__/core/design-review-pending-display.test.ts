@@ -183,6 +183,36 @@ describe("193 Phase 3 (task 8): prompt dynamic context is READ-ONLY guidance", (
     expect(prompt).not.toContain("Operation: review");
   });
 
+  it("193 round-2 fix (review issue 1): smart-pending injects NO plan-revision protocol, stays READ-ONLY guidance", async () => {
+    const meta = pendingMeta({
+      operation: makeReviewOperation("smart"),
+      decision: makePendingDecision("smart"),
+    });
+    const prompt = await injectPrompt(meta);
+    expect(prompt).toContain("PAUSED — awaiting a HUMAN plan-revision decision");
+    expect(prompt).toContain("mode: smart");
+    // the smart protocol (incl. the "append ... to the report" directive) must
+    // be fully suppressed while the human decision is pending
+    expect(prompt).not.toContain("append EXACTLY ONE section");
+    expect(prompt).not.toContain("## Plan Revision Decision");
+    expect(prompt).not.toContain("Smart Plan-Revision Decision");
+  });
+
+  it("control: smart review_running (non-pending) still injects the protocol", async () => {
+    const meta = makeTestMeta({
+      currentStage: "design-review",
+      designReview: pendingState({
+        phase: "review_running",
+        pauseReason: undefined,
+        decision: undefined,
+        operation: makeReviewOperation("smart"),
+      }),
+    });
+    const prompt = await injectPrompt(meta);
+    expect(prompt).toContain("append EXACTLY ONE section");
+    expect(prompt).not.toContain("PAUSED — awaiting a HUMAN plan-revision decision");
+  });
+
   it("non-pending design-review phases keep their original write-scope display", async () => {
     const running = makeTestMeta({
       currentStage: "design-review",

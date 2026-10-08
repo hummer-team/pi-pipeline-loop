@@ -610,6 +610,48 @@ describe("193 Phase 1: system-prompt coherence (injection builder + append-once)
     expect(await buildDesignReviewSmartGuidanceSection(config, other)).toBeNull();
   });
 
+  it("193 round-2 fix (review issue 1): the smart protocol is suppressed during the decision-pending read-only window", async () => {
+    const config = makeTestConfig({ projectRoot });
+    const base = trustedReviewMeta("smart");
+    const dr = base.designReview!;
+    const pending: SessionMeta = {
+      ...base,
+      designReview: {
+        ...dr,
+        phase: "paused",
+        pauseReason: "decision-pending",
+        decision: {
+          state: "pending",
+          decisionId: "dec-smart-1",
+          reviewIdentity: {
+            pipelineId: PIPE,
+            planDoc: dr.planDoc,
+            authorizationId: dr.authorizationId,
+            round: 1,
+            operationId: "op-inj-1",
+            stageVisitId: 1000,
+          },
+          reportDoc: dr.reportDoc ?? "/tmp/report-193.md",
+          reportHash: "hash-report",
+          planHash: "hash-plan",
+          issues: [{ issueId: "i1", text: "a real issue" }],
+          mode: "smart",
+          ownerSessionFile: "owner.jsonl",
+          createdAt: 1,
+        },
+      },
+    };
+
+    // Pending FAIL: the protocol (incl. "append EXACTLY ONE section to the
+    // report") must NOT be injected — the report is frozen at the snapshot the
+    // human decision binds to; only /pipeline-resume moves forward.
+    expect(await buildDesignReviewSmartGuidanceSection(config, pending)).toBeNull();
+    // Control: the SAME identity without the pending pause still renders.
+    const control = await buildDesignReviewSmartGuidanceSection(config, base);
+    expect(control).toContain(HEADING);
+    expect(control).toContain("append EXACTLY ONE section");
+  });
+
   it("injection blocks on BROKEN smart config return null (dispatch is the enforcement point)", async () => {
     writeYml(projectRoot, ".pi", `${DESIGN_REVIEW_SMART_DECISION_PROMPT_KEY}: ""\n`);
     const config = makeTestConfig({ projectRoot });
