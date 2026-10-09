@@ -27,7 +27,14 @@ import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasC
 import { autoAdvanceAfterVerify } from "./verify-advance";
 import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
-import { safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
+// 194 Phase 3 (C5): caller gate + bound atomic commits
+import { gateStageToolCall, applyDeclarationRelay } from "./stage-executor/tool-consumption";
+import {
+  boundActiveRun,
+  commitBoundGateWrite,
+  commitBoundStageExit,
+} from "./stage-executor/transition-commit";
 import { checkStageSummaryHash } from "../utils/summary-hash";
 import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -407,7 +414,10 @@ async function routeConfirmReject(
   // settle needs guarding. Clearing before spawn prevents the spawned subagent's JOIN
   // from inheriting the flag — without this, the subagent's first settle would be
   // eaten by C2 (agent-settled.ts:90-99), stalling the pipeline.
-  ctx.session.updateMeta({
+  // 194 Phase 3 (C5): a bound reject-route is a legitimate owner pause/exit —
+  // ONE strict atomic commit (routing + rejection count + consumption). A
+  // refusal performs nothing: no routing, no counting, no dispatch.
+  const rejectPatch: Partial<SessionMeta> = {
     ...visitResult.patch,
     previousStage: fromStage,
     currentStage: toStage,
@@ -422,7 +432,29 @@ async function routeConfirmReject(
     // Phase 1 (180): clear any deferral stamp — the source stage visit is over,
     // so a leftover stamp must not leak into the target stage's deferral window.
     confirmGateDeferredAt: undefined,
+  };
+  const freshForAnchor = sessionForSpawn.getMeta?.() ?? meta;
+  const boundExit = commitBoundStageExit({
+    session: ctx.session as Parameters<typeof commitBoundStageExit>[0]["session"],
+    meta: freshForAnchor,
+    sourceStage: fromStage,
+    transitionPatch: rejectPatch,
+    runtimeCtx: ctx,
   });
+  if (boundExit.status === "refused") {
+    await safeWriteAuditLog("transition_commit", {
+      action: "bound_exit_refused",
+      pipelineId: meta.pipelineId ?? "unknown",
+      fromStage,
+      toStage,
+      entry: "route_confirm_reject",
+      reason: boundExit.reason,
+    }, "warn");
+    return false;
+  }
+  if (boundExit.status === "not-bound") {
+    ctx.session.updateMeta(rejectPatch);
+  }
 
   // Use custom audit event if provided (e.g. "review_auto_route_fix" to avoid double-writing)
   const auditEvent = opts?.auditEvent ?? "confirm_rejected";
@@ -555,7 +587,31 @@ async function advanceConfirmApproved(
 
   // Reset rejection counter on approval (after marker write succeeds).
   // Phase 1 (180): also clear the deferral stamp — the stage visit is complete.
-  ctx.session.updateMeta({ confirmRejections: undefined, confirmGateDeferredAt: undefined });
+  // 194 C5: a bound reset is a strict-anchored gate write (no consumption —
+  // the advance below commits it); refusal performs nothing at all.
+  {
+    const fresh = ctx.session.getMeta?.() ?? meta;
+    const boundWrite = commitBoundGateWrite({
+      session: ctx.session as unknown as Parameters<typeof commitBoundGateWrite>[0]["session"],
+      meta: fresh,
+      sourceStage: fromStage,
+      patch: { confirmRejections: undefined, confirmGateDeferredAt: undefined },
+      runtimeCtx: ctx,
+    });
+    if (boundWrite.status === "refused") {
+      await safeWriteAuditLog("transition_commit", {
+        action: "bound_gate_write_refused",
+        pipelineId: meta.pipelineId ?? "unknown",
+        stage: fromStage,
+        entry: "advance_confirm_approved",
+        reason: boundWrite.reason,
+      }, "warn");
+      return false;
+    }
+    if (boundWrite.status === "not-bound") {
+      ctx.session.updateMeta({ confirmRejections: undefined, confirmGateDeferredAt: undefined });
+    }
+  }
 
   // Audit the approval
   await writeAuditLog("confirm_approved", {
@@ -1310,23 +1366,54 @@ export async function detectPendingConfirmGate(
  * @param isChild - Whether the calling session is a child/subagent
  */
 export function recordConfirmGateOutcome(
-  session: { updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined },
+  session: {
+    updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
+    getMeta?: () => SessionMeta | undefined;
+    updateMetaVerified?: Parameters<typeof strictCommitMeta>[0]["updateMetaVerified"];
+  },
   meta: SessionMeta,
   gate: ConfirmGateResult,
   isChild: boolean,
+  /** 194 C5: raw entry ctx for owner evidence on bound strict writes. */
+  runtimeCtx?: unknown,
 ): void {
   if (gate.result !== "handled") return;
 
+  const write = (patch: Partial<SessionMeta>) => {
+    // 194 C5: a bound confirm count is a strict-anchored gate write — with a
+    // participating run it NEVER falls back to a plain updateMeta; refusal
+    // performs zero counting (the caller then reports honestly).
+    if (runtimeCtx !== undefined && boundActiveRun(meta, meta.currentStage)) {
+      const res = commitBoundGateWrite({
+        session,
+        meta,
+        sourceStage: meta.currentStage,
+        patch,
+        runtimeCtx,
+      });
+      if (res.status === "refused") {
+        void safeWriteAuditLog("transition_commit", {
+          action: "bound_confirm_count_refused",
+          pipelineId: meta.pipelineId ?? "unknown",
+          stage: meta.currentStage,
+          reason: res.reason,
+        }, "warn");
+      }
+      return;
+    }
+    session.updateMeta(patch);
+  };
+
   if (!isChild && gate.action === "pending" && !gate.deferred) {
     const reask = meta.confirmGateReask;
-    session.updateMeta({
+    write({
       confirmGateReask: {
         stage: meta.currentStage,
         count: (reask?.stage === meta.currentStage ? reask.count : 0) + 1,
       },
     });
   } else if (!isChild && (gate.action === "advanced" || gate.action === "routed")) {
-    session.updateMeta({ confirmGateReask: undefined });
+    write({ confirmGateReask: undefined });
   }
 }
 
@@ -1435,6 +1522,25 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
       const meta: SessionMeta = rawMeta;
       const currentStage: PipelineStage = meta.currentStage;
+
+      // 194 Phase 3 (C5): the caller gate runs BEFORE the coordinator and any
+      // verification/confirmation/counting. A current child only registers its
+      // declaration; stale/unknown callers get zero side effects; the owner
+      // continues with bound strict commits downstream.
+      const toolGate = await gateStageToolCall({
+        tool: "stage_advance",
+        config,
+        session: ctx.session,
+        meta,
+        args,
+        runtimeCtx: ctx,
+      });
+      if (toolGate.kind === "return") return toolGate.result;
+      if (toolGate.kind === "owner-bound") {
+        // Relay: a stored `needConfirm: true` is never downgraded by omitted
+        // args, and a stored target fills an omitted one (C5 rule 3).
+        args = applyDeclarationRelay(args, toolGate.run.declaration);
+      }
 
       // Phase 3 (191): Design-review coordinator delegation
       // When design-review is active, delegate routing decisions to coordinator
@@ -1833,7 +1939,10 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // preserve the parent-session wake settle guard.
       // Pass only the delta (not a full snapshot) to avoid overwriting concurrent
       // writes from shared source during async operations (e.g., runVerification).
-      ctx.session.updateMeta({
+      // 194 Phase 3 (C5): bound exits are ONE strict atomic commit —
+      // transition + consumption (terminalConsumed/applied, wake cleared)
+      // together; nothing is reported or spawned unless it persisted.
+      const transitionPatch: Partial<SessionMeta> = {
         ...visitResult.patch,
         previousStage: currentStage,
         currentStage: advanceTarget,
@@ -1847,7 +1956,33 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         advancedThisTurn: undefined,
         precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
         transientRetryCount: undefined, // 189 Bug 1: clear retry counter on stage transition
+      };
+      const freshForAnchor = ctx.session.getMeta() ?? meta;
+      const boundExit = commitBoundStageExit({
+        session: ctx.session,
+        meta: freshForAnchor,
+        sourceStage: currentStage,
+        transitionPatch,
+        runtimeCtx: ctx,
       });
+      if (boundExit.status === "refused") {
+        await safeWriteAuditLog("transition_commit", {
+          action: "bound_exit_refused",
+          pipelineId: meta.pipelineId,
+          fromStage: currentStage,
+          toStage: advanceTarget,
+          entry: "stage_advance_tool",
+          reason: boundExit.reason,
+        }, "warn");
+        return {
+          success: false,
+          message: `Bound stage exit refused (${boundExit.reason}). Nothing was consumed or advanced — the run stays pending for a reliable retry.`,
+          currentStage: freshForAnchor.currentStage,
+        };
+      }
+      if (boundExit.status === "not-bound") {
+        ctx.session.updateMeta(transitionPatch);
+      }
 
       if (resolvedTarget === null || resolvedTarget === "completed") {
         ui.clearStage(ctx);

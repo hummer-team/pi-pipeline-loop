@@ -15,6 +15,8 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
 import { isDormant } from "../core/dormancy";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
+// 194 Phase 3 (C5): shared caller gate for the stage-side tools
+import { gateStageToolCall } from "../core/stage-executor/tool-consumption";
 // 193 Phase 3 (task 1): shared safe coordinator-context builder
 import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
 // 193 Phase 0: single honest consumer for design-review coordinator results
@@ -94,6 +96,20 @@ export function createPipelineVerify(
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
       const meta: SessionMeta = rawMeta;
+
+      // 194 Phase 3 (C5): the caller gate runs BEFORE the coordinator and any
+      // verification. A current bound child only registers its declaration;
+      // stale/unknown callers get zero side effects; the owner continues into
+      // the normal flow, whose bound writes go through strict commits.
+      const toolGate = await gateStageToolCall({
+        tool: "pipeline_verify",
+        config,
+        session: sessionCtx.session,
+        meta,
+        args,
+        runtimeCtx: ctx,
+      });
+      if (toolGate.kind === "return") return toolGate.result;
 
       // Phase 3 (191): Design-review coordinator delegation
       // When design-review is active, delegate routing decisions to coordinator

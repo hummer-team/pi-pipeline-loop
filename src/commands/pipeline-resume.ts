@@ -240,7 +240,9 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             source: "resume",
           });
           // Share the re-ask / cleanup accounting with the owner auto re-ask chain.
-          recordConfirmGateOutcome(ctx.session, meta, gate, false);
+          // 194 C5: pass the raw entry ctx so a bound count goes through the
+          // strict anchored write (resume's ctx IS the ExtensionContext).
+          recordConfirmGateOutcome(ctx.session, meta, gate, false, { _ctx: ctx });
 
           if (gate.result === "handled") {
             if (gate.action === "advanced") {

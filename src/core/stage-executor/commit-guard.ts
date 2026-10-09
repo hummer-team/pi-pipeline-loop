@@ -24,13 +24,21 @@ import type {
   StageExecutorRun,
 } from "./contracts";
 
-/** Canonical JSON (sorted keys) — insertion order never masks a real change. */
+/**
+ * Canonical JSON (sorted keys) — insertion order never masks a real change.
+ *
+ * 194 Phase 3 (C5): members whose value is `undefined` are dropped, exactly
+ * like JSON.stringify does. Both this guard and the strict-commit read-back in
+ * `session-state.ts` must canonicalize the SAME way, or a write that clears an
+ * optional field (e.g. `pendingWakeId: undefined`) would compare differently
+ * in-memory than on disk.
+ */
 function canonicalJson(value: unknown): string {
   if (value === undefined) return "undefined";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(",")}}`;
 }
 

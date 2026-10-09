@@ -761,7 +761,7 @@ export function createAgentSettled(
             // must NOT consume the bounded re-arm count — otherwise the timeout
             // fallback ("pop anyway + hint" after spawnWaitTimeoutMs) becomes
             // unreachable (fb9822d).
-            recordConfirmGateOutcome(ctx.session, meta, gate, isChild);
+            recordConfirmGateOutcome(ctx.session, meta, gate, isChild, ctx);
             // Phase 4 (169) W2: After confirm gate handled, re-read meta and check if completed.
             // Covers T2 (hook path with no subsequent settle) — same dispatch, idle-safe.
             // P2-6 fix: also covers the "routed" action defensively (routeConfirmReject

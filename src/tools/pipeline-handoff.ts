@@ -25,6 +25,10 @@ import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-
 import { consumeDesignReviewResult } from "../core/design-review/entry-result";
 // 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
 import { checkRecheckForwardRelease } from "../core/design-review/flow-decision-guard";
+// 194 Phase 3 (C5): caller gate + ONE atomic bound commit (visit + transition)
+import { gateStageToolCall } from "../core/stage-executor/tool-consumption";
+import { boundActiveRun, commitBoundStageExit } from "../core/stage-executor/transition-commit";
+import { computeResultKey } from "../core/stage-executor/run-state";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -75,6 +79,20 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };
       }
       const meta: SessionMeta = rawMeta;
+
+      // 194 Phase 3 (C5): the caller gate runs BEFORE the coordinator and any
+      // transition/UI/dispatch side effect. Children are refused outright
+      // (handoff is owner-side), stale/unknown callers get zero side effects,
+      // and the owner's bound transition goes through ONE atomic commit below.
+      const toolGate = await gateStageToolCall({
+        tool: "pipeline_handoff",
+        config,
+        session: ctx.session,
+        meta,
+        args,
+        runtimeCtx: ctx,
+      });
+      if (toolGate.kind === "return") return toolGate.result;
 
       // Phase 3 (191): Design-review coordinator delegation
       // When design-review is active, delegate routing decisions to coordinator
@@ -216,26 +234,79 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         };
       }
 
-      // Merge visit patch (loopCycleCount + stageVisitOrder) into updateMeta
-      ctx.session.updateMeta(visitResult.patch);
-
-      // Get updated metadata for the actual stage transition
-      const updatedMeta = ctx.session.getMeta() as SessionMeta;
-
-      // Update metadata: transition stage, reset counters, pass context
-      // Pass only the delta (not a full snapshot) to avoid overwriting concurrent writes.
-      const contextFiles = updatedMeta.contextFiles || {};
-      ctx.session.updateMeta({
+      // 194 Phase 3 (C5): a bound handoff merges the visit patch AND the stage
+      // transition into ONE strict commit anchored on the current run —
+      // consumption lands atomically with the exit and nothing is reported,
+      // shown or dispatched unless the commit persisted. Outside the closed
+      // loop the original two plain writes run unchanged.
+      const freshForAnchor = (ctx.session.getMeta() as SessionMeta) ?? meta;
+      const boundRunNow = boundActiveRun(freshForAnchor, currentStage);
+      const transitionPatch: Partial<SessionMeta> = {
+        ...visitResult.patch,
         previousStage: currentStage,
         currentStage: nextStage,
         stageStartTime: Date.now(),
         loopCount: 0,
         currentStepIndex: 0,
         contextFiles: {
-          ...contextFiles,
+          ...(freshForAnchor.contextFiles || {}),
           [nextStage]: [currentSummary.path],
         },
+      };
+      const boundExit = commitBoundStageExit({
+        session: ctx.session,
+        meta: freshForAnchor,
+        sourceStage: currentStage,
+        transitionPatch,
+        runtimeCtx: ctx,
+        ...(boundRunNow !== null
+          ? {
+              resultKey: computeResultKey({
+                runId: boundRunNow.binding.runId,
+                declarationRevision: boundRunNow.declaration?.revision,
+                inputFingerprints: [`${currentStage}->${nextStage}`],
+              }),
+            }
+          : {}),
       });
+      if (boundExit.status === "refused") {
+        // ZERO dispatch, ZERO UI: the run stays exactly as persisted.
+        await safeWriteAuditLog("transition_commit", {
+          action: "bound_exit_refused",
+          entry: "pipeline_handoff",
+          stage: currentStage,
+          nextStage,
+          reason: boundExit.reason,
+        }, "warn");
+        return {
+          success: false,
+          error: `Bound handoff refused (${boundExit.reason}). Nothing was consumed or advanced — the run stays pending for a reliable retry.`,
+          message: "Bound handoff refused. Nothing was consumed or advanced.",
+        };
+      }
+      if (boundExit.status === "not-bound") {
+        // Ordinary pipeline work: the original two-write sequence verbatim.
+        // Merge visit patch (loopCycleCount + stageVisitOrder) into updateMeta
+        ctx.session.updateMeta(visitResult.patch);
+
+        // Get updated metadata for the actual stage transition
+        const updatedMeta = ctx.session.getMeta() as SessionMeta;
+
+        // Update metadata: transition stage, reset counters, pass context
+        // Pass only the delta (not a full snapshot) to avoid overwriting concurrent writes.
+        const contextFiles = updatedMeta.contextFiles || {};
+        ctx.session.updateMeta({
+          previousStage: currentStage,
+          currentStage: nextStage,
+          stageStartTime: Date.now(),
+          loopCount: 0,
+          currentStepIndex: 0,
+          contextFiles: {
+            ...contextFiles,
+            [nextStage]: [currentSummary.path],
+          },
+        });
+      }
 
       // NOTE: model management removed (Q4-A) — model is managed by user via /model command.
 

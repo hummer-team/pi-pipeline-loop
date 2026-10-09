@@ -59,6 +59,32 @@ export function createPipelineState(config: PipelineConfig): Tool {
       // advertising "develop" here would encourage self-execution).
       const pendingDecision = buildDesignReviewPendingDecisionView(meta);
 
+      // 194 Phase 3 (C5): read-only executor-run view. The plan requires the
+      // display to show the requesting TOOL, the bound stage and the stored
+      // `needConfirm` (never inferred), plus whether the plugin wake is still
+      // outstanding (`pendingWakeId` is sent at most ONCE — the raw id stays
+      // internal, only its presence is shown).
+      const executorRun = meta.stageExecutorRun;
+      const executorView = executorRun
+        ? {
+            stage: executorRun.binding.stage,
+            status: executorRun.status,
+            recovery: executorRun.recovery,
+            terminalConsumed: executorRun.terminalConsumed,
+            consumptionState: executorRun.consumption?.state ?? null,
+            declaration: executorRun.declaration
+              ? {
+                  requestedBy: executorRun.declaration.requestedBy,
+                  revision: executorRun.declaration.revision,
+                  nextStage: executorRun.declaration.nextStage ?? null,
+                  needConfirm: executorRun.declaration.needConfirm === true,
+                  verificationRequested: executorRun.declaration.verificationRequested === true,
+                }
+              : null,
+            wakeOutstanding: executorRun.pendingWakeId !== undefined,
+          }
+        : null;
+
       const result = {
         pipelineId: meta.pipelineId,
         stage: {
@@ -76,6 +102,8 @@ export function createPipelineState(config: PipelineConfig): Tool {
           stepIndex: meta.currentStepIndex,
           maxLoops: meta.maxLoops,
         },
+        // 194 Phase 3 (C5): closed-loop executor run status (read-only)
+        executor: executorView,
         summaries: meta.summaries,
         stageStartTime: new Date(meta.stageStartTime).toISOString(),
         // Phase 4 (143): Hash integrity check results for all tracked summaries

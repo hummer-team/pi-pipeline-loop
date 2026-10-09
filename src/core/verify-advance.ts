@@ -18,6 +18,13 @@ import { buildDesignReviewReportFeedback } from "./design-review/report-feedback
 // 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
 import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard";
 import { recordStageVisit } from "../utils/stage-visit";
+// 194 Phase 3 (C5): bound exits and failure records go through strict commits
+import {
+  boundActiveRun,
+  commitBoundStageExit,
+  commitBoundFailureRecord,
+} from "./stage-executor/transition-commit";
+import { computeResultKey } from "./stage-executor/run-state";
 import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
@@ -215,7 +222,7 @@ export async function applyVerifyPass(
     }
 
     // Advance to next stage — pass only the delta to avoid overwriting concurrent writes
-    ctx.session.updateMeta({
+    const transitionPatch: Partial<SessionMeta> = {
       ...visitResult.patch,
       previousStage: stageName,
       currentStage: nextStage,
@@ -229,7 +236,50 @@ export async function applyVerifyPass(
       reviewConclusionDeclared: undefined, // Clear 163 declaration flag on stage transition
       precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
       transientRetryCount: undefined, // 189 Phase 2: clear retry counter on stage transition
+    };
+
+    // 194 Phase 3 (C5): a bound stage exit is ONE strict commit — transition,
+    // terminalConsumed and the `applied` record land together, and nothing is
+    // reported or dispatched unless the commit persisted.
+    const freshForAnchor = ctx.session.getMeta() ?? meta;
+    const boundRunNow = boundActiveRun(freshForAnchor, stageName);
+    const boundExit = commitBoundStageExit({
+      session: ctx.session,
+      meta: freshForAnchor,
+      sourceStage: stageName,
+      transitionPatch,
+      runtimeCtx: ctx,
+      ...(boundRunNow !== null
+        ? {
+            resultKey: computeResultKey({
+              runId: boundRunNow.binding.runId,
+              declarationRevision: boundRunNow.declaration?.revision,
+              inputFingerprints: [`${stageName}->${nextStage}`],
+            }),
+          }
+        : {}),
     });
+    if (boundExit.status === "refused") {
+      await safeWriteAuditLog("transition_commit", {
+        action: "bound_exit_refused",
+        stage: stageName,
+        nextStage,
+        method: opts.method,
+        reason: boundExit.reason,
+      }, "warn");
+      if (opts.returnResult) {
+        return {
+          success: false,
+          passed: true,
+          message: `Bound stage exit refused (${boundExit.reason}). Nothing was consumed or advanced — the run stays pending for a reliable retry.`,
+          verifyResult: verifyResult?.verifyResult ?? null,
+        };
+      }
+      return;
+    }
+    if (boundExit.status === "not-bound") {
+      ctx.session.updateMeta(transitionPatch);
+    }
 
     // Phase 0 (186): clear all pendingSpawns when advancing to terminal completed stage.
     // Prevents stale pendingSpawns from blocking wakeOwnerOnChainTerminal.
@@ -393,10 +443,66 @@ export async function applyVerifyFail(
   }
 
   const updatedVerifyAttempts = (meta.verifyAttempts || 0) + 1;
-  ctx.session.updateMeta({
-    verifyAttempts: updatedVerifyAttempts,
-    verifyFailures,
-  });
+  // 194 Phase 3 (C5): a bound failure record is one strict commit carrying the
+  // dedup result key — the SAME result is counted once across the hook and
+  // tool paths, and consumption/wake stay untouched by a failure record.
+  const freshForAnchor = ctx.session.getMeta() ?? meta;
+  const boundRunNow = boundActiveRun(freshForAnchor, stageName);
+  const failKey = boundRunNow !== null
+    ? computeResultKey({
+        runId: boundRunNow.binding.runId,
+        declarationRevision: boundRunNow.declaration?.revision,
+        inputFingerprints: [
+          `${stageName}|${verifyFailures.map((f) => `${f.ruleType}:${f.detail}`).sort().join(";")}`,
+        ],
+      })
+    : "";
+  const boundFail = boundRunNow !== null
+    ? commitBoundFailureRecord({
+        session: ctx.session,
+        meta: freshForAnchor,
+        sourceStage: stageName,
+        failurePatch: { verifyAttempts: updatedVerifyAttempts, verifyFailures },
+        runtimeCtx: ctx,
+        resultKey: failKey,
+      })
+    : ({ status: "not-bound" } as const);
+  if (boundFail.status === "refused") {
+    await safeWriteAuditLog("transition_commit", {
+      action: "bound_failure_refused",
+      stage: stageName,
+      method,
+      reason: boundFail.reason,
+    }, "warn");
+    return {
+      success: false,
+      passed: false,
+      message: `Bound failure record refused (${boundFail.reason}). Nothing was recorded; the run stays pending.`,
+      failures: verifyFailures,
+    };
+  }
+  if (boundFail.status === "duplicate") {
+    // Same verified input already recorded once — no second increment, no
+    // second wake, no budget churn (plan Phase 3 rule 6).
+    await safeWriteAuditLog("transition_commit", {
+      action: "bound_failure_deduped",
+      stage: stageName,
+      method,
+      resultKey: failKey.slice(0, 120),
+    });
+    return {
+      success: false,
+      passed: false,
+      message: `Verification failure already recorded for this input (deduplicated). Fix the artifacts and verify fresh input.`,
+      failures: verifyFailures,
+    };
+  }
+  if (boundFail.status !== "persisted") {
+    ctx.session.updateMeta({
+      verifyAttempts: updatedVerifyAttempts,
+      verifyFailures,
+    });
+  }
 
   await writeAuditLog("auto_verify_fail", {
     pipelineId: meta.pipelineId,

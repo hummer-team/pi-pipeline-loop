@@ -270,7 +270,12 @@ function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
+  // 194 Phase 3 (C5): object members whose value is `undefined` are DROPPED
+  // by JSON.stringify, so the canonical form must drop them too. Without this,
+  // a strict patch that legitimately clears an optional field (e.g.
+  // `{ pendingWakeId: undefined }`) would always fail its own read-back: the
+  // in-memory patch carries the key while the persisted bytes never can.
+  const keys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(",")}}`;
 }
 
