@@ -15,6 +15,7 @@ import type {
   SessionMeta,
   DesignReviewState,
   DesignReviewOperation,
+  DesignReviewOperationKind,
   DesignReviewIdentity,
   DesignReviewInputReceipt,
   ReviewIssue,
@@ -51,7 +52,10 @@ import {
 } from "../session-state";
 import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult } from "./dispatch";
 import { buildDesignReviewDispatchTask } from "./dispatch-task";
-import { resolveDesignReviewReportTemplate } from "./resource-preflight";
+import {
+  preflightDesignReviewDispatchResources,
+  type DesignReviewResourcePreflightOk,
+} from "./resource-preflight";
 import {
   narrowDesignReviewState,
   resolveDesignReviewConfirmMode,
@@ -241,8 +245,43 @@ export async function coordinateDesignReview(
 }
 
 /**
- * Handle review_ready phase: dispatch review agent.
+ * 194 Phase 2 (tasks 2/3): shared resource gate for the closed-loop kinds.
+ *
+ * MUST run at the preparation points — BEFORE a stage visit, send intent or
+ * RPC — so an undeployed agent/skill/template blocks with zero side effects
+ * and the loop stays retryable after the operator fixes the config.
+ *
+ * When `ctx.spawnOverride` is present the gate is ADVISORY: the mocked spawn
+ * never touches the deployed assets, so dispatch assertions must not hinge on
+ * files inside a temp project root. Production contexts have no override and
+ * the gate is always enforcing.
  */
+async function gateDesignReviewDispatchResources(
+  ctx: CoordinatorContext,
+  kind: DesignReviewOperationKind,
+  docs: { writeDocs: readonly string[]; readOnlyDocs: readonly string[] },
+): Promise<{ ok: true; resources: DesignReviewResourcePreflightOk | null } | { ok: false; reason: string }> {
+  const preflight = await preflightDesignReviewDispatchResources({
+    config: ctx.config,
+    kind,
+    writeDocs: docs.writeDocs,
+    readOnlyDocs: docs.readOnlyDocs,
+  });
+  if (preflight.ok) {
+    return { ok: true, resources: preflight };
+  }
+  if (ctx.spawnOverride) {
+    // Test seam: dispatch proceeds, prompt omits the unavailable resources.
+    return { ok: true, resources: null };
+  }
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "dispatch_resource_preflight_blocked",
+    operationKind: kind,
+    issues: preflight.issues.map((i) => `${i.resource}@${i.path || "unset"}: ${i.reason}`).join("; "),
+  }, "warn");
+  return { ok: false, reason: "resource_preflight_failed" };
+}
+
 /**
  * 193 Phase 1 (tasks 1/3): the SINGLE review-dispatch preparation used by
  * BOTH the first review and the next-round review after a plan update.
@@ -257,6 +296,8 @@ export async function coordinateDesignReview(
  *   meta changes, ZERO RPCs and NO consumed visit — the state stays
  *   recoverable and the next attempt re-reads the config (cache invalidated
  *   per actual file path), so a fixed file recovers without a restart.
+ * - 194 Phase 2 (task 2): the resource gate runs FIRST for every mode, so a
+ *   missing agent/skill/template blocks before any visit is even recorded.
  */
 async function prepareReviewDispatchContext(
   ctx: CoordinatorContext,
@@ -269,6 +310,14 @@ async function prepareReviewDispatchContext(
     reportDoc: string;
   },
 ): Promise<{ ok: true; mode: ConfirmMode; guidance?: string } | { ok: false; reason: string }> {
+  // 194 Phase 2 (task 2): review reads the plan, writes ONLY the report.
+  const gate = await gateDesignReviewDispatchResources(ctx, "review", {
+    writeDocs: [candidate.reportDoc],
+    readOnlyDocs: [candidate.planDoc],
+  });
+  if (!gate.ok) {
+    return { ok: false, reason: gate.reason };
+  }
   const stageMode = ctx.config.stages?.["design-review"]?.confirm?.mode;
   const mode: ConfirmMode = stageMode === "smart" || stageMode === "manual" ? stageMode : "auto";
   if (mode !== "smart") {
@@ -699,6 +748,18 @@ async function dispatchHandoffOnce(
   // in-lock bump can stale the proposal), same rule as dispatchOperation.
   const freshMeta = ctx.session.getMeta() ?? meta;
   const anchorState = freshMeta.designReview ?? state;
+  // 194 Phase 2 (task 2): the develop executor's agent/skill must be deployed
+  // BEFORE the intent is written — a blocked handoff performs zero RPCs and
+  // leaves the approved state intact for a fixed-config retry.
+  const gate = await gateDesignReviewDispatchResources(ctx, "develop-handoff", {
+    writeDocs: [],
+    readOnlyDocs: anchorState.reportDoc
+      ? [anchorState.planDoc, anchorState.reportDoc]
+      : [anchorState.planDoc],
+  });
+  if (!gate.ok) {
+    return { status: "handled", action: "pending", reason: gate.reason };
+  }
   // Reliable send-intent BEFORE the external call; failure → zero RPC.
   const intent = markSendIntent(ctx, freshMeta, anchorState, handoffOp.operationId);
   if (!intent.ok) {
@@ -961,6 +1022,17 @@ async function handleFail(
     inputPlanHash: drState.planHash ?? "",
     issueIds,
   };
+
+  // 194 Phase 2 (task 2): the plan-revision agent/skill must be deployed
+  // before ANY preparation; a missing resource blocks with zero visits, zero
+  // intents and zero RPCs, same recoverability as a configuration error.
+  const gate = await gateDesignReviewDispatchResources(ctx, "update", {
+    writeDocs: [drState.planDoc],
+    readOnlyDocs: [reportPath],
+  });
+  if (!gate.ok) {
+    return { status: "handled", action: "pending", reason: gate.reason };
+  }
 
   // 194 Phase 1 (task 1): ONE shared preparation path builds the dispatch
   // candidate — baseline read, C1 descriptor pinning, prompt render and the
@@ -1581,6 +1653,16 @@ async function handleUpdateReady(
 
   // Fresh visit = the CURRENT plan-stage visit (never a stale review stamp).
   const visitId = meta.stageStartTime ?? Date.now();
+
+  // 194 Phase 2 (task 2): same resource gate as the FAIL consumption path —
+  // update_ready stays intact with zero side effects when blocked.
+  const gate = await gateDesignReviewDispatchResources(ctx, "update", {
+    writeDocs: [drState.planDoc],
+    readOnlyDocs: [reportPath],
+  });
+  if (!gate.ok) {
+    return { status: "handled", action: "pending", reason: gate.reason };
+  }
 
   // 194 Phase 1 (task 1): the SAME preparation the FAIL path uses. Nothing is
   // committed and no RPC happens unless candidate + prompt + write-scope
@@ -2345,20 +2427,35 @@ async function spawnDesignReviewAgent(
   // (the previous shared producer handed it the review report), and every
   // dispatch names its own identities so the turn is recognisable as
   // plugin-dispatched work rather than ordinary chat.
-  const templateDoc = operation.kind === "review"
-    ? await resolveDesignReviewReportTemplate(ctx.config)
-    : null;
+  const reportDoc = drState.reportDoc ?? deriveReportPath(drState.planDoc, drState.round);
+  // 194 Phase 2 (tasks 2/3): last-line resource check at RPC time (the prep
+  // gate already protects zero-visit; this catches a config that broke AFTER
+  // the visit). Verified assets also feed the prompt: absolute template path,
+  // the agent's REAL tool list and the project-root search boundary.
+  const gateDocs =
+    operation.kind === "review"
+      ? { writeDocs: [reportDoc], readOnlyDocs: [drState.planDoc] }
+      : operation.kind === "update"
+        ? { writeDocs: [drState.planDoc], readOnlyDocs: [reportDoc] }
+        : { writeDocs: [], readOnlyDocs: [drState.planDoc, reportDoc] };
+  const gate = await gateDesignReviewDispatchResources(ctx, operation.kind, gateDocs);
+  if (!gate.ok) {
+    return { ok: false, error: gate.reason, outcome: "not_sent" };
+  }
+  const resources = gate.resources;
   const task = buildDesignReviewDispatchTask({
     kind: operation.kind,
     pipelineId: freshMeta.pipelineId ?? drState.pipelineId ?? "unknown",
     planDoc: drState.planDoc,
-    reportDoc: drState.reportDoc ?? deriveReportPath(drState.planDoc, drState.round),
+    reportDoc,
     round: drState.round,
     operationId: operation.operationId,
     ...(operation.updateArtifact !== undefined
       ? { receiptDoc: operation.updateArtifact.receiptDoc }
       : {}),
-    ...(templateDoc !== null ? { templateDoc } : {}),
+    ...(resources !== null && resources.templateDoc !== null ? { templateDoc: resources.templateDoc } : {}),
+    ...(resources !== null && resources.tools.length > 0 ? { agentTools: resources.tools } : {}),
+    ...(resources !== null ? { searchRoot: path.resolve(ctx.config.projectRoot) } : {}),
     ...(updatePrompt !== undefined ? { updatePrompt } : {}),
     ...(reviewGuidance !== undefined ? { reviewGuidance } : {}),
   });

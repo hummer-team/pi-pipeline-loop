@@ -23,7 +23,7 @@ import { __resetSharedStateDir } from "../../core/session-state";
 import { computeHash, deriveReportPath, classifyDesignReviewFlow, createInitialState } from "../../core/design-review/state";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, writeStandaloneUpdateDeliverables } from "../helpers";
+import { makeTestConfig, makeTestMeta, writeStandaloneUpdateDeliverables, deployDispatchAssets } from "../helpers";
 
 // ─── harness ─────────────────────────────────────────────────────────────────
 
@@ -71,6 +71,9 @@ function makeHarness(): Harness {
     fs.writeFileSync(path.join(projectRoot, agentRel), `---\nname: ${agent}\n---\nbody\n`, "utf-8");
     config.stages[stage] = { ...config.stages[stage], agentPath: agentRel };
   }
+  // 194 Phase 2: the resource preflight runs on this harness's REAL spawn
+  // path, so ship the skills/template assets a deployed project has.
+  deployDispatchAssets(config);
   // develop becomes terminal in the harness so post-finish replay settles do
   // NOT auto-advance into review and pollute RPC counts.
   config.stages["develop"] = { ...config.stages["develop"]!, nextStage: null };

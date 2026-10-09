@@ -57,6 +57,10 @@ export interface DesignReviewDispatchTaskInput {
   receiptDoc?: string;
   /** Review only: absolute path of the deployed report template resource. */
   templateDoc?: string;
+  /** Task 3: tools verified from the deployed agent definition (never assume bash). */
+  agentTools?: readonly string[];
+  /** Task 2: absolute project root bounding any executor-side search. */
+  searchRoot?: string;
   /** Update only: the already-rendered, already-authorized update prompt. */
   updatePrompt?: string;
   /** Review only: smart plan-revision decision guidance (never for other kinds). */
@@ -94,6 +98,16 @@ function buildReviewTask(input: DesignReviewDispatchTaskInput): DesignReviewDisp
   ];
   if (input.templateDoc !== undefined) {
     lines.push(`Report template (read this ABSOLUTE path directly, no directory search): ${input.templateDoc}`);
+  }
+  // Task 3: name the tools the executor ACTUALLY has (verified from the agent
+  // definition), so it never reaches for a capability (e.g. bash) it lacks.
+  if (input.agentTools !== undefined && input.agentTools.length > 0) {
+    lines.push(`Your available tools: ${input.agentTools.join(", ")} — nothing else is enabled.`);
+  }
+  // Task 2: bound any search to the project so a missing file never turns into
+  // a full-tree scan of the user's directories.
+  if (input.searchRoot !== undefined) {
+    lines.push(`Search scope: resolve paths ONLY under ${input.searchRoot}; never scan the filesystem root or home directories.`);
   }
   const guidance = input.reviewGuidance !== undefined ? `\n\n---\n\n${input.reviewGuidance}` : "";
   return {

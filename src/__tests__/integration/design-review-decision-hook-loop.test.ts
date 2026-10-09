@@ -61,7 +61,7 @@ import { createPipelineResumeCommand } from "../../commands/pipeline-resume";
 import { createSessionStarter } from "../../core/session-starter";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, writeStandaloneUpdateDeliverables } from "../helpers";
+import { makeTestConfig, makeTestMeta, writeStandaloneUpdateDeliverables, deployDispatchAssets } from "../helpers";
 
 const PIPE = "pipe-decision-1";
 
@@ -117,6 +117,9 @@ function makeHarness(opts: { confirmMode?: ConfirmMode } = {}): Harness {
   };
   // develop terminal: post-finish replay settles do NOT advance into review.
   config.stages["develop"] = { ...config.stages["develop"]!, nextStage: null };
+  // 194 Phase 2: the resource preflight runs on this harness's REAL spawn
+  // path, so ship the skills/template assets a deployed project has.
+  deployDispatchAssets(config);
   void initAuditLog(config);
 
   const rpcPrompts: string[] = [];

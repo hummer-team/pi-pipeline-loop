@@ -22,7 +22,7 @@ import {
   computeHash,
   deriveReportPath,
 } from "../../core/design-review/state";
-import { makeTestConfig, makeTestMeta, reviewReportContent } from "../helpers";
+import { makeTestConfig, makeTestMeta, reviewReportContent, deployDispatchAssets } from "../helpers";
 
 const OP_ID = "op-hook-review-1";
 
@@ -128,7 +128,9 @@ describe("192 Phase 3: agent-settled shared-verification chain", () => {
 
     const meta = reviewRunningMeta();
     const ctx = makeHookCtx(meta, { lastUserMessage: "" });
-    const hook = createAgentSettled(makeTestConfig({ projectRoot }));
+    const settledConfig = makeTestConfig({ projectRoot });
+    deployDispatchAssets(settledConfig);
+    const hook = createAgentSettled(settledConfig);
     await hook.handler(ctx);
 
     const after: SessionMeta = ctx.session.getMeta();
@@ -158,7 +160,9 @@ describe("192 Phase 3: agent-settled shared-verification chain", () => {
 
     const meta = reviewRunningMeta();
     const ctx = makeHookCtx(meta, { lastUserMessage: "what is the weather today?" });
-    const hook = createAgentSettled(makeTestConfig({ projectRoot }));
+    const settledConfig = makeTestConfig({ projectRoot });
+    deployDispatchAssets(settledConfig);
+    const hook = createAgentSettled(settledConfig);
     await hook.handler(ctx);
 
     const after: SessionMeta = ctx.session.getMeta();
@@ -179,7 +183,9 @@ describe("192 Phase 3: agent-settled shared-verification chain", () => {
 
     const meta = reviewRunningMeta();
     const ctx = makeHookCtx(meta, { child: true, lastUserMessage: "" });
-    const hook = createAgentSettled(makeTestConfig({ projectRoot }));
+    const settledConfig = makeTestConfig({ projectRoot });
+    deployDispatchAssets(settledConfig);
+    const hook = createAgentSettled(settledConfig);
     await hook.handler(ctx);
 
     const after: SessionMeta = ctx.session.getMeta();
@@ -199,7 +205,9 @@ describe("192 Phase 3: agent-settled shared-verification chain", () => {
 
     const meta = reviewRunningMeta();
     const ctx = makeHookCtx(meta, { lastUserMessage: "" });
-    const hook = createAgentSettled(makeTestConfig({ projectRoot }));
+    const settledConfig = makeTestConfig({ projectRoot });
+    deployDispatchAssets(settledConfig);
+    const hook = createAgentSettled(settledConfig);
     await hook.handler(ctx);
 
     const after: SessionMeta = ctx.session.getMeta();

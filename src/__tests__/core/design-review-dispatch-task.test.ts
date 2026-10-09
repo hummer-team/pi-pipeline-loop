@@ -173,6 +173,46 @@ describe("194 Phase 2: buildDesignReviewDispatchTask — kind closure", () => {
   });
 });
 
+describe("194 Phase 2: buildDesignReviewDispatchTask — verified tools & search bound", () => {
+  test("review lists the agent-verified tools when preflight provided them", () => {
+    const task = buildDesignReviewDispatchTask({
+      ...baseInput("review"),
+      agentTools: ["read", "grep", "find", "ls", "write", "edit"],
+    })!;
+    expect(task.prompt).toContain(
+      "Your available tools: read, grep, find, ls, write, edit — nothing else is enabled.",
+    );
+  });
+
+  test("review bounds searches to the project root when provided", () => {
+    const task = buildDesignReviewDispatchTask({
+      ...baseInput("review"),
+      searchRoot: "/abs/project",
+    })!;
+    expect(task.prompt).toContain(
+      "Search scope: resolve paths ONLY under /abs/project; never scan the filesystem root or home directories.",
+    );
+  });
+
+  test("review omits both lines when preflight data is absent (legacy seam)", () => {
+    const task = buildDesignReviewDispatchTask(baseInput("review"))!;
+    expect(task.prompt).not.toContain("Your available tools");
+    expect(task.prompt).not.toContain("Search scope");
+  });
+
+  test("update and develop never carry the review tool lines", () => {
+    for (const kind of ["update", "develop-handoff"] as const) {
+      const task = buildDesignReviewDispatchTask({
+        ...baseInput(kind),
+        agentTools: ["read", "write"],
+        searchRoot: "/abs/project",
+      })!;
+      expect(task.prompt).not.toContain("Your available tools");
+      expect(task.prompt).not.toContain("Search scope");
+    }
+  });
+});
+
 describe("194 Phase 2: buildDesignReviewDispatchTask — special paths", () => {
   const SPACED_PLAN = "docs/design/My Bug Plan.md";
 

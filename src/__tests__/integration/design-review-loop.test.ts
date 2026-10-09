@@ -46,6 +46,7 @@ import {
   reviewReportContent,
   boundReviewOperation,
   writeStandaloneUpdateDeliverables,
+  deployDispatchAssets,
 } from "../helpers";
 
 // ─── full-cycle harness: ordinary plan start + real TUI menu ────────────────
@@ -103,6 +104,9 @@ function makeLoopHarness(): LoopHarness {
   };
   // develop terminal: post-finish replay settles must not advance further
   config.stages["develop"] = { ...config.stages["develop"]!, nextStage: null };
+  // 194 Phase 2: the resource preflight runs on this harness's REAL spawn
+  // path, so ship the skills/template assets a deployed project has.
+  deployDispatchAssets(config);
   void initAuditLog(config);
 
   // ── fake RPC bus (the ONLY mock): replies carry verifiable ids ──

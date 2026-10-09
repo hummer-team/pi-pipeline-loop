@@ -1,9 +1,9 @@
 import type { PipelineConfig, SessionMeta, PipelineStage, DesignReviewState } from "../types";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { deriveStandaloneReceiptPath } from "../core/design-review/update-artifact";
 import type { RuntimeCtx } from "../core/runtime-ctx";
 import { matchCommitExpectation } from "../core/session-state";
-import { PROTECTED_PATHS } from "../constants";
+import { CONFIG_DIR_NAME, PROTECTED_PATHS } from "../constants";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { writeFile, mkdir } from "node:fs/promises";
@@ -44,6 +44,43 @@ export function makeTestConfig(overrides?: Partial<PipelineConfig>): PipelineCon
     protect: { gitignore: true, paths: [], allow: [] },
     ...overrides,
   } as PipelineConfig;
+}
+
+/**
+ * 194 Phase 2: deploy the assets a real `/pipeline-init` project ships and
+ * the dispatch resource preflight checks — stage agent definitions, stage
+ * skill files and the design-review report template — into a harness
+ * projectRoot. Real-adapter tests exercise the production preflight path,
+ * so they must ship the same resources. Files already written by the
+ * harness are left untouched (write-if-absent).
+ */
+export function deployDispatchAssets(config: PipelineConfig): void {
+  const root = config.projectRoot;
+  const piWorkDir = config.piWorkDir ?? CONFIG_DIR_NAME;
+  const agentContent = "---\nname: test-agent\ntools: read, grep, find, ls, write, edit\n---\ntest agent body\n";
+  for (const stageConfig of Object.values(config.stages ?? {})) {
+    const agentPath = (stageConfig as { agentPath?: unknown } | undefined)?.agentPath;
+    if (typeof agentPath === "string" && agentPath.length > 0) {
+      const abs = path.join(root, agentPath);
+      if (!existsSync(abs)) {
+        mkdirSync(path.dirname(abs), { recursive: true });
+        writeFileSync(abs, agentContent, "utf8");
+      }
+    }
+    const skillPath = (stageConfig as { skillPath?: unknown } | undefined)?.skillPath;
+    if (typeof skillPath === "string" && skillPath.length > 0) {
+      const abs = path.join(root, piWorkDir, "skills", skillPath);
+      if (!existsSync(abs)) {
+        mkdirSync(path.dirname(abs), { recursive: true });
+        writeFileSync(abs, "# test skill\n", "utf8");
+      }
+    }
+  }
+  const templateAbs = path.join(root, piWorkDir, "references", "design_review_report_template.md");
+  if (!existsSync(templateAbs)) {
+    mkdirSync(path.dirname(templateAbs), { recursive: true });
+    writeFileSync(templateAbs, "# design review report template\n", "utf8");
+  }
 }
 
 export function makeTestMeta(overrides?: Partial<SessionMeta>): SessionMeta {

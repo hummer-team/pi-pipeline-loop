@@ -199,8 +199,11 @@ describe("193 Phase 3: resume/startup entries and the human decision", () => {
     expect((after.decision as { choice?: string }).choice).toBe("proceed-develop");
     // command entries have NO trusted dispatch channel in this harness — the
     // develop handoff must honestly report a RETRYABLE outcome (never a fake
-    // "advanced", never a silent fallthrough to generic resume)
-    expect(result.message ?? "").toContain("handoff_not_sent_retryable");
+    // "advanced", never a silent fallthrough to generic resume).
+    // 194 Phase 2: this harness deliberately ships NO deployed develop agent,
+    // so the resource gate now blocks the handoff BEFORE the send intent —
+    // the same retryable contract, enforced earlier with zero RPCs.
+    expect(result.message ?? "").toContain("resource_preflight_failed");
     expect(result.message ?? "").not.toContain("No resume needed");
   });
 
