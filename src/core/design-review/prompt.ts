@@ -60,6 +60,12 @@ export interface DesignReviewUpdatePromptParams {
   issues: string[];
   /** 192 Phase 2: optional requirement doc context token */
   requirementDoc?: string;
+  /**
+   * 194 Phase 1 (C1): absolute path of the STANDALONE update receipt document
+   * the agent must write. Plugin-derived (never model-supplied); every update
+   * dispatch carries it, and a custom template that ignores it is rejected.
+   */
+  updateReceiptDoc: string;
 }
 
 /**
@@ -116,7 +122,24 @@ const RUNTIME_TOKENS = [
   "baselinePlanHash",
   "issues",
   "requirementDoc",
+  // 194 Phase 1 (C1): absolute path of the standalone update receipt document.
+  "updateReceiptDoc",
 ] as const;
+
+/**
+ * 194 Phase 1 (C1/C2): the token a CUSTOM update template MUST reference.
+ *
+ * The receipt contract is externalized: the agent writes the process receipt
+ * into the standalone document at `{updateReceiptDoc}`, never into the plan
+ * body. A custom template without this token still describes the legacy
+ * embedded-receipt contract, which the verifier rejects for every operation
+ * created after this feature — so the dispatch is BLOCKED here with the exact
+ * key/path instead of silently swapping in the built-in default (K04/K05).
+ */
+export const REQUIRED_UPDATE_PROMPT_TOKEN = "updateReceiptDoc";
+
+/** `{name}` or `{{name}}` — the same two forms the strict renderer accepts. */
+const RECEIPT_TOKEN_RE = /\{\{\s*updateReceiptDoc\s*\}\}|\{\s*updateReceiptDoc\s*\}/;
 
 /**
  * 192 Phase 2 (task 1/2): select the update template from the project YAML,
@@ -164,6 +187,8 @@ export function renderDesignReviewUpdatePromptText(
     operationId: !!params.operationId,
     baselinePlanHash: !!params.baselinePlanHash,
     issues: Array.isArray(params.issues),
+    // 194 Phase 1 (C1): the standalone receipt path is part of the identity.
+    updateReceiptDoc: !!params.updateReceiptDoc,
   };
   const missingCore = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
   if (missingCore.length > 0) {
@@ -189,10 +214,30 @@ export function renderDesignReviewUpdatePromptText(
       baselinePlanHash: params.baselinePlanHash,
       issues: issuesText,
       requirementDoc: params.requirementDoc ?? "",
+      updateReceiptDoc: params.updateReceiptDoc,
     },
     label: "Update template",
     errorFor: updateErrorFor,
   });
+}
+
+/**
+ * 194 Phase 1 (C1/C2): reject a CUSTOM template that does not carry the
+ * standalone-receipt contract, and state the exact file/key so the operator
+ * can repair it. The built-in default is authoritative by construction and
+ * never needs this check.
+ */
+function assertReceiptToken(selection: DesignReviewUpdateTemplateSelection): void {
+  if (selection.source !== "yaml") return;
+  if (RECEIPT_TOKEN_RE.test(selection.templateText)) return;
+  throw new DesignReviewUpdateConfigError(
+    "missing-token",
+    `Design review update prompt key "${selection.key}" in ${selection.path ?? "the project YAML"} ` +
+      `does not reference the {${REQUIRED_UPDATE_PROMPT_TOKEN}} token. Since 194 the update receipt is a ` +
+      `STANDALONE document (never a plan-body section), so the template must tell the agent where to write ` +
+      `it. Add {${REQUIRED_UPDATE_PROMPT_TOKEN}} or remove the key to use the built-in default.`,
+    { filePath: selection.path, key: selection.key },
+  );
 }
 
 /**
@@ -206,6 +251,10 @@ export async function buildDesignReviewUpdatePrompt(
   params: DesignReviewUpdatePromptParams,
 ): Promise<{ prompt: string; selection: DesignReviewUpdateTemplateSelection }> {
   const selection = await selectDesignReviewUpdateTemplate(config);
+  // 194 Phase 1: the externalized receipt contract is enforced BEFORE render,
+  // so a legacy-shape custom template blocks with the key/path instead of
+  // producing a prompt the verifier can never accept.
+  assertReceiptToken(selection);
   const prompt = renderDesignReviewUpdatePromptText(selection.templateText, params);
   return { prompt, selection };
 }

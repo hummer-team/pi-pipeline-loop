@@ -1,4 +1,6 @@
-import type { PipelineConfig, SessionMeta, PipelineStage } from "../types";
+import type { PipelineConfig, SessionMeta, PipelineStage, DesignReviewState } from "../types";
+import { writeFileSync } from "node:fs";
+import { deriveStandaloneReceiptPath } from "../core/design-review/update-artifact";
 import type { RuntimeCtx } from "../core/runtime-ctx";
 import { matchCommitExpectation } from "../core/session-state";
 import { PROTECTED_PATHS } from "../constants";
@@ -442,7 +444,61 @@ export function reviewReportContent(opts: {
   return lines.join("\n");
 }
 
-/** A review operation bound to a fixture report (dispatched state). */
+/**
+ * 194 Phase 1: a STANDALONE update receipt document body satisfying the C2
+ * contract — exactly one `## Design Review Update` section with the seven
+ * identity rows, `### Issue Dispositions` (one table row per issue) and
+ * `### Changes Made` (entries carry a plan Phase marker so `fixed` rows pass).
+ * The receipt lives OUTSIDE the plan body (the plan freezes its protocol
+ * sections); tests write these bytes to the operation's pinned `receiptDoc`.
+ */
+export function standaloneReceiptContent(opts: {
+  pipelineId: string;
+  planDoc: string;
+  reviewOperationId: string;
+  reportDoc: string;
+  round: number;
+  updateOperationId: string;
+  baselinePlanHash: string;
+  /** One entry per consumed issue; ids are the report ordinals ("1", "2", ...) */
+  dispositions: Array<{
+    issueId: string;
+    text?: string;
+    disposition: "fixed" | "deferred" | "rejected" | "new-decision" | "unfixable";
+    justification?: string;
+  }>;
+  /** `### Changes Made` entries (default cites Phase 2 for every fixed row) */
+  changesMade?: string[];
+}): string {
+  const lines = [
+    "# Design Review Update Receipt",
+    "",
+    "## Design Review Update",
+    "",
+    `**Pipeline**: ${opts.pipelineId}`,
+    `**Plan**: ${opts.planDoc}`,
+    `**Review Operation**: ${opts.reviewOperationId}`,
+    `**Report**: ${opts.reportDoc}`,
+    `**Round**: ${opts.round}`,
+    `**Operation**: ${opts.updateOperationId}`,
+    `**Baseline Hash**: ${opts.baselinePlanHash}`,
+    "",
+    "### Issue Dispositions",
+    "",
+    "| # | Issue | Disposition | Justification |",
+    "|---|-------|-------------|---------------|",
+  ];
+  for (const d of opts.dispositions) {
+    lines.push(
+      `| ${d.issueId} | ${d.text ?? `issue ${d.issueId}`} | ${d.disposition} | ${d.justification ?? "addressed in the plan"} |`,
+    );
+  }
+  lines.push("", "### Changes Made", "");
+  const changes = opts.changesMade ?? opts.dispositions.map((d) => `- Issue ${d.issueId}: addressed in Phase 2 of the plan.`);
+  for (const c of changes) lines.push(c);
+  lines.push("");
+  return lines.join("\n");
+}
 export function boundReviewOperation(operationId: string, inputHash: string, round?: number) {
   const now = Date.now();
   return {
@@ -457,4 +513,77 @@ export function boundReviewOperation(operationId: string, inputHash: string, rou
     createdAt: now,
     updatedAt: now,
   };
+}
+
+/**
+ * 194 Phase 1: write BOTH deliverables a standalone-contract update produces —
+ * the revised plan body (WITHOUT any protocol section) and the bounded receipt
+ * at the plugin-derived path pinned by the CURRENT update operation.
+ *
+ * Tests that drive the real FAIL → update → settle chain call this instead of
+ * hand-writing an embedded `## Design Review Update` section, which since 194
+ * is a plan-body protocol violation for every new operation.
+ */
+export function writeStandaloneUpdateDeliverables(opts: {
+  /** Absolute plan document path (the operation's bound plan) */
+  planDoc: string;
+  /** Persisted state holding the CURRENT update operation + input receipt */
+  state: DesignReviewState;
+  /** Pipeline identity row the receipt must carry */
+  pipelineId: string;
+  /** Revised plan body (defaults to a short, section-free revision) */
+  planBody?: string;
+  /** Optional per-issue label / justification builders */
+  issueText?: (issueId: string) => string;
+  justification?: (issueId: string) => string;
+  /** `### Changes Made` entries (default: one Phase-1 line per issue) */
+  changesMade?: string[];
+}): { receiptDoc: string; planContent: string } {
+  const updateOp = opts.state.operation;
+  const receipt = opts.state.reviewInputReceipt;
+  if (!updateOp || !receipt) {
+    throw new Error("writeStandaloneUpdateDeliverables requires an update operation and a consumed review receipt");
+  }
+  const planContent =
+    opts.planBody ??
+    [
+      "# Plan",
+      "",
+      "## Approach",
+      "",
+      `Revised design content for round ${String(opts.state.round)} (${updateOp.operationId})`,
+      "addressing every listed defect.",
+      "",
+    ].join("\n");
+  writeFileSync(opts.planDoc, planContent, "utf-8");
+
+  const receiptDoc = deriveStandaloneReceiptPath(opts.planDoc, opts.state.round, updateOp.operationId);
+  if (receiptDoc === null) {
+    throw new Error(`cannot derive the standalone receipt path for round ${String(opts.state.round)}`);
+  }
+  writeFileSync(
+    receiptDoc,
+    standaloneReceiptContent({
+      pipelineId: opts.pipelineId,
+      planDoc: opts.planDoc,
+      reviewOperationId: receipt.reviewIdentity.operationId,
+      reportDoc: receipt.reportDoc,
+      round: opts.state.round,
+      updateOperationId: updateOp.operationId,
+      baselinePlanHash: receipt.inputPlanHash,
+      dispositions: receipt.issueIds.map((issueId) => ({
+        issueId,
+        ...(opts.issueText !== undefined ? { text: opts.issueText(issueId) } : {}),
+        disposition: "fixed" as const,
+        ...(opts.justification !== undefined
+          ? { justification: opts.justification(issueId) }
+          : {}),
+      })),
+      changesMade:
+        opts.changesMade ??
+        receipt.issueIds.map((issueId) => `- Phase 1: amended the section for defect ${issueId}.`),
+    }),
+    "utf-8",
+  );
+  return { receiptDoc, planContent };
 }

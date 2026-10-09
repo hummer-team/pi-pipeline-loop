@@ -46,6 +46,12 @@ export interface GroupEvalOptions {
    * re-reading the file — the domain verdict and the groups rules then judge
    * ONE snapshot (no double-read window). Paths not present in the capture
    * (and glob paths, which are never exact) fall back to normal file reads.
+   *
+   * 194 Phase 1 (task 4): the same contract now carries the SHARED
+   * design-review capture (verification-snapshot.ts) — review: the current
+   * report; update: plan + consumed report + standalone receipt — merged in
+   * auto-verifier.runVerification. Lookup semantics are unchanged; the engine
+   * cannot tell which capture produced the bytes and needs no new rules.
    */
   snapshotLookup?: (absPath: string) => string | undefined;
 }

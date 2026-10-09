@@ -1,3 +1,11 @@
+> **HISTORICAL ASSET (192 era) — NOT a runtime fallback.** Since 194 this
+> embedded plan-body receipt contract is retired for every new update
+> operation: the process receipt now lives in the STANDALONE document the
+> plugin pins as `{updateReceiptDoc}` (see `design_review_update_prompt` in
+> `pipeline-stage-prompt.yml` and `DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT`).
+> Selecting the update template never reads this file; deleting it cannot
+> change what is dispatched (asserted by the asset tests).
+
 # Design Review Update Instructions
 
 You are authorized to update the plan document based on the design review feedback.

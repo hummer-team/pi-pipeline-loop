@@ -32,7 +32,14 @@ export type StrictPromptErrorCode =
   | "shape-error"
   | "missing-param"
   | "unknown-token"
-  | "residual-token";
+  | "residual-token"
+  /**
+   * 194 Phase 1 (C1/C2): a CUSTOM template omits a token the domain contract
+   * makes mandatory (e.g. an update prompt without `{updateReceiptDoc}` still
+   * describes the legacy embedded-receipt shape). Blocking message carries the
+   * exact key and file path; never a silent fallback to the built-in default.
+   */
+  | "missing-token";
 
 /** Extra context attached to a strict prompt error (audit + user text). */
 export interface StrictPromptErrorInit {

@@ -58,7 +58,7 @@ import {
   HUMAN_DECISION_MAX_ISSUES,
 } from "../../core/design-review/human-decision";
 import type { HumanDecision } from "../../core/design-review/decision-types";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, writeStandaloneUpdateDeliverables } from "../helpers";
 
 const PIPE = "pipe-test-001";
 const OWNER = "/x/owner-session.json";
@@ -657,28 +657,16 @@ describe("193 Phase 2: human decision menu flow (coordinator)", () => {
     expect(updateDr.phase).toBe("update_running");
     const updateOpId = updateDr.operation!.operationId;
 
-    // plan agent completes the revision (192 Phase 2 update contract)
-    fs.writeFileSync(planDoc, [
-      "# Plan",
-      "",
-      "## Design Review Update",
-      "",
-      `**Report**: ${reportDoc}`,
-      "**Round**: 1",
-      `**Operation**: ${updateOpId}`,
-      `**Baseline Hash**: ${planHash}`,
-      "",
-      "### Issue Dispositions",
-      "",
-      "| # | Issue | Disposition | Justification |",
-      "|---|-------|-------------|---------------|",
-      "| 1 | Missing rollback plan for the migration phase | fixed | added rollback coverage |",
-      "",
-      "### Changes Made",
-      "",
-      "- New section: rollback coverage.",
-      "",
-    ].join("\n"), "utf-8");
+    // plan agent completes the revision (194 Phase 1 update contract: revised
+    // plan body + standalone receipt, never a plan-body protocol section)
+    writeStandaloneUpdateDeliverables({
+      planDoc,
+      state: updateDr,
+      pipelineId: session.getMeta()!.pipelineId ?? "unknown",
+      issueText: () => "Missing rollback plan for the migration phase",
+      justification: () => "added rollback coverage",
+      changesMade: ["- Phase 1: new rollback coverage section."],
+    });
 
     const r3 = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
     expect(r3.status === "handled" && r3.action === "routed").toBe(true);

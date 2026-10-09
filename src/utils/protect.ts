@@ -432,7 +432,14 @@ export function isWithinDesignReviewScope(
   planDoc: string,
   reportDoc: string | undefined,
   projectRoot: string,
-  allowedUpdatePaths?: string[],
+  /**
+   * 194 Phase 1 (C4): EXACT additional writable paths for an update operation
+   * (the standalone receipt document from the write policy). Matching is
+   * canonical string equality — no prefixes, no globs, no directory grants,
+   * so the update can create exactly its own receipt and nothing else.
+   * Legacy callers that pass nothing keep the 191 behaviour (plan only).
+   */
+  exactUpdatePaths?: readonly string[],
 ): boolean {
   // Resolve paths relative to project root
   const relPlanDoc = toProjectRelative(projectRoot, planDoc);
@@ -444,18 +451,13 @@ export function isWithinDesignReviewScope(
     return relPath === relReportDoc;
   }
 
-  // Update operation: plan document + explicitly allowed paths are writable
+  // Update operation: plan document + EXACT plugin-derived artifact paths
+  // (194: the standalone receipt document; nothing else is ever writable).
   if (operation === "update") {
     if (relPath === relPlanDoc) return true;
-    
-    // Check allowed update paths (planning artifacts)
-    if (allowedUpdatePaths && allowedUpdatePaths.length > 0) {
-      for (const allowedPath of allowedUpdatePaths) {
-        const normalizedAllowed = normalizeAllow([allowedPath]);
-        if (isPathAllowed(relPath, normalizedAllowed)) {
-          return true;
-        }
-      }
+    if (exactUpdatePaths && exactUpdatePaths.length > 0) {
+      const canonicalTarget = path.resolve(projectRoot, relPath);
+      return exactUpdatePaths.some((candidate) => path.resolve(candidate) === canonicalTarget);
     }
     return false;
   }

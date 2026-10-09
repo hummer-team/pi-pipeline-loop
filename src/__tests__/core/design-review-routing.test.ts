@@ -46,7 +46,11 @@ describe("design-review-coordinator routing", () => {
     await writeFile(planDoc, planContent, "utf-8");
     planHash = computeHash(planContent);
 
+    // 194 Phase 1 (C4): the plan/report deliverables live INSIDE the project
+    // root exactly like production — the update scope preflight (and the
+    // permission guard) never authorize deliverables outside projectRoot.
     config = makeTestConfig({
+      projectRoot: tempDir,
       maxLoopCycles: 3,
       stages: {
         ...makeTestConfig().stages,

@@ -36,11 +36,15 @@ import {
   isPathProtectedForModify,
   isPathProtectedForGit,
   toProjectRelative,
-  isWithinDesignReviewScope,
   resolveSymlinkPath,
   resolveSymlinkPathStrict,
   type ProtectState,
 } from "../utils/protect";
+import {
+  resolveDesignReviewWritePolicy,
+  isPathWithinWriteScope,
+  describeWriteScope,
+} from "./design-review/write-policy";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
 import { resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
@@ -398,6 +402,9 @@ async function checkBashFileTargets(
   // Phase 4 (191): Design-review dynamic scope - check once for all targets
   const drState = meta.designReview;
   const hasDesignReviewScope = !!(drState && drState.operation);
+  // 194 Phase 1 (C4): ONE policy resolution feeds every scope check in this
+  // bash segment loop (guard and prompt guidance share the same exact list).
+  const writePolicy = resolveDesignReviewWritePolicy(meta);
 
   for (const t of targets) {
     // Phase 1 / 177 (D3): a "suspicious" target is source text captured by `>`
@@ -458,12 +465,16 @@ async function checkBashFileTargets(
         // TARGET both against the dynamic scope. A link that resolves
         // OUTSIDE the project root (resolvedRelPath === null) is
         // out-of-scope — fail closed, never fall back to the lexical path.
-        const scopeArgs = [drState.operation.kind, drState.planDoc, drState.reportDoc, config.projectRoot] as const;
-        const sourceInScope = isWithinDesignReviewScope(relPath, ...scopeArgs);
+        // 194 Phase 1 (C4): the EXACT writable list comes from the shared
+        // write policy (single source for guard + prompt), so a standalone
+        // update can create exactly its own receipt document and nothing
+        // else; paused/blocked lifecycle states refuse every mutation.
+        const sourceInScope = isPathWithinWriteScope(writePolicy, config.projectRoot, absTarget);
         const realTargetInScope =
-          resolvedRelPath !== null && isWithinDesignReviewScope(resolvedRelPath, ...scopeArgs);
+          resolvedRelPath !== null &&
+          isPathWithinWriteScope(writePolicy, config.projectRoot, resolvedAbsTarget);
         if (!sourceInScope || !realTargetInScope) {
-          const reason = `FORBIDDEN: Target '${relPath}' is outside design-review dynamic write scope for operation '${drState.operation.kind}'.`;
+          const reason = `FORBIDDEN: Target '${relPath}' is outside design-review dynamic write scope for operation '${drState.operation.kind}'. Writable now: ${describeWriteScope(writePolicy)}`;
           await trackViolation({
             type: "write_protected",
             tool: "bash",
@@ -1134,13 +1145,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const { isChild } = detectSessionRole(ctx);
 
           // Phase 4 (191): Design-review dynamic write scope enforcement
-          // Check if path is within scope based on current operation type
+          // 194 Phase 1 (C4): the scope comes from the SHARED write policy,
+          // so the guard authorizes exactly the deliverables the lifecycle
+          // declares (review: current report; standalone update: original plan
+          // plus its own receipt) and never a directory or a foreign file.
           const drState = meta.designReview;
           if (drState && drState.operation) {
             const operationKind = drState.operation.kind;
-            const reportDoc = drState.reportDoc;
-            const planDoc = drState.planDoc;
-            
+            const writePolicy = resolveDesignReviewWritePolicy(meta);
+
             // 192 Phase 4 (F07): canonical resolution covering parent dirs of
             // not-yet-existing files; a resolution error BLOCKS (fail-closed).
             const strictRes = await resolveSymlinkPathStrict(absPath);
@@ -1161,26 +1174,14 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             // TARGET both against the dynamic scope. A link that resolves
             // OUTSIDE the project root (resolvedRelPath === null) is
             // out-of-scope — fail closed, never fall back to the lexical path.
-            const sourceInScope = isWithinDesignReviewScope(
-              relPath,
-              operationKind,
-              planDoc,
-              reportDoc,
-              config.projectRoot,
-            );
+            const sourceInScope = isPathWithinWriteScope(writePolicy, config.projectRoot, absPath);
             const realTargetInScope =
               resolvedRelPath !== null &&
-              isWithinDesignReviewScope(
-                resolvedRelPath,
-                operationKind,
-                planDoc,
-                reportDoc,
-                config.projectRoot,
-              );
+              isPathWithinWriteScope(writePolicy, config.projectRoot, resolvedAbsPath);
 
             if (!sourceInScope || !realTargetInScope) {
               const reason = `FORBIDDEN: Path '${relPath}' is outside design-review dynamic write scope for operation '${operationKind}'. ` +
-                `Only ${operationKind === 'review' ? `report document (${reportDoc})` : operationKind === 'update' ? `plan document (${planDoc}) and allowed artifacts` : 'no paths'} are writable.`;
+                `Writable now: ${describeWriteScope(writePolicy)}`;
               await trackViolation({
                 type: "write_protected",
                 tool: toolName,

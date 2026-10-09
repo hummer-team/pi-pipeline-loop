@@ -243,25 +243,43 @@ stage_executor_clarify: |
 # the plugin's built-in default; an explicit empty/non-string value or a
 # broken YAML BLOCKS the corresponding dispatch (never a silent default swap).
 # Tokens: update → {pipelineId} {planDoc} {reviewDoc} {round} {operationId}
-# {baselinePlanHash} {issues} {requirementDoc}; smart decision → {pipelineId}
-# {planDoc} {round} {operationId} {inputHash} {reportDoc}. Any other brace
-# identifier in the text blocks the dispatch. Example fields: no braces.
+# {baselinePlanHash} {updateReceiptDoc} {issues} {requirementDoc}; smart
+# decision → {pipelineId} {planDoc} {round} {operationId} {inputHash}
+# {reportDoc}. Any other brace identifier in the text blocks the dispatch.
+# Example fields: no braces.
+# 194 Phase 1 (C1): a CUSTOM update template MUST reference {updateReceiptDoc}
+# (the standalone receipt document the agent writes); without it the update
+# dispatch BLOCKS with code `missing-token` — the plan-body receipt contract is
+# retired for every operation created after 194.
 design_review_update_prompt: |
    ## Design Review Update Mode
    This plan update is triggered by a **design-review FAIL** verdict. You are in authorized update mode.
 
-   **MUST**: Process each issue from the design review report in the `## Design Review Update` section below:
-   - Read the report at {reviewDoc} fully first; ONLY modify the existing plan document ({planDoc})
+   **Context**
+   - Pipeline: {pipelineId}
+   - Plan document (deliverable you edit): {planDoc}
+   - Review report (read it fully first): {reviewDoc}
+   - Review round: {round}
+   - Update operation id: {operationId}
+   - Baseline plan hash (before your change): {baselinePlanHash}
+   - Update receipt document (the ONLY place your process receipt goes): {updateReceiptDoc}
+
+   **MUST**: Process every issue of the review report with TWO deliverables — the edited plan document and ONE standalone update receipt document:
+   - Apply the actual fixes to the plan document ({planDoc})
+   - Write the disposition receipt into the receipt document ({updateReceiptDoc}), creating or overwriting it with the EXACT format below
    - For each issue, provide a disposition: `fixed`, `deferred`, or `rejected` with justification
    - Use `new-decision` as the disposition when a NEW requirement/decision is needed that you cannot make alone, and `unfixable` with proof when an issue cannot be fixed in this plan; either one stops the automatic loop for owner review
-   - Do NOT claim "fixed" without actual changes to the plan document
+   - Do NOT claim "fixed" without actual changes to the plan document AND a plan Phase location in `### Changes Made`
    - Do NOT add new clarification rounds or fabricate user confirmation
    - Do NOT modify source code or the requirement document
 
-   **Output Format** (section header and the four association fields are exact):
+   **Receipt Output Format** (the section header, the seven identity rows and both sub-sections are exact; the receipt document carries EXACTLY ONE such section):
    ```markdown
    ## Design Review Update
 
+   **Pipeline**: {pipelineId}
+   **Plan**: {planDoc}
+   **Review Operation**: <the operation row of the consumed review report, copied verbatim>
    **Report**: {reviewDoc}
    **Round**: {round}
    **Operation**: {operationId}
@@ -276,11 +294,12 @@ design_review_update_prompt: |
 
    ### Changes Made
 
-   - where in the plan each fixed issue was addressed (for the next review round)
+   - where in the plan each fixed issue was addressed, citing the plan Phase (e.g. "Phase 3"), for the next review round
    ```
 
    **Constraints**:
-   - Only modify the plan document ({planDoc})
+   - Write ONLY the plan document ({planDoc}) and the receipt document ({updateReceiptDoc})
+   - The plan body must NOT gain or edit any `## Design Review Update` protocol section — the receipt lives exclusively in the standalone document
    - Do NOT modify source code, requirement docs, or add clarification rounds
    - Preserve all existing plan structure and decisions unless explicitly addressing review issues
    - The disposition table must cover EVERY issue of the consumed report exactly once (by the report's issue numbering); missing or duplicate entries invalidate the update

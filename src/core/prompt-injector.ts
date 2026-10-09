@@ -45,7 +45,10 @@ import {
 } from "./design-review/decision-display";
 import { resolvePiWorkDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
-import { isWithinDesignReviewScope } from "../utils/protect";
+import {
+  resolveDesignReviewWritePolicy,
+  describeWriteScope,
+} from "./design-review/write-policy";
 import type { RuntimeCtx } from "./runtime-ctx";
 
 /**
@@ -882,23 +885,24 @@ function buildDesignReviewContext(
     parts.push(`- Report Document: ${drState.reportDoc}`);
   }
 
-  // Add operation-specific restrictions
-  if (operation.kind === "review") {
+  // 194 Phase 1 (C4): the advertised scope is the SAME exact path list the
+  // permission guard enforces (single source: design-review write policy),
+  // so an update is told about its standalone receipt document and a paused
+  // or identity-blocked run is never promised a writable file.
+  const writePolicy = resolveDesignReviewWritePolicy(meta);
+  parts.push(``, `**Write Scope**: ${describeWriteScope(writePolicy)}`);
+  if (writePolicy.mode === "scoped" && writePolicy.writable.length > 0) {
     parts.push(
-      `\n**Write Scope**: Only the report document (${drState.reportDoc || "TBD"}) is writable.`,
-      `Requirements docs and source code are read-only.`,
-      `Git operations are blocked by default (gitModify=block).`,
-    );
-  } else if (operation.kind === "update") {
-    parts.push(
-      `\n**Write Scope**: Only the plan document (${drState.planDoc}) and explicitly allowed planning artifacts are writable.`,
-      `Requirements docs and source code remain read-only.`,
+      `Everything NOT listed above is read-only (requirements docs, source code, other rounds' reports, other operations' receipts).`,
       `Git operations are blocked by default (gitModify=block).`,
     );
   } else if (operation.kind === "develop-handoff") {
     parts.push(
-      `\n**Write Scope**: No write operations allowed during handoff.`,
-      `Pipeline is transitioning to develop stage.`,
+      `Pipeline is transitioning to develop stage; the transition itself is plugin-owned.`,
+    );
+  } else {
+    parts.push(
+      `Write/edit tools and file-mutating bash commands are refused right now. Do NOT attempt to produce any deliverable until the loop resumes.`,
     );
   }
 

@@ -81,7 +81,10 @@ describe("Phase 4 (191): Dynamic write scope (isWithinDesignReviewScope)", () =>
 
   describe("update operation", () => {
     const operation = createOperation("update");
-    const allowedPaths = ["docs/plan.md", "docs/design/"];
+    // 194 Phase 1 (C4): the extra list carries EXACT absolute artifact paths
+    // (the standalone receipt document). No prefixes, no globs, no directory
+    // grants — a listed file can never smuggle in its siblings.
+    const exactPaths = ["/project/docs/plan.md", "/project/docs/plan/plan-update-1-op-1-plan.md"];
 
     it("allows writing to plan document", () => {
       const result = isWithinDesignReviewScope(
@@ -90,21 +93,33 @@ describe("Phase 4 (191): Dynamic write scope (isWithinDesignReviewScope)", () =>
         planDoc,
         reportDoc,
         projectRoot,
-        allowedPaths
+        exactPaths
       );
       expect(result).toBe(true);
     });
 
-    it("allows writing to allowed paths", () => {
+    it("allows writing to an EXACT listed artifact path", () => {
       const result = isWithinDesignReviewScope(
-        "docs/design/architecture.md",
+        "docs/plan/plan-update-1-op-1-plan.md",
         operation.kind,
         planDoc,
         reportDoc,
         projectRoot,
-        allowedPaths
+        exactPaths
       );
       expect(result).toBe(true);
+    });
+
+    it("blocks a sibling inside a listed artifact's directory (no prefix grants)", () => {
+      const result = isWithinDesignReviewScope(
+        "docs/plan/architecture.md",
+        operation.kind,
+        planDoc,
+        reportDoc,
+        projectRoot,
+        exactPaths
+      );
+      expect(result).toBe(false);
     });
 
     it("blocks writing to report document", () => {
@@ -114,7 +129,7 @@ describe("Phase 4 (191): Dynamic write scope (isWithinDesignReviewScope)", () =>
         planDoc,
         reportDoc,
         projectRoot,
-        allowedPaths
+        exactPaths
       );
       expect(result).toBe(false);
     });
@@ -126,12 +141,12 @@ describe("Phase 4 (191): Dynamic write scope (isWithinDesignReviewScope)", () =>
         planDoc,
         reportDoc,
         projectRoot,
-        allowedPaths
+        exactPaths
       );
       expect(result).toBe(false);
     });
 
-    it("allows plan document even when allowedPaths is empty", () => {
+    it("allows plan document even when the exact list is empty", () => {
       const result = isWithinDesignReviewScope(
         "docs/plan.md",
         operation.kind,

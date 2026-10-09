@@ -40,7 +40,13 @@ import {
 import { coordinateDesignReview, type CoordinatorContext } from "../../core/design-review/coordinator";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, reviewReportContent, boundReviewOperation } from "../helpers";
+import {
+  makeTestConfig,
+  makeTestMeta,
+  reviewReportContent,
+  boundReviewOperation,
+  writeStandaloneUpdateDeliverables,
+} from "../helpers";
 
 // ─── full-cycle harness: ordinary plan start + real TUI menu ────────────────
 
@@ -250,32 +256,13 @@ function writeReport(h: LoopHarness, verdict: "PASS" | "FAIL", issues: string[] 
 
 /** Apply the plan update exactly as the delivered update prompt requires. */
 function writePlanUpdate(h: LoopHarness) {
-  const st = stateOf(h);
-  const updateOp = st.operation!;
-  const receipt = st.reviewInputReceipt!;
-  const lines = [
-    "# Plan",
-    "updated design content",
-    "",
-    "## Design Review Update",
-    "",
-    `**Report**: ${receipt.reportDoc}`,
-    `**Round**: ${st.round}`,
-    `**Operation**: ${updateOp.operationId}`,
-    `**Baseline Hash**: ${receipt.inputPlanHash}`,
-    "",
-    "### Issue Dispositions",
-    "",
-    "| # | Issue | Disposition | Justification |",
-    "|---|-------|-------------|---------------|",
-    ...receipt.issueIds.map((id) => `| ${id} | defect ${id} | fixed | amended section ${id} |`),
-    "",
-    "### Changes Made",
-    "",
-    `- addressed ${receipt.issueIds.length} issue(s) inline`,
-    "",
-  ];
-  fs.writeFileSync(h.planDoc, lines.join("\n"), "utf-8");
+  // 194 Phase 1: the update writes a revised plan body PLUS its standalone
+  // receipt; the plan keeps no `## Design Review Update` protocol section.
+  writeStandaloneUpdateDeliverables({
+    planDoc: h.planDoc,
+    state: stateOf(h),
+    pipelineId: h.session.getMeta()!.pipelineId ?? "unknown",
+  });
 }
 
 describe("192 full cycle (rewritten per plan Phase 5 task 3): ordinary plan + real TUI menu", () => {

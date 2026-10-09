@@ -61,7 +61,7 @@ import { createPipelineResumeCommand } from "../../commands/pipeline-resume";
 import { createSessionStarter } from "../../core/session-starter";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta } from "../helpers";
+import { makeTestConfig, makeTestMeta, writeStandaloneUpdateDeliverables } from "../helpers";
 
 const PIPE = "pipe-decision-1";
 
@@ -321,32 +321,14 @@ function writeGarbageReport(h: Harness) {
 }
 
 function writePlanUpdate(h: Harness) {
-  const st = stateOf(h);
-  const updateOp = st.operation!;
-  const receipt = st.reviewInputReceipt!;
-  const lines = [
-    "# Plan",
-    "updated design content",
-    "",
-    "## Design Review Update",
-    "",
-    `**Report**: ${receipt.reportDoc}`,
-    `**Round**: ${st.round}`,
-    `**Operation**: ${updateOp.operationId}`,
-    `**Baseline Hash**: ${receipt.inputPlanHash}`,
-    "",
-    "### Issue Dispositions",
-    "",
-    "| # | Issue | Disposition | Justification |",
-    "|---|-------|-------------|---------------|",
-    ...receipt.issueIds.map((id) => `| ${id} | defect ${id} | fixed | amended section ${id} |`),
-    "",
-    "### Changes Made",
-    "",
-    `- addressed ${receipt.issueIds.length} issue(s) inline`,
-    "",
-  ];
-  fs.writeFileSync(h.planDoc, lines.join("\n"), "utf-8");
+  // 194 Phase 1: the update writes a revised plan body PLUS its standalone
+  // receipt; the plan keeps no `## Design Review Update` protocol section.
+  const meta = h.session.getMeta()!;
+  writeStandaloneUpdateDeliverables({
+    planDoc: h.planDoc,
+    state: meta.designReview!,
+    pipelineId: meta.pipelineId ?? "unknown",
+  });
 }
 
 function humanMenus(h: Harness): number {

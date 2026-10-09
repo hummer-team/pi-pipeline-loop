@@ -30,6 +30,12 @@ import {
   deriveDomainVerificationContext,
   resolveDesignReviewConfirmMode,
 } from "./design-review/verification-context";
+import type { TrustedDomainVerificationContext } from "./design-review/verification-context";
+import {
+  captureDesignReviewSnapshots,
+  evaluateUpdateSnapshots,
+} from "./design-review/verification-snapshot";
+import type { DesignReviewSnapshotSet } from "./design-review/verification-snapshot";
 import { buildDesignReviewIdentity } from "./design-review/state";
 import { verifyDesignReviewReportSnapshot } from "./verifiers/design-review-verifier";
 import { validateDesignReviewUpdate } from "./verifiers/design-review-update-verifier";
@@ -412,11 +418,13 @@ export async function runVerification(
   assistantMessages: string[],
   options?: RunVerificationOptions,
 ): Promise<VerificationRunResult> {
-  // 192 Phase 3 (task 4, issue-2 fix): capture the active design-review
-  // deliverable ONCE and share the snapshot between the domain validator and
-  // the groups/flat rule engine (exact-path lookup) — closing the double-read
-  // window where groups judged bytes different from the domain verdict.
-  const capture = await captureDesignReviewSnapshot(meta);
+  // 194 Phase 1: the context is derived ONCE and the snapshot set captures
+  // every consumed deliverable exactly once (review: report; update: plan +
+  // consumed report + standalone receipt). The same bytes are shared with the
+  // groups/flat rule engine through an exact-path lookup — no double-read
+  // window in which the domain verdict and a rule judge different content.
+  const ctx = deriveDomainVerificationContext(meta);
+  const capture = ctx ? await captureDesignReviewSnapshots(ctx) : undefined;
   const baseOptions: RunVerificationOptions | undefined = capture
     ? {
         ...options,
@@ -426,67 +434,30 @@ export async function runVerification(
       }
     : options;
   const base = await runVerificationBase(config, meta, assistantMessages, baseOptions);
-  const designReviewOutcome = await computeDesignReviewDomainOutcome(config, meta, capture);
+  const designReviewOutcome = ctx
+    ? await computeDesignReviewDomainOutcome(config, meta, ctx, capture)
+    : undefined;
   if (!designReviewOutcome) return base;
   return { ...base, designReviewOutcome };
 }
 
 /**
- * 192 Phase 3 (task 4): one snapshot per consumed deliverable, shared by the
- * domain validator and the groups engine via an exact-path lookup.
- */
-interface DesignReviewSnapshotCapture {
-  /** Resolved absolute path of the captured deliverable. */
-  absPath: string;
-  /** Captured content; null when the file was unreadable at capture time. */
-  content: string | null;
-  /** Exact-path lookup consumed by groups / flat fileContentPattern rules. */
-  lookup: (absPath: string) => string | undefined;
-}
-
-async function captureDesignReviewSnapshot(
-  meta: SessionMeta,
-): Promise<DesignReviewSnapshotCapture | undefined> {
-  const ctx = deriveDomainVerificationContext(meta);
-  if (!ctx) return undefined;
-  const target = ctx.kind === "review" ? ctx.reportPath : ctx.planDoc;
-  const absPath = path.resolve(target);
-  let content: string | null = null;
-  try {
-    content = await fs.readFile(absPath, "utf-8");
-  } catch {
-    // Unreadable at capture time: groups fall back to their own reads and the
-    // domain outcome re-reads to surface the precise invalid failure detail.
-    content = null;
-  }
-  return {
-    absPath,
-    content,
-    lookup: (p: string) => (content !== null && path.resolve(p) === absPath ? content : undefined),
-  };
-}
-
-/**
- * 192 Phase 3: trusted domain outcome over the CURRENT running context.
- * Purely read-only: no meta writes, no dispatch, no stage changes — the
- * owner consumer decides transitions.
+ * 192 Phase 3 / 194 Phase 1: trusted domain outcome over the CURRENT running
+ * context. Purely read-only: no meta writes, no dispatch, no stage changes —
+ * the owner consumer decides transitions.
  */
 async function computeDesignReviewDomainOutcome(
   config: PipelineConfig,
   meta: SessionMeta,
-  capture?: DesignReviewSnapshotCapture,
+  ctx: TrustedDomainVerificationContext,
+  capture?: DesignReviewSnapshotSet,
 ): Promise<DesignReviewVerificationOutcome | undefined> {
-  const ctx = deriveDomainVerificationContext(meta);
-  if (!ctx) return undefined;
   const state = meta.designReview!;
   const operation = state.operation!;
 
   if (ctx.kind === "review") {
-    // Prefer the shared capture (task 4: ONE snapshot for domain + groups).
-    let content: string | undefined =
-      capture && capture.content !== null && capture.absPath === path.resolve(ctx.reportPath)
-        ? capture.content
-        : undefined;
+    // Prefer the shared capture (ONE snapshot for domain + groups).
+    let content: string | undefined = capture?.lookup(ctx.reportPath);
     if (content === undefined) {
       try {
         content = await fs.readFile(ctx.reportPath, "utf-8");
@@ -541,47 +512,24 @@ async function computeDesignReviewDomainOutcome(
     };
   }
 
-  // kind === "update"
-  // Prefer the shared capture (task 4: ONE snapshot for domain + groups).
-  let planContent: string | undefined =
-    capture && capture.content !== null && capture.absPath === path.resolve(ctx.planDoc)
-      ? capture.content
-      : undefined;
-  if (planContent === undefined) {
-    try {
-      planContent = await fs.readFile(ctx.planDoc, "utf-8");
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      return {
-        kind: "invalid",
-        failures: [{ ruleType: "designReviewUpdate", detail: `plan snapshot unreadable: ${ctx.planDoc} (${detail})`, timestamp: Date.now() }],
-      };
-    }
+  // kind === "update" — 194 Phase 1: ONE snapshot set supplies the plan bytes,
+  // the consumed report bytes and (standalone only) the receipt bytes. Building
+  // the validator input from that set is the single place where the OUTPUT
+  // binding is interpreted, so "missing receipt" can never degrade into
+  // "back-fill the receipt from the plan body".
+  const set = capture ?? (await captureDesignReviewSnapshots(ctx));
+  const evaluated = evaluateUpdateSnapshots(ctx, set);
+  if (!evaluated.ok) {
+    return {
+      kind: "invalid",
+      failures: evaluated.failures.map((detail) => ({ ruleType: "designReviewUpdate", detail, timestamp: Date.now() })),
+    };
   }
-  // 192 issue 8: consume a read-only snapshot of the CONSUMED report so the
-  // update validator enforces attribution itself (snapshot hash vs receipt
-  // reportHash + declared **operation** vs the consumed review identity —
-  // plan Phase 2 task 6). One read per deliverable (the report, distinct
-  // from the captured plan snapshot). Unreadable ⇒ omitted here; the
-  // authoritative coordinator consumption fail-closes on an unreadable or
-  // drifted consumed report (handleUpdateRunning), so nothing silently passes.
-  let reportContent: string | undefined;
-  try {
-    reportContent = await fs.readFile(ctx.reportDoc, "utf-8");
-  } catch {
-    reportContent = undefined;
-  }
-  const verdict = validateDesignReviewUpdate({
-    planContent,
-    baselinePlanHash: ctx.baselinePlanHash,
-    reportDoc: ctx.reportDoc,
-    reportHash: ctx.reportHash,
-    round: ctx.round,
-    reviewOperationId: ctx.reviewOperationId,
-    ...(reportContent !== undefined ? { reportContent } : {}),
-    updateOperationId: ctx.updateOperationId,
-    issueIds: ctx.issueIds,
-  });
+  // 192 issue 8: the consumed-report snapshot handed to the validator is the
+  // SAME bytes the capture bound inputs to (no second file read), so report
+  // attribution (snapshot hash vs receipt reportHash + declared **operation**
+  // vs the consumed review identity) is enforced inside the evaluator.
+  const verdict = validateDesignReviewUpdate(evaluated.input);
   if (verdict.status === "invalid") {
     return {
       kind: "invalid",
@@ -602,6 +550,9 @@ async function computeDesignReviewDomainOutcome(
     reportHash: ctx.reportHash,
     baselinePlanHash: ctx.baselinePlanHash,
     newPlanHash: verdict.newPlanHash,
+    // 194 C2: the plan hash alone no longer describes the update's output —
+    // the standalone receipt hash rides along for pre-advance revalidation.
+    ...(verdict.receiptHash !== undefined ? { receiptHash: verdict.receiptHash } : {}),
   };
 }
 

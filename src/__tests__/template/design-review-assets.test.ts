@@ -57,6 +57,8 @@ function params(): DesignReviewUpdatePromptParams {
     operationId: "op-tpl-update",
     baselinePlanHash: "a".repeat(64),
     issues: ["issue one"],
+    // 194 Phase 1 (C1): the standalone receipt document path is required.
+    updateReceiptDoc: "/abs/docs/X_plan/plan-update-1-op-tpl-update-X_plan.md",
   };
 }
 

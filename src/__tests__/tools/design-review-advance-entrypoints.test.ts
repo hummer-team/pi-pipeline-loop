@@ -382,8 +382,10 @@ describe("design-review multi-entrypoint consistency", () => {
   describe("update mode validation", () => {
     test("update with no actual change returns pending", async () => {
       const drState = createInitialState(planDoc, "menu", planHash, undefined, { pipelineId: "pipe-test-001" });
+      // Production layout: an authorized update runs in the PLAN stage — the
+      // trusted update verification context exists only there.
       const meta = makeTestMeta({
-        currentStage: "design-review",
+        currentStage: "plan",
         designReview: {
           ...drState,
           phase: "update_running",

@@ -23,7 +23,7 @@ import { __resetSharedStateDir } from "../../core/session-state";
 import { computeHash, deriveReportPath, classifyDesignReviewFlow, createInitialState } from "../../core/design-review/state";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta } from "../helpers";
+import { makeTestConfig, makeTestMeta, writeStandaloneUpdateDeliverables } from "../helpers";
 
 // ─── harness ─────────────────────────────────────────────────────────────────
 
@@ -286,32 +286,13 @@ function writeReport(h: Harness, verdict: "PASS" | "FAIL", issues: string[] = []
 }
 
 function writePlanUpdate(h: Harness) {
-  const st = stateOf(h);
-  const updateOp = st.operation!;
-  const receipt = st.reviewInputReceipt!;
-  const lines = [
-    "# Plan",
-    "updated design content",
-    "",
-    "## Design Review Update",
-    "",
-    `**Report**: ${receipt.reportDoc}`,
-    `**Round**: ${st.round}`,
-    `**Operation**: ${updateOp.operationId}`,
-    `**Baseline Hash**: ${receipt.inputPlanHash}`,
-    "",
-    "### Issue Dispositions",
-    "",
-    "| # | Issue | Disposition | Justification |",
-    "|---|-------|-------------|---------------|",
-    ...receipt.issueIds.map((id) => `| ${id} | defect ${id} | fixed | amended section ${id} |`),
-    "",
-    "### Changes Made",
-    "",
-    `- addressed ${receipt.issueIds.length} issue(s) inline`,
-    "",
-  ];
-  fs.writeFileSync(h.planDoc, lines.join("\n"), "utf-8");
+  // 194 Phase 1: the update writes a revised plan body PLUS its standalone
+  // receipt; the plan keeps no `## Design Review Update` protocol section.
+  writeStandaloneUpdateDeliverables({
+    planDoc: h.planDoc,
+    state: stateOf(h),
+    pipelineId: h.session.getMeta()!.pipelineId ?? "unknown",
+  });
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────

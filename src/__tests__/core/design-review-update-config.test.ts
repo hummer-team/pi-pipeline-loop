@@ -41,6 +41,9 @@ function baseParams(overrides?: Partial<DesignReviewUpdatePromptParams>): Design
     operationId: "op-update-1",
     baselinePlanHash: "a".repeat(64),
     issues: ["Issue A", "Issue B"],
+    // 194 Phase 1 (C1): every update dispatch carries the plugin-derived
+    // standalone receipt document path.
+    updateReceiptDoc: "/tmp/proj/docs/plan-update-1-op-update-1-plan.md",
     ...overrides,
   };
 }

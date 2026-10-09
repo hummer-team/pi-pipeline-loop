@@ -18,6 +18,8 @@ import type {
   ConfirmMode,
 } from "../../types";
 import { hasCompleteDesignReviewIdentity, buildDesignReviewIdentity, deriveReportPath } from "./state";
+import { narrowUpdateArtifact } from "./update-artifact";
+import type { UpdateArtifactNarrow } from "./update-artifact";
 
 /**
  * Narrowed read-only context for the current design-review operation.
@@ -128,6 +130,18 @@ export type TrustedDomainVerificationContext =
       reviewOperationId: string;
       /** Issue ids of the consumed report */
       issueIds: readonly string[];
+      /**
+       * 194 Phase 1 (C1): the update's OUTPUT binding, narrowed from the
+       * PERSISTED operation descriptor and nothing else.
+       *
+       * - `ok:false`  → a malformed/foreign descriptor: fail-closed invalid,
+       *   NEVER a downgrade to the legacy embedded receipt.
+       * - `legacy`    → pre-194 operation: receipt is the plan-body section.
+       * - `standalone`→ the pinned absolute receipt document must be read.
+       */
+      output: UpdateArtifactNarrow;
+      /** 194 C2: pipeline identity row the standalone receipt must carry. */
+      pipelineId: string;
     };
 
 /**
@@ -210,6 +224,10 @@ export function deriveDomainVerificationContext(
       round: state.round,
       reviewOperationId: receipt?.reviewIdentity.operationId ?? "unknown",
       issueIds: receipt?.issueIds ?? [],
+      // 194 Phase 1 (C1): narrowed from the PERSISTED operation only — never
+      // from tool args, an overrideFile or "the newest file in the directory".
+      output: narrowUpdateArtifact(op.updateArtifact, state.planDoc, state.round, op.operationId),
+      pipelineId: meta.pipelineId ?? "unknown",
     };
   }
 

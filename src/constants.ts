@@ -301,41 +301,54 @@ export const DEFAULT_READONLY_WRITE_PATHS = ["docs/", "doc/", "documentation/"];
  *
  * Runtime tokens use the SAME declared set as YAML templates:
  * {pipelineId} {planDoc} {reviewDoc} {round} {operationId} {baselinePlanHash}
- * ({requirementDoc} and {issues} are also declared for custom templates).
- * Example fields are written WITHOUT braces so they are never treated as
- * runtime tokens. The independent
+ * {updateReceiptDoc} ({requirementDoc} and {issues} are also declared for
+ * custom templates). Example fields are written WITHOUT braces so they are
+ * never treated as runtime tokens. The independent
  * `.pi/references/design-review-update-prompt.md` file is a historical asset
  * and is NOT a runtime fallback.
+ *
+ * 194 Phase 1 (C1/C2): the update receipt is a STANDALONE document the plugin
+ * derives ({updateReceiptDoc}), never a plan-body section. A CUSTOM update
+ * template that does not reference {updateReceiptDoc} is rejected before
+ * dispatch, so every 194 update is told exactly where its receipt belongs.
  */
 export const DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT = `## Design Review Update Mode
 This plan update is triggered by a **design-review FAIL** verdict. You are in authorized update mode.
 
 **Context**
 - Pipeline: {pipelineId}
-- Plan document (the ONLY writable target): {planDoc}
+- Plan document (deliverable you edit): {planDoc}
 - Review report (read it fully first): {reviewDoc}
 - Review round: {round}
 - Update operation id: {operationId}
 - Baseline plan hash (before your change): {baselinePlanHash}
+- Update receipt document (the ONLY place your process receipt goes): {updateReceiptDoc}
 
-**MUST**: Process every issue of the review report inside a single
-\`## Design Review Update\` section of the EXISTING plan document:
+**MUST**: Process every issue of the review report with TWO deliverables — the
+edited plan document and ONE standalone update receipt document:
+- Apply the actual fixes to the plan document ({planDoc})
+- Write the disposition receipt into the receipt document ({updateReceiptDoc}),
+  creating or overwriting it with the EXACT format below
 - Provide one disposition per issue: \`fixed\`, \`deferred\`, or \`rejected\`, each with a concrete justification
-- \`fixed\` requires actual changes in the plan document — do NOT claim "fixed" without them
+- \`fixed\` requires actual changes in the plan document AND a plan Phase location in \`### Changes Made\` — do NOT claim "fixed" without them
 - Do NOT add new clarification rounds and do NOT fabricate user confirmation
 - Do NOT modify source code, the requirement document, or any other file
 - If an issue needs a NEW requirement or decision you cannot make alone, set its disposition to \`new-decision\` and STOP for owner review
 - If an issue is provably unfixable in this plan, set its disposition to \`unfixable\` and explain why
 
-**Output Format** (the section header and the four association fields are exact):
+**Receipt Output Format** (the section header, the seven identity rows and both
+sub-sections are exact; the receipt document carries EXACTLY ONE such section):
 
 \`\`\`markdown
 ## Design Review Update
 
-**Report**: <absolute path of the review report you consumed>
-**Round**: <review round number>
-**Operation**: <the update operation id given above>
-**Baseline Hash**: <the baseline plan hash given above>
+**Pipeline**: {pipelineId}
+**Plan**: {planDoc}
+**Review Operation**: <the operation row of the consumed review report, copied verbatim>
+**Report**: {reviewDoc}
+**Round**: {round}
+**Operation**: {operationId}
+**Baseline Hash**: {baselinePlanHash}
 
 ### Issue Dispositions
 
@@ -346,11 +359,12 @@ This plan update is triggered by a **design-review FAIL** verdict. You are in au
 
 ### Changes Made
 
-- <where in the plan each fixed issue was addressed, for the next review round>
+- <where in the plan each fixed issue was addressed, citing the plan Phase (e.g. "Phase 3"), for the next review round>
 \`\`\`
 
 **Constraints**
-- Only modify the plan document ({planDoc}); keep all existing structure and decisions unless explicitly addressing review issues
+- Write ONLY the plan document ({planDoc}) and the receipt document ({updateReceiptDoc}); keep all existing plan structure and decisions unless explicitly addressing review issues
+- The plan body must NOT gain or edit any \`## Design Review Update\` protocol section — the receipt lives exclusively in the standalone document
 - The disposition table must cover EVERY issue of the consumed report exactly once; missing or duplicate entries invalidate the update
 - The updated plan is automatically re-reviewed in the next design-review round; final fix QUALITY is judged there, not by this step`;
 

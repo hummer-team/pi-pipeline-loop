@@ -1061,6 +1061,13 @@ export type DesignReviewVerificationOutcome =
       reportHash: string;
       baselinePlanHash: string;
       newPlanHash: string;
+      /**
+       * 194 Phase 1 (C2): SHA-256 of the STANDALONE receipt bytes the verdict
+       * consumed. Present only for post-194 operations; the plan hash alone no
+       * longer describes the update's full output, so pre-advance revalidation
+       * must compare this hash too. Legacy (embedded-section) updates omit it.
+       */
+      receiptHash?: string;
     }
   | { kind: "invalid"; failures: readonly VerifyFailureItem[] }
   | { kind: "paused"; reason: DesignReviewPauseReason };

@@ -42,7 +42,13 @@ import {
   strictPromptFilePath,
 } from "../../core/prompt-config";
 import { DEFAULT_DESIGN_REVIEW_SMART_DECISION_PROMPT } from "../../constants";
-import { makeTestConfig, makeTestMeta, makeStrictSession, writePromptYml } from "../helpers";
+import {
+  makeTestConfig,
+  makeTestMeta,
+  makeStrictSession,
+  writePromptYml,
+  writeStandaloneUpdateDeliverables,
+} from "../helpers";
 import {
   computeHash,
   createInitialState,
@@ -512,29 +518,13 @@ describe("193 Phase 1: review dispatch integration (exact prompt, blocking, reco
     expect(spawnLog.length).toBe(2);
     expect(spawnLog[1].prompt).not.toContain(HEADING);
 
-    // 3. Plan updated per contract → settle → next-round review dispatch
-    fs.writeFileSync(planDoc, [
-      "# Plan",
-      "",
-      "## Design Review Update",
-      "",
-      `**Report**: ${reportDoc}`,
-      "**Round**: 1",
-      `**Operation**: ${updateOpId}`,
-      `**Baseline Hash**: ${planHash}`,
-      "",
-      "### Issue Dispositions",
-      "",
-      "| # | Issue | Disposition | Justification |",
-      "|---|-------|-------------|---------------|",
-      "| 1 | Missing error handling | fixed | added error handling section |",
-      "| 2 | Incomplete specification | fixed | expanded specification |",
-      "",
-      "### Changes Made",
-      "",
-      "- New section: error handling; expanded spec details.",
-      "",
-    ].join("\n"), "utf-8");
+    // 3. Deliverables updated (194 Phase 1: revised plan + standalone receipt,
+    //    no protocol section in the plan body) → settle → next-round review.
+    writeStandaloneUpdateDeliverables({
+      planDoc,
+      state: session.getMeta()!.designReview!,
+      pipelineId: PIPE,
+    });
     const newPlanHash = computeHash(fs.readFileSync(planDoc, "utf-8"));
     const r3 = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
     expect(r3.status === "handled" && r3.action === "routed").toBe(true);

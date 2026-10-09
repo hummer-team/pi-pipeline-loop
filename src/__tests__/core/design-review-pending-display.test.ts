@@ -178,8 +178,8 @@ describe("193 Phase 3 (task 8): prompt dynamic context is READ-ONLY guidance", (
     expect(prompt).toContain("/pipeline-resume");
     expect(prompt).toContain("Design Review Decision");
     expect(prompt).toContain("Revise Plan / Proceed to Develop / Cancel");
-    // the contradicting advertisement from the review must be gone
-    expect(prompt).not.toContain("Only the report document");
+    // the contradicting writable-report advertisement from the review must be gone
+    expect(prompt).not.toContain("EXACTLY these files");
     expect(prompt).not.toContain("Operation: review");
   });
 
@@ -213,7 +213,7 @@ describe("193 Phase 3 (task 8): prompt dynamic context is READ-ONLY guidance", (
     expect(prompt).not.toContain("PAUSED — awaiting a HUMAN plan-revision decision");
   });
 
-  it("non-pending design-review phases keep their original write-scope display", async () => {
+  it("non-pending design-review phases show the policy-driven exact write scope", async () => {
     const running = makeTestMeta({
       currentStage: "design-review",
       designReview: pendingState({
@@ -224,7 +224,10 @@ describe("193 Phase 3 (task 8): prompt dynamic context is READ-ONLY guidance", (
     });
     const prompt = await injectPrompt(running);
     expect(prompt).toContain("Operation: review");
-    expect(prompt).toContain("Only the report document");
+    // 194 Phase 1 (C4): the advertised scope is the SAME exact list the guard
+    // enforces — the bound report path and nothing else.
+    expect(prompt).toContain("EXACTLY these files");
+    expect(prompt).toContain("/tmp/docs/review-design-1-plan.md");
     expect(prompt).not.toContain("awaiting a HUMAN plan-revision decision");
   });
 });

@@ -472,6 +472,9 @@ describe("Phase 1 successor D: update prompt rendering (single token contract)",
     operationId: OP_ID,
     baselinePlanHash: "b".repeat(64),
     issues: ["Issue 1", "Issue 2", "Issue 3"],
+    // 194 Phase 1 (C1): the standalone receipt document path is a required
+    // identity token for every update dispatch.
+    updateReceiptDoc: "docs/plan with spaces/plan-update-2-op-standalone.md",
   };
 
   test("renders every token exactly (double-brace form == single-brace form)", () => {

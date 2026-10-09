@@ -7,8 +7,16 @@
  * bounded input receipt. Late results of the consumed review operation can
  * no longer overwrite the current update operation.
  *
+ * 194 Phase 1 changes the shape of the update's evidence: the plan body keeps
+ * only its review-facing sections while the process receipt lives in the
+ * STANDALONE document pinned by the operation descriptor
+ * (`{planDir}/plan-update-{round}-{updateOperationId}-{planBase}.md`).
+ * A blocked preparation now commits NOTHING (the FAIL report stays unconsumed
+ * in `review_running`) so a config repair + settle retries the same
+ * consumption with zero RPCs and zero consumed stage visits.
+ *
  * This phase drives consumption through credible result fixtures (report
- * files + controlled spawn); Phase 5 replaces the fixture layer with the
+ * files + controlled spawn); later phases replace the fixture layer with the
  * real hook verification chain.
  */
 
@@ -23,11 +31,12 @@ import {
   computeHash,
   deriveReportPath,
 } from "../../core/design-review/state";
+import { deriveStandaloneReceiptPath } from "../../core/design-review/update-artifact";
 import { coordinateDesignReview } from "../../core/design-review/coordinator";
 import type { CoordinatorContext } from "../../core/design-review/coordinator";
 import { writebackDesignReviewResult, isCurrentOperation } from "../../core/design-review/dispatch";
 import { matchCommitExpectation } from "../../core/session-state";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, standaloneReceiptContent } from "../helpers";
 
 describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
   let projectRoot: string;
@@ -185,31 +194,43 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
     expect(still.operation?.dispatchState).toBe("dispatched");
     expect(isCurrentOperation(still, reviewOpId, 1)).toBe(false);
 
-    // ── 4. Plan updated + settle → NEW round with a NEW review operation.
-    // 192 Phase 2 contract: association fields bound to the CURRENT update
-    // operation + one disposition row per consumed issue.
-    fs.writeFileSync(planDoc, [
-      "# Plan",
-      "",
-      "## Design Review Update",
-      "",
-      `**Report**: ${reportDoc}`,
-      "**Round**: 1",
-      `**Operation**: ${updateOpId}`,
-      `**Baseline Hash**: ${planHash}`,
-      "",
-      "### Issue Dispositions",
-      "",
-      "| # | Issue | Disposition | Justification |",
-      "|---|-------|-------------|---------------|",
-      "| 1 | Missing error handling | fixed | added error handling section |",
-      "| 2 | Incomplete specification | fixed | expanded specification |",
-      "",
-      "### Changes Made",
-      "",
-      "- New section: error handling; expanded spec details.",
-      "",
-    ].join("\n"), "utf-8");
+    // ── 4. Deliverables updated + settle → NEW round with a NEW review operation.
+    // 194 Phase 1 contract: the plan body keeps only the review-facing sections
+    // while the bounded receipt carries identity, dispositions and changes.
+    fs.writeFileSync(
+      planDoc,
+      ["# Plan", "", "## Approach", "", "Revised error handling and specification detail.", ""].join("\n"),
+      "utf-8",
+    );
+    const receiptDoc = deriveStandaloneReceiptPath(planDoc, 1, updateOpId)!;
+    fs.writeFileSync(
+      receiptDoc,
+      standaloneReceiptContent({
+        pipelineId: "pipe-test-001",
+        planDoc,
+        reviewOperationId: reviewOpId,
+        reportDoc,
+        round: 1,
+        updateOperationId: updateOpId,
+        baselinePlanHash: planHash,
+        dispositions: [
+          {
+            issueId: "1",
+            text: "Missing error handling",
+            disposition: "fixed",
+            justification: "added the error handling section",
+          },
+          {
+            issueId: "2",
+            text: "Incomplete specification",
+            disposition: "fixed",
+            justification: "expanded the specification",
+          },
+        ],
+        changesMade: ["- Phase 1: new error handling section; expanded specification."],
+      }),
+      "utf-8",
+    );
 
     const r3 = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
     expect(r3.status === "handled" && r3.action === "routed").toBe(true);
@@ -291,10 +312,12 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
     expect(spawnLog.length).toBe(2); // review + handoff, no more
   });
 
-  it("blocked update config (empty key) keeps update_ready with spawn=0 — never a fake update_running", async () => {
-    // 192 Phase 2 (K05): an explicitly EMPTY update key is a configuration
-    // ERROR (not "unconfigured"): dispatch must block with ZERO spawns and
-    // the state must stay update_ready WITHOUT a fabricated update_running.
+  it("blocked update config (empty key) commits NOTHING with spawn=0 — never a fake update_running", async () => {
+    // 192 Phase 2 (K05) + 194 Phase 1: an explicitly EMPTY update key is a
+    // configuration ERROR (not "unconfigured"). Preparation happens BEFORE any
+    // transition is recorded, so dispatch blocks with ZERO spawns, no stage
+    // visit is consumed, the FAIL report stays UNCONSUMED in review_running,
+    // and repairing the config + settling again retries the same consumption.
     const refDir = path.join(projectRoot, ".pi", "references");
     fs.mkdirSync(refDir, { recursive: true });
     fs.writeFileSync(path.join(refDir, "pipeline-stage-prompt.yml"), "design_review_update_prompt: \"\"\n", "utf-8");
@@ -318,8 +341,6 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
         "**round**: 1",
         `**operation**: ${session.getMeta()!.designReview!.operation!.operationId}`,
         `**input hash**: ${session.getMeta()!.designReview!.operation!.inputHash}`,
-      `**operation**: ${session.getMeta()!.designReview!.operation!.operationId}`,
-      `**input hash**: ${session.getMeta()!.designReview!.operation!.inputHash}`,
         "",
         // 193 Phase 0: a complete report carries all four contract sections.
         "## Summary",
@@ -346,14 +367,20 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
         expect(r.reason).toBe("update_prompt_render_failed");
       }
       const state = session.getMeta()!.designReview!;
-      expect(state.phase).toBe("update_ready");
-      expect(state.operation).toBeUndefined(); // never a fake update_running
+      // NOTHING was committed: the review operation is still current and the
+      // FAIL report remains unconsumed, so a config repair + settle retries it.
+      expect(state.phase).toBe("review_running");
+      expect(state.operation?.kind).toBe("review");
+      expect(state.reviewInputReceipt).toBeUndefined();
       expect(spawnLogB.length).toBe(1); // ONLY the review — zero update spawn
-      // Attribution survived for a later retry after config repair
-      expect(state.reviewInputReceipt?.issueIds).toEqual(["1"]);
+      expect(session.getMeta()!.currentStage).toBe("design-review"); // zero visit
 
-      // Repair the config -> retry from update_ready dispatches exactly once
-      fs.writeFileSync(path.join(refDir, "pipeline-stage-prompt.yml"), "design_review_update_prompt: |\n  REPAIRED TEXT {planDoc}\n", "utf-8");
+      // Repair the config -> the SAME unconsumed FAIL now dispatches exactly once
+      fs.writeFileSync(
+        path.join(refDir, "pipeline-stage-prompt.yml"),
+        "design_review_update_prompt: |\n  REPAIRED TEXT {planDoc} {updateReceiptDoc}\n",
+        "utf-8",
+      );
       resetPromptConfigCache();
       const r2 = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
       expect(r2.status === "handled" && r2.action === "routed").toBe(true);

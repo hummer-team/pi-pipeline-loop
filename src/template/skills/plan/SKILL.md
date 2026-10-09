@@ -60,14 +60,21 @@ disable-model-invocation: true
 When the plugin dispatches plan work with a `design_review_update_prompt` section
 (YAML-configured; built-in default when the key is absent), you are in
 AUTHORIZED UPDATE mode, not fresh-planning mode:
-- Read the referenced review report; modify ONLY the existing plan document.
+- Read the referenced review report; edit the existing plan document and write
+  the process receipt to the TWO exact paths the prompt names.
 - Do NOT modify source code or the requirement document; do NOT add
   clarification rounds or fabricate user confirmation.
-- Produce the exact `## Design Review Update` section with the four
-  association fields (Report / Round / Operation / Baseline Hash) and one
-  disposition row (`fixed` / `deferred` / `rejected`, or the owner sentinels
-  `new-decision` / `unfixable`) per report issue, each with justification.
-- Record concrete change points under `### Changes Made` for the next review
-  round; fix QUALITY is judged by the next design-review, not by this step.
-The plugin verifies the section structurally and re-reviews automatically —
+- The plan document carries the ACTUAL fixes only (cite the plan Phase numbers
+  you edited); the plan body must NOT gain or edit any `## Design Review Update`
+  protocol section — that contract is historical and rejected for new updates.
+- The STANDALONE receipt document (path given as `updateReceiptDoc` in the
+  prompt) carries the exact `## Design Review Update` section with the seven
+  identity rows (Pipeline / Plan / Review Operation / Report / Round /
+  Operation / Baseline Hash) and one disposition row (`fixed` / `deferred` /
+  `rejected`, or the owner sentinels `new-decision` / `unfixable`) per report
+  issue, each with justification.
+- Record concrete change points under `### Changes Made` (with the plan Phase
+  location for every `fixed` issue) for the next review round; fix QUALITY is
+  judged by the next design-review, not by this step.
+The plugin verifies the receipt structurally and re-reviews automatically —
 no manual confirm checkpoint applies in this mode.
