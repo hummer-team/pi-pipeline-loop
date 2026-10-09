@@ -17,7 +17,10 @@
  * - a child whose own recorded binding belongs to an older run is refused as
  *   `child-stale` with ZERO writes;
  * - same-visit attempts inherit the failure budget and the FOURTH attempt is
- *   refused as `budget_exhausted_same_visit` (no silent infinite retries).
+ *   refused as `budget_exhausted_same_visit` (no silent infinite retries);
+ * - with the dispatch assets MISSING the production preflight blocks the
+ *   review honestly: zero RPC, zero operation, zero run — and replaying the
+ *   settle never turns into a retry storm.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -39,12 +42,13 @@ import {
   makeChainHarness,
   operationContextFromState,
   type ChainHarness,
+  type ChainHarnessOptions,
 } from "./executor-chain-harness";
 
 const live: ChainHarness[] = [];
 
-function mk(): ChainHarness {
-  const h = makeChainHarness();
+function mk(opts?: ChainHarnessOptions): ChainHarness {
+  const h = makeChainHarness(opts);
   live.push(h);
   return h;
 }
@@ -293,5 +297,32 @@ describe("194 Phase 4: handoff recovery and terminal identity rules", () => {
     expect(completed.action).toBe("duplicate_ignored");
     expect(h.run()!.recovery).toBe("budget-exhausted");
     expect(h.run()!.consecutiveFailures).toBe(3);
+  });
+
+  test("missing dispatch assets block the review with zero RPC, zero operation, zero run — and stay blocked on replay", async () => {
+    // The resource-blocked case (194 D5): without the design-review agent /
+    // skill assets the production preflight refuses to dispatch. The stage
+    // waits HONESTLY at `review_ready` — no fabricated operation, no orphan
+    // run, no retry storm.
+    const h = mk({ skipDispatchAssets: true });
+    await h.settle();
+
+    expect(h.rpcCount()).toBe(0); // zero external calls, zero spawns
+    expect(h.spawnIds()).toEqual([]);
+
+    const meta = h.meta();
+    expect(meta.currentStage).toBe("design-review");
+    expect(meta.stageExecutorRun).toBeUndefined(); // no orphan executor run
+
+    const st = h.state()!;
+    expect(st.phase).toBe("review_ready");
+    expect(st.operation).toBeUndefined(); // nothing was ever dispatched
+
+    // Replay: settling again meets the SAME block — idempotent, no silent
+    // retry that could half-dispatch once assets appear.
+    const before = JSON.stringify(h.meta());
+    await h.settle();
+    expect(h.rpcCount()).toBe(0);
+    expect(JSON.stringify(h.meta())).toBe(before);
   });
 });

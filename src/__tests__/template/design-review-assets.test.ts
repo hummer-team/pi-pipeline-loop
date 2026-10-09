@@ -15,7 +15,12 @@
  * - 193: the shipped SKILL/agent/template/YML assets teach EXACTLY the
  *   confirmed decision semantics (issues precedence, four sections, mode
  *   routing owned by the plugin, report-only write scope) and the shipped
- *   smart YAML key stays in sync with the built-in default.
+ *   smart YAML key stays in sync with the built-in default;
+ * - 194 (C1): BOTH shipped update-template sources carry the REQUIRED
+ *   `{updateReceiptDoc}` token, the receipt is never proxy-verified through
+ *   the ordinary completion-marker machinery, and the ordinary confirm/SOP
+ *   assets (clarify marker, manual/auto confirms, develop's real nextStage)
+ *   remain untouched.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -23,14 +28,21 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { loadVerifyContractAnchors } from "../../utils/contract-loader";
-import { renderDesignReviewUpdatePromptText, DESIGN_REVIEW_UPDATE_PROMPT_KEY } from "../../core/design-review/prompt";
+import {
+  renderDesignReviewUpdatePromptText,
+  DESIGN_REVIEW_UPDATE_PROMPT_KEY,
+  REQUIRED_UPDATE_PROMPT_TOKEN,
+} from "../../core/design-review/prompt";
 import type { DesignReviewUpdatePromptParams } from "../../core/design-review/prompt";
 import {
   DESIGN_REVIEW_SMART_DECISION_PROMPT_KEY,
   renderDesignReviewSmartTemplateText,
 } from "../../core/design-review/smart-prompt";
 import type { DesignReviewSmartPromptParams } from "../../core/design-review/smart-prompt";
-import { DEFAULT_DESIGN_REVIEW_SMART_DECISION_PROMPT } from "../../constants";
+import {
+  DEFAULT_DESIGN_REVIEW_SMART_DECISION_PROMPT,
+  DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT,
+} from "../../constants";
 import { buildDesignReviewAuthorisationPrompt } from "../../core/design-review/authorization";
 import { resetPromptConfigCache } from "../../core/prompt-config";
 import { makeTestConfig } from "../helpers";
@@ -413,5 +425,96 @@ describe("193 fix (review issue 3): deployed heading declarations match the doma
     expect(summaryNode).toBeDefined();
     expect(new RegExp(summaryNode!.patterns![0]!, "m").test("### Summary")).toBe(true);
     expect(new RegExp(summaryNode!.patterns![0]!, "m").test("##### Summary")).toBe(false);
+  });
+});
+
+// ─── 194 Phase 4 (task 3): standalone update-receipt asset consistency ───────
+// C1 moved the update receipt OUT of the plan body into a plugin-derived
+// standalone document. These guards pin the SHIPPED assets to that contract:
+// both template sources carry the required token, no ordinary completion
+// marker can proxy-verify an update, and the untouched confirm/SOP assets
+// still describe the pre-194 interactive semantics.
+describe("194 Phase 4: standalone update-receipt asset consistency", () => {
+  /** The receipt path the shared `params()` fixture supplies. */
+  const RECEIPT_PATH = "/abs/docs/X_plan/plan-update-1-op-tpl-update-X_plan.md";
+
+  it("both shipped update sources carry the REQUIRED receipt token and render it", () => {
+    const yml = readTemplate(path.join("references", "pipeline-stage-prompt.yml"));
+    const yamlBody = extractYamlBlock(yml, DESIGN_REVIEW_UPDATE_PROMPT_KEY);
+
+    // The token the dispatch guard demands from ANY custom template
+    // (REQUIRED_UPDATE_PROMPT_TOKEN, prompt.ts C1/C2) is present in both.
+    expect(yamlBody).toContain(`{${REQUIRED_UPDATE_PROMPT_TOKEN}}`);
+    expect(DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT).toContain(`{${REQUIRED_UPDATE_PROMPT_TOKEN}}`);
+
+    // The strict renderer resolves it end to end in BOTH sources and both
+    // teach the standalone-only receipt contract.
+    const renderedYaml = renderDesignReviewUpdatePromptText(yamlBody, params());
+    const renderedDefault = renderDesignReviewUpdatePromptText(
+      DEFAULT_DESIGN_REVIEW_UPDATE_PROMPT,
+      params(),
+    );
+    for (const rendered of [renderedYaml, renderedDefault]) {
+      expect(rendered).toContain(RECEIPT_PATH);
+      expect(rendered).not.toMatch(/\{\{?\s*updateReceiptDoc\s*\}?\}/);
+      expect(rendered).toContain("the ONLY place your process receipt goes");
+      // The plan body must never carry the receipt section — no plan marker
+      // can stand in for the receipt.
+      expect(rendered).toMatch(
+        /plan body must NOT gain or edit any `## Design Review Update` protocol section/,
+      );
+    }
+  });
+
+  it("the update receipt can never be proxy-verified by the ordinary completion marker", () => {
+    const cfg = JSON.parse(readTemplate("pipeline_loop.json")) as {
+      stages: Record<
+        string,
+        { nextStage?: string; confirm?: { mode?: string }; verify?: { require?: boolean; completionMarker?: string } }
+      >;
+    };
+    // The completion-marker precheck stays EXCLUSIVE to the interactive
+    // clarify stage; design-review (which routes updates) verifies by
+    // contract, never by a marker.
+    const withMarker = Object.entries(cfg.stages)
+      .filter(([, stage]) => stage.verify?.completionMarker !== undefined)
+      .map(([name]) => name);
+    expect(withMarker).toEqual(["clarify"]);
+    expect(cfg.stages["clarify"]!.verify?.completionMarker).toBe("## 模型确认");
+
+    // No shipped asset turns the receipt heading into a marker-like proxy:
+    // neither the loop config, the design-review verify contract, nor the
+    // agent/skill documents teach the retired embedded-receipt section.
+    expect(readTemplate("pipeline_loop.json")).not.toContain("Design Review Update");
+    expect(readTemplate(path.join("references", "design-review_spec", "verify.md"))).not.toContain(
+      "Design Review Update",
+    );
+    for (const doc of [
+      readTemplate(path.join("skills", "design-review", "SKILL.md")),
+      readTemplate(path.join("agents", "design-review-agent.md")),
+    ]) {
+      expect(doc).not.toContain("## Design Review Update");
+    }
+  });
+
+  it("ordinary confirm/SOP assets stay untouched by the receipt contract", () => {
+    const cfg = JSON.parse(readTemplate("pipeline_loop.json")) as {
+      stages: Record<string, { nextStage?: string; confirm?: { mode?: string } }>;
+    };
+    // Interactive clarify SOP and the manual plan gate keep their 193 shapes.
+    expect(cfg.stages["clarify"]!.nextStage).toBe("plan");
+    expect(cfg.stages["plan"]!.confirm?.mode).toBe("manual");
+    expect(cfg.stages["plan"]!.nextStage).toBe("develop");
+    expect(cfg.stages["design-review"]!.confirm?.mode).toBe("auto");
+    expect(cfg.stages["design-review"]!.nextStage).toBe("develop");
+    // 194's closed loop rides the REAL develop exit — the shipped config keeps
+    // `review` (the chain tests forbid hiding consumption behind a null).
+    expect(cfg.stages["develop"]!.nextStage).toBe("review");
+
+    // The YAML's clarify return-protocol guidance still teaches the marker
+    // auto-verification SOP verbatim.
+    const yml = readTemplate(path.join("references", "pipeline-stage-prompt.yml"));
+    expect(yml).toContain("`## 模型确认` marker");
+    expect(yml).toContain("auto-verifies (completionMarker)");
   });
 });
