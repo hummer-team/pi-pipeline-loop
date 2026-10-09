@@ -309,10 +309,34 @@ describe("193 Phase 4: decision-contract asset consistency", () => {
     expect(byMode.get("smart")).toContain("NEVER releases a FAIL automatically");
   });
 
-  it("verify.md declares the same four contract sections as the template", () => {
+  it("verify.md declares the same four contract sections as the template", async () => {
+    // Fix for a failure pre-existing at baseline d1ae498: since the deployed
+    // anchors were made heading-tolerant (levels 1-4, bilingual aliases, case
+    // written inline because the groups engine compiles these patterns with the
+    // "m" flag only), a literal `Summary` / `Recommendations` / `Issues` string
+    // no longer appears in verify.md. The contract the assertion guards is the
+    // PARITY between the asset's declarations and the trusted domain contract —
+    // so assert BEHAVIOUR (every mandatory section has exactly one deployed
+    // anchor that accepts its canonical heading), not literal source text.
     const verifyText = readTemplate(path.join("references", "design-review_spec", "verify.md"));
-    for (const label of ["Summary", "Recommendations", "Verdict", "Issues"]) {
-      expect(verifyText).toContain(label);
+    const frontmatter = verifyText.split(/^---\s*$/m)[1]?.trim() ?? "";
+    const rules = await parseFrontmatter(frontmatter);
+    if (!rules) throw new Error("verify.md frontmatter unparsable");
+    const group = rules.groups?.[0];
+    if (!group) throw new Error("verify.md groups missing");
+    const nodes = group.rules.filter(
+      (n) => n.type === "fileContentPattern" && (n.patterns?.length ?? 0) > 0,
+    );
+    for (const spec of DESIGN_REVIEW_REPORT_SECTIONS) {
+      const canonical = `## ${spec.label}`;
+      const anchors = nodes.filter((n) =>
+        spec.key === "issues"
+          ? n.runtime === "issueHeading"
+          : n.runtime === undefined && new RegExp(n.patterns![0]!, "m").test(canonical),
+      );
+      // exactly one declaration per section, and it accepts the canonical heading
+      expect(anchors.length).toBe(1);
+      expect(new RegExp(anchors[0]!.patterns![0]!, "m").test(canonical)).toBe(true);
     }
   });
 });
