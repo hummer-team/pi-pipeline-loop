@@ -532,7 +532,10 @@ function isGitReadOnly(stageName: string): boolean {
  */
 function buildWriteScopeLine(stageConfig: StageConfig, meta: SessionMeta): string {
   const policy = resolveDesignReviewWritePolicy(meta);
-  if (policy.mode !== "ordinary") {
+  // 194 Phase 3 (C4): a finished release governs writes too — the develop
+  // chain applies, but the cycle's own documents stay read-only, and the
+  // guidance must say so (guard and prompt never disagree).
+  if (policy.mode !== "ordinary" || policy.finishedRelease) {
     return describeWriteScope(policy);
   }
   const awp = stageConfig.allowedWritePaths;
@@ -962,7 +965,16 @@ function buildDesignReviewContext(
   // or identity-blocked run is never promised a writable file.
   const writePolicy = resolveDesignReviewWritePolicy(meta);
   parts.push(``, `**Write Scope**: ${describeWriteScope(writePolicy)}`);
-  if (writePolicy.mode === "scoped" && writePolicy.writable.length > 0) {
+  if (writePolicy.mode === "ordinary" && writePolicy.finishedRelease) {
+    // 194 Phase 3 (C4, task 1): a trusted finished release REMOVES the
+    // handoff no-write guidance — develop proceeds normally — but the cycle's
+    // own documents stay read-only, which the guard keeps enforcing.
+    parts.push(
+      `The design-review cycle is FINISHED with a trusted handoff receipt: develop proceeds`,
+      `under the stage's normal write scope. Do NOT reopen this cycle's plan, review reports`,
+      `or update receipts — the permission guard still refuses them.`,
+    );
+  } else if (writePolicy.mode === "scoped" && writePolicy.writable.length > 0) {
     parts.push(
       `Everything NOT listed above is read-only (requirements docs, source code, other rounds' reports, other operations' receipts).`,
       `Git operations are blocked by default (gitModify=block).`,

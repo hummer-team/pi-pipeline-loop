@@ -215,6 +215,12 @@ export function createMockCtx(
     sessionName?: string;
     /** Session file override (for registry tests) */
     sessionFile?: string;
+    /**
+     * 194 Phase 3: session-local custom entries returned by
+     * `_ctx.sessionManager.getEntries()` — lets executor-identity tests inject
+     * a recorded `pi-pipeline:executor-binding` entry for this session.
+     */
+    sessionEntries?: unknown[];
     /** Raw event override (for fork detection tests) */
     event?: Record<string, unknown>;
   },
@@ -270,7 +276,7 @@ export function createMockCtx(
     _ctx: {
       sessionManager: {
         getBranch: () => [] as unknown[],
-        getEntries: () => [] as unknown[],
+        getEntries: () => (opts?.sessionEntries ?? []) as unknown[],
         getHeader: opts?.sessionHeader ? () => opts.sessionHeader! : undefined,
         getSessionName: opts?.sessionName ? () => opts.sessionName! : undefined,
         getSessionFile: opts?.sessionFile ? () => opts.sessionFile! : undefined,

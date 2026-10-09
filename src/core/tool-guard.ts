@@ -41,10 +41,17 @@ import {
   type ProtectState,
 } from "../utils/protect";
 import {
-  resolveDesignReviewWritePolicy,
   isPathWithinWriteScope,
   describeWriteScope,
 } from "./design-review/write-policy";
+// 194 Phase 3 (C4, task 1): lifecycle access decision (runtime identity →
+// dynamic scope → stage/global protect) lives in ONE small policy module.
+import {
+  resolveLifecycleWriteAccess,
+  collectLifecycleEvidence,
+  isFinishedReleaseProtectedPath,
+  type LifecycleWriteAccess,
+} from "./stage-executor/lifecycle-access";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
 import { resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
@@ -354,6 +361,8 @@ function isGitLockFile(relPath: string): boolean {
  * @param ctx - Runtime context (for TUI ask dialogs)
  * @param trackViolation - Violation recorder
  * @param ui - Pipeline UI for notifications
+ * @param access - Resolved lifecycle write access for this bash call (194
+ *   Phase 3 C4: runtime identity already folded in; single policy per call)
  * @param opts - Optional behavior modifiers
  * @param opts.skipGitDirTargets - When true, targets under `.git/` are skipped
  *   (used for git-native write commands in allow stages — `.git/` writes are expected)
@@ -370,6 +379,7 @@ async function checkBashFileTargets(
   ctx: RuntimeCtx,
   trackViolation: (item: Omit<ViolationItem, "timestamp">) => void,
   ui: ReturnType<typeof createPipelineUI>,
+  access: LifecycleWriteAccess,
   opts?: { skipGitDirTargets?: boolean; allowGitLockFiles?: boolean },
 ): Promise<{ block: true; reason: string } | undefined> {
   const targets = extractBashFileTargets(segment);
@@ -395,16 +405,32 @@ async function checkBashFileTargets(
     }
   }
 
+  // 194 Phase 3 (C4): a blocked/readonly lifecycle (fail-closed identity,
+  // stale/unknown closed-loop child, paused loop, unproven finished release)
+  // refuses EVERY mutating target BEFORE the session allowance, the stage
+  // whitelist and any protection opening can pass.
+  if (targets.length > 0 && (access.policy.mode === "blocked" || access.policy.mode === "readonly")) {
+    const reason =
+      `FORBIDDEN: Bash command mutates files while the design-review lifecycle refuses writes ` +
+      `(${access.policy.reason ?? access.policy.mode}). Writable now: ${describeWriteScope(access.policy)}`;
+    await trackViolation({
+      type: "write_protected",
+      tool: "bash",
+      detail: reason,
+      suggestion: "Resolve the lifecycle state via the owner (decision / recovery) first.",
+    });
+    ui.notify(ctx, reason);
+    return { block: true, reason };
+  }
+
   const sessionPaths = meta.sessionAllowedWritePaths || [];
   // Phase 1 (190) Fix-A extension: detect session role once for child hard-block checks
   const { isChild } = detectSessionRole(ctx);
-  
-  // Phase 4 (191): Design-review dynamic scope - check once for all targets
+  // 194 Phase 1 (C4) / Phase 3 (task 1): the scope comes from the lifecycle
+  // access decision (runtime identity + shared write policy), so the guard
+  // authorizes exactly what the lifecycle declares and nothing wider.
+  const writePolicy = access.policy;
   const drState = meta.designReview;
-  const hasDesignReviewScope = !!(drState && drState.operation);
-  // 194 Phase 1 (C4): ONE policy resolution feeds every scope check in this
-  // bash segment loop (guard and prompt guidance share the same exact list).
-  const writePolicy = resolveDesignReviewWritePolicy(meta);
 
   for (const t of targets) {
     // Phase 1 / 177 (D3): a "suspicious" target is source text captured by `>`
@@ -446,7 +472,10 @@ async function checkBashFileTargets(
       // not-yet-existing leaves included). Resolution errors BLOCK — broken
       // links / ELOOP / permission problems are never "file does not exist"
       // pass-throughs.
-      if (hasDesignReviewScope && drState.operation) {
+      // 194 Phase 3 (task 1): the branch is keyed on the POLICY MODE, not on
+      // the mere presence of an operation, so `blocked`/`readonly` decisions
+      // above and the `finished` release below are never swallowed here.
+      if (writePolicy.mode === "scoped" && drState && drState.operation) {
         const strictRes = await resolveSymlinkPathStrict(absTarget);
         if (!strictRes.ok) {
           const reason = `FORBIDDEN: cannot canonicalize bash target '${relPath}' (${strictRes.reason}); design-review scope requires a resolvable path.`;
@@ -480,6 +509,39 @@ async function checkBashFileTargets(
             tool: "bash",
             detail: reason,
             suggestion: `Design-review scope: operation=${drState.operation.kind}, phase=${drState.phase}.`,
+          });
+          ui.notify(ctx, reason);
+          return { block: true, reason };
+        }
+      }
+
+      // 194 Phase 3 (C4, task 1): the finished release keeps the cycle's own
+      // documents closed — plan, every round's review report, update receipts.
+      // This runs BEFORE the session allowance bypass below, because
+      // sessionAllowedWritePaths must never reopen a finished artifact.
+      if (writePolicy.finishedRelease && drState) {
+        const strictRes = await resolveSymlinkPathStrict(absTarget);
+        if (!strictRes.ok) {
+          const reason = `FORBIDDEN: cannot canonicalize bash target '${relPath}' (${strictRes.reason}); the finished design-review cycle requires a resolvable path to check its read-only documents.`;
+          await trackViolation({
+            type: "write_protected",
+            tool: "bash",
+            detail: reason,
+            suggestion: "Resolve or remove the broken/looping symlink before writing.",
+          });
+          ui.notify(ctx, reason);
+          return { block: true, reason };
+        }
+        const artifactHit =
+          isFinishedReleaseProtectedPath(config.projectRoot, absTarget, drState)
+          || isFinishedReleaseProtectedPath(config.projectRoot, strictRes.resolved, drState);
+        if (artifactHit) {
+          const reason = `FORBIDDEN: Bash target '${relPath}' belongs to the finished design-review cycle (plan, review report or update receipt) and stays read-only. Writable now: ${describeWriteScope(writePolicy)}`;
+          await trackViolation({
+            type: "write_protected",
+            tool: "bash",
+            detail: reason,
+            suggestion: "The design-review cycle is finished; its documents are closed. Write the develop deliverables instead.",
           });
           ui.notify(ctx, reason);
           return { block: true, reason };
@@ -553,6 +615,20 @@ async function checkBashFileTargets(
       }
     } else {
       // Path outside project root
+      // 194 Phase 3 (C4, task 1): a finished cycle's PINNED documents (plan
+      // living outside the project root) stay read-only even as absolute
+      // out-of-root targets — canonical exact match, no directory grants.
+      if (writePolicy.finishedRelease && drState && isFinishedReleaseProtectedPath(config.projectRoot, absTarget, drState)) {
+        const reason = `FORBIDDEN: Bash target '${t.target}' resolves to a finished design-review cycle document (plan, review report or update receipt) and stays read-only. Writable now: ${describeWriteScope(writePolicy)}`;
+        await trackViolation({
+          type: "write_protected",
+          tool: "bash",
+          detail: reason,
+          suggestion: "The design-review cycle is finished; its documents are closed.",
+        });
+        ui.notify(ctx, reason);
+        return { block: true, reason };
+      }
       const isWhitelistMode =
         stageConfig.allowedWritePaths !== undefined &&
         !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
@@ -691,6 +767,13 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       // 2. Bash command handling
       if (toolName === "bash") {
         const command = args.command as string;
+        // 194 Phase 3 (C4, task 1): ONE lifecycle decision per bash call —
+        // runtime identity first, then the dynamic write scope, then the
+        // original stage/global protect chains (ordinary flow untouched).
+        const bashAccess = resolveLifecycleWriteAccess(
+          meta,
+          collectLifecycleEvidence(ctx, meta, detectSessionRole(ctx).isChild),
+        );
 
         // ── DESTRUCTIVE COMMAND CHECK (full command, pre-split) ──
         if (isDestructiveCommand(command)) {
@@ -755,6 +838,25 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             }
 
             const isWrite = isGitWriteCommand(segment);
+
+            // 194 Phase 3 (C4, task 1): the lifecycle refusal covers git
+            // mutations as well. A blocked/readonly/scoped decision is never
+            // bypassed through the stage git policy or an ask answer — only
+            // the ordinary chain (no loop, or a trusted finished release)
+            // consults the existing policy.
+            if (isWrite && bashAccess.policy.mode !== "ordinary") {
+              const reason =
+                `FORBIDDEN: Git mutation refused by the design-review lifecycle ` +
+                `(${bashAccess.policy.reason ?? bashAccess.policy.mode}). Writable now: ${describeWriteScope(bashAccess.policy)}`;
+              await trackViolation({
+                type: "git_protected",
+                tool: "bash",
+                detail: reason,
+                suggestion: "Resolve the lifecycle state via the owner (decision / recovery) first.",
+              });
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
 
             if (isWrite && gitPolicy !== "allow") {
               // Phase 1 / 177 (D2) tri-state truth table:
@@ -837,6 +939,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               if (!bashFileState) bashFileState = await getProtectState();
               const blockResult = await checkBashFileTargets(
                 segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
+                bashAccess,
                 { skipGitDirTargets: true },
               );
               if (blockResult) return blockResult;
@@ -854,6 +957,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           if (!bashFileState) bashFileState = await getProtectState();
           const blockResult = await checkBashFileTargets(
             segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
+            bashAccess,
             { allowGitLockFiles: gitPolicy === "allow" },
           );
           if (blockResult) return blockResult;
@@ -1139,21 +1243,50 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           : path.resolve(config.projectRoot, filePath);
         const relPath = toProjectRelative(config.projectRoot, absPath);
 
+        // Phase 4 (191): Design-review dynamic write scope enforcement.
+        // 194 Phase 3 (C4, task 1): ONE lifecycle decision ordered runtime
+        // identity → dynamic scope → the original stage/global protect chain.
+        // `finished` releases writes ONLY on the trusted handoff receipt,
+        // and even then the cycle's plan/report/receipt documents stay
+        // read-only; a stale or unverifiable closed-loop child never
+        // inherits the current operation's permissions. The decision runs
+        // BEFORE the in/out-of-root split so a refused lifecycle cannot be
+        // dodged with an absolute path.
+        const { isChild } = detectSessionRole(ctx);
+        const lifecycleAccess = resolveLifecycleWriteAccess(
+          meta,
+          collectLifecycleEvidence(ctx, meta, isChild),
+        );
+        const writePolicy = lifecycleAccess.policy;
+        const drState = meta.designReview;
+
+        // blocked/readonly lifecycle: refuse EVERY write attempt, fail closed,
+        // before any whitelist/session-allowance opening can pass.
+        if (writePolicy.mode === "blocked" || writePolicy.mode === "readonly") {
+          const reason =
+            `FORBIDDEN: Path '${relPath ?? absPath}' is refused by the design-review lifecycle ` +
+            `(${writePolicy.reason ?? writePolicy.mode}). Writable now: ${describeWriteScope(writePolicy)}`;
+          await trackViolation({
+            type: "write_protected",
+            tool: toolName,
+            detail: reason,
+            suggestion: "Resolve the lifecycle state via the owner (decision / recovery) first.",
+          });
+          ui.notify(ctx, reason);
+          return { block: true, reason };
+        }
+
         if (relPath) {
           const state = await getProtectState();
-          // Phase 1 (190) Fix-A: detect session role once for child hard-block checks
-          const { isChild } = detectSessionRole(ctx);
 
-          // Phase 4 (191): Design-review dynamic write scope enforcement
-          // 194 Phase 1 (C4): the scope comes from the SHARED write policy,
-          // so the guard authorizes exactly the deliverables the lifecycle
-          // declares (review: current report; standalone update: original plan
-          // plus its own receipt) and never a directory or a foreign file.
-          const drState = meta.designReview;
-          if (drState && drState.operation) {
-            const operationKind = drState.operation.kind;
-            const writePolicy = resolveDesignReviewWritePolicy(meta);
-
+          // scoped lifecycle: the EXACT writable list (shared with the prompt),
+          // checked against BOTH the lexical source and the symlink-resolved
+          // real target. ordinary + finishedRelease: the cycle's own documents
+          // are closed; everything else falls through to the original chain.
+          if (
+            (writePolicy.mode === "scoped" && drState && drState.operation)
+            || (writePolicy.mode === "ordinary" && writePolicy.finishedRelease && drState)
+          ) {
             // 192 Phase 4 (F07): canonical resolution covering parent dirs of
             // not-yet-existing files; a resolution error BLOCKS (fail-closed).
             const strictRes = await resolveSymlinkPathStrict(absPath);
@@ -1170,26 +1303,49 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             }
             const resolvedAbsPath = strictRes.resolved;
             const resolvedRelPath = toProjectRelative(config.projectRoot, resolvedAbsPath);
-            // 192 fix (issue 4, plan Phase 4 task 9): verify SOURCE and REAL
-            // TARGET both against the dynamic scope. A link that resolves
-            // OUTSIDE the project root (resolvedRelPath === null) is
-            // out-of-scope — fail closed, never fall back to the lexical path.
-            const sourceInScope = isPathWithinWriteScope(writePolicy, config.projectRoot, absPath);
-            const realTargetInScope =
-              resolvedRelPath !== null &&
-              isPathWithinWriteScope(writePolicy, config.projectRoot, resolvedAbsPath);
 
-            if (!sourceInScope || !realTargetInScope) {
-              const reason = `FORBIDDEN: Path '${relPath}' is outside design-review dynamic write scope for operation '${operationKind}'. ` +
-                `Writable now: ${describeWriteScope(writePolicy)}`;
-              await trackViolation({
-                type: "write_protected",
-                tool: toolName,
-                detail: reason,
-                suggestion: `Design-review scope: operation=${operationKind}, phase=${drState.phase}.`,
-              });
-              ui.notify(ctx, reason);
-              return { block: true, reason };
+            if (writePolicy.mode === "scoped") {
+              // 192 fix (issue 4, plan Phase 4 task 9): verify SOURCE and REAL
+              // TARGET both against the dynamic scope. A link that resolves
+              // OUTSIDE the project root (resolvedRelPath === null) is
+              // out-of-scope — fail closed, never fall back to the lexical path.
+              const sourceInScope = isPathWithinWriteScope(writePolicy, config.projectRoot, absPath);
+              const realTargetInScope =
+                resolvedRelPath !== null &&
+                isPathWithinWriteScope(writePolicy, config.projectRoot, resolvedAbsPath);
+
+              if (!sourceInScope || !realTargetInScope) {
+                const operationKind = writePolicy.operationKind ?? drState.operation?.kind ?? "design-review";
+                const reason = `FORBIDDEN: Path '${relPath}' is outside design-review dynamic write scope for operation '${operationKind}'. ` +
+                  `Writable now: ${describeWriteScope(writePolicy)}`;
+                await trackViolation({
+                  type: "write_protected",
+                  tool: toolName,
+                  detail: reason,
+                  suggestion: `Design-review scope: operation=${operationKind}, phase=${drState.phase}.`,
+                });
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
+            } else {
+              // finished release: the cycle's documents stay read-only. The
+              // check runs BEFORE the session allowance bypass below, so
+              // sessionAllowedWritePaths can never reopen a closed artifact.
+              const artifactHit =
+                isFinishedReleaseProtectedPath(config.projectRoot, absPath, drState)
+                || isFinishedReleaseProtectedPath(config.projectRoot, resolvedAbsPath, drState);
+              if (artifactHit) {
+                const reason = `FORBIDDEN: Path '${relPath}' belongs to the finished design-review cycle (plan, review report or update receipt) and stays read-only. ` +
+                  `Writable now: ${describeWriteScope(writePolicy)}`;
+                await trackViolation({
+                  type: "write_protected",
+                  tool: toolName,
+                  detail: reason,
+                  suggestion: "The design-review cycle is finished; its documents are closed. Write the develop deliverables instead.",
+                });
+                ui.notify(ctx, reason);
+                return { block: true, reason };
+              }
             }
           }
 
@@ -1326,7 +1482,26 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             // "allow-whitelist" → fall through to hash recording (gitignore exemption implicit)
           }
         } else {
-          // Path outside project root: block in whitelist mode (cannot satisfy whitelist)
+          // Path outside project root
+          // 194 Phase 3 (C4, task 1): a finished cycle's PINNED documents stay
+          // read-only even when addressed as absolute out-of-root targets
+          // (exact canonical match only — no directory grants).
+          if (
+            writePolicy.finishedRelease
+            && drState
+            && isFinishedReleaseProtectedPath(config.projectRoot, absPath, drState)
+          ) {
+            const reason = `FORBIDDEN: Path '${absPath}' is a document of the finished design-review cycle and stays read-only. ` +
+              `Writable now: ${describeWriteScope(writePolicy)}`;
+            await trackViolation({
+              type: "write_protected",
+              tool: toolName,
+              detail: reason,
+              suggestion: "The design-review cycle is finished; its documents are closed.",
+            });
+            ui.notify(ctx, reason);
+            return { block: true, reason };
+          }
           const isWhitelistMode =
             stageConfig.allowedWritePaths !== undefined &&
             !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);

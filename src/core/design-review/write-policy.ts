@@ -29,6 +29,7 @@ import * as path from "node:path";
 import type {
   DesignReviewOperationKind,
   DesignReviewPhase,
+  DesignReviewState,
   PipelineConfig,
   PipelineStage,
   SessionMeta,
@@ -63,6 +64,14 @@ export interface DesignReviewWritePolicy {
   writable: readonly string[];
   /** Machine-readable explanation when writes are narrowed or refused. */
   reason?: string;
+  /**
+   * 194 Phase 3 (C4): true when `finished` released the loop BACK to the
+   * ordinary stage/global protect chain — and only after the current
+   * develop-handoff's trusted success receipt was proven. A released loop
+   * still keeps its cycle artifacts (plan, review reports, update receipts)
+   * read-only; consumers must never widen this back to unrestricted writes.
+   */
+  finishedRelease?: boolean;
 }
 
 const NO_WRITABLE: readonly string[] = Object.freeze([]);
@@ -70,6 +79,69 @@ const NO_WRITABLE: readonly string[] = Object.freeze([]);
 /** Ordinary flow: the design-review loop does not govern this session. */
 function ordinary(): DesignReviewWritePolicy {
   return { mode: "ordinary", writable: NO_WRITABLE };
+}
+
+/**
+ * 194 Phase 3 (C4): the `finished` lifecycle row of the permission matrix.
+ *
+ * A finished loop releases writes back to the ordinary stage/global protect
+ * chain ONLY when the current develop-handoff carries its trusted success
+ * receipt (`dispatchState=completed` + `dispatchEvidence=trusted_id` + a real
+ * agentId — the exact shape `finishCurrentHandoffReliably` commits). Anything
+ * else claiming `finished` (receipt insufficient, evidence never trusted, or
+ * an identity that cannot be proven) stays fail-closed: a phase label alone
+ * must never open develop writes. Legacy finished records (pre-192 loops with
+ * a review/update operation, or none) release with the artifact guard,
+ * matching the 191-compat `classifyDesignReviewFlow` terminal behavior.
+ */
+function resolveFinishedRelease(state: DesignReviewState): DesignReviewWritePolicy {
+  const operation = state.operation;
+  const operationKind = operation?.kind;
+
+  // C4: an unprovable identity cannot even claim a finished release.
+  if (!hasCompleteDesignReviewIdentity(state)) {
+    return {
+      mode: "blocked",
+      ...(operationKind !== undefined ? { operationKind } : {}),
+      phase: "finished",
+      writable: NO_WRITABLE,
+      reason: "design_review_identity_incomplete",
+    };
+  }
+
+  if (operation && operation.kind === "develop-handoff") {
+    const trustedReceipt =
+      operation.dispatchState === "completed"
+      && operation.dispatchEvidence === "trusted_id"
+      && typeof operation.agentId === "string"
+      && operation.agentId.length > 0;
+    if (!trustedReceipt) {
+      return {
+        mode: "blocked",
+        operationKind: operation.kind,
+        phase: "finished",
+        writable: NO_WRITABLE,
+        reason: "finished_release_unproven",
+      };
+    }
+    return {
+      mode: "ordinary",
+      finishedRelease: true,
+      operationKind: operation.kind,
+      phase: "finished",
+      writable: NO_WRITABLE,
+    };
+  }
+
+  // Legacy finished record: released, with the cycle artifacts still
+  // read-only (enforced by stage-executor/lifecycle-access).
+  return {
+    mode: "ordinary",
+    finishedRelease: true,
+    ...(operationKind !== undefined ? { operationKind } : {}),
+    phase: "finished",
+    writable: NO_WRITABLE,
+  };
 }
 
 /**
@@ -85,6 +157,13 @@ export function resolveDesignReviewWritePolicy(
 ): DesignReviewWritePolicy {
   const state = meta?.designReview;
   if (!state) return ordinary();
+
+  // 194 Phase 3 (C4): `finished` is a CONDITIONAL release, evaluated before
+  // the no-operation shortcut so a finished record is never treated as if no
+  // loop had ever governed this session.
+  if (state.phase === "finished") {
+    return resolveFinishedRelease(state);
+  }
 
   const operation = state.operation;
   // No current operation: nothing is executing under this loop, so the
@@ -273,6 +352,12 @@ export function findWriteScopeConflicts(
 export function describeWriteScope(policy: DesignReviewWritePolicy): string {
   switch (policy.mode) {
     case "ordinary":
+      if (policy.finishedRelease) {
+        // 194 Phase 3 (C4): finished released the loop, but the cycle's own
+        // documents stay closed — the prompt must tell the model what the
+        // guard will still refuse.
+        return "the develop stage's normal write scope (global protect applies); the finished design-review cycle's plan, review reports and update receipts stay read-only";
+      }
       return "the stage's normal write scope (no design-review loop governs this session)";
     case "blocked":
       return `nothing — this run's identity or output binding cannot be proven (${policy.reason ?? "unknown"})`;
