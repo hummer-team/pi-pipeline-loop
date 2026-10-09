@@ -243,6 +243,19 @@ export const PIPELINE_TURN_SIGNATURES: ReadonlyArray<string | RegExp> = [
   // Source: utils/subagent-rpc.ts L467
   "Begin the ",
 
+  // 194 Phase 3 (task 3): trusted owner wake from a closed-loop executor
+  // terminal. The settle gate FIRST verifies the embedded wakeId against the
+  // run's persisted pendingWakeId (stage-executor/turn-source.ts); this
+  // registration is the fallback so the wake turn is never mistaken for
+  // ordinary chat even if the strict source check is unavailable.
+  "pi-pipeline:owner-wake ",
+
+  // 192 Phase 1 terminal wake: "[plugin auto-settle] Design-review ... "
+  // 194 Phase 3 (task 3): registers the PREVIOUSLY UNRECOGNISED legacy wake
+  // prefix (a production wake turn used to fall into the ordinary-chat gate)
+  // so review/update terminal wakes are pipeline turns on the text path too.
+  "[plugin auto-settle] ",
+
   // @mention pattern: "@agent-name file [args]" where args include round indicators
   // Matches: "@feat-design-plan-agent docs/req.md 1", "@agent file 2 答", "@agent file full-und?"
   // Source: commands/pipeline-start.ts L803, user-initiated @mentions

@@ -34,6 +34,8 @@ import { classifyDesignReviewFlow } from "./design-review/state";
 // 193 Phase 3 (tasks 1/3): shared safe builder + single honest consumer at startup
 import { createDesignReviewRuntimeContext } from "./design-review/runtime-context";
 import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "./design-review/entry-result";
+// 194 Phase 3 (C3, task 2): child-side executor binding record after JOIN
+import { recordChildBindingFromRuntimeEvidence } from "./stage-executor/runtime-binding";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -148,6 +150,46 @@ function inferSpawnTrigger(parentMeta: SessionMeta, _parentPipelineId: string): 
 
   // No matching spawn record → manual or external trigger
   return "manual_or_external";
+}
+
+/**
+ * 194 Phase 3 (C3, task 2): best-effort child-side executor binding record
+ * after a successful JOIN. The JOIN copies the owner's meta — including any
+ * CURRENT `stageExecutorRun` — but the child's identity must be proven from
+ * its OWN runtime evidence (parentSession header + own session file against
+ * the registry-folded binding) before anything is recorded into the child's
+ * entries. Every no-evidence case stays silent-by-design (ordinary children
+ * never have a run); exceptions never block session start.
+ */
+function recordChildExecutorBinding(ctx: RuntimeCtx, parentSession: string, sessionFile: string): void {
+  try {
+    const meta = ctx.session.getMeta();
+    const run = meta?.stageExecutorRun;
+    if (!run) return; // no closed-loop run inherited — nothing to record
+    const pi = (ctx as { pi?: { appendEntry?: (customType: string, data: unknown) => void } }).pi;
+    if (!pi || typeof pi.appendEntry !== "function") return;
+    const sm = ((ctx._ctx as unknown) as Record<string, unknown> | undefined)?.sessionManager as
+      | { getEntries?: () => readonly unknown[] }
+      | undefined;
+    const entries = (sm?.getEntries?.() ?? []) as Parameters<typeof recordChildBindingFromRuntimeEvidence>[0]["entries"];
+    const res = recordChildBindingFromRuntimeEvidence({
+      writer: { appendEntry: pi.appendEntry.bind(pi) },
+      entries,
+      parentSession,
+      ownSessionFile: sessionFile,
+      currentRun: run,
+    });
+    void safeWriteAuditLog("executor_child_binding", {
+      action: res.recorded ? "recorded" : "skipped",
+      reason: res.reason ?? "ok",
+      pipelineId: meta?.pipelineId,
+      stage: run.binding.stage,
+      runId: run.binding.runId,
+    }, res.recorded ? undefined : "warn");
+  } catch {
+    // Identity recording is auxiliary at startup: the runtime guard already
+    // fails closed for unproven children — never block session start here.
+  }
 }
 
 /**
@@ -415,7 +457,15 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             | { getSessionFile?: () => string } | undefined;
           const sessionFile = sm?.getSessionFile?.() ?? "";
           const joined = await handleSubagentJoin(config, ctx, ui, parentSession, sessionFile);
-          if (joined) return; // JOIN succeeded — child inherits parent pipeline
+          if (joined) {
+            // 194 Phase 3 (C3, task 2): the JOINED child records its OWN
+            // executor binding from runtime evidence — meta is inherited,
+            // identity is NOT. A run bound to this child's session file gets
+            // a local `pi-pipeline:executor-binding` entry (idempotent);
+            // anything unprovable records nothing (overlay stays inert).
+            recordChildExecutorBinding(ctx, parentSession, sessionFile);
+            return; // JOIN succeeded — child inherits parent pipeline
+          }
           // JOIN failed (registry miss / meta read fail) — fall through to dormant
         } else if (isSubagent && !parentSession) {
           // Only secondary/fork signal matched but no parentSession available for lookup.

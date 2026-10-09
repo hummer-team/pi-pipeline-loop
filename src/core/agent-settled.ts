@@ -8,7 +8,7 @@
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { runVerification, precheckCompletionMarker, precheckRequiredFiles, precheckClarifyAwaitAnswer } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
-import { writeAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, writeAuditLog } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
@@ -47,6 +47,8 @@ import { consumeDesignReviewResult } from "./design-review/entry-result";
 import { createDesignReviewRuntimeContext } from "./design-review/runtime-context";
 // 192 Phase 3: flow classification for the shared verification wiring (K02)
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "./design-review/state";
+// 194 Phase 3 (task 3): trusted wake-source gate + visible C5 waiting state
+import { verifyOwnerWakeTurn, recordAwaitingOwnerConsumption } from "./stage-executor/turn-source";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -203,7 +205,23 @@ export function createAgentSettled(
       try {
         const lastUserMsg = extractLastUserMessageText(ctx._ctx as Parameters<typeof extractLastUserMessageText>[0]);
         if (lastUserMsg.length > 0) {
-          const isPipelineTurn = PIPELINE_TURN_SIGNATURES.some((sig) => {
+          // 194 Phase 3 (task 3): the trusted WAKE SOURCE is verified BEFORE
+          // the ordinary-chat signature gate. A marker that does not equal
+          // the current run's persisted pendingWakeId is a replay of an
+          // already-consumed or superseded wake — zero side effects, exactly
+          // once per binding.
+          const wakeVerdict = verifyOwnerWakeTurn(lastUserMsg, meta);
+          if (wakeVerdict.matched && !wakeVerdict.trusted) {
+            // Safe wrapper: a replay rejection must never be downgraded to
+            // "fall through as pipeline turn" by a failing diagnostic write.
+            await safeWriteAuditLog("agent_settled_owner_wake_replay_skipped", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+              wakeId: wakeVerdict.wakeId ?? "malformed",
+            }, "warn");
+            return;
+          }
+          const isPipelineTurn = wakeVerdict.trusted || PIPELINE_TURN_SIGNATURES.some((sig) => {
             if (typeof sig === "string") {
               return lastUserMsg.startsWith(sig);
             }
@@ -527,6 +545,10 @@ export function createAgentSettled(
 
       // Tool mode: skip hook-based verification — agent calls pipeline_verify tool explicitly
       if (stageConfig.verify.mode === "tool") {
+        // 194 Phase 3 (task 3): a bound closed-loop run records its VISIBLE
+        // waiting state before the skip, so "deferred to the owner tool" is
+        // persisted truth instead of silence.
+        await recordBoundConsumptionWait(ctx, meta, "awaiting-owner-tool");
         await writeAuditLog("verify_mode_tool_skip", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
@@ -539,6 +561,10 @@ export function createAgentSettled(
       // Smart mode uses the stage_advance tool's needConfirm parameter to declare complexity,
       // so the hook should not run verification or auto-advance.
       if (stageConfig.confirm?.mode === "smart") {
+        // 194 Phase 3 (task 3): record the visible waiting state BEFORE the
+        // skip — a bound run awaiting the owner's confirm path must never
+        // settle into silence (the exact "silent running" this plan removes).
+        await recordBoundConsumptionWait(ctx, meta, "awaiting-confirmation");
         await writeAuditLog("confirm_smart_defer_to_tool", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
@@ -794,6 +820,34 @@ function isBarePipelineTurn(message: string, requirementDoc: string | undefined)
     `^${escapeRegExp(requirementDoc)}\\s*(\\d+\\s*答|full-und\\?|\\d+$)`,
   );
   return pattern.test(message);
+}
+
+/**
+ * 194 Phase 3 (task 3): record the VISIBLE C5 waiting state on the current
+ * closed-loop run BEFORE a tool/smart skip returns. Applies only when the
+ * session's CURRENT stage is the one bound to an un-consumed run; every
+ * failure is audited and never blocks the settle flow (the skip itself is
+ * the pre-existing behavior).
+ */
+async function recordBoundConsumptionWait(
+  ctx: RuntimeCtx,
+  meta: SessionMeta,
+  state: "awaiting-owner-tool" | "awaiting-confirmation",
+): Promise<void> {
+  const run = meta.stageExecutorRun;
+  if (!run || run.terminalConsumed || run.binding.stage !== meta.currentStage) return;
+  try {
+    await recordAwaitingOwnerConsumption({ session: ctx.session, run, state });
+  } catch (err) {
+    // The wait record is a diagnostic C5 convenience: its failure must never
+    // convert the benign skip below into an error path.
+    await safeWriteAuditLog("owner_consumption_wait_error", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      state,
+      error: err instanceof Error ? err.message : String(err),
+    }, "warn");
+  }
 }
 
 /**

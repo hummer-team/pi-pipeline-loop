@@ -1125,6 +1125,13 @@ export interface SpawnOperationContext {
   stageVisitId: number;
   /** Operation input hash (when computed) */
   inputHash?: string;
+  /**
+   * 194 Phase 3 (C3, task 2): plugin-issued run id bound at dispatch intent,
+   * carried through the reserved entry, the lifecycle terminal event and the
+   * trusted dispatch receipt. Absent for pre-194 entries — identity checks
+   * then fall back to the remaining (full) components, never to guesses.
+   */
+  runId?: string;
 }
 
 // ─── Protect Configuration ───────────────────────────────────────────────────

@@ -142,6 +142,39 @@ export function recordExecutorBinding(
 }
 
 /**
+ * 194 Phase 3 (C3, task 2): record the CHILD side binding from runtime
+ * evidence at JOIN time. The child inherits the owner's CURRENT run through
+ * the meta JOIN, but inherits NO identity — this composition proves the run
+ * belongs to THIS child before anything is written into the child's own
+ * entries:
+ * - the run's owner session file must equal the child's parentSession header;
+ * - the run's executor session file must equal the child's own session file
+ *   (registry-folded evidence from the trusted dispatch; absence means the
+ *   registry could not prove it → unproven, nothing is recorded).
+ * Idempotent through recordExecutorBinding (first record wins, JOIN echoes
+ * never refresh identity).
+ */
+export function recordChildBindingFromRuntimeEvidence(deps: {
+  writer: BindingEntryWriter;
+  entries: readonly BindingEntryLike[];
+  parentSession: string;
+  ownSessionFile: string;
+  currentRun: StageExecutorRun | undefined;
+}): { recorded: boolean; reason?: string } {
+  const run = deps.currentRun;
+  if (!run) return { recorded: false, reason: "no_current_run" };
+  if (!deps.parentSession || run.binding.ownerSessionFile !== deps.parentSession) {
+    return { recorded: false, reason: "owner_session_mismatch" };
+  }
+  if (!deps.ownSessionFile) return { recorded: false, reason: "own_session_file_missing" };
+  if (run.binding.executorSessionFile === undefined
+    || run.binding.executorSessionFile !== deps.ownSessionFile) {
+    return { recorded: false, reason: "executor_session_file_unproven" };
+  }
+  return recordExecutorBinding(deps.writer, run.binding, deps.entries);
+}
+
+/**
  * Read THIS session's own executor binding from its local entries (latest
  * wins). A parent JOIN copies meta, not entries, so a child always answers
  * from its own recorded identity — never the parent's snapshot.

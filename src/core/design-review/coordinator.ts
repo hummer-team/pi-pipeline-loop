@@ -89,6 +89,9 @@ import type {
 } from "./decision-types";
 import { recordStageVisit } from "../../utils/stage-visit";
 import { spawnStageSubagent, type DesignReviewTerminalEvent } from "../../utils/subagent-rpc";
+// 194 Phase 3 (tasks 2/3): closed-loop executor run lifecycle + trusted wake.
+import { issueExecutorRunOnDispatch, applyExecutorTerminal, isHandoffReceiptFinal } from "../stage-executor/terminal";
+import { sendTrustedOwnerWake } from "../stage-executor/turn-source";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { shouldEmitWithinWindow } from "../../utils/audit-throttle";
 import * as fs from "node:fs/promises";
@@ -783,6 +786,13 @@ async function dispatchHandoffOnce(
       "trusted_id",
     );
     if (receiptState) {
+      // 194 Phase 3 (task 2): the trusted reply pair (full agentId + persisted
+      // dispatched receipt) establishes the develop executor's run BEFORE the
+      // finished commit — the run outlives the closed domain loop (C3).
+      await issueBoundExecutorRun(ctx, {
+        agentId: spawnResult.agentId,
+        operationContext: spawnResult.operationContext,
+      });
       // Milestone 4: only now may finished be committed.
       const finish = await finishCurrentHandoffReliably(ctx);
       if (finish) {
@@ -2090,6 +2100,33 @@ export async function handleDesignReviewOperationTerminal(
     return;
   }
 
+  // 194 Phase 3 (task 2): maintain the closed-loop run FIRST. A develop
+  // executor's terminal legitimately arrives while the handoff operation is
+  // already "completed" — the dispatch-receipt gate below is about DISPATCH
+  // evidence and must never swallow run bookkeeping for a bound run.
+  const terminal = await applyExecutorTerminal({ session, config, evt });
+
+  // A REAL terminal never rewrites the finished handoff receipt (C3): the
+  // run above carries the outcome and the owner is woken to consume it.
+  if (isHandoffReceiptFinal(state)) {
+    await safeWriteAuditLog("design_review_terminal", {
+      action: "handoff_receipt_final",
+      operationId: op.operationId,
+      event: evt.event,
+      runTerminal: terminal.action,
+    });
+    if (terminal.action === "applied") {
+      await sendTrustedOwnerWake({
+        pi,
+        session,
+        config,
+        run: terminal.run,
+        status: terminal.run.status,
+      });
+    }
+    return;
+  }
+
   // Terminal evidence may only attach to a TRUSTED dispatched operation with
   // the SAME agent id. An operation with unknown dispatch stays unverifiable.
   if (op.dispatchState !== "dispatched" || !op.agentId || (evt.agentId && op.agentId !== evt.agentId)) {
@@ -2167,6 +2204,10 @@ function makeOperationContext(
     operationId: operation.operationId,
     stageVisitId: operation.stageVisitId,
     ...(operation.inputHash !== undefined ? { inputHash: operation.inputHash } : {}),
+    // 194 Phase 3 (C3): one plugin-issued run id per dispatch ATTEMPT —
+    // rides the reserved entry, the terminal event and the trusted receipt,
+    // so a superseded run's listener can never be mistaken for the current.
+    runId: crypto.randomUUID(),
   };
 }
 
@@ -2343,6 +2384,42 @@ async function recordDispatchOutcome(
 }
 
 /**
+ * 194 Phase 3 (C3, task 2): establish the closed-loop executor RUN from a
+ * trusted dispatch — the full agent id from the RPC reply plus the exact
+ * operation context (including the pre-issued runId) the lifecycle watcher
+ * carries. Entries without EITHER half never create a run: intent/prepared
+ * state stays on the operation, and an owner session file the entry point
+ * could not prove fail-closes to "no run" (recovery stays owner-driven).
+ */
+async function issueBoundExecutorRun(
+  ctx: CoordinatorContext,
+  dispatch: { agentId?: string; operationContext?: SpawnOperationContext },
+): Promise<void> {
+  const oc = dispatch.operationContext;
+  if (!oc || !dispatch.agentId) return;
+  const ownerSessionFile = ctx.actor && !ctx.actor.isChild ? ctx.actor.sessionFile : undefined;
+  if (ownerSessionFile === undefined || ownerSessionFile.length === 0) {
+    void safeWriteAuditLog("executor_run_issue", {
+      action: "run_skip_no_owner_evidence",
+      operationId: oc.operationId,
+    }, "warn");
+    return;
+  }
+  const issued = await issueExecutorRunOnDispatch({
+    session: ctx.session,
+    config: ctx.config,
+    identity: { ownerSessionFile, agentId: dispatch.agentId, operationContext: oc },
+  });
+  if (!issued.ok) {
+    void safeWriteAuditLog("executor_run_issue", {
+      action: "run_issue_skipped",
+      operationId: oc.operationId,
+      reason: issued.reason,
+    }, "warn");
+  }
+}
+
+/**
  * Shared dispatch for review/update operations:
  * commit operation → send-intent → dispatch → record outcome.
  * A failed operation commit or intent commit performs ZERO external calls.
@@ -2374,7 +2451,7 @@ async function dispatchOperation(
     updatePrompt,
     reviewGuidance,
   );
-  return recordDispatchOutcome(
+  const recorded = await recordDispatchOutcome(
     ctx,
     freshMeta,
     intent.state,
@@ -2382,6 +2459,12 @@ async function dispatchOperation(
     spawnResult.outcome,
     spawnResult.agentId,
   );
+  // 194 Phase 3 (task 2): a trusted reply pair establishes the run right
+  // after the dispatched receipt was persisted — never before.
+  if (recorded === "trusted") {
+    await issueBoundExecutorRun(ctx, spawnResult);
+  }
+  return recorded;
 }
 
 /**
@@ -2419,6 +2502,10 @@ async function spawnDesignReviewAgent(
   error?: string;
   agentId?: string;
   outcome?: import("../../utils/subagent-rpc").StageDispatchOutcome;
+  /** 194 Phase 3 (task 2): the identity the spawn was dispatched under —
+   * returned so the caller can establish the run from the SAME context the
+   * lifecycle watcher will report back (runId included). */
+  operationContext?: SpawnOperationContext;
 }> {
   const freshMeta = ctx.session.getMeta() ?? meta;
 
@@ -2510,7 +2597,7 @@ async function spawnDesignReviewAgent(
       agentId: spawnResult.agentId ?? "none",
       round: String(drState.round),
     });
-    return { ok: true, agentId: spawnResult.agentId, outcome };
+    return { ok: true, agentId: spawnResult.agentId, outcome, operationContext };
   }
 
   await safeWriteAuditLog("design_review_coordinator", {
