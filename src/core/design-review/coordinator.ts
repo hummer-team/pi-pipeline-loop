@@ -49,7 +49,9 @@ import {
   type MetaCommitExpectation,
   type StrictCommitSession,
 } from "../session-state";
-import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult, formatDesignReviewSpawnPrompt } from "./dispatch";
+import { prepareDesignReviewOperation, commitDesignReviewOperation, writebackDesignReviewResult } from "./dispatch";
+import { buildDesignReviewDispatchTask } from "./dispatch-task";
+import { resolveDesignReviewReportTemplate } from "./resource-preflight";
 import {
   narrowDesignReviewState,
   resolveDesignReviewConfirmMode,
@@ -2336,27 +2338,43 @@ async function spawnDesignReviewAgent(
   agentId?: string;
   outcome?: import("../../utils/subagent-rpc").StageDispatchOutcome;
 }> {
-  const stage: "design-review" | "plan" | "develop" =
-    operation.kind === "review" ? "design-review" : operation.kind === "update" ? "plan" : "develop";
   const freshMeta = ctx.session.getMeta() ?? meta;
 
-  // Generate spawn prompt with plan/report path and round
-  const inputPath = operation.kind === "review" ? drState.planDoc : (drState.reportDoc ?? drState.planDoc);
-  const spawnKind = operation.kind as "review" | "update";
-  const spawnPrompt = formatDesignReviewSpawnPrompt(spawnKind, inputPath, drState.round);
-  const spawnDescription = `Design review ${operation.kind}: ${inputPath} round ${drState.round}`;
-
-  // For update operations with a rendered prompt, append it to provide authorized update context
-  let finalPrompt = updatePrompt
-    ? `${spawnPrompt}\n\n---\n\n${updatePrompt}`
-    : spawnPrompt;
-
-  // 193 Phase 1 (task 3): smart plan-revision decision guidance is appended
-  // to the EXACT REVIEW prompt only — update and develop-handoff dispatches
-  // never carry it (they have no report-verdict decision to make).
-  if (reviewGuidance !== undefined && operation.kind === "review") {
-    finalPrompt = `${finalPrompt}\n\n---\n\n${reviewGuidance}`;
+  // 194 Phase 2 (task 1): the task input is built PER KIND, from persisted
+  // state only. A develop handoff must receive the ORIGINAL PLAN as its task
+  // (the previous shared producer handed it the review report), and every
+  // dispatch names its own identities so the turn is recognisable as
+  // plugin-dispatched work rather than ordinary chat.
+  const templateDoc = operation.kind === "review"
+    ? await resolveDesignReviewReportTemplate(ctx.config)
+    : null;
+  const task = buildDesignReviewDispatchTask({
+    kind: operation.kind,
+    pipelineId: freshMeta.pipelineId ?? drState.pipelineId ?? "unknown",
+    planDoc: drState.planDoc,
+    reportDoc: drState.reportDoc ?? deriveReportPath(drState.planDoc, drState.round),
+    round: drState.round,
+    operationId: operation.operationId,
+    ...(operation.updateArtifact !== undefined
+      ? { receiptDoc: operation.updateArtifact.receiptDoc }
+      : {}),
+    ...(templateDoc !== null ? { templateDoc } : {}),
+    ...(updatePrompt !== undefined ? { updatePrompt } : {}),
+    ...(reviewGuidance !== undefined ? { reviewGuidance } : {}),
+  });
+  if (task === null) {
+    // An unrecognised kind must NOT be dispatched with a guessed task.
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "dispatch_task_unsupported_kind",
+      operationKind: String(operation.kind),
+      operationId: operation.operationId,
+      round: String(drState.round),
+    }, "error");
+    return { ok: false, error: "unsupported_operation_kind", outcome: "not_sent" };
   }
+  const stage = task.stage;
+  const finalPrompt = task.prompt;
+  const spawnDescription = task.description;
 
   const operationContext = makeOperationContext(freshMeta, drState, operation);
 
