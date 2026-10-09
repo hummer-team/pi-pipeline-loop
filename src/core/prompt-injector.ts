@@ -11,6 +11,11 @@
  * (pi base + prior plugin modifications), separated by `\n\n---\n\n`.
  * When ctx.getSystemPrompt is unavailable, returns plugin prompt directly.
  *
+ * 194 Phase 2 (C4): the base is first stripped of plugin-owned regions
+ * (`pipeline-prompt-boundary`) and the final plugin content is wrapped in
+ * paired runtime-context markers before appending — repeated injections and
+ * prompt-inheriting child sessions never stack or keep stale instructions.
+ *
  * Requirement document (D1/D2): Full-text injection removed. When in clarify stage
  * and meta.requirementDoc exists, the document path is included in context_reference
  * (REQUIRED CONTEXT FILES) for the agent to read via the read tool.
@@ -45,6 +50,13 @@ import {
 } from "./design-review/decision-display";
 import { resolvePiWorkDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
+// 194 Phase 2 (task 4 / C4): plugin-owned prompt boundary shared by the yml,
+// fallback, and default rendering paths.
+import {
+  stripPluginPromptContent,
+  wrapPluginRuntimeContext,
+  PLUGIN_PROMPT_SEPARATOR,
+} from "./pipeline-prompt-boundary";
 import {
   resolveDesignReviewWritePolicy,
   describeWriteScope,
@@ -381,7 +393,7 @@ async function buildLoopStatus(
     `- Constraint: You MUST run tests after changes. If tests fail, this counts as an attempt.\n` +
     `- Limit: After ${meta.maxLoops} failed attempts, the pipeline will freeze.\n` +
     `- ${scopeParts.join("\n- ")}\n` +
-    `- Write Scope: ${buildWriteScopeLine(config.stages[meta.currentStage])}\n` +
+    `- Write Scope: ${buildWriteScopeLine(config.stages[meta.currentStage], meta)}\n` +
     // Phase 3 (143): develop/fix stages must carry commitIds in stage summary
     `- Summary Requirement: Stage summary MUST call \`generate_stage_summary\` with \`commitIds\` parameter (all git commit ids produced in this stage)`
   );
@@ -511,10 +523,18 @@ function isGitReadOnly(stageName: string): boolean {
 
 /**
  * Builds the write scope line for a stage.
- * - Whitelist mode: "docs/, doc/, documentation/"
- * - Full mode: "all (global protect applies)"
+ * - Design-review governed (194 Phase 2 task 4 / C4): the EXACT scope the
+ *   permission guard enforces, shared with the dynamic design-review context
+ *   via `resolveDesignReviewWritePolicy` — guidance can never promise a file
+ *   the write/edit guard would refuse.
+ * - Ordinary whitelist mode: "docs/, doc/, documentation/"
+ * - Ordinary full mode: "all (global protect applies)"
  */
-function buildWriteScopeLine(stageConfig: StageConfig): string {
+function buildWriteScopeLine(stageConfig: StageConfig, meta: SessionMeta): string {
+  const policy = resolveDesignReviewWritePolicy(meta);
+  if (policy.mode !== "ordinary") {
+    return describeWriteScope(policy);
+  }
   const awp = stageConfig.allowedWritePaths;
   if (awp === undefined || awp.includes(ALLOWED_WRITE_ALL)) {
     return "all (global protect applies)";
@@ -533,16 +553,18 @@ function buildWriteScopeLine(stageConfig: StageConfig): string {
  * @param stageConfig - Current stage configuration
  * @param includeGitHint - Whether to append git read-only hint
  * @param stageName - Current stage name for git read-only check
+ * @param meta - Current session metadata (design-review scope sharing)
  * @returns Prompt section string
  */
 function buildStageWriteScope(
   stageConfig: StageConfig,
   includeGitHint: boolean,
-  stageName: string
+  stageName: string,
+  meta: SessionMeta
 ): string {
   const lines = [
     `# STAGE WRITE SCOPE`,
-    `- Write Scope: ${buildWriteScopeLine(stageConfig)}`,
+    `- Write Scope: ${buildWriteScopeLine(stageConfig, meta)}`,
   ];
   if (includeGitHint && isGitReadOnly(stageName)) {
     lines.push(`- Git: read-only (add/commit/push forbidden)`);
@@ -676,9 +698,50 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
       // Extract base system prompt EARLY (before buildDynamicValues)
       // Needed for idempotent stage-skill injection detection
       // Phase 0 (183): apply gated skills dedup before downstream consumption
+      // 194 Phase 2 (task 4 / C4): strip every plugin-owned region BEFORE
+      // anything downstream consumes the base, so old stage instructions
+      // (append mode, or a child inheriting the owner's prompt) can neither
+      // duplicate nor keep commanding the run. An unprovable boundary fails
+      // closed: skip injection entirely rather than guess the split point.
       const baseRaw = ctx.getSystemPrompt?.() ?? "";
-      const dedup = skillsDedup(baseRaw);
+      const boundary = stripPluginPromptContent(baseRaw);
+      if (boundary.status === "ambiguous") {
+        await safeWriteAuditLog("prompt_boundary_ambiguous", {
+          stage: meta.currentStage,
+          pipelineId: meta.pipelineId,
+          reason: boundary.reason,
+          hash_before: computeStringHash(baseRaw),
+        }, "warn");
+        try {
+          ctx.ui.notify(
+            `Pipeline prompt injection skipped: the current system prompt has an unfinished or conflicting ` +
+            `pipeline region (${boundary.reason}). To avoid acting on stale instructions, please recreate a ` +
+            `clean session (start a new session and /pipeline-resume) before continuing.`,
+          );
+        } catch {
+          // Fail-open: notify must never mask the skip decision
+        }
+        return undefined;
+      }
+      const dedup = skillsDedup(boundary.prompt);
       const base = dedup.prompt;
+
+      // 194 Phase 2 (task 4): observability for every region we removed so a
+      // stale-instruction report can be traced back to the owning injection.
+      if (boundary.removedManagedBlocks > 0 || boundary.removedLegacySections > 0) {
+        try {
+          await safeWriteAuditLog("prompt_boundary_stripped", {
+            stage: meta.currentStage,
+            pipelineId: meta.pipelineId,
+            removed_managed_blocks: String(boundary.removedManagedBlocks),
+            removed_legacy_sections: String(boundary.removedLegacySections),
+            hash_before: computeStringHash(baseRaw),
+            hash_after: computeStringHash(boundary.prompt),
+          }, "info");
+        } catch {
+          // Fail-open: audit must never block prompt injection
+        }
+      }
 
       // Phase 1 (183): emit audit events for skills dedup outcome (fail-open)
       try {
@@ -761,14 +824,21 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
 
       const pluginPromptFull = pluginPrompt + pipelineStateSuffix + runHealthSuffix;
 
+      // 194 Phase 2 (task 4 / C4): the FINAL plugin content — yml template,
+      // fallback, or default assembly, plus frozen-state and run-health
+      // suffixes — is wrapped exactly once. Both rendering paths share this
+      // single boundary, and the base was already stripped above, so repeated
+      // injections can never stack or nest managed regions.
+      const pluginBlock = wrapPluginRuntimeContext(pluginPromptFull);
+
       const systemPrompt = base
-        ? base + "\n\n---\n\n" + pluginPromptFull
-        : pluginPromptFull;
+        ? base + PLUGIN_PROMPT_SEPARATOR + pluginBlock
+        : pluginBlock;
 
       // Phase 5 (146) + Phase 6 (161): unified prompt snapshot — record after full assembly
       // Snapshot level controlled by config.audit.promptSnapshot (default "full")
       // "full" mode writes 3 events: combined snapshot + separate base/plugin snapshots
-      // "plugin" mode writes only pluginPromptFull (backward compatible)
+      // "plugin" mode writes only the wrapped plugin region (backward compatible)
       // "off" skips all snapshots
       const snapshotLevel = config.audit?.promptSnapshot ?? "full";
       if (snapshotLevel !== "off") {
@@ -788,20 +858,21 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
             source: snapshotSource,
             prompt_hash: computeStringHash(baseContent),
           }, baseContent);
-          // Plugin prompt snapshot
+          // Plugin prompt snapshot — the exact wrapped region that shipped,
+          // so a boundary incident can be reconstructed from the audit log.
           await safeWritePromptSnapshot("prompt_snapshot_plugin", {
             stage: meta.currentStage,
             pipelineId: meta.pipelineId,
             source: snapshotSource,
-            prompt_hash: computeStringHash(pluginPromptFull),
-          }, pluginPromptFull);
+            prompt_hash: computeStringHash(pluginBlock),
+          }, pluginBlock);
         } else {
           // Non-full mode (e.g., "plugin"): write only plugin content
           await safeWritePromptSnapshot("prompt_snapshot", {
             stage: meta.currentStage,
             pipelineId: meta.pipelineId,
             source: snapshotSource,
-          }, pluginPromptFull);
+          }, pluginBlock);
         }
       }
 
@@ -988,7 +1059,7 @@ async function buildDefaultPrompt(
   const part7 = buildVerifyToolGuidance(stageConfig);
   // Part 8: Stage Write Scope (standalone for non-loop stages; loop stages get it in Part 4)
   const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
-    ? buildStageWriteScope(stageConfig, true, meta.currentStage)
+    ? buildStageWriteScope(stageConfig, true, meta.currentStage, meta)
     : null;
   // Part 9: Stage Executor Scheduling (Phase 4: 139)
   const part9 = await buildStageExecutor(config, stageConfig, meta);
@@ -1041,7 +1112,7 @@ async function buildDynamicValues(
     violations: buildViolationPrompt(meta),
     verify_tool_guidance: buildVerifyToolGuidance(stageConfig),
     // Write scope: null for loop stages (embedded in loop_status), built for non-loop
-    stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true, meta.currentStage),
+    stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true, meta.currentStage, meta),
     // Phase 4 (139): Stage executor scheduling segment (reads from yml)
     stage_executor: await buildStageExecutor(config, stageConfig, meta),
     // Phase 0 (146): Plugin default deliverables (reads from yml stage_deliverable_{stage})
