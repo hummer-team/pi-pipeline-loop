@@ -49,6 +49,8 @@ import { createDesignReviewRuntimeContext } from "./design-review/runtime-contex
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "./design-review/state";
 // 194 Phase 3 (task 3): trusted wake-source gate + visible C5 waiting state
 import { verifyOwnerWakeTurn, recordAwaitingOwnerConsumption } from "./stage-executor/turn-source";
+// 194 Phase 3 (task 7): closed-loop executor ownership gate for the 189 bypass
+import { hasLiveExecutorRun } from "./stage-executor/commit-guard";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -876,7 +878,10 @@ async function compactIfTerminal(
  * 189 Bug 1: Auto re-spawn stage executor after transient failure.
  *
  * Guards (all must pass):
- * - Stage is develop or fix (re-spawn时机)
+ * - Stage is develop or fix (re-spawn timing)
+ * - 194 Phase 3 task 7: no UNCONSUMED closed-loop executor run (a live run
+ *   must never be re-dispatched; a failed run parks on the owner's explicit
+ *   D4 recovery instead of the automatic respawn)
  * - Pipeline not aborted and user did not quit
  * - Dedup: messageId !== lastTransientRespawnMsgId
  * - Precheck fails (stage genuinely incomplete)
@@ -901,6 +906,28 @@ export async function maybeRespawnAfterTransientFailure(
 
     // Guard 1: only develop/fix stages
     if (stage !== "develop" && stage !== "fix") {
+      return;
+    }
+
+    // Guard 1.5 (194 Phase 3 task 7, C3/D4): closed-loop executor ownership
+    // takes precedence over the 189 auto-respawn bypass. While the latest
+    // executor run is live (running/unknown) any re-dispatch is forbidden;
+    // while a terminal run still awaits owner consumption or recovery
+    // (terminalConsumed=false) the owner-side C5/D4 paths decide the next
+    // step. Auto-respawning here would clear spawn records and bypass the
+    // failure budget. Ordinary develop/fix without an executor run is
+    // unchanged.
+    const executorRun = meta.stageExecutorRun;
+    if (executorRun && !executorRun.terminalConsumed) {
+      await writeAuditLog("transient_respawn_closed_loop_gated", {
+        pipelineId: meta.pipelineId,
+        stage,
+        runId: executorRun.binding.runId,
+        runStage: executorRun.binding.stage,
+        status: executorRun.status,
+        recovery: executorRun.recovery,
+        live: String(hasLiveExecutorRun(meta)),
+      }, "warn");
       return;
     }
 
