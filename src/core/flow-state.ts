@@ -581,6 +581,18 @@ export async function executeDecision(
         );
       }
 
+      // 194 Phase 3 (task 7, review issue 3): a manual stage jump is a
+      // boundary — the executor run belongs to the ABANDONED stage visit and
+      // must be invalidated BEFORE the new-stage meta is written (a plain
+      // merge would otherwise carry the stale binding into the new visit).
+      // Loaded dynamically: stage-executor/recovery statically depends on
+      // this module, and a static import here would form a cycle.
+      const { invalidateExecutorRunOnBoundary } = await import("./stage-executor/recovery");
+      await invalidateExecutorRunOnBoundary({
+        session: ctx.session,
+        reason: "decision_choose_stage",
+      });
+
       const frozenStage = meta.currentStage;
       const fromIdx = CANONICAL_STAGE_ORDER.indexOf(frozenStage);
       const toIdx = CANONICAL_STAGE_ORDER.indexOf(target);

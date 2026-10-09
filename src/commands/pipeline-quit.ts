@@ -8,6 +8,8 @@ import type { PipelineConfig, Command, SessionMeta } from "../types";
 import { getFlowState, invalidateDesignReviewAuthorization } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
+// 194 Phase 3 (task 7, review issue 3): quit invalidates a stale executor binding
+import { invalidateExecutorRunOnBoundary } from "../core/stage-executor/recovery";
 
 export function createPipelineQuitCommand(config: PipelineConfig): Command {
   return {
@@ -35,6 +37,13 @@ export function createPipelineQuitCommand(config: PipelineConfig): Command {
       // Phase 4 (191): invalidate design-review authorization on quit
       // Ensures stale authorization does not persist across pipeline runs
       await invalidateDesignReviewAuthorization(ctx, "user_quit");
+
+      // 194 Phase 3 (task 7, review issue 3): quitting is a pipeline boundary —
+      // a stale executor run must not survive into whatever starts next. Same
+      // controlled strict-commit pattern as the authorization clear above; an
+      // invalidation that cannot be committed is audited honestly by the
+      // helper and never re-attempted by silently keeping the binding.
+      await invalidateExecutorRunOnBoundary({ session: ctx.session, reason: "user_quit" });
 
       // Release session-level resources (preserve pipelineId/currentStage/summaries/domain/requirementDoc)
       ctx.session.updateMeta({

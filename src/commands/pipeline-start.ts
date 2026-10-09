@@ -43,6 +43,8 @@ import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "../core/des
 // 193 Phase 3 (tasks 1/2): shared safe coordinator builder + single consumer
 import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
 import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/design-review/entry-result";
+// 194 Phase 3 (task 7, review issue 3): a new pipeline start invalidates a stale executor binding
+import { invalidateExecutorRunOnBoundary } from "../core/stage-executor/recovery";
 
 /**
  * Checks that all 5 active stages have agentPath configured.
@@ -926,6 +928,17 @@ async function startNewPipeline(
   const isRestart = existingMeta && getFlowState(existingMeta) === "aborted";
   // Phase 2b (173) D2: detect completed wake-up for superseded message
   const isCompletedWake = existingMeta?.currentStage === "completed";
+
+  // 194 Phase 3 (task 7, review issue 3): starting a NEW pipeline is a
+  // boundary — a stale closed-loop executor binding must be invalidated
+  // BEFORE the fresh meta is written (updateMeta merges, so the old run
+  // would otherwise survive under the new pipelineId). The strict-commit
+  // clear runs only once every pre-check above has passed; the resume
+  // paths (same pipelineId) intentionally KEEP the binding for D4
+  // breakpoint recovery.
+  if (ctx?.session) {
+    await invalidateExecutorRunOnBoundary({ session: ctx.session, reason: "pipeline_start" });
+  }
 
   // Step 3: Build meta and initialize
   const { pipelineId, newMeta } = buildStartMeta(existingMeta, config, file, startStage);
