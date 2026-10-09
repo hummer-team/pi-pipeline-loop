@@ -103,24 +103,62 @@ function readNextStage(config: PipelineConfig, stage: string): string | null | u
 }
 
 /**
- * Determines the dynamic target for design-review stage based on current phase.
- * Returns the effective next stage to display, overriding static config.
- * 
- * @param meta - Session metadata
- * @returns Dynamic target stage name, or null if not in design-review
+ * The paused-phase status token: a pending human plan-revision decision gets
+ * its own READ-ONLY token, any other pause gets the generic `paused` token.
+ * Neither ever advertises an automatic stage (194 D2: paused 不宣称自动推进).
  */
-function getDesignReviewDynamicTarget(meta: any): string | null {
+function pausedTarget(meta: any): string {
+  return buildDesignReviewPendingDecisionView(meta) !== null
+    ? DESIGN_REVIEW_PENDING_TARGET
+    : 'paused';
+}
+
+/**
+ * Determines the dynamic display target for the design-review loop, per
+ * 194 D2 (按真实 stage 展示):
+ * - `design-review` + review_ready/review_running → `plan` (the revision
+ *   candidate a FAIL routes to — never the stage itself);
+ * - `design-review` + update_ready/update_running → `plan` (the revision is
+ *   happening there right now);
+ * - `plan` + update_ready/update_running → `design-review` (an ACTUAL update
+ *   run shows its dynamic return target instead of the ordinary plan next
+ *   stage, which would advertise plain development continuation);
+ * - `pass_ready` → `develop`;
+ * - `paused` → a status token (awaiting-decision / paused), never a stage;
+ * - `finished` → `completed`;
+ * - outside the loop (no drState) or an unmapped combination → null, so the
+ *   static config `nextStage` governs the display unchanged.
+ *
+ * @param meta - Session metadata
+ * @param stage - The stage label being rendered
+ * @returns Dynamic target name, or null for the static fallback
+ */
+function getDesignReviewDynamicTarget(meta: any, stage: string): string | null {
   const drState = meta?.designReview;
-  if (!drState || meta?.currentStage !== 'design-review') {
+  if (!drState) {
     return null;
   }
 
   const phase = drState.phase;
-  const operation = drState.operation;
+
+  if (stage === 'plan') {
+    // 194 D2: an in-flight plan revision belongs to the design-review loop.
+    if (phase === 'update_ready' || phase === 'update_running') {
+      return 'design-review';
+    }
+    if (phase === 'paused') {
+      return pausedTarget(meta);
+    }
+    return null;
+  }
+
+  if (stage !== 'design-review') {
+    return null;
+  }
 
   // Map design-review phases to effective targets (use real stage names per Issue #18)
   if (phase === 'review_ready' || phase === 'review_running') {
-    return 'design-review';  // Current stage itself
+    return 'plan';  // 194 D2: revision candidate — a FAIL review routes back to plan
   }
   if (phase === 'update_ready' || phase === 'update_running') {
     return 'plan';  // Actual target is to modify the plan
@@ -132,9 +170,7 @@ function getDesignReviewDynamicTarget(meta: any): string | null {
     // 193 Phase 3 (task 8): a pending human plan-revision decision shows its
     // own READ-ONLY status token — the bar must never advertise an automatic
     // next step while the decision executor awaits a human choice.
-    return buildDesignReviewPendingDecisionView(meta) !== null
-      ? DESIGN_REVIEW_PENDING_TARGET
-      : 'paused';
+    return pausedTarget(meta);
   }
   if (phase === 'finished') {
     return 'completed';
@@ -151,6 +187,7 @@ function getDesignReviewDynamicTarget(meta: any): string | null {
  * 
  * Phase 4-4: For design-review stage, display dynamic target based on current phase
  * instead of static nextStage from config.
+ * 194 D2: the plan stage joins the override while a revision is in flight.
  */
 function formatStage(config: PipelineConfig, ctx: any, stage: string): string {
   const pipelineId = readPipelineId(ctx);
@@ -158,9 +195,11 @@ function formatStage(config: PipelineConfig, ctx: any, stage: string): string {
     return `Pipeline → ${stage}`;
   }
   
-  // Phase 4-4: Use dynamic target for design-review stage
+  // Phase 4-4: Use dynamic target for design-review-loop stages
   const meta = ctx?.session?.getMeta?.();
-  const dynamicTarget = stage === 'design-review' ? getDesignReviewDynamicTarget(meta) : null;
+  const dynamicTarget = stage === 'design-review' || stage === 'plan'
+    ? getDesignReviewDynamicTarget(meta, stage)
+    : null;
   const nextStage = dynamicTarget ?? readNextStage(config, stage);
   
   if (nextStage) {

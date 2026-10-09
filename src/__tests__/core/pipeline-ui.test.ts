@@ -557,7 +557,7 @@ describe("createPipelineUI", () => {
   // ── Phase 4-4 (191): design-review dynamic target display ─────────────────
 
   describe("Phase 4-4 (191): design-review dynamic target display", () => {
-    it("design-review stage with review_ready phase shows 'design-review' target", () => {
+    it("design-review stage with review_ready phase shows 'plan' target (194 D2 revision candidate)", () => {
       const config = makeTestConfig({ output: { pipelineStage: true } });
       const ui = createPipelineUI(config);
       const { ctx, notifications } = makeDesignReviewCtx({
@@ -578,7 +578,10 @@ describe("createPipelineUI", () => {
 
       expect(notifications.length).toBe(1);
       expect(notifications[0]).toContain("design-review");
-      expect(notifications[0]).toContain("-> design-review");
+      // 194 D2: review_ready/running advertise the revision candidate `plan`
+      // (a FAIL routes back there), never the stage itself.
+      expect(notifications[0]).toContain("-> plan");
+      expect(notifications[0]).not.toContain("-> design-review");
     });
 
     it("design-review stage with update_ready phase shows 'plan' target", () => {
