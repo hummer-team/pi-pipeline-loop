@@ -110,8 +110,13 @@ describe("194 Phase 4: handoff recovery and terminal identity rules", () => {
     const wakesBefore = h.wakeMessages.length;
 
     h.emitTerminal("failed");
+    // The failed terminal now goes through TWO durable strict commits
+    // (terminal save → D4 failure park → wake persist); wait for the wake
+    // marker instead of a fixed grace so the assertions are deterministic.
+    for (let i = 0; i < 100 && h.run()?.pendingWakeId === undefined; i++) {
+      await h.flush();
+    }
     await h.flush();
-
     const run = h.run()!;
     expect(run.status).toBe("failed");
     expect(run.consecutiveFailures).toBe(1);
@@ -119,6 +124,10 @@ describe("194 Phase 4: handoff recovery and terminal identity rules", () => {
     expect(run.consumption?.state).toBe("awaiting-declaration");
     expect(run.terminalConsumed).toBe(false);
     expect(run.pendingWakeId).toBeDefined();
+    // 194 D4 (Phase 3 task 5): the develop failure is PARKED — flowState
+    // blocked, awaiting the owner's explicit recovery.
+    expect(h.meta().flowState).toBe("blocked");
+    expect(h.meta().blockedReason).toBe("executor_failed");
     expect(h.wakeMessages.length - wakesBefore).toBe(1); // one honest wake
 
     const runBefore = canonicalRun(run);

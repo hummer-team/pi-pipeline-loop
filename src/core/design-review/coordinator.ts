@@ -91,6 +91,7 @@ import { recordStageVisit } from "../../utils/stage-visit";
 import { spawnStageSubagent, type DesignReviewTerminalEvent } from "../../utils/subagent-rpc";
 // 194 Phase 3 (tasks 2/3): closed-loop executor run lifecycle + trusted wake.
 import { issueExecutorRunOnDispatch, applyExecutorTerminal, isHandoffReceiptFinal } from "../stage-executor/terminal";
+import { parkExecutorFailure } from "../stage-executor/recovery";
 import { sendTrustedOwnerWake } from "../stage-executor/turn-source";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { shouldEmitWithinWindow } from "../../utils/audit-throttle";
@@ -2105,6 +2106,14 @@ export async function handleDesignReviewOperationTerminal(
   // already "completed" — the dispatch-receipt gate below is about DISPATCH
   // evidence and must never swallow run bookkeeping for a bound run.
   const terminal = await applyExecutorTerminal({ session, config, evt });
+
+  // 194 Phase 3 (task 5, D4): park a trusted failed/aborted terminal BEFORE
+  // any wake — review/update pauses with `executor-failed`, develop blocks the
+  // flow (recovery awaits the owner's explicit decision; registry evidence
+  // decides, a still-live executor is never parked or re-dispatched).
+  if (terminal.action === "applied" && (terminal.run.status === "failed" || terminal.run.status === "aborted")) {
+    await parkExecutorFailure({ session, config, run: terminal.run });
+  }
 
   // A REAL terminal never rewrites the finished handoff receipt (C3): the
   // run above carries the outcome and the owner is woken to consume it.
