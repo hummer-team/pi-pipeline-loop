@@ -1540,3 +1540,32 @@ reserveTokens = contextWindow × (1 − 触发占比)
 ### 17.4 最佳实践（对 verify 规则的影响）
 
 轮内压缩会摘要早期对话文本。因此 verify 规则应**以磁盘/工具类为主**（`requiredFiles`、`requiredCommands`、`requiredGit`、`fileContentPattern` 等），**慎用**依赖 assistant 文本关键词（`keywords`）的规则——早期关键词可能已被压缩摘要，导致误判。
+
+## 18. design-review 闭环协议（192–194）
+
+### 18.1 闭环所有权：声明 ≠ 消费
+
+design-review 派发的子代理（plan-review / update / develop-executor）对流水线状态**只有声明权，没有消费权**：
+
+- 子会话内调用 `pipeline_verify` / `stage_advance` 仅登记 declaration（`declared-for-owner`，revision 递增；字节相同的重复请求走 echo 零写分支，不重复计数）；越权参数（`verifyFile` 覆盖、`skipVerify`）一律 `declaration_rejected` 且零写入。`pipeline_handoff` 为插件独占，子代理调用直接 `caller_refused`。
+- 只有**受信 terminal**（生命周期事件 + 可信 agentId 与 dispatch 回执对齐）才会把 run 推进到 `awaiting-owner-tool`，并通过 `sendTrustedOwnerWake` 唤醒 owner 会话一次。
+- owner 侧 `pipeline_verify` 消费 declaration：一次原子 bound exit 同时完成 `currentStage` 推进（develop 走**真实配置的 nextStage**，如 `review`）、`terminalConsumed` 标记、wake 清理与失败预算重置。
+
+### 18.2 独立 update receipt（194 C1）
+
+FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立回执文档（`{updateReceiptDoc}`，形如 `<plan 目录>/plan-update-<round>-<operationId>-<plan>.md`），update prompt 的两个来源（内置默认与 YAML 自定义）均强制携带该 token。自定义 YAML 模板缺少 `{updateReceiptDoc}` 时 dispatch 以 `missing-token` **阻断**（不回退默认模板）。plan 正文出现 `## Design Review Update` 协议段将被验证拒绝；`completionMarker` 预检机制仅属于 clarify 交互阶段，**不能**用于 update 的代理验证。
+
+### 18.3 部署预检与资源阻断
+
+`/pipeline-init` 必须部署 design-review agent/skill 资产与 `references/design-review_spec/verify.md` 契约。资产缺失时 preflight 阻断派发：阶段停留在 `review_ready`，**零 RPC、零 operation、零 run**，重复 settle 幂等（无重试风暴）。补齐资产并重启会话后即可正常派发。
+
+### 18.4 恢复与 terminal 身份规则
+
+| 场景 | 行为 | 审计 action |
+|---|---|---|
+| terminal 前 owner 查询 | `awaiting-terminal`，pending 提示，零副作用 | — |
+| failed terminal | run 停泊 `awaiting-owner`，恢复是 owner 显式决策，工具调用本身零变更 | `awaiting-owner-recovery` |
+| 重复 terminal | 不重计数、不重写、不二次唤醒 | `duplicate_ignored` |
+| 旧 run 的迟到 terminal | 与当前 identity 不匹配 → 当前记录零触碰 | `late_event_ignored` |
+| 子会话绑定旧 run | `child-stale` 拒绝，零写入（身份一经更早 run 冻结） | `identity_frozen_by_earlier_run` |
+| 同 visit 失败预算 | 继承 `consecutiveFailures`，达到上限（`maxLoopCycles`，默认 3）后新 run 拒绝 `budget_exhausted_same_visit`；completed terminal **不**重置预算 | — |
