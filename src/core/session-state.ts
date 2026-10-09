@@ -27,6 +27,14 @@ import {
   sharedPipelineDir,
   type MetaLockAcquisition,
 } from "./pipeline-meta-transaction";
+// 194 Phase 0 (C3): executor-run commit comparison + stale-write protection.
+// commit-guard has no runtime imports of its own, so this adds no module cycle.
+import {
+  matchStageExecutorExpectation,
+  stageExecutorRunPatchViolation,
+  executorExpectationFromCurrent,
+} from "./stage-executor/commit-guard";
+import type { StageExecutorExpectation } from "./stage-executor/contracts";
 import type { PipelineConfig } from "../types";
 
 /** CustomEntry type identifier for pipeline metadata persistence. */
@@ -92,10 +100,14 @@ export interface SessionState {
  * before a strict commit is allowed to proceed. All optional fields are
  * compared only when provided (undefined = don't check).
  *
+ * 194 Phase 0 (C3): extends the bounded executor-run anchors (stage / visit /
+ * runId / terminalConsumed / declarationRevision / resultKey) — a concurrent
+ * consumer of the SAME run can therefore only succeed on ONE side.
+ *
  * Single-writer model: comparison is synchronous against the current owner
  * state; this makes no cross-process CAS/transaction claim.
  */
-export interface MetaCommitExpectation {
+export interface MetaCommitExpectation extends StageExecutorExpectation {
   /** Current run pipeline id — must match the persisted state */
   pipelineId: string;
   /** Expected design-review authorizationId of the CURRENT state */
@@ -243,7 +255,9 @@ export function matchCommitExpectation(
       return "decision_state_mismatch";
     }
   }
-  return null;
+  // 194 Phase 0 (C3): bounded executor-run anchors (stage/visit/run/terminal/
+  // declaration revision/result key) — one concurrent consumer can succeed.
+  return matchStageExecutorExpectation(current, expected);
 }
 
 /**
@@ -290,6 +304,12 @@ export function plainPatchBarrierViolation(
   patch: Partial<SessionMeta>,
   authoritative: SessionMeta,
 ): string | null {
+  // 194 Phase 0 (C3): run-identity protection applies EVEN when the
+  // design-review barrier is closed — after `finished` the live develop run
+  // is still the permission authority, so a stale whole-meta echo must never
+  // erase it.
+  const executorViolation = stageExecutorRunPatchViolation(patch, authoritative);
+  if (executorViolation) return executorViolation;
   if (!isDesignReviewBarrierActive(authoritative)) return null;
   const authDr = authoritative.designReview!;
   if ("designReview" in patch) {
@@ -351,6 +371,9 @@ export function expectedFromCurrent(
     ...(dr ? { operationId: dr.operation?.operationId ?? null as string | null } : {}),
     ...(dr?.phase !== undefined ? { phase: dr.phase } : {}),
     ...(dr?.updatedAt !== undefined ? { stateUpdatedAt: dr.updatedAt } : {}),
+    // 194 Phase 0 (C3): anchor the latest executor run too — "no concurrent
+    // change since my read" covers a run appearing OR disappearing meanwhile.
+    ...executorExpectationFromCurrent(meta),
   };
 }
 
@@ -741,6 +764,17 @@ export function createSessionState(
             ) {
               return unavailable("readback_approval_mismatch");
             }
+          }
+
+          // 194 Phase 0 (C3): the executor run is identity authority — it must
+          // read back byte-for-byte (canonical key order) or the commit is not
+          // a success. A stale whole-meta echo can therefore never "succeed"
+          // while silently erasing or replacing a live run.
+          if (
+            patch.stageExecutorRun !== undefined
+            && canonicalJson(rb.stageExecutorRun) !== canonicalJson(patch.stageExecutorRun)
+          ) {
+            return unavailable("readback_executor_run_mismatch");
           }
 
           return { status: "persisted", meta: rb };

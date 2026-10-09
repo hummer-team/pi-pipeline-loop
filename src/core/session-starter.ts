@@ -235,6 +235,24 @@ async function handleSubagentJoin(
     spawnTrigger,
   });
 
+  // 194 Phase 0 (C3): a JOIN inherits the parent's meta SNAPSHOT, including
+  // the latest closed-loop executor run. That record describes the OWNER's
+  // dispatch — it is NEVER this child's own executor identity, so it must not
+  // refresh or replace the binding this session recorded for itself
+  // (stage-executor/runtime-binding.ts reads the child's OWN entries only).
+  // Observability only: no behaviour or RPC count changes when inactive.
+  if (parentMeta.stageExecutorRun) {
+    await safeWriteAuditLog("session_join_executor_snapshot_untrusted", {
+      sessionFile,
+      pipelineId: parentPipelineId,
+      stage: parentMeta.currentStage,
+      runId: parentMeta.stageExecutorRun.binding.runId,
+      agentId: parentMeta.stageExecutorRun.binding.agentId,
+      runStage: parentMeta.stageExecutorRun.binding.stage,
+      spawnTrigger,
+    });
+  }
+
   // Phase 4 / 180 (Q3B): out-of-band duplicate-spawn observability.
   // A JOIN driven by manual @mention / external tool (spawnTrigger =
   // "manual_or_external") while the current stage already has a live spawn record

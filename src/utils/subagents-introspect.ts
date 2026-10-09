@@ -21,10 +21,10 @@ const LIVE_STATUSES = new Set(["queued", "running", "steered"]);
 
 /** Minimal interface for the manager registry (fail-safe on field drift) */
 interface ManagerRegistry {
-  getRecord?: (id: string) => { status?: string } | undefined;
+  getRecord?: (id: string) => { status?: string; sessionFile?: string } | undefined;
   hasRunning?: () => boolean;
   /** Phase 0 (182): optional method for enumerating all records (name-based lookup). */
-  listRecords?: () => Array<{ id?: string; name?: string; status?: string }>;
+  listRecords?: () => Array<{ id?: string; name?: string; status?: string; sessionFile?: string }>;
 }
 
 /**
@@ -94,4 +94,97 @@ export function findLiveAgentByName(name: string): { agentId: string } | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 194 Phase 0 (C3): narrow identity evidence for ONE full agent id, read from
+ * the manager registry only. `found:false` / `ambiguous:true` / a missing
+ * `sessionFile` are all ABSENT evidence: authority must fail closed.
+ */
+export interface AgentSessionEvidence {
+  /** The full id that was probed */
+  readonly agentId: string;
+  /** True when the registry holds exactly one top-level record for this id */
+  readonly found: boolean;
+  /** Bounded liveness view (registry statuses are mapped, never invented) */
+  readonly status: "live" | "settled" | "unknown";
+  /** Raw registry status string when available (audit honesty) */
+  readonly recordStatus?: string;
+  /** Session file recorded by the runtime — only registry-sourced evidence */
+  readonly sessionFile?: string;
+  /** True when the id enumerates more than once (never identity) */
+  readonly ambiguous: boolean;
+}
+
+/**
+ * 194 Phase 0 (C3): narrow runtime evidence for ONE full agent id.
+ *
+ * Why this exists: a closed-loop executor may only be authorized from
+ * registry evidence — `getRecord(fullId)` (filtered to top-level records by
+ * pi-subagents, so another owner's child cannot leak) plus the record's
+ * `sessionFile`. A short id / handle / `active_agent` prompt text is NEVER
+ * identity evidence: an unresolvable id simply comes back `found:false`, and
+ * the caller must fail closed instead of guessing.
+ *
+ * Fail-safe: an unavailable registry or API drift yields `status:"unknown"`
+ * with no sessionFile — callers treat that as ABSENT evidence (pause / deny),
+ * never as proof of settling.
+ *
+ * @param agentId - The FULL id returned by the trusted RPC reply
+ */
+export function probeAgentSessionEvidence(agentId: string): AgentSessionEvidence {
+  const base: Omit<AgentSessionEvidence, "status" | "found" | "ambiguous"> = { agentId };
+  if (typeof agentId !== "string" || agentId.trim().length === 0) {
+    return { ...base, found: false, status: "unknown", ambiguous: false };
+  }
+  try {
+    const manager = (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] as ManagerRegistry | undefined;
+    if (!manager || typeof manager.getRecord !== "function") {
+      return { ...base, found: false, status: "unknown", ambiguous: false };
+    }
+    const record = manager.getRecord(agentId);
+    if (!record) {
+      // No live record: either settled-and-evicted or the id is not a full
+      // registry id. Evidence is absent either way — never a trusted terminal.
+      return { ...base, found: false, status: "unknown", ambiguous: false };
+    }
+    const status = typeof record.status === "string" ? record.status : undefined;
+    const resolved: AgentSessionEvidence = {
+      agentId,
+      found: true,
+      status: status === undefined ? "unknown" : LIVE_STATUSES.has(status) ? "live" : "settled",
+      ambiguous: false,
+      ...(status !== undefined ? { recordStatus: status } : {}),
+      ...(typeof record.sessionFile === "string" && record.sessionFile.length > 0
+        ? { sessionFile: record.sessionFile }
+        : {}),
+    };
+    // Ambiguity guard: an id that enumerates more than once is never identity.
+    if (typeof manager.listRecords === "function") {
+      try {
+        const records = manager.listRecords();
+        if (Array.isArray(records)) {
+          const matches = records.filter((r) => r && r.id === agentId).length;
+          if (matches > 1) return { ...resolved, ambiguous: true, status: "unknown", sessionFile: undefined };
+        }
+      } catch {
+        // Enumeration drift: keep getRecord evidence, ambiguity stays false.
+      }
+    }
+    return resolved;
+  } catch {
+    return { ...base, found: false, status: "unknown", ambiguous: false };
+  }
+}
+
+/** Map one registry record status onto a bounded executor terminal status. */
+export function toExecutorTerminalStatus(
+  recordStatus: string | undefined,
+): "running" | "completed" | "failed" | "aborted" | "unknown" {
+  if (recordStatus === undefined) return "unknown";
+  if (LIVE_STATUSES.has(recordStatus)) return "running";
+  if (recordStatus === "completed") return "completed";
+  if (recordStatus === "error") return "failed";
+  if (recordStatus === "aborted" || recordStatus === "stopped") return "aborted";
+  return "unknown";
 }

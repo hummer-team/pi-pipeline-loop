@@ -52,6 +52,17 @@ export interface RuntimeCtx {
    */
   getSystemPrompt?: () => string;
 
+  /**
+   * 194 Phase 0 (C3): the session file of THIS session, read from the runtime
+   * session manager. Executor identity checks compare against this value (plus
+   * manager registry evidence) and NEVER against a parent JOIN snapshot, an
+   * `active_agent` prompt line, or a short id.
+   *
+   * Optional because test mocks may not expose `getSessionFile`; absent
+   * evidence means "identity unknown" → callers must fail closed, not guess.
+   */
+  selfSessionFile?: string;
+
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
   _ctx: ExtensionContext;
 }
@@ -83,12 +94,21 @@ export function buildRuntimeCtx(
 
   // 138: Forward pi so that hooks (e.g., agent_settled) can call pi.sendUserMessage
   // Forward getSystemPrompt (bound to ctx) so prompt-injector can read the base prompt
+  // 194 Phase 0 (C3): own-session evidence for executor identity checks.
+  // Read directly from the runtime session manager — never from a parent
+  // JOIN snapshot or meta payload.
+  const sm = ((ctx as unknown) as Record<string, unknown>)?.sessionManager as
+    | { getSessionFile?: () => string }
+    | undefined;
+  const selfSessionFile = sm?.getSessionFile?.();
+
   const rctx: RuntimeCtx = {
     session,
     ui,
     _ctx: ctx,
     pi,
     getSystemPrompt: ctx.getSystemPrompt?.bind(ctx),
+    ...(typeof selfSessionFile === "string" && selfSessionFile.length > 0 ? { selfSessionFile } : {}),
   };
 
   if (event && typeof event === "object") {

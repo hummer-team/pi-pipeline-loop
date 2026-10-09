@@ -16,6 +16,37 @@ import type {
   DesignReviewApprovalBasis,
   DesignReviewRecheckMarker,
 } from "./core/design-review/decision-types";
+// 194 Phase 0 (C1/C3/C5): update-receipt descriptor and bounded executor
+// identity payloads live in their own modules; types.ts only bridges them
+// into the persisted meta shapes (explicit re-exports, no implementation).
+import type { StandaloneUpdateArtifact } from "./core/design-review/update-artifact";
+import type {
+  StageExecutorBinding,
+  StageExecutorRun,
+  StageExecutorStatus,
+  StageExecutorRecovery,
+  StageExecutorStage,
+  StageCompletionDeclaration,
+  StageDeclarationRequester,
+  StageOwnerConsumption,
+  StageOwnerConsumptionState,
+  StageExecutorExpectation,
+} from "./core/stage-executor/contracts";
+export type {
+  StandaloneUpdateArtifact,
+} from "./core/design-review/update-artifact";
+export type {
+  StageExecutorBinding,
+  StageExecutorRun,
+  StageExecutorStatus,
+  StageExecutorRecovery,
+  StageExecutorStage,
+  StageCompletionDeclaration,
+  StageDeclarationRequester,
+  StageOwnerConsumption,
+  StageOwnerConsumptionState,
+  StageExecutorExpectation,
+} from "./core/stage-executor/contracts";
 export type {
   SmartPlanRevisionAction,
   SmartPlanRevisionDecision,
@@ -649,6 +680,20 @@ export interface SessionMeta {
    * until a NEW review authorization atomically clears it.
    */
   designReviewRecheck?: DesignReviewRecheckMarker;
+  /**
+   * 194 Phase 0 (C3): the SINGLE latest closed-loop executor run
+   * (design-review / plan / develop dispatches). Bounded by design — no
+   * history array lives in meta; the JSON Lines audit is the history.
+   *
+   * Lifecycle:
+   * - created ONLY from a trusted RPC reply (full agent id + owner evidence)
+   * - superseded atomically by a new attempt / new stage visit
+   * - NEVER erased by a plain whole-meta write (strict commits only, see
+   *   stage-executor/commit-guard.ts)
+   * - `terminalConsumed` flips true only after a reliable owner advance or
+   *   legitimate pause (a PASS awaiting tool/confirmation stays unconsumed)
+   */
+  stageExecutorRun?: StageExecutorRun;
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
@@ -733,6 +778,14 @@ export interface DesignReviewOperation {
    * the stage-resolved config value — the field never FABRICATES authority.
    */
   reviewConfirmMode?: ConfirmMode;
+  /**
+   * 194 Phase 0 (C1): descriptor pinning the STANDALONE update receipt output
+   * for a plan-revision operation. New update operations always carry it;
+   * its ABSENCE is the only legacy-read compatibility signal (a malformed
+   * value is rejected by `narrowUpdateArtifact`, never downgraded).
+   * Never model-supplied: path and baseline hash are plugin-derived.
+   */
+  updateArtifact?: StandaloneUpdateArtifact;
   /** Timestamp when operation was created */
   createdAt: number;
   /** Timestamp when operation completed/failed (absent until settled) */
@@ -747,6 +800,13 @@ export interface DesignReviewOperation {
 export interface DesignReviewOutcome {
   /** Hash of the review report (for review operations) */
   reportHash?: string;
+  /**
+   * 194 Phase 0 (C2): hash of the STANDALONE update receipt document, captured
+   * from the same snapshot the verifier consumed. Present only for update
+   * operations validated against a pinned C1 descriptor — the plan hash alone
+   * no longer describes the update's full output.
+   */
+  receiptHash?: string;
   /** Verdict: pass, fail, or invalid */
   verdict?: "pass" | "fail" | "invalid";
   /** Reason for verdict (e.g., "no valid issues", "ambiguous tokens") */
@@ -784,7 +844,8 @@ export type DesignReviewPauseReason =
   | "budget-exhausted"   // maxLoopCycles reached
   | "unknown-dispatch"   // 192 Phase 1: dispatch outcome unprovable (pause & verify)
   | "update-invalid"     // 192 Phase 2: structural update validation failed
-  | "decision-pending";  // 193 Phase 2: a human plan-revision decision awaits a choice
+  | "decision-pending"   // 193 Phase 2: a human plan-revision decision awaits a choice
+  | "executor-failed";   // 194 Phase 0 (D4): a trusted executor terminal is failed/aborted or has no trustworthy delivery — owner must recover explicitly
 
 /**
  * Phase 1 / 191: Design review report verdict result.
