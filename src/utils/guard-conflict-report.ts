@@ -14,7 +14,7 @@
 import { DEFAULT_MAX_VIOLATIONS } from "../constants";
 import { getFlowState, formatAbortedNotifyText, formatFrozenReason, formatDecisionMenuHint } from "../core/flow-state";
 import { isPathReadOnly } from "./protect";
-import { resolveCommitDocPath } from "../core/verify-path-resolver";
+import { resolveCommitDocPath, getStageDeliverableExemptions } from "../core/verify-path-resolver";
 import type { SessionMeta, PipelineStage } from "../types";
 
 /**
@@ -100,13 +100,12 @@ export interface DispatchConflictResult {
  * Checks for dispatch-blocking configuration conflicts before sub-agent spawn.
  * Returns null when no conflict is detected (spawn may proceed).
  *
- * Conflict i: stage deliverable write targets (from getStageDeliverableExemptions)
- *   hit read-only paths and exemption does not apply (e.g. requirementDoc missing).
- *   Uses isPathReadOnly for proper glob pattern matching.
+ * Conflict i: For develop/fix stages, check if the required deliverable path
+ *   (commit doc) hits read-only paths AND the Phase 1 exemption does NOT apply
+ *   (i.e., requirementDoc is missing or stage is not develop/fix).
  *
- * Conflict ii: design-review dynamic write scope is empty but stage contract
- *   requires output (resolveDesignReviewWritePolicy + describeWriteScope).
- *   Checks when requirementDoc is set AND design-review blocks writes.
+ * Conflict ii: For design-review stage, check if the dynamic write scope is
+ *   empty but the stage contract requires output (allowedWritePaths is configured).
  */
 export async function checkDispatchConflicts(
   stage: PipelineStage,
@@ -116,31 +115,38 @@ export async function checkDispatchConflicts(
   resolveWritePolicy: () => Promise<{ mode: string; writable?: readonly string[]; reason?: string }> | { mode: string; writable?: readonly string[]; reason?: string },
   describeScope: (policy: { mode: string; writable?: readonly string[]; reason?: string }) => Promise<string> | string,
 ): Promise<DispatchConflictResult | null> {
-  // Compute required deliverable path (if any)
-  let requiredDeliverablePath: string | null = null;
-  if ((stage === "develop" || stage === "fix") && meta.requirementDoc) {
-    const reqBase = meta.requirementDoc.replace(/\.md$/, "");
-    if (reqBase) {
-      requiredDeliverablePath = resolveCommitDocPath(reqBase);
+  // Conflict i: Check if deliverable path hits read-only AND exemption does NOT apply
+  if (stage === "develop" || stage === "fix") {
+    // Compute what the deliverable path WOULD be
+    let deliverablePath: string | null = null;
+    if (meta.requirementDoc) {
+      const reqBase = meta.requirementDoc.replace(/\.md$/, "");
+      if (reqBase) {
+        deliverablePath = resolveCommitDocPath(reqBase);
+      }
+    }
+    
+    // Only check if we can determine the deliverable path AND it hits read-only
+    if (deliverablePath && allowedReadOnlyPaths?.length) {
+      // Check if exemption applies
+      const exemptions = getStageDeliverableExemptions(meta, stage);
+      const isExempted = exemptions.includes(deliverablePath);
+      
+      // Block if NOT exempted AND hits read-only
+      if (!isExempted && isPathReadOnly(deliverablePath, allowedReadOnlyPaths)) {
+        const report = describeReadOnlyWriteConflict(
+          stage,
+          allowedReadOnlyPaths,
+          allowedWritePaths ?? [],
+        );
+        return { blocked: true, conflictType: "readonly_write", report };
+      }
     }
   }
 
-  // Conflict i: required deliverable path is blocked by read-only patterns
-  if (requiredDeliverablePath && allowedReadOnlyPaths?.length) {
-    if (isPathReadOnly(requiredDeliverablePath, allowedReadOnlyPaths)) {
-      const report = describeReadOnlyWriteConflict(
-        stage,
-        allowedReadOnlyPaths,
-        allowedWritePaths ?? [],
-      );
-      return { blocked: true, conflictType: "readonly_write", report };
-    }
-  }
-
-  // Conflict ii: design-review write scope is empty but stage requires deliverables
-  // This happens when requirementDoc is set (so stage requires output) but
-  // design-review policy blocks all writes
-  if (requiredDeliverablePath) {
+  // Conflict ii: For design-review stage, check if write scope is empty
+  // BUT only if stage contract requires output (allowedWritePaths is configured)
+  if (stage === "design-review" && allowedWritePaths && allowedWritePaths.length > 0) {
     const policy = await resolveWritePolicy();
     if (policy.mode !== "ordinary") {
       const scopeDesc = await describeScope(policy);

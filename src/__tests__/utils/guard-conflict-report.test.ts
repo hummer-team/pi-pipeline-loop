@@ -32,8 +32,8 @@ describe("guard-conflict-report", () => {
 
   describe("describeEmptyWriteScopeConflict", () => {
     test("describes empty write scope", () => {
-      const report = describeEmptyWriteScopeConflict("develop", "nothing (blocked by design-review)");
-      expect(report).toContain("stage 'develop'");
+      const report = describeEmptyWriteScopeConflict("design-review", "nothing (blocked by design-review)");
+      expect(report).toContain("stage 'design-review'");
       expect(report).toContain("write scope is empty");
       expect(report).toContain("nothing (blocked by design-review)");
       expect(report).toContain("Next step");
@@ -95,13 +95,14 @@ describe("guard-conflict-report", () => {
       expect(result).toBeNull();
     });
 
-    test("detects readonly-write conflict when deliverable path blocked", async () => {
+    test("no conflict when deliverable path is exempted (Phase 1)", async () => {
       const meta = {
         currentStage: "develop",
         requirementDoc: "plan.md",
       } as SessionMeta;
       // resolveCommitDocPath("plan") returns "docs/design/plan_commit.md"
       // readOnlyPaths matches it via glob pattern
+      // BUT Phase 1 exemption applies because requirementDoc exists
       const result = await checkDispatchConflicts(
         "develop",
         meta,
@@ -110,18 +111,17 @@ describe("guard-conflict-report", () => {
         () => ({ mode: "ordinary" }),
         (_p) => _p.mode === "ordinary" ? "full write" : "nothing",
       );
-      expect(result).not.toBeNull();
-      expect(result?.conflictType).toBe("readonly_write");
-      expect(result?.report).toContain("Configuration conflict");
+      // Exemption applies, so no conflict should be detected
+      expect(result).toBeNull();
     });
 
-    test("detects empty-write-scope conflict", async () => {
+    test("detects empty-write-scope conflict for design-review stage", async () => {
       const meta = {
-        currentStage: "develop",
+        currentStage: "design-review",
         requirementDoc: "plan.md",
       } as SessionMeta;
       const result = await checkDispatchConflicts(
-        "develop",
+        "design-review",
         meta,
         undefined,
         ["docs/design/plan_commit.md"],
