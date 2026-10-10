@@ -88,7 +88,7 @@ import type {
   HumanDecisionReviewIdentity,
 } from "./decision-types";
 import { recordStageVisit } from "../../utils/stage-visit";
-import { spawnStageSubagent, type DesignReviewTerminalEvent } from "../../utils/subagent-rpc";
+import { spawnStageSubagent, type DesignReviewTerminalEvent, type StageDispatchOutcome } from "../../utils/subagent-rpc";
 // 194 Phase 3 (tasks 2/3): closed-loop executor run lifecycle + trusted wake.
 import { issueExecutorRunOnDispatch, applyExecutorTerminal, isHandoffReceiptFinal } from "../stage-executor/terminal";
 import { parkExecutorFailure } from "../stage-executor/recovery";
@@ -2308,7 +2308,7 @@ async function recordDispatchOutcome(
   meta: SessionMeta,
   state: DesignReviewState,
   operationId: string,
-  outcome: "spawned_id" | "fallback_no_id" | "deferred" | "queued_owner" | "not_sent" | "unknown" | "strict_blocked" | "skipped_duplicate" | undefined,
+  outcome: StageDispatchOutcome | undefined,
   agentId?: string,
 ): Promise<"trusted" | "unknown" | "not_sent" | "pending_queue" > {
   if (outcome === "spawned_id" && agentId) {
@@ -2317,7 +2317,7 @@ async function recordDispatchOutcome(
     // Receipt write failed → fall through to unknown marking below: the child
     // MAY exist; never claim success.
   }
-  if (outcome === "not_sent" || outcome === "strict_blocked") {
+  if (outcome === "not_sent" || outcome === "strict_blocked" || outcome === "conflict_blocked") {
     // Provable not-sent: mark evidence so a same-operation retry is permitted.
     // 192 issue 9: "strict_blocked" is returned by the pre-RPC strict reserved
     // write ONLY when zero external calls happened (subagent-rpc.ts:908-913),
@@ -2326,7 +2326,11 @@ async function recordDispatchOutcome(
     // tasks 9/10). If the evidence write itself fails, fall through honestly
     // to "unknown" below (persisted not-sent cannot be claimed).
     const notSentReason =
-      outcome === "strict_blocked" ? "strict_blocked_before_send" : "transport_confirmed_not_sent";
+      outcome === "conflict_blocked"
+        ? "dispatch_config_conflict"
+        : outcome === "strict_blocked"
+          ? "strict_blocked_before_send"
+          : "transport_confirmed_not_sent";
     const cur = ctx.session.getMeta();
     const st = cur?.designReview;
     if (st?.operation?.operationId === operationId) {

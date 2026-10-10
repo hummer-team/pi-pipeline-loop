@@ -59,6 +59,7 @@ import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText, fo
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { getStageDeliverableExemptions } from "./verify-path-resolver";
+import { describeReadOnlyWriteConflict } from "../utils/guard-conflict-report";
 import { checkGitAdd, checkGitCommit, isGitWriteCommand, isGitForbidden } from "../utils/git-protect";
 import { resolveGitModifyPolicy, describeGitModifySource } from "../utils/protect";
 import { staleConfigNotice } from "../utils/config-staleness";
@@ -193,7 +194,7 @@ function warnReadOnlyWriteIntersection(
         [stageName]: true,
       },
     });
-    const msg = `Warning: allowedReadOnlyPaths and allowedWritePaths overlap for stage '${stageName}'. Read-only paths take priority.`;
+    const msg = describeReadOnlyWriteConflict(stageName, allowedReadOnlyPaths, allowedWritePaths);
     // Audit log (fail-open, fire-and-forget)
     safeWriteAuditLog("readonly_write_intersection_warning", {
       stage: stageName,
@@ -307,7 +308,7 @@ function checkStageWriteBlock(
   if (isPathReadOnly(relPath, allowedReadOnlyPaths)) {
     return {
       status: "block",
-      reason: `FORBIDDEN: '${relPath}' is in read-only paths for '${stageName}' stage.`,
+      reason: `FORBIDDEN: '${relPath}' is in read-only paths for '${stageName}' stage. Next step: use a path from allowedWritePaths or wait for stage transition.`,
     };
   }
 
@@ -325,7 +326,7 @@ function checkStageWriteBlock(
   if (!isPathAllowedWrite(relPath, allowedWritePaths)) {
     return {
       status: "block",
-      reason: `FORBIDDEN: '${relPath}' not in allowed write paths for '${stageName}' stage.`,
+      reason: `FORBIDDEN: '${relPath}' not in allowed write paths for '${stageName}' stage. Next step: write to [${(allowedWritePaths ?? []).join(", ")}].`,
     };
   }
 
@@ -1004,7 +1005,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         // Phase 2 (171) Q2-B + Phase 4 (172) G6a: aborted/blocked-state exemption for
         // read-only probe tools. pipeline_state and get_subagent_result are safe (no write
         // side effects) and enable self-rescue / state inspection in frozen states.
-        // Effective for both aborted and blocked — awaiting_human maintains full block.
+        // E22: Exemption only applies when flowState ∈ {blocked, aborted}; awaiting_human has no producer, no valid combination.
         if ((fs === "aborted" || fs === "blocked") && FROZEN_ABORT_EXEMPT_TOOLS.includes(toolName)) {
           // Throttled audit for frozen probe (same 60s window pattern as rejection)
           const probeThrottleKey = `frozen-probe:${meta.pipelineId}:${toolName}`;

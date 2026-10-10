@@ -53,6 +53,8 @@ import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard"
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "./design-review/entry-result";
 import { createInitialState, computeHash } from "./design-review/state";
+import { describeInvalidNextStage } from "../utils/guard-conflict-report";
+import { buildStageSequence } from "../utils/stage-sequence";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -1667,7 +1669,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         }, "warn");
         return {
           success: false,
-          message: `Invalid nextStage "${resolvedTarget}": not defined in pipeline config`,
+          message: `Invalid nextStage "${resolvedTarget}": not defined in pipeline config. ${describeInvalidNextStage(buildStageSequence(config, currentStage))}`,
           currentStage,
         };
       }
@@ -1679,7 +1681,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         }, "warn");
         return {
           success: false,
-          message: `Invalid nextStage "${resolvedTarget}": cannot advance to the same stage`,
+          message: `Invalid nextStage "${resolvedTarget}": cannot advance to the same stage. ${describeInvalidNextStage(buildStageSequence(config, currentStage))}`,
           currentStage,
         };
       }
@@ -1695,7 +1697,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         }, "warn");
         return {
           success: false,
-          message: `Fix stage must route back to "review" for re-review. nextStage "${resolvedTarget}" is not allowed from "fix".`,
+          message: `Fix stage must route back to "review" for re-review. nextStage "${resolvedTarget}" is not allowed from "fix". ${describeInvalidNextStage(buildStageSequence(config, currentStage))}`,
           currentStage,
         };
       }

@@ -532,7 +532,9 @@ export type StageDispatchOutcome =
   /** strict identity/commit check failed BEFORE any external call — zero RPC */
   | "strict_blocked"
   /** duplicate guard: this exact operation was already dispatched */
-  | "skipped_duplicate";
+  | "skipped_duplicate"
+  /** 195 Phase 2: configuration conflict (read-only ∩ write / empty write scope) blocks spawn */
+  | "conflict_blocked";
 
 /**
  * Spawns a subagent for the given stage after stage transition.
@@ -649,6 +651,42 @@ export async function spawnStageSubagent(
         return { spawned: false, fallback: false };
       }
     }
+  }
+
+  // 195 Phase 2: Configuration conflict fail-fast check
+  // Resolvers passed as lazy callbacks to avoid runtime imports from ../core/
+  const { checkDispatchConflicts: checkConflicts } = await import("./guard-conflict-report");
+  const conflictResult = await checkConflicts(
+    stage,
+    meta,
+    config.stages?.[stage]?.allowedReadOnlyPaths,
+    config.stages?.[stage]?.allowedWritePaths,
+    async () => {
+      const { resolveDesignReviewWritePolicy } = await import("../core/design-review/write-policy");
+      return resolveDesignReviewWritePolicy(meta);
+    },
+    async (policy) => {
+      const { describeWriteScope } = await import("../core/design-review/write-policy");
+      return describeWriteScope(policy as any);
+    },
+  );
+  
+  if (conflictResult) {
+    // Notify UI with conflict report
+    if (opts?.ui?.notify) {
+      opts.ui.notify(conflictResult.report);
+    }
+    // Audit the conflict block
+    await safeWriteAuditLog("dispatch_conflict_blocked", {
+      pipelineId: meta.pipelineId,
+      stage,
+      conflictType: conflictResult.conflictType,
+    });
+    return {
+      spawned: false,
+      fallback: false,
+      dispatchOutcome: "conflict_blocked" as StageDispatchOutcome,
+    };
   }
 
   // G2 (188): Gate defer guard — do not spawn when confirm gate is in deferred
