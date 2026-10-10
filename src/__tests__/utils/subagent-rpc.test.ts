@@ -24,7 +24,7 @@ import {
   __resetSubagentsReady,
 } from "../../utils/subagent-availability";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, createMockEventBus } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockEventBus, makeStageConfig } from "../helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -554,6 +554,233 @@ describe("168 Phase 4: spawnStageSubagent", () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  // ── 195 Phase 2 G2: Configuration conflict dispatch tests ──────────────────
+
+  it("195 Phase 2 G2: conflict i — requirementDoc missing + read-only hits contract pattern ⇒ block spawn", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-rpc-conflict-i-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "develop-agent.md"),
+      "---\nname: develop-agent\n---\n# Develop Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          ...makeStageConfig(),
+          agentPath: "agents/develop-agent.md",
+          allowedReadOnlyPaths: ["docs/design/*.md"],
+          allowedWritePaths: ["docs/design/plan_commit.md"],
+        },
+      },
+    });
+
+    // requirementDoc is MISSING — exemption does NOT apply
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-conflict-i-test",
+    });
+    // Ensure no spawnedStages entry (no idempotency guard)
+    delete meta.spawnedStages;
+
+    const bus = createMockEventBus();
+    await initAuditLog(config);
+
+    const mockPi = {
+      events: bus,
+      sendUserMessage: (_msg: string, _opts?: Record<string, unknown>) => {},
+    };
+
+    const notifications: string[] = [];
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: (m: string) => { notifications.push(m); } },
+    });
+
+    // Conflict i: spawn should be blocked
+    expect(result.spawned).toBe(false);
+    expect(result.fallback).toBe(false);
+    expect(result.dispatchOutcome).toBe("conflict_blocked");
+
+    // UI notification should contain conflict report with suggested fix
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]).toContain("Configuration conflict");
+    expect(notifications[0]).toContain("read-only takes priority");
+    expect(notifications[0]).toContain("Next step");
+
+    // Audit log should contain dispatch_conflict_blocked
+    const auditFile = path.join(tmpDir, ".pi", "audit", getDateAuditFileName());
+    const auditContent = fs.readFileSync(auditFile, "utf-8");
+    expect(auditContent).toContain("dispatch_conflict_blocked");
+    expect(auditContent).toContain("conflictType");
+    expect(auditContent).toContain("readonly_write");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("195 Phase 2 G2: conflict ii — design-review empty write scope ⇒ block spawn", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-rpc-conflict-ii-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "design-review-agent.md"),
+      "---\nname: design-review-agent\n---\n# Design Review Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        "design-review": {
+          ...makeStageConfig(),
+          agentPath: "agents/design-review-agent.md",
+          allowedWritePaths: ["docs/design/plan_commit.md"],
+        },
+      },
+    });
+
+    // Create meta with designReview state that has paused phase and operation
+    // This triggers "readonly" mode with empty writable, causing empty write scope conflict
+    const now = Date.now();
+    const meta = makeTestMeta({
+      currentStage: "design-review",
+      pipelineId: "pipe-conflict-ii-test",
+      designReview: {
+        schemaVersion: 1,
+        planDoc: path.resolve(tmpDir, "docs/design/plan_plan.md"),
+        phase: "paused",
+        pauseReason: "decision-pending",
+        round: 1,
+        authorizationId: "test-auth-id-12345",
+        authorizationSource: "menu",
+        authorizedAt: now,
+        updatedAt: now,
+        operation: {
+          operationId: "op-123",
+          kind: "review",
+          stageVisitId: now,
+          attempt: 1,
+          dispatchState: "pending",
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+    });
+    delete meta.spawnedStages;
+
+    const bus = createMockEventBus();
+    await initAuditLog(config);
+
+    const mockPi = {
+      events: bus,
+      sendUserMessage: (_msg: string, _opts?: Record<string, unknown>) => {},
+    };
+
+    const notifications: string[] = [];
+    const result = await spawnStageSubagent(mockPi, config, "design-review", meta, {
+      ui: { notify: (m: string) => { notifications.push(m); } },
+    });
+
+    // Conflict ii: spawn should be blocked
+    expect(result.spawned).toBe(false);
+    expect(result.fallback).toBe(false);
+    expect(result.dispatchOutcome).toBe("conflict_blocked");
+
+    // UI notification should contain conflict report
+    expect(notifications.length).toBe(1);
+    expect(notifications[0]).toContain("Configuration conflict");
+    expect(notifications[0]).toContain("write scope is empty");
+    expect(notifications[0]).toContain("Next step");
+
+    // Audit log should contain dispatch_conflict_blocked
+    const auditFile = path.join(tmpDir, ".pi", "audit", getDateAuditFileName());
+    const auditContent = fs.readFileSync(auditFile, "utf-8");
+    expect(auditContent).toContain("dispatch_conflict_blocked");
+    expect(auditContent).toContain("empty_write_scope");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("195 Phase 2 G2: no-conflict — normal config ⇒ spawn proceeds", async () => {
+    const tmpDir = path.join(tmpdir(), "pi-rpc-no-conflict-" + Date.now());
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const agentDir = path.join(tmpDir, "agents");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "develop-agent.md"),
+      "---\nname: develop-agent\n---\n# Develop Agent\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          ...makeStageConfig(),
+          agentPath: "agents/develop-agent.md",
+          allowedReadOnlyPaths: ["src/**/*.ts"],
+          allowedWritePaths: ["docs/design/plan_commit.md"],
+        },
+      },
+    });
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-no-conflict-test",
+    });
+    delete meta.spawnedStages;
+
+    const bus = createMockEventBus();
+    await initAuditLog(config);
+
+    const mockPi = {
+      events: bus,
+      sendUserMessage: (_msg: string, _opts?: Record<string, unknown>) => {},
+    };
+
+    // Intercept emit: reply to ping + accept spawn
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:ping") {
+        const replyChannel = `subagents:rpc:ping:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true }), 5);
+      } else if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, {
+          success: true,
+          data: { id: "subagent-no-conflict" },
+        }), 5);
+      }
+    };
+
+    const notifications: string[] = [];
+    const result = await spawnStageSubagent(mockPi, config, "develop", meta, {
+      ui: { notify: (m: string) => { notifications.push(m); } },
+    });
+
+    // No conflict: spawn should proceed
+    expect(result.spawned).toBe(true);
+    expect(result.fallback).toBe(false);
+    expect(result.agentId).toBe("subagent-no-conflict");
+    expect(result.dispatchOutcome).toBeUndefined();
+
+    // No conflict notification should be sent
+    expect(notifications.length).toBe(0);
+
+    // Audit log should NOT contain dispatch_conflict_blocked
+    const auditFile = path.join(tmpDir, ".pi", "audit", getDateAuditFileName());
+    const auditContent = fs.readFileSync(auditFile, "utf-8");
+    expect(auditContent).not.toContain("dispatch_conflict_blocked");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
 });
 
 // ── Phase 1 (169) P1: spawn prompt requirementDoc + dual-trigger guard ────────

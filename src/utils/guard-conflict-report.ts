@@ -115,25 +115,36 @@ export async function checkDispatchConflicts(
   resolveWritePolicy: () => Promise<{ mode: string; writable?: readonly string[]; reason?: string }> | { mode: string; writable?: readonly string[]; reason?: string },
   describeScope: (policy: { mode: string; writable?: readonly string[]; reason?: string }) => Promise<string> | string,
 ): Promise<DispatchConflictResult | null> {
-  // Conflict i: Check if deliverable path hits read-only AND exemption does NOT apply
+  // Conflict i: Check if contract-required write target hits read-only AND exemption does NOT apply.
+  // When requirementDoc exists: check exact deliverable path against read-only + exemption.
+  // When requirementDoc is MISSING: exemption does not apply (getStageDeliverableExemptions returns []),
+  // and the contract-required write target pattern is `docs/design/*_plan_commit.md`.
+  // Use a representative instance of that pattern to probe for pattern-level intersection.
   if (stage === "develop" || stage === "fix") {
-    // Compute what the deliverable path WOULD be
-    let deliverablePath: string | null = null;
     if (meta.requirementDoc) {
+      // Exact path: resolveCommitDocPath(requirementDoc base)
       const reqBase = meta.requirementDoc.replace(/\.md$/, "");
       if (reqBase) {
-        deliverablePath = resolveCommitDocPath(reqBase);
+        const deliverablePath = resolveCommitDocPath(reqBase);
+        if (allowedReadOnlyPaths?.length) {
+          const exemptions = getStageDeliverableExemptions(meta, stage);
+          const isExempted = exemptions.includes(deliverablePath);
+          if (!isExempted && isPathReadOnly(deliverablePath, allowedReadOnlyPaths)) {
+            const report = describeReadOnlyWriteConflict(
+              stage,
+              allowedReadOnlyPaths,
+              allowedWritePaths ?? [],
+            );
+            return { blocked: true, conflictType: "readonly_write", report };
+          }
+        }
       }
-    }
-    
-    // Only check if we can determine the deliverable path AND it hits read-only
-    if (deliverablePath && allowedReadOnlyPaths?.length) {
-      // Check if exemption applies
-      const exemptions = getStageDeliverableExemptions(meta, stage);
-      const isExempted = exemptions.includes(deliverablePath);
-      
-      // Block if NOT exempted AND hits read-only
-      if (!isExempted && isPathReadOnly(deliverablePath, allowedReadOnlyPaths)) {
+    } else if (allowedReadOnlyPaths?.length) {
+      // requirementDoc missing: exemption does NOT apply.
+      // Contract-required write target pattern: docs/design/*_plan_commit.md.
+      // Probe with a representative instance — if it hits read-only, the pattern is blocked.
+      const contractPatternProbe = resolveCommitDocPath("plan");
+      if (isPathReadOnly(contractPatternProbe, allowedReadOnlyPaths)) {
         const report = describeReadOnlyWriteConflict(
           stage,
           allowedReadOnlyPaths,
@@ -143,6 +154,7 @@ export async function checkDispatchConflicts(
       }
     }
   }
+
 
   // Conflict ii: For design-review stage, check if write scope is empty
   // BUT only if stage contract requires output (allowedWritePaths is configured)

@@ -133,10 +133,12 @@ describe("guard-conflict-report", () => {
       expect(result?.report).toContain("write scope is empty");
     });
 
-    test("no conflict when requirementDoc missing", async () => {
+    test("conflict i: requirementDoc missing + read-only hits contract pattern ⇒ block (195 Phase 2 G1)", async () => {
       const meta = {
         currentStage: "develop",
       } as SessionMeta;
+      // allowedReadOnlyPaths covers docs/design/*.md — intersects contract pattern docs/design/*_plan_commit.md.
+      // Exemption does NOT apply (requirementDoc missing ⇒ getStageDeliverableExemptions returns []).
       const result = await checkDispatchConflicts(
         "develop",
         meta,
@@ -144,6 +146,27 @@ describe("guard-conflict-report", () => {
         ["docs/design/plan_commit.md"],
         () => ({ mode: "blocked" }),
         () => "nothing",
+      );
+      expect(result).not.toBeNull();
+      expect(result?.blocked).toBe(true);
+      expect(result?.conflictType).toBe("readonly_write");
+      expect(result?.report).toContain("Configuration conflict");
+      expect(result?.report).toContain("stage 'develop'");
+      expect(result?.report).toContain("Next step");
+    });
+
+    test("conflict i: requirementDoc missing + read-only does NOT hit contract pattern ⇒ pass", async () => {
+      const meta = {
+        currentStage: "fix",
+      } as SessionMeta;
+      // allowedReadOnlyPaths only covers src/** — no intersection with docs/design/*_plan_commit.md.
+      const result = await checkDispatchConflicts(
+        "fix",
+        meta,
+        ["src/**/*.ts"],
+        ["docs/design/plan_commit.md"],
+        () => ({ mode: "ordinary" }),
+        () => "full write",
       );
       expect(result).toBeNull();
     });
