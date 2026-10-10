@@ -20,18 +20,7 @@ import type {
 // identity payloads live in their own modules; types.ts only bridges them
 // into the persisted meta shapes (explicit re-exports, no implementation).
 import type { StandaloneUpdateArtifact } from "./core/design-review/update-artifact";
-import type {
-  StageExecutorBinding,
-  StageExecutorRun,
-  StageExecutorStatus,
-  StageExecutorRecovery,
-  StageExecutorStage,
-  StageCompletionDeclaration,
-  StageDeclarationRequester,
-  StageOwnerConsumption,
-  StageOwnerConsumptionState,
-  StageExecutorExpectation,
-} from "./core/stage-executor/contracts";
+import type { StageExecutorRun } from "./core/stage-executor/contracts";
 export type {
   StandaloneUpdateArtifact,
 } from "./core/design-review/update-artifact";
@@ -362,6 +351,8 @@ export interface ViolationItem {
   /** Optional suggestion (allowed tools/prefixes, protected paths) */
   suggestion?: string;
   /** Unix timestamp (ms) when the violation was recorded */
+  /** Phase 0 (195_Bug): Which guard layer produced this block (optional for backward compat) */
+  guardSource?: "read_only_path" | "dynamic_write_scope" | "git_policy" | "bash_destructive" | "legacy";
   timestamp: number;
 }
 
@@ -432,6 +423,28 @@ export interface SessionMeta {
 
   /** Ordered list of stages visited (for cycle detection) */
   stageVisitOrder?: PipelineStage[];
+
+  /**
+   * Phase 0 (195_Bug): Count of loop budget extensions via "set rounds" (question 24-B).
+   * Incremented when the owner grants additional loop cycles after exhaustion.
+   * Consumed by Phase 5/6 budget-extension gating.
+   */
+  loopBudgetExtensionCount?: number;
+
+  /**
+   * Phase 0 (195_Bug): Count of loop rewind operations (N8).
+   * Symmetric with loopBudgetExtensionCount — rewind zeroes loopCycleCount,
+   * so without a counter the max_loop_cycles breaker can be bypassed indefinitely.
+   * Consumed by Phase 5/6 rewind gating.
+   */
+  loopRewindCount?: number;
+
+  /**
+   * Phase 0 (195_Bug): Owner-side flag indicating a pending menu escalation (question 15-B).
+   * Set when the owner session needs to re-present the decision menu after a child-side
+   * freeze. Consumed by Phase 5/6 escalation gating.
+   */
+  menuEscalationPending?: boolean;
 
   /**
    * @deprecated Use flowState instead. Kept for backward-compatible reading only.

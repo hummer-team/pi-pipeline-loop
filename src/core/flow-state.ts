@@ -44,6 +44,9 @@ import { isAuthorizationValid } from "./design-review/state";
  * Fix for Issue #2: Include ui property to enable authorization gate TUI interaction.
  */
 function buildRoleCtxForGate(ctx: FlowStateCtx): RuntimeCtx {
+  // SAFETY: FlowStateCtx contains a subset of RuntimeCtx fields (_ctx, ui, session).
+  // This cast is safe because we only use role-detection APIs that don't access
+  // other RuntimeCtx properties (toolCall, etc.). Verified by session-role.ts contract.
   return { 
     _ctx: ctx._ctx,
     ui: ctx.ui,
@@ -1381,7 +1384,7 @@ export function clearDecisionTimer(pipelineId: string): void {
  * Clears all decision retry timers. Called on session shutdown to prevent leaks.
  */
 export function clearAllDecisionTimers(): void {
-  for (const [id, timer] of decisionRetryTimers) {
+  for (const [_id, timer] of decisionRetryTimers) {
     clearTimeout(timer);
   }
   decisionRetryTimers.clear();
@@ -1420,6 +1423,10 @@ export function __hasDecisionTimer(pipelineId: string): boolean {
  * 2. If flowState is "running" → set flowState="blocked" + blockedReason=reason
  * 3. Write audit `pipeline_blocked` (warn)
  * 4. Delegate to `promptDecisionMenu` for the actual UI interaction
+ *
+ * Phase 0 (195_Bug): blockedNextStage (line 1472) is display-only — it reads
+ * config.stages[currentStage].nextStage for audit/UI context, but does NOT
+ * influence stage transitions (flowState=blocked is the single source of truth).
  *
  * @param ctx - FlowStateCtx with session and optional UI
  * @param meta - Current SessionMeta snapshot

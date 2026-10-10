@@ -556,3 +556,21 @@ describe("194 Phase 3 (C3): JOINed child records its own binding", () => {
     expect(sink.length).toBe(1);
   });
 });
+
+  it("Phase 0 (195_Bug): maxLoopCycles=99 still flips budget-exhausted on 4th failure (decoupled from config.maxLoopCycles)", async () => {
+    adapter = makeRealAdapter(99); // Set config.maxLoopCycles to 99
+    seedMeta(baseMeta({
+      stageExecutorRun: makeRun({}, { status: "running", consecutiveFailures: 2, recovery: "awaiting-owner" }),
+    }));
+    const res = await applyExecutorTerminal({
+      session: adapter.session,
+      config: adapter.config,
+      evt: { event: "failed", agentId: AGENT, operationContext: makeOc() },
+    });
+    expect(res.action).toBe("applied");
+    if (res.action !== "applied") return;
+    // budgetLimitOf now returns DEFAULT_EXECUTOR_FAILURE_BUDGET (3), not config.maxLoopCycles
+    expect(res.budgetExhausted).toBe(true);
+    expect(res.run.recovery).toBe("budget-exhausted");
+    expect(res.run.consecutiveFailures).toBe(3);
+  });

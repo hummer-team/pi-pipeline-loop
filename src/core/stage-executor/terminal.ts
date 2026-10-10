@@ -31,6 +31,7 @@ import type {
   SessionMeta,
   SpawnOperationContext,
 } from "../../types";
+import { DEFAULT_EXECUTOR_FAILURE_BUDGET } from "../../constants";
 import type { ReliableMetaCommitResult } from "../../types";
 import { strictCommitMeta } from "../session-state";
 import { executorExpectationFromCurrent } from "./commit-guard";
@@ -117,9 +118,15 @@ export function isHandoffReceiptFinal(state: DesignReviewState | undefined): boo
     && op.dispatchEvidence === "trusted_id";
 }
 
-/** Default consecutive-failure budget (plan Phase 3 rule 6: 3, no 4th). */
+/**
+ * Default consecutive-failure budget for executor runs (Phase 0: issue195 T4/Q29).
+ * Decoupled from config.maxLoopCycles — executor failure budget is independent.
+ * References DEFAULT_EXECUTOR_FAILURE_BUDGET constant (advisory: 3, no 4th attempt).
+ */
 function budgetLimitOf(config: PipelineConfig): number {
-  return config.maxLoopCycles ?? 3;
+  // Phase 0 (195_Bug): return fixed constant, ignore config.maxLoopCycles
+  void config; // unused but kept for future flexibility
+  return DEFAULT_EXECUTOR_FAILURE_BUDGET;
 }
 
 /**

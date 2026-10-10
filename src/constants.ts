@@ -103,6 +103,27 @@ export const CONFIRM_GATE_REASK_MAX = 3;
 export const DEFAULT_MAX_VIOLATIONS = 3;
 
 /**
+ * Default maximum loop cycles before freeze (question 17-D).
+ * Used as the fallback when meta.maxLoopCycles and config.maxLoopCycles are both unset.
+ * Phase 0 (195_Bug): single source of truth for loop cycle budget default.
+ */
+export const DEFAULT_MAX_LOOP_CYCLES = 5;
+
+/**
+ * Default executor failure budget for stage-executor/terminal.ts budgetLimitOf (question 29-A).
+ * Independent from maxLoopCycles — executor failures are counted per loop visit, not per cycle.
+ * Phase 0 (195_Bug): decouples executor budget from loop cycle budget.
+ */
+export const DEFAULT_EXECUTOR_FAILURE_BUDGET = 3;
+
+/**
+ * Advisory-only: maximum bash_destructive prompt count before escalation.
+ * Phase 0 (195_Bug): declared but NOT wired to any freezeAndPrompt call chain (N2).
+ * Reserved for Phase 7 (bash_destructive guardSource-aware prompting).
+ */
+export const DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX = 5;
+
+/**
  * Default cap on confirm rejections per stage (post-verify confirm gate).
  * Stage-level `confirm.maxRejections` overrides this value.
  * When exceeded, behavior is controlled by `confirmOverflow` ("ask" | "terminate").

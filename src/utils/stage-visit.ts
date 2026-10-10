@@ -14,6 +14,7 @@
  */
 
 import type { SessionMeta, PipelineStage } from "../types";
+import { DEFAULT_MAX_LOOP_CYCLES } from "../constants";
 
 /**
  * Result of recording a stage visit.
@@ -71,4 +72,22 @@ export function recordStageVisit(
   };
 
   return { ok: true, patch };
+}
+
+/**
+ * Phase 0 (195_Bug): Three-level fallback accessor for loop budget.
+ * Single source of truth for maxLoopCycles resolution:
+ * 1. meta.maxLoopCycles (session-level override)
+ * 2. config.maxLoopCycles (config-level default)
+ * 3. DEFAULT_MAX_LOOP_CYCLES (hardcoded fallback)
+ * 
+ * Usage: All modules reading loop budget should call this instead of
+ * directly accessing meta.maxLoopCycles or config.maxLoopCycles.
+ * This prevents budget inflation and ensures consistent resolution.
+ */
+export function effectiveMax(
+  meta: Partial<SessionMeta>,
+  config: { maxLoopCycles?: number }
+): number {
+  return meta.maxLoopCycles ?? config.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES;
 }

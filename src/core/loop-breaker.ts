@@ -237,7 +237,7 @@ function looksLikeMissedTest(command: string): boolean {
  *
  * 1. **Loop circuit breaker** — When bash test commands fail in develop/fix stages,
  *    increments loopCount. After maxLoops failures, freezes the pipeline
- *    (switches to "awaiting_human") and writes an audit log entry.
+ *    (sets flowState=blocked) and writes an audit log entry.
  *
  * 2. **Diff archiving** — When write/edit tools succeed, computes old/new hashes
  *    and archives a diff file to `.pi/loops/{pipelineId}/step-{n}/loop-{n}/`.
