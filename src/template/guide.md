@@ -329,6 +329,34 @@ bun add @earendil-works/pi-pipeline
 
 ---
 
+### 3.4 Stage 级只读保护（allowedReadOnlyPaths）
+
+`allowedReadOnlyPaths` 为 stage 配置**只读路径集**，确保关键文档在特定阶段不被修改。
+
+**配置位置**：`stages.{stage}.allowedReadOnlyPaths`
+
+```jsonc
+{
+  "stages": {
+    "develop": {
+      "allowedReadOnlyPaths": ["docs/design/*_plan.md"]  // 默认值
+    },
+    "fix": {
+      "allowedReadOnlyPaths": ["docs/design/*_plan.md"]  // 默认值
+    }
+  }
+}
+```
+
+**设计意图**：
+- **保护 plan 本体只读**：develop/fix 阶段可自由编写代码，但 plan 文档（`*_plan.md`）在整个实现周期内不可修改，确保需求与设计的完整性
+- **建议使用精确形态 `*_plan.md`**：glob 中 `*` 匹配 `[^/]*`（不含路径分隔符），`*_plan.md` 精确匹配 plan 文档本身，不会意外覆盖 commit 文档等衍生文件
+- **`_plan_commit.md` 属框架契约交付物，已被判定层豁免**：develop/fix 阶段写入 `docs/design/{reqBase}_plan_commit.md` 时，判定层自动跳过只读拦截（审计事件 `readonly_exempt_applied`），无需手动配置白名单
+
+**优先级**：只读优先于写白名单（F8 设计）——当路径同时命中 `allowedWritePaths` 和 `allowedReadOnlyPaths` 时，只读拦截生效（豁免路径除外）。
+
+---
+
 ## 4. 启动 pipeline-start
 
 编写需求文档后，使用 `/pipeline-start` 命令启动流水线。**`doc_file` 为必填参数**：

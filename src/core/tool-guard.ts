@@ -34,9 +34,7 @@ import {
   isPathAllowedWrite,
   isPathReadOnly,
   isPathProtectedForModify,
-  isPathProtectedForGit,
   toProjectRelative,
-  resolveSymlinkPath,
   resolveSymlinkPathStrict,
   type ProtectState,
 } from "../utils/protect";
@@ -54,14 +52,14 @@ import {
 } from "./stage-executor/lifecycle-access";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
 import { resolveGitignoreSkipDirs } from "../utils/work-dir";
-import { buildProtectedPaths } from "../utils/protect";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText, formatDecisionMenuHint } from "./flow-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
-import { checkGitAdd, checkGitCommit, isGitWriteCommand, isGitForbidden, type GitCheckResult } from "../utils/git-protect";
+import { getStageDeliverableExemptions } from "./verify-path-resolver";
+import { checkGitAdd, checkGitCommit, isGitWriteCommand, isGitForbidden } from "../utils/git-protect";
 import { resolveGitModifyPolicy, describeGitModifySource } from "../utils/protect";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
@@ -117,17 +115,17 @@ function buildGitWriteBlockReason(config: PipelineConfig, currentStage: Pipeline
       : `matrix default for "${currentStage}"`;
   return `FORBIDDEN: git write command blocked in stage '${currentStage}'. Policy source: ${sourceHint}. To permit git writes, set protect.gitModify="allow" or stages.${currentStage}.protect.gitModify="allow" in pipeline_loop.json (protect.allow does NOT exempt git commands).${staleNotice ? " " + staleNotice : ""}`;
 }
-
 /**
  * Result of the stage-level write whitelist check.
  * - "block": Path is denied by stage whitelist or hardcoded protection.
  * - "allow-whitelist": Path is allowed by stage whitelist (skip global chain).
  * - "continue": No stage-level decision (full mode / undefined) — caller should apply global chain.
+ * - exempted?: boolean indicates the path was exempted from read-only check (195 Phase 1)
  */
 type StageWriteCheckResult =
-  | { status: "block"; reason: string }
-  | { status: "allow-whitelist" }
-  | { status: "continue" };
+  | { status: "block"; reason: string; exempted?: boolean }
+  | { status: "allow-whitelist"; exempted?: boolean }
+  | { status: "continue"; exempted?: boolean };
 
 /**
  * Test-only hook retained for backwards compatibility.
@@ -211,7 +209,7 @@ function warnReadOnlyWriteIntersection(
  * When the path is under .pi/audit/, append guidance directing the model to use
  * generate_stage_summary tool instead of writing directly.
  */
-function buildHardcodedForbiddenReason(relPath: string, hardcoded: string[]): string {
+function buildHardcodedForbiddenReason(relPath: string, _hardcoded: string[]): string {
   const base = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
   if (relPath.startsWith(".pi/audit/")) {
     return (
@@ -291,8 +289,19 @@ function checkStageWriteBlock(
   allowedWritePaths: string[] | undefined,
   stageName: string,
   state: ProtectState,
-  allowedReadOnlyPaths?: string[]
+  allowedReadOnlyPaths?: string[],
+  exemptedPaths?: string[]
 ): StageWriteCheckResult {
+  // 195 Phase 1: Check if path is in exempted list before read-only check.
+  // Exempted paths skip read-only interception and return exempted: true.
+  if (exemptedPaths && exemptedPaths.length > 0) {
+    const normalizedPath = path.normalize(relPath);
+    const isExempted = exemptedPaths.some(exempt => path.normalize(exempt) === normalizedPath);
+    if (isExempted) {
+      return { status: "continue", exempted: true };
+    }
+  }
+
   // Phase 0 (186): read-only path check BEFORE write whitelist.
   // Read-only paths take priority over allowedWritePaths on intersection.
   if (isPathReadOnly(relPath, allowedReadOnlyPaths)) {
@@ -551,8 +560,24 @@ async function checkBashFileTargets(
       // Session allowance early bypass
       if (sessionPaths.includes(relPath)) continue;
 
+      // 195 Phase 1: Get stage deliverable exemptions for read-only path checks
+      const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
+      
       // Stage-level write whitelist check (with read-only path priority)
-      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths);
+      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths);
+      
+      // 195 Phase 1: Audit log when path is exempted from read-only check
+      if (stageCheck.exempted) {
+        await safeWriteAuditLog(
+          meta.currentStage,
+          {
+
+            readonly_exempt_applied: `tool=bash, path=${relPath}`,
+
+          },
+          "info"
+        );
+      }
       if (stageCheck.status === "block") {
         if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
           // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
@@ -1355,8 +1380,24 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const sessionAllowed = sessionPaths.includes(relPath);
 
           if (!sessionAllowed) {
+            // 195 Phase 1: Get stage deliverable exemptions for read-only path checks
+            const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
+            
             // Stage-level write whitelist check (with read-only path priority)
-            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths);
+            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths);
+            
+            // 195 Phase 1: Audit log when path is exempted from read-only check
+            if (stageCheck.exempted) {
+              await safeWriteAuditLog(
+                meta.currentStage,
+                {
+
+                  readonly_exempt_applied: `tool=${toolName}, path=${relPath}`,
+
+                },
+                "info"
+              );
+            }
 
             if (stageCheck.status === "block") {
               // Phase 1 (190) Fix-A: child sessions hard-block immediately on protected paths

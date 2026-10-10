@@ -18,10 +18,43 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
-import type { VerifyRules, FileContentRule, VerifyGroupRuleNode } from "./verify-frontmatter";
+import type { VerifyRules, VerifyGroupRuleNode } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
 import { escapeRegExp } from "../utils/regex-utils";
 // 192 Phase 3: canonical report path derivation for the design-review stage
+/**
+ * Resolve the commit document path for a given requirement base name.
+ * Single source of truth for the contract deliverable path (195 Phase 1).
+ *
+ * @param reqBase - Requirement document base name (without .md extension)
+ * @returns Relative path to the commit document
+ */
+export function resolveCommitDocPath(reqBase: string): string {
+  return `docs/design/${reqBase}_plan_commit.md`;
+}
+
+/**
+ * Get stage deliverable exemptions for read-only path checks.
+ * When stage is develop/fix and requirementDoc exists, return the commit doc path
+ * as an exemption (195 Phase 1).
+ *
+ * @param meta - Session metadata
+ * @param stage - Current pipeline stage
+ * @returns Array of relative paths that are exempt from read-only checks
+ */
+export function getStageDeliverableExemptions(
+  meta: SessionMeta,
+  stage: PipelineStage
+): string[] {
+  if ((stage === "develop" || stage === "fix") && meta.requirementDoc) {
+    const reqBase = path.basename(meta.requirementDoc, ".md");
+    if (reqBase) {
+      return [resolveCommitDocPath(reqBase)];
+    }
+  }
+  return [];
+}
+
 // (state is a pure leaf module — no import cycle through this edge).
 import { deriveReportPath } from "./design-review/state";
 
@@ -210,7 +243,7 @@ export async function applyConcreteStageDocPaths(
     // Any commit doc MUST be named `{reqBase}_plan_commit.md` — this replaces
     // the loose `{reqBase}_*_commit.md` pattern that previously accepted
     // per-phase suffixes like `_phase0_`, `_dev_`, `_develop_` drift.
-    concreteGlob = `docs/design/${reqBase}_plan_commit.md`;
+    concreteGlob = resolveCommitDocPath(reqBase);
     return replaceGlobInRules(result, isCommitDocGlob, concreteGlob);
   }
 
