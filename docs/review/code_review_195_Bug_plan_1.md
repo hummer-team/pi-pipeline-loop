@@ -91,7 +91,7 @@
 - 问题: `remainingRounds` 口径**未扣减 `c0Used`**，与 plan N5 数值表（R1 ⇒ 4/5）不符：`src/core/flow-state.ts:1490`（`freezeAndPrompt` 的 `pipeline_blocked` 审计）、`src/core/verify-advance.ts:224`、`src/core/prompt-injector.ts:707`（`buildLowBudgetWarning`；:705 注释声称"derive from deriveReworkLoopGate … c0Used"，代码实为 `maxCycles - loopCycleCount`）。仅在 `max_loop_cycles` 冻结点两者偶然一致（均为 0/5），非回环冻结点相差 1。develop ledger ② 的"等价"理由经复核不成立。
 - 等级：Medium
 - 符合规划：否
-- 是否修复：已修复 `[FIXED] commit: 284759a`
+- 是否修复：已修复 `[FIXED] commit: 93ce209`
 - 改进建议：抽一个共享 helper（如 `remainingRoundsOf(meta, config)`）统一三处，并由 `stageVisitOrder`/`deriveReworkLoopGate` 派生 c0Used；补一条数值表驱动单测（R1=4、R2=3 …），避免三处各自演进。
 
 ### 问题 10
@@ -105,7 +105,7 @@
 - 问题: `src/core/prompt-injector.ts:476-509`（`buildViolationPrompt` 分桶改写）—— P7 计划明确要求的两处文案侧行为未实现：(a) 任务 3 要求 `bash_destructive` 桶**明确"该类不触发冻结"**，实现只输出 `## bash_destructive (N)` 与条目，无任何"仅建议、不冻结"标注（`rg '不触发冻结|advisory' src/core/prompt-injector.ts` = 0 命中）；(b) 任务 2 要求 `bucketCount ≥ 5` 后"文案升级为收尾提示（仅提示）"，实现仅在 `violation-tracker.ts` 记录 `bucketLimit`（`DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX`），无任何文案升级。后果：模型仍可能把 bash 建议类违规误读为临近冻结，且计划要求的降级提示缺失。
 - 等级：Medium
 - 符合规划：否
-- 是否修复：已修复 `[FIXED] commit: 2614189`
+- 是否修复：已修复 `[FIXED] commit: 0ad3b10`
 - 改进建议：按桶注入尾部说明（`bash_destructive` → "advisory only, does not trigger freeze"），并在 `bucketCount >= DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX` 时切换为收尾提示文案；补一条断言文本的用例（现无用例覆盖文案）。
 
 ### 问题 12
@@ -167,9 +167,9 @@
 | 问题 6 | Medium | - | 已在先前 commit 中修复 |
 | 问题 7 | Medium | - | 已在先前 commit 中修复 |
 | 问题 8 | Medium | `534e4c8` | 合并 4 个未授权事件名为 `dispatch_conflict_blocked` + `site` 字段 |
-| 问题 9 | Medium | `284759a` | 提取 `remainingRoundsOf` 共享 helper，统一三处扣减 `c0Used` |
+| 问题 9 | Medium | `93ce209` | 提取 `remainingRoundsOf` 共享 helper，统一三处扣减 `c0Used` |
 | 问题 10 | Medium | - | 已在先前 commit 中修复 |
-| 问题 11 | Medium | `2614189` | 为 `bash_destructive` 桶添加 advisory 标注，实现收尾提示文案升级 |
+| 问题 11 | Medium | `0ad3b10` | 为 `bash_destructive` 桶添加 advisory 标注，实现收尾提示文案升级 |
 | 问题 12 | Medium | `09d0fff` | 重构 `buildLowBudgetWarning`：类型安全、静态导入、await 审计、错误日志 |
 | 问题 13 | Medium | - | 已在先前 commit 中修复 |
 
