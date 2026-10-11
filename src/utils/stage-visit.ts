@@ -225,3 +225,33 @@ export function effectiveMax(
 ): number {
   return meta.maxLoopCycles ?? config?.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES;
 }
+
+/**
+ * Calculate remaining rework rounds using the unified formula from plan :318.
+ * 
+ * Formula: remainingRounds = effectiveMax(meta, config) − loopCycleCount − c0Used
+ * 
+ * Where c0Used is derived from deriveReworkLoopGate:
+ * - If deriveReworkLoopGate returns non-null (in rework loop), c0Used = 1
+ * - If deriveReworkLoopGate returns null (in design-review cycle), c0Used = 0
+ * 
+ * Value table (max=5, N5):
+ * - Not started: 5/5 (count=0, c0Used=0)
+ * - R1 in progress: 4/5 (count=0, c0Used=1)
+ * - R4 completed: 1/5 (count=3, c0Used=1, warning)
+ * - R5 completed: 0/5 (count=4, c0Used=1, freeze)
+ * 
+ * @param meta - SessionMeta with loopCycleCount and stageVisitOrder
+ * @param config - PipelineConfig for effectiveMax calculation
+ * @returns Number of remaining rework rounds
+ */
+export function remainingRoundsOf(
+  meta: Pick<SessionMeta, "maxLoopCycles" | "loopCycleCount" | "stageVisitOrder" | "currentStage">,
+  config: PipelineConfig | undefined
+): number {
+  const max = effectiveMax(meta, config);
+  const count = meta.loopCycleCount ?? 0;
+  const gate = deriveReworkLoopGate(meta, config);
+  const c0Used = gate !== null ? 1 : 0;
+  return max - count - c0Used;
+}

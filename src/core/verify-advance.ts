@@ -17,7 +17,7 @@ import { freezeAndPrompt } from "./flow-state";
 import { buildDesignReviewReportFeedback } from "./design-review/report-feedback";
 // 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
 import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard";
-import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
+import { recordStageVisit, effectiveMax, remainingRoundsOf } from "../utils/stage-visit";
 // 194 Phase 3 (C5): bound exits and failure records go through strict commits
 import {
   boundActiveRun,
@@ -221,7 +221,7 @@ export async function applyVerifyPass(
         reason: "budget_exceeded",
         loopCycleCount: String(meta.loopCycleCount ?? 0),
         maxLoopCycles: String(effectiveMax(meta, ctx.config)),
-        remainingRounds: String(effectiveMax(meta, ctx.config) - (meta.loopCycleCount ?? 0)),
+        remainingRounds: String(remainingRoundsOf(meta, ctx.config)),
         rulesSource: verifyResult?.rulesSource ?? "",
         rulesParsed: verifyResult?.rulesParsed ?? false,
         selfVerifySkip: verifyResult?.selfVerifySkip ?? false,

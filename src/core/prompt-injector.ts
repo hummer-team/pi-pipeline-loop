@@ -62,7 +62,7 @@ import {
   describeWriteScope,
 } from "./design-review/write-policy";
 import type { RuntimeCtx } from "./runtime-ctx";
-import { effectiveMax } from "../utils/stage-visit";
+import { effectiveMax, remainingRoundsOf } from "../utils/stage-visit";
 
 /**
  * Builds Part 1: Context Reference.
@@ -721,7 +721,7 @@ async function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, 
   const loopCycleCount = meta.loopCycleCount ?? 0;
   // c0Used: derive from deriveReworkLoopGate - first visit to gate stage resets count
   // For simplicity, use the same formula as audit: max - loopCycleCount
-  const remainingRounds = maxCycles - loopCycleCount;
+  const remainingRounds = remainingRoundsOf(meta, config);
   
   // Single-trigger: only when remainingRounds === 1
   if (remainingRounds !== 1) {
