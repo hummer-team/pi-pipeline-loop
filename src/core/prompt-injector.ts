@@ -25,7 +25,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -500,6 +500,23 @@ function buildViolationPrompt(meta: SessionMeta): string | null {
       const correction = v.suggestion ? `${v.detail} ${v.suggestion}` : v.detail;
       lines.push(`- ${tag}: ${correction}`);
     }
+    // M11: Add tail explanation for bash_destructive bucket
+    if (bucket === "bash_destructive") {
+      lines.push(`\n*Note: This bucket is advisory-only and does NOT trigger pipeline freeze.*`);
+    }
+  }
+
+  // M11: Check if bucketCount >= DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX for closing prompt upgrade
+  const bashDestructiveCount = buckets.get("bash_destructive")?.length ?? 0;
+  const isClosingPrompt = bashDestructiveCount >= DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX;
+
+  if (isClosingPrompt) {
+    return (
+      `# ⚠️ VIOLATION SUMMARY (CLOSING PHASE)\n` +
+      `Buckets: ${bucketSummaries.join(", ")}\n` +
+      `Your actions have been flagged by violation guards. This is an advisory summary — no freeze will occur. Please review your approach before continuing.\n` +
+      lines.join("\n")
+    );
   }
 
   return (
@@ -699,7 +716,7 @@ function buildPipelineStateSection(
  * Phase 4 (task 4): Build low-budget warning section for remainingRounds === 1.
  * Single-trigger: only when exactly 1 round remains and not yet warned.
  */
-function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, ctx?: any): string {
+async function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, ctx?: RuntimeCtx): Promise<string> {
   const maxCycles = effectiveMax(meta, config);
   const loopCycleCount = meta.loopCycleCount ?? 0;
   // c0Used: derive from deriveReworkLoopGate - first visit to gate stage resets count
@@ -719,23 +736,32 @@ function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, ctx?: 
   // Audit loop_budget_low (single-trigger)
   if (ctx && ctx.session) {
     try {
-      const { safeWriteAuditLog } = require('../utils/auditLog');
-      safeWriteAuditLog("loop_budget_low", {
+      await safeWriteAuditLog("loop_budget_low", {
         pipelineId: meta.pipelineId,
         stage: meta.currentStage,
-        remainingRounds,
-        maxLoopCycles: maxCycles,
-        loopCycleCount,
+        remainingRounds: String(remainingRounds),
+        maxLoopCycles: String(maxCycles),
+        loopCycleCount: String(loopCycleCount),
       }, "warn");
-    } catch {
-      // Fail-open: audit must never block injection
+    } catch (err) {
+      // Fail-open with error log: audit must never block injection
+      await safeWriteAuditLog("loop_budget_low_audit_failed", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        error: err instanceof Error ? err.message : String(err),
+      }, "error");
     }
     
     // Owner notify (single-trigger)
     try {
       ctx.ui?.notify?.(`⚠️ Low budget warning: ${remainingRounds}/${maxCycles} rounds remaining. Next budget exceed will freeze the pipeline.`);
-    } catch {
-      // Fail-open: notify must never block injection
+    } catch (err) {
+      // Fail-open with error log: notify must never block injection
+      await safeWriteAuditLog("loop_budget_low_notify_failed", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        error: err instanceof Error ? err.message : String(err),
+      }, "error");
     }
   }
   
@@ -743,8 +769,13 @@ function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, ctx?: 
   if (ctx && ctx.session) {
     try {
       ctx.session.updateMeta({ loopBudgetWarned: true });
-    } catch {
-      // Fail-open: meta update must never block injection
+    } catch (err) {
+      // Fail-open with warn log: meta update failure may cause repeat warnings
+      await safeWriteAuditLog("loop_budget_low_meta_update_failed", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        error: err instanceof Error ? err.message : String(err),
+      }, "warn");
     }
   }
   
@@ -905,7 +936,7 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         : "";
 
         // Phase 4 (task 4): inject LOW BUDGET WARNING for remainingRounds === 1
-  const lowBudgetWarning = buildLowBudgetWarning(config, meta, ctx);
+  const lowBudgetWarning = await buildLowBudgetWarning(config, meta, ctx);
   const lowBudgetSuffix = lowBudgetWarning
     ? "\n\n---\n\n" + lowBudgetWarning
     : "";
