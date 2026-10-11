@@ -15,6 +15,7 @@
 
 import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
+import { effectiveMax } from "../utils/stage-visit";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
 import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER } from "../constants";
@@ -1484,6 +1485,9 @@ export async function freezeAndPrompt(
     nextStage: blockedNextStage ?? "null",
     nextAction: formatDecisionMenuHint(),
     hostRole,
+    loopCycleCount: String(meta.loopCycleCount ?? 0),
+    maxLoopCycles: String(effectiveMax(meta, config)),
+    remainingRounds: String(effectiveMax(meta, config) - (meta.loopCycleCount ?? 0)),
   }, "warn");
 
   // Phase 4 (189): Notify regardless of hostRole — child TUI shows the block,

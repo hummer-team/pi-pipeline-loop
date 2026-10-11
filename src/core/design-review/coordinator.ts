@@ -87,7 +87,7 @@ import type {
   HumanDecision,
   HumanDecisionReviewIdentity,
 } from "./decision-types";
-import { recordStageVisit } from "../../utils/stage-visit";
+import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
 import { spawnStageSubagent, type DesignReviewTerminalEvent, type StageDispatchOutcome } from "../../utils/subagent-rpc";
 // 194 Phase 3 (tasks 2/3): closed-loop executor run lifecycle + trusted wake.
 import { issueExecutorRunOnDispatch, applyExecutorTerminal, isHandoffReceiptFinal } from "../stage-executor/terminal";
@@ -1079,7 +1079,7 @@ async function handleFail(
   const updatePrompt = prepared.candidate.prompt;
 
   // Record transition ONLY now that the dispatch is proven possible.
-  const visitResult = recordStageVisit(meta, "plan", ctx.config.maxLoopCycles ?? 3, ctx.config);
+  const visitResult = recordStageVisit(meta, "plan", effectiveMax(meta, ctx.config), ctx.config);
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
@@ -1924,7 +1924,7 @@ async function handleUpdateRunning(
   };
 
   // Record transition
-  const visitResult = recordStageVisit(meta, "design-review", ctx.config.maxLoopCycles ?? 3, ctx.config);
+  const visitResult = recordStageVisit(meta, "design-review", effectiveMax(meta, ctx.config), ctx.config);
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
@@ -2190,7 +2190,7 @@ function checkBudget(
   config: PipelineConfig,
 ): { ok: boolean; current: number; max: number } {
   const current = meta.loopCycleCount ?? 0;
-  const max = config.maxLoopCycles ?? 3;
+  const max = effectiveMax(meta, config);
   return { ok: current < max, current, max };
 }
 

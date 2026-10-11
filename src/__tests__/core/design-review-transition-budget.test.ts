@@ -176,7 +176,7 @@ describe("192 Phase 4: DR192-01 handoff windows + budget freeze", () => {
     expect(after.designReview?.operation?.operationId).toBe(handoffId);
   });
 
-  it("budget default 3: FAIL consumption at cap FREEZES via the hook (flowState actually blocked)", async () => {
+  it("budget default 5: FAIL consumption at cap FREEZES via the hook (flowState actually blocked)", async () => {
     // report present; loopCycleCount at cap → coordinator frozen; hook must
     // translate that into a REAL freeze (flowState blocked), not just a string.
     fs.writeFileSync(deriveReportPath(planDoc, 1), reviewReportContent({
@@ -196,7 +196,7 @@ describe("192 Phase 4: DR192-01 handoff windows + budget freeze", () => {
         phase: "review_running",
         operation: boundReviewOperation(OP, planHash),
       },
-      loopCycleCount: 3, // == default maxLoopCycles
+      loopCycleCount: 5, // == default maxLoopCycles
     });
     const session = makeStrictSession(meta);
     let menuOpened = false;

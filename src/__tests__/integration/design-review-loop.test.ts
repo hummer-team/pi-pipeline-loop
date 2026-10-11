@@ -574,7 +574,7 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
   });
 
   it("budget successor (strong): at-cap FAIL → EXACTLY frozen with budget_exceeded, phase/report untouched", async () => {
-    const { ctx, meta } = reviewRunningCtx({ loopCycleCount: 3 });
+    const { ctx, meta } = reviewRunningCtx({ loopCycleCount: 5 });
     fs.writeFileSync(
       deriveReportPath(planDoc, 1),
       reviewReportContent({

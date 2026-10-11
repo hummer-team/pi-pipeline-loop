@@ -161,7 +161,7 @@ describe("resolvePipelineConfig", () => {
     expect(result.auditDir).toBe(".pi/audit");
     expect(result.domainDir).toBe(".pi/domains");
     expect(result.maxLoops).toBe(3);
-    expect(result.maxLoopCycles).toBe(3);
+    expect(result.maxLoopCycles).toBe(5);
   });
 
   it("fills verify config defaults", () => {

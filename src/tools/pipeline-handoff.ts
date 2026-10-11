@@ -12,7 +12,7 @@ import { freezeAndPrompt } from "../core/flow-state";
 import { checkStageSummaryHash } from "../utils/summary-hash";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
-import { recordStageVisit } from "../utils/stage-visit";
+import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
 import { toProjectRelative } from "../utils/path-display";
 import { isDormant } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
@@ -217,7 +217,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
 
       // Cycle detection: unified via recordStageVisit helper (DRY with stage-advancer,
       // routeConfirmReject, verify-advance). Preserves original handoff semantics.
-      const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
+      const maxCycles = effectiveMax(meta, config);
       const visitResult = recordStageVisit(meta, nextStage, maxCycles, config);
 
       if (!visitResult.ok) {

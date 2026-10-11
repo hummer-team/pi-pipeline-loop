@@ -62,6 +62,7 @@ import {
   describeWriteScope,
 } from "./design-review/write-policy";
 import type { RuntimeCtx } from "./runtime-ctx";
+import { effectiveMax } from "../utils/stage-visit";
 
 /**
  * Builds Part 1: Context Reference.
@@ -672,6 +673,62 @@ function buildPipelineStateSection(
  * @param config - The pipeline configuration
  * @returns A Hook object for the "before_agent_start" event
  */
+/**
+ * Phase 4 (task 4): Build low-budget warning section for remainingRounds === 1.
+ * Single-trigger: only when exactly 1 round remains and not yet warned.
+ */
+function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, ctx?: any): string {
+  const maxCycles = effectiveMax(meta, config);
+  const loopCycleCount = meta.loopCycleCount ?? 0;
+  // c0Used: derive from deriveReworkLoopGate - first visit to gate stage resets count
+  // For simplicity, use the same formula as audit: max - loopCycleCount
+  const remainingRounds = maxCycles - loopCycleCount;
+  
+  // Single-trigger: only when remainingRounds === 1
+  if (remainingRounds !== 1) {
+    return "";
+  }
+  
+  // Check if already warned (use meta flag)
+  if (meta.loopBudgetWarned) {
+    return "";
+  }
+  
+  // Audit loop_budget_low (single-trigger)
+  if (ctx && ctx.session) {
+    try {
+      const { safeWriteAuditLog } = require('../utils/auditLog');
+      safeWriteAuditLog("loop_budget_low", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        remainingRounds,
+        maxLoopCycles: maxCycles,
+        loopCycleCount,
+      }, "warn");
+    } catch {
+      // Fail-open: audit must never block injection
+    }
+    
+    // Owner notify (single-trigger)
+    try {
+      ctx.ui?.notify?.(`⚠️ Low budget warning: ${remainingRounds}/${maxCycles} rounds remaining. Next budget exceed will freeze the pipeline.`);
+    } catch {
+      // Fail-open: notify must never block injection
+    }
+  }
+  
+  // Mark as warned to prevent repeat warnings
+  if (ctx && ctx.session) {
+    try {
+      ctx.session.updateMeta({ loopBudgetWarned: true });
+    } catch {
+      // Fail-open: meta update must never block injection
+    }
+  }
+  
+  return `## ⚠️ LOW BUDGET WARNING\n\nRemaining rework rounds: **${remainingRounds}/${maxCycles}**. Next budget exceed will freeze the pipeline.\n`;
+}
+
 export function createPromptInjector(config: PipelineConfig): Hook<"before_agent_start"> {
   return {
     event: "before_agent_start",
@@ -825,7 +882,13 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
         ? "\n\n---\n\n" + runHealthWarning
         : "";
 
-      const pluginPromptFull = pluginPrompt + pipelineStateSuffix + runHealthSuffix;
+        // Phase 4 (task 4): inject LOW BUDGET WARNING for remainingRounds === 1
+  const lowBudgetWarning = buildLowBudgetWarning(config, meta, ctx);
+  const lowBudgetSuffix = lowBudgetWarning
+    ? "\n\n---\n\n" + lowBudgetWarning
+    : "";
+
+  const pluginPromptFull = pluginPrompt + pipelineStateSuffix + runHealthSuffix + lowBudgetSuffix;
 
       // 194 Phase 2 (task 4 / C4): the FINAL plugin content — yml template,
       // fallback, or default assembly, plus frozen-state and run-health

@@ -2,7 +2,9 @@
   "_comment": "EXCLUSION DECLARATION: Keys 'spawnSubagentOnClarify' and 'agentMentions' do NOT exist in this plugin (0 hits in codebase). Do not add them here. See guide.md §14 for valid configuration keys. NOTE: the plugin performs a READ-ONLY probe of the separate pi-subagents config .pi/subagents.json (agentMentions) to surface the 'model' rewrite mode; it never writes or overwrites that file.",
   "startStageMode": "auto",
   "llmExtract": true,
-  "output": { "pipelineStage": true },
+  "output": {
+    "pipelineStage": true
+  },
   "spawnWaitTimeoutMs": 120000,
   "_comment_spawnWaitTimeoutMs": "Safety-net wait (ms) before escalating to manual handling while a same-named subagent is still live. Shared by stage-spawn deferral (G3) and confirm-gate deferral (G5/G7). Must be a positive integer; invalid values warn and fall back to 120000.",
   "maxConfirmRejections": 5,
@@ -11,6 +13,8 @@
   "piWorkDir": ".pi",
   "_comment_piWorkDir": "Plugin-owned asset directory (relative to projectRoot). Default \".pi\". All \".pi/\"-prefixed config values (auditDir, domainDir, stage agentPath, verifyFile) are rewritten to this directory at resolve time. EXCEPTION: the config anchor file `.pi/pipeline_loop.json` is NEVER affected by this setting — it always lives at `.pi/pipeline_loop.json`. Constraints: non-empty string, relative path, no '..' segments; invalid values warn and fall back to \".pi\". Changing this value requires re-running /pipeline-init and restarting pi to take effect.",
   "maxLoops": 3,
+  "maxLoopCycles": 5,
+  "_comment_maxLoopCycles": "Maximum rework loop cycles (review↔fix rounds); default 5",
   "maxVerifyAttempts": 3,
   "protect": {
     "gitignore": true,
@@ -19,54 +23,94 @@
     "gitModify": "allow",
     "_comment_allow": "Add paths here to exempt from gitignore protection (prefix match). Example: [\"docs/\"] exempts docs/** from gitignore blocking. NOTE: allowedWritePaths per-stage is NOT the exemption channel — use protect.allow for gitignore exemption."
   },
-  "audit": { "promptSnapshot": "full" },
-  "init": { "conflictCheck": "model" },
+  "audit": {
+    "promptSnapshot": "full"
+  },
+  "init": {
+    "conflictCheck": "model"
+  },
   "stages": {
     "clarify": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
       "skillPath": "design/SKILL.md",
       "nextStage": "plan",
-      "verify": { "require": true, "completionMarker": "## 模型确认" },
-      "guard": { "blockedTools": [], "suppressDuplicateSpawn": true }
+      "verify": {
+        "require": true,
+        "completionMarker": "## 模型确认"
+      },
+      "guard": {
+        "blockedTools": [],
+        "suppressDuplicateSpawn": true
+      }
     },
     "plan": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",
       "skillPath": "plan/SKILL.md",
       "nextStage": "develop",
-      "verify": { "require": true },
-      "confirm": { "mode": "manual" },
-      "guard": { "suppressDuplicateSpawn": true }
+      "verify": {
+        "require": true
+      },
+      "confirm": {
+        "mode": "manual"
+      },
+      "guard": {
+        "suppressDuplicateSpawn": true
+      }
     },
     "design-review": {
       "agentPath": ".pi/agents/design-review-agent.md",
       "skillPath": "design-review/SKILL.md",
       "nextStage": "develop",
-      "verify": { "require": true },
-      "confirm": { "mode": "auto" },
-      "allowedWritePaths": ["docs/"]
+      "verify": {
+        "require": true
+      },
+      "confirm": {
+        "mode": "auto"
+      },
+      "allowedWritePaths": [
+        "docs/"
+      ]
     },
     "develop": {
       "agentPath": ".pi/agents/develop-agent.md",
       "skillPath": "develop/SKILL.md",
       "nextStage": "review",
-      "allowedReadOnlyPaths": ["docs/design/*_plan.md"],
-      "verify": { "require": true, "selfVerifySkip": true }
+      "allowedReadOnlyPaths": [
+        "docs/design/*_plan.md"
+      ],
+      "verify": {
+        "require": true,
+        "selfVerifySkip": true
+      }
     },
     "review": {
       "agentPath": ".pi/agents/code-review-agent.md",
       "skillPath": "review/SKILL.md",
       "nextStage": "completed",
-      "verify": { "require": true },
-      "confirm": { "mode": "manual" }
+      "verify": {
+        "require": true
+      },
+      "confirm": {
+        "mode": "manual"
+      }
     },
     "fix": {
       "agentPath": ".pi/agents/code-review-withfix-agent.md",
       "skillPath": "fix/SKILL.md",
       "nextStage": "review",
-      "allowedReadOnlyPaths": ["docs/design/*_plan.md"],
-      "verify": { "require": true, "selfVerifySkip": true }
+      "allowedReadOnlyPaths": [
+        "docs/design/*_plan.md"
+      ],
+      "verify": {
+        "require": true,
+        "selfVerifySkip": true
+      }
     },
-    "awaiting_human": { "nextStage": null },
-    "completed": { "nextStage": null }
+    "awaiting_human": {
+      "nextStage": null
+    },
+    "completed": {
+      "nextStage": null
+    }
   }
 }

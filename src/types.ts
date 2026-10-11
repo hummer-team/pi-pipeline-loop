@@ -432,6 +432,12 @@ export interface SessionMeta {
   loopBudgetExtensionCount?: number;
 
   /**
+   * Phase 4 (task 4): Single-trigger flag for low-budget warning.
+   * Set true when remainingRounds === 1 and warning emitted; prevents repeat warnings.
+   */
+  loopBudgetWarned?: boolean;
+
+  /**
    * Phase 0 (195_Bug): Count of loop rewind operations (N8).
    * Symmetric with loopBudgetExtensionCount — rewind zeroes loopCycleCount,
    * so without a counter the max_loop_cycles breaker can be bypassed indefinitely.

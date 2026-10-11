@@ -15,6 +15,7 @@ import {
   DEFAULT_VERIFY_FILE,
   resolveStagePath,
   RESUMABLE_STAGES,
+  DEFAULT_MAX_LOOP_CYCLES,
 } from "../constants";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -279,7 +280,7 @@ function buildRestartMeta(
     loopCount: 0,
     currentStepIndex: 0,
     maxLoops: config.maxLoops || 3,
-    maxLoopCycles: config.maxLoopCycles ?? 3,
+    maxLoopCycles: config.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES,
     flowState: "running",
     verifyAttempts: 0,
     verifyFailures: [],
@@ -359,7 +360,7 @@ export function buildStartMeta(
     loopCount: 0,
     currentStepIndex: 0,
     maxLoops: config.maxLoops || 3,
-    maxLoopCycles: config.maxLoopCycles ?? 3,
+    maxLoopCycles: config.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES,
     flowState: "running",
     verifyAttempts: 0,
     verifyFailures: [],
@@ -477,7 +478,7 @@ export function buildResumeMeta(
     summaries: meta.summaries ?? {},
     contextFiles: meta.contextFiles,
     maxLoops: config.maxLoops ?? meta.maxLoops ?? 3,
-    maxLoopCycles: config.maxLoopCycles ?? meta.maxLoopCycles ?? 3,
+    maxLoopCycles: meta.maxLoopCycles ?? config.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES,
     // Phase 4 (191): preserve designReview authorization on resume for recovery —
     // if the pipeline was aborted during design-review stages, the authorization
     // must be retained so recovery can resume from where it left off.

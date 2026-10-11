@@ -157,7 +157,7 @@ bun add @earendil-works/pi-pipeline
 {
   // ── 顶层字段 ──
   "maxLoops": 3,                    // 单阶段最大测试失败重试次数
-  "maxLoopCycles": 3,               // 流水线循环周期上限（review/fix/develop 回环计数）
+  "maxLoopCycles": 5,               // 流水线循环周期上限（review/fix/develop 回环计数）
   "llmExtract": true,               // 启用 LLM 辅助提取交付项（推荐开启，结合技术栈检测）
    "auditDir": ".pi/audit",          // 审计日志目录
    "piWorkDir": ".pi",                // 插件资产目录（相对 projectRoot，默认 ".pi"）：所有 ".pi/" 前缀配置值在此解析期重写为该目录；例外：配置锚点 `.pi/pipeline_loop.json` 不受其影响。约束：非空字符串、相对路径、禁止 ".." 段；非法值告警并回落 ".pi"。修改后需重跑 /pipeline-init 并重启 pi 生效

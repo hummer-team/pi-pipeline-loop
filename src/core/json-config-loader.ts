@@ -24,6 +24,7 @@ import {
   DEFAULT_CONFIRM_MAX_REJECTIONS,
   DEFAULT_CONFIRM_OVERFLOW,
   DEFAULT_SPAWN_WAIT_TIMEOUT_MS,
+  DEFAULT_MAX_LOOP_CYCLES,
   STAGE_TYPE_TOOL_DEFAULTS,
   resolveStagePath,
 } from "../constants";
@@ -821,7 +822,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     seenCycleKeys.add(normalizedKey);
     console.info(
       `[pi-pipeline] Circular reference detected: ${normalizedKey}. ` +
-        `maxLoopCycles=${json.maxLoopCycles ?? 3} will limit cycles.`,
+        `maxLoopCycles=${json.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES} will limit cycles.`,
     );
   }
 
@@ -837,7 +838,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     domainDir: rewritePiPrefix(rawDomainDir, piWorkDir),
     piWorkDir,
     maxLoops: json.maxLoops ?? 3,
-    maxLoopCycles: json.maxLoopCycles ?? 3,
+    maxLoopCycles: json.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES,
     maxVerifyAttempts: json.maxVerifyAttempts ?? json.maxLoops ?? 3,
     // Validated again here so callers constructing a PipelineJsonConfig directly
     // (bypassing loadJsonConfig) still get invalid-value guarding + the default.

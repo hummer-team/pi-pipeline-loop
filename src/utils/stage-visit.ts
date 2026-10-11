@@ -55,7 +55,7 @@ export type StageVisitResult =
  */
 export function classifyVisitEdge(
   meta: Pick<SessionMeta, "currentStage" | "stageVisitOrder">,
-  config: PipelineConfig,
+  config: PipelineConfig | undefined,
   target: PipelineStage,
 ): { kind: VisitEdgeKind; counted: boolean } {
   const source = meta.currentStage;
@@ -67,7 +67,7 @@ export function classifyVisitEdge(
   }
 
   // C1: forward edge — config-defined nextStage chain
-  const sourceNext = config.stages[source]?.nextStage;
+  const sourceNext = config?.stages[source]?.nextStage;
   if (target === sourceNext) {
     return { kind: "forward", counted: false };
   }
@@ -80,7 +80,7 @@ export function classifyVisitEdge(
   }
 
   // C3: loop_return — entering a stage whose config.nextStage points back to source
-  const targetNext = config.stages[target]?.nextStage;
+  const targetNext = config?.stages[target]?.nextStage;
   if (targetNext === source) {
     return { kind: "loop_return", counted: true };
   }
@@ -105,7 +105,7 @@ export function recordStageVisit(
   meta: SessionMeta,
   nextStage: PipelineStage,
   maxCycles: number,
-  config: PipelineConfig,
+  config: PipelineConfig | undefined,
 ): StageVisitResult {
   const visitOrder = meta.stageVisitOrder ?? [];
   const edge = classifyVisitEdge(
@@ -162,7 +162,7 @@ export function recordStageVisit(
  */
 export function deriveReworkLoopGate(
   meta: Pick<SessionMeta, "stageVisitOrder">,
-  config: PipelineConfig,
+  config: PipelineConfig | undefined,
 ): PipelineStage | null {
   const visitOrder = meta.stageVisitOrder ?? [];
   if (visitOrder.length < 2) {
@@ -181,7 +181,7 @@ export function deriveReworkLoopGate(
     if (edge.counted) {
       // I2 constraint: gate must be a valid stage and not a terminal/non-rework stage
       if (
-        config.stages[source] &&
+        config?.stages[source] &&
         source !== "completed" &&
         source !== "awaiting_human"
       ) {
@@ -202,7 +202,7 @@ export function deriveReworkLoopGate(
  */
 export function effectiveMax(
   meta: Partial<SessionMeta>,
-  config: { maxLoopCycles?: number }
+  config: { maxLoopCycles?: number } | undefined
 ): number {
-  return meta.maxLoopCycles ?? config.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES;
+  return meta.maxLoopCycles ?? config?.maxLoopCycles ?? DEFAULT_MAX_LOOP_CYCLES;
 }

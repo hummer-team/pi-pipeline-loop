@@ -40,7 +40,7 @@ import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
-import { recordStageVisit } from "../utils/stage-visit";
+import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
 import { isDormant } from "./dormancy";
 import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
@@ -390,7 +390,7 @@ async function routeConfirmReject(
   // cycle count semantics match handoff)
   const sessionForSpawn = ctx.session as unknown as { getMeta?: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined };
   const freshMetaForVisit = sessionForSpawn.getMeta?.() ?? meta;
-  const maxCycles = freshMetaForVisit.maxLoopCycles ?? config.maxLoopCycles ?? 3;
+  const maxCycles = effectiveMax(freshMetaForVisit, config);
   const visitResult = recordStageVisit(freshMetaForVisit, toStage, maxCycles, config);
 
   // Nit 4 (reaudit): honor recordStageVisit().ok — when maxLoopCycles reached,
@@ -1147,7 +1147,7 @@ export async function maybeHandleConfirmGate(
       });
       
       // Record stage visit to design-review (without writing confirmation markers)
-      const visitResult = recordStageVisit(meta, "design-review", config.maxLoopCycles ?? 3, config);
+      const visitResult = recordStageVisit(meta, "design-review", effectiveMax(meta, config), config);
       if (!visitResult.ok) {
         ui.notify(ctx, `Auto Review Plan failed: max loop cycle limit reached`);
         return { result: "handled", action: "pending" };
@@ -1917,7 +1917,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // (e) Advance to target stage
       // Record stage visit via shared helper (DRY with handoff, routeConfirmReject, verify-advance)
       const advanceTarget = resolvedTarget ?? "completed";
-      const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
+      const maxCycles = effectiveMax(meta, config);
       const visitResult = recordStageVisit(meta, advanceTarget, maxCycles, config);
 
       if (!visitResult.ok) {

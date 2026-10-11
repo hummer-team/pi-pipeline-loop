@@ -457,10 +457,10 @@ describe("192 Phase 5: continuous hook-driven design-review loop", () => {
     expect(h.session.getMeta()!.currentStage).toBe("design-review");
   });
 
-  it("budget default 3: FAIL at cap → hook applies the REAL freeze (flowState blocked, report unconsumed)", async () => {
+  it("budget default 5: FAIL at cap → hook applies the REAL freeze (flowState blocked, report unconsumed)", async () => {
     authorizeReview(h);
     // consume two cycles first via direct state to reach the cap
-    h.session.updateMeta({ loopCycleCount: 3 });
+    h.session.updateMeta({ loopCycleCount: 5 });
     await h.settle(); // review dispatch happens on review_ready (no budget check there? budget gate blocks it)
     // handleReviewReady budget-froze FIRST: assert real freeze, no review RPC
     expect(h.session.getMeta()!.flowState).toBe("blocked");
@@ -578,15 +578,12 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     expect(classifyDesignReviewFlow(metaEnd).kind).toBe("ordinary");
   });
 
-  it("default cap 3: the SAME real chain REALLY freezes at the round-4 FAIL revisit (no injected counter)", async () => {
-    // No config override → coordinator's `?? 3` default applies
-    // (src/core/design-review/coordinator.ts:844). This is the discriminating
-    // pair for the configured-5 test above.
-    //
+  it("default cap 5: the SAME real chain REALLY freezes at the round-6 FAIL revisit (no injected counter)", async () => {
+    // No config override → DEFAULT_MAX_LOOP_CYCLES=5 applies.
     // With Phase 3 (195_Bug) classifyVisitEdge semantics:
     // - plan → design-review: C1 forward → don't count
     // - design-review → plan: C2 backward → count (+1)
-    // So freeze happens when design-review → plan count reaches 3 (at round-4 FAIL).
+    // So freeze happens when design-review → plan count reaches 5 (at round-6 FAIL).
     authorizeReview(h);
     
     // Round 1: FAIL → update
@@ -609,27 +606,44 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     await h.settle(); // update r3 (rpc6): design-review → plan, C2 backward, count=2
     writePlanUpdate(h);
     
-    // Round 4: FAIL → freeze
+    // Round 4: FAIL → update
     await h.settle(); // review r4 (rpc7): plan → design-review, C1 forward, count=2
     expect(stateOf(h).round).toBe(4);
     expect(h.session.getMeta()!.loopCycleCount).toBe(2); // C1 forward, not counted
+    writeReport(h, "FAIL", ["Defect four"]);
+    await h.settle(); // update r4 (rpc8): design-review → plan, C2 backward, count=3
+    writePlanUpdate(h);
     
-    // Round-4 FAIL: the "plan" REVISIT reaches cycleCount 3 >= cap 3 →
+    // Round 5: FAIL → update
+    await h.settle(); // review r5 (rpc9): plan → design-review, C1 forward, count=3
+    expect(stateOf(h).round).toBe(5);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(3); // C1 forward, not counted
+    writeReport(h, "FAIL", ["Defect five"]);
+    await h.settle(); // update r5 (rpc10): design-review → plan, C2 backward, count=4
+    writePlanUpdate(h);
+    
+    // Round 6: FAIL → freeze
+    await h.settle(); // review r6 (rpc11): plan → design-review, C1 forward, count=4
+    expect(stateOf(h).round).toBe(6);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(4); // C1 forward, not counted
+    
+    // Round-6 FAIL: the "plan" REVISIT reaches cycleCount 5 >= cap 5 →
     // recordStageVisit refuses, coordinator returns frozen, and the hook
     // applies the REAL freeze (agent-settled.ts:376-385 → freezeAndPrompt).
-    writeReport(h, "FAIL", ["Defect four"]);
-    await h.settle(); // update r4 attempt: design-review → plan, C2 backward, count=3 → FREEZE
+    writeReport(h, "FAIL", ["Defect six"]);
+    await h.settle(); // update r6 attempt: design-review → plan, C2 backward, count=5 → FREEZE
     const metaFrozen = h.session.getMeta()!;
     expect(metaFrozen.flowState).toBe("blocked");
-    expect(metaFrozen.loopCycleCount).toBe(3); // counted for audit, transition refused
+    expect(metaFrozen.loopCycleCount).toBe(5); // counted for audit, transition refused
     expect(metaFrozen.stageVisitOrder).toEqual([
-      "plan", "design-review", "plan", "design-review", "plan", "design-review", "plan"
+      "plan", "design-review", "plan", "design-review", "plan", "design-review", 
+      "plan", "design-review", "plan", "design-review", "plan"
     ]);
     expect(metaFrozen.currentStage).toBe("design-review"); // never moved to plan
-    expect(h.rpcCount()).toBe(7); // NO update dispatch after the freeze
-    // The round-4 FAIL state remains explainable/recoverable: the report is
+    expect(h.rpcCount()).toBe(11); // NO update dispatch after the freeze
+    // The round-6 FAIL state remains explainable/recoverable: the report is
     // still on disk UNCONSUMED and the review operation stays as it was.
-    expect(fs.existsSync(deriveReportPath(h.planDoc, 4))).toBe(true);
+    expect(fs.existsSync(deriveReportPath(h.planDoc, 6))).toBe(true);
     expect(stateOf(h).phase).toBe("review_running");
     expect(stateOf(h).operation?.kind).toBe("review");
     expect(stateOf(h).operation?.dispatchEvidence).toBe("trusted_id");
@@ -637,8 +651,8 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
 
     // Automatic re-entry must not dispatch or double-count.
     await h.settle();
-    expect(h.rpcCount()).toBe(7);
-    expect(h.session.getMeta()!.loopCycleCount).toBe(3);
+    expect(h.rpcCount()).toBe(11);
+    expect(h.session.getMeta()!.loopCycleCount).toBe(5);
   });
 
   it("drift: PASS blocked → paused(drift) zero handoff; owner confirm → recompute hash/new operation/safe round → re-review PASS", async () => {

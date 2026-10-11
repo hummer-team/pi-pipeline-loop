@@ -33,7 +33,7 @@ import {
   type StrictCommitSession,
 } from "../session-state";
 import { computeHash, createOperation, computeHandoffInputHash, transitionPhase } from "./state";
-import { recordStageVisit } from "../../utils/stage-visit";
+import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 
 /** Minimal context the transition preparation needs (structurally satisfied by CoordinatorContext). */
@@ -133,7 +133,7 @@ export async function prepareDevelopTransition(args: {
   }
 
   // Record transition (fresh develop visit material).
-  const visitResult = recordStageVisit(meta, "develop", ctx.config.maxLoopCycles ?? 3, ctx.config);
+  const visitResult = recordStageVisit(meta, "develop", effectiveMax(meta, ctx.config), ctx.config);
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
     return { ok: false, result: { status: "handled", action: "frozen", reason: "max_loop_cycles" } };
