@@ -842,7 +842,8 @@ export async function dispatchAfterResume(
 
   if (result.dispatchOutcome === "conflict_blocked") {
     // 195 Phase 2: configuration conflict — UI already notified, no manual prompt needed
-    await safeWriteAuditLog("pipeline_resume_conflict_blocked", {
+    const { emitDispatchConflictBlocked } = await import("../utils/dispatch-conflict-audit");
+    await emitDispatchConflictBlocked("pipeline_resume", {
       stage,
       requirementDoc: doc,
       pipelineId: meta.pipelineId,

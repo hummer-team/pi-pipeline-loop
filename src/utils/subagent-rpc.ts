@@ -1359,7 +1359,8 @@ export async function consumePendingSpawns(
       // Clear the pending entry to prevent retry loops, but don't count as consumed.
       // Note: spawnClarifyStageSubagent doesn't return dispatchOutcome, so we use a type guard.
       clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
-      await safeWriteAuditLog("pending_spawn_conflict_blocked", {
+      const { emitDispatchConflictBlocked } = await import("../utils/dispatch-conflict-audit");
+      await emitDispatchConflictBlocked("pending_spawn", {
         stage,
         pipelineId: fresh.pipelineId,
         reason: "configuration_conflict",
