@@ -25,6 +25,7 @@
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta, ExecFn, ViolationItem, PipelineStage } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
+import type { GuardSource } from "./violation-tracker";
 import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { getFileHash } from "../utils/hash";
 import {
@@ -243,7 +244,7 @@ async function childHardBlockForProtectedPath(
   protectionType: "hardcoded" | "gitignore",
   state: ProtectState,
   toolName: string,
-  trackViolation: (item: Omit<ViolationItem, "timestamp">) => void | Promise<void>,
+  trackViolation: (item: Omit<ViolationItem, "timestamp">, guardSource?: GuardSource) => void | Promise<void>,
   ui: ReturnType<typeof createPipelineUI>,
   ctx: RuntimeCtx,
 ): Promise<{ block: true; reason: string } | undefined> {
@@ -262,7 +263,7 @@ async function childHardBlockForProtectedPath(
     tool: toolName,
     detail: reason,
     suggestion,
-  });
+  }, "git_policy");
 
   ui.notify(ctx, reason);
   return { block: true, reason };
@@ -387,7 +388,7 @@ async function checkBashFileTargets(
   meta: SessionMeta,
   config: PipelineConfig,
   ctx: RuntimeCtx,
-  trackViolation: (item: Omit<ViolationItem, "timestamp">) => void,
+  trackViolation: (item: Omit<ViolationItem, "timestamp">, guardSource?: GuardSource) => void,
   ui: ReturnType<typeof createPipelineUI>,
   access: LifecycleWriteAccess,
   opts?: { skipGitDirTargets?: boolean; allowGitLockFiles?: boolean },
@@ -409,7 +410,7 @@ async function checkBashFileTargets(
         tool: "bash",
         detail: pendingReason,
         suggestion: "Resolve the pending human decision via /pipeline-resume (owner session) first.",
-      });
+      }, "dynamic_write_scope");
       ui.notify(ctx, pendingReason);
       return { block: true, reason: pendingReason };
     }
@@ -428,7 +429,7 @@ async function checkBashFileTargets(
       tool: "bash",
       detail: reason,
       suggestion: "Resolve the lifecycle state via the owner (decision / recovery) first.",
-    });
+    }, "dynamic_write_scope");
     ui.notify(ctx, reason);
     return { block: true, reason };
   }
@@ -455,7 +456,7 @@ async function checkBashFileTargets(
           await trackViolation({
             type: "write_protected", tool: "bash", detail: reason,
             suggestion: `Confirm the ambiguous write target or rewrite the command.`,
-          });
+          }, "read_only_path");
         }
         ui.notify(ctx, reason);
         return { block: true, reason };
@@ -494,7 +495,7 @@ async function checkBashFileTargets(
             tool: "bash",
             detail: reason,
             suggestion: "Resolve or remove the broken/looping symlink before writing.",
-          });
+          }, "dynamic_write_scope");
           ui.notify(ctx, reason);
           return { block: true, reason };
         }
@@ -519,7 +520,7 @@ async function checkBashFileTargets(
             tool: "bash",
             detail: reason,
             suggestion: `Design-review scope: operation=${drState.operation.kind}, phase=${drState.phase}.`,
-          });
+          }, "dynamic_write_scope");
           ui.notify(ctx, reason);
           return { block: true, reason };
         }
@@ -538,7 +539,7 @@ async function checkBashFileTargets(
             tool: "bash",
             detail: reason,
             suggestion: "Resolve or remove the broken/looping symlink before writing.",
-          });
+          }, "dynamic_write_scope");
           ui.notify(ctx, reason);
           return { block: true, reason };
         }
@@ -552,7 +553,7 @@ async function checkBashFileTargets(
             tool: "bash",
             detail: reason,
             suggestion: "The design-review cycle is finished; its documents are closed. Write the develop deliverables instead.",
-          });
+          }, "dynamic_write_scope");
           ui.notify(ctx, reason);
           return { block: true, reason };
         }
@@ -595,7 +596,7 @@ async function checkBashFileTargets(
               await trackViolation({
                 type: "write_protected", tool: "bash", detail: stageCheck.reason,
                 suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-              });
+              }, "read_only_path");
             }
             ui.notify(ctx, stageCheck.reason);
             return { block: true, reason: stageCheck.reason };
@@ -605,7 +606,7 @@ async function checkBashFileTargets(
         await trackViolation({
           type: "write_protected", tool: "bash", detail: stageCheck.reason,
           suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-        });
+        }, "read_only_path");
         ui.notify(ctx, stageCheck.reason);
         return { block: true, reason: stageCheck.reason };
       }
@@ -626,7 +627,7 @@ async function checkBashFileTargets(
               const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
               // Phase 4 (173) C11: dismissed action does NOT count as violation
               if (outcome.action !== "dismissed") {
-                await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: ${state.hardcoded.join(", ")} + gitignore patterns.` });
+                await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: ${state.hardcoded.join(", ")} + gitignore patterns.` }, "git_policy");
               }
               ui.notify(ctx, reason);
               return { block: true, reason };
@@ -634,7 +635,7 @@ async function checkBashFileTargets(
             continue;
           }
           const reason = `FORBIDDEN: Bash command modifies protected path '${relPath}'.`;
-          await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: ${state.hardcoded.join(", ")} + gitignore patterns.` });
+          await trackViolation({ type: "write_protected", tool: "bash", detail: reason, suggestion: `Protected paths: ${state.hardcoded.join(", ")} + gitignore patterns.` }, "git_policy");
           ui.notify(ctx, reason);
           return { block: true, reason };
         }
@@ -651,7 +652,7 @@ async function checkBashFileTargets(
           tool: "bash",
           detail: reason,
           suggestion: "The design-review cycle is finished; its documents are closed.",
-        });
+        }, "dynamic_write_scope");
         ui.notify(ctx, reason);
         return { block: true, reason };
       }
@@ -675,7 +676,7 @@ async function checkBashFileTargets(
         await trackViolation({
           type: "write_protected", tool: "bash", detail: reason,
           suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-        });
+        }, "read_only_path");
         ui.notify(ctx, reason);
         return { block: true, reason };
       }
@@ -687,7 +688,7 @@ async function checkBashFileTargets(
         await trackViolation({
           type: "bash_destructive", tool: "bash", detail: reason,
           suggestion: `Avoid destructive operations targeting system paths.`,
-        });
+        }, "bash_destructive");
         ui.notify(ctx, reason);
         return { block: true, reason };
       }
@@ -766,8 +767,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       const { name: toolName, arguments: args } = ctx.toolCall!;
 
       // Helper: record a violation and check the breaker (pure recording, no block side effects)
-      async function trackViolation(item: Omit<ViolationItem, "timestamp">): Promise<void> {
-        const full: ViolationItem = { ...item, timestamp: Date.now() };
+      async function trackViolation(item: Omit<ViolationItem, "timestamp">, guardSource?: GuardSource): Promise<void> {
+        const full: ViolationItem = { ...item, timestamp: Date.now(), ...(guardSource !== undefined ? { guardSource } : {}) };
         await recordViolation(ctx, meta, full);
         // Re-read meta after updateMeta to get latest violations count
         const updatedMeta = ctx.session.getMeta() as SessionMeta;
@@ -816,7 +817,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     tool: "bash",
                     detail: reason,
                     suggestion: `Use protect.ask dialog to allow, or avoid dangerous commands.`,
-                  });
+                  }, "bash_destructive");
                 }
                 ui.notify(ctx, reason);
                 return { block: true, reason };
@@ -828,7 +829,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 tool: "bash",
                 detail: reason,
                 suggestion: `Avoid dangerous commands or enable protect.ask in config.`,
-              });
+              }, "bash_destructive");
               ui.notify(ctx, reason);
               return { block: true, reason };
             }
@@ -858,7 +859,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 tool: "bash",
                 detail: reason,
                 suggestion: `Forbidden git operations: filter-branch, reset --hard, clean -f, worktree remove, push --force.`,
-              });
+              }, "bash_destructive");
               ui.notify(ctx, reason);
               return { block: true, reason };
             }
@@ -879,7 +880,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 tool: "bash",
                 detail: reason,
                 suggestion: "Resolve the lifecycle state via the owner (decision / recovery) first.",
-              });
+              }, "dynamic_write_scope");
               ui.notify(ctx, reason);
               return { block: true, reason };
             }
@@ -904,7 +905,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                       tool: "bash",
                       detail: reason,
                       suggestion: `Git write operations are not allowed in the '${currentStage}' stage.`,
-                    });
+                    }, "git_policy");
                   }
                   ui.notify(ctx, reason);
                   return { block: true, reason };
@@ -917,7 +918,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: "bash",
                   detail: reason,
                   suggestion: `Git write operations are not allowed in the '${currentStage}' stage.`,
-                });
+                }, "git_policy");
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
@@ -933,7 +934,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: "bash",
                   detail: result.reason!,
                   suggestion: `git add cannot stage protected paths (${gitState.hardcoded.join(", ")}, gitignore).`,
-                });
+                }, "git_policy");
                 ui.notify(ctx, result.reason!);
                 return { block: true, reason: result.reason! };
               }
@@ -950,7 +951,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: "bash",
                   detail: result.reason!,
                   suggestion: `git commit cannot include protected paths (${gitState.hardcoded.join(", ")}, gitignore).`,
-                });
+                }, "git_policy");
                 ui.notify(ctx, result.reason!);
                 return { block: true, reason: result.reason! };
               }
@@ -1257,7 +1258,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             tool: toolName,
             detail: pendingReason,
             suggestion: "Resolve the pending human decision via /pipeline-resume (owner session) first.",
-          });
+          }, "dynamic_write_scope");
           ui.notify(ctx, pendingReason);
           return { block: true, reason: pendingReason };
         }
@@ -1297,7 +1298,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             tool: toolName,
             detail: reason,
             suggestion: "Resolve the lifecycle state via the owner (decision / recovery) first.",
-          });
+          }, "dynamic_write_scope");
           ui.notify(ctx, reason);
           return { block: true, reason };
         }
@@ -1323,7 +1324,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 tool: toolName,
                 detail: reason,
                 suggestion: "Resolve or remove the broken/looping symlink before writing.",
-              });
+              }, "dynamic_write_scope");
               ui.notify(ctx, reason);
               return { block: true, reason };
             }
@@ -1349,7 +1350,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: toolName,
                   detail: reason,
                   suggestion: `Design-review scope: operation=${operationKind}, phase=${drState.phase}.`,
-                });
+                }, "dynamic_write_scope");
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
@@ -1368,7 +1369,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: toolName,
                   detail: reason,
                   suggestion: "The design-review cycle is finished; its documents are closed. Write the develop deliverables instead.",
-                });
+                }, "dynamic_write_scope");
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
@@ -1420,7 +1421,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                       tool: toolName,
                       detail: stageCheck.reason,
                       suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-                    });
+                    }, "read_only_path");
                   }
                   ui.notify(ctx, stageCheck.reason);
                   return { block: true, reason: stageCheck.reason };
@@ -1433,7 +1434,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: toolName,
                   detail: stageCheck.reason,
                   suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-                });
+                }, "read_only_path");
                 ui.notify(ctx, stageCheck.reason);
                 return { block: true, reason: stageCheck.reason };
               }
@@ -1459,7 +1460,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                         tool: toolName,
                         detail: reason,
                         suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
-                      });
+                      }, "git_policy");
                     }
                     ui.notify(ctx, reason);
                     return { block: true, reason };
@@ -1472,7 +1473,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     tool: toolName,
                     detail: reason,
                     suggestion: `Hardcoded protected: ${state.hardcoded.join(", ")}.`,
-                  });
+                  }, "git_policy");
                   ui.notify(ctx, reason);
                   return { block: true, reason };
                 }
@@ -1500,7 +1501,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                             tool: toolName,
                             detail: reason,
                             suggestion: `Gitignore protected. Use protect.allow to exempt specific paths.`,
-                          });
+                          }, "git_policy");
                         }
                         ui.notify(ctx, reason);
                         return { block: true, reason };
@@ -1513,7 +1514,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                         tool: toolName,
                         detail: reason,
                         suggestion: `Gitignore protected. Use protect.allow to exempt specific paths.`,
-                      });
+                      }, "git_policy");
                       ui.notify(ctx, reason);
                       return { block: true, reason };
                     }
@@ -1540,7 +1541,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               tool: toolName,
               detail: reason,
               suggestion: "The design-review cycle is finished; its documents are closed.",
-            });
+            }, "dynamic_write_scope");
             ui.notify(ctx, reason);
             return { block: true, reason };
           }
@@ -1560,7 +1561,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   tool: toolName,
                   detail: reason,
                   suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-                });
+                }, "read_only_path");
                 ui.notify(ctx, reason);
                 return { block: true, reason };
               }
@@ -1571,7 +1572,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 tool: toolName,
                 detail: reason,
                 suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
-              });
+              }, "read_only_path");
               ui.notify(ctx, reason);
               return { block: true, reason };
             }

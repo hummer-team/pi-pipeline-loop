@@ -476,14 +476,36 @@ function buildViolationPrompt(meta: SessionMeta): string | null {
     return null;
   }
 
-  const lines = violations.map(v => {
-    const tag = v.tool ? `[${v.type}] Tool "${v.tool}"` : `[${v.type}]`;
-    const correction = v.suggestion ? `${v.detail} ${v.suggestion}` : v.detail;
-    return `- ${tag}: ${correction}`;
-  });
+  // Phase 7 (195_Bug): Group violations by guardSource bucket
+  const buckets = new Map<string, typeof violations>();
+  for (const v of violations) {
+    const bucket = v.guardSource ?? "legacy";
+    const existing = buckets.get(bucket) ?? [];
+    existing.push(v);
+    buckets.set(bucket, existing);
+  }
+
+  // Build bucket summary
+  const bucketSummaries: string[] = [];
+  for (const [bucket, items] of buckets) {
+    bucketSummaries.push(`${bucket}: ${items.length}`);
+  }
+
+  // Build violation lines grouped by bucket
+  const lines: string[] = [];
+  for (const [bucket, items] of buckets) {
+    lines.push(`\n## ${bucket} (${items.length})`);
+    for (const v of items) {
+      const tag = v.tool ? `[${v.type}] Tool "${v.tool}"` : `[${v.type}]`;
+      const correction = v.suggestion ? `${v.detail} ${v.suggestion}` : v.detail;
+      lines.push(`- ${tag}: ${correction}`);
+    }
+  }
+
   return (
     `# PREVIOUS VIOLATIONS (MUST FIX)\n` +
-    `The following tool usage violations were blocked. Correct your approach:\n\n` +
+    `Buckets: ${bucketSummaries.join(", ")}\n` +
+    `The following tool usage violations were blocked. Correct your approach:\n` +
     lines.join("\n")
   );
 }
