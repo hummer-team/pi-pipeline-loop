@@ -164,6 +164,7 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
               meta: freshMeta,
               entry: "command",
               ctx: {
+                config,
                 session: ctx.session,
                 ui: ctx.ui,
                 pi: ctx.pi,

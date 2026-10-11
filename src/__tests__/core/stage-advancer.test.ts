@@ -1322,6 +1322,7 @@ describe("Reaudit: routeConfirmReject wake suppression + C2 clear + maxLoopCycle
     const config = makeTestConfig({ projectRoot: stageTmp });
     config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as PipelineStage | null };
 
+    config.stages["fix"] = { ...config.stages["fix"], nextStage: "review" as PipelineStage };
     // Set up meta with maxLoopCycles=1 and already visited fix twice (cycle count at limit)
     const meta = makeTestMeta({
       currentStage: "review",

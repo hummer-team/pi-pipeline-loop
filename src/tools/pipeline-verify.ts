@@ -83,6 +83,7 @@ export function createPipelineVerify(
         };
         ui?: { notify: (msg: string) => void };
         /** @internal Original ExtensionContext for standalone functions */
+        config: PipelineConfig;
         _ctx: { sessionManager: { getBranch(): any[] } };
       };
 
@@ -137,6 +138,7 @@ export function createPipelineVerify(
             session: sessionCtx.session,
             ui: sessionCtx.ui,
             pi: (sessionCtx as { pi?: { sendUserMessage?: (m: string, o?: Record<string, unknown>) => void } }).pi,
+            config,
           },
           config,
           runtimeCtx: ctx,
@@ -276,6 +278,7 @@ export function createPipelineVerify(
           };
         }
 
+        // SAFETY: applyVerifyPass returns a tool result object with string keys and unknown values,
         return (await applyVerifyPass(sessionCtx, meta, stageName, stageConfig.nextStage, sharedResult, {
           method: "tool",
           handleTerminal: true,
@@ -284,6 +287,7 @@ export function createPipelineVerify(
         })) as unknown as Record<string, unknown>;
       }
 
+      // SAFETY: applyVerifyFail returns a tool result object with string keys and unknown values,
       return (await applyVerifyFail(sessionCtx, meta, stageName, sharedResult, "tool", ui, config)) as unknown as Record<string, unknown>;
     },
   };

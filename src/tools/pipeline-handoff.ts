@@ -120,6 +120,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
             session: ctx.session,
             ui: ctx.ui,
             pi: ctx.pi,
+            config,
           },
           config,
           runtimeCtx: ctx,
@@ -217,7 +218,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       // Cycle detection: unified via recordStageVisit helper (DRY with stage-advancer,
       // routeConfirmReject, verify-advance). Preserves original handoff semantics.
       const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
-      const visitResult = recordStageVisit(meta, nextStage, maxCycles);
+      const visitResult = recordStageVisit(meta, nextStage, maxCycles, config);
 
       if (!visitResult.ok) {
         // Max loop cycles reached — freeze pipeline and prompt for user decision

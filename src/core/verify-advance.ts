@@ -42,6 +42,8 @@ interface VerifyAdvanceCtx {
   ui?: { notify: (msg: string) => void; select?: (message: string, options: string[]) => Promise<string | undefined> };
   /** @internal pi SDK handle for sending wake messages (used by autoAdvanceAfterVerify) */
   pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void; events?: unknown };
+  /** Phase 3 (195_Bug): PipelineConfig for edge classification */
+  config: PipelineConfig;
 }
 
 /**
@@ -196,7 +198,7 @@ export async function applyVerifyPass(
     // Record stage visit via shared helper before updateMeta (DRY with handoff,
     // stage-advancer, routeConfirmReject). Max cycles from meta with default 3.
     const maxCycles = meta.maxLoopCycles ?? 3;
-    const visitResult = recordStageVisit(meta, nextStage, maxCycles);
+    const visitResult = recordStageVisit(meta, nextStage, maxCycles, ctx.config);
 
     // Issue #20: Check budget early stop — if recordStageVisit failed (budget exceeded),
     // freeze the pipeline instead of advancing. This prevents the "advance first, freeze later"

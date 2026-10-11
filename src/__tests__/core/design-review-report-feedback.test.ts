@@ -458,7 +458,7 @@ describe("193 Phase 0: consumeDesignReviewResult is honest and counts once", () 
       result: { status: "not-applicable" },
       meta,
       entry: "tool",
-      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi },
+      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, config: configWithBudget(3) },
       config: configWithBudget(3),
     });
     expect(outcome.handled).toBe(false);
@@ -473,7 +473,7 @@ describe("193 Phase 0: consumeDesignReviewResult is honest and counts once", () 
       result: failResult,
       meta: ctx.currentMeta,
       entry: "tool",
-      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi },
+      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, config: configWithBudget(3) },
       config: configWithBudget(3),
       runtimeCtx: ctx,
     });
@@ -497,7 +497,7 @@ describe("193 Phase 0: consumeDesignReviewResult is honest and counts once", () 
       result: failResult,
       meta: ctx.currentMeta,
       entry: "hook",
-      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi },
+      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, config: configWithBudget(3) },
       config: configWithBudget(3),
       runtimeCtx: ctx,
     });
@@ -523,7 +523,7 @@ describe("193 Phase 0: consumeDesignReviewResult is honest and counts once", () 
       result: failResult,
       meta: ctx.currentMeta,
       entry: "tool",
-      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi },
+      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, config: configWithBudget(3) },
       config: configWithBudget(3),
       runtimeCtx: childRuntime,
     });
@@ -542,7 +542,7 @@ describe("193 Phase 0: consumeDesignReviewResult is honest and counts once", () 
       result: failResult,
       meta: ctx.currentMeta,
       entry: "tool",
-      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi },
+      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, config: configWithBudget(3) },
       config: configWithBudget(3),
       runtimeCtx: ctx,
     });
@@ -571,7 +571,7 @@ describe("193 Phase 0: consumeDesignReviewResult is honest and counts once", () 
         result,
         meta,
         entry: "tool",
-        ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi },
+        ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, config: configWithBudget(3) },
         config: configWithBudget(3),
         runtimeCtx: ctx,
       });
@@ -597,7 +597,7 @@ describe("193 Phase 0: consumeDesignReviewResult is honest and counts once", () 
       },
       meta: ctx.currentMeta,
       entry: "tool",
-      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi },
+      ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, config: configWithBudget(3) },
       config: configWithBudget(3),
       runtimeCtx: ctx,
     });

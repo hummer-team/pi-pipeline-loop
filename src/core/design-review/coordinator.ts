@@ -1079,7 +1079,7 @@ async function handleFail(
   const updatePrompt = prepared.candidate.prompt;
 
   // Record transition ONLY now that the dispatch is proven possible.
-  const visitResult = recordStageVisit(meta, "plan", ctx.config.maxLoopCycles ?? 3);
+  const visitResult = recordStageVisit(meta, "plan", ctx.config.maxLoopCycles ?? 3, ctx.config);
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };
@@ -1924,7 +1924,7 @@ async function handleUpdateRunning(
   };
 
   // Record transition
-  const visitResult = recordStageVisit(meta, "design-review", ctx.config.maxLoopCycles ?? 3);
+  const visitResult = recordStageVisit(meta, "design-review", ctx.config.maxLoopCycles ?? 3, ctx.config);
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
     return { status: "handled", action: "frozen", reason: "max_loop_cycles" };

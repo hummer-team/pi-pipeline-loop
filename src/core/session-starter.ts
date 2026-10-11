@@ -556,6 +556,7 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
                   ui: (ctx as any).ui,
                   pi: (ctx as any).pi,
                   _ctx: (ctx as any)._ctx,
+                  config,
                 } as DesignReviewConsumeCtx,
                 config,
                 ui,

@@ -133,7 +133,7 @@ export async function prepareDevelopTransition(args: {
   }
 
   // Record transition (fresh develop visit material).
-  const visitResult = recordStageVisit(meta, "develop", ctx.config.maxLoopCycles ?? 3);
+  const visitResult = recordStageVisit(meta, "develop", ctx.config.maxLoopCycles ?? 3, ctx.config);
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
     return { ok: false, result: { status: "handled", action: "frozen", reason: "max_loop_cycles" } };

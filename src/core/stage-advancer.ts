@@ -386,11 +386,12 @@ async function routeConfirmReject(
   }
 
   // Record stage visit via shared helper (reject routing is a legitimate cycle,
+  // SAFETY: ctx.session has getMeta/updateMeta at runtime but type signature is narrower
   // cycle count semantics match handoff)
   const sessionForSpawn = ctx.session as unknown as { getMeta?: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined };
   const freshMetaForVisit = sessionForSpawn.getMeta?.() ?? meta;
   const maxCycles = freshMetaForVisit.maxLoopCycles ?? config.maxLoopCycles ?? 3;
-  const visitResult = recordStageVisit(freshMetaForVisit, toStage, maxCycles);
+  const visitResult = recordStageVisit(freshMetaForVisit, toStage, maxCycles, config);
 
   // Nit 4 (reaudit): honor recordStageVisit().ok — when maxLoopCycles reached,
   // freeze the pipeline and abort routing (aligned with stage-advancer tool + verify-advance).
@@ -399,6 +400,7 @@ async function routeConfirmReject(
     ctx.session.updateMeta(visitResult.patch);
     await import("./flow-state").then(async ({ freezeAndPrompt }) => {
       const { buildOnStageChangedCallback } = await import("../commands/pipeline-start");
+        // SAFETY: ctx has all required properties at runtime, matching freezeAndPrompt expected shape
       await freezeAndPrompt(
         ctx as unknown as Parameters<typeof freezeAndPrompt>[0],
         meta,
@@ -593,6 +595,7 @@ async function advanceConfirmApproved(
   // the advance below commits it); refusal performs nothing at all.
   {
     const fresh = ctx.session.getMeta?.() ?? meta;
+      // SAFETY: ctx.session has getMeta/updateMeta at runtime, matching commitBoundGateWrite expected session shape
     const boundWrite = commitBoundGateWrite({
       session: ctx.session as unknown as Parameters<typeof commitBoundGateWrite>[0]["session"],
       meta: fresh,
@@ -638,6 +641,7 @@ async function advanceConfirmApproved(
     fromStage,
     toStage,
     syntheticResult,
+    // SAFETY: pipelineUI has required notify/transition methods at runtime, matching autoAdvanceAfterVerify expected shape
     pipelineUI as unknown as Parameters<typeof autoAdvanceAfterVerify>[6],
     { skipPassAudit: true },
   );
@@ -1143,7 +1147,7 @@ export async function maybeHandleConfirmGate(
       });
       
       // Record stage visit to design-review (without writing confirmation markers)
-      const visitResult = recordStageVisit(meta, "design-review", config.maxLoopCycles ?? 3);
+      const visitResult = recordStageVisit(meta, "design-review", config.maxLoopCycles ?? 3, config);
       if (!visitResult.ok) {
         ui.notify(ctx, `Auto Review Plan failed: max loop cycle limit reached`);
         return { result: "handled", action: "pending" };
@@ -1592,6 +1596,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
                 }
               : undefined,
             pi: ctx.pi,
+            config,
           },
           config,
           ui,
@@ -1913,7 +1918,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // Record stage visit via shared helper (DRY with handoff, routeConfirmReject, verify-advance)
       const advanceTarget = resolvedTarget ?? "completed";
       const maxCycles = meta.maxLoopCycles ?? config.maxLoopCycles ?? 3;
-      const visitResult = recordStageVisit(meta, advanceTarget, maxCycles);
+      const visitResult = recordStageVisit(meta, advanceTarget, maxCycles, config);
 
       if (!visitResult.ok) {
         // Max loop cycles reached — freeze and return error (aligned with handoff)

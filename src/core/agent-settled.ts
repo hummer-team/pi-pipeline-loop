@@ -46,7 +46,7 @@ import { consumeDesignReviewResult } from "./design-review/entry-result";
 // 193 Phase 3 (task 1): ONE safe builder for coordinator ctx at every entry
 import { createDesignReviewRuntimeContext } from "./design-review/runtime-context";
 // 192 Phase 3: flow classification for the shared verification wiring (K02)
-import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "./design-review/state";
+import { classifyDesignReviewFlow } from "./design-review/state";
 // 194 Phase 3 (task 3): trusted wake-source gate + visible C5 waiting state
 import { verifyOwnerWakeTurn, recordAwaitingOwnerConsumption } from "./stage-executor/turn-source";
 // 194 Phase 3 (task 7): closed-loop executor ownership gate for the 189 bypass
@@ -428,6 +428,7 @@ export function createAgentSettled(
                   ui: ctx.ui,
                   pi: ctx.pi,
                   _ctx: ctx._ctx,
+                  config,
                 } as Parameters<typeof applyVerifyFail>[0],
                 config,
                 ui,
@@ -512,7 +513,6 @@ export function createAgentSettled(
           } else if (confirmMode !== "manual") {
             // Auto mode (or unconfigured): parse report → route directly
             if (reviewVerdict && reviewVerdict.verdict === "fail") {
-              // Fail → route to fix (no count, no select, no verify)
               await routeReviewFailAuto(config, ctx, meta, ui, {
                 reason: `review report parsed as fail (source: ${reviewVerdict.source})`,
               });
@@ -537,7 +537,7 @@ export function createAgentSettled(
       }
 
       // Phase 4 (162): confirm gate wiring.
-      const ctxWithPi = { ...ctx, pi: ctx.pi };
+      const ctxWithPi = { ...ctx, pi: ctx.pi, config };
 
       // 2. Auto-verification
       const stageConfig = config.stages[meta.currentStage];
