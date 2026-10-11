@@ -82,10 +82,12 @@ export function createPipelineVerify(
           updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
         };
         ui?: { notify: (msg: string) => void };
-        /** @internal Original ExtensionContext for standalone functions (optional, config accessed via closure) */
-        config?: PipelineConfig;
+        /** @internal Original ExtensionContext for standalone functions */
+        config: PipelineConfig;
         _ctx: { sessionManager: { getBranch(): any[] } };
       };
+      // M4 (review-issue): Inject config from closure to fix type-runtime mismatch
+      sessionCtx.config = config;
 
       if (!sessionCtx.session) {
         return { error: "No session context available" };
