@@ -1,253 +1,164 @@
 /**
  * @module tool-guard-phase7.test
- * Phase 7 (195_Bug): guardSource assignment and bucket-based violation counting tests.
+ * Phase 7 (195_Bug): guardSource assignment at tool-guard call sites and
+ * bash_destructive freeze decoupling.
  *
- * Test coverage:
- * - guardSource assignment: Each of the 4 categories has corresponding tests
- * - New audit fields: guardSource, bucketCount, bucketLimit
- * - bash_destructive only triggers prompt, never freeze
- * - Same action dedup: same bash violation counts as 1, not 2
+ * Every trigger in this file was verified empirically against the live
+ * guard pipeline (no conditional "if violation happened" assertions —
+ * each test asserts the violation IS recorded, unconditionally):
+ * - write tool outside the stage write whitelist     -> read_only_path
+ * - write tool on a gitignore-protected path         -> git_policy
+ * - bash destructive command on a system path        -> bash_destructive
+ * - dynamic_write_scope is covered end-to-end in
+ *   tool-guard-design-review-scope.test.ts (guardSource assertion added
+ *   there; re-deriving the design-review lifecycle harness here would
+ *   duplicate an existing deterministic trigger).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import { createToolGuard } from "../../core/tool-guard";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
-import type { SessionMeta, PipelineConfig } from "../../types";
+import type { SessionMeta } from "../../types";
 import { DEFAULT_MAX_VIOLATIONS, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../../constants";
 
-const TMP = join(tmpdir(), "pi-tool-guard-phase7-test-" + Date.now());
-
-function createCtxWithTool(toolName: string, args: Record<string, any>, meta: SessionMeta) {
-  const updates: SessionMeta[] = [];
-  return {
-    session: {
-      getMeta: () => meta,
-      updateMeta: (patch: Partial<SessionMeta>) => {
-        const merged = { ...meta, ...patch };
-        updates.push(merged);
-        Object.assign(meta, merged);
-        return merged;
-      },
-    },
-    ui: {
-      notify: (_msg: string) => {},
-      select: async (_msg: string, _opts: string[]) => undefined,
-    },
-    toolCall: {
-      name: toolName,
-      arguments: args,
-    },
-    updates,
-  };
+/** Fresh project root per test so audit files never accumulate across tests. */
+async function freshRoot(tag: string): Promise<string> {
+  const root = join(tmpdir(), `pi-tg-phase7-${tag}-${Date.now()}`);
+  await mkdir(join(root, "src"), { recursive: true });
+  return root;
 }
 
-beforeEach(async () => {
-  await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
-  await initAuditLog(makeTestConfig({ projectRoot: TMP }));
-});
+async function readAuditLines(root: string): Promise<string[]> {
+  const log = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+  return log.trim().split("\n");
+}
 
-afterEach(async () => {
+function violationSources(meta: SessionMeta): Array<[string, string | undefined]> {
+  return (meta.violations ?? []).map((v) => [v.type, v.guardSource]);
+}
+
+afterEach(() => {
   __resetAuditDirPath();
-  // Clean up audit log file to avoid accumulation
-  const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-  try {
-    await Bun.file(logPath).delete();
-  } catch {}
 });
 
-describe("Phase 7: guardSource assignment", () => {
-  it("assigns read_only_path for stage whitelist violations", async () => {
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      stages: {
-        clarify: {
-          ...makeTestConfig().stages.clarify,
-          allowedWritePaths: ["src/**"],
-        },
-      },
-    });
-    const meta = makeTestMeta({ currentStage: "clarify" });
-    const ctx = createCtxWithTool("bash", { command: "echo test > /outside/project/file.txt" }, meta);
-    
-    const guard = createToolGuard(config);
-    await guard.handler(ctx as any);
+describe("Phase 7: guardSource assignment (empirical triggers)", () => {
+  it("write outside stage write whitelist records read_only_path", async () => {
+    const root = await freshRoot("wl");
+    const config = makeTestConfig({ projectRoot: root });
+    config.stages["develop"] = {
+      ...config.stages["develop"],
+      allowedWritePaths: ["docs/"],
+    };
+    await initAuditLog(config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    
-    // Check if audit log was created (it may not exist if no violations occurred)
-    try {
-      const logContent = await readFile(logPath, "utf-8");
-      // Should have a violation with read_only_path guardSource
-      if (logContent.includes("pipeline_violation")) {
-        expect(logContent).toContain("guardSource=read_only_path");
-      }
-    } catch (e: any) {
-      // If file doesn't exist, that's acceptable - no violations were recorded
-      if (e.code !== "ENOENT") {
-        throw e;
-      }
-    }
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "write", arguments: { file_path: join(root, "src", "app.ts") } };
+
+    const result = await createToolGuard(config).handler(ctx as any);
+    expect((result as { block?: boolean })?.block).toBe(true);
+
+    const recorded = ctx.session.getMeta() as SessionMeta;
+    expect(violationSources(recorded)).toEqual([["write_protected", "read_only_path"]]);
+
+    const lines = await readAuditLines(root);
+    const vLine = lines.find((l) => l.includes("pipeline_violation"));
+    expect(vLine).toBeDefined();
+    expect(vLine).toContain("guardSource=read_only_path");
+    expect(vLine).toContain("bucketCount=1");
+    expect(vLine).toContain(`bucketLimit=${DEFAULT_MAX_VIOLATIONS}`);
   });
 
-  it("assigns dynamic_write_scope for design-review scope violations", async () => {
-    const config = makeTestConfig({ projectRoot: TMP });
-    const meta = makeTestMeta({
-      currentStage: "develop",
-      designReview: {
-        active: true,
-        phase: "develop",
-        operation: {
-          kind: "single-file-update",
-          operationId: "op-123",
-          targets: { files: ["src/update.ts"] },
-        },
-      },
-    });
-    const ctx = createCtxWithTool("bash", { command: "echo test > src/outside-scope.ts" }, meta);
-    
-    const guard = createToolGuard(config);
-    await guard.handler(ctx as any);
+  it("write on gitignore-protected path records git_policy", async () => {
+    const root = await freshRoot("git");
+    await writeFile(join(root, ".gitignore"), "secret.txt\n");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "write", arguments: { file_path: join(root, "secret.txt") } };
 
-    // Should have a violation with dynamic_write_scope guardSource if blocked
-    if (logContent.includes("pipeline_violation")) {
-      expect(logContent).toContain("guardSource=dynamic_write_scope");
-    }
+    const result = await createToolGuard(config).handler(ctx as any);
+    expect((result as { block?: boolean })?.block).toBe(true);
+
+    const recorded = ctx.session.getMeta() as SessionMeta;
+    expect(violationSources(recorded)).toEqual([["write_protected", "git_policy"]]);
+
+    const lines = await readAuditLines(root);
+    const vLine = lines.find((l) => l.includes("pipeline_violation"));
+    expect(vLine).toContain("guardSource=git_policy");
+    expect(vLine).toContain("bucketCount=1");
+    expect(vLine).toContain(`bucketLimit=${DEFAULT_MAX_VIOLATIONS}`);
   });
 
-  it("assigns git_policy for git protection violations", async () => {
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      stages: {
-        clarify: {
-          ...makeTestConfig().stages.clarify,
-          gitPolicy: "block",
-        },
-      },
-    });
-    const meta = makeTestMeta({ currentStage: "clarify" });
-    const ctx = createCtxWithTool("bash", { command: "git add ." }, meta);
-    
-    const guard = createToolGuard(config);
-    await guard.handler(ctx as any);
+  it("bash destructive command on system path records bash_destructive", async () => {
+    const root = await freshRoot("rm");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
 
-    // Should have a violation with git_policy guardSource if blocked
-    if (logContent.includes("pipeline_violation")) {
-      expect(logContent).toContain("guardSource=git_policy");
-    }
+    const result = await createToolGuard(config).handler(ctx as any);
+    expect((result as { block?: boolean })?.block).toBe(true);
+
+    const recorded = ctx.session.getMeta() as SessionMeta;
+    expect(violationSources(recorded)).toEqual([["bash_destructive", "bash_destructive"]]);
+
+    const lines = await readAuditLines(root);
+    const vLine = lines.find((l) => l.includes("pipeline_violation"));
+    expect(vLine).toContain("guardSource=bash_destructive");
+    expect(vLine).toContain("bucketCount=1");
+    expect(vLine).toContain(`bucketLimit=${DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX}`);
   });
 
-  it("assigns bash_destructive for destructive command violations", async () => {
-    const config = makeTestConfig({ projectRoot: TMP });
-    const meta = makeTestMeta();
-    const ctx = createCtxWithTool("bash", { command: "rm -rf /" }, meta);
-    
-    const guard = createToolGuard(config);
-    await guard.handler(ctx as any);
+  it("one blocked tool call records exactly one violation (no double count)", async () => {
+    // The guard returns on the first blocking validator, so an action that
+    // would match multiple policy classes can still only record once.
+    // `rm -rf /` hits both the destructive-prompt path and the system-path
+    // safety net region — only a single item must reach meta.violations.
+    const root = await freshRoot("dedup");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
 
-    // Should have a violation with bash_destructive guardSource if blocked
-    if (logContent.includes("pipeline_violation")) {
-      expect(logContent).toContain("guardSource=bash_destructive");
-    }
+    await createToolGuard(config).handler(ctx as any);
+
+    const recorded = ctx.session.getMeta() as SessionMeta;
+    expect(recorded.violations?.length).toBe(1);
   });
 });
 
-describe("Phase 7: new audit fields", () => {
-  it("writes audit entry with guardSource, bucketCount, bucketLimit for bash_destructive", async () => {
-    const config = makeTestConfig({ projectRoot: TMP });
-    const meta = makeTestMeta();
-    const ctx = createCtxWithTool("bash", { command: "rm -rf /" }, meta);
-    
-    const guard = createToolGuard(config);
-    await guard.handler(ctx as any);
+describe("Phase 7: bash_destructive never freezes the pipeline", () => {
+  it("exceeding DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX does not block or freeze", async () => {
+    const root = await freshRoot("nofreeze");
+    const config = makeTestConfig({ projectRoot: root });
+    await initAuditLog(config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
-
-    if (logContent.includes("pipeline_violation")) {
-      expect(logContent).toContain("guardSource=bash_destructive");
-      expect(logContent).toContain("bucketCount=1");
-      expect(logContent).toContain(`bucketLimit=${DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX}`);
-    }
-  });
-
-  it("writes audit entry with guardSource, bucketCount, bucketLimit for git_policy", async () => {
-    const config = makeTestConfig({
-      projectRoot: TMP,
-      stages: {
-        clarify: {
-          ...makeTestConfig().stages.clarify,
-          gitPolicy: "block",
-        },
-      },
-    });
-    const meta = makeTestMeta({ currentStage: "clarify" });
-    const ctx = createCtxWithTool("bash", { command: "git commit -m 'test'" }, meta);
-    
-    const guard = createToolGuard(config);
-    await guard.handler(ctx as any);
-
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
-
-    if (logContent.includes("pipeline_violation")) {
-      expect(logContent).toContain("guardSource=git_policy");
-      expect(logContent).toContain("bucketCount=1");
-      expect(logContent).toContain(`bucketLimit=${DEFAULT_MAX_VIOLATIONS}`);
-    }
-  });
-});
-
-describe("Phase 7: bash_destructive never triggers freeze", () => {
-  it("does NOT freeze pipeline even with many bash_destructive violations", async () => {
-    const config = makeTestConfig({ projectRoot: TMP });
-    const meta = makeTestMeta();
-    
-    // Trigger multiple bash_destructive violations
-    for (let i = 0; i < DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX + 5; i++) {
-      const ctx = createCtxWithTool("bash", { command: `rm -rf /tmp/test${i}` }, meta);
-      const guard = createToolGuard(config);
-      await guard.handler(ctx as any);
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const iterations = DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX + 5;
+    for (let i = 0; i < iterations; i++) {
+      const ctx = createMockCtx(meta);
+      ctx.toolCall = { name: "bash", arguments: { command: "rm -rf /" } };
+      await createToolGuard(config).handler(ctx as any);
     }
 
-    // Pipeline should NOT be frozen for bash_destructive
+    // Every iteration recorded its item (advisory stream is visible)...
+    expect(meta.violations?.length).toBe(iterations);
+    // ...but the bash_destructive bucket must never take the pipeline down.
     expect(meta.flowState).not.toBe("blocked");
     expect(meta.blockedReason).not.toBe("violation_overflow");
-  });
-});
 
-describe("Phase 7: same action dedup", () => {
-  it("counts same bash violation as 1 per call, not multiple", async () => {
-    const config = makeTestConfig({ projectRoot: TMP });
-    const meta = makeTestMeta();
-    
-    // Trigger one bash_destructive violation
-    const ctx = createCtxWithTool("bash", { command: "rm -rf /" }, meta);
-    const guard = createToolGuard(config);
-    await guard.handler(ctx as any);
-
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
-    const logContent = await readFile(logPath, "utf-8");
-    const lines = logContent.trim().split("\n");
-
-    // Should have exactly one pipeline_violation entry for this call
-    // Check the LAST line only (this test's entry, not accumulated from other tests)
-    const violationLines = lines.filter(line => line.includes("pipeline_violation") && line.includes("bash_destructive"));
-    if (violationLines.length > 0) {
-      const lastViolation = violationLines[violationLines.length - 1];
-      expect(lastViolation).toContain("bucketCount=1");
-    }
+    const lines = await readAuditLines(root);
+    expect(lines.some((l) => l.includes("pipeline_blocked"))).toBe(false);
   });
 });

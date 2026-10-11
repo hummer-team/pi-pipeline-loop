@@ -102,6 +102,8 @@ describe("192 issue-4: design-review guard scope (rename/delete two-end + git de
     expect(res?.reason).toContain("design-review dynamic write scope");
     const violations = ((ctx.session.getMeta() as SessionMeta).violations ?? []);
     expect(violations.some((v) => v.tool === "bash" && v.type === "write_protected")).toBe(true);
+    // Phase 7 (195_Bug): the dynamic-scope guard must tag its bucket source.
+    expect(violations.some((v) => v.guardSource === "dynamic_write_scope")).toBe(true);
   });
 
   it("bash mv from an out-of-scope SOURCE into the in-scope report: blocked (source end checked)", async () => {
