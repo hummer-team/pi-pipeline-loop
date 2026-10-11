@@ -15,7 +15,7 @@
 
 import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
 import { safeWriteAuditLog } from "../utils/auditLog";
-import { effectiveMax } from "../utils/stage-visit";
+import { effectiveMax, deriveReworkLoopGate } from "../utils/stage-visit";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
 import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER } from "../constants";
@@ -85,7 +85,7 @@ export interface FlowStateCtx {
 // ─── Decision Types ─────────────────────────────────────────────────────────
 
 /** User decision identifiers for the pipeline decision menu. */
-export type PipelineDecision = "resume" | "skip" | "rollback" | "restart" | "abort" | "choose_stage";
+export type PipelineDecision = "resume" | "skip" | "rollback" | "restart" | "abort" | "choose_stage" | "set_budget" | "rewind_last_round";
 
 /** Decision menu labels (English, matching TUI display). */
 const DECISION_LABELS: Record<PipelineDecision, string> = {
@@ -95,6 +95,8 @@ const DECISION_LABELS: Record<PipelineDecision, string> = {
   restart: "Restart & New",
   abort: "Abort & Exit",
   choose_stage: "Choose stage…",
+  set_budget: "设置轮次",
+  rewind_last_round: "回退上一轮",
 };
 
 // ─── getFlowState ───────────────────────────────────────────────────────────
@@ -195,6 +197,8 @@ export async function executeDecision(
     basis?: string;
     /** Phase 0 (182): DI callback invoked after choose_stage succeeds. Callers inject dispatchAfterResume. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    budgetValue?: number;
   },
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
@@ -699,6 +703,104 @@ export async function executeDecision(
       return { success: true, message: `Pipeline resumed at stage "${target}" (chosen from "${frozenStage}").` };
     }
 
+    case "set_budget": {
+      if (!isFrozen(meta)) {
+        return { success: false, message: "Cannot set budget: pipeline is not frozen." };
+      }
+
+      const budgetValue = opts?.budgetValue;
+      if (budgetValue === undefined || budgetValue === null) {
+        return { success: false, message: "Cannot set budget: budgetValue is required." };
+      }
+
+      if (typeof budgetValue !== "number" || budgetValue <= 0) {
+        return { success: false, message: "Cannot set budget: budgetValue must be a positive number." };
+      }
+
+      const currentCycleCount = meta.loopCycleCount ?? 0;
+      if (budgetValue <= currentCycleCount) {
+        return { success: false, message: `Cannot set budget: value (${budgetValue}) must be greater than current loopCycleCount (${currentCycleCount}).` };
+      }
+
+      const extensionCount = meta.loopBudgetExtensionCount ?? 0;
+      if (extensionCount >= 1) {
+        return { success: false, message: "本期已上调过轮次额度，请继续或重启" };
+      }
+
+      ctx.session.updateMeta({
+        maxLoopCycles: budgetValue,
+        loopBudgetExtensionCount: extensionCount + 1,
+        flowState: "running",
+        blockedReason: undefined,
+      });
+
+      await safeWriteAuditLog("pipeline_decision", {
+        pipelineId: meta.pipelineId,
+        decision,
+        fromStage,
+        toStage: meta.currentStage,
+        reason: meta.blockedReason ?? "",
+        budgetValue: String(budgetValue),
+        previousMaxLoopCycles: String(meta.maxLoopCycles ?? 0),
+        ...(opts?.source ? { source: opts.source } : {}),
+      });
+
+      return { success: true, message: `Budget extended to ${budgetValue} cycles.` };
+    }
+
+    case "rewind_last_round": {
+      if (!isFrozen(meta)) {
+        return { success: false, message: "Cannot rewind: pipeline is not frozen." };
+      }
+
+      const rewindCount = meta.loopRewindCount ?? 0;
+      if (rewindCount >= 1) {
+        return { success: false, message: "本期已回退过一次，请继续或重启" };
+      }
+
+      const gate = deriveReworkLoopGate(meta, config);
+      
+      if (gate === null) {
+        await safeWriteAuditLog("rewind_target_unresolved", {
+          pipelineId: meta.pipelineId,
+          decision,
+          stage: meta.currentStage,
+          reason: "No valid rework loop gate found in stageVisitOrder",
+          ...(opts?.source ? { source: opts.source } : {}),
+        });
+        return { success: false, message: "未能定位上一轮返工起点" };
+      }
+
+      if (gate === "completed" || gate === "awaiting_human") {
+        return { success: false, message: `Cannot rewind to terminal/non-rework stage: ${gate}` };
+      }
+
+      const prevStage = meta.currentStage;
+      const visitOrder = [...(meta.stageVisitOrder ?? []), gate];
+
+      ctx.session.updateMeta({
+        currentStage: gate,
+        previousStage: prevStage,
+        loopCycleCount: 0,
+        loopRewindCount: rewindCount + 1,
+        flowState: "running",
+        blockedReason: undefined,
+        stageVisitOrder: visitOrder,
+      });
+
+      await safeWriteAuditLog("pipeline_decision", {
+        pipelineId: meta.pipelineId,
+        decision,
+        fromStage: prevStage,
+        toStage: gate,
+        reason: meta.blockedReason ?? "",
+        rewindGate: gate,
+        ...(opts?.source ? { source: opts.source } : {}),
+      });
+
+      return { success: true, message: `Rewound from "${prevStage}" to rework loop gate "${gate}".` };
+    }
+
     default:
       return { success: false, message: `Unknown decision: "${String(decision)}".` };
   }
@@ -1084,6 +1186,8 @@ async function promptStageSelection(
     tuiEnabled: boolean;
     /** Phase 0 (182): forwarded to executeDecision for choose_stage aftermath. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    budgetValue?: number;
   },
 ): Promise<PromptDecisionOutcome> {
   const { ui, source, tuiEnabled } = opts;
@@ -1177,6 +1281,8 @@ export async function promptDecisionMenu(
     directStageSelect?: boolean;
     /** Phase 0 (182): forwarded to executeDecision via promptStageSelection for choose_stage aftermath. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    budgetValue?: number;
   },
 ): Promise<PromptDecisionOutcome> {
   const ui = opts?.ui ?? ctx.ui;
@@ -1324,6 +1430,8 @@ export function scheduleDecisionRetry(
   opts?: {
     /** Phase 0 (182): forwarded to promptDecisionMenu for choose_stage aftermath. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    budgetValue?: number;
   },
 ): void {
   const pipelineId = meta.pipelineId;
@@ -1444,6 +1552,8 @@ export async function freezeAndPrompt(
     ui?: FlowStateCtx["ui"];
     /** Phase 0 (182): forwarded to promptDecisionMenu for choose_stage aftermath. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    budgetValue?: number;
   },
 ): Promise<void> {
   // Idempotent: only transition running → blocked, and only perform

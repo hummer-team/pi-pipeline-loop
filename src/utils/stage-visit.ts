@@ -181,11 +181,11 @@ export function deriveReworkLoopGate(
     if (edge.counted) {
       // I2 constraint: gate must be a valid stage and not a terminal/non-rework stage
       if (
-        config?.stages[source] &&
-        source !== "completed" &&
-        source !== "awaiting_human"
+        config?.stages[target] &&
+        target !== "completed" &&
+        target !== "awaiting_human"
       ) {
-        return source;
+        return target;
       }
     }
   }

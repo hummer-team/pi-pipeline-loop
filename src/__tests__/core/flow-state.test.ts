@@ -444,6 +444,248 @@ describe("executeDecision", () => {
     expect(meta.currentStage).toBe("develop");
     expect(meta.confirmGateDeferredAt).toBeUndefined();
   });
+
+  // ─── Phase 5 (195): set_budget ───────────────────────────────────────────
+
+  describe("Phase 5 (195): set_budget", () => {
+    it("success: extends budget, increments loopBudgetExtensionCount, unfreezes", async () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+        loopCycleCount: 3,
+        maxLoopCycles: 5,
+        loopBudgetExtensionCount: 0,
+      });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "set_budget", config, { budgetValue: 8 });
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("8");
+      expect(meta.maxLoopCycles).toBe(8);
+      expect(meta.loopBudgetExtensionCount).toBe(1);
+      expect(meta.flowState).toBe("running");
+      expect(meta.blockedReason).toBeUndefined();
+      expect(meta.loopCycleCount).toBe(3); // unchanged
+    });
+
+    it("reject: not frozen", async () => {
+      const meta = makeTestMeta({ flowState: "running", loopCycleCount: 3 });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "set_budget", config, { budgetValue: 8 });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("not frozen");
+    });
+
+    it("reject: budgetValue missing", async () => {
+      const meta = makeTestMeta({ flowState: "blocked", loopCycleCount: 3 });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "set_budget", config);
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("budgetValue is required");
+    });
+
+    it("reject: budgetValue not positive", async () => {
+      const meta = makeTestMeta({ flowState: "blocked", loopCycleCount: 3 });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "set_budget", config, { budgetValue: -5 });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("positive number");
+    });
+
+    it("reject: budgetValue <= loopCycleCount (E14)", async () => {
+      const meta = makeTestMeta({ flowState: "blocked", loopCycleCount: 5, maxLoopCycles: 5 });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "set_budget", config, { budgetValue: 5 });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("must be greater than");
+    });
+
+    it("reject: one-time limit (loopBudgetExtensionCount >= 1)", async () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        loopCycleCount: 5,
+        loopBudgetExtensionCount: 1,
+      });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "set_budget", config, { budgetValue: 10 });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("已上调过");
+      expect(meta.maxLoopCycles).toBeUndefined(); // unchanged
+      expect(meta.loopBudgetExtensionCount).toBe(1); // unchanged
+    });
+
+    it("works with various blockedReason values", async () => {
+      const blockedReasons = ["loop_overflow", "verify_fail", "contract_drift", "design_violation"] as const;
+      for (const br of blockedReasons) {
+        const meta = makeTestMeta({ flowState: "blocked", blockedReason: br, loopCycleCount: 2, maxLoopCycles: 3 });
+        const ctx = makeCtx(meta);
+        const result = await executeDecision(ctx, meta, "set_budget", config, { budgetValue: 6 });
+        expect(result.success).toBe(true);
+        expect(meta.maxLoopCycles).toBe(6);
+        expect(meta.flowState).toBe("running");
+        expect(meta.blockedReason).toBeUndefined();
+      }
+    });
+  });
+
+  // ─── Phase 5 (195): rewind_last_round ────────────────────────────────────
+
+  describe("Phase 5 (195): rewind_last_round", () => {
+    it("success: rewinds to gate, resets loopCycleCount, increments loopRewindCount", async () => {
+      const meta = makeTestMeta({
+        currentStage: "fix",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+        loopCycleCount: 3,
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix"],
+      });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("review");
+      expect(meta.currentStage).toBe("review");
+      expect(meta.loopCycleCount).toBe(0);
+      expect(meta.loopRewindCount).toBe(1);
+      expect(meta.flowState).toBe("running");
+      expect(meta.blockedReason).toBeUndefined();
+      expect(meta.previousStage).toBe("fix");
+      expect(meta.stageVisitOrder).toContain("review");
+    });
+
+    it("reject: not frozen", async () => {
+      const meta = makeTestMeta({ flowState: "running", loopRewindCount: 0 });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("not frozen");
+    });
+
+    it("reject: one-time limit (loopRewindCount >= 1)", async () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        loopRewindCount: 1,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix"],
+      });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("已回退过");
+      expect(meta.currentStage).toBe("develop"); // unchanged
+      expect(meta.loopRewindCount).toBe(1); // unchanged
+    });
+
+    it("reject: no rework loop gate found (null gate)", async () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan"],
+      });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("未能定位");
+      expect(meta.flowState).toBe("blocked"); // frozen state maintained
+      expect(meta.currentStage).toBe("develop"); // unchanged
+    });
+
+    it("reject: legacy meta missing stageVisitOrder", async () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        loopRewindCount: 0,
+        stageVisitOrder: undefined,
+      });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("未能定位");
+      expect(meta.flowState).toBe("blocked"); // frozen state maintained
+    });
+
+    it("F4 regression: review,fix,review,fix,review,fix ⇒ gate=review, count=0, running", async () => {
+      const meta = makeTestMeta({
+        currentStage: "fix",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+        loopCycleCount: 3,
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix", "review", "fix"],
+      });
+      const ctx = makeCtx(meta);
+
+      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+
+      expect(result.success).toBe(true);
+      expect(meta.currentStage).toBe("review");
+      expect(meta.loopCycleCount).toBe(0);
+      expect(meta.flowState).toBe("running");
+      expect(meta.previousStage).toBe("fix");
+    });
+
+    it("works with various blockedReason values", async () => {
+      const blockedReasons = ["loop_overflow", "verify_fail", "contract_drift", "design_violation"] as const;
+      for (const br of blockedReasons) {
+        const meta = makeTestMeta({
+          currentStage: "fix",
+          flowState: "blocked",
+          blockedReason: br,
+          loopRewindCount: 0,
+          stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review"],
+        });
+        const ctx = makeCtx(meta);
+        const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+        expect(result.success).toBe(true);
+        expect(meta.currentStage).toBe("review");
+        expect(meta.loopCycleCount).toBe(0);
+        expect(meta.flowState).toBe("running");
+        expect(meta.blockedReason).toBeUndefined();
+      }
+    });
+
+    it("migration matrix: all fields updated atomically", async () => {
+      const meta = makeTestMeta({
+        currentStage: "fix",
+        previousStage: "review",
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+        loopCycleCount: 2,
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review"],
+      });
+      const ctx = makeCtx(meta);
+
+      await executeDecision(ctx, meta, "rewind_last_round", config);
+
+      expect(meta.currentStage).toBe("review");
+      expect(meta.previousStage).toBe("fix");
+      expect(meta.loopCycleCount).toBe(0);
+      expect(meta.loopRewindCount).toBe(1);
+      expect(meta.flowState).toBe("running");
+      expect(meta.blockedReason).toBeUndefined();
+      expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "fix", "review", "review"]);
+    });
+  });
 });
 
 // ─── freezeAndPrompt ─────────────────────────────────────────────────────────
