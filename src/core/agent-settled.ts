@@ -355,8 +355,8 @@ export function createAgentSettled(
                 const alreadyDispatched = meta.dispatchedProbeDeferrals?.[dedupeKey];
                 
                 if (alreadyDispatched) {
-                  // Already dispatched — skip to prevent double-dispatch (similar to agent_settled_owner_wake_replay_skipped)
-                  await writeAuditLog("probe_deferral_replay_skipped", {
+                  // Already dispatched — skip to prevent double-dispatch (N1 closure: reuses the sanctioned replay-skip event; path distinguished by reason=duplicate_dispatch_prevented)
+                  await writeAuditLog("agent_settled_owner_wake_replay_skipped", {
                     pipelineId: meta.pipelineId,
                     stage: meta.currentStage,
                     expectedAgent,

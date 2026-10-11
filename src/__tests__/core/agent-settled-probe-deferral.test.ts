@@ -210,7 +210,7 @@ describe("agent-settled probe deferral cap (Phase 8)", () => {
     expect(gaveUpEntries.length).toBe(1);
 
     const replayEntries = entries.filter(
-      (e) => e.includes("probe_deferral_replay_skipped") && e.includes(pipelineId),
+      (e) => e.includes("agent_settled_owner_wake_replay_skipped") && e.includes(pipelineId),
     );
     expect(replayEntries.length).toBe(1);
 
