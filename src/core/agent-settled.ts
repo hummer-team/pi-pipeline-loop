@@ -786,6 +786,11 @@ export function createAgentSettled(
         structuredResult: vr.structuredResult,
         ruleMissing: vr.ruleMissing,
         verifyResult: vr.verifyResult ?? null,
+        // Phase 9: pass rule set identity fields for audit and owner-visible messages
+        rulesSource: vr.rulesSource,
+        rulesParsed: vr.rulesParsed,
+        selfVerifySkip: vr.selfVerifySkip,
+        parseError: vr.parseError,
       };
 
       // 148 Phase 3: Config-error skip → treat as pass with notify/audit

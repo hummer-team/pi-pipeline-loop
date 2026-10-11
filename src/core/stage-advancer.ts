@@ -1829,6 +1829,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
               structuredResult: vr.verifyResult?.structured,
               ruleMissing: vr.ruleMissing,
               verifyResult: vr.verifyResult,
+              // Phase 9: pass rule set identity fields for audit and owner-visible messages
+              rulesSource: vr.rulesSource,
+              rulesParsed: vr.rulesParsed,
+              selfVerifySkip: vr.selfVerifySkip,
+              parseError: vr.parseError,
             };
             const failResult = await applyVerifyFail(ctx, meta, currentStage, sharedResult, "tool", ui, config);
             return {

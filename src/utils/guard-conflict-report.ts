@@ -89,6 +89,35 @@ export function describeInvalidNextStage(legalChain: string[]): string {
   ].join("\n");
 }
 
+/**
+ * Describes an empty or parse-failed rule set during verification.
+ * When verify.md is missing, empty, or has invalid frontmatter, the owner
+ * needs actionable guidance on the only legal next step.
+ */
+export function describeEmptyOrInvalidRuleSet(
+  stageName: string,
+  rulesSource: string | undefined,
+  parseError: string | undefined,
+): string {
+  const sourceInfo = rulesSource ? ` (source: ${rulesSource})` : '';
+  
+  if (parseError) {
+    return [
+      `Verification configuration error for stage '${stageName}'${sourceInfo}.`,
+      `Issue: verify.md frontmatter parse failed — ${parseError}.`,
+      `Consequence: no verification rules can be evaluated; verification cannot proceed.`,
+      `Next step: fix the frontmatter syntax in verify.md. Ensure the file starts with "---" and contains valid YAML between the delimiters.`,
+    ].join("\n");
+  }
+  
+  return [
+    `Verification configuration error for stage '${stageName}'${sourceInfo}.`,
+    `Issue: verify.md is empty or contains no verification rules.`,
+    `Consequence: no verification rules can be evaluated; verification cannot proceed.`,
+    `Next step: add verification rules to verify.md (e.g., requiredFiles, requiredCommands, keywords).`,
+  ].join("\n");
+}
+
 /** Result of checkDispatchConflicts when a conflict is found. */
 export interface DispatchConflictResult {
   blocked: true;

@@ -28,6 +28,7 @@ import { computeResultKey } from "./stage-executor/run-state";
 import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
+import { describeEmptyOrInvalidRuleSet } from "../utils/guard-conflict-report";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -55,6 +56,14 @@ interface VerifyAdvanceResult {
   structuredResult?: { failures: { ruleType: string; detail: string; group?: string }[] };
   ruleMissing: string[];
   verifyResult?: { structured: { passed: boolean }; overallPassed: boolean } | null;
+  /** Phase 9: rule set source file path (relative to projectRoot) */
+  rulesSource?: string;
+  /** Phase 9: whether rules were successfully parsed */
+  rulesParsed?: boolean;
+  /** Phase 9: whether self-verify skip is enabled */
+  selfVerifySkip?: boolean;
+  /** Phase 9: parse error reason when rules failed to parse */
+  parseError?: string;
 }
 
 /**
@@ -213,6 +222,9 @@ export async function applyVerifyPass(
         loopCycleCount: String(meta.loopCycleCount ?? 0),
         maxLoopCycles: String(effectiveMax(meta, ctx.config)),
         remainingRounds: String(effectiveMax(meta, ctx.config) - (meta.loopCycleCount ?? 0)),
+        rulesSource: verifyResult?.rulesSource ?? "",
+        rulesParsed: verifyResult?.rulesParsed ?? false,
+        selfVerifySkip: verifyResult?.selfVerifySkip ?? false,
       });
 
       if (opts.returnResult) {
@@ -300,6 +312,9 @@ export async function applyVerifyPass(
         fromStage: stageName,
         nextStage,
         method: opts.method,
+        rulesSource: verifyResult?.rulesSource ?? "",
+        rulesParsed: verifyResult?.rulesParsed ?? false,
+        selfVerifySkip: verifyResult?.selfVerifySkip ?? false,
       });
     }
 
@@ -329,6 +344,9 @@ export async function applyVerifyPass(
       stage: stageName,
       method: opts.method,
       note: "terminal stage, no advance",
+      rulesSource: verifyResult?.rulesSource ?? "",
+      rulesParsed: verifyResult?.rulesParsed ?? false,
+      selfVerifySkip: verifyResult?.selfVerifySkip ?? false,
     });
   }
 
@@ -403,6 +421,11 @@ export async function applyVerifyFail(
       timestamp: now,
     });
   }
+
+  // Phase 9 Task 4: detect empty or parse-failed rule sets
+  // When rule set is empty (rulesParsed=false) or parse fails (parseError exists),
+  // use the shared function to display actionable "only legal next step" message
+  const isEmptyOrParseFailed = verifyResult.rulesParsed === false || !!verifyResult.parseError;
 
   // Phase 3 (L3): config-error detection — freeze immediately without
   // incrementing verifyAttempts, giving the user the decision menu.
@@ -516,6 +539,9 @@ export async function applyVerifyFail(
     failureCount: String(verifyFailures.length),
     failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
     details: verifyFailures.map((f) => f.detail).join("; "),
+    rulesSource: verifyResult?.rulesSource ?? "",
+    rulesParsed: verifyResult?.rulesParsed ?? false,
+    selfVerifySkip: verifyResult?.selfVerifySkip ?? false,
   }, "warn");
 
   const failureSummary = verifyFailures
@@ -573,7 +599,9 @@ export async function applyVerifyFail(
       return {
         success: false,
         passed: false,
-        message: reportFeedback
+        message: isEmptyOrParseFailed
+          ? describeEmptyOrInvalidRuleSet(stageName, verifyResult.rulesSource, verifyResult.parseError)
+          : reportFeedback
           ? `Design-review report is invalid and the verify budget is exhausted — pipeline frozen. ${reportFeedback.message}`
           : `Verification failed for "${stageName}" (attempt overflow — frozen): ${failureSummary}`,
         failures: verifyFailures,
@@ -587,7 +615,9 @@ export async function applyVerifyFail(
   if (method === "rule" && ctx.pi && typeof ctx.pi.sendUserMessage === "function") {
     try {
       ctx.pi.sendUserMessage(
-        reportFeedback
+        isEmptyOrParseFailed
+          ? describeEmptyOrInvalidRuleSet(stageName, verifyResult.rulesSource, verifyResult.parseError)
+          : reportFeedback
           ? reportFeedback.message
           : `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification. Please strictly follow the SKILL output format requirements.`,
         { deliverAs: "followUp" },
@@ -614,7 +644,9 @@ export async function applyVerifyFail(
   return {
     success: false,
     passed: false,
-    message: reportFeedback
+    message: isEmptyOrParseFailed
+      ? describeEmptyOrInvalidRuleSet(stageName, verifyResult.rulesSource, verifyResult.parseError)
+      : reportFeedback
       ? `${reportFeedback.message}`
       : `Verification failed for "${stageName}": ${failureSummary}. Please strictly follow the SKILL output format requirements.`,
     failures: verifyFailures,

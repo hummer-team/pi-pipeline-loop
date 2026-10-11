@@ -65,6 +65,12 @@ export interface StructuredVerifyResult {
   passed: boolean;
   /** List of failures with rule type and detail */
   failures: VerifyFailure[];
+  /** Phase 9: rule set source file path (relative to projectRoot) */
+  rulesSource?: string;
+  /** Phase 9: whether rules were successfully parsed */
+  rulesParsed?: boolean;
+  /** Phase 9: whether self-verify skip is enabled */
+  selfVerifySkip?: boolean;
 }
 
 /**
@@ -103,6 +109,8 @@ export interface VerifyResult {
 export interface ParsedVerifyFile {
   /** Verification rules (null if no YAML frontmatter with keywords) */
   rules: VerifyRules | null;
+  /** Phase 9: parse failure reason (present when rules is null due to parse error) */
+  parseError?: string;
 }
 
 /**
@@ -117,12 +125,12 @@ export async function parseVerifyFile(
   try {
     raw = await fs.readFile(verifyPath, "utf-8");
   } catch {
-    return { rules: null };
+    return { rules: null, parseError: "file read failed" };
   }
 
   const parts = raw.split(/^---\s*$/m);
   if (parts.length < 2) {
-    return { rules: null };
+    return { rules: null, parseError: "no frontmatter delimiter" };
   }
 
   // parts[0] is before first --- (should be empty/whitespace)
@@ -130,6 +138,10 @@ export async function parseVerifyFile(
   const frontmatter = parts[1].trim();
 
   const rules = await parseFrontmatter(frontmatter);
+  
+  if (!rules) {
+    return { rules: null, parseError: "frontmatter parse failed" };
+  }
 
   return { rules };
 }
@@ -185,6 +197,7 @@ export async function executeStructuredRules(
   stageStartTime?: number,
   stageName?: string,
   snapshotLookup?: (absPath: string) => string | undefined,
+  rulesSource?: string,
 ): Promise<StructuredVerifyResult> {
   const failures: VerifyFailure[] = [];
 
@@ -402,6 +415,14 @@ export interface VerificationRunResult {
    * Produced from a single content snapshot per consumed deliverable.
    */
   designReviewOutcome?: DesignReviewVerificationOutcome;
+  /** Phase 9: rule set source file path (relative to projectRoot) */
+  rulesSource?: string;
+  /** Phase 9: whether rules were successfully parsed */
+  rulesParsed?: boolean;
+  /** Phase 9: whether self-verify skip is enabled */
+  selfVerifySkip?: boolean;
+  /** Phase 9: parse failure reason (present when rules is null due to parse error) */
+  parseError?: string;
 }
 
 /**
@@ -582,7 +603,7 @@ async function runVerificationBase(
   // - double fs.readFile + parseFrontmatter (performance)
   // - TOCTOU window between diagnose and parse (correctness)
   // Now parse first, then diagnose — single-read path (see raw content reuse below).
-  const { rules } = await parseVerifyFile(verifyPath);
+  const { rules, parseError } = await parseVerifyFile(verifyPath);
 
   // M4 fix: diagnose using the same file. When parseVerifyFile has already read
   // the file, we still call diagnoseVerifyConfig (which re-reads — acceptable
@@ -605,6 +626,21 @@ async function runVerificationBase(
   // Default structured result when no structured rules exist
   let structuredResult: StructuredVerifyResult = { passed: true, failures: [] };
 
+  // Phase 9: compute rule set identity fields
+  const rulesSource = path.relative(config.projectRoot, verifyPath);
+  const rulesParsed = rules !== null;
+  const selfVerifySkip = verifyConfig.selfVerifySkip === true;
+
+  // Task 3: When parse fails, write verify_config_skip audit event
+  if (!rules && parseError) {
+    await safeWriteAuditLog("verify_config_skip", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      reason: parseError,
+      rulesSource,
+    });
+  }
+
   if (!rules) {
     // No rules defined — structured-only path, no LLM fallback (Q6-B)
     const verifyResult: VerifyResult = { structured: structuredResult, overallPassed: false };
@@ -613,6 +649,10 @@ async function runVerificationBase(
       rulePassed: false,
       ruleMissing: [],
       verifyResult,
+      rulesSource,
+      rulesParsed,
+      selfVerifySkip,
+      parseError,
     };
   }
 
@@ -781,6 +821,9 @@ async function runVerificationBase(
         ruleMissing: [],
         structuredResult,
         verifyResult,
+        rulesSource,
+        rulesParsed,
+        selfVerifySkip,
       };
     }
   }
@@ -814,6 +857,7 @@ async function runVerificationBase(
       meta.currentStage,
       // 192 Phase 3 (task 4): shared exact-path snapshot for groups/flat rules
       options?.snapshotLookup,
+      rulesSource,
     );
   } else {
     // Legacy path: keyword-only rules
@@ -836,6 +880,9 @@ async function runVerificationBase(
       ruleMissing: [],
       structuredResult,
       verifyResult,
+      rulesSource,
+      rulesParsed,
+      selfVerifySkip,
     };
   }
 
@@ -850,6 +897,9 @@ async function runVerificationBase(
     ruleMissing,
     structuredResult,
     verifyResult,
+    rulesSource,
+    rulesParsed,
+    selfVerifySkip,
   };
 }
 
@@ -877,7 +927,7 @@ export async function precheckRequiredFiles(
   const verifyPath = resolveVerifyFilePath(config, meta.currentStage);
 
   // Parse verify.md to extract requiredFiles rules
-  const { rules } = await parseVerifyFile(verifyPath);
+  const { rules, parseError } = await parseVerifyFile(verifyPath);
 
   // No rules → precheck passes
   if (!rules) {
