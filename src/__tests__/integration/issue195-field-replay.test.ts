@@ -16,8 +16,13 @@
 
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { recordStageVisit, deriveReworkLoopGate } from "../../utils/stage-visit";
-import { executeDecision } from "../../core/flow-state";
-import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { executeDecision, buildDecisionMenu } from "../../core/flow-state";
+import { createToolGuard } from "../../core/tool-guard";
+import { __setSafeWriteAuditLogOverride, initAuditLog } from "../../utils/auditLog";
+import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { SessionMeta, PipelineConfig, PipelineStage } from "../../types";
 
 describe("issue195 field replay: rework loop freeze and decision exits", () => {
@@ -347,5 +352,93 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
     // Verify audit event
     const unresolvedAudit = auditEvents.find(e => e.stage === "rewind_target_unresolved");
     expect(unresolvedAudit).toBeDefined();
+  });
+
+  test("deliverable write passthrough under tool-guard in develop stage", async () => {
+    const pipelineId = "pipe-issue195-replay-deliverable-write";
+    const projectRoot = join(tmpdir(), `pi-issue195-deliverable-${Date.now()}`);
+    await mkdir(projectRoot, { recursive: true });
+    await mkdir(join(projectRoot, "docs", "design"), { recursive: true });
+
+    const testConfig = makeTestConfig({
+      projectRoot,
+      stages: {
+        clarify: { nextStage: "plan", allowedWritePaths: ["docs/"] } as any,
+        plan: { nextStage: "develop", allowedWritePaths: ["docs/"] } as any,
+        develop: { nextStage: "review", allowedWritePaths: ["**"], allowedReadOnlyPaths: ["docs/design/*_plan.md"] } as any,
+        "design-review": { nextStage: "develop", allowedWritePaths: [] } as any,
+        review: { nextStage: "completed", allowedWritePaths: [] } as any,
+        fix: { nextStage: "review", allowedWritePaths: ["**"] } as any,
+        completed: { nextStage: null } as any,
+        awaiting_human: { nextStage: null } as any,
+      },
+    });
+    await initAuditLog(testConfig);
+
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId });
+    const ctx = createMockCtx(meta);
+
+    const guard = createToolGuard(testConfig);
+
+    // (a) Write deliverable commit file: should pass (not in read-only paths)
+    const commitFile = join(projectRoot, "docs", "design", "test_plan_commit.md");
+    ctx.toolCall = { name: "write", arguments: { file_path: commitFile } };
+    const resultCommit = await guard.handler(ctx as any);
+    const commitBlocked = (resultCommit as { block?: boolean })?.block;
+    expect(commitBlocked).toBeUndefined();
+
+    // (b) Bash echo to same deliverable: should pass
+    ctx.toolCall = { name: "bash", arguments: { command: `echo "content" > ${commitFile}` } };
+    const resultBash = await guard.handler(ctx as any);
+    const bashBlocked = (resultBash as { block?: boolean })?.block;
+    expect(bashBlocked).toBeUndefined();
+
+    // (c) Write to read-only plan file: should block
+    const planFile = join(projectRoot, "docs", "design", "test_plan.md");
+    ctx.toolCall = { name: "write", arguments: { file_path: planFile } };
+    const resultPlan = await guard.handler(ctx as any);
+    expect((resultPlan as { block?: boolean })?.block).toBe(true);
+
+    // Verify violation recorded for read-only path
+    const updatedMeta = ctx.session.getMeta() as SessionMeta;
+    const violations = updatedMeta.violations ?? [];
+    const readOnlyViolations = violations.filter(v => v.type === "write_protected");
+    expect(readOnlyViolations.length).toBe(1);
+  });
+
+  test("pruned decision menu after round 6 freeze", () => {
+    const pipelineId = "pipe-issue195-replay-pruned-menu";
+
+    // Frozen meta at round 6: loopCycleCount=5, maxLoopCycles=5, budget exhausted
+    const frozenMeta: SessionMeta = {
+      currentStage: "review",
+      stageVisitOrder: [
+        "clarify", "plan", "develop", "review",
+        "fix", "review", "fix", "review", "fix", "review", "fix", "review", "fix", "review", "fix"
+      ],
+      loopCycleCount: 5,
+      maxLoopCycles: 5,
+      pipelineId,
+      flowState: "blocked",
+      blockedReason: "max_loop_cycles",
+      loopBudgetExtensionCount: 0,
+      loopRewindCount: 0,
+    } as SessionMeta;
+
+    const menu = buildDecisionMenu(frozenMeta, "max_loop_cycles", config);
+
+    // Menu should contain exactly: set_budget, rewind_last_round, restart, abort
+    expect(menu).not.toBeNull();
+    expect(menu!.length).toBe(4);
+    expect(menu).toContain("设置轮次");
+    expect(menu).toContain("回退上一轮");
+    expect(menu).toContain("Restart & New");
+    expect(menu).toContain("Abort & Exit");
+
+    // Resume should NOT be present (no budget remaining)
+    expect(menu).not.toContain("Resume");
+
+    // First item must be set_budget (设置轮次)
+    expect(menu![0]).toBe("设置轮次");
   });
 });
