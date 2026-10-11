@@ -137,7 +137,7 @@ bun add @earendil-works/pi-pipeline
 - `stages.{stage}.verify.selfVerifySkip`：当模型已在本 stage 工具调用中成功执行过相同 requiredCommand 时跳过重执行（仅 audit），write/edit 文件变更后失效；默认 false（develop/fix 建议开启）
 - `llmExtract`：是否启用 LLM 辅助提取交付项（推荐 true，结合技术栈检测生成项目相关命令）
 - `maxLoops`：单阶段最大测试失败重试次数（默认 3）
-- `maxLoopCycles`：流水线循环周期上限（默认 3）
+- `maxLoopCycles`：返工轮次上限（默认 5）。计数按 `classifyVisitEdge` 判据：返工回退/回环入口边计数，前进边与首访不计数，review↔fix 一次往返恰耗 1。执行器连续失败预算另列（`DEFAULT_EXECUTOR_FAILURE_BUDGET`，与返工预算解耦，勿混淆）。区别于 `maxLoops`（单阶段测试失败重试）与 `maxVerifyAttempts`（verify 重试上限）
 - `output.pipelineStage`：是否在 TUI 状态栏显示阶段转换（默认 true）。状态栏格式：`[ {pipelineId} • {stage} -> {nextStage} ]`（nextStage 置灰；completed 无箭头；无 meta 时回退 `Pipeline → {stage}`）
 - `protect`：文件保护配置（详见 3.2 节）
   - `gitignore`：是否解析 `.gitignore` 动态保护（默认 true）
@@ -157,7 +157,7 @@ bun add @earendil-works/pi-pipeline
 {
   // ── 顶层字段 ──
   "maxLoops": 3,                    // 单阶段最大测试失败重试次数
-  "maxLoopCycles": 5,               // 流水线循环周期上限（review/fix/develop 回环计数）
+  "maxLoopCycles": 5,               // 返工轮次上限（review↔fix 一次往返耗 1；classifyVisitEdge 判据：回退/回环边计数，前进/首访不计数）；执行器连续失败预算另列 DEFAULT_EXECUTOR_FAILURE_BUDGET，与返工预算解耦
   "llmExtract": true,               // 启用 LLM 辅助提取交付项（推荐开启，结合技术栈检测）
    "auditDir": ".pi/audit",          // 审计日志目录
    "piWorkDir": ".pi",                // 插件资产目录（相对 projectRoot，默认 ".pi"）：所有 ".pi/" 前缀配置值在此解析期重写为该目录；例外：配置锚点 `.pi/pipeline_loop.json` 不受其影响。约束：非空字符串、相对路径、禁止 ".." 段；非法值告警并回落 ".pi"。修改后需重跑 /pipeline-init 并重启 pi 生效
@@ -450,7 +450,7 @@ clarify → plan → design-review → develop → review ⇄ fix → review (lo
 - review 报告有 Blocker/High/Medium → confirm 门拒绝→fix → 修复后→review 复验
 - review confirm 门通过 → completed
 - fix 复验通过 → review（再次 confirm 门）
-- `loopCycleCount` 跟踪 review/fix 回环次数 → 达到 `maxLoopCycles` → 流水线终止
+- `loopCycleCount` 按 `classifyVisitEdge` 判据累加（返工回退/回环入口边 +1，前进边与首访不计数）→ 达到 `maxLoopCycles`（默认 5）→ 流水线终止
 
 > **fix.nextStage 修正 (162)**：`fix.nextStage` 为 `"review"`，修复后回 review 复验，由 review confirm 门收敛至 completed。
 
@@ -865,7 +865,7 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 
 **解决**：
 - 检查测试失败原因，修复根本问题
-- 调高 `maxLoops` 或 `maxLoopCycles` 配置
+- 调高 `maxLoops`（单阶段测试重试上限）或 `maxLoopCycles`（返工轮次上限，默认 5）配置
 - 使用 /pipeline-start REQUIREMENT.md 重新开始流水线
 
 ### 8.3 受保护路径写入被拒
@@ -1596,4 +1596,4 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | 重复 terminal | 不重计数、不重写、不二次唤醒 | `duplicate_ignored` |
 | 旧 run 的迟到 terminal | 与当前 identity 不匹配 → 当前记录零触碰 | `late_event_ignored` |
 | 子会话绑定旧 run | `child-stale` 拒绝，零写入（身份一经更早 run 冻结） | `identity_frozen_by_earlier_run` |
-| 同 visit 失败预算 | 继承 `consecutiveFailures`，达到上限（`maxLoopCycles`，默认 3）后新 run 拒绝 `budget_exhausted_same_visit`；completed terminal **不**重置预算 | — |
+| 同 visit 失败预算 | 执行器连续失败预算由 `DEFAULT_EXECUTOR_FAILURE_BUDGET`（默认 3）管控，与返工预算 `maxLoopCycles`（默认 5）解耦；继承 `consecutiveFailures`，达到执行器预算上限后新 run 拒绝 `budget_exhausted_same_visit`；completed terminal **不**重置预算 | — |
