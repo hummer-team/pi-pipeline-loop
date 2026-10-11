@@ -221,6 +221,110 @@ describe("applyVerifyPass", () => {
     );
     expect(result2).toBeUndefined();
   });
+
+  // Phase 9: verify-audit attestation matrix — triplet fields present
+  it("auto_verify_pass audit includes triplet fields when present", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-p9-pass-triplet" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: { structured: { passed: true }, llm: null, overallPassed: true },
+      rulesSource: "docs/design/test_plan_verify.md",
+      rulesParsed: true,
+      selfVerifySkip: false,
+    };
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "develop",
+      "review" as PipelineStage,
+      sharedResult,
+      { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
+    );
+
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    const lines = logContent.split("\n");
+    const match = lines.find((l) => l.includes("auto_verify_pass") && l.includes("pipe-p9-pass-triplet"));
+    expect(match).toBeDefined();
+    expect(match).toContain("rulesSource=docs/design/test_plan_verify.md");
+    expect(match).toContain("rulesParsed=true");
+    expect(match).toContain("selfVerifySkip=false");
+  });
+
+  // Phase 9: verify-audit attestation matrix — defaults when missing
+  it("auto_verify_pass audit includes default triplet fields when missing", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-p9-pass-defaults" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: { structured: { passed: true }, llm: null, overallPassed: true },
+      // No triplet fields set
+    };
+
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "develop",
+      "review" as PipelineStage,
+      sharedResult,
+      { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
+    );
+
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    const lines = logContent.split("\n");
+    const match = lines.find((l) => l.includes("auto_verify_pass") && l.includes("pipe-p9-pass-defaults"));
+    expect(match).toBeDefined();
+    expect(match).toContain("rulesSource=");
+    expect(match).toContain("rulesParsed=false");
+    expect(match).toContain("selfVerifySkip=false");
+  });
+
+  // Phase 9: blocked_by_budget spike — triplet fields present
+  it("auto_verify_pass_blocked_by_budget audit includes triplet fields", async () => {
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-p9-budget-triplet",
+      stageVisitOrder: ["develop", "review"],
+      loopCycleCount: 0,
+      maxLoopCycles: 1,
+    });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: { failures: [] },
+      ruleMissing: [],
+      verifyResult: { structured: { passed: true }, llm: null, overallPassed: true },
+      rulesSource: "docs/design/test_plan_verify.md",
+      rulesParsed: true,
+      selfVerifySkip: false,
+    };
+
+    // review -> develop is backward edge (C2), will increment cycleCount to 1, which >= maxCycles=1
+    await applyVerifyPass(
+      ctx as any,
+      meta,
+      "review",
+      "develop" as PipelineStage,
+      sharedResult,
+      { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
+    );
+
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    const lines = logContent.split("\n");
+    const match = lines.find((l) => l.includes("auto_verify_pass_blocked_by_budget") && l.includes("pipe-p9-budget-triplet"));
+    expect(match).toBeDefined();
+    expect(match).toContain("rulesSource=docs/design/test_plan_verify.md");
+    expect(match).toContain("rulesParsed=true");
+    expect(match).toContain("selfVerifySkip=false");
+  });
 });
 
 describe("applyVerifyFail", () => {
@@ -320,6 +424,41 @@ describe("applyVerifyFail", () => {
     // Should NOT duplicate keywords — only 1 failure
     expect(result.failures.length).toBe(1);
     expect(result.failures[0].ruleType).toBe("keywords");
+  });
+
+  // Phase 9: verify-audit attestation matrix — fail path triplet fields
+  it("auto_verify_fail audit includes triplet fields", async () => {
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-p9-fail-triplet" });
+    const ctx = createCtx(meta);
+
+    const sharedResult = {
+      structuredResult: {
+        failures: [{ ruleType: "requiredFiles", detail: "missing: output.md" }],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+      rulesSource: "docs/design/test_plan_verify.md",
+      rulesParsed: true,
+      selfVerifySkip: false,
+    };
+
+    await applyVerifyFail(
+      ctx as any,
+      meta,
+      "develop",
+      sharedResult,
+      "tool",
+      ctx.pipelineUI,
+    );
+
+    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logContent = await readFile(logPath, "utf-8");
+    const lines = logContent.split("\n");
+    const match = lines.find((l) => l.includes("auto_verify_fail") && l.includes("pipe-p9-fail-triplet"));
+    expect(match).toBeDefined();
+    expect(match).toContain("rulesSource=docs/design/test_plan_verify.md");
+    expect(match).toContain("rulesParsed=true");
+    expect(match).toContain("selfVerifySkip=false");
   });
 });
 

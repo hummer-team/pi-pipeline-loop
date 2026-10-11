@@ -218,6 +218,15 @@ describe("Phase 3 (148): agent_settled verify config skip", () => {
     // M1 fix: skipped must NOT write auto_verify_pass audit
     expect(logContent).not.toContain("auto_verify_pass");
 
+    // Phase 9 M1 regression: verify_config_skip count = 1, auto_verify_pass count = 0
+    const skipLines = logContent.split("\n").filter(l => l.includes("verify_config_skip"));
+    expect(skipLines.length).toBe(1);
+    const passLines = logContent.split("\n").filter(l => l.includes("auto_verify_pass"));
+    expect(passLines.length).toBe(0);
+    
+    // Phase 9: verify_config_skip includes failure reason fragment
+    expect(skipLines[0]).toContain("errors=");
+
     await rm(stageTmp, { recursive: true, force: true });
   });
 });
