@@ -177,11 +177,14 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
     const hook = createToolGuard(devConfig);
     await hook.handler(ctx as any);
 
-    // Read audit log
+    // Read audit log and verify structured event fields
     const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-    expect(logContent).toContain("readonly_exempt_applied");
-    expect(logContent).toContain("tool=write");
-    expect(logContent).toContain("docs/design/195_Bug_plan_commit.md");
+    const events = logContent.split('\n').filter(line => line.trim());
+    const exemptEvent = events.find(e => e.includes('readonly_exempt_applied'));
+    expect(exemptEvent).toBeDefined();
+    expect(exemptEvent).toMatch(/stage=develop/);
+    expect(exemptEvent).toMatch(/relPath=docs\/design\/195_Bug_plan_commit\.md/);
+    expect(exemptEvent).toMatch(/tool=write/);
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -210,10 +213,13 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
     // Bash write to exempted path should NOT be blocked
     expect(result).toBeUndefined();
 
-    // Verify audit event for bash exemption
+    // Verify audit event for bash exemption with structured fields
     const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
-    expect(logContent).toContain("readonly_exempt_applied");
-    expect(logContent).toContain("tool=bash");
+    const events = logContent.split('\n').filter(line => line.trim());
+    const bashExemptEvent = events.find(e => e.includes('readonly_exempt_applied'));
+    expect(bashExemptEvent).toBeDefined();
+    expect(bashExemptEvent).toMatch(/stage=develop/);
+    expect(bashExemptEvent).toMatch(/tool=bash/);
 
     await rm(TMP, { recursive: true, force: true });
   });

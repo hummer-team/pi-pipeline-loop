@@ -571,11 +571,11 @@ async function checkBashFileTargets(
       // 195 Phase 1: Audit log when path is exempted from read-only check
       if (stageCheck.exempted) {
         await safeWriteAuditLog(
-          meta.currentStage,
+          "readonly_exempt_applied",
           {
-
-            readonly_exempt_applied: `tool=bash, path=${relPath}`,
-
+            stage: meta.currentStage,
+            relPath,
+            tool: "bash",
           },
           "info"
         );
@@ -1391,11 +1391,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             // 195 Phase 1: Audit log when path is exempted from read-only check
             if (stageCheck.exempted) {
               await safeWriteAuditLog(
-                meta.currentStage,
+                "readonly_exempt_applied",
                 {
-
-                  readonly_exempt_applied: `tool=${toolName}, path=${relPath}`,
-
+                  stage: meta.currentStage,
+                  relPath,
+                  tool: toolName,
                 },
                 "info"
               );
