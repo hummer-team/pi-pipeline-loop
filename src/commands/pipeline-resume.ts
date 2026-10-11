@@ -13,8 +13,9 @@
  *   - With UI + no --force-resume → present decision menu (Phase 0 / 182)
  *     - decided → return decision result (status bar synced by Phase 0)
  *     - cancelled/interrupted → keep frozen, return frozen hint
- *     - no-menu (child session) → fall through to legacy resume
- *   - With --force-resume or no UI → legacy executeDecision("resume") + dispatch
+ *     - no-menu (child session / no UI) → Phase 6 (195): show frozen reason + hint,
+ *       audit resume_skipped_no_menu, DO NOT silently resume
+ *   - With --force-resume → explicit skip, executeDecision("resume") + dispatch (Phase 6 / 195)
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
@@ -317,11 +318,32 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             };
           }
 
-          // "no-menu" (child session) → fall through to legacy resume path
+          // "no-menu" (child session) → Phase 6 (195): DO NOT silently resume
+          // Instead, show frozen reason + hint, audit, and return
         }
 
-        // Legacy path: --force-resume, no UI, or child session fallback
-        const result = await executeDecision(ctx, meta, "resume", config, { source: "command" });
+        // Phase 6 (195): Eliminate silent thaw — no-menu paths no longer auto-resume
+        if (!forceResume) {
+          // Distinguish child session vs no UI for audit clarity
+          const noMenuReason = (typeof ctx?.ui?.select !== "function") ? "no_ui" : "child_session";
+          
+          await safeWriteAuditLog("resume_skipped_no_menu", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            reason: noMenuReason,
+            blockedReason: meta.blockedReason ?? "unknown",
+          });
+          
+          const frozenReason = formatFrozenReason(meta);
+          const hint = "在 owner 会话执行 /pipeline-resume，或使用 --force-resume 显式解冻";
+          const message = `Pipeline frozen: ${frozenReason}. ${hint}`;
+          
+          ui.notify(ctx, message);
+          return { message };
+        }
+
+        // --force-resume path: explicit skip, proceed with resume
+        const result = await executeDecision(ctx, meta, "resume", config, { source: "force-resume" });
 
         if (!result.success) {
           return { error: `Resume failed: ${result.message}` };

@@ -136,16 +136,56 @@ export function isFrozen(meta: SessionMeta): boolean {
 /**
  * Builds the decision menu items for the TUI select dialog.
  *
- * - blocked / awaiting_human → 6 items (resume/skip/rollback/restart/abort/choose_stage)
- * - running → 2 items (restart/abort)
+ * Phase 6 (195): Now accepts blockedReason and config to dynamically adjust menu items.
+ *
  * - aborted → null (do not show menu)
+ * - blockedReason === "max_loop_cycles" → [resume?/设置轮次/回退上一轮/restart/abort]
+ *   - resume only when effectiveMax(meta, config) > (meta.loopCycleCount ?? 0)
+ *   - set_budget hidden when loopBudgetExtensionCount >= 1
+ *   - rewind_last_round hidden when deriveReworkLoopGate(meta, config) === null OR loopRewindCount >= 1
+ * - Other blocked / awaiting_human → 6 items (resume/skip/rollback/restart/abort/choose_stage)
+ * - running → 2 items (restart/abort)
  */
-export function buildDecisionMenu(meta: SessionMeta): string[] | null {
+export function buildDecisionMenu(meta: SessionMeta, blockedReason?: string, config?: PipelineConfig): string[] | null {
   const fs = getFlowState(meta);
 
   if (fs === "aborted") return null;
 
   if (fs === "blocked" || meta.currentStage === "awaiting_human") {
+    // Phase 6 (195): max_loop_cycles gets a specialized 4-item menu
+    if (blockedReason === "max_loop_cycles") {
+      const items: string[] = [];
+      
+      // Plan menu order: [set_budget?, rewind?, restart, abort, resume?] —
+      // resume is appended only when budget remains; the first item must be
+      // 设置轮次 per Phase 6 acceptance, so resume never leads.
+      const maxCycles = effectiveMax(meta, config);
+      const currentCycles = meta.loopCycleCount ?? 0;
+      
+      // set_budget hidden when already extended once
+      if ((meta.loopBudgetExtensionCount ?? 0) < 1) {
+        items.push(DECISION_LABELS.set_budget);
+      }
+      
+      // rewind_last_round hidden when gate cannot be derived OR already rewound once
+      const rewindGate = deriveReworkLoopGate(meta, config);
+      if (rewindGate !== null && (meta.loopRewindCount ?? 0) < 1) {
+        items.push(DECISION_LABELS.rewind_last_round);
+      }
+      
+      // restart and abort always present
+      items.push(DECISION_LABELS.restart);
+      items.push(DECISION_LABELS.abort);
+      
+      // Resume appended last, only when budget remains
+      if (maxCycles > currentCycles) {
+        items.push(DECISION_LABELS.resume);
+      }
+      
+      return items;
+    }
+    
+    // Other blocked reasons: standard 6-item menu (E17)
     return [
       DECISION_LABELS.resume,
       DECISION_LABELS.skip,
@@ -1286,12 +1326,30 @@ export async function promptDecisionMenu(
   },
 ): Promise<PromptDecisionOutcome> {
   const ui = opts?.ui ?? ctx.ui;
-  const menu = buildDecisionMenu(meta);
+  
+  // Phase 6 (195): Owner session checks for pending escalation from child (15-B/C)
+  // If menuEscalationPending is true, clear it and proceed to show menu (one-time)
+  if (meta.menuEscalationPending) {
+    ctx.session.updateMeta({ menuEscalationPending: false });
+    await safeWriteAuditLog("menu_escalation_consumed", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+    });
+  }
+  
+  // Phase 6 (195): Pass blockedReason and config to buildDecisionMenu for dynamic menu composition
+  const menu = buildDecisionMenu(meta, meta.blockedReason, config);
   const tuiEnabled = config.output?.pipelineStage !== false;
   const source = opts?.source ?? "menu";
 
   if (!menu) {
     // aborted → do not prompt
+    // Phase 6 (195) Task 4: audit no-menu exit for aborted state
+    await safeWriteAuditLog("pipeline_decision_interrupted", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      context: "aborted",
+    });
     return "no-menu";
   }
 
@@ -1393,6 +1451,12 @@ export async function promptDecisionMenu(
         `Pipeline frozen: ${formatFrozenReason(frozenMeta)} ${formatDecisionMenuHint()}`,
       );
     }
+    // Phase 6 (195) Task 4: audit no-menu exit for no-UI scenario
+    await safeWriteAuditLog("pipeline_decision_interrupted", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      context: "no_ui",
+    });
     return "no-menu";
   }
 }
@@ -1612,6 +1676,13 @@ export async function freezeAndPrompt(
   // Phase 1 (173) C7: Child sessions skip menu prompt and retry scheduling.
   // The freeze state is recorded (owner will see it on next settle/shortcut/replay).
   if (hostRole === "child") {
+    // Phase 6 (195): Flag owner to show menu once on next interaction (15-B/C)
+    ctx.session.updateMeta({ menuEscalationPending: true });
+    await safeWriteAuditLog("menu_escalation_armed", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      reason,
+    });
     return;
   }
 

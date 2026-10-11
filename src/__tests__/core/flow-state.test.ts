@@ -133,6 +133,176 @@ describe("buildDecisionMenu", () => {
   });
 });
 
+  // ─── Phase 6 (195): max_loop_cycles dynamic menu ─────────────────────────
+  describe("Phase 6 (195): max_loop_cycles dynamic menu", () => {
+    const templateChainConfig = makeTestConfig({
+      stages: {
+        clarify: { nextStage: "plan" } as any,
+        plan: { nextStage: "develop" } as any,
+        "design-review": { nextStage: "develop" } as any,
+        develop: { nextStage: "review" } as any,
+        review: { nextStage: "fix" } as any,
+        fix: { nextStage: "review" } as any,
+        awaiting_human: { nextStage: null } as any,
+        completed: { nextStage: null } as any,
+      },
+    });
+
+    it("max_loop_cycles with full budget remaining shows all 5 items", () => {
+      // Use backward edge (review → develop) to create counted edge (C2)
+      // This ensures deriveReworkLoopGate returns "review" (the gate)
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 2,
+        maxLoopCycles: 5,
+        loopBudgetExtensionCount: 0,
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "develop"],
+      });
+      const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
+      // Plan Phase 6 order: base 4 items fixed, resume appended when budget
+      // remains — first item must be 设置轮次 (menu-order acceptance).
+      expect(menu).toEqual([
+        "设置轮次",
+        "回退上一轮",
+        "Restart & New",
+        "Abort & Exit",
+        "Resume",
+      ]);
+    });
+
+    it("max_loop_cycles with no budget remaining hides resume", () => {
+      // Use backward edge to ensure deriveReworkLoopGate returns non-null
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 5,
+        loopBudgetExtensionCount: 0,
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "develop"],
+      });
+      const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
+      expect(menu).toEqual([
+        "设置轮次",
+        "回退上一轮",
+        "Restart & New",
+        "Abort & Exit",
+      ]);
+      expect(menu).not.toContain("Resume");
+    });
+
+    it("max_loop_cycles with loopBudgetExtensionCount >= 1 hides set_budget", () => {
+      // Use backward edge to ensure deriveReworkLoopGate returns non-null
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 5,
+        loopBudgetExtensionCount: 1,
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "develop"],
+      });
+      const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
+      expect(menu).toEqual([
+        "回退上一轮",
+        "Restart & New",
+        "Abort & Exit",
+      ]);
+      expect(menu).not.toContain("设置轮次");
+    });
+
+    it("max_loop_cycles with loopRewindCount >= 1 hides rewind_last_round (N8)", () => {
+      // Use backward edge to ensure deriveReworkLoopGate returns non-null
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 5,
+        loopBudgetExtensionCount: 0,
+        loopRewindCount: 1,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "develop"],
+      });
+      const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
+      expect(menu).toEqual([
+        "设置轮次",
+        "Restart & New",
+        "Abort & Exit",
+      ]);
+      expect(menu).not.toContain("回退上一轮");
+    });
+
+    it("max_loop_cycles with no rework gate (null) hides rewind_last_round", () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 5,
+        loopBudgetExtensionCount: 0,
+        loopRewindCount: 0,
+        stageVisitOrder: ["clarify", "plan", "develop"],
+      });
+      const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
+      expect(menu).toEqual([
+        "设置轮次",
+        "Restart & New",
+        "Abort & Exit",
+      ]);
+      expect(menu).not.toContain("回退上一轮");
+    });
+
+    it("max_loop_cycles with all limits reached shows only restart + abort", () => {
+      // Use backward edge to ensure deriveReworkLoopGate returns non-null
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 5,
+        loopBudgetExtensionCount: 1,
+        loopRewindCount: 1,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "develop"],
+      });
+      const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
+      expect(menu).toEqual([
+        "Restart & New",
+        "Abort & Exit",
+      ]);
+    });
+
+    it("non-max_loop_cycles blockedReason returns standard 6-item menu", () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "loop_overflow",
+      });
+      const menu = buildDecisionMenu(meta, "loop_overflow", templateChainConfig);
+      expect(menu).toEqual([
+        "Resume",
+        "Skip",
+        "Rollback",
+        "Restart & New",
+        "Abort & Exit",
+        "Choose stage…",
+      ]);
+    });
+
+    it("undefined blockedReason returns standard 6-item menu", () => {
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: undefined,
+      });
+      const menu = buildDecisionMenu(meta, undefined, templateChainConfig);
+      expect(menu).toEqual([
+        "Resume",
+        "Skip",
+        "Rollback",
+        "Restart & New",
+        "Abort & Exit",
+        "Choose stage…",
+      ]);
+    });
+  });
+
 // ─── executeDecision ─────────────────────────────────────────────────────────
 
 describe("executeDecision", () => {
@@ -1472,5 +1642,37 @@ describe("Phase 0 (186): markPipelineAborted clears pendingSpawns", () => {
     expect(meta.pendingSpawns).toEqual({});
     // flowState should be aborted
     expect(meta.flowState).toBe("aborted");
+  });
+});
+
+// ─── Phase 6 (195): freezeAndPrompt regression ─────────────────────────────
+describe("Phase 6 (195): freezeAndPrompt owner menu call count", () => {
+  it("owner session calls promptDecisionMenu exactly once", async () => {
+    const meta = makeTestMeta({
+      flowState: "running",
+      currentStage: "review",
+    });
+    let menuCallCount = 0;
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: any) => Object.assign(meta, patch),
+      },
+      ui: {
+        select: async () => {
+          menuCallCount++;
+          return "Resume"; // User selects resume to unfreeze
+        },
+        notify: () => {},
+      },
+    } as any;
+    const config = makeTestConfig();
+
+    await freezeAndPrompt(ctx, meta, "max_loop_cycles", config);
+
+    // Should call menu exactly once (not stacked)
+    expect(menuCallCount).toBe(1);
+    // After resume decision, flowState should be "running" (unfrozen)
+    expect(meta.flowState).toBe("running");
   });
 });

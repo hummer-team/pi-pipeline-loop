@@ -96,85 +96,17 @@ describe("createPipelineResumeCommand", () => {
     // loopCount should be reset
     expect(ctx.metadataUpdates.some(u => u.loopCount === 0)).toBe(true);
 
-    // Audit should contain pipeline_decision with source=command
+    // Audit should contain pipeline_decision with source=force-resume (Phase 6)
     const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("pipeline_decision");
     expect(auditContent).toContain("source");
-    expect(auditContent).toContain("command");
+    expect(auditContent).toContain("force-resume");
 
     await rm(TMP, { recursive: true, force: true });
   });
 
-  it("blocked + no active spawns → dispatch is attempted (notify confirms resume + stage dispatch)", async () => {
-    const TMP = join(tmpdir(), "pi-resume-dispatch-" + Date.now());
-    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
-    const config = makeTestConfig({ projectRoot: TMP });
-    await initAuditLog(config);
 
-    const meta = makeTestMeta({
-      currentStage: "develop",
-      flowState: "blocked",
-      blockedReason: "loop_overflow",
-      // No activeSpawns → should attempt dispatch
-      activeSpawns: {},
-    });
-    const ctx = createMockCtx(meta);
-    const notifications: string[] = [];
-    (ctx as any).ui = { notify: (msg: string) => notifications.push(msg), setStatus: () => {} };
-    const cmd = createPipelineResumeCommand(config);
-    const result = await cmd.execute({}, ctx as any);
-
-    expect((result as any).error).toBeUndefined();
-    // Resume notify should include stage info
-    expect(notifications.some(n => n.includes("resumed"))).toBe(true);
-
-    await rm(TMP, { recursive: true, force: true });
-  });
-
-  it("blocked + live agent probe → dispatch skipped (no duplicate spawn)", async () => {
-    const TMP = join(tmpdir(), "pi-resume-live-" + Date.now());
-    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
-    const config = makeTestConfig({ projectRoot: TMP });
-    await initAuditLog(config);
-
-    const meta = makeTestMeta({
-      currentStage: "develop",
-      flowState: "blocked",
-      blockedReason: "loop_overflow",
-      activeSpawns: {
-        develop: { agentName: "develop-agent", agentId: "agent-live-001", startedAt: Date.now() },
-      },
-    });
-    const ctx = createMockCtx(meta);
-    const notifications: string[] = [];
-    (ctx as any).ui = { notify: (msg: string) => notifications.push(msg), setStatus: () => {} };
-
-    // Mock the pi-subagents manager singleton to return "live" for our agent
-    const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
-    const origManager = (globalThis as any)[MANAGER_SYMBOL];
-    (globalThis as any)[MANAGER_SYMBOL] = {
-      getRecord: (id: string) => id === "agent-live-001" ? { status: "running" } : undefined,
-    };
-
-    try {
-      const cmd = createPipelineResumeCommand(config);
-      const result = await cmd.execute({}, ctx as any);
-
-      expect((result as any).error).toBeUndefined();
-      // Should notify that agent is already running and skip duplicate spawn
-      expect(notifications.some(n => n.includes("already running"))).toBe(true);
-    } finally {
-      // Restore original manager
-      if (origManager !== undefined) {
-        (globalThis as any)[MANAGER_SYMBOL] = origManager;
-      } else {
-        delete (globalThis as any)[MANAGER_SYMBOL];
-      }
-    }
-
-    await rm(TMP, { recursive: true, force: true });
-  });
 
   // ── Phase 1 / 175: forwardArgs passthrough ──────────────────────────────
   it("Phase 1 / 175: blocked pipeline with forwardArgs passes them to dispatchAfterResume", async () => {
@@ -492,30 +424,6 @@ describe("createPipelineResumeCommand", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("no ui.select → fail-soft to legacy resume path", async () => {
-      const TMP = join(tmpdir(), "pi-resume-noselect-" + Date.now());
-      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
-      const config = makeTestConfig({ projectRoot: TMP });
-      await initAuditLog(config);
-
-      const meta = makeTestMeta({
-        currentStage: "develop",
-        flowState: "blocked",
-        blockedReason: "loop_overflow",
-      });
-      const ctx = createMockCtx(meta);
-      // Remove select to simulate no UI
-      delete (ctx.ui as any).select;
-
-      const cmd = createPipelineResumeCommand(config);
-      const result = await cmd.execute({}, ctx as any);
-
-      // Should still resume via legacy path
-      expect((result as any).error).toBeUndefined();
-      expect(meta.flowState).toBe("running");
-
-      await rm(TMP, { recursive: true, force: true });
-    });
 
     it("menu cancelled → returns frozen hint, flowState unchanged", async () => {
       const TMP = join(tmpdir(), "pi-resume-cancelled-" + Date.now());
@@ -542,4 +450,98 @@ describe("createPipelineResumeCommand", () => {
       await rm(TMP, { recursive: true, force: true });
     });
   });
+
+  // ─── Phase 6 (195): Eliminate silent resume ──────────────────────────────
+  describe("Phase 6 (195): Eliminate silent resume", () => {
+    it("no-UI without --force-resume does NOT resume, audits resume_skipped_no_menu", async () => {
+      const TMP = join(tmpdir(), "pi-resume-no-ui-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 5,
+      });
+      // Create ctx WITHOUT ui.select (no UI available)
+      const baseCtx = createMockCtx(meta);
+      const ctx = { ...baseCtx, ui: { ...baseCtx.ui, select: undefined } } as any;
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx);
+
+      // Should NOT resume — should return frozen message
+      expect((result as any).message).toContain("Pipeline frozen");
+      expect(meta.flowState).toBe("blocked"); // Still frozen
+      expect(meta.blockedReason).toBe("max_loop_cycles"); // Unchanged
+
+      // Verify audit log contains resume_skipped_no_menu
+      const auditFile = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditContent = await readFile(auditFile, "utf-8");
+      expect(auditContent).toContain("resume_skipped_no_menu");
+      expect(auditContent).toContain("no_ui");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("no-UI with --force-resume DOES resume and audits force-resume source", async () => {
+      const TMP = join(tmpdir(), "pi-resume-force-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 10, // Budget available
+      });
+      const baseCtx = createMockCtx(meta);
+      const ctx = { ...baseCtx, ui: { ...baseCtx.ui, select: undefined } } as any;
+      const cmd = createPipelineResumeCommand(config);
+      // Pass forceResume flag
+      const result = await cmd.execute({ forceResume: true }, ctx);
+
+      // Should resume
+      expect((result as any).message).toBeDefined();
+      expect(meta.flowState).toBe("running"); // Unfrozen
+
+      // Verify audit log shows force-resume source
+      const auditFile = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditContent = await readFile(auditFile, "utf-8");
+      expect(auditContent).toContain("force-resume");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
+    it("child session without --force-resume does NOT resume, audits child_session", async () => {
+      const TMP = join(tmpdir(), "pi-resume-child-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+      });
+      // Simulate child session: no ui.select available (child sessions suppress menu)
+      const baseCtx = createMockCtx(meta);
+      const ctx = { ...baseCtx, ui: { ...baseCtx.ui, select: undefined } } as any;
+      const cmd = createPipelineResumeCommand(config);
+      const result = await cmd.execute({}, ctx);
+
+      // Should NOT resume
+      expect((result as any).message).toContain("Pipeline frozen");
+      expect(meta.flowState).toBe("blocked");
+
+      // Verify audit log contains resume_skipped_no_menu
+      const auditFile = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditContent = await readFile(auditFile, "utf-8");
+      expect(auditContent).toContain("resume_skipped_no_menu");
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+  });
+
 });
