@@ -542,6 +542,21 @@ describe("executeDecision", () => {
   // ─── Phase 5 (195): rewind_last_round ────────────────────────────────────
 
   describe("Phase 5 (195): rewind_last_round", () => {
+    // Template chain config for rewind tests (matches actual pipeline_loop.json structure)
+    // This ensures rewind tests use realistic stage transitions where fix→review is a forward edge
+    const templateChainConfig = makeTestConfig({
+      stages: {
+        clarify: { nextStage: "plan" } as any,
+        plan: { nextStage: "develop" } as any,
+        "design-review": { nextStage: "develop" } as any,
+        develop: { nextStage: "review" } as any,
+        review: { nextStage: "completed" } as any,
+        fix: { nextStage: "review" } as any,
+        awaiting_human: { nextStage: null } as any,
+        completed: { nextStage: null } as any,
+      },
+    });
+
     it("success: rewinds to gate, resets loopCycleCount, increments loopRewindCount", async () => {
       const meta = makeTestMeta({
         currentStage: "fix",
@@ -553,7 +568,7 @@ describe("executeDecision", () => {
       });
       const ctx = makeCtx(meta);
 
-      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+      const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(true);
       expect(result.message).toContain("review");
@@ -570,7 +585,7 @@ describe("executeDecision", () => {
       const meta = makeTestMeta({ flowState: "running", loopRewindCount: 0 });
       const ctx = makeCtx(meta);
 
-      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+      const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(false);
       expect(result.message).toContain("not frozen");
@@ -584,7 +599,7 @@ describe("executeDecision", () => {
       });
       const ctx = makeCtx(meta);
 
-      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+      const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(false);
       expect(result.message).toContain("已回退过");
@@ -600,7 +615,7 @@ describe("executeDecision", () => {
       });
       const ctx = makeCtx(meta);
 
-      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+      const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(false);
       expect(result.message).toContain("未能定位");
@@ -616,7 +631,7 @@ describe("executeDecision", () => {
       });
       const ctx = makeCtx(meta);
 
-      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+      const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(false);
       expect(result.message).toContain("未能定位");
@@ -634,7 +649,7 @@ describe("executeDecision", () => {
       });
       const ctx = makeCtx(meta);
 
-      const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+      const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(true);
       expect(meta.currentStage).toBe("review");
@@ -651,10 +666,10 @@ describe("executeDecision", () => {
           flowState: "blocked",
           blockedReason: br,
           loopRewindCount: 0,
-          stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review"],
+          stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix"],
         });
         const ctx = makeCtx(meta);
-        const result = await executeDecision(ctx, meta, "rewind_last_round", config);
+        const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
         expect(result.success).toBe(true);
         expect(meta.currentStage).toBe("review");
         expect(meta.loopCycleCount).toBe(0);
@@ -671,11 +686,11 @@ describe("executeDecision", () => {
         blockedReason: "loop_overflow",
         loopCycleCount: 2,
         loopRewindCount: 0,
-        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review"],
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix"],
       });
       const ctx = makeCtx(meta);
 
-      await executeDecision(ctx, meta, "rewind_last_round", config);
+      await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(meta.currentStage).toBe("review");
       expect(meta.previousStage).toBe("fix");
@@ -683,7 +698,7 @@ describe("executeDecision", () => {
       expect(meta.loopRewindCount).toBe(1);
       expect(meta.flowState).toBe("running");
       expect(meta.blockedReason).toBeUndefined();
-      expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "fix", "review", "review"]);
+      expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "fix", "review", "fix", "review"]);
     });
   });
 });

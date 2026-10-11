@@ -1,8 +1,9 @@
 import { describe, it, expect } from "bun:test";
-import { recordStageVisit, classifyVisitEdge } from "../../utils/stage-visit";
+import { recordStageVisit, classifyVisitEdge, deriveReworkLoopGate } from "../../utils/stage-visit";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { effectiveMax } from "../../utils/stage-visit";
 import { DEFAULT_MAX_LOOP_CYCLES } from "../../constants";
+import type { PipelineStage } from "../../types";
 
 // Test helper config for recordStageVisit
 // Aligned with actual template chain from pipeline_loop.json:
@@ -22,7 +23,7 @@ const createTestConfig = () => makeTestConfig({
 
 describe("recordStageVisit", () => {
   it("first visit: appends stage and sets loopCycleCount=0", () => {
-    const meta = makeTestMeta({ stageVisitOrder: ["clarify"], loopCycleCount: undefined });
+    const meta = makeTestMeta({ stageVisitOrder: ["clarify"] as PipelineStage[], loopCycleCount: undefined });
     const result = recordStageVisit(meta, "plan", 3, createTestConfig() as any);
 
     expect(result.ok).toBe(true);
@@ -46,7 +47,7 @@ describe("recordStageVisit", () => {
   it("C2 backward revisit: increments loopCycleCount and appends", () => {
     const meta = makeTestMeta({
       currentStage: "develop",
-      stageVisitOrder: ["clarify", "plan", "develop"],
+      stageVisitOrder: ["clarify", "plan", "develop"] as PipelineStage[],
       loopCycleCount: 0,
     });
     const result = recordStageVisit(meta, "plan", 3, createTestConfig() as any);
@@ -63,7 +64,7 @@ describe("recordStageVisit", () => {
     // Use C2 backward edge (fix → develop) to trigger freeze, not self-loop (C4 unclassified)
     const meta = makeTestMeta({
       currentStage: "fix",
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix"] as PipelineStage[],
       loopCycleCount: 2,
     });
     const result = recordStageVisit(meta, "develop", 3, createTestConfig() as any);
@@ -80,7 +81,7 @@ describe("recordStageVisit", () => {
 
   it("first visit to new stage resets loopCycleCount to 0", () => {
     const meta = makeTestMeta({
-      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review"] as PipelineStage[],
       loopCycleCount: 2,
     });
     const result = recordStageVisit(meta, "completed", 3, createTestConfig() as any);
@@ -94,7 +95,7 @@ describe("recordStageVisit", () => {
 
   it("does not mutate original meta", () => {
     const meta = makeTestMeta({
-      stageVisitOrder: ["clarify"],
+      stageVisitOrder: ["clarify"] as PipelineStage[],
       loopCycleCount: 0,
     });
     const originalOrder = [...(meta.stageVisitOrder ?? [])];
@@ -109,7 +110,7 @@ describe("classifyVisitEdge", () => {
   it("C0 first: target not in stageVisitOrder", () => {
     const meta = makeTestMeta({
       currentStage: "plan",
-      stageVisitOrder: ["clarify", "plan"],
+      stageVisitOrder: ["clarify", "plan"] as PipelineStage[],
     });
     const result = classifyVisitEdge(meta, createTestConfig() as any, "develop");
     expect(result.kind).toBe("first");
@@ -121,7 +122,7 @@ describe("classifyVisitEdge", () => {
     // C1 fires when target IS in visitOrder AND target === source.nextStage
     const meta = makeTestMeta({
       currentStage: "develop",
-      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review"] as PipelineStage[],
     });
     const result = classifyVisitEdge(meta, createTestConfig() as any, "review");
     expect(result.kind).toBe("forward");
@@ -131,7 +132,7 @@ describe("classifyVisitEdge", () => {
   it("C2 backward: ordinal regression in canonical order", () => {
     const meta = makeTestMeta({
       currentStage: "develop",
-      stageVisitOrder: ["clarify", "plan", "develop"],
+      stageVisitOrder: ["clarify", "plan", "develop"] as PipelineStage[],
     });
     const result = classifyVisitEdge(meta, createTestConfig() as any, "plan");
     expect(result.kind).toBe("backward");
@@ -143,7 +144,7 @@ describe("classifyVisitEdge", () => {
     // C3 fires when target IS in visitOrder AND config.stages[target].nextStage === source
     const meta = makeTestMeta({
       currentStage: "review",
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "develop", "review"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "develop", "review"] as PipelineStage[],
     });
     const result = classifyVisitEdge(meta, createTestConfig() as any, "fix");
     expect(result.kind).toBe("loop_return");
@@ -153,7 +154,7 @@ describe("classifyVisitEdge", () => {
   it("C4 unclassified: fallback (self-loop)", () => {
     const meta = makeTestMeta({
       currentStage: "develop",
-      stageVisitOrder: ["clarify", "plan", "develop"],
+      stageVisitOrder: ["clarify", "plan", "develop"] as PipelineStage[],
     });
     const result = classifyVisitEdge(meta, createTestConfig() as any, "develop");
     expect(result.kind).toBe("unclassified");
@@ -167,7 +168,7 @@ describe("classifyVisitEdge", () => {
     // - review→fix (fix已访问): C3 loop_return, count+1
     const meta = makeTestMeta({
       currentStage: "review",
-      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review"] as PipelineStage[],
       loopCycleCount: 0,
     });
     const config = createTestConfig() as any;
@@ -183,7 +184,7 @@ describe("classifyVisitEdge", () => {
     // fix → review (C1 forward, count stays at 0)
     const meta2 = makeTestMeta({
       currentStage: "fix",
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix"] as PipelineStage[],
       loopCycleCount: 0,
     });
     const result2 = recordStageVisit(meta2, "review", 5, config);
@@ -196,7 +197,7 @@ describe("classifyVisitEdge", () => {
     // review → fix (fix已访问, C3 loop_return, count=1)
     const meta3 = makeTestMeta({
       currentStage: "review",
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review"] as PipelineStage[],
       loopCycleCount: 0,
     });
     const result3 = recordStageVisit(meta3, "fix", 5, config);
@@ -209,7 +210,7 @@ describe("classifyVisitEdge", () => {
     // fix → review (C1 forward, count stays at 1)
     const meta4 = makeTestMeta({
       currentStage: "fix",
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix"] as PipelineStage[],
       loopCycleCount: 1,
     });
     const result4 = recordStageVisit(meta4, "review", 5, config);
@@ -222,7 +223,7 @@ describe("classifyVisitEdge", () => {
     // review → fix (C3, count=2)
     const meta5 = makeTestMeta({
       currentStage: "review",
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix", "review"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix", "review"] as PipelineStage[],
       loopCycleCount: 1,
     });
     const result5 = recordStageVisit(meta5, "fix", 5, config);
@@ -235,7 +236,7 @@ describe("classifyVisitEdge", () => {
     // count=4 → 5, 5 >= maxCycles=5 → freeze! (6th review→fix attempt)
     const meta6 = makeTestMeta({
       currentStage: "review",
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix", "review", "fix", "review", "fix", "review"],
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix", "review", "fix", "review", "fix", "review"] as PipelineStage[],
       loopCycleCount: 4,
     });
     const result6 = recordStageVisit(meta6, "fix", 5, config);
@@ -273,5 +274,51 @@ describe("effectiveMax (Phase 0: 195_Bug)", () => {
     const meta = {};
     const config = {};
     expect(effectiveMax(meta, config)).toBe(DEFAULT_MAX_LOOP_CYCLES);
+  });
+});
+
+
+// Phase 5 (195): deriveReworkLoopGate unit tests
+describe("deriveReworkLoopGate (Phase 5: 195)", () => {
+  // Template chain config matching pipeline_loop.json
+  const templateConfig = createTestConfig();
+
+  it("returns 'review' for F4 sequence ending with review,fix,review,fix,review,fix", () => {
+    const meta = {
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix", "review", "fix"] as PipelineStage[],
+    };
+    const gate = deriveReworkLoopGate(meta, templateConfig);
+    expect(gate).toBe("review");
+  });
+
+  it("returns 'design-review' for design-review↔plan loop", () => {
+    const meta = {
+      stageVisitOrder: ["clarify", "plan", "design-review", "plan", "design-review"] as PipelineStage[],
+    };
+    const gate = deriveReworkLoopGate(meta, templateConfig);
+    expect(gate).toBe("design-review");
+  });
+
+  it("returns null when stageVisitOrder is missing or length < 2", () => {
+    expect(deriveReworkLoopGate({}, templateConfig)).toBeNull();
+    expect(deriveReworkLoopGate({ stageVisitOrder: [] }, templateConfig)).toBeNull();
+    expect(deriveReworkLoopGate({ stageVisitOrder: ["clarify"] }, templateConfig)).toBeNull();
+  });
+
+  it("never returns completed or awaiting_human", () => {
+    // Test with sequences where rework loops involve non-terminal stages
+    const testCases: PipelineStage[][] = [
+      ["clarify", "plan", "develop", "review", "fix", "review", "fix"], // review↔fix loop
+      ["clarify", "plan", "develop", "review", "fix", "review"], // review→fix→review
+      ["clarify", "plan", "develop", "review", "fix", "review", "fix", "review"], // multiple loops
+    ];
+    for (const visitOrder of testCases) {
+      const gate = deriveReworkLoopGate({ stageVisitOrder: visitOrder }, templateConfig);
+      // Gate should be a rework stage, never terminal
+      if (gate !== null) {
+        expect(gate).not.toBe("completed");
+        expect(gate).not.toBe("awaiting_human");
+      }
+    }
   });
 });

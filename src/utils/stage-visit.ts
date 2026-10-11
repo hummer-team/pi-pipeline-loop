@@ -185,7 +185,7 @@ export function deriveReworkLoopGate(
         target !== "completed" &&
         target !== "awaiting_human"
       ) {
-        return target;
+        return source;
       }
     }
   }
