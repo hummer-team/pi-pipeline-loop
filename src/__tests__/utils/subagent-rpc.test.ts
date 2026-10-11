@@ -2768,3 +2768,122 @@ describe("static guard: no runtime circular dependencies", () => {
     expect(runtimeImportsFromCore).toEqual([]);
   });
 });
+
+describe("Phase 8 (195 Bug): pendingSpawns ownership check", () => {
+  it("mismatch: entry.pipelineId !== fresh.pipelineId → discarded with reason ownership_mismatch", async () => {
+    __resetSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-current",
+      pendingSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          requestedAt: Date.now(),
+          attempts: 0,
+          pipelineId: "pipe-original",
+        },
+      },
+    });
+    const bus = createMockEventBus();
+    const mockPi = { sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual([]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("legacy: entry without pipelineId → normal consumption (no discard)", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-current",
+      pendingSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          requestedAt: Date.now(),
+          attempts: 0,
+        },
+      },
+    });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-legacy" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual(["develop"]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("match: entry.pipelineId === fresh.pipelineId → normal consumption (no discard)", async () => {
+    markSubagentsReady();
+    const { config, tmpDir } = makeDevelopConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: "pipe-same",
+      pendingSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          requestedAt: Date.now(),
+          attempts: 0,
+          pipelineId: "pipe-same",
+        },
+      },
+    });
+    const bus = createMockEventBus();
+    const origEmit = bus.emit.bind(bus);
+    bus.emit = (event: string, payload: Record<string, unknown>) => {
+      origEmit(event, payload);
+      if (event === "subagents:rpc:spawn") {
+        const replyChannel = `subagents:rpc:spawn:reply:${payload.requestId}`;
+        setTimeout(() => bus.trigger(replyChannel, { success: true, data: { id: "sa-match" } }), 5);
+      }
+    };
+    const mockPi = { events: bus, sendUserMessage: () => {} };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+    };
+
+    const consumed = await consumePendingSpawns(mockPi, config, meta, {
+      ui: { notify: () => {} },
+      session: session as any,
+    });
+
+    expect(consumed).toEqual(["develop"]);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
