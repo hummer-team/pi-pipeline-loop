@@ -705,7 +705,8 @@ export async function autoAdvanceAfterVerify(
         toStage,
         method: "hook_auto_advance",
       });
-      await writeAuditLog("auto_advance_conflict_blocked", {
+      const { emitDispatchConflictBlocked } = await import("../utils/dispatch-conflict-audit");
+      await emitDispatchConflictBlocked("auto_advance", {
         pipelineId: meta.pipelineId,
         fromStage,
         toStage,

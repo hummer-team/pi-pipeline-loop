@@ -488,7 +488,8 @@ async function routeConfirmReject(
 
   if (spawnResult.dispatchOutcome === "conflict_blocked") {
     // 195 Phase 2: configuration conflict — UI already notified, no wake/retry needed
-    await writeAuditLog("confirm_reject_conflict_blocked", {
+    const { emitDispatchConflictBlocked } = await import("../utils/dispatch-conflict-audit");
+    await emitDispatchConflictBlocked("confirm_reject", {
       pipelineId: meta.pipelineId,
       fromStage,
       toStage,
