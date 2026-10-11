@@ -2099,3 +2099,57 @@ function countOccurrences(haystack: string, needle: string): number {
   }
   return count;
 }
+
+// M11: Unit tests for buildViolationPrompt
+describe("buildViolationPrompt (M11)", () => {
+  const { buildViolationPrompt } = require("../../core/prompt-injector");
+  const { DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } = require("../../constants");
+
+  it("includes advisory-only note for bash_destructive bucket", () => {
+    const meta = {
+      violations: [
+        { guardSource: "bash_destructive", tool: "bash", type: "blocked", detail: "destructive command", suggestion: "avoid" },
+        { guardSource: "bash_destructive", tool: "bash", type: "blocked", detail: "another destructive", suggestion: "avoid" },
+        { guardSource: "bash_destructive", tool: "bash", type: "blocked", detail: "third destructive", suggestion: "avoid" },
+      ],
+    };
+
+    const result = buildViolationPrompt(meta);
+    expect(result).toContain("advisory-only and does NOT trigger pipeline freeze");
+    expect(result).toContain("bash_destructive: 3");
+    expect(result).not.toContain("CLOSING PHASE");
+  });
+
+  it("returns closing prompt when bash_destructive reaches max", () => {
+    const violations = [];
+    for (let i = 0; i < DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX; i++) {
+      violations.push({
+        guardSource: "bash_destructive",
+        tool: "bash",
+        type: "blocked",
+        detail: `destructive command ${i}`,
+        suggestion: "avoid",
+      });
+    }
+
+    const meta = { violations };
+    const result = buildViolationPrompt(meta);
+    expect(result).toContain("VIOLATION SUMMARY (CLOSING PHASE)");
+    expect(result).toContain("review your approach");
+    expect(result).toContain("advisory-only and does NOT trigger pipeline freeze");
+  });
+
+  it("does not include advisory note for non-bash_destructive buckets", () => {
+    const meta = {
+      violations: [
+        { guardSource: "readonly", tool: "edit", type: "blocked", detail: "readonly violation", suggestion: "use write" },
+        { guardSource: "readonly", tool: "bash", type: "blocked", detail: "another readonly", suggestion: "avoid" },
+      ],
+    };
+
+    const result = buildViolationPrompt(meta);
+    expect(result).not.toContain("advisory-only");
+    expect(result).toContain("readonly: 2");
+    expect(result).not.toContain("CLOSING PHASE");
+  });
+});

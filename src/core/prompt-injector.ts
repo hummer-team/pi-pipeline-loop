@@ -470,7 +470,7 @@ function buildVerifyFailurePrompt(meta: SessionMeta): string | null {
  * @param meta - Current session metadata
  * @returns Prompt section string, or null if no violations
  */
-function buildViolationPrompt(meta: SessionMeta): string | null {
+export function buildViolationPrompt(meta: SessionMeta): string | null {
   const violations = meta.violations;
   if (!violations || violations.length === 0) {
     return null;
