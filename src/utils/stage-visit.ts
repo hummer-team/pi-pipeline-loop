@@ -16,6 +16,8 @@
  */
 
 import type { SessionMeta, PipelineStage, PipelineConfig } from "../types";
+import { safeWriteAuditLog } from "./auditLog";
+import { shouldEmitWithinWindow } from "./audit-throttle";
 import { DEFAULT_MAX_LOOP_CYCLES, CANONICAL_STAGE_ORDER } from "../constants";
 
 /**
@@ -136,6 +138,19 @@ export function recordStageVisit(
       return { ok: false, patch, wouldFreeze: true, edgeKind: edge.kind, counted: true };
     }
     return { ok: true, patch, edgeKind: edge.kind, counted: true };
+  }
+
+  // C4: unclassified edge audit (throttled per pipelineId, one-time semantics)
+  if (edge.kind === "unclassified") {
+    const throttleKey = `${meta.pipelineId}:unclassified`;
+    if (shouldEmitWithinWindow(throttleKey, 60000)) {
+      void safeWriteAuditLog("visit_edge_unclassified", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        source: meta.currentStage,
+        target: nextStage,
+      });
+    }
   }
 
   // C1/C4: non-counting edge — keep existing cycle count
