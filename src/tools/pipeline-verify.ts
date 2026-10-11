@@ -82,8 +82,8 @@ export function createPipelineVerify(
           updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined;
         };
         ui?: { notify: (msg: string) => void };
-        /** @internal Original ExtensionContext for standalone functions */
-        config: PipelineConfig;
+        /** @internal Original ExtensionContext for standalone functions (optional, config accessed via closure) */
+        config?: PipelineConfig;
         _ctx: { sessionManager: { getBranch(): any[] } };
       };
 
