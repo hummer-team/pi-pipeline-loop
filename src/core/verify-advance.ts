@@ -698,6 +698,22 @@ export async function autoAdvanceAfterVerify(
       runtimeCtx: ctx,
     });
 
+    if (spawnResult.dispatchOutcome === "conflict_blocked") {
+      // 195 Phase 2: configuration conflict — UI already notified, skip wake/retry
+      await writeStageAudit(config, "stage_advance", clearedMeta, {
+        fromStage,
+        toStage,
+        method: "hook_auto_advance",
+      });
+      await writeAuditLog("auto_advance_conflict_blocked", {
+        pipelineId: meta.pipelineId,
+        fromStage,
+        toStage,
+        reason: "configuration_conflict",
+      });
+      return;
+    }
+
     if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
       // Subagent spawned or deferred — write audit after spawn to maintain ordering.
       await writeStageAudit(config, "stage_advance", clearedMeta, {

@@ -21,9 +21,22 @@ import { resolveClarifyDescription } from "./clarify-args";
 import { findLatestReviewReport } from "./review-conclusion";
 import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
+import { checkDispatchConflicts } from "./guard-conflict-report";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
 import type { PipelineConfig, PipelineStage, SessionMeta, SpawnOperationContext } from "../types";
 import type { FixExecutorCompletedCtx, FixExecutorCompletedHandler } from "../core/fix-executor-completion";
+import type { DesignReviewWritePolicy } from "../core/design-review/write-policy";
+
+// Module-level cache for lazy import of ../core/design-review/write-policy
+// (Cannot use static import due to circular dependency guard test)
+let _writePolicyModule: Promise<typeof import("../core/design-review/write-policy")> | null = null;
+
+async function getWritePolicyModule(): Promise<typeof import("../core/design-review/write-policy")> {
+  if (!_writePolicyModule) {
+    _writePolicyModule = import("../core/design-review/write-policy");
+  }
+  return _writePolicyModule;
+}
 
 /**
  * Phase 2 / 177 (D4⑥): Extracts the current session file from a runtime context
@@ -654,21 +667,16 @@ export async function spawnStageSubagent(
   }
 
   // 195 Phase 2: Configuration conflict fail-fast check
-  // Resolvers passed as lazy callbacks to avoid runtime imports from ../core/
-  const { checkDispatchConflicts: checkConflicts } = await import("./guard-conflict-report");
-  const conflictResult = await checkConflicts(
+  // Uses static import for checkDispatchConflicts (sibling module) and cached
+  // lazy import for ../core/design-review/write-policy (circular dependency guard)
+  const writePolicyModule = await getWritePolicyModule();
+  const conflictResult = await checkDispatchConflicts(
     stage,
     meta,
     config.stages?.[stage]?.allowedReadOnlyPaths,
     config.stages?.[stage]?.allowedWritePaths,
-    async () => {
-      const { resolveDesignReviewWritePolicy } = await import("../core/design-review/write-policy");
-      return resolveDesignReviewWritePolicy(meta);
-    },
-    async (policy) => {
-      const { describeWriteScope } = await import("../core/design-review/write-policy");
-      return describeWriteScope(policy as any);
-    },
+    () => writePolicyModule.resolveDesignReviewWritePolicy(meta),
+    (policy) => writePolicyModule.describeWriteScope(policy as DesignReviewWritePolicy),
   );
   
   if (conflictResult) {
@@ -1343,6 +1351,19 @@ export async function consumePendingSpawns(
       // Phase 2 / 179 (G3): the spawn is waiting for a live same-agent child in
       // another stage. Leave the pending entry untouched and do NOT consume an
       // attempt — the wait is not a spawn failure.
+      continue;
+    }
+
+    if ("dispatchOutcome" in result && result.dispatchOutcome === "conflict_blocked") {
+      // 195 Phase 2: configuration conflict — UI already notified, retry won't help.
+      // Clear the pending entry to prevent retry loops, but don't count as consumed.
+      // Note: spawnClarifyStageSubagent doesn't return dispatchOutcome, so we use a type guard.
+      clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
+      await safeWriteAuditLog("pending_spawn_conflict_blocked", {
+        stage,
+        pipelineId: fresh.pipelineId,
+        reason: "configuration_conflict",
+      });
       continue;
     }
 

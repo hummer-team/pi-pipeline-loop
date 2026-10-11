@@ -486,7 +486,15 @@ async function routeConfirmReject(
     runtimeCtx: ctx,
   });
 
-  if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
+  if (spawnResult.dispatchOutcome === "conflict_blocked") {
+    // 195 Phase 2: configuration conflict — UI already notified, no wake/retry needed
+    await writeAuditLog("confirm_reject_conflict_blocked", {
+      pipelineId: meta.pipelineId,
+      fromStage,
+      toStage,
+      reason: "configuration_conflict",
+    });
+  } else if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
     // Subagent spawned or deferred — skip generic wake to prevent dual execution.
     // deferred means the spawn is queued and will execute once the old twin settles;
     // waking the owner now would cause dual execution with the pending dequeue.
@@ -2049,7 +2057,10 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // guarded by C2. When spawn succeeded or was deferred, the flag stays cleared —
       // subagent JOIN inherits undefined, its first settle runs verification normally.
       // deferred: spawn is queued; the eventual dequeue will run verification.
-      if (!toolSpawnResult.spawned && !toolSpawnResult.fallback && !toolSpawnResult.deferred) {
+      // 195 Phase 2: conflict_blocked is a configuration error (already reported to user),
+      // not a retryable failure — skip C2 guard to prevent misleading wake behavior.
+      if (toolSpawnResult.dispatchOutcome !== "conflict_blocked" &&
+          !toolSpawnResult.spawned && !toolSpawnResult.fallback && !toolSpawnResult.deferred) {
         ctx.session.updateMeta({ advancedThisTurn: true });
       }
 

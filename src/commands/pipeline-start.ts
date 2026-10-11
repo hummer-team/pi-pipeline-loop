@@ -840,7 +840,15 @@ export async function dispatchAfterResume(
     runtimeCtx: ctx,
   });
 
-  if (result.spawned) {
+  if (result.dispatchOutcome === "conflict_blocked") {
+    // 195 Phase 2: configuration conflict — UI already notified, no manual prompt needed
+    await safeWriteAuditLog("pipeline_resume_conflict_blocked", {
+      stage,
+      requirementDoc: doc,
+      pipelineId: meta.pipelineId,
+      reason: "configuration_conflict",
+    });
+  } else if (result.spawned) {
     await safeWriteAuditLog("pipeline_resume_dispatch", {
       stage,
       requirementDoc: doc,
