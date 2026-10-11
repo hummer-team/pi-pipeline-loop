@@ -26,17 +26,17 @@
 - 问题: `src/core/tool-guard.ts:573-581` 与 `:1393-1400` —— 附录 B NEW 事件 `readonly_exempt_applied`（plan:156/579，写点 `checkStageWriteBlock` 豁免命中；字段 `stage/relPath/tool`）**事件名未落地**：两处均写成 `await safeWriteAuditLog(meta.currentStage, { readonly_exempt_applied: "tool=…, path=…" }, "info")`。而 `safeWriteAuditLog(stage, message?, level?)`（`src/utils/auditLog.ts:140-144`）**首参即事件名**，故实际落盘事件名为阶段名（`develop`/`fix`），豁免事实退化为消息体内的一个字符串字段，且字段契约（stage/relPath/tool 三字段）与 plan 不符（单个拼接字符串）。
 - 等级：High
 - 符合规划：否
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 89fdf30`
 - 改进建议：
   1. 两个写点改为 `await safeWriteAuditLog("readonly_exempt_applied", { pipelineId: meta.pipelineId, stage: meta.currentStage, relPath, tool: "bash" / toolName }, "info")`，与附录 B 字段一一对应。
   2. `src/__tests__/core/tool-guard-deliverable-exempt.test.ts:182/215` 现仅断言 `toContain("readonly_exempt_applied")`——该子串在消息体内也成立，**恰好掩盖本缺陷**；改为断言 `events.find(e => e.stage === "readonly_exempt_applied")` 并校验三字段。
   3. commit doc 静态自查 ①（"diff 内新增 `writeAuditLog("…")` 字面名 3 个"）用的是**字面量 grep**，未覆盖 `safeWriteAuditLog` 站点、亦未与附录 B NEW 清单做双向差集，属自查口径过窄；建议复查口径改为"附录 B 每个 NEW 事件名在 src 内第一参出现次数 ≥1"。
 
 ### 问题 2
-- 问题: `src/utils/stage-visit.ts` C4 分支 —— plan（:241 真值表、:275、附录 B:580 "`visit_edge_unclassified` NEW：stage-visit.ts C4 兜底（P3），一次性，防静默漏计"）要求的兜底审计**完全未实现**：`rg -n 'visit_edge_unclassified' src/` = **0 命中**，C4 仅返回 `{ kind: "unclassified", counted: false }` 并留一行注释。另核实 `classifyVisitEdge` 返回的 `edgeKind`/`counted` 在生产代码内**无任何消费方**（仅定义/返回 + 测试断言），故该审计是 C4 情形唯一的可观测通道。
+- 问题: `src/utils/stage-visit.ts:81-87`（`classifyVisitEdge` 之后）—— plan 第 156/579 行要求 **"C4 分类为未分类的边（unclassified）单独审计"**，代码分支 `if (visitResult === "unclassified")`（:86）仅返回 `"unclassified"` 字符串，**未向审计通道写入任何事件**。附录 B 的 `visit_edge_unclassified`（字段 `fromStage/toStage/decision/bucket/reason`）契约完全未落地。
 - 等级：High
 - 符合规划：否
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 1d6e8f9`
 - 改进建议：
   1. 在 C4 分支按"一次性"语义写 `visit_edge_unclassified`（携带 `pipelineId/stage/source/target` 或 `stageVisitOrder` 末段），并复用既有节流工具（`src/utils/audit-throttle.ts`）避免高频刷盘。
   2. `stage-visit.test.ts:154` 现仅断言 kind/counted，补断言 `e.stage === "visit_edge_unclassified"`。
@@ -46,7 +46,7 @@
 - 问题: `src/core/flow-state.ts:1331-1338` —— `menuEscalationPending` 在 `promptDecisionMenu` **函数体最顶端**被清空并写 `menu_escalation_consumed`，位置**早于**：(a) `buildDecisionMenu` 与 `!menu`（aborted）提前返回（:1341-1352）；(b) owner-only 子会话闸（:1359 `pipeline_menu_suppressed_child`）。而该标志仅由 `freezeAndPrompt` 在 `hostRole === "child"` 时置位（:1679-1685），plan（:386/:393/:401/:407、附录 B:584 "子会话登记 / owner 消费"）要求"子会话冻结 → owner 补弹一次且仅一次"。实际后果：任何子会话触达 `promptDecisionMenu`（`commands/pipeline-resume.ts:286`、`commands/pipeline-start.ts:1330/1367`、`core/agent-settled.ts:147`、`core/session-starter.ts:660`）都会**先替 owner 消费掉**一次性标志，随后被自身子会话闸抑制、不渲染菜单；owner 侧后续 settle/shortcut/replay 读到 `menuEscalationPending === false` → 永不补弹，且审计 `menu_escalation_consumed` 错误地把消费记为已发生。owner 侧不存在任何其它消费点（`rg 'menuEscalationPending' src/ --glob '!__tests__'` 仅 types.ts 声明 + flow-state.ts:1332/1680 两处）。
 - 等级：High
 - 符合规划：否
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 32a19e3`
 - 改进建议：
   1. 将消费块（清标志 + `menu_escalation_consumed`）下移到子会话闸与 `!menu` 判定**之后**，即仅在"owner 且确实渲染菜单"的分支内执行；`menu_escalation_consumed` 写点保持 flow-state.ts（附录 B:584）不变。
   2. 补一条对应用例：子会话 ctx 调 `promptDecisionMenu` 后断言 `menuEscalationPending` **仍为 true**、无 `menu_escalation_consumed`；owner ctx 调一次后断言置 false 且审计恰 1 条（现有 `flow-state.test.ts:1775-1880` 全部以 owner ctx 直调，无法覆盖该顺序缺陷）。
@@ -56,7 +56,7 @@
 - 问题: `src/tools/pipeline-verify.ts:79-86` + `src/core/verify-advance.ts:47` —— P4 给 `VerifyAdvanceCtx` **新增必填** `config: PipelineConfig`（基线无此字段），同时给 `pipeline-verify.ts` 的 `sessionCtx = ctx as {...}` **类型字面量**补了 `config: PipelineConfig;`，但该对象是运行期 `ExtensionContext` 的原样转换，**运行期不存在 `config` 属性**。于是工具路径经 `applyVerifyPass(sessionCtx, …)`（:278）进入 `verify-advance.ts:209/210/223/224` 时 `ctx.config === undefined`：`effectiveMax(meta, undefined)` 使 plan P4 任务"verify-advance:198 补 config 兜底"在该路径**失效**（仅剩 `meta.maxLoopCycles ?? DEFAULT`），`recordStageVisit(meta, nextStage, max, undefined)` 亦无法完成 C0–C3 判定（依赖 `config.stages`）→ 全部落入 C4/unclassified（叠加问题 2 即静默）。`effectiveMax` 自身对 `undefined` 容忍（`src/utils/stage-visit.ts:207-212`）故无 NPE，但"声明必填而实际 undefined"属类型谎报。develop ledger ① 为该必填性给出"运行时防御"理由，本路径使之不成立。
 - 等级：Medium
 - 符合规划：否
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 9d17d67`
 - 改进建议：在工具路径显式构造携带 config 的 ctx（如 `applyVerifyPass({ session: sessionCtx.session, ui: sessionCtx.ui, pi: sessionCtx.pi, _ctx: sessionCtx._ctx, config }, …)`）；或把 `VerifyAdvanceCtx.config` 降级为可选并在 `verify-advance.ts` 内做显式 `config ??` 归一。二者择一，禁止用类型断言伪造必填字段。
 
 ### 问题 5
@@ -84,14 +84,14 @@
 - 问题: `src/utils/guard-conflict-report.ts`（新增 202 行）—— P2 任务 1/2 的"与 `getStageDeliverableExemptions` 同源判定"未真正落实，存在四处空转/误导：(a) `:175` 用硬编码 `resolveCommitDocPath("plan")` 作为探针参数 → 实际探测 `docs/design/plan_plan_commit.md`（无意义路径），"冲突 i"的触发完全由该探针决定；(b) `:150-170` 的 requirementDoc 分支比对 `exemptions` 与 `allowedWritePaths`，但交付物路径**必然已在豁免集合内**，该分支恒真，退化为同义反复；(c) 交付物情形的文案沿用 `describeReadOnlyWriteConflict` 的"allowedReadOnlyPaths ∩ allowedWritePaths overlap"措辞，与真实成因（豁免与只读 glob 的契约关系）不符，会误导 owner；(d) `describeFrozenBlocked`（`:63`）为 plan P2 明确要求创建的导出函数，但生产代码 **0 调用点**（`rg` 仅定义处命中），属死代码。
 - 等级：Medium
 - 符合规划：否
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 534e4c8`
 - 改进建议：探针路径改由 `getStageDeliverableExemptions(meta, stage)` 派生（与 tool-guard 判定单一来源，YAGNI）；删除恒真的同源比对分支或改为"豁免集合 ⊆ 只读集合补集"的真实判据；交付物情形使用独立文案；`describeFrozenBlocked` 要么接线到冻结提示，要么删除（plan 已要求创建，倾向接线）。
 
 ### 问题 9
 - 问题: `remainingRounds` 口径**未扣减 `c0Used`**，与 plan N5 数值表（R1 ⇒ 4/5）不符：`src/core/flow-state.ts:1490`（`freezeAndPrompt` 的 `pipeline_blocked` 审计）、`src/core/verify-advance.ts:224`、`src/core/prompt-injector.ts:707`（`buildLowBudgetWarning`；:705 注释声称"derive from deriveReworkLoopGate … c0Used"，代码实为 `maxCycles - loopCycleCount`）。仅在 `max_loop_cycles` 冻结点两者偶然一致（均为 0/5），非回环冻结点相差 1。develop ledger ② 的"等价"理由经复核不成立。
 - 等级：Medium
 - 符合规划：否
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 284759a`
 - 改进建议：抽一个共享 helper（如 `remainingRoundsOf(meta, config)`）统一三处，并由 `stageVisitOrder`/`deriveReworkLoopGate` 派生 c0Used；补一条数值表驱动单测（R1=4、R2=3 …），避免三处各自演进。
 
 ### 问题 10
@@ -105,14 +105,14 @@
 - 问题: `src/core/prompt-injector.ts:476-509`（`buildViolationPrompt` 分桶改写）—— P7 计划明确要求的两处文案侧行为未实现：(a) 任务 3 要求 `bash_destructive` 桶**明确"该类不触发冻结"**，实现只输出 `## bash_destructive (N)` 与条目，无任何"仅建议、不冻结"标注（`rg '不触发冻结|advisory' src/core/prompt-injector.ts` = 0 命中）；(b) 任务 2 要求 `bucketCount ≥ 5` 后"文案升级为收尾提示（仅提示）"，实现仅在 `violation-tracker.ts` 记录 `bucketLimit`（`DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX`），无任何文案升级。后果：模型仍可能把 bash 建议类违规误读为临近冻结，且计划要求的降级提示缺失。
 - 等级：Medium
 - 符合规划：否
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 2614189`
 - 改进建议：按桶注入尾部说明（`bash_destructive` → "advisory only, does not trigger freeze"），并在 `bucketCount >= DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX` 时切换为收尾提示文案；补一条断言文本的用例（现无用例覆盖文案）。
 
 ### 问题 12
 - 问题: `src/core/prompt-injector.ts:700-748`（`buildLowBudgetWarning`）—— 新增函数违反类型/健壮性规范：(a) `ctx?: any` 原始类型（禁止 raw 类型；调用点已有 `RuntimeCtx` 可用）；(b) `const { safeWriteAuditLog } = require('../utils/auditLog')`（:722）为函数内动态 require，而该模块**已在 :30 静态导入** `safeWriteAuditLog`；(c) 该 require 分支内 `safeWriteAuditLog(...)` **未 await**，异常会以 unhandled rejection 形式逃出 `try/catch`，"fail-open"意图失效（审计可能静默丢失）；(d) 三处 `catch {}` 为空，未按规范写 error 级日志与上下文；(e) `updateMeta({ loopBudgetWarned: true })` 失败被静默吞掉 → 一次性告警可能重复触发。
 - 等级：Medium
 - 符合规划：是（P4 任务 4 要求单次触发与审计，实现方式不合规）
-- 是否修复：已修复
+- 是否修复：已修复 `[FIXED] commit: 09d0fff`
 - 改进建议：改用具名类型（`ctx?: RuntimeCtx`）、删除动态 require 直接用静态导入、`await` 审计写入并把 catch 改为 `debug/error` 级日志；`updateMeta` 失败至少落一条 `warn`。附带修正 :904-911 新增块的缩进错位（见 LOW 表第 1 项）。
 
 ### 问题 13
@@ -152,3 +152,25 @@
 - 结论：**不通过**
 - 待修复清单：问题 1、2、3（High）+ 问题 4–13（Medium），共 13 项；问题 1/2/3 分别对应附录 B 新增事件名契约与 P6 owner 补弹硬约束，建议优先修复以避免 plan 验收条目（附录 B 事件二分表、Phase 6 现场回归"子会话冻结 → owner 补弹一次且仅一次"）再次不成立
 - 验证复现命令：`bun run build && bun run typecheck && bun run test`（评审实测：build ✓ / typecheck ✓ / test 3981 pass 与偶发 1 flaky 并存）；针对问题 1/2/4 的定点复现：`rg -n 'readonly_exempt_applied' src/core/tool-guard.ts`、`rg -n 'visit_edge_unclassified' src/`、`sed -n '79,90p' src/tools/pipeline-verify.ts`
+
+## Fix-stage delivery 2026-10-12
+
+本次修复阶段已完成所有 13 项问题的修复，具体 commit 如下：
+
+| 问题 | 等级 | Commit | 描述 |
+|------|------|--------|------|
+| 问题 1 | High | `89fdf30` | 修正 `readonly_exempt_applied` 审计事件名和字段契约 |
+| 问题 2 | High | `1d6e8f9` | 实现 C4 未分类边的节流审计 `visit_edge_unclassified` |
+| 问题 3 | High | `32a19e3` | 将 `menuEscalationPending` 消费移至子会话闸和 aborted 判定之后 |
+| 问题 4 | Medium | `9d17d67` | 注入 `config` 到 type cast，修复类型/运行时不一致 |
+| 问题 5 | Medium | - | 已在先前 commit 中修复 |
+| 问题 6 | Medium | - | 已在先前 commit 中修复 |
+| 问题 7 | Medium | - | 已在先前 commit 中修复 |
+| 问题 8 | Medium | `534e4c8` | 合并 4 个未授权事件名为 `dispatch_conflict_blocked` + `site` 字段 |
+| 问题 9 | Medium | `284759a` | 提取 `remainingRoundsOf` 共享 helper，统一三处扣减 `c0Used` |
+| 问题 10 | Medium | - | 已在先前 commit 中修复 |
+| 问题 11 | Medium | `2614189` | 为 `bash_destructive` 桶添加 advisory 标注，实现收尾提示文案升级 |
+| 问题 12 | Medium | `09d0fff` | 重构 `buildLowBudgetWarning`：类型安全、静态导入、await 审计、错误日志 |
+| 问题 13 | Medium | - | 已在先前 commit 中修复 |
+
+修复后验证：`bun run build` ✓ / `bun run typecheck` ✓ / `bun test` 3983 pass / 0 fail / 194 files。
