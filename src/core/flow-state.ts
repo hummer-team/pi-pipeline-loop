@@ -1327,16 +1327,7 @@ export async function promptDecisionMenu(
 ): Promise<PromptDecisionOutcome> {
   const ui = opts?.ui ?? ctx.ui;
   
-  // Phase 6 (195): Owner session checks for pending escalation from child (15-B/C)
-  // If menuEscalationPending is true, clear it and proceed to show menu (one-time)
-  if (meta.menuEscalationPending) {
-    ctx.session.updateMeta({ menuEscalationPending: false });
-    await safeWriteAuditLog("menu_escalation_consumed", {
-      pipelineId: meta.pipelineId,
-      stage: meta.currentStage,
-    });
-  }
-  
+
   // Phase 6 (195): Pass blockedReason and config to buildDecisionMenu for dynamic menu composition
   const menu = buildDecisionMenu(meta, meta.blockedReason, config);
   const tuiEnabled = config.output?.pipelineStage !== false;
@@ -1369,6 +1360,17 @@ export async function promptDecisionMenu(
     }
   } catch {
     // Fail-open: role detection error → treat as owner (conservative, same as session-role.ts:14-15)
+  }
+
+  // Phase 6 (195): Owner session checks for pending escalation from child (15-B/C)
+  // If menuEscalationPending is true, clear it and proceed to show menu (one-time)
+  // Moved after !menu and child session gates: aborted and child sessions must not consume the flag
+  if (meta.menuEscalationPending) {
+    ctx.session.updateMeta({ menuEscalationPending: false });
+    await safeWriteAuditLog("menu_escalation_consumed", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+    });
   }
 
   if (ui?.select) {

@@ -1772,7 +1772,83 @@ describe("Phase 6 (195): menuEscalationPending lifecycle", () => {
     __setSafeWriteAuditLogOverride(null);
   });
 
-  it("idempotent: no consumed audit when menuEscalationPending is already false", async () => {
+  // H3 (review-issue): Child session calling promptDecisionMenu must NOT consume menuEscalationPending
+  it("child session calling promptDecisionMenu does NOT consume menuEscalationPending", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      menuEscalationPending: true,
+    });
+
+    const childCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        select: async () => "Resume",
+        notify: () => {},
+      },
+      _ctx: {
+        sessionManager: {
+          getHeader: () => ({ parentSession: "/tmp/parent-session.jsonl" }),
+          getSessionName: () => "child-session-12345678",
+          getSessionFile: () => "/tmp/child-session.jsonl",
+        },
+      },
+    } as any;
+
+    const config = makeTestConfig();
+    await promptDecisionMenu(childCtx, meta, config);
+
+    // menuEscalationPending must remain true (not consumed by child)
+    expect(meta.menuEscalationPending).toBe(true);
+
+    // No menu_escalation_consumed audit should be written
+    const consumedAudits = auditEvents.filter(e => e.stage === "menu_escalation_consumed");
+    expect(consumedAudits.length).toBe(0);
+
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  // H3 (review-issue): Aborted state (no menu) must NOT consume menuEscalationPending
+  it("aborted state (no menu) does NOT consume menuEscalationPending", async () => {
+    const meta = makeTestMeta({
+      flowState: "aborted",
+      menuEscalationPending: true,
+    });
+
+    const ownerCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        select: async () => "Resume",
+        notify: () => {},
+      },
+    } as any;
+
+    const config = makeTestConfig();
+    await promptDecisionMenu(ownerCtx, meta, config);
+
+    // menuEscalationPending must remain true (not consumed by aborted)
+    expect(meta.menuEscalationPending).toBe(true);
+
+    // No menu_escalation_consumed audit should be written
+    const consumedAudits = auditEvents.filter(e => e.stage === "menu_escalation_consumed");
+    expect(consumedAudits.length).toBe(0);
+
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+    it("idempotent: no consumed audit when menuEscalationPending is already false", async () => {
     const meta = makeTestMeta({
       flowState: "blocked",
       blockedReason: "loop_overflow",
