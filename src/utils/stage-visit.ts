@@ -179,11 +179,15 @@ export function deriveReworkLoopGate(
       target,
     );
     if (edge.counted) {
-      // I2 constraint: gate must be a valid stage and not a terminal/non-rework stage
+      // I2 constraint: the RESULT (returned source stage) must be a valid
+      // configured stage and not a terminal/non-rework stage. Guard is on
+      // `source` because the plan mandates "result ∉ {completed,
+      // awaiting_human}" (Rev.4 :267); Phase 6 menu provisioning relies on
+      // null => the rewind exit is not offered.
       if (
-        config?.stages[target] &&
-        target !== "completed" &&
-        target !== "awaiting_human"
+        config?.stages[source] &&
+        source !== "completed" &&
+        source !== "awaiting_human"
       ) {
         return source;
       }
