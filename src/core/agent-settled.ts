@@ -324,14 +324,91 @@ export function createAgentSettled(
             const nameProbeHit = !evidenceHit ? findLiveAgentByName(expectedAgent) : null;
             const liveEvidence = evidenceHit ?? (nameProbeHit ? { basis: "manual_live_probe" as const, agentId: nameProbeHit.agentId, stage: meta.currentStage } : null);
             if (liveEvidence) {
-              await writeAuditLog("advance_deferred_stage_agent_live", {
-                pipelineId: meta.pipelineId,
-                stage: meta.currentStage,
-                expectedAgent,
-                basis: liveEvidence.basis,
-                ...(liveEvidence.agentId ? { agentId: liveEvidence.agentId } : {}),
-              });
-              return;
+              // Phase 8 (195 Bug T2): the deferral cap applies ONLY to
+              // probe-unavailable deferrals. A "reserved" basis means the spawn
+              // registry holds a reservation the probe could not confirm as a
+              // live executor — deferring on it forever would strand the
+              // pipeline on a stale entry (issue-20-D). Positive evidence
+              // ("probe_live" / "manual_live_probe") keeps G5's unbounded
+              // deferral: the owner MUST wait while the executor verifiably
+              // runs (194 handoff-ledger contract depends on this).
+              if (liveEvidence.basis !== "reserved") {
+                if (meta.probeDeferralCount !== undefined || meta.probeDeferralStage !== undefined) {
+                  ctx.session.updateMeta({ probeDeferralCount: undefined, probeDeferralStage: undefined });
+                }
+                await writeAuditLog("advance_deferred_stage_agent_live", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  expectedAgent,
+                  basis: liveEvidence.basis,
+                  ...(liveEvidence.agentId ? { agentId: liveEvidence.agentId } : {}),
+                });
+                return;
+              }
+              // Reserved-basis deferral: count consecutively per stage
+              // (counter resets when currentStage changes — plan Phase 8 boundary).
+              const baseCount = meta.probeDeferralStage === meta.currentStage ? (meta.probeDeferralCount ?? 0) : 0;
+              const deferralCount = baseCount + 1;
+              if (deferralCount >= 2) {
+                // Phase 8 (195 Bug): idempotent dedup — check if this pipelineId+stage has already been dispatched
+                const dedupeKey = `${meta.pipelineId}:${meta.currentStage}`;
+                const alreadyDispatched = meta.dispatchedProbeDeferrals?.[dedupeKey];
+                
+                if (alreadyDispatched) {
+                  // Already dispatched — skip to prevent double-dispatch (similar to agent_settled_owner_wake_replay_skipped)
+                  await writeAuditLog("probe_deferral_replay_skipped", {
+                    pipelineId: meta.pipelineId,
+                    stage: meta.currentStage,
+                    expectedAgent,
+                    basis: liveEvidence.basis,
+                    deferralCount: String(deferralCount),
+                    reason: "duplicate_dispatch_prevented",
+                    previousDispatchAt: String(alreadyDispatched),
+                    ...(liveEvidence.agentId ? { agentId: liveEvidence.agentId } : {}),
+                  });
+                  // Reset the counter and return (skip dispatch)
+                  ctx.session.updateMeta({ probeDeferralCount: 0, probeDeferralStage: undefined });
+                  return;
+                }
+                
+                // Give up deferring after 2 consecutive deferrals
+                await writeAuditLog("probe_gave_up_after_delay", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  expectedAgent,
+                  basis: liveEvidence.basis,
+                  deferralCount: String(deferralCount),
+                  reason: "max_deferral_cap_reached",
+                  ...(liveEvidence.agentId ? { agentId: liveEvidence.agentId } : {}),
+                });
+                // Mark as dispatched and reset the counter
+                ctx.session.updateMeta({
+                  probeDeferralCount: 0,
+                  probeDeferralStage: undefined,
+                  dispatchedProbeDeferrals: {
+                    ...(meta.dispatchedProbeDeferrals ?? {}),
+                    [dedupeKey]: Date.now(),
+                  },
+                });
+                // Proceed with dispatch/report (don't return, let the flow continue)
+              } else {
+                // Defer as usual, increment counter
+                await writeAuditLog("advance_deferred_stage_agent_live", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  expectedAgent,
+                  basis: liveEvidence.basis,
+                  deferralCount: String(deferralCount),
+                  ...(liveEvidence.agentId ? { agentId: liveEvidence.agentId } : {}),
+                });
+                ctx.session.updateMeta({ probeDeferralCount: deferralCount, probeDeferralStage: meta.currentStage });
+                return;
+              }
+            } else {
+              // No live evidence — reset the deferral counter
+              if (meta.probeDeferralCount !== undefined || meta.probeDeferralStage !== undefined) {
+                ctx.session.updateMeta({ probeDeferralCount: undefined, probeDeferralStage: undefined });
+              }
             }
           }
         }

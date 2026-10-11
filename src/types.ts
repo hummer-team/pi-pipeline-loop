@@ -622,7 +622,12 @@ export interface SessionMeta {
    * - Consumed (and cleared) by the owner session in `agent_settled`
    * - `attempts` bounds idempotent re-delivery (max 1 re-delivery per stage)
    */
-  pendingSpawns?: Partial<Record<PipelineStage, { agentName: string; requestedAt: number; attempts: number; extraArgs?: string; /** 192 Phase 0: operation identity carried with the request; dequeue must validate stage/operation/round before consuming. */ operationContext?: SpawnOperationContext }>>;
+  pendingSpawns?: Partial<Record<PipelineStage, {
+    /** Phase 8 (195 Bug): ownership binding — pipelineId pins the pending to its
+     *  originating pipeline run. Optional for backwards compatibility: legacy
+     *  entries without it are treated as ownership-compatible (see dequeue guard). */
+    pipelineId?: string;
+    agentName: string; requestedAt: number; attempts: number; extraArgs?: string; /** 192 Phase 0: operation identity carried with the request; dequeue must validate stage/operation/round before consuming. */ operationContext?: SpawnOperationContext }>>;
 
   /**
    * Phase 3 / 177 (D5b): Bounded auto re-ask bookkeeping for an unresolved
@@ -639,6 +644,24 @@ export interface SessionMeta {
    * deadlock when an unrelated subagent hangs.
    */
   confirmGateDeferredAt?: { stage: PipelineStage; at: number };
+
+  /**
+   * Phase 8 (195 Bug): Consecutive probe deferral counter for advance liveness guard.
+   * Tracks how many consecutive times the agent was detected as live and deferred.
+   * After 2 consecutive deferrals, gives up and proceeds with dispatch/report.
+   * Reset on stage transitions and when probe returns no live evidence.
+   */
+  probeDeferralCount?: number;
+  /** Phase 8 (195 Bug T2): stage the reserved-basis deferral counter applies to;
+   *  consecutive counting resets when currentStage differs from this value. */
+  probeDeferralStage?: PipelineStage;
+
+  /**
+   * Phase 8 (195 Bug): Track dispatched probe deferrals for idempotent dedup.
+   * Maps "pipelineId:stage" to timestamp when dispatch occurred after giving up on deferral.
+   * Prevents double-dispatch from owner/child dual channels.
+   */
+  dispatchedProbeDeferrals?: Record<string, number>;
 
   /**
    * Phase 4 / 177 (D7③): The user's current-round clarify arguments, persisted

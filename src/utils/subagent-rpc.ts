@@ -1154,6 +1154,7 @@ export function enqueuePendingSpawn(
     pendingSpawns: {
       ...(meta.pendingSpawns ?? {}),
       [stage]: {
+        pipelineId: meta.pipelineId,
         agentName,
         requestedAt: sameOperation ? existing!.requestedAt : Date.now(),
         attempts: sameOperation ? existing!.attempts : 0,
@@ -1240,6 +1241,21 @@ export async function consumePendingSpawns(
     const fresh = opts.session.getMeta();
     if (!fresh?.pendingSpawns?.[stage]) continue;
     const freshEntry = fresh.pendingSpawns[stage]!;
+
+    // Phase 8 (195 Bug): backwards-compatible ownership check
+    // Only enforce pipelineId match if both entry and current have pipelineId
+    // Legacy entries without pipelineId are treated as compatible
+    if (freshEntry.pipelineId && fresh.pipelineId && freshEntry.pipelineId !== fresh.pipelineId) {
+      clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
+      await safeWriteAuditLog("pending_spawn_discarded", {
+        stage,
+        reason: "ownership_mismatch",
+        expectedPipelineId: freshEntry.pipelineId,
+        currentPipelineId: fresh.pipelineId,
+        requestedAt: String(freshEntry.requestedAt),
+      });
+      continue;
+    }
 
     // 192 Phase 1 (task 7): operation-bound queue entries are consumed ONLY
     // when the CURRENT design-review operation matches the entry identity
