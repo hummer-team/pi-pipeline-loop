@@ -1676,3 +1676,210 @@ describe("Phase 6 (195): freezeAndPrompt owner menu call count", () => {
     expect(meta.flowState).toBe("running");
   });
 });
+
+// ─── Phase 6 (195): menuEscalationPending lifecycle ──────────────────────────
+
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+
+describe("Phase 6 (195): menuEscalationPending lifecycle", () => {
+  let auditEvents: Array<{ stage: string; message?: Record<string, string | boolean> }>;
+
+  beforeEach(() => {
+    auditEvents = [];
+    __setSafeWriteAuditLogOverride(async (stage, message) => {
+      auditEvents.push({ stage, message });
+    });
+  });
+
+  it("child freeze sets menuEscalationPending and writes menu_escalation_armed audit", async () => {
+    const meta = makeTestMeta({ flowState: "running" });
+    const childCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        notify: () => {},
+        select: async () => undefined,
+      },
+      _ctx: {
+        sessionManager: {
+          getHeader: () => ({ parentSession: "/tmp/parent-session.jsonl" }),
+          getSessionName: () => "child-session-12345678",
+          getSessionFile: () => "/tmp/child-session.jsonl",
+        },
+      },
+    } as any;
+
+    const config = makeTestConfig();
+    await freezeAndPrompt(childCtx, meta, "loop_overflow", config);
+
+    // Verify menuEscalationPending is set
+    expect(meta.menuEscalationPending).toBe(true);
+
+    // Verify menu_escalation_armed audit was written
+    const armedAudit = auditEvents.find(e => e.stage === "menu_escalation_armed");
+    expect(armedAudit).toBeDefined();
+    expect(armedAudit?.message?.pipelineId).toBe(meta.pipelineId);
+    expect(armedAudit?.message?.stage).toBe(meta.currentStage);
+
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  it("owner promptDecisionMenu consumes escalation: clears flag, writes consumed audit, shows menu", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      menuEscalationPending: true,
+    });
+
+    let selectCalls = 0;
+    const ownerCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        select: async () => {
+          selectCalls++;
+          return "Resume";
+        },
+        notify: () => {},
+      },
+    } as any;
+
+    const config = makeTestConfig();
+    await promptDecisionMenu(ownerCtx, meta, config);
+
+    // Verify menuEscalationPending is cleared
+    expect(meta.menuEscalationPending).toBe(false);
+
+    // Verify menu_escalation_consumed audit was written
+    const consumedAudit = auditEvents.find(e => e.stage === "menu_escalation_consumed");
+    expect(consumedAudit).toBeDefined();
+    expect(consumedAudit?.message?.pipelineId).toBe(meta.pipelineId);
+    expect(consumedAudit?.message?.stage).toBe(meta.currentStage);
+
+    // Verify menu was shown (select called)
+    expect(selectCalls).toBe(1);
+
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  it("idempotent: no consumed audit when menuEscalationPending is already false", async () => {
+    const meta = makeTestMeta({
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      menuEscalationPending: false,
+    });
+
+    let selectCalls = 0;
+    const ownerCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        select: async () => {
+          selectCalls++;
+          return "Resume";
+        },
+        notify: () => {},
+      },
+    } as any;
+
+    const config = makeTestConfig();
+    await promptDecisionMenu(ownerCtx, meta, config);
+
+    // Verify NO menu_escalation_consumed audit was written
+    const consumedAudit = auditEvents.find(e => e.stage === "menu_escalation_consumed");
+    expect(consumedAudit).toBeUndefined();
+
+    // Verify menu was still shown (normal flow)
+    expect(selectCalls).toBe(1);
+
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  it("end-to-end: child arm → owner consume → owner again: 2 menu calls, 1 consumed audit", async () => {
+    const meta = makeTestMeta({ flowState: "running" });
+
+    // Step 1: Child arm
+    const childCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        notify: () => {},
+        select: async () => undefined,
+      },
+      _ctx: {
+        sessionManager: {
+          getHeader: () => ({ parentSession: "/tmp/parent-session.jsonl" }),
+          getSessionName: () => "child-session-12345678",
+          getSessionFile: () => "/tmp/child-session.jsonl",
+        },
+      },
+    } as any;
+
+    const config = makeTestConfig();
+    await freezeAndPrompt(childCtx, meta, "loop_overflow", config);
+    expect(meta.menuEscalationPending).toBe(true);
+
+    // Step 2: Owner consume (first call)
+    let selectCalls = 0;
+    const ownerCtx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      ui: {
+        select: async () => {
+          selectCalls++;
+          return "Resume";
+        },
+        notify: () => {},
+      },
+    } as any;
+
+    await promptDecisionMenu(ownerCtx, meta, config);
+    expect(meta.menuEscalationPending).toBe(false);
+    expect(selectCalls).toBe(1);
+
+    // Count consumed audits so far
+    const consumedAuditsAfterFirst = auditEvents.filter(e => e.stage === "menu_escalation_consumed");
+    expect(consumedAuditsAfterFirst.length).toBe(1);
+
+    // Step 3: Simulate pipeline getting blocked again (manual state reset, no full freezeAndPrompt flow)
+    // After resume, flowState is "running". Manually set blocked state to simulate a new block.
+    meta.flowState = "blocked";
+    meta.blockedReason = "loop_overflow";
+
+
+    // Step 4: Owner second call
+    await promptDecisionMenu(ownerCtx, meta, config);
+    expect(selectCalls).toBe(2); // Menu shown second time
+
+    // Verify total consumed audits is still 1 (no duplicate)
+    const consumedAuditsAfterSecond = auditEvents.filter(e => e.stage === "menu_escalation_consumed");
+    expect(consumedAuditsAfterSecond.length).toBe(1);
+
+    __setSafeWriteAuditLogOverride(null);
+  });
+});
