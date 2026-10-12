@@ -4,7 +4,8 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 import type { PipelineStage, SessionMeta } from "../../types";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-" + Date.now());
@@ -28,7 +29,7 @@ describe("createAgentSettled", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const content = await readFile(logPath, "utf-8");
     const line = content.trim().split("\n")[0];
 
@@ -104,7 +105,7 @@ describe("createAgentSettled", () => {
     expect(lastMeta.verifyFailures![0].ruleType).toBe("fileContentPattern");
 
     // Should have audit log for verify failure
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("auto_verify_fail");
 
     await rm(stageTmp, { recursive: true, force: true });
@@ -159,7 +160,7 @@ describe("createAgentSettled", () => {
     expect(verifyUpdates.length).toBe(0);
 
     // Should write agent_settled_skipped_frozen audit
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("agent_settled_skipped_frozen");
 
     // Should notify user about frozen state and shortcut key (Medium #7)
@@ -240,7 +241,7 @@ describe("createAgentSettled", () => {
     // In tool mode, no verification runs and no metadata update occurs
     // The handler simply returns after audit log + skip notification
     // Check audit log for mode=tool skip
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("verify_mode_tool_skip");
     expect(logContent).toContain("verify.mode=tool");
 
@@ -374,7 +375,7 @@ describe("createAgentSettled", () => {
     expect(sentMessages[0]).toContain("plan");
 
     // Audit log should contain auto_advance_wake
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("auto_advance_wake");
 
     await rm(stageTmp, { recursive: true, force: true });
@@ -530,7 +531,7 @@ describe("createAgentSettled", () => {
     expect(lastMeta.currentStage).toBe("plan");
 
     // Audit log should contain auto_advance_wake_skipped
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("auto_advance_wake_skipped");
 
     await rm(stageTmp, { recursive: true, force: true });
@@ -601,7 +602,7 @@ describe("createAgentSettled", () => {
     expect(lastMeta.currentStage).toBe("plan");
 
     // Audit log should contain auto_advance_wake_failed (not auto_advance_wake)
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("auto_advance_wake_failed");
     expect(logContent).toContain("pi SDK internal failure");
     expect(logContent).not.toContain("auto_advance_wake\n");
@@ -656,7 +657,7 @@ describe("createAgentSettled", () => {
     await expect(hook.handler(ctx as any)).resolves.toBeUndefined();
 
     // Audit log should contain verify_fail_wake_failed
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("verify_fail_wake_failed");
     expect(logContent).toContain("wake failure");
 

@@ -4,7 +4,8 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-pipeline-shutdown-" + Date.now());
 
@@ -28,7 +29,7 @@ describe("createSessionShutdown", () => {
     const hook = createSessionShutdown(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const content = await readFile(logPath, "utf-8");
     const line = content.trim().split("\n").find((l: string) => l.includes("session_shutdown"))!;
 
@@ -52,7 +53,7 @@ describe("createSessionShutdown", () => {
     const hook = createSessionShutdown(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const content = await readFile(logPath, "utf-8");
     const lines = content.trim().split("\n");
     const line = lines.find((l: string) => l.includes("completed"))!;
@@ -72,7 +73,7 @@ describe("createSessionShutdown", () => {
     const hook = createSessionShutdown(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const content = await readFile(logPath, "utf-8");
     const lines = content.trim().split("\n");
     const lastLine = lines[lines.length - 1];
@@ -101,7 +102,7 @@ describe("createSessionShutdown", () => {
       expect(meta.terminateReason).toBe("session_quit");
 
       // Verify audit log
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("pipeline_session_aborted");
       expect(content).toContain("reason=session_quit");
@@ -208,7 +209,7 @@ describe("createSessionShutdown", () => {
       const hook = createSessionShutdown(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       const shutdownLine = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("reason=quit"));
       expect(shutdownLine).toBeDefined();
@@ -228,7 +229,7 @@ describe("createSessionShutdown", () => {
       const hook = createSessionShutdown(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       const shutdownLines = content.trim().split("\n").filter((l: string) => l.includes("session_shutdown"));
       const lastLine = shutdownLines[shutdownLines.length - 1];
@@ -254,7 +255,7 @@ describe("createSessionShutdown", () => {
       const hook = createSessionShutdown(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       const shutdownLine = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("sessionFile="));
       expect(shutdownLine).toBeDefined();
@@ -278,7 +279,7 @@ describe("createSessionShutdown", () => {
       const hook = createSessionShutdown(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       const shutdownLine = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("isSubagent="));
       expect(shutdownLine).toBeDefined();
@@ -298,7 +299,7 @@ describe("createSessionShutdown", () => {
       const hook = createSessionShutdown(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       const shutdownLines = content.trim().split("\n").filter((l: string) => l.includes("session_shutdown"));
       const lastLine = shutdownLines[shutdownLines.length - 1];
@@ -322,7 +323,7 @@ describe("createSessionShutdown", () => {
       const hook = createSessionShutdown(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       const line = content.trim().split("\n").find((l: string) => l.includes("session_shutdown") && l.includes("isSubagent=true"));
       expect(line).toBeDefined();
@@ -358,7 +359,7 @@ describe("createSessionShutdown", () => {
       expect(meta.terminateReason).not.toBe("session_quit");
 
       // Audit should contain session_shutdown_skipped
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("session_shutdown_skipped");
       expect(content).toContain("isSubagent=true");
@@ -400,7 +401,7 @@ describe("createSessionShutdown", () => {
       expect(notifications[0]).toContain("session_quit");
 
       // Audit has enriched fields
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("pipeline_session_aborted");
       expect(content).toContain("stage=plan");
@@ -464,7 +465,7 @@ describe("createSessionShutdown", () => {
       await hook.handler(ownerCtx as any);
       expect(meta.flowState).toBe("aborted"); // Owner triggers abort
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("session_shutdown_skipped"); // Child skip recorded
       expect(content).toContain("pipeline_session_aborted"); // Owner abort recorded
@@ -491,7 +492,7 @@ describe("createSessionShutdown", () => {
       await hook.handler(ctx as any);
 
       expect(meta.flowState).toBe("running"); // No abort for child 'new'
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("session_shutdown_skipped");
     });
@@ -519,7 +520,7 @@ describe("createSessionShutdown", () => {
       const hook = createSessionShutdown(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
 
       // Should have EXACTLY ONE session_shutdown_skipped line
@@ -573,7 +574,7 @@ describe("createSessionShutdown", () => {
       });
       await hook.handler(ctx2 as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
 
       // Only ONE session_shutdown line (the second was throttled)
@@ -603,7 +604,7 @@ describe("createSessionShutdown", () => {
       const ctx2 = createMockCtx(meta, { sessionFile: "same-session", event: { reason: "resume" } });
       await hook.handler(ctx2 as any);
 
-      const logPath = join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"), meta.pipelineId);
       const content = await readFile(logPath, "utf-8");
 
       // Both events should be written

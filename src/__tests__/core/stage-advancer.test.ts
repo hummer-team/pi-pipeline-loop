@@ -4,7 +4,8 @@ import { makeTestConfig, makeTestMeta, STAGE_LIST } from "../helpers";
 import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 import type { PipelineStage } from "../../types";
 
 /** Minimal mock ctx with session + _ctx for extractAssistantMessages */
@@ -628,7 +629,7 @@ describe("Phase 4 (162): stage_advance confirm gate integration", () => {
     expect(result.success).toBe(true);
     expect(meta.currentStage).toBe("develop");
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_smart_skip");
 
@@ -660,7 +661,7 @@ describe("Phase 4 (162): stage_advance confirm gate integration", () => {
     expect(meta.currentStage).toBe("develop");
     expect(meta.confirmRejections).toBeUndefined();
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_approved");
 
@@ -743,7 +744,7 @@ describe("Phase 4 (162): stage_advance confirm gate integration", () => {
     expect(result.success).toBe(true);
     expect(meta.currentStage).toBe("develop");
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_auto_write");
     // Should NOT have confirm gate audit events
@@ -800,7 +801,7 @@ describe("Phase 4 (162): stage_advance confirm gate integration", () => {
     expect(selectCalls).toBe(0);
     expect(meta.currentStage).toBe("plan");
 
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("confirm_gate_suppressed_child");
     expect(logContent).not.toContain("confirm_approved");
 
@@ -875,7 +876,7 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     expect(meta.advancedThisTurn).toBe(true);
 
     // Audit: single review_auto_route_fix event, NOT confirm_rejected
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("review_auto_route_fix");
     expect(logContent).not.toContain("confirm_rejected");
@@ -904,7 +905,7 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     // Should advance normally (pass falls through to original flow)
     expect(result.success).toBe(true);
     // No review_auto_route_fix audit — pass does not trigger auto-route
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).not.toContain("review_auto_route_fix");
 
@@ -930,7 +931,7 @@ describe("Phase 1 (163): reviewConclusion declaration auto-route", () => {
     expect(meta.currentStage).toBe("plan");
 
     // Audit: review_conclusion_ignored
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("review_conclusion_ignored");
     expect(logContent).not.toContain("review_auto_route_fix");
@@ -1081,7 +1082,7 @@ describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () 
     expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop", "review", "completed"]);
 
     // pipeline_completed audit event must carry the FULL sequence (text format)
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     const completedLine = logContent.split("\n").find(l => l.includes("pipeline_completed"));
     expect(completedLine).toBeDefined();
     expect(completedLine).toContain("stageVisitOrder=clarify,plan,develop,review,completed");
@@ -1253,7 +1254,7 @@ describe("Reaudit: routeConfirmReject wake suppression + C2 clear + maxLoopCycle
     expect(spawnMsg.length).toBe(1);
 
     // Wake suppression audit
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("confirm_reject_wake_skipped");
     expect(logContent).toContain("subagent_spawned");
 
@@ -1355,7 +1356,7 @@ describe("Reaudit: routeConfirmReject wake suppression + C2 clear + maxLoopCycle
     // Pipeline should be frozen (blocked)
     expect(meta.flowState).toBe("blocked");
 
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId), "utf-8");
     expect(logContent).toContain("pipeline_blocked");
 
     await rm(stageTmp, { recursive: true, force: true });
@@ -1609,7 +1610,7 @@ describe("Phase 0 (182) G5: fix→terminal hard guard", () => {
     expect((result as any).message).toContain("completed");
 
     // Verify audit
-    const auditPath = join(TMP6, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP6, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("fix_terminal_blocked");
 
@@ -1665,7 +1666,7 @@ describe("Phase 0 (182) G5: fix→terminal hard guard", () => {
     const result = await tool.execute({ nextStage: "completed" }, ctx as any);
 
     // review → completed should NOT be blocked by the fix terminal guard
-    const auditPath = join(TMP6, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP6, ".pi", "audit"), meta.pipelineId);
     try {
       const auditContent = await readFile(auditPath, "utf-8");
       expect(auditContent).not.toContain("fix_terminal_blocked");
@@ -1694,7 +1695,7 @@ describe("Phase 0 (188) G7: stage_advance git uncommitted check", () => {
     expect((result as any).success).toBe(false);
     expect((result as any).message).toContain("Uncommitted changes detected");
 
-    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("stage_advance_blocked_uncommitted");
 
@@ -1831,7 +1832,7 @@ describe("G6 (188): stage_advance tool spawn-before-audit ordering", () => {
     // spawnStageSubagent writes "stage_spawn_fallback" INSIDE its execution,
     // then safeWriteStageAudit writes "stage_advance" AFTER spawn returns.
     // By checking file positions, we prove spawn ran before audit.
-    const auditPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(stageTmp, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(auditPath, "utf-8");
 
     const spawnEntryPos = logContent.indexOf("stage_spawn_fallback");
@@ -1953,7 +1954,7 @@ Verify commit doc exists.`,
     expect(result.precheck).toBe(true);
 
     // Verify hardstop audit was written
-    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("stage_advance_precheck_hardstop");
 

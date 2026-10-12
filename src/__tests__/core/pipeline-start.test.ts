@@ -3,8 +3,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand, buildStartMeta, buildResumeMeta } from "../../commands/pipeline-start";
-import { makeTestConfig, createMockCtx, createMockRuntimeCtx, makeTestMeta, finalStatusText } from "../helpers";
-import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+import { makeTestConfig, createMockCtx, createMockRuntimeCtx, makeTestMeta, finalStatusText, auditLogFileFor } from "../helpers";
+import { initAuditLog, getDateAuditFileName, __resetAuditDirPath, setAuditPipelineContext } from "../../utils/auditLog";
 
 let TMP: string;
 let docPath: string;
@@ -385,6 +385,8 @@ describe("createPipelineStartCommand", () => {
   });
 
   it("writes pipeline_start_error to audit when file is missing", async () => {
+    // Reset audit context to ensure logs go to system directory
+    setAuditPipelineContext("");
     // Set up audit log to a temp directory
     const auditDir = path.join(TMP, ".pi", "audit");
     await fs.mkdir(auditDir, { recursive: true });
@@ -401,7 +403,7 @@ describe("createPipelineStartCommand", () => {
     expect(result.error).toContain("File not found");
 
     // Read the audit log and verify
-    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir, meta.pipelineId);
     const logContent = await fs.readFile(logFile, "utf-8");
 
     expect(logContent).toContain("pipeline_start_error");
@@ -1066,6 +1068,8 @@ describe("createPipelineStartCommand", () => {
         flowState: "aborted",
         requirementDoc: "docs/design/req.md",
       });
+      // Set audit context to match the pipelineId in meta
+      setAuditPipelineContext(meta.pipelineId);
       const ctx = {
         session: {
           getMeta: () => meta,
@@ -1078,7 +1082,7 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
 
       // Read audit log
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir, meta.pipelineId);
       const logContent = await fs.readFile(logFile, "utf-8");
 
       // pipeline_start event with mode=resume (audit format: pipe-separated key=value)

@@ -3,7 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPipelineQuitCommand } from "../../commands/pipeline-quit";
-import { makeTestConfig, makeTestMeta } from "../helpers";
+import { makeTestConfig, makeTestMeta, auditLogFileFor } from "../helpers";
 import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
 
 function createCtx(meta: any) {
@@ -58,7 +58,7 @@ describe("createPipelineQuitCommand", () => {
     // Verify no audit written: file should not exist (initAuditLog creates dir only)
     let auditExists = true;
     try {
-      await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), ""), "utf-8");
     } catch {
       auditExists = false;
     }
@@ -99,7 +99,7 @@ describe("createPipelineQuitCommand", () => {
     expect(meta.currentStage).toBe("develop");
 
     // Audit verification: pipeline_quit event with stage=develop
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-quit-001"), "utf-8");
     expect(logContent).toContain("pipeline_quit");
     expect(logContent).toContain("stage=develop");
     expect(logContent).toContain("pipelineId=pipe-quit-001");
@@ -155,7 +155,7 @@ describe("createPipelineQuitCommand", () => {
     // Verify no repeat audit: file should not exist (initAuditLog creates dir only)
     let auditExists = true;
     try {
-      await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
     } catch {
       auditExists = false;
     }

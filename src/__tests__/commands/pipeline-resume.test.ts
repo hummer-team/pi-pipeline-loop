@@ -4,7 +4,8 @@ import { makeTestConfig, makeTestMeta, createMockCtx, finalStatusText } from "..
 import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 import type { PipelineStage } from "../../types";
 
 describe("createPipelineResumeCommand", () => {
@@ -97,7 +98,7 @@ describe("createPipelineResumeCommand", () => {
     expect(ctx.metadataUpdates.some(u => u.loopCount === 0)).toBe(true);
 
     // Audit should contain pipeline_decision with source=force-resume (Phase 6)
-    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("pipeline_decision");
     expect(auditContent).toContain("source");
@@ -304,7 +305,7 @@ describe("createPipelineResumeCommand", () => {
       expect((result as any).message).toContain("No resume needed");
       // Re-ask budget untouched by the system deferral.
       expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
-      const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
       expect(audit).toContain("confirm_gate_deferred");
 
       await rm(TMP, { recursive: true, force: true });
@@ -331,7 +332,7 @@ describe("createPipelineResumeCommand", () => {
 
       // Shared accounting helper increments the stage-scoped re-ask count.
       expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 2 });
-      const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
       expect(audit).toContain("confirm_gate_dismiss_interrupted");
       expect(audit).toContain("source=resume");
 
@@ -477,7 +478,7 @@ describe("createPipelineResumeCommand", () => {
       expect(meta.blockedReason).toBe("max_loop_cycles"); // Unchanged
 
       // Verify audit log contains resume_skipped_no_menu
-      const auditFile = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditFile = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
       const auditContent = await readFile(auditFile, "utf-8");
       expect(auditContent).toContain("resume_skipped_no_menu");
       expect(auditContent).toContain("no_ui");
@@ -508,7 +509,7 @@ describe("createPipelineResumeCommand", () => {
       expect(meta.flowState).toBe("running"); // Unfrozen
 
       // Verify audit log shows force-resume source
-      const auditFile = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditFile = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
       const auditContent = await readFile(auditFile, "utf-8");
       expect(auditContent).toContain("force-resume");
 
@@ -536,7 +537,7 @@ describe("createPipelineResumeCommand", () => {
       expect(meta.flowState).toBe("blocked");
 
       // Verify audit log contains resume_skipped_no_menu
-      const auditFile = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditFile = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
       const auditContent = await readFile(auditFile, "utf-8");
       expect(auditContent).toContain("resume_skipped_no_menu");
 

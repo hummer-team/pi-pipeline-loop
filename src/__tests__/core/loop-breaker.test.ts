@@ -4,7 +4,8 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 describe("createLoopBreaker", () => {
   it("creates a hook with event 'tool_result'", () => {
@@ -46,7 +47,7 @@ describe("createLoopBreaker", () => {
       expect(lastUpdate.blockedReason).toBe("loop_overflow");
       expect(lastUpdate.loopCount).toBe(2);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
       const lines = logContent.trim().split("\n");
       // Should have both loop_break_fatal and pipeline_blocked audit entries
       expect(lines.some(l => l.includes("loop_break_fatal"))).toBe(true);
@@ -333,9 +334,9 @@ describe("createLoopBreaker", () => {
       // maxLoops=1 makes a spurious count immediately observable as a freeze.
       const config = makeTestConfig({ projectRoot: TMP, maxLoops: 1 });
       await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0, maxLoops: 1 });
 
       for (const cmd of ["./scripts/test.sh", "make check"]) {
-        const meta = makeTestMeta({ currentStage: "develop", loopCount: 0, maxLoops: 1 });
         const ctx = createMockCtx(meta);
         ctx.toolCall = { name: "bash", arguments: { command: cmd } };
         ctx.result = { exitCode: 1 };
@@ -347,7 +348,7 @@ describe("createLoopBreaker", () => {
         expect(meta.flowState, `unexpected freeze: ${cmd}`).toBeUndefined();
       }
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
       expect(logContent.includes("loop_break_fatal")).toBe(false);
     });
 
@@ -365,7 +366,7 @@ describe("createLoopBreaker", () => {
       await createLoopBreaker(config).handler(ctx as any);
 
       expect(ctx.metadataUpdates.length).toBe(0);
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
       expect(logContent).toContain("test_detect_miss_candidate");
       expect(logContent).toContain("command=./scripts/test.sh");
     });
@@ -376,6 +377,7 @@ describe("createLoopBreaker", () => {
 
       const config = makeTestConfig({ projectRoot: TMP });
       await initAuditLog(config);
+      const meta = makeTestMeta({ currentStage: "develop", loopCount: 0 });
 
       const scenarios = [
         { stage: "develop", cmd: "git status", exitCode: 1 }, // no "test" word
@@ -384,14 +386,15 @@ describe("createLoopBreaker", () => {
       ] as const;
 
       for (const s of scenarios) {
-        const meta = makeTestMeta({ currentStage: s.stage, loopCount: 0 });
-        const ctx = createMockCtx(meta);
+        // Update meta.currentStage for each scenario to test stage-specific behavior
+        const scenarioMeta = { ...meta, currentStage: s.stage };
+        const ctx = createMockCtx(scenarioMeta);
         ctx.toolCall = { name: "bash", arguments: { command: s.cmd } };
         ctx.result = { exitCode: s.exitCode };
         await createLoopBreaker(config).handler(ctx as any);
       }
 
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
       let logContent = "";
       try { logContent = await readFile(logPath, "utf-8"); } catch { /* no audit file written */ }
       expect(logContent.includes("test_detect_miss_candidate")).toBe(false);
@@ -410,7 +413,7 @@ describe("createLoopBreaker", () => {
 
       await createLoopBreaker(config).handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
       const line = logContent
         .trim()
         .split("\n")
@@ -443,7 +446,7 @@ describe("createLoopBreaker", () => {
       const hook = createLoopBreaker(config);
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
       const line = logContent.trim().split("\n")[0];
       expect(line).toContain(" - [INFO] file_modified");
     });
@@ -468,7 +471,7 @@ describe("createLoopBreaker", () => {
       await hook.handler(ctx as any);
 
       let logExists = true;
-      try { await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8"); } catch { logExists = false; }
+      try { await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8"); } catch { logExists = false; }
       expect(logExists).toBe(false);
     });
 

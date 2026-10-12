@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { resetPromptConfigCache } from "../../core/prompt-config";
-import { initAuditLog, __resetAuditDirPath, getDateAuditFileName, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { initAuditLog, __resetAuditDirPath, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 
 describe("createPromptInjector", () => {
@@ -1853,7 +1854,7 @@ describe("Phase 1 (183): skillsDedup wiring and audit events", () => {
     expect(openCount).toBe(1);
 
     // Read audit log and verify prompt_skills_dedup event
-    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("prompt_skills_dedup");
     expect(auditContent).toContain("removed_pairs=1");
@@ -1893,7 +1894,7 @@ describe("Phase 1 (183): skillsDedup wiring and audit events", () => {
     expect(result.systemPrompt).toBe(resultNoop.systemPrompt);
 
     // No dedup audit event should be present
-    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).not.toContain("prompt_skills_dedup");
     expect(auditContent).not.toContain("prompt_skills_dedup_skipped");
@@ -1925,7 +1926,7 @@ describe("Phase 1 (183): skillsDedup wiring and audit events", () => {
     expect(openCount).toBe(2);
 
     // Read audit log and verify skipped event
-    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("prompt_skills_dedup_skipped");
     expect(auditContent).toContain("reason=mismatch");

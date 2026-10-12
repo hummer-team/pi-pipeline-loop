@@ -4,7 +4,8 @@ import { makeTestConfig, makeTestMeta, finalStatusText } from "../helpers";
 import { writeFile, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog, setAuditPipelineContext } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 import { resetPromptConfigCache, loadPromptConfig } from "../../core/prompt-config";
 import { registerSession } from "../../utils/session-registry";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
@@ -122,7 +123,7 @@ describe("createSessionStarter", () => {
       await hook.handler(ctx as any);
 
       // C4: No session_start audit line for pipeline creation
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "");
       let content = "";
       try {
         content = await readFile(logPath, "utf-8");
@@ -317,7 +318,7 @@ describe("createSessionStarter", () => {
       expect(meta.terminateReason).toBe("stale_startup");
 
       // Verify pipeline_stale_reset audit
-      const logPath = join(TMP_STALE, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP_STALE, ".pi", "audit"), "pipe-stale-1");
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("pipeline_stale_reset");
       expect(content).toContain("pipelineId=pipe-stale-1");
@@ -461,7 +462,7 @@ describe("createSessionStarter", () => {
       expect(abortedNotify).toBeUndefined();
 
       // Verify audit file does NOT contain pipeline_stale_reset
-      const logPath = join(TMP_T1, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP_T1, ".pi", "audit"), "pipe-frozen-replay-1");
       try {
         const content = await readFile(logPath, "utf-8");
         expect(content).not.toContain("pipeline_stale_reset");
@@ -513,7 +514,7 @@ describe("createSessionStarter", () => {
       expect(abortedNotify).toBeUndefined();
 
       // Verify audit file does NOT contain pipeline_stale_reset
-      const logPath = join(TMP_T2, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP_T2, ".pi", "audit"), "pipe-frozen-replay-2");
       try {
         const content = await readFile(logPath, "utf-8");
         expect(content).not.toContain("pipeline_stale_reset");
@@ -637,6 +638,8 @@ describe("createSessionStarter", () => {
     });
 
     it("JOIN: parentSession + registry miss → dormant (C4: no new pipeline)", async () => {
+      // Reset audit context to ensure logs go to system directory
+      setAuditPipelineContext("");
       const TMP = join(tmpdir(), "pi-ss-join-miss-" + Date.now());
       await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
 
@@ -656,7 +659,7 @@ describe("createSessionStarter", () => {
       expect(meta.currentStage).toBeUndefined();
       expect(meta.pipelineId).toBeUndefined();
 
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "");
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("session_join_missing_registry");
     });
@@ -806,7 +809,7 @@ describe("createSessionStarter", () => {
       expect(meta.requirementDoc).toBe("docs/design/82_Feat.md");
 
       // Audit should contain requirement_doc_bound
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-autobind-parent");
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("requirement_doc_bound");
       expect(content).toContain("subagent_join");
@@ -848,7 +851,7 @@ describe("createSessionStarter", () => {
       expect(meta.requirementDoc).toBeUndefined();
 
       // Audit should NOT contain requirement_doc_bound
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-nobind-parent");
       const content = await readFile(logPath, "utf-8");
       expect(content).not.toContain("requirement_doc_bound");
 
@@ -912,7 +915,7 @@ describe("createSessionStarter", () => {
       // C4: No session_start audit for new sessions (dormant)
       let logContent = "";
       try {
-        logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+        logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-autobind-parent"), "utf-8");
       } catch { /* file may not exist */ }
       const hasCreationAudit = logContent.includes("session_start") && logContent.includes("pluginVersion");
       expect(hasCreationAudit).toBe(false);
@@ -965,7 +968,7 @@ describe("createSessionStarter", () => {
       await hook.handler(ctx as any);
 
       // C4: No session_start audit for new sessions (dormant)
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "");
       let content = "";
       try { content = await readFile(logPath, "utf-8"); } catch { /* */ }
       const startLine = content.trim().split("\n").find((l: string) => l.includes("session_start") && l.includes("sessionFile="));
@@ -986,7 +989,7 @@ describe("createSessionStarter", () => {
       await hook.handler(ctx as any);
 
       // C4: No session_start audit for new sessions (dormant)
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "");
       let content = "";
       try { content = await readFile(logPath, "utf-8"); } catch { /* */ }
       const startLines = content.trim().split("\n").filter((l: string) => l.includes("session_start") && l.includes("pipelineId=pipe-"));
@@ -1082,7 +1085,7 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-aborted-parent");
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("session_join_aborted_parent");
       expect(content).toContain("pipelineId=pipe-aborted-parent");
@@ -1117,7 +1120,7 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-running-parent");
       const content = await readFile(logPath, "utf-8");
       expect(content).not.toContain("session_join_aborted_parent");
       // But session_join_parent should still be present
@@ -1156,7 +1159,7 @@ describe("createSessionStarter", () => {
       const hook = createSessionStarter(config);
       await hook.handler(ctx as any);
 
-      const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+      const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-bindmiss-parent");
       const content = await readFile(logPath, "utf-8");
       expect(content).toContain("requirement_doc_bind_missed");
       expect(content).toContain("pipelineId=pipe-bindmiss-parent");
@@ -1182,7 +1185,7 @@ describe("createSessionStarter", () => {
       // C4: New sessions are dormant → no session_start audit with pluginVersion
       let logContent = "";
       try {
-        logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+        logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), ""), "utf-8");
       } catch { /* file may not exist */ }
       const match = logContent.match(/pluginVersion=(\d+\.\d+\.\d+\+[a-f0-9]+|\d+\.\d+\.\d+\+unknown)/);
       expect(match).toBeNull();
@@ -1223,7 +1226,7 @@ describe("createSessionStarter", () => {
 
       // Child should NOT trigger pipeline_session_aborted / flowState change
       // The flowState should remain "running" (no abort)
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-child-test"), "utf-8");
       // Should have stale_suspect audit instead of pipeline_session_aborted
       expect(logContent).toContain("stale_suspect");
       expect(logContent).not.toContain("stale_startup");
@@ -1245,6 +1248,8 @@ describe("Phase 1 / 179 (G2 layer ④): subagents agentMentions probe", () => {
   }
 
   it("agentMentions:'model' → exactly one notify + audit", async () => {
+    // Reset audit context to ensure logs go to system directory
+    setAuditPipelineContext("");
     const TMP = join(tmpdir(), "pi-ss-subagents-model-" + Date.now());
     await mkdir(join(TMP, ".pi"), { recursive: true });
     await writeFile(
@@ -1261,7 +1266,7 @@ describe("Phase 1 / 179 (G2 layer ④): subagents agentMentions probe", () => {
 
     const matches = notifications.filter((n) => n.includes("agentMentions"));
     expect(matches.length).toBe(1);
-    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), ""), "utf-8");
     expect(audit).toContain("subagents_mention_model_detected");
 
     await rm(TMP, { recursive: true, force: true });

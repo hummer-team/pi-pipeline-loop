@@ -1,5 +1,7 @@
 import type { PipelineConfig, SessionMeta, PipelineStage, DesignReviewState } from "../types";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { getDateAuditFileName } from "../utils/auditLog";
+import { readdirSync } from "node:fs";
 import { deriveStandaloneReceiptPath } from "../core/design-review/update-artifact";
 import type { RuntimeCtx } from "../core/runtime-ctx";
 import { matchCommitExpectation } from "../core/session-state";
@@ -629,4 +631,55 @@ export function writeStandaloneUpdateDeliverables(opts: {
     "utf-8",
   );
   return { receiptDoc, planContent };
+}
+
+
+/**
+ * Phase 1 (197): test helper for constructing audit log file paths.
+ * Resolves the audit log file path under a per-pipeline layout.
+ * 
+ * @param auditRoot - Root audit directory path (e.g., join(projectRoot, ".pi", "audit"))
+ * @param pipelineId - Optional pipeline ID. If omitted, infers from directory scan.
+ * @returns Full path to the audit log file
+ * 
+ * Rules:
+ * - Explicit pipelineId → {auditRoot}/{id}/log/{date}
+ * - Omitted → readdirSync filter /^pipe-/ dirs:
+ *   - 0 dirs → {auditRoot}/system/log/{date}
+ *   - 1 dir → {auditRoot}/{that-dir}/log/{date}
+ *   - >1 dirs → throw error (test must pass explicit id)
+ */
+export function auditLogFileFor(auditRoot: string, pipelineId?: string): string {
+  let segment: string;
+  
+  if (pipelineId !== undefined) {
+    // Explicit pipelineId provided
+    segment = pipelineId && pipelineId.length > 0 ? pipelineId : "system";
+  } else {
+    // Infer from directory scan
+    try {
+      const entries = readdirSync(auditRoot, { withFileTypes: true });
+      const pipeDirs = entries.filter(e => e.isDirectory() && e.name.startsWith('pipe-')).map(e => e.name);
+      
+      if (pipeDirs.length === 0) {
+        segment = "system";
+      } else if (pipeDirs.length === 1) {
+        segment = pipeDirs[0];
+      } else {
+        throw new Error(
+          `auditLogFileFor: multiple pipeline directories found (${pipeDirs.join(', ')}). ` +
+          `Pass explicit pipelineId parameter.`
+        );
+      }
+    } catch (err: any) {
+      // Directory doesn't exist or can't be read → default to system
+      if (err.code === 'ENOENT') {
+        segment = "system";
+      } else {
+        throw err;
+      }
+    }
+  }
+  
+  return join(auditRoot, segment, "log", getDateAuditFileName());
 }
