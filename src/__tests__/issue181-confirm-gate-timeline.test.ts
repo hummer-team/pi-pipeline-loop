@@ -20,8 +20,9 @@ import { tmpdir } from "node:os";
 import { createAgentSettled } from "../core/agent-settled";
 import { createPipelineResumeCommand } from "../commands/pipeline-resume";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "./helpers";
-import { initAuditLog, getDateAuditFileName } from "../utils/auditLog";
+import { initAuditLog } from "../utils/auditLog";
 import type { PipelineConfig, SessionMeta } from "../types";
+import { auditLogFileFor } from "./helpers";
 
 const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
@@ -112,7 +113,7 @@ describe("Issue 181: owner-only confirm gate recovery timeline", () => {
     expect(meta.confirmGateDeferredAt!.at).toBeGreaterThanOrEqual(deferredAt);
     expect(meta.currentStage).toBe("plan");
 
-    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(audit).toContain("confirm_gate_deferred");
     expect(audit).toContain("confirm_gate_suppressed_child");
     expect(audit).not.toContain("confirm_gate_dismissed");

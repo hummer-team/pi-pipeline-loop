@@ -23,7 +23,7 @@ import {
 import type { FlowStateCtx } from "../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../types";
 import { makeTestMeta, makeTestConfig, createMockCtx, createMockRuntimeCtx } from "./helpers";
-import { initAuditLog, getDateAuditFileName } from "../utils/auditLog";
+import { initAuditLog } from "../utils/auditLog";
 import { readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -32,6 +32,7 @@ import { createSessionStarter, __resetPluginVersionStamp, __resetDriftCheckFlag 
 import { createToolGuard } from "../core/tool-guard";
 import { isDormant, DORMANT_KEEP_PROTECTION } from "../core/dormancy";
 import { __resetMemoryThrottle } from "../utils/audit-throttle";
+import { auditLogFileFor } from "./helpers";
 
 let TMP: string;
 
@@ -88,7 +89,7 @@ describe("Review-r4 Issue 2: skip/rollback/abort audit source field", () => {
 
     await executeDecision(ctx, meta, "skip", config, { source: "menu" });
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision");
     expect(content).toContain("decision=skip");
@@ -106,7 +107,7 @@ describe("Review-r4 Issue 2: skip/rollback/abort audit source field", () => {
 
     await executeDecision(ctx, meta, "rollback", config, { source: "shortcut" });
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision");
     expect(content).toContain("decision=rollback");
@@ -124,7 +125,7 @@ describe("Review-r4 Issue 2: skip/rollback/abort audit source field", () => {
 
     await executeDecision(ctx, meta, "abort", config, { source: "command" });
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision");
     expect(content).toContain("decision=abort");
@@ -182,7 +183,7 @@ describe("Review-r4 Issue 4: secondary menu fast dismiss → interrupted + retry
     // 172-G5 semantics extended to secondary: fast dismiss → interrupted
     expect(outcome).toBe("interrupted");
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision_interrupted");
     expect(content).toContain("choose_stage_secondary");
@@ -211,7 +212,7 @@ describe("Review-r4 Issue 4: secondary menu fast dismiss → interrupted + retry
 
     expect(outcome).toBe("cancelled");
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision_cancelled");
     expect(content).toContain("choose_stage_secondary");
@@ -263,7 +264,7 @@ describe("Review-r4 Issue 1-①: C15 spawnTrigger real behavior (handleSubagentJ
     const hook = createSessionStarter(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     // C15: spawnTrigger should be "pipeline_auto" when activeSpawns matches current stage
     expect(content).toContain("session_join_parent");
@@ -311,7 +312,7 @@ describe("Review-r4 Issue 1-①: C15 spawnTrigger real behavior (handleSubagentJ
     const hook = createSessionStarter(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     // C15: spawnTrigger should be "manual_or_external" when no activeSpawns match
     expect(content).toContain("session_join_parent");
@@ -655,7 +656,7 @@ describe("Phase 4 / 180: duplicate_spawn_suspect observability", () => {
 
     await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
 
-    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(root, ".pi", "audit")), "utf-8");
     expect(audit).toContain("duplicate_spawn_suspect");
     expect(audit).toContain("existingAgentId=dup-live-1");
     expect(audit).toContain("joiningSessionFile=dup-child-session");
@@ -676,7 +677,7 @@ describe("Phase 4 / 180: duplicate_spawn_suspect observability", () => {
     // Second JOIN uses a fresh child ctx (its meta must still be empty to re-enter JOIN).
     await hook.handler(makeJoinCtx(notifications) as any);
 
-    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(root, ".pi", "audit")), "utf-8");
     const suspectLines = audit.split("\n").filter((l) => l.includes("] duplicate_spawn_suspect |"));
     expect(suspectLines.length).toBe(2);
     // Notify is throttled to once within AUDIT_THROTTLE_WINDOW_MS.
@@ -695,7 +696,7 @@ describe("Phase 4 / 180: duplicate_spawn_suspect observability", () => {
 
     await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
 
-    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(root, ".pi", "audit")), "utf-8");
     expect(audit).not.toContain("duplicate_spawn_suspect");
     expect(notifications.filter((n) => n.includes("Duplicate spawn suspect")).length).toBe(0);
 
@@ -712,7 +713,7 @@ describe("Phase 4 / 180: duplicate_spawn_suspect observability", () => {
 
     await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
 
-    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(root, ".pi", "audit")), "utf-8");
     expect(audit).not.toContain("duplicate_spawn_suspect");
     expect(notifications.filter((n) => n.includes("Duplicate spawn suspect")).length).toBe(0);
 
@@ -737,7 +738,7 @@ describe("Phase 4 / 180: duplicate_spawn_suspect observability", () => {
 
     await createSessionStarter(makeTestConfig({ projectRoot: root })).handler(ctx as any);
 
-    const audit = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(root, ".pi", "audit")), "utf-8");
     expect(audit).toContain("spawnTrigger=pipeline_auto");
     expect(audit).not.toContain("duplicate_spawn_suspect");
 

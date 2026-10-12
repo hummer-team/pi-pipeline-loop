@@ -21,8 +21,9 @@ import { tmpdir } from "node:os";
 import { createAgentSettled } from "../core/agent-settled";
 import { createPipelineResumeCommand } from "../commands/pipeline-resume";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "./helpers";
-import { initAuditLog, getDateAuditFileName } from "../utils/auditLog";
+import { initAuditLog } from "../utils/auditLog";
 import type { PipelineConfig } from "../types";
+import { auditLogFileFor } from "./helpers";
 
 const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
@@ -96,7 +97,7 @@ describe("Issue 180: confirm-gate recovery timeline", () => {
     expect(selectMessages.length).toBe(0);
     expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
 
-    let audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    let audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(audit).toContain("confirm_gate_deferred");
 
     // ── Step 2: subagent settles → popup presented, immediately dismissed ────
@@ -106,7 +107,7 @@ describe("Issue 180: confirm-gate recovery timeline", () => {
     expect(selectMessages.length).toBe(1);
     expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
 
-    audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(audit).toContain("confirm_gate_dismiss_interrupted");
 
     // ── Step 3: reload → /pipeline-resume → predicate hits → dialog reappears ─
@@ -124,7 +125,7 @@ describe("Issue 180: confirm-gate recovery timeline", () => {
     // Pending → the running status text is returned.
     expect((result as any).message).toContain("No resume needed");
 
-    audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     // The resume-triggered dismiss is attributed to the resume source.
     expect(audit).toContain("source=resume");
   });

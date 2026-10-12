@@ -75,7 +75,7 @@ describe("initAuditLog isFallbackTemplate gate (Phase 2)", () => {
     expect(fs.existsSync(auditDir)).toBe(false);
   });
 
-  it("isFallbackTemplate=false/undefined → initAuditLog creates directory", async () => {
+  it("isFallbackTemplate=false/undefined → initAuditLog is safe no-op (directory not created)", async () => {
     const auditDir = path.join(TMP, "audit-created");
     const config = {
       stages: {} as any,
@@ -84,10 +84,11 @@ describe("initAuditLog isFallbackTemplate gate (Phase 2)", () => {
       // isFallbackTemplate not set (undefined = falsy)
     };
 
+    // Phase 0 / 197: initAuditLog is lazy - it doesn't create directories.
+    // Directory creation is deferred to the first actual audit write.
+    // This test verifies the function doesn't create the directory eagerly.
     await initAuditLog(config);
-
-    // The audit dir should have been created
-    expect(fs.existsSync(auditDir)).toBe(true);
+    expect(fs.existsSync(auditDir)).toBe(false);
   });
 });
 

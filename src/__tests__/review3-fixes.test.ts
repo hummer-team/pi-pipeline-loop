@@ -23,10 +23,11 @@ import type { FlowStateCtx } from "../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../types";
 import { makeTestMeta, makeTestConfig } from "./helpers";
 import { askProtectDecision, askCommandDecision } from "../utils/protect-ask";
-import { initAuditLog, getDateAuditFileName } from "../utils/auditLog";
+import { initAuditLog } from "../utils/auditLog";
 import { readFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { auditLogFileFor } from "./helpers";
 
 let TMP: string;
 
@@ -444,7 +445,7 @@ describe("Review-r3 Issue 3: no-UI dismissCount skip + hostRole audit", () => {
 
     await askProtectDecision(ctx, meta, "test/file.md", config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_protect_ask");
     expect(content).toContain("hostRole=");
@@ -464,7 +465,7 @@ describe("Review-r3 Issue 3: no-UI dismissCount skip + hostRole audit", () => {
 
     await askCommandDecision(ctx, meta, "rm -rf /", config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_command_ask");
     expect(content).toContain("hostRole=");
@@ -484,7 +485,7 @@ describe("Review-r3 Issue 3: no-UI dismissCount skip + hostRole audit", () => {
 
     await askProtectDecision(ctx, meta, "test/file.md", config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("noUi=true");
   });
@@ -505,7 +506,7 @@ describe("Review-r3 Issue 4: audit source defaults", () => {
 
     await promptDecisionMenu(ctx, meta, config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision");
     expect(content).toContain("source=menu");
@@ -536,7 +537,7 @@ describe("Review-r3 Issue 1: secondary menu Esc audit", () => {
     const outcome = await promptDecisionMenu(ctx, meta, config);
 
     expect(outcome).toBe("cancelled");
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision_cancelled");
     expect(content).toContain("choose_stage_secondary");
@@ -596,7 +597,7 @@ describe("Review-r3 Issue 4: startup replay source='replay'", () => {
     await hook.handler(ctx as any);
 
     // Plan §3.1 dictates source="replay" for all replay reasons (including startup)
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     // Should NOT contain "source=startup" (which was the old bug)
     expect(content).not.toContain("source=startup");
@@ -688,7 +689,7 @@ describe("Review-r3 Issue 1: choose_stage audit fields", () => {
       basis: "currentStage",
     });
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("pipeline_decision");
     expect(content).toContain("decision=choose_stage");
