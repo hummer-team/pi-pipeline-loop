@@ -21,8 +21,11 @@
  *   When meta already contains prompt_hash (e.g., "full" mode callers), the function
  *   skips the automatic append to avoid duplicate keys in the snapshot line.
  *
- * All snapshot lines are appended to `{auditDir}/YYYYMMDD_audit.log` alongside
- * regular single-line audit events.
+ * Per-pipeline routing (Phase 0 / 197_Feat):
+ *   Audit writes are routed to `{auditDir}/{pipelineId}/log/YYYYMMDD_audit.log`.
+ *   Unattributable events (pipelineId empty) fall back to `{auditDir}/system/log/...`.
+ *   Routing is resolved via `resolveAuditPipelineId()`; directory creation is lazy
+ *   via `ensureAuditLogDir()`.
  */
 
 import fs from "node:fs/promises";
@@ -32,14 +35,21 @@ import type { AuditLogLevel, PipelineConfig, SessionMeta } from "../types";
 import { buildStageSequence } from "./stage-sequence";
 import { resolveAuditDir } from "./work-dir";
 
-/** Resolved absolute path to the audit log directory. */
+/** Resolved absolute path to the audit log base directory. */
 let auditDirPath = "";
+
+/** Routing context: pipelineId of the pipeline the current event belongs to. */
+let auditPipelineId = "";
+
+/** Audit log dirs whose creation has been confirmed in this process. */
+const ensuredAuditDirs = new Set<string>();
 
 /**
  * Initializes the audit log directory.
  *
  * Resolves `projectRoot + auditDir` to an absolute path, stores it in
- * module scope, and creates the directory recursively if it does not exist.
+ * module scope. Per-pipeline subdirectories are created lazily by
+ * `ensureAuditLogDir` on first write — no eager `mkdir` here.
  *
  * Must be called once before `writeAuditLog` is used (typically at
  * pipeline startup in `createPipeline`).
@@ -58,7 +68,6 @@ export async function initAuditLog(config: PipelineConfig): Promise<void> {
 
   const auditDir = resolveAuditDir(config);
   auditDirPath = path.resolve(config.projectRoot, auditDir);
-  await fs.mkdir(auditDirPath, { recursive: true });
 }
 
 /**
@@ -75,6 +84,83 @@ export function getDateAuditFileName(): string {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}${m}${day}_audit.log`;
 }
+
+// ─── Per-pipeline routing helpers (197_Feat Phase 0) ──────────────────────────
+
+/**
+ * Resolves the audit pipelineId from the current routing context.
+ *
+ * - meta.pipelineId present → return that pipelineId (even if it differs from current context).
+ * - meta.pipelineId missing/empty → return current auditPipelineId (may be empty).
+ *
+ * @param meta - Object with optional pipelineId (e.g. message or SessionMeta)
+ * @returns The resolved pipelineId string (may be empty)
+ */
+export function resolveAuditPipelineId(meta?: { pipelineId?: string }): string {
+  if (meta?.pipelineId && meta.pipelineId.length > 0) {
+    return meta.pipelineId;
+  }
+  return auditPipelineId;
+}
+
+/**
+ * Resolves the audit log directory for a given pipelineId.
+ *
+ * - pipelineId non-empty → auditDirPath / pipelineId / log
+ * - pipelineId empty       → auditDirPath / system / log
+ *
+ * This is the single routing entry point; no other function may construct
+ * audit log paths from auditDirPath directly.
+ *
+ * @param pipelineId - The pipelineId to route to (empty for system)
+ * @returns The resolved absolute audit log directory path
+ */
+export function auditLogDirFor(pipelineId: string): string {
+  const segment = pipelineId && pipelineId.length > 0 ? pipelineId : "system";
+  return path.join(auditDirPath, segment, "log");
+}
+
+/**
+ * Ensures a directory exists, creating it recursively if needed.
+ *
+ * Writes are skipped when auditDirPath is uninitialized (initAuditLog not called).
+ * Per-pipeline directories are cached in ensuredAuditDirs to avoid repeated mkdir calls.
+ *
+ * @param dir - The directory path to ensure exists
+ */
+export async function ensureAuditLogDir(dir: string): Promise<void> {
+  if (!auditDirPath) return;
+  if (ensuredAuditDirs.has(dir)) return;
+  await fs.mkdir(dir, { recursive: true });
+  ensuredAuditDirs.add(dir);
+}
+
+/**
+ * Runs a callback with a specific pipelineId as the audit routing context.
+ *
+ * Used by callers that have a pipelineId available (e.g. meta.pipelineId)
+ * to route events to the correct pipeline directory without mutating global state.
+ *
+ * After the callback completes, the previous auditPipelineId is restored.
+ *
+ * @param pipelineId - The pipelineId to use during the callback (may be undefined)
+ * @param fn - The callback to execute with the routing context set
+ * @returns Promise that resolves with the callback's return value
+ */
+export async function withPipelineId<T>(
+  pipelineId: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = auditPipelineId;
+  auditPipelineId = pipelineId ?? "";
+  try {
+    return await fn();
+  } finally {
+    auditPipelineId = previous;
+  }
+}
+
+// ─── Core audit writers ────────────────────────────────────────────────────────
 
 /**
  * Writes a formatted audit log line and appends it to today's log file.
@@ -123,7 +209,12 @@ export async function writeAuditLog(
     }
   }
 
-  const logPath = path.join(auditDirPath, getDateAuditFileName());
+  // Route to per-pipeline directory
+  const pipelineId = resolveAuditPipelineId();
+  const logDir = auditLogDirFor(pipelineId);
+  await ensureAuditLogDir(logDir);
+
+  const logPath = path.join(logDir, getDateAuditFileName());
   await fs.appendFile(logPath, line + "\n");
 }
 
@@ -133,19 +224,21 @@ export async function writeAuditLog(
  * Used in error-path call sites (Phase 1 catch blocks) where audit failure
  * must not alter business control flow. Any error is silently swallowed.
  *
- * @param stage   - The pipeline stage or action name
- * @param message - Optional key-value pairs to append after the stage
- * @param level   - Log severity level (default "info")
+ * @param stage      - The pipeline stage or action name
+ * @param message    - Optional key-value pairs to append after the stage
+ * @param level      - Log severity level (default "info")
+ * @param pipelineId - Optional pipelineId for routing (transparent to caller)
  */
 export async function safeWriteAuditLog(
   stage: string,
   message?: Record<string, string | boolean>,
   level?: AuditLogLevel,
+  pipelineId?: string,
 ): Promise<void> {
   // Test override: when set, delegate to the replacement (which may throw)
   if (_safeWriteOverride) return _safeWriteOverride(stage, message, level);
   try {
-    await writeAuditLog(stage, message, level);
+    await withPipelineId(pipelineId, () => writeAuditLog(stage, message, level));
   } catch {
     // Audit failure must never alter business control flow
   }
@@ -286,7 +379,12 @@ export async function writePromptSnapshot(
     "", // produces second \n → real blank line separator
   ].join("\n");
 
-  const logPath = path.join(auditDirPath, getDateAuditFileName());
+  // Route to per-pipeline directory (extract pipelineId from message)
+  const pipelineId = resolveAuditPipelineId({ pipelineId: message.pipelineId });
+  const logDir = auditLogDirFor(pipelineId);
+  await ensureAuditLogDir(logDir);
+
+  const logPath = path.join(logDir, getDateAuditFileName());
   await fs.appendFile(logPath, snapshotBlock);
 }
 
@@ -296,25 +394,40 @@ export async function writePromptSnapshot(
  * Used in hot paths where audit failure must not alter business control flow.
  * Any error is silently swallowed.
  *
- * @param stage   - Fixed string "prompt_snapshot" identifying the event type
- * @param message - Key-value metadata (must include stage, pipelineId, source)
- * @param prompt  - The rendered plugin prompt content (may be multiline)
+ * @param stage      - Fixed string "prompt_snapshot" identifying the event type
+ * @param message    - Key-value metadata (must include stage, pipelineId, source)
+ * @param prompt     - The rendered plugin prompt content (may be multiline)
+ * @param pipelineId - Optional pipelineId for routing (transparent to caller)
  */
 export async function safeWritePromptSnapshot(
   stage: string,
   message: Record<string, string>,
   prompt: string,
+  pipelineId?: string,
 ): Promise<void> {
   try {
-    await writePromptSnapshot(stage, message, prompt);
+    await withPipelineId(pipelineId, () => writePromptSnapshot(stage, message, prompt));
   } catch {
     // Audit failure must never alter business control flow
   }
 }
 
+// ─── Test hooks ────────────────────────────────────────────────────────────────
+
+/**
+ * Resets all module-level audit routing state to initial values.
+ * FOR TESTING ONLY — allows tests to start with a clean slate.
+ */
+export function __resetAuditRoutingState(): void {
+  auditDirPath = "";
+  auditPipelineId = "";
+  ensuredAuditDirs.clear();
+}
+
 /**
  * Resets the module-level auditDirPath to empty string.
  * FOR TESTING ONLY — allows tests to verify the uninitialized guard behavior.
+ * @deprecated Use __resetAuditRoutingState() instead
  */
 export function __resetAuditDirPath(): void {
   auditDirPath = "";
