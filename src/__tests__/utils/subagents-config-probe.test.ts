@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   probeSubagentsMentionMode,
   maybeNotifySubagentsMentionMode,
 } from "../../utils/subagents-config-probe";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { makeTestConfig } from "../helpers";
+import { auditLogFileFor } from "../helpers";
 
 let TMP: string;
 
@@ -83,7 +85,7 @@ describe("maybeNotifySubagentsMentionMode (Phase 1 / 179)", () => {
     expect(notifications[0]).toContain("guide.md");
 
     const audit = await fs.readFile(
-      path.join(TMP, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(TMP, ".pi", "audit")),
       "utf-8",
     );
     expect(audit).toContain("subagents_mention_model_detected");

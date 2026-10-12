@@ -27,7 +27,9 @@ import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../u
 import { makeTestConfig, makeTestMeta, createMockEventBus, makeStageConfig } from "../helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { auditLogFileFor } from "../helpers";
 
 // Phase 2 / 177 (D4): spawn paths are latch-driven. Pre-set the latch so
 // existing RPC-path tests exercise the RPC branch; latch-specific tests reset it.
@@ -613,7 +615,7 @@ describe("168 Phase 4: spawnStageSubagent", () => {
     expect(notifications[0]).toContain("Next step");
 
     // Audit log should contain dispatch_conflict_blocked
-    const auditFile = path.join(tmpDir, ".pi", "audit", getDateAuditFileName());
+    const auditFile = auditLogFileFor(join(tmpDir, ".pi", "audit"));
     const auditContent = fs.readFileSync(auditFile, "utf-8");
     expect(auditContent).toContain("dispatch_conflict_blocked");
     expect(auditContent).toContain("conflictType");
@@ -698,7 +700,7 @@ describe("168 Phase 4: spawnStageSubagent", () => {
     expect(notifications[0]).toContain("Next step");
 
     // Audit log should contain dispatch_conflict_blocked
-    const auditFile = path.join(tmpDir, ".pi", "audit", getDateAuditFileName());
+    const auditFile = auditLogFileFor(join(tmpDir, ".pi", "audit"));
     const auditContent = fs.readFileSync(auditFile, "utf-8");
     expect(auditContent).toContain("dispatch_conflict_blocked");
     expect(auditContent).toContain("empty_write_scope");
@@ -774,7 +776,7 @@ describe("168 Phase 4: spawnStageSubagent", () => {
     expect(notifications.length).toBe(0);
 
     // Audit log should NOT contain dispatch_conflict_blocked
-    const auditFile = path.join(tmpDir, ".pi", "audit", getDateAuditFileName());
+    const auditFile = auditLogFileFor(join(tmpDir, ".pi", "audit"));
     const auditContent = fs.readFileSync(auditFile, "utf-8");
     expect(auditContent).not.toContain("dispatch_conflict_blocked");
 
@@ -1354,7 +1356,7 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     // No spawn attempt
     expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
     // Audit log must contain the discard event
-    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(tmpDir, config.auditDir!));
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
     expect(auditContent).toContain("stale_stage_mismatch");
@@ -1396,7 +1398,7 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     expect(consumed).toEqual([]);
     expect(meta.pendingSpawns?.develop).toBeUndefined();
     expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
-    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(tmpDir, config.auditDir!));
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
     expect(auditContent).toContain("stale_stage_mismatch");
@@ -1483,7 +1485,7 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     expect(meta.pendingSpawns?.develop).toBeUndefined();
     expect(meta.pendingSpawns?.review).toBeUndefined();
     // Audit must record the stale "review" discard
-    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(tmpDir, config.auditDir!));
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
     expect(auditContent).toContain("stale_stage_mismatch");
@@ -1522,7 +1524,7 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     expect(consumed).toEqual([]);
     expect(meta.pendingSpawns?.develop).toBeUndefined();
     expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
-    const auditPath = path.join(tmpDir, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(tmpDir, config.auditDir!));
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
     expect(auditContent).toContain("stale_stage_mismatch");
@@ -1601,7 +1603,7 @@ describe("Phase 2 / 177 (D4): spawn audit sessionFile", () => {
     });
 
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("stage_spawn_fallback");
@@ -1769,7 +1771,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
 
     expect(notifications.some((n) => n.includes("timed out"))).toBe(true);
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("pending_spawn_wait_timeout");
@@ -1959,7 +1961,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     // Count audit entries: stage_spawn_deferred should appear exactly once
     // (the second call is deduped and returns before writing audit).
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     const deferCount = logContent.split("stage_spawn_deferred").length - 1;
@@ -2022,7 +2024,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
 
     // Audit log: stage_spawn_deferred with evidenceStage=develop (NOT review/other).
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("stage_spawn_deferred");
@@ -2065,7 +2067,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
 
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("stage_spawn_deferred");
@@ -2235,7 +2237,7 @@ describe("G2 (188): confirmGateDeferredAt guard", () => {
     expect(result.spawned).toBe(false);
     expect(result.fallback).toBe(false);
 
-    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = fs.readFileSync(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("confirm_gate_deferred");
   });
 
@@ -2254,7 +2256,7 @@ describe("G2 (188): confirmGateDeferredAt guard", () => {
     const result = await spawnStageSubagent({}, config, "plan", meta, { session: session as any });
 
     // Result depends on other guards (agent resolution, etc.), but NOT confirm_gate_deferred
-    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = fs.readFileSync(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).not.toContain("confirm_gate_deferred");
   });
 
@@ -2268,7 +2270,7 @@ describe("G2 (188): confirmGateDeferredAt guard", () => {
 
     const result = await spawnStageSubagent({}, config, "plan", meta, { session: session as any });
 
-    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = fs.readFileSync(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).not.toContain("confirm_gate_deferred");
   });
 
@@ -2282,7 +2284,7 @@ describe("G2 (188): confirmGateDeferredAt guard", () => {
     // No session → guard is skipped entirely
     const result = await spawnStageSubagent({}, config, "plan", meta);
 
-    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = fs.readFileSync(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).not.toContain("confirm_gate_deferred");
   });
 });

@@ -17,11 +17,12 @@ import { askProtectDecision, askCommandDecision } from "../../utils/protect-ask"
 import { freezeAndPrompt, clearAllDecisionTimers } from "../../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../../types";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { DEFAULT_MAX_DISMISS_COUNT, PROTECT_ASK_DISMISS_MS } from "../../constants";
 import { readFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { auditLogFileFor } from "../helpers";
 
 let TMP: string;
 let config: PipelineConfig;
@@ -242,7 +243,7 @@ describe("Phase 4 (173) C11: audit enrichment", () => {
 
     await askProtectDecision(ctx, meta, "test/file.md", config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("pipeline_protect_ask");
     expect(logContent).toContain("elapsedMs=");
@@ -257,7 +258,7 @@ describe("Phase 4 (173) C11: audit enrichment", () => {
 
     await askCommandDecision(ctx, meta, "rm -rf /", config);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("pipeline_command_ask");
     expect(logContent).toContain("elapsedMs=");

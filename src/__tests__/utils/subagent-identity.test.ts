@@ -8,8 +8,10 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { SessionMeta } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 describe("G4 (188): validateSubagentCreated", () => {
   let TMP: string;
@@ -81,7 +83,7 @@ describe("G4 (188): validateSubagentCreated", () => {
     expect(notifications[0]).toContain("develop-agent");
 
     // Audit should record the mismatch
-    const logContent = fs.readFileSync(path.join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = fs.readFileSync(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("subagent_identity_mismatch_blocked");
   });
 
