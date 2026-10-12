@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPipelineQuitCommand } from "../../commands/pipeline-quit";
 import { makeTestConfig, makeTestMeta, auditLogFileFor } from "../helpers";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 
 function createCtx(meta: any) {
   const updates: any[] = [];

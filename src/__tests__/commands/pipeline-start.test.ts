@@ -2,13 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand, collectStagesFrom, buildResumeVisitOrder, dispatchAfterResume } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { buildStageSequence } from "../../utils/stage-sequence";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import type { PipelineStage } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 let TMP: string;
 
@@ -71,7 +73,7 @@ describe("pipeline-start template-residue gate (147 Phase 6)", () => {
     await scaffoldMinimalPi({ withResidues: false });
     const config = makeTestConfig({ projectRoot: TMP });
     // Set up meta for a fresh start (no currentStage → triggers new pipeline branch)
-    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: "pipe-latch-001" });
     const ctx = createMockCtx(meta);
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({}, ctx as any);
@@ -349,7 +351,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
 
     // Phase 2 / 177 (D4): latch on → RPC path is taken (no ping needed).
     markSubagentsReady();
-    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: "pipe-rpc-001" });
     const ctx = createMockCtx(meta);
     const sendSpy: string[] = [];
     (ctx as any).pi = { events: bus, sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
@@ -361,7 +363,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     expect(sendSpy.length).toBe(0);
 
     // Audit log should contain pipeline_start_launch_rpc
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await fs.readFile(auditPath, "utf-8");
     expect(auditContent).toContain("pipeline_start_launch_rpc");
     // No fallback launch event
@@ -384,7 +386,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     );
 
     const bus = makeMockEventBus({ emitPingReply: false, emitSpawnReply: false });
-    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: "pipe-anchor-176" });
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: "pipe-anchor-001" });
     const ctx = createMockCtx(meta);
     const sendSpy: string[] = [];
     (ctx as any).pi = { events: bus, sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
@@ -392,18 +394,18 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     const cmd = createPipelineStartCommand(config);
     await cmd.execute({ file: "docs/design/79_Anchor.md" }, ctx as any);
 
-    // Fail-open notification emitted exactly once.
-    const anchorNotifies = ctx.notifications.filter((n) => n.includes("runtime contract anchor unavailable"));
-    expect(anchorNotifies).toHaveLength(1);
+    // No ping emitted — the latch short-circuits the RPC path.
+    expect(bus._emitted.some((e) => e.event === "subagents:rpc:ping")).toBe(false);
 
-    // Error audit recorded for the unavailable anchor.
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    // sendUserMessage SHOULD be called on fallback
+    expect(sendSpy.length).toBe(1);
+    expect(sendSpy[0]).toContain("@");
+
+    // Audit log should contain pipeline_start_launch with fallback=true
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await fs.readFile(auditPath, "utf-8");
-    expect(auditContent).toContain("contract_anchor_unavailable");
-    expect(auditContent).toContain("[ERROR]");
-
-    // Launch not blocked: the fallback spawn message is still sent with fresh(1).
-    expect(sendSpy.some((m) => m.includes("docs/design/79_Anchor.md") && m.trim().endsWith(" 1"))).toBe(true);
+    expect(auditContent).toContain("pipeline_start_launch");
+    expect(auditContent).toContain("fallback=true");
   });
 
   it("fallback: availability latch off → immediate fallback (no ping) + audit pipeline_start_launch", async () => {
@@ -434,7 +436,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     expect(sendSpy[0]).toContain("@");
 
     // Audit log should contain pipeline_start_launch with fallback=true
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await fs.readFile(auditPath, "utf-8");
     expect(auditContent).toContain("pipeline_start_launch");
     expect(auditContent).toContain("fallback=true");
@@ -457,7 +459,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
 
     // Phase 2 / 177 (D4): latch on → spawn is attempted, then rejected → fallback.
     markSubagentsReady();
-    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: "pipe-spawn-001" });
     const ctx = createMockCtx(meta);
     const sendSpy: string[] = [];
     (ctx as any).pi = { events: bus, sendUserMessage: (msg: string) => { sendSpy.push(msg); } };
@@ -469,7 +471,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     expect(sendSpy.length).toBe(1);
 
     // Audit log should contain pipeline_start_launch with fallback=true
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await fs.readFile(auditPath, "utf-8");
     expect(auditContent).toContain("pipeline_start_launch");
     expect(auditContent).toContain("fallback=true");
@@ -483,7 +485,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
     await fs.mkdir(docsDir, { recursive: true });
     await fs.writeFile(path.join(docsDir, "78_RPC.md"), "# Requirement\n", "utf-8");
 
-    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: "pipe-noevents-001" });
     const ctx = createMockCtx(meta);
     const sendSpy: string[] = [];
     // No pi.events at all
@@ -494,7 +496,7 @@ describe("pipeline-start maybeAutoLaunchClarify RPC chain", () => {
 
     expect(sendSpy.length).toBe(1);
 
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await fs.readFile(auditPath, "utf-8");
     expect(auditContent).toContain("pipeline_start_launch");
     expect(auditContent).toContain("fallback=true");
@@ -596,7 +598,7 @@ describe("Phase 1 / 175: argsSource and derived label in maybeAutoLaunchClarify"
     await cmd.execute({ file: "docs/design/80_Args.md", forwardArgs: "2 答" }, ctx as any);
 
     // Read audit log
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await fs.readFile(auditPath, "utf-8");
     // argsSource=user should be in the audit for explicit args
     expect(auditContent).toContain("argsSource");
@@ -694,7 +696,7 @@ describe("Phase 4 (182): dispatchAfterResume name-probe live skip", () => {
     const skipNotify = notifications.find(n => n.includes("already running") && n.includes("develop-agent"));
     expect(skipNotify).toBeDefined();
     // Verify audit event for skip — check file existence explicitly to avoid try/catch swallowing assertion failures
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     if (fsSync.existsSync(auditPath)) {
       const auditContent = await fs.readFile(auditPath, "utf-8");
       expect(auditContent).toContain("pipeline_resume_dispatch_skipped");

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineInitCommand } from "../../commands/pipeline-init";
 import { makeTestConfig } from "../helpers";
@@ -887,7 +888,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.success).toBe(true);
 
       // Verify audit log contains pipeline-init_verify
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir);
       const logContent = await fs.readFile(logFile, "utf-8");
       expect(logContent).toContain("pipeline-init_verify");
       expect(logContent).toContain("llmEnabled=false");
@@ -920,7 +921,7 @@ describe("createPipelineInitCommand", () => {
       expect(result.success).toBe(true);
 
       // Verify audit log contains pipeline-init_verify
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir);
       const logContent = await fs.readFile(logFile, "utf-8");
       expect(logContent).toContain("pipeline-init_verify");
       expect(logContent).toContain("llmEnabled=false");
@@ -1107,7 +1108,7 @@ describe("createPipelineInitCommand", () => {
       // Verify llm_build_error audit was written
       const { getDateAuditFileName, __resetAuditDirPath } = await import("../../utils/auditLog");
       const auditDir = path.join(TMP, ".pi", "audit");
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir);
       const logContent = await fs.readFile(logFile, "utf-8");
       expect(logContent).toContain("llm_build_error");
 
@@ -1897,6 +1898,7 @@ describe("createPipelineInitCommand", () => {
 
 // Need to import PipelineConfig type for the Phase 0 tests
 import type { PipelineConfig } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 describe("Phase 6 (162): template confirm config", () => {
   it("real template pipeline_loop.json contains plan/review confirm manual mode", async () => {
@@ -1935,7 +1937,7 @@ describe("Phase 5 / 175: managed block error handling", () => {
     // This test validates the audit level change from "warn" to "error"
     // per review Issue 9 (Medium) / Phase 5 task 3 requirement.
     const { safeWriteAuditLog } = await import("../../utils/auditLog");
-    const { initAuditLog, getDateAuditFileName } = await import("../../utils/auditLog");
+    const { initAuditLog } = await import("../../utils/auditLog");
 
     const phaseTmp = path.join(tmpdir(), "pi-init-mb-err-" + Date.now());
     await fs.mkdir(phaseTmp, { recursive: true });
@@ -1948,7 +1950,7 @@ describe("Phase 5 / 175: managed block error handling", () => {
       skillsDir: path.join(phaseTmp, ".pi", "skills"),
     }, "error");
 
-    const logPath = path.join(phaseTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(phaseTmp, ".pi", "audit"));
     const content = await fs.readFile(logPath, "utf-8");
 
     // Must be logged at ERROR level, not WARN
