@@ -16,7 +16,7 @@ import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { getFileHash } from "../utils/hash";
-import { writeAuditLog, encodeAuditValue } from "../utils/auditLog";
+import { writeAuditLog, encodeAuditValue, setAuditPipelineContext } from "../utils/auditLog";
 import { resolveAuditDir } from "../utils/work-dir";
 import { createPipelineUI } from "./pipeline-ui";
 import { isDormant } from "./dormancy";
@@ -260,6 +260,8 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
     event: "tool_result",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 1 (197): refresh audit routing context on every hook entry
+      setAuditPipelineContext(rawMeta?.pipelineId);
       // Phase 2b (173) C3: dormant guard — zero counting
       if (!rawMeta || isDormant(rawMeta)) return;
       const meta: SessionMeta = rawMeta;

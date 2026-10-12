@@ -152,12 +152,42 @@ export async function withPipelineId<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const previous = auditPipelineId;
-  auditPipelineId = pipelineId ?? "";
+  // Only override context when pipelineId is explicitly provided
+  if (pipelineId !== undefined) {
+    auditPipelineId = pipelineId;
+  }
   try {
     return await fn();
   } finally {
     auditPipelineId = previous;
   }
+}
+
+/**
+ * Permanently sets the audit routing pipelineId context.
+ *
+ * Used by lifecycle entry points (birth, recovery, JOIN) to bind the module-level
+ * auditPipelineId so that subsequent writeAuditLog calls route to the correct
+ * pipeline directory without needing an explicit override.
+ *
+ * @param pipelineId - The pipelineId to bind (null/undefined clears to "")
+ */
+export function setAuditPipelineContext(pipelineId: string | null | undefined): void {
+  auditPipelineId = (pipelineId ?? "").trim();
+}
+
+/**
+ * Binds the audit routing context and pre-creates the pipeline's audit log directory.
+ *
+ * Combines setAuditPipelineContext + auditLogDirFor + ensureAuditLogDir into a single
+ * call for the three birth points (pipeline-start ×2, flow-state restart).
+ *
+ * @param pipelineId - The new pipelineId to bind and pre-create
+ */
+export async function prepareAuditPipelineLog(pipelineId: string): Promise<void> {
+  setAuditPipelineContext(pipelineId);
+  const dir = auditLogDirFor(pipelineId);
+  await ensureAuditLogDir(dir);
 }
 
 // ─── Core audit writers ────────────────────────────────────────────────────────

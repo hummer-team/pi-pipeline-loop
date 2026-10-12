@@ -27,7 +27,7 @@ import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
 import { loadGitignoreInfo } from "../utils/gitignore";
-import { safeWriteAuditLog, safeWritePromptSnapshot } from "../utils/auditLog";
+import { safeWriteAuditLog, safeWritePromptSnapshot, setAuditPipelineContext } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { computeStringHash } from "../utils/hash";
 import { isFrozen, getFlowState, formatFrozenReason, formatDecisionMenuHint } from "./flow-state";
@@ -787,6 +787,8 @@ export function createPromptInjector(config: PipelineConfig): Hook<"before_agent
     event: "before_agent_start",
     handler: async (ctx: RuntimeCtx): Promise<BeforeAgentStartEventResult | void> => {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 1 (197): refresh audit routing context on every hook entry
+      setAuditPipelineContext(rawMeta?.pipelineId);
       // Phase 2b (173) C3: dormant guard — zero injection, zero snapshot
       // Covers: no meta, aborted, completed (terminal=silent equivalent)
       if (!rawMeta || isDormant(rawMeta)) return undefined;

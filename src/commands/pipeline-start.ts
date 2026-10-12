@@ -17,7 +17,7 @@ import {
   RESUMABLE_STAGES,
   DEFAULT_MAX_LOOP_CYCLES,
 } from "../constants";
-import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { getFlowState, formatFrozenReason, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
@@ -952,6 +952,7 @@ async function startNewPipeline(
 
   // Step 3: Build meta and initialize
   const { pipelineId, newMeta } = buildStartMeta(existingMeta, config, file, startStage);
+  await prepareAuditPipelineLog(pipelineId);
   ctx?.session?.updateMeta?.(newMeta);
   syncStageStatusBar(ui, ctx);
 

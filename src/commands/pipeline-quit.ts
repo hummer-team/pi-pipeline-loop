@@ -7,7 +7,7 @@
 import type { PipelineConfig, Command, SessionMeta } from "../types";
 import { getFlowState, invalidateDesignReviewAuthorization } from "../core/flow-state";
 import { createPipelineUI } from "../core/pipeline-ui";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 // 194 Phase 3 (task 7, review issue 3): quit invalidates a stale executor binding
 import { invalidateExecutorRunOnBoundary } from "../core/stage-executor/recovery";
 
@@ -56,12 +56,19 @@ export function createPipelineQuitCommand(config: PipelineConfig): Command {
         sessionAllowedWritePaths: [],
       });
 
-      // Audit the quit event
+      // Phase 1 (197): set audit routing context before writing audit
+      setAuditPipelineContext(pipelineId);
+
+      // Audit the quit event (must happen before clearing audit context)
+      // Pass pipelineId as 4th parameter to ensure correct routing
       await safeWriteAuditLog("pipeline_quit", {
         pipelineId,
         stage,
         from: fromState,
-      });
+      }, undefined, pipelineId);
+
+      // Phase 1 (197): clear audit routing context after terminal state
+      setAuditPipelineContext(null);
 
       // Clear TUI stage status bar
       const ui = createPipelineUI(config);

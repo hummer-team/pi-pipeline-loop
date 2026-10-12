@@ -20,7 +20,7 @@
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { clearAllDecisionTimers, invalidateDesignReviewAuthorization } from "./flow-state";
 import type { RuntimeCtx } from "./runtime-ctx";
-import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
+import { writeAuditLog, safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { createPipelineUI } from "./pipeline-ui";
 import { markPipelineAborted } from "./flow-state";
 import { detectSessionRole } from "./session-role";
@@ -50,6 +50,8 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
     event: "session_shutdown",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 1 (197): refresh audit routing context on every hook entry
+      setAuditPipelineContext(rawMeta?.pipelineId);
       // Phase 6 (172) G5: clear all decision retry timers on shutdown (prevent leaks)
       clearAllDecisionTimers();
 
@@ -185,6 +187,9 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
           },
           config,
         });
+
+        // Phase 1 (197): clear audit routing context after terminal state
+        setAuditPipelineContext(null);
       }
 
       // Clear status bar on session shutdown (owner only — child returned above)

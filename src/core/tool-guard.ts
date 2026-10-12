@@ -57,7 +57,7 @@ import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gi
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
 import { createPipelineUI } from "./pipeline-ui";
 import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText, formatDecisionMenuHint } from "./flow-state";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { getStageDeliverableExemptions } from "./verify-path-resolver";
 import { describeReadOnlyWriteConflict } from "../utils/guard-conflict-report";
@@ -744,6 +744,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
     event: "tool_call",
     handler: async (ctx: RuntimeCtx): Promise<ToolCallEventResult | void> => {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 1 (197): refresh audit routing context on every hook entry
+      setAuditPipelineContext(rawMeta?.pipelineId);
       // Phase 2b (173) C3: dormant guard — full pass-through (🔴-1)
       // Default (DORMANT_KEEP_PROTECTION=false): ALL checks bypassed
       // Switch=true: only silencing side bypassed; protection chain remains

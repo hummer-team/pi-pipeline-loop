@@ -14,7 +14,7 @@
  */
 
 import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { effectiveMax, deriveReworkLoopGate, remainingRoundsOf } from "../utils/stage-visit";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
@@ -469,6 +469,9 @@ export async function executeDecision(
         designReviewRecheck: undefined,
         // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
+
+      // Phase 1 (197): bind audit routing to new pipeline identity (3rd birth point)
+      await prepareAuditPipelineLog(newPipelineId);
 
       await safeWriteAuditLog("pipeline_decision", {
         pipelineId: meta.pipelineId,

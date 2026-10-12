@@ -24,7 +24,7 @@ import { dispatchAfterResume } from "./pipeline-start";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { detectPendingConfirmGate, maybeHandleConfirmGate, recordConfirmGateOutcome } from "../core/stage-advancer";
 import { detectSessionRole } from "../core/session-role";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
 import { staleConfigNotice } from "../utils/config-staleness";
@@ -110,6 +110,8 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
       }
 
       const meta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 1 (197): refresh audit routing context on command entry
+      setAuditPipelineContext(meta?.pipelineId);
       if (!meta || !meta.pipelineId) {
         return { error: "No active pipeline. Run /pipeline-start <doc_file> to begin." };
       }

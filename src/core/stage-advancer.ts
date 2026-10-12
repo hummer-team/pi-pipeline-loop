@@ -27,7 +27,7 @@ import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasC
 import { autoAdvanceAfterVerify } from "./verify-advance";
 import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
-import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 // 194 Phase 3 (C5): caller gate + bound atomic commits
 import { gateStageToolCall, applyDeclarationRelay } from "./stage-executor/tool-consumption";
 import {
@@ -1531,6 +1531,8 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
 
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 1 (197): refresh audit routing context on every tool entry
+      setAuditPipelineContext(rawMeta?.pipelineId);
       // Phase 2b (173) C3: dormant guard — guidance message
       if (!rawMeta || isDormant(rawMeta)) {
         return { message: "No active pipeline. Run /pipeline-start <doc>." };

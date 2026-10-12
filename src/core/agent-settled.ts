@@ -8,7 +8,7 @@
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import { runVerification, precheckCompletionMarker, precheckRequiredFiles, precheckClarifyAwaitAnswer } from "./auto-verifier";
 import type { RunVerificationOptions } from "./auto-verifier";
-import { safeWriteAuditLog, writeAuditLog } from "../utils/auditLog";
+import { safeWriteAuditLog, writeAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
@@ -76,6 +76,8 @@ export function createAgentSettled(
     event: "agent_settled",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // Phase 1 (197): refresh audit routing context on every hook entry
+      setAuditPipelineContext(rawMeta?.pipelineId);
 
       // Phase 2b (173) C3: Terminal compaction exemption runs BEFORE dormant guard.
       // Completed (dormant) T1 settle must still trigger compact — the helper's

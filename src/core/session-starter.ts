@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
-import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
+import { writeAuditLog, safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, promptDecisionMenu, scheduleDecisionRetry } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
@@ -262,6 +262,10 @@ async function handleSubagentJoin(
   // Register this session too (supports nested subagents)
   await registerSession(config, sessionFile, parentPipelineId);
 
+  // Phase 1 (197): bind audit routing to inherited parent pipelineId.
+  // No directory pre-creation needed — the parent already created it.
+  setAuditPipelineContext(parentPipelineId);
+
   // Audit JOIN event (Phase 0/171: enriched with flowState for zombie-resurrection traceability)
   // Phase 5 (173) C15: spawnTrigger field — how was this subagent spawned?
   // - "pipeline_auto": plugin auto-spawned via stage executor (activeSpawns/spawnedStages match)
@@ -489,6 +493,10 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         // Wake-up entry: /pipeline-start (fresh/resume/adopt) only.
       } else {
         // ── Resumed session: stale startup recovery + frozen replay ────
+        // Phase 1 (197): bind audit routing to existing pipelineId on recovery entry.
+        // Ensures writeAuditLog calls route to the correct pipeline directory.
+        setAuditPipelineContext(meta.pipelineId);
+        
         const reason = (ctx.event as Record<string, unknown> | undefined)?.reason;
         const flowState = getFlowState(meta);
         const { isChild } = detectSessionRole(ctx);
