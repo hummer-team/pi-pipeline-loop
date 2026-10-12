@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -29,6 +29,14 @@ function makeConfig(projectRoot: string, auditDir?: string): PipelineConfig {
     stages: {} as PipelineConfig["stages"],
   } as PipelineConfig;
 }
+
+// Global hygiene: module-level audit routing context can leak from other
+// test files in the same process (e.g. pipeline-start command run binds a
+// pipelineId at its birth points). Reset before every case so each test
+// starts from the documented "no context" baseline regardless of file order.
+beforeEach(() => {
+  __resetAuditRoutingState();
+});
 
 describe("initAuditLog", () => {
   it("resolves auditDirPath without eager directory creation", async () => {
