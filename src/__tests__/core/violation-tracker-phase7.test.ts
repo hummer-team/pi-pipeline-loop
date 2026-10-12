@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import type { SessionMeta, ViolationItem } from "../../types";
 import { DEFAULT_MAX_VIOLATIONS, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../../constants";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-violation-tracker-phase7-test-" + Date.now());
 
@@ -116,7 +117,7 @@ describe("Phase 7: recordViolation audit fields", () => {
     const item: ViolationItem = makeViolationWithGuardSource("write_protected", "read_only_path");
     await recordViolation(ctx as any, meta, item);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
 
     expect(logContent).toContain("pipeline_violation");
@@ -139,7 +140,7 @@ describe("Phase 7: recordViolation audit fields", () => {
     };
     await recordViolation(ctx as any, meta, item);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
 
     expect(logContent).toContain("guardSource=legacy");
@@ -154,7 +155,7 @@ describe("Phase 7: recordViolation audit fields", () => {
     const item: ViolationItem = makeViolationWithGuardSource("bash_destructive", "bash_destructive");
     await recordViolation(ctx as any, meta, item);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
 
     expect(logContent).toContain("guardSource=bash_destructive");
@@ -172,7 +173,7 @@ describe("Phase 7: recordViolation audit fields", () => {
     await recordViolation(ctx as any, meta, makeViolationWithGuardSource("write_protected", "read_only_path"));
     await recordViolation(ctx as any, meta, makeViolationWithGuardSource("write_protected", "read_only_path"));
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.trim().split("\n");
 

@@ -10,10 +10,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseFrontmatter } from "../../core/verify-frontmatter";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { makeTestConfig } from "../helpers";
+import { auditLogFileFor } from "../helpers";
 
 let TMP: string;
 
@@ -38,7 +40,7 @@ function u(s: string): string {
 
 /** Reads today's audit log content, or "" when no log file exists. */
 async function readAuditLog(): Promise<string> {
-  const logFile = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+  const logFile = auditLogFileFor(join(TMP, ".pi", "audit"));
   try {
     return await fs.readFile(logFile, "utf-8");
   } catch {

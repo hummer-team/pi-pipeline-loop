@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import type { SessionMeta } from "../../types";
 import { DEFAULT_MAX_VIOLATIONS, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../../constants";
+import { auditLogFileFor } from "../helpers";
 
 /** Fresh project root per test so audit files never accumulate across tests. */
 async function freshRoot(tag: string): Promise<string> {
@@ -33,7 +34,7 @@ async function freshRoot(tag: string): Promise<string> {
 }
 
 async function readAuditLines(root: string): Promise<string[]> {
-  const log = await readFile(join(root, ".pi", "audit", getDateAuditFileName()), "utf-8");
+  const log = await readFile(auditLogFileFor(join(root, ".pi", "audit")), "utf-8");
   return log.trim().split("\n");
 }
 

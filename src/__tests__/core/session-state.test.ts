@@ -7,6 +7,7 @@ import { createSessionState, extractAssistantMessages, extractToolCallRecords, P
 import type { SessionMeta } from "../../types";
 import { makeTestMeta, makeTestConfig, makeMockSessionManager } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 let AUDIT_TMP: string;
 
@@ -181,7 +182,7 @@ describe("Phase 1 — catch block audit logging", () => {
     await new Promise(resolve => setTimeout(resolve, 50));
 
     // Verify audit
-    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await fs.readFile(logFile, "utf-8");
     expect(logContent).toContain("session_state_error");
     expect(logContent).toContain("getMeta");
@@ -209,7 +210,7 @@ describe("Phase 1 — catch block audit logging", () => {
     await new Promise(resolve => setTimeout(resolve, 50));
 
     // Verify audit
-    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await fs.readFile(logFile, "utf-8");
     expect(logContent).toContain("session_state_error");
     expect(logContent).toContain("extractAssistantMessages");

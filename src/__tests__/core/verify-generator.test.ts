@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   generateVerifyFiles,
@@ -21,6 +22,7 @@ import { parseFrontmatter } from "../../core/auto-verifier";
 import { makeTestConfig } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { resetPromptConfigCache } from "../../core/prompt-config";
+import { auditLogFileFor } from "../helpers";
 
 let TMP: string;
 
@@ -339,7 +341,7 @@ describe("verify-generator", () => {
       expect(repairedContent).toMatch(/mode: and\n---/);
 
       // Audit log contains verify_md_repair entry
-      const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"));
       const auditContent = await fs.readFile(auditPath, "utf-8");
       expect(auditContent).toContain("verify_md_repair");
     });
@@ -539,7 +541,7 @@ describe("verify-generator", () => {
       expect(results[0].llmStatus).toBe("fail");
 
       // Verify audit log contains error
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir);
       const logContent = await fs.readFile(logFile, "utf-8");
       expect(logContent).toContain("verify_llm_extract_error");
       expect(logContent).toContain("LLM timeout");
@@ -567,7 +569,7 @@ describe("verify-generator", () => {
       expect(results[0].hardcodedCount).toBe(1);
 
       // Verify audit log contains verify_llm_extract_error (warn level)
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir);
       const logContent = await fs.readFile(logFile, "utf-8");
       expect(logContent).toContain("verify_llm_extract_error");
       expect(logContent).toContain("invalid JSON from LLM");
@@ -585,7 +587,7 @@ describe("verify-generator", () => {
       const results = await generateVerifyFiles(config, { stage: "develop" });
       expect(results[0].status).toBe("generated");
 
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir);
       const logContent = await fs.readFile(logFile, "utf-8");
       expect(logContent).toContain("verify_md_generate");
       expect(logContent).toContain("stage=develop");
@@ -857,7 +859,7 @@ describe("verify-generator", () => {
       const errored = results.filter(r => r.status === "error");
       expect(errored).toHaveLength(1);
 
-      const logFile = path.join(auditDir, getDateAuditFileName());
+      const logFile = auditLogFileFor(auditDir);
       const logContent = await fs.readFile(logFile, "utf-8");
       expect(logContent).toContain("verify_md_generate_error");
       expect(logContent).toContain("[ERROR]");

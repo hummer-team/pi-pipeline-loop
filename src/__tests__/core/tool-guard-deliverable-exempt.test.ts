@@ -5,7 +5,8 @@ import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 /**
  * 195 Phase 1: Deliverable exemption tests.
@@ -178,7 +179,7 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
     await hook.handler(ctx as any);
 
     // Read audit log and verify structured event fields
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     const events = logContent.split('\n').filter(line => line.trim());
     const exemptEvent = events.find(e => e.includes('readonly_exempt_applied'));
     expect(exemptEvent).toBeDefined();
@@ -214,7 +215,7 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
     expect(result).toBeUndefined();
 
     // Verify audit event for bash exemption with structured fields
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     const events = logContent.split('\n').filter(line => line.trim());
     const bashExemptEvent = events.find(e => e.includes('readonly_exempt_applied'));
     expect(bashExemptEvent).toBeDefined();

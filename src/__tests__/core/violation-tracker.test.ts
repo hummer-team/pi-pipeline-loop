@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import type { SessionMeta, ViolationItem } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-violation-tracker-test-" + Date.now());
 
@@ -96,7 +97,7 @@ describe("recordViolation", () => {
     };
     await recordViolation(ctx as any, meta, item);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("pipeline_violation");
     expect(logContent).toContain("bash_destructive");

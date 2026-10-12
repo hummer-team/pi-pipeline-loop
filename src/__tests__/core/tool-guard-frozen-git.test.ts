@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { auditLogFileFor } from "../helpers";
 
 describe("createToolGuard", () => {
   beforeEach(() => {
@@ -35,7 +36,7 @@ describe("createToolGuard", () => {
       // Second call (same tool+flowState) within window → suppressed
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       const occurrences = logContent.split("tool_rejected_frozen").length - 1;
       expect(occurrences).toBe(1); // Only one audit within window
 
@@ -65,7 +66,7 @@ describe("createToolGuard", () => {
       ctx2.toolCall = { name: "bash", arguments: { command: "ls" } };
       await hook.handler(ctx2 as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       const occurrences = logContent.split("tool_rejected_frozen").length - 1;
       expect(occurrences).toBe(2); // Two audits for different tools
 
@@ -93,7 +94,7 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("tool_rejected_frozen");
       expect(logContent).toContain("sessionFile=zombie-subagent-session");
 
@@ -117,7 +118,7 @@ describe("createToolGuard", () => {
       const hook = createToolGuard(config);
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("tool_rejected_frozen");
       expect(logContent).not.toContain("sessionFile=");
 
@@ -178,7 +179,7 @@ describe("createToolGuard", () => {
 
       // No probe audit (dormant returns before reaching frozen probe exemption)
       let logContent = "";
-      try { logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8"); } catch { /* */ }
+      try { logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8"); } catch { /* */ }
       expect(logContent).not.toContain("tool_allowed_frozen_probe");
 
       await rm(TMP, { recursive: true, force: true });
@@ -295,7 +296,7 @@ describe("createToolGuard", () => {
       await hook.handler(ctx as any);
       await hook.handler(ctx as any);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       const occurrences = logContent.split("tool_allowed_frozen_probe").length - 1;
       expect(occurrences).toBe(1); // Throttled to 1
 

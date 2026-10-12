@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { auditLogFileFor } from "../helpers";
 
 /** Create an agent file with frontmatter name for resolveAgentMention */
 async function writeAgentFile(projectRoot: string, agentPath: string, name: string): Promise<void> {
@@ -82,7 +83,7 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
     expect((result as any).reason).toContain("reserved");
 
     // Check spawn_suppressed audit with basis=reserved
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("spawn_suppressed");
     expect(logContent).toContain("reserved");
   });
@@ -295,7 +296,7 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
 
     expect(result).toBeDefined();
     expect((result as any).block).toBe(true);
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("spawn_suppressed");
     expect(logContent).toContain("basis=probe_live");
     expect(logContent).toContain("evidenceStage=clarify");
@@ -370,7 +371,7 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
     expect((result as any).reason).toContain("already running");
     expect((result as any).reason).toContain("manual_live_probe");
 
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("spawn_suppressed");
     expect(logContent).toContain("manual_live_probe");
   });
@@ -442,7 +443,7 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     expect(result).toBeDefined();
     expect((result as any).block).toBe(true);
     expect((result as any).reason).toContain("Advance through the confirm gate");
-    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(audit).toContain("out_of_stage_spawn_blocked");
     expect(audit).toContain("targetStage=fix");
   });
@@ -477,7 +478,7 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
 
     // Adjacent stages are allowed — no block
     expect(result).toBeUndefined();
-    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(audit).toContain("out_of_stage_spawn_allowed_review_fix");
   });
 
@@ -498,7 +499,7 @@ describe("Phase 4 / 179 (G6): out-of-stage spawn block", () => {
     expect(result).toBeDefined();
     expect((result as any).block).toBe(true);
     expect((result as any).reason).toContain("Advance through the confirm gate");
-    const audit = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(audit).toContain("out_of_stage_spawn_blocked");
     expect(audit).toContain("targetStage=develop");
   });

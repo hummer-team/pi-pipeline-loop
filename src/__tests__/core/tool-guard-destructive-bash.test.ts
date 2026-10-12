@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import type { ExecFn, PipelineStage } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 describe("createToolGuard", () => {
   beforeEach(() => {
@@ -342,7 +343,7 @@ describe("createToolGuard", () => {
       await hook.handler(ctx as any);
 
       // Read the audit log and verify encoding
-      const auditFile = join(TMP2, ".pi/audit", getDateAuditFileName());
+      const auditFile = auditLogFileFor(join(TMP2, ".pi/audit"));
       const auditContent = await readFile(auditFile, "utf-8");
       const violationLines = auditContent.split("\n").filter(l => l.includes("pipeline_violation"));
       expect(violationLines.length).toBeGreaterThan(0);
@@ -571,7 +572,7 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("clarify");
 
       // Audit should contain tool_blocked_by_policy
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("tool_blocked_by_policy");
       expect(logContent).toContain("ask_user_question");
 

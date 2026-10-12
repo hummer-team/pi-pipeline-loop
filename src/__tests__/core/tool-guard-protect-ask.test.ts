@@ -5,8 +5,9 @@ import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { ExecFn } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 describe("createToolGuard", () => {
   beforeEach(() => {
@@ -44,7 +45,7 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("gitignore protected");
 
       // Verify audit — Phase 4 (173) C11: follow_default → denied (tri-state)
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("pipeline_protect_ask");
       expect(logContent).toContain("action=denied");
       expect(logContent).toContain("file=docs/file.md");
@@ -73,7 +74,7 @@ describe("createToolGuard", () => {
       // Should NOT be blocked
       expect(result).toBeUndefined();
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=allow_once");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -101,7 +102,7 @@ describe("createToolGuard", () => {
       // sessionAllowedWritePaths should contain the path
       expect(meta.sessionAllowedWritePaths).toContain("docs/file.md");
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=allow_session");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -193,7 +194,7 @@ describe("createToolGuard", () => {
       expect((result as any).block).toBe(true);
       expect(selectCalls).toBe(2);
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=allow_once");
       // Phase 4 (173) C11: follow_default → denied (tri-state)
       expect(logContent).toContain("action=denied");
@@ -228,7 +229,7 @@ describe("createToolGuard", () => {
       // No audit for stage whitelist rejection
       let hasAudit = false;
       try {
-        const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+        const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
         hasAudit = logContent.includes("pipeline_protect_ask");
       } catch { /* no audit file = no audit */ }
       expect(hasAudit).toBe(false);
@@ -285,7 +286,7 @@ describe("createToolGuard", () => {
       expect((result as any).block).toBe(true);
 
       // Phase 4 (173) C11: fast undefined → dismissed (not canceled)
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=dismissed");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -327,7 +328,7 @@ describe("createToolGuard", () => {
         expect(captured.some(msg => msg.includes("askProtectDecision") && msg.includes("docs/file.md"))).toBe(true);
 
         // Phase 4 (173) C11: fast error → dismissed (not canceled)
-        const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+        const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
         expect(logContent).toContain("action=dismissed");
       } finally {
         console.error = origError;
@@ -432,7 +433,7 @@ describe("createToolGuard", () => {
 
       expect(result).toBeUndefined();
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("pipeline_protect_ask");
       expect(logContent).toContain("action=allow_once");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
@@ -464,7 +465,7 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("not in allowed write paths");
 
       // Phase 4 (173) C11: fast undefined → dismissed (not canceled)
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=dismissed");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -559,7 +560,7 @@ describe("createToolGuard", () => {
       // whitelist block + gitignore protected + ask=true + allow_once → pass
       expect(result).toBeUndefined();
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=allow_once");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -619,7 +620,7 @@ describe("createToolGuard", () => {
       // Full mode: hardcoded path hits global chain ask (not whitelist ask)
       expect(result).toBeUndefined();
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=allow_once");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -658,7 +659,7 @@ describe("createToolGuard", () => {
 
       expect(result).toBeUndefined();
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=allow_once");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });
@@ -751,7 +752,7 @@ describe("createToolGuard", () => {
       // Global chain ask still triggers for gitignore protected path
       expect(result).toBeUndefined();
 
-      const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+      const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
       expect(logContent).toContain("action=allow_once");
       // Note: TMP intentionally not deleted — initAuditLog sets module-level auditDirPath
     });

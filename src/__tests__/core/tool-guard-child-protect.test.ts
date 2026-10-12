@@ -6,7 +6,8 @@ import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 /**
  * Phase 1 (190): child session dismiss protection + dismissCount reset
@@ -67,7 +68,7 @@ describe("Phase 1 (190): child session dismiss protection", () => {
 
       // Audit log should NOT contain pipeline_protect_ask (no ask dialog)
       const logContent = await readFile(
-        join(TMP, ".pi", "audit", getDateAuditFileName()),
+        auditLogFileFor(join(TMP, ".pi", "audit")),
         "utf-8"
       );
       expect(logContent).not.toContain("pipeline_protect_ask");
@@ -108,7 +109,7 @@ describe("Phase 1 (190): child session dismiss protection", () => {
 
       // Audit log should contain pipeline_protect_ask
       const logContent = await readFile(
-        join(TMP, ".pi", "audit", getDateAuditFileName()),
+        auditLogFileFor(join(TMP, ".pi", "audit")),
         "utf-8"
       );
       expect(logContent).toContain("pipeline_protect_ask");

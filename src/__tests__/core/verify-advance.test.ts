@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import type { SessionMeta, PipelineStage } from "../../types";
 import { createPipelineUI, STAGE_STATUS_KEY } from "../../core/pipeline-ui";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-verify-advance-test-" + Date.now());
 
@@ -87,7 +88,7 @@ describe("applyVerifyPass", () => {
     expect(ctx.statusCalls).toContainEqual({ key: STAGE_STATUS_KEY, text: `[ pipe-test-001 • review ${grayOpen}-> fix${grayClose} ]` });
 
     // Should have audit log
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("auto_verify_pass");
     expect(logContent).toContain("method=tool");
@@ -118,7 +119,7 @@ describe("applyVerifyPass", () => {
       { method: "rule", handleTerminal: false, returnResult: false, ui: ctx.pipelineUI },
     );
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("method=rule");
   });
@@ -147,7 +148,7 @@ describe("applyVerifyPass", () => {
     expect(ctx.updates.length).toBe(0);
 
     // Should have audit log for terminal stage
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("terminal stage, no advance");
 
@@ -245,7 +246,7 @@ describe("applyVerifyPass", () => {
       { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_pass") && l.includes("pipe-p9-pass-triplet"));
@@ -276,7 +277,7 @@ describe("applyVerifyPass", () => {
       { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_pass") && l.includes("pipe-p9-pass-defaults"));
@@ -316,7 +317,7 @@ describe("applyVerifyPass", () => {
       { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_pass_blocked_by_budget") && l.includes("pipe-p9-budget-triplet"));
@@ -364,7 +365,7 @@ describe("applyVerifyFail", () => {
     // NOTE: assistantMessages removed from metadata (Q4-A) — Phase 3 will use extractAssistantMessages
 
     // Should have audit log
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("auto_verify_fail");
     expect(logContent).toContain("method=tool");
@@ -394,7 +395,7 @@ describe("applyVerifyFail", () => {
 
     await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("method=rule");
   });
@@ -451,7 +452,7 @@ describe("applyVerifyFail", () => {
       ctx.pipelineUI,
     );
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_fail") && l.includes("pipe-p9-fail-triplet"));
@@ -655,7 +656,7 @@ describe("output.pipelineStage: false (silent)", () => {
 
     await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
 
     // Should contain auto_verify_fail event
@@ -706,7 +707,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     // Return message should mention config error
     expect(result.message).toContain("Verification config error");
     // Audit should contain verify_config_error
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("verify_config_error");
   });
@@ -1165,7 +1166,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     // Exactly one followUp (the chain summary) — no verify_fail_wake double-send.
     expect(wakeCalls.length).toBe(1);
     expect(wakeCalls[0]).toContain("terminal");
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("chain_terminal_wake");
   });
 
@@ -1189,7 +1190,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     expect(wakeCalls.length).toBe(1);
     expect(wakeCalls[0]).toContain("terminal");
     expect(meta.pendingSpawns).toEqual({});
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("chain_terminal_wake");
   });
 
@@ -1207,7 +1208,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
       config, ctx as any, meta, "review", "completed", PASS_RESULT, ctx.pipelineUI,
     );
 
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("chain_terminal_wake_skipped");
   });
 
@@ -1243,7 +1244,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     expect(summary).toContain("re-ask count: 2");
 
     // Audit must include pendingActions payload
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("chain_terminal_wake");
     expect(logContent).toContain("pendingActions");
   });
@@ -1306,7 +1307,7 @@ describe("G6 (188): autoAdvanceAfterVerify spawn-before-audit ordering", () => {
     // spawnStageSubagent writes "stage_spawn_fallback" INSIDE its execution,
     // then writeStageAudit writes "stage_advance" AFTER spawn returns.
     // By checking file positions, we prove spawn ran before audit.
-    const auditPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(auditPath, "utf-8");
 
     const spawnEntryPos = logContent.indexOf("stage_spawn_fallback");
@@ -1384,7 +1385,7 @@ describe("G6 (188): autoAdvanceAfterVerify spawn-before-audit ordering", () => {
     expect(consumed).toEqual(["review"]);
 
     // Verify NO discard audit was written (stage-consistency guard did not fire)
-    const auditPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(auditPath, "utf-8");
     expect(logContent).not.toContain("stale_stage_mismatch");
 

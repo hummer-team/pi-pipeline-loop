@@ -5,8 +5,9 @@ import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { PipelineStage } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 describe("createToolGuard", () => {
   beforeEach(() => {
@@ -236,7 +237,7 @@ describe("Phase 0 (186): allowedReadOnlyPaths blocks writes", () => {
 
     // Should have audit warning (fire-and-forget — give it a tick)
     await new Promise(resolve => setTimeout(resolve, 50));
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("readonly_write_intersection_warning");
 
     await rm(TMP, { recursive: true, force: true });

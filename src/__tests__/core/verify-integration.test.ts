@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
 import { generateVerifyFiles } from "../../core/verify-generator";
@@ -10,8 +11,9 @@ import { createPromptInjector } from "../../core/prompt-injector";
 import { createLoopBreaker } from "../../core/loop-breaker";
 import { runVerification, parseFrontmatter, resolvePlaceholders, applyConcreteStageDocPaths } from "../../core/auto-verifier";
 import { makeTestConfig, makeTestMeta, createMockCtx, createMockRuntimeCtx } from "../helpers";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { SessionMeta } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 let TMP: string;
 
@@ -968,7 +970,7 @@ describe("168 Phase 4: routeReviewFailAuto triggers fix spawn", () => {
 
     // Wake suppression audit event
     const logContent = await fs.readFile(
-      path.join(TMP, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(TMP, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("confirm_reject_wake_skipped");
