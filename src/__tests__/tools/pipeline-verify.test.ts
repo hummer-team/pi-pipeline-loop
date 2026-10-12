@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog } from "../../utils/auditLog";
 import type { SessionMeta, PipelineStage } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 // Use a stable module-level path (never cleaned up) to avoid shared auditDirPath
 // conflicts with other test files that call initAuditLog in parallel
@@ -426,7 +427,7 @@ describe("Phase 4 (162): pipeline_verify confirm gate bypass prevention", () => 
     // Should have audit event
     const { readFile } = await import("node:fs/promises");
     const { getDateAuditFileName } = await import("../../utils/auditLog");
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_defer_to_stage_advance");
 

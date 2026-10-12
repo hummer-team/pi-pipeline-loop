@@ -4,7 +4,7 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import crypto from "node:crypto";
 
 /** Helper: write a file and return its SHA-256 hash */
@@ -136,7 +136,7 @@ describe("createPipelineHandoff", () => {
     const tool = createPipelineHandoff(config);
     await tool.execute({ nextStage: "plan", note: "All tests pass" }, ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     const line = logContent.trim().split("\n")[0];
 
@@ -173,6 +173,7 @@ describe("createPipelineHandoff", () => {
 
 import { __resetSharedStateDir } from "../../core/session-state";
 import { __resetAuditDirPath } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 describe("pipeline_handoff — hash mismatch (143 Phase 4)", () => {
   it("blocks handoff when summary file has been manually modified", async () => {
@@ -368,7 +369,7 @@ describe("Phase 3 / 177 (D6): handoff confirm gate", () => {
     expect(meta.currentStage).toBe("plan");
 
     // Phase 1 / 181: child suppression is audited with the child session file.
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("confirm_gate_suppressed_child");
     expect(logContent).not.toContain("confirm_approved");
 
@@ -386,7 +387,7 @@ describe("Phase 3 / 177 (D6): handoff confirm gate", () => {
     expect(meta.currentStage).toBe("develop");
 
     // Marker path is a no-gate: no suppression audit.
-    const logContent = await readFile(join(TMP, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
     expect(logContent).not.toContain("confirm_gate_suppressed_child");
 
     await rm(TMP, { recursive: true, force: true });

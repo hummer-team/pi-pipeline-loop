@@ -5,8 +5,9 @@ import { readFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as fsSync from "node:fs";
-import { initAuditLog, __resetAuditDirPath, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog, __resetAuditDirPath, setAuditPipelineContext } from "../../utils/auditLog";
 import { __resetSharedStateDir } from "../../core/session-state";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-pipeline-gen-summary-" + Date.now());
 
@@ -280,6 +281,7 @@ describe("generate_stage_summary — Phase 2 (143)", () => {
     const config = makeTestConfig({ projectRoot: VERSIONED_TMP });
     await initAuditLog(config);
     const meta = makeTestMeta({ currentStage: "plan", pipelineId: "pipe-audit-001" });
+    setAuditPipelineContext(meta.pipelineId);
     const ctx = createCtx(meta);
 
     const tool = createGenerateSummary(config);
@@ -293,7 +295,7 @@ describe("generate_stage_summary — Phase 2 (143)", () => {
     // Wait for async audit log
     await new Promise(r => setTimeout(r, 50));
 
-    const logPath = join(VERSIONED_TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(VERSIONED_TMP, ".pi", "audit"), meta.pipelineId);
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("summary_generated");
     expect(logContent).toContain("stage=plan");

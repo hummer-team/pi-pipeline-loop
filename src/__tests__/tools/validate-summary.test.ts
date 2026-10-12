@@ -4,7 +4,8 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -130,7 +131,7 @@ describe("createValidateSummary", () => {
     const tool = createValidateSummary(config);
     await tool.execute({ stage: "develop", isApproved: true, comment: "ok" }, ctx as any);
 
-    const logPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     const line = logContent.trim().split("\n")[0];
 
