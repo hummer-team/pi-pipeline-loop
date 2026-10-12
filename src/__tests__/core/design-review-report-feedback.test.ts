@@ -19,6 +19,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { PipelineConfig, SessionMeta, VerifyFailureItem } from "../../types";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
@@ -37,6 +38,7 @@ import {
 import { clearAllDecisionTimers } from "../../core/flow-state";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import type { CoordinatorResult } from "../../core/design-review/coordinator";
+import { auditLogFileFor } from "../helpers";
 
 const PIPELINE_ID = "pipe-feedback-193";
 const OP_ID = "op-feedback-review-1";
@@ -437,7 +439,7 @@ describe("193 Phase 0: applyVerifyFail keeps the existing budget policy", () => 
       undefined,
       configWithBudget(3),
     );
-    const logPath = path.join(projectRoot, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(projectRoot, ".pi", "audit"));
     const content = fs.readFileSync(logPath, "utf-8");
     expect(content).toContain("design_review_report_feedback");
     expect(content).toContain("report_contract");

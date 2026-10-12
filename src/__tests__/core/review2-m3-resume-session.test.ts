@@ -14,6 +14,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import * as os from "node:os";
 import { createPipelineStartCommand, buildResumeMeta, dispatchAfterResume } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
@@ -26,6 +27,7 @@ import {
   __resetDeferredSpawnPollMs,
 } from "../../utils/subagent-rpc";
 import { createPipelineUI } from "../../core/pipeline-ui";
+import { auditLogFileFor } from "../helpers";
 
 // Phase 2 / 177 (D4): spawn paths are latch-driven; pre-arm for RPC-path tests.
 beforeEach(() => {
@@ -431,7 +433,7 @@ describe("M3: dispatchAfterResume session passthrough", () => {
       expect(notifications.some((n) => n.includes("Run the develop agent"))).toBe(false);
 
       // 2. Audit pipeline_resume_deferred is written
-      const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+      const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"));
       const auditContent = await fsp.readFile(auditPath, "utf-8");
       expect(auditContent).toContain("pipeline_resume_deferred");
     } finally {

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { resetPromptConfigCache } from "../../core/prompt-config";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 // File-level reset scaffolding: migrated describes previously relied on the parent
 // describe("createPromptInjector") beforeEach/afterEach for cache resets.
@@ -118,7 +119,7 @@ describe("yml template rendering path", () => {
     expect(result.systemPrompt!).toContain("STAGE WRITE SCOPE");
 
     // Audit log should contain the missing placeholder event
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await readFile(logFile, "utf-8");
     expect(logContent).toContain("prompt_injector_missing_placeholder");
     expect(logContent).toContain("{{pipeline_status}}");
@@ -309,7 +310,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const hook = createPromptInjector(config);
     const result = (await hook.handler(ctx as any))!;
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await readFile(logFile, "utf-8");
 
     // Snapshot metadata line
@@ -372,7 +373,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const hook = createPromptInjector(config);
     await hook.handler(ctx as any);
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await readFile(logFile, "utf-8");
 
     // All three events present
@@ -410,7 +411,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const hook = createPromptInjector(config);
     await hook.handler(ctx as any);
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await readFile(logFile, "utf-8");
 
     // Base placeholder should be written
@@ -446,7 +447,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     // Should fall back to default prompt
     expect(result.systemPrompt!).toContain("Pipeline Status");
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await readFile(logFile, "utf-8");
 
     // Missing placeholder warning should still be present
@@ -478,7 +479,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const hook = createPromptInjector(config);
     await hook.handler(ctx as any);
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const { existsSync } = await import("node:fs");
     if (!existsSync(logFile)) {
       throw new Error("Expected audit log file to exist on default path");
@@ -514,7 +515,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const hook = createPromptInjector(config);
     await hook.handler(ctx as any);
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const { existsSync } = await import("node:fs");
     if (!existsSync(logFile)) {
       // No audit file = no snapshot written — pass
@@ -549,7 +550,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const hook = createPromptInjector(config);
     await hook.handler(ctx as any);
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await readFile(logFile, "utf-8");
 
     // Plugin mode should write snapshot
@@ -580,7 +581,7 @@ describe("prompt snapshot audit (E4/E5/E6/E7)", () => {
     const hook = createPromptInjector(config);
     await hook.handler(ctx as any);
 
-    const logFile = join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await readFile(logFile, "utf-8");
 
     // Metadata line should contain prompt_hash

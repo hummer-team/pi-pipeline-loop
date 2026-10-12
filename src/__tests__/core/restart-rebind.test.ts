@@ -30,7 +30,7 @@ import type { FlowStateCtx } from "../../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../../types";
 import { makeTestMeta, makeTestConfig } from "../helpers";
 import { registerSession, lookupParentPipeline } from "../../utils/session-registry";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { mkdir, rm, readFile, writeFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

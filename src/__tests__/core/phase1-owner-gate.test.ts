@@ -28,10 +28,11 @@ import {
 import type { FlowStateCtx } from "../../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { auditLogFileFor } from "../helpers";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -101,8 +102,7 @@ async function setupTmp(label: string): Promise<PipelineConfig> {
 /** Read the most recent audit log file and return lines as parsed objects. */
 async function readAuditLines(config: PipelineConfig): Promise<Record<string, string>[]> {
   const auditDir = config.auditDir || ".pi/audit";
-  const fileName = getDateAuditFileName();
-  const logPath = join(config.projectRoot, auditDir, fileName);
+  const logPath = auditLogFileFor(join(config.projectRoot, auditDir));
   const content = await readFile(logPath, "utf-8");
   return content
     .trim()

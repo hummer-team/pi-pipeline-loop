@@ -4,8 +4,9 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { PipelineStage, SessionMeta } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-owner-spawn-" + Date.now());
 
@@ -102,7 +103,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     await hook.handler(ctx as any);
 
     // Verify the advance guard fired (audit event + stage unchanged)
-    const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP5, ".pi", "audit"));
     let auditContent = "";
     try {
       auditContent = await readFile(auditPath, "utf-8");
@@ -148,7 +149,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     await hook.handler(ctx as any);
 
     // Verify the guard either fired (audit defer event) or preserved state (stage unchanged)
-    const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP5, ".pi", "audit"));
     let auditContent = "";
     try {
       auditContent = await readFile(auditPath, "utf-8");
@@ -190,7 +191,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     await hook.handler(ctx as any);
 
     // Verify no defer audit (guard didn't fire because no evidence → fail-open)
-    const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP5, ".pi", "audit"));
     // Read audit file if it exists; either outcome (missing file or file without defer event) is valid
     let auditContent = "";
     try {
@@ -248,7 +249,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     expect(meta.currentStage).toBe("develop");
 
     // Audit should NOT contain advance_deferred for child settle
-    const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP5, ".pi", "audit"));
     let auditContent = "";
     try {
       auditContent = await readFile(auditPath, "utf-8");
@@ -359,7 +360,7 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     expect(meta.currentStage).toBe("review");
 
     // Audit assertions: exactly 1 stage_advance event (develop → review)
-    const auditPath = join(TMP5, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP5, ".pi", "audit"));
     const auditContent = await readFile(auditPath, "utf-8");
 
     // Guard fired once (step 1 deferred)
@@ -421,7 +422,7 @@ describe("Phase 0 (186): consumePendingSpawns runs before source gate", () => {
     await hook.handler(ctx as any);
 
     // Source gate should have rejected (non-pipeline turn)
-    const auditPath = join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("agent_settled_non_pipeline_turn");
 

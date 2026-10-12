@@ -24,6 +24,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import {
@@ -57,6 +58,7 @@ import {
 import { coordinateDesignReview, type CoordinatorContext } from "../../core/design-review/coordinator";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+import { auditLogFileFor } from "../helpers";
 
 const PIPE = "pipe-test-001";
 const HEADING = "## Design Review Smart Plan-Revision Decision";
@@ -363,7 +365,7 @@ describe("193 Phase 1: review dispatch integration (exact prompt, blocking, reco
   });
 
   async function readAudit(): Promise<string> {
-    const file = path.join(projectRoot, ".pi", "audit", getDateAuditFileName());
+    const file = auditLogFileFor(join(projectRoot, ".pi", "audit"));
     try {
       return await fs.promises.readFile(file, "utf-8");
     } catch {

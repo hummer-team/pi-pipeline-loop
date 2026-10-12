@@ -24,6 +24,7 @@ import { makeTestConfig, makeTestMeta } from "../helpers";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { resetPromptConfigCache } from "../../core/prompt-config";
 import type { SessionMeta } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 let TMP: string;
 
@@ -451,7 +452,7 @@ describe("runVerification — structured rules", () => {
     await runVerification(fullConfig, meta, [], { execFn: throwingExecFn });
 
     // Read the audit log and verify
-    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await fs.readFile(logFile, "utf-8");
 
     expect(logContent).toContain("verify_error");
@@ -476,7 +477,7 @@ describe("runVerification — structured rules", () => {
     expect(result).toBeNull();
 
     // Verify audit log contains verify_frontmatter_parse_error
-    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await fs.readFile(logFile, "utf-8");
     expect(logContent).toContain("verify_frontmatter_parse_error");
     expect(logContent).toContain("[ERROR]");
@@ -753,7 +754,7 @@ describe("parseFrontmatter — Phase 0 robustness fixes", () => {
     expect(rules!.fileContentPattern![0].path).toBe("real.md");
 
     // Verify audit log contains the empty-item warning
-    const logFile = path.join(auditDir, getDateAuditFileName());
+    const logFile = auditLogFileFor(auditDir);
     const logContent = await fs.readFile(logFile, "utf-8");
     expect(logContent).toContain("verify_frontmatter_parse_error");
     expect(logContent).toContain("Empty entries discarded");

@@ -13,14 +13,16 @@ import {
 } from "../../utils/subagent-availability";
 import {
   initAuditLog,
-  getDateAuditFileName,
+
   __resetAuditDirPath,
 } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, createMockEventBus } from "../helpers";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { auditLogFileFor } from "../helpers";
 
 /**
  * Tests for fix-executor-completion handler (Phase 0 / 189).
@@ -127,7 +129,7 @@ describe("Phase 3 (189): Fix-complete auto-unfreeze", () => {
 
     // Verify audit log
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("fix_completed_auto_unfreeze");
@@ -364,7 +366,7 @@ describe("Phase 3 (189): Fix-complete auto-unfreeze", () => {
 
     // Verify error audit
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("fix_unfreeze_error");
@@ -513,7 +515,7 @@ describe("handleFixExecutorCompleted: direct-call preconditions", () => {
 
     // Verify error audit
     const logContent = fs.readFileSync(
-      path.join(tmpDir, ".pi", "audit", getDateAuditFileName()),
+      auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
     expect(logContent).toContain("fix_unfreeze_error");

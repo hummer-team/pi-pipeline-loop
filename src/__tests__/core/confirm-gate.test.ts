@@ -12,7 +12,7 @@ import {
   PLAN_CONFIRM_MARKER_RULE,
 } from "../../core/stage-advancer";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import type { SessionMeta, PipelineConfig } from "../../types";
 

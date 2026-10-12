@@ -4,8 +4,9 @@ import { makeTestConfig, makeTestMeta, createMockCtx, deployDispatchAssets } fro
 import { readFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { SessionMeta, PipelineStage } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-pipeline-probe-deferral-" + Date.now());
 const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
@@ -35,8 +36,8 @@ function makeReservedEntry(stage: PipelineStage): SessionMeta["activeSpawns"] {
   };
 }
 
-async function readAuditEntries(projectRoot: string): Promise<string[]> {
-  const logPath = join(projectRoot, ".pi", "audit", getDateAuditFileName());
+async function readAuditEntries(projectRoot: string, pipelineId?: string): Promise<string[]> {
+  const logPath = auditLogFileFor(join(projectRoot, ".pi", "audit"), pipelineId);
   try {
     const content = await readFile(logPath, "utf-8");
     return content.trim().split("\n").filter(Boolean);
@@ -117,7 +118,7 @@ describe("agent-settled probe deferral cap (Phase 8)", () => {
       await hook.handler(ctx as any);
     }
 
-    const entries = await readAuditEntries(TMP);
+    const entries = await readAuditEntries(TMP, pipelineId);
     const gaveUpEntries = entries.filter(
       (e) => e.includes("probe_gave_up_after_delay") && e.includes(pipelineId),
     );
@@ -167,7 +168,7 @@ describe("agent-settled probe deferral cap (Phase 8)", () => {
     expect(updatedMeta.probeDeferralCount).toBe(1);
     expect(updatedMeta.probeDeferralStage).toBe(stage2);
 
-    const entries = await readAuditEntries(TMP);
+    const entries = await readAuditEntries(TMP, pipelineId);
     const gaveUpEntries = entries.filter(
       (e) => e.includes("probe_gave_up_after_delay") && e.includes(pipelineId),
     );
@@ -203,7 +204,7 @@ describe("agent-settled probe deferral cap (Phase 8)", () => {
     ctx = createMockCtx(meta);
     await hook.handler(ctx as any);
 
-    const entries = await readAuditEntries(TMP);
+    const entries = await readAuditEntries(TMP, pipelineId);
     const gaveUpEntries = entries.filter(
       (e) => e.includes("probe_gave_up_after_delay") && e.includes(pipelineId),
     );

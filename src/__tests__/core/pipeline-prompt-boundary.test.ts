@@ -24,6 +24,7 @@ import { describe, it, expect, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { join } from "node:path";
 import type {
   DesignReviewOperation,
   DesignReviewState,
@@ -42,6 +43,7 @@ import { deriveStandaloneReceiptPath } from "../../core/design-review/update-art
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { resetPromptConfigCache } from "../../core/prompt-config";
+import { auditLogFileFor } from "../helpers";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -361,10 +363,10 @@ describe("createPromptInjector: boundary wiring", () => {
   let tmpRoot = "";
   let auditPath = "";
 
-  function freshConfig(): PipelineConfig {
+  function freshConfig(pipelineId?: string): PipelineConfig {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-boundary-"));
     const config = makeTestConfig({ projectRoot: tmpRoot, auditDir: ".pi/audit" });
-    auditPath = path.join(tmpRoot, ".pi", "audit", getDateAuditFileName());
+    auditPath = auditLogFileFor(join(tmpRoot, ".pi", "audit"), pipelineId);
     cleanups.push(async () => {
       resetPromptConfigCache();
       resetGitignoreCache();
@@ -431,12 +433,12 @@ describe("createPromptInjector: boundary wiring", () => {
   });
 
   it("strips a pre-194 marker-less plugin tail from the base and re-wraps the fresh render", async () => {
-    const config = freshConfig();
-    await initAuditLog(config);
     const meta = makeTestMeta({
       currentStage: "review",
       pipelineId: "pipe-new-194",
     });
+    const config = freshConfig(meta.pipelineId);
+    await initAuditLog(config);
     const legacyBase = [
       "PI BASE",
       "",
@@ -465,9 +467,9 @@ describe("createPromptInjector: boundary wiring", () => {
   });
 
   it("fails closed on an unpaired BEGIN: no injection, audit warn, clean-session notice", async () => {
-    const config = freshConfig();
-    await initAuditLog(config);
     const meta = makeTestMeta({ currentStage: "review" });
+    const config = freshConfig(meta.pipelineId);
+    await initAuditLog(config);
     const brokenBase = `PI BASE\n\n---\n\n${PIPELINE_RUNTIME_CONTEXT_BEGIN}\n# Pipeline Status\n- Pipeline ID: x`;
     const notes: string[] = [];
     const hook = createPromptInjector(config);

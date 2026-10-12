@@ -4,8 +4,9 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { PipelineStage, SessionMeta } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-turn-gates-" + Date.now());
 
@@ -184,7 +185,7 @@ describe("Nit 3 (reaudit): agent-settled auto mode + fail report → route fix v
     expect(selectCalled).toBe(false);
 
     // Audit: review_auto_route_fix must be present
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("review_auto_route_fix");
     // Must NOT have confirm_rejected (no counting)
@@ -236,7 +237,7 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     await hook.handler(ctx as unknown as Parameters<typeof hook.handler>[0]);
 
     // Audit should contain verify_completion_marker_unbound (NOT verify_completion_marker_pending)
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("verify_completion_marker_unbound");
     expect(logContent).not.toContain("verify_completion_marker_pending");
 
@@ -286,7 +287,7 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     await hook.handler(ctx as unknown as Parameters<typeof hook.handler>[0]);
 
     // Audit should still contain the unbound event (always written)
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("verify_completion_marker_unbound");
 
     // But no new notification should fire (throttled)
@@ -335,7 +336,7 @@ describe("Phase 1 (170): unbound requirementDoc gate in agent_settled", () => {
     await hook.handler(ctx as unknown as Parameters<typeof hook.handler>[0]);
 
     // Should use the OLD event name (pending, not unbound)
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("verify_completion_marker_pending");
     expect(logContent).not.toContain("verify_completion_marker_unbound");
 
@@ -413,7 +414,7 @@ describe("Phase 2 (172): pipeline-turn source gate", () => {
     await hook.handler(ctx as any);
 
     // Should audit non-pipeline turn
-    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(config.projectRoot, config.auditDir!));
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).toContain("agent_settled_non_pipeline_turn");
     // verifyAttempts must NOT have been incremented
@@ -434,7 +435,7 @@ describe("Phase 2 (172): pipeline-turn source gate", () => {
     await hook.handler(ctx as any);
 
     // Should NOT audit non-pipeline turn (verification proceeds)
-    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(config.projectRoot, config.auditDir!));
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
   });
@@ -452,7 +453,7 @@ describe("Phase 2 (172): pipeline-turn source gate", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(config.projectRoot, config.auditDir!));
     const auditContent = await readFile(auditPath, "utf-8");
     expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
   });
@@ -469,7 +470,7 @@ describe("Phase 2 (172): pipeline-turn source gate", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const auditPath = join(config.projectRoot, config.auditDir!, getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(config.projectRoot, config.auditDir!));
     const auditContent = await readFile(auditPath, "utf-8");
     // Empty → fail-open → NOT filtered as non-pipeline
     expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
@@ -535,7 +536,7 @@ describe("Phase 1 / 179 (G2 layer ①): bare-form pipeline turn relaxation", () 
 
     await createAgentSettled(config).handler(ctx as any);
 
-    const auditContent = await readFile(join(config.projectRoot, config.auditDir!, getDateAuditFileName()), "utf-8");
+    const auditContent = await readFile(auditLogFileFor(join(config.projectRoot, config.auditDir!)), "utf-8");
     expect(auditContent).not.toContain("agent_settled_non_pipeline_turn");
     expect(auditContent).toContain("agent_settled_bare_turn_matched");
   });
@@ -552,7 +553,7 @@ describe("Phase 1 / 179 (G2 layer ①): bare-form pipeline turn relaxation", () 
 
     await createAgentSettled(config).handler(ctx as any);
 
-    const auditContent = await readFile(join(config.projectRoot, config.auditDir!, getDateAuditFileName()), "utf-8");
+    const auditContent = await readFile(auditLogFileFor(join(config.projectRoot, config.auditDir!)), "utf-8");
     expect(auditContent).toContain("agent_settled_non_pipeline_turn");
     expect(auditContent).not.toContain("agent_settled_bare_turn_matched");
   });
@@ -569,7 +570,7 @@ describe("Phase 1 / 179 (G2 layer ①): bare-form pipeline turn relaxation", () 
 
     await createAgentSettled(config).handler(ctx as any);
 
-    const auditContent = await readFile(join(config.projectRoot, config.auditDir!, getDateAuditFileName()), "utf-8");
+    const auditContent = await readFile(auditLogFileFor(join(config.projectRoot, config.auditDir!)), "utf-8");
     expect(auditContent).toContain("agent_settled_non_pipeline_turn");
     expect(auditContent).not.toContain("agent_settled_bare_turn_matched");
   });

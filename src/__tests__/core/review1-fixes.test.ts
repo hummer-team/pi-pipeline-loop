@@ -27,12 +27,13 @@ import {
 } from "../../core/flow-state";
 import { SPAWN_TOOL_NAMES, FROZEN_ABORT_EXEMPT_TOOLS } from "../../constants";
 import { probeAgentState } from "../../utils/subagents-introspect";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { buildResumeMeta, buildResumeVisitOrder } from "../../commands/pipeline-start";
 import { deriveClarifyForwardArgs } from "../../utils/clarify-args";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { auditLogFileFor } from "../helpers";
 
 /** Minimal FlowStateCtx factory for audit-field assertion tests */
 function makeFlowCtx(
@@ -251,7 +252,7 @@ describe("High C: flow-state C14/C15 audit field assertions", () => {
     expect(meta.terminateReason).toBe("session_quit");
 
     // Verify audit file was written with correct fields
-    const auditFile = path.join(tempAuditDir, getDateAuditFileName());
+    const auditFile = auditLogFileFor(tempAuditDir);
     const auditContent = fs.readFileSync(auditFile, "utf-8");
     const lines = auditContent.trim().split("\n");
     const abortLine = lines.find(l => l.includes("pipeline_session_aborted"));
@@ -279,7 +280,7 @@ describe("High C: flow-state C14/C15 audit field assertions", () => {
     await executeDecision(ctx, meta, "abort", config);
 
     // Verify audit file
-    const auditFile = path.join(tempAuditDir, getDateAuditFileName());
+    const auditFile = auditLogFileFor(tempAuditDir);
     const auditContent = fs.readFileSync(auditFile, "utf-8");
     const lines = auditContent.trim().split("\n");
     const decisionLine = lines.find(l => l.includes("pipeline_decision") && l.includes("decision=abort"));
@@ -304,7 +305,7 @@ describe("High C: flow-state C14/C15 audit field assertions", () => {
     await freezeAndPrompt(ctx, meta, "loop_overflow", config);
 
     // Verify audit file
-    const auditFile = path.join(tempAuditDir, getDateAuditFileName());
+    const auditFile = auditLogFileFor(tempAuditDir);
     const auditContent = fs.readFileSync(auditFile, "utf-8");
     const lines = auditContent.trim().split("\n");
     const blockedLine = lines.find(l => l.includes("pipeline_blocked"));

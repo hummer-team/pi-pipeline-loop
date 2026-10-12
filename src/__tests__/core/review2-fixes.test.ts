@@ -18,6 +18,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import * as os from "node:os";
 import {
   createPipelineStartCommand,
@@ -34,11 +35,12 @@ import {
 import type { SessionMeta, PipelineStage } from "../../types";
 import {
   initAuditLog,
-  getDateAuditFileName,
+
   __resetAuditDirPath,
 } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
+import { auditLogFileFor } from "../helpers";
 
 // Phase 2 / 177 (D4): spawn paths are latch-driven; pre-arm for RPC-path tests.
 beforeEach(() => {
@@ -548,7 +550,7 @@ describe("M4: settle-retry binding", () => {
     // requirementDoc must be bound to the parsed path
     expect(meta.requirementDoc).toBe(docPath);
     // Audit must contain source=settle_retry
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const auditContent = await fsp.readFile(auditPath, "utf-8");
     expect(auditContent).toContain("requirement_doc_bound");
     expect(auditContent).toContain("settle_retry");
@@ -568,7 +570,7 @@ describe("M4: settle-retry binding", () => {
     // requirementDoc must NOT be bound (no parseable path)
     expect(meta.requirementDoc).toBeUndefined();
     // Audit must contain verify_completion_marker_unbound
-    const auditPath = path.join(TMP, ".pi", "audit", getDateAuditFileName());
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"));
     const auditContent = await fsp.readFile(auditPath, "utf-8");
     expect(auditContent).toContain("verify_completion_marker_unbound");
     expect(auditContent).not.toContain("settle_retry");

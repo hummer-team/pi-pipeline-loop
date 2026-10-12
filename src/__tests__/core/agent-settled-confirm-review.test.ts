@@ -4,8 +4,9 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { PipelineStage, SessionMeta } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-confirm-review-" + Date.now());
 
@@ -57,7 +58,7 @@ describe("Phase 4 (162): agent_settled confirm gate integration", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("confirm_smart_defer_to_tool");
     // Stage should not change
@@ -89,7 +90,7 @@ Verify plan quality.`);
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_auto_write");
 
@@ -130,7 +131,7 @@ Verify plan.`);
     expect(meta.currentStage).toBe("develop");
     expect(meta.confirmRejections).toBeUndefined();
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_approved");
 
@@ -298,7 +299,7 @@ Verify plan.`);
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     // Deferral should have been applied (marker rule skipped during verify)
     expect(logContent).toContain("verify_rule_deferred");
@@ -352,7 +353,7 @@ Verify plan.`);
     // Stage not advanced.
     expect(meta.currentStage).toBe("plan");
     // Suppression audit written with the child session file.
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("confirm_gate_suppressed_child");
     expect(logContent).toContain("sessionFile=/tmp/child.jsonl");
 
@@ -425,7 +426,7 @@ describe("Phase 1 (163): review_declaration_missing audit", () => {
     await hook.handler(ctx as any);
 
     // Should have audit hook_skip_after_manual_advance (not review_declaration_missing)
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("hook_skip_after_manual_advance");
     expect(logContent).not.toContain("review_declaration_missing");
@@ -479,7 +480,7 @@ describe("Phase 1 (163): review_declaration_missing audit", () => {
     await hook.handler(ctx as any);
 
     // Should NOT have review_declaration_missing (declaration was made)
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).not.toContain("review_declaration_missing");
 
@@ -555,7 +556,7 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
     // confirmRejections should be incremented to 1
     expect(meta.confirmRejections).toBe(1);
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     // Should have confirm rejection audit
     expect(logContent).toContain("confirm_rejected");
@@ -584,7 +585,7 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
     // confirmRejections should be cleared (approve resets counter)
     expect(meta.confirmRejections).toBeUndefined();
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_approved");
 

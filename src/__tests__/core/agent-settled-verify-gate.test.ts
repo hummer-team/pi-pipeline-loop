@@ -4,8 +4,9 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import type { PipelineStage, SessionMeta } from "../../types";
+import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-pipeline-agent-settled-verify-gate-" + Date.now());
 
@@ -61,7 +62,7 @@ describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
     expect(ctx.metadataUpdates.length).toBe(0);
     expect(meta.currentStage).toBe("clarify");
     // Audit should contain verify_completion_marker_pending
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("verify_completion_marker_pending");
 
     await rm(stageTmp, { recursive: true, force: true });
@@ -172,7 +173,7 @@ describe("Phase 3 (140): completionMarker precheck in agent_settled", () => {
     const lastMeta = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
     expect(lastMeta.currentStage).toBe("plan");
     // No completionMarker audit
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).not.toContain("verify_completion_marker_pending");
 
     await rm(stageTmp, { recursive: true, force: true });
@@ -213,7 +214,7 @@ describe("Phase 3 (148): agent_settled verify config skip", () => {
     // Should have advanced (pass path)
     expect(meta.currentStage).toBe("review");
     // Should have audit log verify_config_skip
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("verify_config_skip");
     // M1 fix: skipped must NOT write auto_verify_pass audit
     expect(logContent).not.toContain("auto_verify_pass");
@@ -281,7 +282,7 @@ describe("168 Phase 0: precheckRequiredFiles in agent_settled hook", () => {
     const verifyUpdates = ctx.metadataUpdates.filter(u => u.verifyFailures);
     expect(verifyUpdates.length).toBe(0);
     // Audit should contain verify_precheck_deferred
-    const logContent = await readFile(join(stageTmp, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("verify_precheck_deferred");
     expect(logContent).toContain("nonexistent.md");
     // Should NOT contain auto_verify_fail (full verification was not run)
@@ -343,7 +344,7 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
     await hook.handler(ctx as any);
 
     // Assert: contract_anchor_unavailable + review_declaration_missing audits
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("contract_anchor_unavailable");
     expect(logContent).toContain("review_declaration_missing");
@@ -410,7 +411,7 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
 
-    const logPath = join(stageTmp, ".pi", "audit", getDateAuditFileName());
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
 
     // Red-green discrimination: these audit events MUST be present when the

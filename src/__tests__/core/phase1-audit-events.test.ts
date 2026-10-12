@@ -12,19 +12,20 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { readFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { initAuditLog } from "../../utils/auditLog";
 import { createStageAdvancer } from "../../core/stage-advancer";
 import { createPipelineState } from "../../core/pipeline-state";
 import { createLoopChecker } from "../../core/loop-checker";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+import { auditLogFileFor } from "../helpers";
 
 function makeTmpRoot(label: string): string {
   return join(tmpdir(), `pi-p1audit-${label}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 }
 
-async function readAuditLog(root: string): Promise<string> {
-  const logPath = join(root, ".pi", "audit", getDateAuditFileName());
+async function readAuditLog(root: string, pipelineId?: string): Promise<string> {
+  const logPath = auditLogFileFor(join(root, ".pi", "audit"), pipelineId);
   try {
     return await readFile(logPath, "utf-8");
   } catch {
@@ -153,7 +154,7 @@ describe("Phase 1 audit: pipeline_start event", () => {
     const result = await cmd.execute({ file: "req.md" }, ctx as any) as any;
 
     expect(result.success).toBe(true);
-    const log = await readAuditLog(root);
+    const log = await readAuditLog(root, result.pipelineId);
     expect(log).toContain("pipeline_start");
     expect(log).toContain("file=req.md");
     expect(log).toContain("previousStage=none");

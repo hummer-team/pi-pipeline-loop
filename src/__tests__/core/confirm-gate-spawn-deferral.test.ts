@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   maybeHandleConfirmGate,
 } from "../../core/stage-advancer";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { initAuditLog, getDateAuditFileName } from "../../utils/auditLog";
+import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor } from "../helpers";
+import { initAuditLog } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import type { SessionMeta, PipelineConfig } from "../../types";
 import {
@@ -293,7 +294,7 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
     expect(selectCalls).toBe(0);
     expect(result).toEqual({ result: "handled", action: "pending", deferred: true });
     expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
-    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await fs.readFile(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("confirm_gate_deferred");
   });
 
@@ -358,7 +359,7 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
     expect(result.result).toBe("handled");
     expect(notifications.some((n) => n.includes("timeout"))).toBe(true);
     expect(meta.confirmGateDeferredAt).toBeUndefined();
-    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await fs.readFile(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("confirm_gate_defer_timeout");
   });
 });
@@ -412,7 +413,7 @@ describe("Phase 1 / 180: stale confirmGateDeferredAt invalidation", () => {
     expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
     expect(meta.confirmGateDeferredAt!.at).toBeGreaterThanOrEqual(now);
     // First-deferral audit + notify reappear for the new window.
-    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await fs.readFile(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("confirm_gate_deferred");
     expect(notifications.some((n) => n.includes("deferred"))).toBe(true);
   });
@@ -471,7 +472,7 @@ describe("Phase 2 / 180: confirm gate dismiss attribution", () => {
     );
 
     expect(result).toEqual({ result: "handled", action: "pending" });
-    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await fs.readFile(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("] confirm_gate_dismiss_interrupted |");
     expect(logContent).toContain("action=collateral_suspect");
     expect(logContent).toContain("mode=manual");
@@ -502,7 +503,7 @@ describe("Phase 2 / 180: confirm gate dismiss attribution", () => {
     );
 
     expect(result).toEqual({ result: "handled", action: "pending" });
-    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await fs.readFile(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("] confirm_gate_dismissed |");
     expect(logContent).toContain("action=user_esc");
     // Default source when not provided.
@@ -549,7 +550,7 @@ describe("Phase 2 / 180: repeat-defer throttled audit", () => {
     // Call 3: still within the throttle window → no new repeat audit.
     await maybeHandleConfirmGate(config, ctx, meta, ui, { mode: "manual" });
 
-    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await fs.readFile(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     const firstDeferCount = (logContent.match(/\] confirm_gate_deferred \|/g) ?? []).length;
     const repeatCount = (logContent.match(/\] confirm_gate_defer_repeat \|/g) ?? []).length;
     expect(firstDeferCount).toBe(1);

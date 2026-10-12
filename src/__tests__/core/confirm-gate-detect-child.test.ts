@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { join } from "node:path";
 import {
   maybeHandleConfirmGate,
   detectPendingConfirmGate,
   recordConfirmGateOutcome,
 } from "../../core/stage-advancer";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
-import { getDateAuditFileName } from "../../utils/auditLog";
+import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor } from "../helpers";
 import type { PipelineConfig } from "../../types";
 import {
   makePlanConfigWithConfirm,
@@ -211,7 +211,7 @@ describe("Phase 1 / 181: child session zero-side-effect bypass", () => {
     expect(meta.confirmGateDeferredAt?.stage).toBe("plan");
     expect(meta.confirmGateDeferredAt!.at).toBeGreaterThanOrEqual(beforeBypass);
     // Suppression audit with attribution fields and deferredAt stamp.
-    const logContent = await fs.readFile(path.join(tmpDir, ".pi", "audit", getDateAuditFileName()), "utf-8");
+    const logContent = await fs.readFile(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("confirm_gate_suppressed_child");
     expect(logContent).toContain("stage=plan");
     expect(logContent).toContain("sessionFile=child-42");
