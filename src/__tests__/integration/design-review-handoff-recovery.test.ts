@@ -80,9 +80,24 @@ function forbiddenPi(calls: string[]) {
 /** The day-rotated audit text (async appends get a small settle grace). */
 async function auditText(h: ChainHarness): Promise<string> {
   await new Promise((r) => setTimeout(r, 30));
-  const dir = path.join(h.projectRoot, ".pi", "audit");
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith("_audit.log"));
-  return files.map((f) => fs.readFileSync(path.join(dir, f), "utf-8")).join("\n");
+  const auditDir = path.join(h.projectRoot, ".pi", "audit");
+  const contents: string[] = [];
+  
+  // Read all audit log files from all pipeline subdirectories
+  const entries = fs.readdirSync(auditDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const logDir = path.join(auditDir, entry.name, "log");
+      if (fs.existsSync(logDir)) {
+        const files = fs.readdirSync(logDir).filter((f) => f.endsWith("_audit.log"));
+        for (const file of files) {
+          contents.push(fs.readFileSync(path.join(logDir, file), "utf-8"));
+        }
+      }
+    }
+  }
+  
+  return contents.join("\n");
 }
 
 describe("194 Phase 4: handoff recovery and terminal identity rules", () => {
