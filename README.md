@@ -150,6 +150,8 @@ All pipeline events are recorded as JSON Lines in the audit directory:
 
 - Stage transitions, verification results, circuit breaker triggers
 - Prompt snapshots (configurable: full / plugin-only / off)
+- Audit log per pipeline at `{auditDir}/{pipelineId}/log/YYYYMMDD_audit.log`
+- Orphan events (no pipeline binding) at `{auditDir}/system/log/YYYYMMDD_audit.log`
 - Per-file diffs archived at `{auditDir}/{pipelineId}/step-{n}/loop-{n}/`
 
 ### Plan Human Gate

@@ -159,7 +159,7 @@ bun add @earendil-works/pi-pipeline
   "maxLoops": 3,                    // 单阶段最大测试失败重试次数
   "maxLoopCycles": 5,               // 返工轮次上限（review↔fix 一次往返耗 1；classifyVisitEdge 判据：回退/回环边计数，前进/首访不计数）；执行器连续失败预算另列 DEFAULT_EXECUTOR_FAILURE_BUDGET，与返工预算解耦
   "llmExtract": true,               // 启用 LLM 辅助提取交付项（推荐开启，结合技术栈检测）
-   "auditDir": ".pi/audit",          // 审计日志目录
+   "auditDir": ".pi/audit",          // 审计日志目录（子结构：{pipelineId}/log/ 存审计日志，system/log/ 存无归属事件，{pipelineId}/step-{n}/loop-{n}/ 存 diff 归档）
    "piWorkDir": ".pi",                // 插件资产目录（相对 projectRoot，默认 ".pi"）：所有 ".pi/" 前缀配置值在此解析期重写为该目录；例外：配置锚点 `.pi/pipeline_loop.json` 不受其影响。约束：非空字符串、相对路径、禁止 ".." 段；非法值告警并回落 ".pi"。修改后需重跑 /pipeline-init 并重启 pi 生效
    "domainDir": ".pi/domains",       // 业务域定义目录（三态查找链：项目级 domainDir → home ~/.pi/domains → 跳过）；支持 "~" 前缀（展开为 homedir）与绝对路径
   "output": {
@@ -618,7 +618,7 @@ develop: |
 
 此外，未知占位符（`{{xxx}}` 不在上述 8 个已知 key 中）保留原样不替换，可放心用于自定义标记。
 
-**Prompt 快照审计**：当 yml 模板命中并成功渲染时，插件将渲染后的完整 systemPrompt 以多行快照格式写入 `audit.log`（`source=yml`）；当关键占位符缺失触发回退时，同样写入回退后的 default prompt 快照（`source=fallback`）；yml 未命中走 default 路径时也会写快照（`source=default`）。快照写入受 `audit.promptSnapshot` 控制（`"full"`/`"plugin"`/`"off"`，默认 `"full"`）。快照格式如下：
+**Prompt 快照审计**：当 yml 模板命中并成功渲染时，插件将渲染后的完整 systemPrompt 以多行快照格式写入审计日志（`source=yml`）；当关键占位符缺失触发回退时，同样写入回退后的 default prompt 快照（`source=fallback`）；yml 未命中走 default 路径时也会写快照（`source=default`）。快照写入受 `audit.promptSnapshot` 控制（`"full"`/`"plugin"`/`"off"`，默认 `"full"`）。快照格式如下：
 
 ```
 YYYY-MM-DD HH:mm:ss - [INFO] prompt_snapshot | stage=clarify | pipelineId=xxx | source=yml
@@ -627,7 +627,7 @@ YYYY-MM-DD HH:mm:ss - [INFO] prompt_snapshot | stage=clarify | pipelineId=xxx | 
 === PROMPT END ===
 ```
 
-快照写入 `{auditDir}/YYYYMMDD_audit.log`，与常规审计事件共存。
+快照写入 `{auditDir}/{pipelineId}/log/YYYYMMDD_audit.log`，与常规审计事件共存。无归属 pipeline 的事件落入 `{auditDir}/system/log/YYYYMMDD_audit.log`。
 
 ### 7.5 verify_extract 系列
 
@@ -670,7 +670,7 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 
 ## 7.5 审计事件表
 
-所有管线推进/查询事件通过 `writeStageAudit` 统一写入审计日志（`.pi/audit/YYYYMMDD_audit.log`）。
+所有管线推进/查询事件通过 `writeStageAudit` 统一写入审计日志（`.pi/audit/{pipelineId}/log/YYYYMMDD_audit.log`）。
 
 | 事件 | 触发时机 | 关键字段 |
 |------|---------|---------|
@@ -856,7 +856,7 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 **现象**：所有工具调用被阻止，Agent 无法执行操作。
 
 **解决**：
-- 查看审计日志（`.pi/audit/audit.log`）了解冻结原因
+- 查看审计日志（`.pi/audit/{pipelineId}/log/`）了解冻结原因
 - 重新开始流水线（运行 /pipeline-start REQUIREMENT.md 开启新流水线），或手动修改会话元数据恢复
 
 ### 8.2 loop-breaker 导致 terminated
@@ -1343,7 +1343,7 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 | 审查报告 | `docs/review/*.md` | review 阶段产出 |
 | 修复代码 | `src/**` | fix 阶段产出 |
 | 阶段摘要 | `{auditDir}/{pipelineId}/{stage}.md` | 插件内部产物 |
-| 审计日志 | `{auditDir}/YYYYMMDD_audit.log` | 插件内部产物 |
+| 审计日志 | `{auditDir}/{pipelineId}/log/YYYYMMDD_audit.log` | 插件内部产物；无归属事件落入 `{auditDir}/system/log/` |
 
 **路径约定（C17）**：业务交付物一律写入 `docs/design/` 等用户可见路径。`{auditDir}/` 仅存放插件内部产物（summary/audit/registry），不应作为业务交付目录。
 
