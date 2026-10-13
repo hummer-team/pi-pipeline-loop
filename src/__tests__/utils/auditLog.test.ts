@@ -456,24 +456,31 @@ describe("writePromptSnapshot", () => {
     const root = makeTmpRoot("snapshot-blank-sep");
     await initAuditLog(makeConfig(root));
 
-    // Write a snapshot followed immediately by a regular audit event
-    await writePromptSnapshot(
-      "prompt_snapshot",
-      { stage: "clarify", pipelineId: "pipe-sep", source: "yml" },
-      "Prompt text",
-    );
-    await writeAuditLog("next_event", { pipelineId: "pipe-sep" });
+    // Write a snapshot followed immediately by a regular audit event,
+    // both under the same pipeline context so they land in the same file.
+    await withPipelineId("pipe-sep", async () => {
+      await writePromptSnapshot(
+        "prompt_snapshot",
+        { stage: "clarify", pipelineId: "pipe-sep", source: "yml" },
+        "Prompt text",
+      );
+      await writeAuditLog("next_event", { pipelineId: "pipe-sep" });
+    });
 
-    // Snapshot routes to pipe-sep/log; regular audit routes to system/log
+    // Both writes route to pipe-sep/log (same pipeline归属)
     const pipelineLogPath = join(root, ".pi", "audit", "pipe-sep", "log", getDateAuditFileName());
-    const systemLogPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
     const pipelineContent = await readFile(pipelineLogPath, "utf-8");
-    const systemContent = await readFile(systemLogPath, "utf-8");
 
-    // Snapshot block in pipeline log
+    // Snapshot block present
     expect(pipelineContent).toContain("=== PROMPT END ===");
-    // Regular event in system log
-    expect(systemContent).toContain("next_event");
+    // Next event present
+    expect(pipelineContent).toContain("next_event");
+
+    // E7 protocol: blank line (\n\n) between === PROMPT END === and next audit event
+    const endIdx = pipelineContent.indexOf("=== PROMPT END ===");
+    const nextIdx = pipelineContent.indexOf("next_event");
+    const between = pipelineContent.slice(endIdx, nextIdx);
+    expect(between).toMatch(/\n\n/);
 
     await rm(root, { recursive: true, force: true });
   });
