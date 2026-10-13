@@ -461,6 +461,7 @@ export function __resetAuditRoutingState(): void {
  */
 export function __resetAuditDirPath(): void {
   auditDirPath = "";
+  ensuredAuditDirs.clear();
 }
 
 /**
@@ -470,6 +471,7 @@ export function __resetAuditDirPath(): void {
  */
 export function __setAuditDirPath(dirPath: string): void {
   auditDirPath = dirPath;
+  ensuredAuditDirs.clear();
 }
 
 /** Override for safeWriteAuditLog — when set, replaces the real implementation. FOR TESTING ONLY */
