@@ -12,7 +12,7 @@ import {
   writePromptSnapshot,
   safeWritePromptSnapshot,
   __resetAuditRoutingState,
-  auditLogDirFor,
+  __auditLogDirFor,
   withPipelineId,
 } from "../../utils/auditLog";
 import type { PipelineConfig, SessionMeta } from "../../types";
@@ -653,27 +653,27 @@ describe("safeWriteStageAudit", () => {
 
 describe("resolveAuditPipelineId", () => {
   it("returns meta.pipelineId when provided", async () => {
-    const { resolveAuditPipelineId } = await import("../../utils/auditLog");
-    expect(resolveAuditPipelineId({ pipelineId: "pipe-abc" })).toBe("pipe-abc");
+    const { __resolveAuditPipelineId } = await import("../../utils/auditLog");
+    expect(__resolveAuditPipelineId({ pipelineId: "pipe-abc" })).toBe("pipe-abc");
   });
 
   it("returns current auditPipelineId when meta.pipelineId is absent", async () => {
-    const { resolveAuditPipelineId } = await import("../../utils/auditLog");
+    const { __resolveAuditPipelineId } = await import("../../utils/auditLog");
     // No pipelineId set → returns empty
-    expect(resolveAuditPipelineId()).toBe("");
-    expect(resolveAuditPipelineId({})).toBe("");
-    expect(resolveAuditPipelineId({ pipelineId: "" })).toBe("");
+    expect(__resolveAuditPipelineId()).toBe("");
+    expect(__resolveAuditPipelineId({})).toBe("");
+    expect(__resolveAuditPipelineId({ pipelineId: "" })).toBe("");
   });
 });
 
 describe("auditLogDirFor", () => {
   it("returns system/log for empty pipelineId", () => {
-    const dir = auditLogDirFor("");
+    const dir = __auditLogDirFor("");
     expect(dir).toMatch(/system[/\\]log$/);
   });
 
   it("returns {pipelineId}/log for non-empty pipelineId", () => {
-    const dir = auditLogDirFor("pipe-123");
+    const dir = __auditLogDirFor("pipe-123");
     expect(dir).toMatch(/pipe-123[/\\]log$/);
   });
 });
@@ -684,25 +684,25 @@ describe("ensureAuditLogDir", () => {
     const config = makeConfig(root);
     await initAuditLog(config);
 
-    const dir = auditLogDirFor("pipe-test");
+    const dir = __auditLogDirFor("pipe-test");
     const { stat } = await import("node:fs/promises");
 
     // First call: creates directory
-    await import("../../utils/auditLog").then(m => m.ensureAuditLogDir(dir));
+    await import("../../utils/auditLog").then(m => m.__ensureAuditLogDir(dir));
     const dirStat1 = await stat(dir);
     expect(dirStat1.isDirectory()).toBe(true);
 
     // Second call: no error (cached in ensuredAuditDirs)
-    await import("../../utils/auditLog").then(m => m.ensureAuditLogDir(dir));
+    await import("../../utils/auditLog").then(m => m.__ensureAuditLogDir(dir));
 
     await rm(root, { recursive: true, force: true });
   });
 
   it("silently returns when auditDirPath is uninitialized", async () => {
     __resetAuditRoutingState();
-    const { ensureAuditLogDir } = await import("../../utils/auditLog");
+    const { __ensureAuditLogDir } = await import("../../utils/auditLog");
     // Should not throw
-    await expect(ensureAuditLogDir("/some/path")).resolves.toBeUndefined();
+    await expect(__ensureAuditLogDir("/some/path")).resolves.toBeUndefined();
   });
 });
 
@@ -716,7 +716,7 @@ describe("withPipelineId", () => {
     await withPipelineId("pipe-xyz", async () => {
       // Inside callback: writeAuditLog should route to pipe-xyz/log
       await writeAuditLog("test_event", { key: "val" });
-      capturedDir = auditLogDirFor("pipe-xyz");
+      capturedDir = __auditLogDirFor("pipe-xyz");
     });
 
     // Verify the file was written to pipe-xyz/log

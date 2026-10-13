@@ -96,7 +96,7 @@ export function getDateAuditFileName(): string {
  * @param meta - Object with optional pipelineId (e.g. message or SessionMeta)
  * @returns The resolved pipelineId string (may be empty)
  */
-export function resolveAuditPipelineId(meta?: { pipelineId?: string }): string {
+function resolveAuditPipelineId(meta?: { pipelineId?: string }): string {
   if (meta?.pipelineId && meta.pipelineId.length > 0) {
     return meta.pipelineId;
   }
@@ -115,7 +115,7 @@ export function resolveAuditPipelineId(meta?: { pipelineId?: string }): string {
  * @param pipelineId - The pipelineId to route to (empty for system)
  * @returns The resolved absolute audit log directory path
  */
-export function auditLogDirFor(pipelineId: string): string {
+function auditLogDirFor(pipelineId: string): string {
   const segment = pipelineId && pipelineId.length > 0 ? pipelineId : "system";
   return path.join(auditDirPath, segment, "log");
 }
@@ -128,7 +128,7 @@ export function auditLogDirFor(pipelineId: string): string {
  *
  * @param dir - The directory path to ensure exists
  */
-export async function ensureAuditLogDir(dir: string): Promise<void> {
+async function ensureAuditLogDir(dir: string): Promise<void> {
   if (!auditDirPath) return;
   if (ensuredAuditDirs.has(dir)) return;
   await fs.mkdir(dir, { recursive: true });
@@ -443,6 +443,16 @@ export async function safeWritePromptSnapshot(
 }
 
 // ─── Test hooks ────────────────────────────────────────────────────────────────
+
+/** @internal — FOR TESTING ONLY. Expose resolveAuditPipelineId for tests */
+export const __resolveAuditPipelineId = resolveAuditPipelineId;
+
+/** @internal — FOR TESTING ONLY. Expose auditLogDirFor for tests */
+export const __auditLogDirFor = auditLogDirFor;
+
+/** @internal — FOR TESTING ONLY. Expose ensureAuditLogDir for tests */
+export const __ensureAuditLogDir = ensureAuditLogDir;
+
 
 /**
  * Resets all module-level audit routing state to initial values.
