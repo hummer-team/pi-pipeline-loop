@@ -246,7 +246,7 @@ describe("applyVerifyPass", () => {
       { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-p9-pass-triplet");
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_pass") && l.includes("pipe-p9-pass-triplet"));
@@ -277,7 +277,7 @@ describe("applyVerifyPass", () => {
       { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-p9-pass-defaults");
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_pass") && l.includes("pipe-p9-pass-defaults"));
@@ -317,7 +317,7 @@ describe("applyVerifyPass", () => {
       { method: "tool", handleTerminal: true, returnResult: true, ui: ctx.pipelineUI },
     );
 
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-p9-budget-triplet");
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_pass_blocked_by_budget") && l.includes("pipe-p9-budget-triplet"));
@@ -365,7 +365,7 @@ describe("applyVerifyFail", () => {
     // NOTE: assistantMessages removed from metadata (Q4-A) — Phase 3 will use extractAssistantMessages
 
     // Should have audit log
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-test-001");
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("auto_verify_fail");
     expect(logContent).toContain("method=tool");
@@ -395,7 +395,7 @@ describe("applyVerifyFail", () => {
 
     await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI);
 
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-test-001");
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("method=rule");
   });
@@ -452,7 +452,7 @@ describe("applyVerifyFail", () => {
       ctx.pipelineUI,
     );
 
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-p9-fail-triplet");
     const logContent = await readFile(logPath, "utf-8");
     const lines = logContent.split("\n");
     const match = lines.find((l) => l.includes("auto_verify_fail") && l.includes("pipe-p9-fail-triplet"));
@@ -656,7 +656,7 @@ describe("output.pipelineStage: false (silent)", () => {
 
     await applyVerifyFail(ctx as any, meta, "develop", sharedResult, "rule", ctx.pipelineUI);
 
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-details-test");
     const logContent = await readFile(logPath, "utf-8");
 
     // Should contain auto_verify_fail event
@@ -707,7 +707,7 @@ describe("Phase 3: config-error freeze in applyVerifyFail", () => {
     // Return message should mention config error
     expect(result.message).toContain("Verification config error");
     // Audit should contain verify_config_error
-    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logPath = auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-test-001");
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("verify_config_error");
   });
@@ -1166,7 +1166,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     // Exactly one followUp (the chain summary) — no verify_fail_wake double-send.
     expect(wakeCalls.length).toBe(1);
     expect(wakeCalls[0]).toContain("terminal");
-    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-g8-terminal"), "utf-8");
     expect(logContent).toContain("chain_terminal_wake");
   });
 
@@ -1190,7 +1190,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     expect(wakeCalls.length).toBe(1);
     expect(wakeCalls[0]).toContain("terminal");
     expect(meta.pendingSpawns).toEqual({});
-    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-g8-pending"), "utf-8");
     expect(logContent).toContain("chain_terminal_wake");
   });
 
@@ -1208,7 +1208,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
       config, ctx as any, meta, "review", "completed", PASS_RESULT, ctx.pipelineUI,
     );
 
-    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-g8-nopi"), "utf-8");
     expect(logContent).toContain("chain_terminal_wake_skipped");
   });
 
@@ -1244,7 +1244,7 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
     expect(summary).toContain("re-ask count: 2");
 
     // Audit must include pendingActions payload
-    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
+    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-g8-pending-actions"), "utf-8");
     expect(logContent).toContain("chain_terminal_wake");
     expect(logContent).toContain("pendingActions");
   });

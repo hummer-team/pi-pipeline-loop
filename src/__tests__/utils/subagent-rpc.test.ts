@@ -23,7 +23,7 @@ import {
   isSubagentsReady,
   __resetSubagentsReady,
 } from "../../utils/subagent-availability";
-import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName, __resetAuditRoutingState } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, createMockEventBus, makeStageConfig } from "../helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -38,7 +38,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   __resetSubagentsReady();
-  __resetAuditDirPath();
+  __resetAuditRoutingState();
 });
 
 describe("pingSubagents", () => {
@@ -1485,7 +1485,7 @@ describe("Phase 2 / 177 (D4): owner-routed pendingSpawns", () => {
     expect(meta.pendingSpawns?.develop).toBeUndefined();
     expect(meta.pendingSpawns?.review).toBeUndefined();
     // Audit must record the stale "review" discard
-    const auditPath = auditLogFileFor(join(tmpDir, config.auditDir!));
+    const auditPath = auditLogFileFor(join(tmpDir, config.auditDir!), "");
     const auditContent = fs.readFileSync(auditPath, "utf-8");
     expect(auditContent).toContain("pending_spawn_discarded");
     expect(auditContent).toContain("stale_stage_mismatch");
@@ -1771,7 +1771,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
 
     expect(notifications.some((n) => n.includes("timed out"))).toBe(true);
     const logContent = fs.readFileSync(
-      auditLogFileFor(join(tmpDir, ".pi", "audit")),
+      auditLogFileFor(join(tmpDir, ".pi", "audit"), ""),
       "utf-8",
     );
     expect(logContent).toContain("pending_spawn_wait_timeout");

@@ -14,7 +14,7 @@ import {
 import {
   initAuditLog,
 
-  __resetAuditDirPath,
+  __resetAuditRoutingState,
 } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, createMockEventBus } from "../helpers";
 import type { PipelineConfig, SessionMeta } from "../../types";
@@ -40,7 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetSubagentsReady();
-  __resetAuditDirPath();
+  __resetAuditRoutingState();
   // Clear handler to prevent cross-file leakage
   setFixExecutorCompletedHandler(null);
 });
@@ -129,7 +129,7 @@ describe("Phase 3 (189): Fix-complete auto-unfreeze", () => {
 
     // Verify audit log
     const logContent = fs.readFileSync(
-      auditLogFileFor(join(tmpDir, ".pi", "audit")),
+      auditLogFileFor(join(tmpDir, ".pi", "audit"), "pipe-phase3-a"),
       "utf-8",
     );
     expect(logContent).toContain("fix_completed_auto_unfreeze");
