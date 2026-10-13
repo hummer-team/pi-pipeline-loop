@@ -474,7 +474,7 @@ export async function executeDecision(
       await prepareAuditPipelineLog(newPipelineId);
 
       await safeWriteAuditLog("pipeline_decision", {
-        pipelineId: meta.pipelineId,
+        pipelineId: newPipelineId,
         decision,
         // Phase 3 (173) C10④: fromStage is the actual frozen stage, not hardcoded "restart"
         fromStage: fromStage,
@@ -482,7 +482,7 @@ export async function executeDecision(
         newPipelineId,
         reason: meta.blockedReason ?? "",
         ...(opts?.source ? { source: opts.source } : {}),
-      });
+      }, undefined, newPipelineId);
 
       // ─── Phase 0 (173) C1: restart rebind + stale timer cleanup ──────────
       // V5/V7 root fix — executeDecision is the ONLY channel that swaps

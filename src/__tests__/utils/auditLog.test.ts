@@ -13,7 +13,7 @@ import {
   safeWritePromptSnapshot,
   __resetAuditRoutingState,
   __auditLogDirFor,
-  withPipelineId,
+  runWithAuditPipelineContext,
 } from "../../utils/auditLog";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
@@ -98,8 +98,8 @@ describe("writeAuditLog", () => {
       stage: "plan",
     });
 
-    // Logs route to system/log (no pipelineId set in routing context)
-    const logPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    // Phase 0 (197): message.pipelineId routes to per-pipeline directory via four-level chain
+    const logPath = join(root, ".pi", "audit", "pipe-001", "log", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
     const line = content.trim();
 
@@ -235,9 +235,9 @@ describe("writeAuditLog level parameter", () => {
     // Explicit "info"
     await writeAuditLog("agent_settled", { pipelineId: "p1" }, "info");
     // Default (no level arg)
-    await writeAuditLog("session_end", { pipelineId: "p2" });
+    await writeAuditLog("session_end", { pipelineId: "p1" });
 
-    const logPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    const logPath = join(root, ".pi", "audit", "p1", "log", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
     const lines = content.trim().split("\n");
 
@@ -382,15 +382,13 @@ describe("writePromptSnapshot", () => {
     // Then another regular audit line
     await writeAuditLog("session_end", { pipelineId: "pipe-003" });
 
-    // Regular audit lines route to system/log; snapshot routes to pipe-003/log
-    const systemLogPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    // Phase 0 (197): all writes with message.pipelineId route to per-pipeline directory
     const pipelineLogPath = join(root, ".pi", "audit", "pipe-003", "log", getDateAuditFileName());
-    const systemContent = await readFile(systemLogPath, "utf-8");
     const pipelineContent = await readFile(pipelineLogPath, "utf-8");
 
-    // Regular audit lines in system/log
-    expect(systemContent).toContain("[INFO] agent_settled");
-    expect(systemContent).toContain("[INFO] session_end");
+    // All audit lines route to pipe-003/log (message.pipelineId drives routing)
+    expect(pipelineContent).toContain("[INFO] agent_settled");
+    expect(pipelineContent).toContain("[INFO] session_end");
     // Snapshot block in pipe-003/log
     expect(pipelineContent).toContain("[INFO] prompt_snapshot");
     expect(pipelineContent).toContain("=== PROMPT START ===");
@@ -458,7 +456,7 @@ describe("writePromptSnapshot", () => {
 
     // Write a snapshot followed immediately by a regular audit event,
     // both under the same pipeline context so they land in the same file.
-    await withPipelineId("pipe-sep", async () => {
+    await runWithAuditPipelineContext("pipe-sep", async () => {
       await writePromptSnapshot(
         "prompt_snapshot",
         { stage: "clarify", pipelineId: "pipe-sep", source: "yml" },
@@ -527,8 +525,8 @@ describe("writeStageAudit", () => {
       toStage: "develop",
     });
 
-    // writeStageAudit calls writeAuditLog without pipelineId context → system/log
-    const logPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    // writeStageAudit enriches the message with meta pipelineId -> per-pipeline dir
+    const logPath = join(root, ".pi", "audit", "pipe-test-001", "log", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
     const line = content.trim();
 
@@ -562,7 +560,7 @@ describe("writeStageAudit", () => {
     const meta = makeTestMeta({ currentStage: "clarify" });
     await writeStageAudit(config, "pipeline_start", meta);
 
-    const logPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    const logPath = join(root, ".pi", "audit", "pipe-test-001", "log", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
     const line = content.trim();
 
@@ -583,7 +581,7 @@ describe("writeStageAudit", () => {
     // Should NOT hang — visited-set guard terminates the loop
     await writeStageAudit(config, "stage_advance", meta);
 
-    const logPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    const logPath = join(root, ".pi", "audit", "pipe-test-001", "log", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
     const line = content.trim();
 
@@ -613,7 +611,7 @@ describe("writeStageAudit", () => {
     const meta = makeTestMeta();
     await writeStageAudit(config, "stage_advance_failed", meta, { reason: "invalid_next" }, "warn");
 
-    const logPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    const logPath = join(root, ".pi", "audit", "pipe-test-001", "log", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("[WARN] stage_advance_failed");
     expect(content).toContain("reason=invalid_next");
@@ -631,7 +629,7 @@ describe("safeWriteStageAudit", () => {
     const meta = makeTestMeta();
     await safeWriteStageAudit(config, "pipeline_state", meta, { snapshot: "{}" });
 
-    const logPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    const logPath = join(root, ".pi", "audit", "pipe-test-001", "log", getDateAuditFileName());
     const content = await readFile(logPath, "utf-8");
     expect(content).toContain("[INFO] pipeline_state");
     expect(content).toContain("snapshot={}");
@@ -651,18 +649,173 @@ describe("safeWriteStageAudit", () => {
 
 // ─── Per-pipeline routing helpers (197_Feat Phase 0) ─────────────────────────
 
-describe("resolveAuditPipelineId", () => {
-  it("returns meta.pipelineId when provided", async () => {
-    const { __resolveAuditPipelineId } = await import("../../utils/auditLog");
-    expect(__resolveAuditPipelineId({ pipelineId: "pipe-abc" })).toBe("pipe-abc");
+describe("resolveAuditPipelineId (four-level chain)", () => {
+  it("explicit > message > context", async () => {
+    const { __resolveAuditPipelineId, __resetAuditRoutingState } = await import("../../utils/auditLog");
+    await import("../../utils/auditLog").then(m => m.__setAuditPipelineId?.("pipe-ctx") ?? undefined);
+    
+    // Step 1: explicit parameter wins
+    expect(__resolveAuditPipelineId({ pipelineId: "pipe-msg" }, "pipe-exp")).toBe("pipe-exp");
+    
+    // Step 2: message.pipelineId wins when no explicit
+    expect(__resolveAuditPipelineId({ pipelineId: "pipe-msg" })).toBe("pipe-msg");
+    
+    // Step 3: context wins when no explicit/message
+    expect(__resolveAuditPipelineId()).toBe("pipe-ctx");
+    expect(__resolveAuditPipelineId({})).toBe("pipe-ctx");
+    expect(__resolveAuditPipelineId({ pipelineId: "" })).toBe("pipe-ctx");
+    
+    __resetAuditRoutingState();
   });
 
-  it("returns current auditPipelineId when meta.pipelineId is absent", async () => {
-    const { __resolveAuditPipelineId } = await import("../../utils/auditLog");
-    // No pipelineId set → returns empty
+  it("returns empty when all levels are empty", async () => {
+    const { __resolveAuditPipelineId, __resetAuditRoutingState } = await import("../../utils/auditLog");
+    __resetAuditRoutingState();
+    
     expect(__resolveAuditPipelineId()).toBe("");
     expect(__resolveAuditPipelineId({})).toBe("");
     expect(__resolveAuditPipelineId({ pipelineId: "" })).toBe("");
+    expect(__resolveAuditPipelineId({ pipelineId: "" }, "")).toBe("");
+  });
+});
+
+// ─── Phase 0 (197): Four-level chain + completion semantics + consistency ────
+
+describe("Phase 0 target 1: four-level chain suppression", () => {
+  it("explicit > message > context > empty", async () => {
+    const root = makeTmpRoot("phase0-chain");
+    await initAuditLog(makeConfig(root));
+
+    // Set context to pipe-ctx
+    await import("../../utils/auditLog").then(m => m.__setAuditPipelineId?.("pipe-ctx"));
+
+    // Step 1: explicit wins over message and context
+    await writeAuditLog("test1", { pipelineId: "pipe-msg" }, "info", "pipe-exp");
+    const expPath = join(root, ".pi", "audit", "pipe-exp", "log", getDateAuditFileName());
+    const expContent = await readFile(expPath, "utf-8");
+    expect(expContent).toContain("test1");
+    expect(expContent).toContain("pipelineId=pipe-exp");
+
+    // Step 2: message wins over context (no explicit)
+    await writeAuditLog("test2", { pipelineId: "pipe-msg" });
+    const msgPath = join(root, ".pi", "audit", "pipe-msg", "log", getDateAuditFileName());
+    const msgContent = await readFile(msgPath, "utf-8");
+    expect(msgContent).toContain("test2");
+    expect(msgContent).toContain("pipelineId=pipe-msg");
+
+    // Step 3: context wins when no explicit/message
+    await writeAuditLog("test3");
+    const ctxPath = join(root, ".pi", "audit", "pipe-ctx", "log", getDateAuditFileName());
+    const ctxContent = await readFile(ctxPath, "utf-8");
+    expect(ctxContent).toContain("test3");
+    expect(ctxContent).toContain("pipelineId=pipe-ctx");
+
+    // Step 4: empty when all levels empty
+    await import("../../utils/auditLog").then(m => m.__setAuditPipelineId?.(""));
+    await writeAuditLog("test4");
+    const emptyPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    const emptyContent = await readFile(emptyPath, "utf-8");
+    expect(emptyContent).toContain("test4");
+
+    await import("../../utils/auditLog").then(m => m.__resetAuditRoutingState());
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("Phase 0 target 2: completion semantics (no caller mutation)", () => {
+  it("enriches log line without mutating caller message object", async () => {
+    const root = makeTmpRoot("phase0-enrich");
+    await initAuditLog(makeConfig(root));
+
+    const callerMsg = { stage: "test", data: "value" };
+    const originalKeys = Object.keys(callerMsg).sort();
+
+    // Write with context (no pipelineId in message)
+    await import("../../utils/auditLog").then(m => m.__setAuditPipelineId?.("pipe-enrich"));
+    await writeAuditLog("enriched_event", callerMsg);
+
+    // Verify caller object not mutated
+    expect(Object.keys(callerMsg).sort()).toEqual(originalKeys);
+    expect(callerMsg).not.toHaveProperty("pipelineId");
+
+    // Verify log line contains enriched pipelineId
+    const logPath = join(root, ".pi", "audit", "pipe-enrich", "log", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("pipelineId=pipe-enrich");
+    expect(content).toContain("stage=test");
+    expect(content).toContain("data=value");
+
+    await import("../../utils/auditLog").then(m => m.__resetAuditRoutingState());
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not override existing pipelineId in message", async () => {
+    const root = makeTmpRoot("phase0-no-override");
+    await initAuditLog(makeConfig(root));
+
+    const callerMsg = { stage: "test", pipelineId: "pipe-original" };
+    await import("../../utils/auditLog").then(m => m.__setAuditPipelineId?.("pipe-context"));
+    await writeAuditLog("no_override_event", callerMsg);
+
+    // Log should use message pipelineId (step 2 wins over step 3)
+    const logPath = join(root, ".pi", "audit", "pipe-original", "log", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("pipelineId=pipe-original");
+    expect(content).not.toContain("pipe-context");
+
+    await import("../../utils/auditLog").then(m => m.__resetAuditRoutingState());
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("Phase 0 target 3: directory-line consistency", () => {
+  it("directory and log line use same pipelineId", async () => {
+    const root = makeTmpRoot("phase0-consistency");
+    await initAuditLog(makeConfig(root));
+
+    // Write with explicit pipelineId
+    await writeAuditLog("consistency_test", { data: "test" }, "info", "pipe-consistent");
+
+    // Verify directory matches log content
+    const logPath = join(root, ".pi", "audit", "pipe-consistent", "log", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("pipelineId=pipe-consistent");
+    expect(content).toContain("consistency_test");
+
+    // Verify no other pipeline directory has this event
+    const otherPath = join(root, ".pi", "audit", "system", "log", getDateAuditFileName());
+    try {
+      const otherContent = await readFile(otherPath, "utf-8");
+      expect(otherContent).not.toContain("consistency_test");
+    } catch {
+      // File does not exist, which is expected
+    }
+
+    await import("../../utils/auditLog").then(m => m.__resetAuditRoutingState());
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("writePromptSnapshot directory-line consistency", async () => {
+    const root = makeTmpRoot("phase0-snapshot-consistency");
+    await initAuditLog(makeConfig(root));
+
+    const callerMsg = { stage: "plan", source: "test" };
+    await writePromptSnapshot("prompt_snapshot", callerMsg, "Test prompt content", "pipe-snap");
+
+    // Verify directory matches log content
+    const logPath = join(root, ".pi", "audit", "pipe-snap", "log", getDateAuditFileName());
+    const content = await readFile(logPath, "utf-8");
+    expect(content).toContain("pipelineId=pipe-snap");
+    expect(content).toContain("prompt_snapshot");
+    expect(content).toContain("=== PROMPT START ===");
+    expect(content).toContain("Test prompt content");
+    expect(content).toContain("=== PROMPT END ===");
+
+    // Verify caller object not mutated
+    expect(callerMsg).not.toHaveProperty("pipelineId");
+
+    await import("../../utils/auditLog").then(m => m.__resetAuditRoutingState());
+    await rm(root, { recursive: true, force: true });
   });
 });
 
@@ -706,14 +859,14 @@ describe("ensureAuditLogDir", () => {
   });
 });
 
-describe("withPipelineId", () => {
+describe("runWithAuditPipelineContext", () => {
   it("sets auditPipelineId during callback and restores afterward", async () => {
     const root = makeTmpRoot("with-pipeline-id");
     const config = makeConfig(root);
     await initAuditLog(config);
 
     let capturedDir = "";
-    await withPipelineId("pipe-xyz", async () => {
+    await runWithAuditPipelineContext("pipe-xyz", async () => {
       // Inside callback: writeAuditLog should route to pipe-xyz/log
       await writeAuditLog("test_event", { key: "val" });
       capturedDir = __auditLogDirFor("pipe-xyz");
@@ -740,7 +893,7 @@ describe("withPipelineId", () => {
     await initAuditLog(config);
 
     try {
-      await withPipelineId("pipe-err", async () => {
+      await runWithAuditPipelineContext("pipe-err", async () => {
         throw new Error("test error");
       });
     } catch {
@@ -761,7 +914,7 @@ describe("withPipelineId", () => {
     const config = makeConfig(root);
     await initAuditLog(config);
 
-    await withPipelineId(undefined, async () => {
+    await runWithAuditPipelineContext(undefined, async () => {
       await writeAuditLog("undef_event");
     });
 

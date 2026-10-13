@@ -88,19 +88,56 @@ export function getDateAuditFileName(): string {
 // ─── Per-pipeline routing helpers (197_Feat Phase 0) ──────────────────────────
 
 /**
- * Resolves the audit pipelineId from the current routing context.
+ * Resolves the audit pipelineId via a four-step priority chain.
  *
- * - meta.pipelineId present → return that pipelineId (even if it differs from current context).
- * - meta.pipelineId missing/empty → return current auditPipelineId (may be empty).
+ * Priority: explicit (param) > message.pipelineId > context binding > ""
  *
- * @param meta - Object with optional pipelineId (e.g. message or SessionMeta)
+ * @param message - Optional message object that may carry a pipelineId field
+ * @param explicitPipelineId - Optional explicit pipelineId passed directly by the caller
  * @returns The resolved pipelineId string (may be empty)
  */
-function resolveAuditPipelineId(meta?: { pipelineId?: string }): string {
-  if (meta?.pipelineId && meta.pipelineId.length > 0) {
-    return meta.pipelineId;
+function resolveAuditPipelineId(
+  message?: { pipelineId?: string },
+  explicitPipelineId?: string,
+): string {
+  // Step 1: explicit parameter (highest priority)
+  if (explicitPipelineId && explicitPipelineId.length > 0) {
+    return explicitPipelineId;
   }
-  return auditPipelineId;
+  // Step 2: message.pipelineId (message carries its own attribution)
+  if (message?.pipelineId && message.pipelineId.length > 0) {
+    return message.pipelineId;
+  }
+  // Step 3: context binding (module-level auditPipelineId)
+  if (auditPipelineId && auditPipelineId.length > 0) {
+    return auditPipelineId;
+  }
+  // Step 4: fallback to empty string (will route to system/log)
+  return "";
+}
+
+/**
+ * Enriches the message object with the resolved pipelineId attribution.
+ *
+ * - If the message already carries a pipelineId field, returns the original object (no mutation).
+ * - If the resolved pipelineId is non-empty, returns a new object with pipelineId injected.
+ * - If the resolved pipelineId is empty, returns the original object (no injection).
+ *
+ * This preserves the caller object immutability and ensures log lines always
+ * carry their pipelineId attribution for post-hoc analysis.
+ *
+ * @param message - The original message object (not mutated)
+ * @param routedId - The resolved pipelineId for this write
+ * @returns The enriched message (new object if injected, same reference otherwise)
+ */
+function withPipelineId<T extends Record<string, unknown>>(
+  message: T | undefined,
+  routedId: string,
+): T | undefined {
+  if (!routedId) return message; // No injection if routedId is empty
+  // Always inject/override with the routedId for consistency between directory and log content
+  if (!message) return { pipelineId: routedId } as unknown as T;
+  return { ...message, pipelineId: routedId } as T;
 }
 
 /**
@@ -136,7 +173,7 @@ async function ensureAuditLogDir(dir: string): Promise<void> {
 }
 
 /**
- * Runs a callback with a specific pipelineId as the audit routing context.
+ * Runs a callback within a scoped audit routing context (runWithAuditPipelineContext).
  *
  * Used by callers that have a pipelineId available (e.g. meta.pipelineId)
  * to route events to the correct pipeline directory without mutating global state.
@@ -147,7 +184,7 @@ async function ensureAuditLogDir(dir: string): Promise<void> {
  * @param fn - The callback to execute with the routing context set
  * @returns Promise that resolves with the callback's return value
  */
-export async function withPipelineId<T>(
+export async function runWithAuditPipelineContext<T>(
   pipelineId: string | undefined,
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -214,6 +251,7 @@ export async function writeAuditLog(
   stage: string,
   message?: Record<string, string | boolean>,
   level: AuditLogLevel = "info",
+  explicitPipelineId?: string,
 ): Promise<void> {
   // Guard: if audit directory has not been initialized, silently skip
   if (!auditDirPath) return;
@@ -239,13 +277,23 @@ export async function writeAuditLog(
     }
   }
 
-  // Route to per-pipeline directory
-  const pipelineId = resolveAuditPipelineId();
-  const logDir = auditLogDirFor(pipelineId);
+  // Route-then-enrich: resolve pipelineId, enrich message, serialize
+  const routedId = resolveAuditPipelineId(message, explicitPipelineId);
+  const outMessage = withPipelineId(message, routedId);
+
+  const logDir = auditLogDirFor(routedId);
   await ensureAuditLogDir(logDir);
 
+  // Rebuild line with enriched message (ensures pipelineId attribution in log content)
+  let enrichedLine = `${datePart} ${timePart} - ${levelPrefix}${stage}`;
+  if (outMessage && Object.keys(outMessage).length > 0) {
+    for (const [k, v] of Object.entries(outMessage)) {
+      enrichedLine += ` | ${k}=${v}`;
+    }
+  }
+
   const logPath = path.join(logDir, getDateAuditFileName());
-  await fs.appendFile(logPath, line + "\n");
+  await fs.appendFile(logPath, enrichedLine + "\n");
 }
 
 /**
@@ -268,7 +316,7 @@ export async function safeWriteAuditLog(
   // Test override: when set, delegate to the replacement (which may throw)
   if (_safeWriteOverride) return _safeWriteOverride(stage, message, level);
   try {
-    await withPipelineId(pipelineId, () => writeAuditLog(stage, message, level));
+    await runWithAuditPipelineContext(pipelineId, () => writeAuditLog(stage, message, level, pipelineId));
   } catch {
     // Audit failure must never alter business control flow
   }
@@ -368,6 +416,7 @@ export async function writePromptSnapshot(
   stage: string,
   message: Record<string, string>,
   prompt: string,
+  explicitPipelineId?: string,
 ): Promise<void> {
   // Guard: if audit directory has not been initialized, silently skip
   if (!auditDirPath) return;
@@ -384,12 +433,16 @@ export async function writePromptSnapshot(
     String(now.getSeconds()).padStart(2, "0"),
   ].join(":");
 
+  // Route-then-enrich: resolve pipelineId, enrich message, serialize
+  const routedId = resolveAuditPipelineId(message, explicitPipelineId);
+  const outMessage = withPipelineId(message, routedId);
+
   // Build metadata single-line event (same format as writeAuditLog)
   // D5: Only append prompt_hash if not already present in meta (avoids duplicate keys)
   let metaLine = `${datePart} ${timePart} - [INFO] ${stage}`;
   let hasPromptHash = false;
-  if (message && Object.keys(message).length > 0) {
-    for (const [k, v] of Object.entries(message)) {
+  if (outMessage && Object.keys(outMessage).length > 0) {
+    for (const [k, v] of Object.entries(outMessage)) {
       metaLine += ` | ${k}=${v}`;
       if (k === "prompt_hash") hasPromptHash = true;
     }
@@ -409,9 +462,8 @@ export async function writePromptSnapshot(
     "", // produces second \n → real blank line separator
   ].join("\n");
 
-  // Route to per-pipeline directory (extract pipelineId from message)
-  const pipelineId = resolveAuditPipelineId({ pipelineId: message.pipelineId });
-  const logDir = auditLogDirFor(pipelineId);
+  // Route to per-pipeline directory using already-resolved routedId
+  const logDir = auditLogDirFor(routedId);
   await ensureAuditLogDir(logDir);
 
   const logPath = path.join(logDir, getDateAuditFileName());
@@ -436,7 +488,7 @@ export async function safeWritePromptSnapshot(
   pipelineId?: string,
 ): Promise<void> {
   try {
-    await withPipelineId(pipelineId, () => writePromptSnapshot(stage, message, prompt));
+    await runWithAuditPipelineContext(pipelineId, () => writePromptSnapshot(stage, message, prompt, pipelineId));
   } catch {
     // Audit failure must never alter business control flow
   }
@@ -445,7 +497,10 @@ export async function safeWritePromptSnapshot(
 // ─── Test hooks ────────────────────────────────────────────────────────────────
 
 /** @internal — FOR TESTING ONLY. Expose resolveAuditPipelineId for tests */
-export const __resolveAuditPipelineId = resolveAuditPipelineId;
+export const __resolveAuditPipelineId: (
+  message?: { pipelineId?: string },
+  explicitPipelineId?: string,
+) => string = resolveAuditPipelineId;
 
 /** @internal — FOR TESTING ONLY. Expose auditLogDirFor for tests */
 export const __auditLogDirFor = auditLogDirFor;
@@ -463,6 +518,15 @@ export function __resetAuditRoutingState(): void {
   auditPipelineId = "";
   ensuredAuditDirs.clear();
 }
+
+/**
+ * Test-only: Set the audit pipeline ID context
+ * @param pipelineId - The pipeline ID to set as context
+ */
+export function __setAuditPipelineId(pipelineId: string): void {
+  auditPipelineId = pipelineId;
+}
+
 
 /**
  * Resets the module-level auditDirPath to empty string.
@@ -485,14 +549,14 @@ export function __setAuditDirPath(dirPath: string): void {
 }
 
 /** Override for safeWriteAuditLog — when set, replaces the real implementation. FOR TESTING ONLY */
-let _safeWriteOverride: ((stage: string, message?: Record<string, string | boolean>, level?: AuditLogLevel) => Promise<void>) | null = null;
+let _safeWriteOverride: ((stage: string, message?: Record<string, string | boolean>, level?: AuditLogLevel, explicitPipelineId?: string) => Promise<void>) | null = null;
 
 /**
  * Replace safeWriteAuditLog with a custom implementation (or null to restore).
  * FOR TESTING ONLY — allows tests to verify fail-open catch branches in callers.
  */
 export function __setSafeWriteAuditLogOverride(
-  fn: ((stage: string, message?: Record<string, string | boolean>, level?: AuditLogLevel) => Promise<void>) | null,
+  fn: ((stage: string, message?: Record<string, string | boolean>, level?: AuditLogLevel, explicitPipelineId?: string) => Promise<void>) | null,
 ): void {
   _safeWriteOverride = fn;
 }
