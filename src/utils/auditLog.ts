@@ -270,14 +270,10 @@ export async function writeAuditLog(
 
   // All levels get a prefix: info=[INFO], warn=[WARN], error=[ERROR]
   const levelPrefix = level === "warn" ? "[WARN] " : level === "error" ? "[ERROR] " : "[INFO] ";
-  let line = `${datePart} ${timePart} - ${levelPrefix}${stage}`;
-  if (message && Object.keys(message).length > 0) {
-    for (const [k, v] of Object.entries(message)) {
-      line += ` | ${k}=${v}`;
-    }
-  }
 
-  // Route-then-enrich: resolve pipelineId, enrich message, serialize
+  // Route-then-enrich: resolve pipelineId, enrich message, serialize (single
+  // assembly path — review round-2 M1: former duplicate `line` serializer was
+  // dead code and a byte-format drift trap; enrichedLine is the only format)
   const routedId = resolveAuditPipelineId(message, explicitPipelineId);
   const outMessage = withPipelineId(message, routedId);
 
@@ -535,6 +531,7 @@ export function __setAuditPipelineId(pipelineId: string): void {
  */
 export function __resetAuditDirPath(): void {
   auditDirPath = "";
+  auditPipelineId = "";
   ensuredAuditDirs.clear();
 }
 
