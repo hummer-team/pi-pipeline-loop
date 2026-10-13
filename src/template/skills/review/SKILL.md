@@ -6,76 +6,82 @@ disable-model-invocation: true
 ---
 
 ## workflow
-1. **解析输入**：从上级 Agent 传递的任务描述中，提取文件路径 `code-review-agent {file}_commit.md`
-2. 查看 `{file}_commit.md` 如果缺失 `plan doc` 中断 review 并输出"缺失plan文档请补充"，如果缺失 `commit id` 则获取 git 最近的 10 条 commit log
-3. 查看 `{file}_commit.md` 文档引用
-   - `plan doc`，阅读理解 plan
-   - `commit id`，根据 dev commit id 或 fix commit id 完成 review
-4. 按以下步骤完成 review
+1. **Parse Input**: Extract file path `code‑review‑agent {file}_commit.md` from task description passed by upstream Agent.
+2. Read `{file}_commit.md`. Terminate review and output "Missing plan document, please supplement" if `plan doc` is absent; terminate review and report error if `commit id` is missing.
+3. Read references inside `{file}_commit.md`
+   - `plan doc`: Read and understand the plan
+   - `commit id`: Perform review based on dev commit id or fix commit id
+4. Complete review per steps below
 
-### 1. 作用域合规
-- 检查 `{file}_commit.md` 的 dev/fix commit id 改动内容是否涉及与 plan 规划无关的文件被意外修改？若存在则标记等级 `High`
-- 注意：如果不在 commit 内容的变动是历史增量修改，review 时请忽略
-- 新增文件是否是plan文档明确指定？如果非plan则标记`Medium`
+### 0. Follow YAGNI Principle for Plan Implementation‑Code Restraint & Reflection
+1. If an implementation already exists in the codebase, reuse existing functions and modules directly.
+2. If solvable by the standard library, use the standard library.
+3. If solvable by existing dependencies, use current dependencies.
+4. If achievable in one‑line code, avoid over‑engineering; simplify and combine sub‑functions to meet business goals.
 
-### 2. 类型与空值安全
+### 1. Scope Compliance
+‑ Check whether changes from dev/fix commit id in `{file}_commit.md` contain unexpected modifications to files unrelated to plan; mark severity as `High` if found.
+‑ Note: Ignore historical incremental changes not included in commit diff during review.
+‑ Check whether new files are explicitly specified in plan document; mark as `Medium` if not defined in plan.
+
+### 2. Type & Null‑Safety
 <!-- Template-TODO: 替换为项目审查规范 -->
-- 以下规则为通用模板，具体以项目 `.pi/references/{stack}_code_spec.md` 为准（`{stack}` 见 develop SKILL 占位）
-- **禁止裸类型（raw type）**：泛型类必须指定类型参数。
-- **可空类型正确处理**：返回可能为空的值时，必须对空值做显式处理（如提前返回、默认值、断言），禁止未检查直接使用。
-- **公共方法参数非空检查**：核心 public 方法入口应对关键参数做 `null`/空值检查。
+‑ Rules below are general template; refer to project [frontend_ts_code_spec](.pi/references/frontend_ts_code_spec.md) for project‑specific requirements.
+‑ **No raw types**: Type parameters must be specified for generic classes.
+‑ **Proper nullable handling**: Explicit null handling (early return, default value, assertion) is required for potentially‑null return values; direct unchecked usage is forbidden.
+‑ **NonNull check for public‑method arguments**: Critical input arguments of core public entry methods shall be checked for `null` / empty values.
 
-### 3. 回归与副作用检测
-- **方法签名兼容**：修改后的 public/protected 方法签名必须与所有调用方兼容。
+### 3. Regression & Side‑Effect Detection
+‑ **Method signature compatibility**: Modified public/protected method signatures must be compatible with all call‑sites.
 <!-- Template-TODO: 替换为项目特有的回归检测规则（如 ORM 实体变更、定时任务调度影响等） -->
 
-### 4. 代码质量
-- **函数过长**：单个方法超过 100 行且无强耦合理由，标记 `Medium`。
-- **命名不规范**：变量/方法命名中性化、无明确业务含义，标记 `Low`。
-- **鲁棒性**：
-  - 核心逻辑无边界检查（空集合、null 值、空字符串）。
-  - `catch` 块必须记录 `error` 级别日志并包含明确的输入参数和异常堆栈，禁止空 `catch` 块吞掉异常。
-  - 批量处理中单条失败不得中断整个批次。
-- **代码重复**：违反 DRY 原则。
+### 4. Code Quality
+‑ **Overlong function**: Mark `Medium` when single method exceeds 100 lines without strong coupling justification.
+‑ **Poor naming**: Mark `Low` for neutral variable/method names without clear business semantics.
+‑ **Robustness**:
+  ‑ Missing boundary checks (empty collection, null, blank string) for core logic.
+  ‑ `catch` blocks must write `error`‑level log with explicit input parameters and exception stack trace; empty catch swallowing exceptions is forbidden.
+  ‑ Single‑item failure in batch processing shall not abort the whole batch.
+‑ **Code duplication**: Violates DRY principle.
 <!-- Template-TODO: 替换为项目特有的代码质量规则（如外部调用规范等） -->
 
-### 5. 日志规范
+### 5. Logging Specification
 <!-- Template-TODO: 替换为项目审查规范 -->
-- **框架统一**：使用项目约定的日志框架，禁止直接使用标准输出流。
-- **日志级别**：
-  - 方法入口/出口与核心业务流程 → `info`
-  - 中间过程数据 → `debug`
-  - 异常 → `error`
-- **日志内容**：关键日志必须包含上下文信息，异常日志必须包含错误堆栈。
+‑ **Unified framework**: Use project‑agreed logging framework; direct standard output stream usage is forbidden.
+‑ **Log level**:
+  ‑ Method entry/exit and core business flow → `info`
+  ‑ Intermediate process data → `debug`
+  ‑ Exceptions → `error`
+‑ **Log content**: Critical logs must carry context information; exception logs must include stack trace.
 
-### 6. 配置安全
-- 禁止在代码中硬编码密钥、密码、Token 等敏感信息。
+### 6. Configuration Security
+‑ Hard‑coding secrets, passwords, tokens and other sensitive data in source code is forbidden.
 <!-- Template-TODO: 替换为项目特有的配置安全规则 -->
 
-### 7. 输出格式
-### 问题/等级/改进建议
-1. 问题等级定义
+### 7. Output Format Issue / Severity / Improvement Suggestion
+1. Severity definition
    - **Blocker**:
-     - 遗漏 plan 定义的 phase
-     - 内存泄漏、OOM
-   - **High**：
-     - 未完全遵循 plan 文档定义的 Task
+     - Missing phase defined in plan
+     - Memory leak, OOM
+   - **High**:
+     - Tasks defined in plan document are not fully implemented
    - **Medium**:
-     - 逻辑覆盖plan不完整
-     - 实现边界不清晰，代码复杂，不易维护
-     - 部分场景可能影响功能
-   - **LOW**
-     - 非功能问题 
-     - 仅格式、命名、风格、可读性问题
-2. **Blocker**,**High**,**Medium** 的问题标记为 `待修复`，**LOW** 的问题不需要修复
+     - Incomplete logic coverage against plan
+     - Unclear implementation boundary, complex hard‑to‑maintain code
+     - Potential functional impact under partial scenarios
+     - Not following the `YAGNI` principle
+   - **LOW**:
+     - Non‑functional issues
+     - Format, naming, style, readability concerns only
+2. Mark **Blocker**, **High**, **Medium** items as `To‑Fix` or `待修复`; LOW items require no fixes.
 
-### Review 结果输出目录 `docs/review`
-1. 文件命名格式：`code_review_{file}.md`
-   - 多轮复验更新同一文件，仅保留最终结论（复验历史由 git 追溯）
-   - 多轮复验多新问题则追加到review文档中
-2. 报告格式参考 `@.pi/references/review_report_template.md`
-3. <!-- Phase 5 (173) C17: Path convention clarification -->
-   **路径约定**：Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
+### 8.1 Review Output Directory: `docs/review`
+1. File naming rule: `code_review_{file}_plan_{index}.md`
+   - `{file}`: Plan file name
+   - `{index}`: Review round number, starting from 1
+   - Example: `docs/review/code_review_xx_plan_1.md`
+2. Strictly follow the content template. Output type‑safety, regression‑side‑effect detection issues via template if found. If no issues exist, briefly summarize review scope inside `Summary`.
+3. use `read` tool report format flow [review_report_template.md](.pi/references/review_report_template.md)
 
-### 8. not commit review doc
-1. 所有 review 相关文档，模板 local 存储不需要 commit
+### 9. not commit review doc
+1. All review‑related documents and templates shall be stored locally; no commit required.

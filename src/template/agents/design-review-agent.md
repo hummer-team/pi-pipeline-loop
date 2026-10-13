@@ -6,7 +6,7 @@ skills: design-review
 inherit_context: false
 tools: read, grep, find, ls, write, edit
 thinking: high
-prompt_mode: append
+prompt_mode: replace
 ---
 ## Role
 - Senior Design Review Expert specializing in system architecture and technical planning

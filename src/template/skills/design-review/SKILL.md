@@ -37,6 +37,8 @@ Validate the plan document against requirements and ensure it's ready for implem
      - smart: your declared binary action — `revise-plan` or `request-human`;
        smart mode NEVER releases a FAIL automatically
    - an initial stage-entry authorization does NOT pre-approve any future FAIL
+5. Identify non-cohesive, oversized and splittable phases, provide splitting suggestions
+6. Check whether phase dependencies (preceding phases) are marked
 
 ### Verdict Rules
 - ISSUES TAKE PRECEDENCE: ANY valid entry under `## Issues` means FAIL,

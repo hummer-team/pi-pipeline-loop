@@ -6,34 +6,42 @@ disable-model-invocation: true
 ---
 
 ## workflow
-### 必须遵循
-1. **plan** 严格遵循 plan doc Phase 顺序完成规划的所有任务(不能跳跃，遗漏)
-2. **技术规范**：read `.pi/references/{stack}_code_spec.md`（`{stack}` 见交付项 Template-TODO 占位）
 
-### phase 开发流程
-1. **前置校验**：
-   - 检查规划文件是否存在，不存在则提示用户并终止。
-   - 检查文件是否包含 `## Phase <index>` 章节，若无则提示"无效的规划文件"。
-     - 举例：`Phase 0: xxx`、`Phase 1: xxx` 等。
-2. **解析规划**：读取规划文件，理解所有 Phase 及其任务列表、验收标准。
-3. git log check
-    - 读取最近的git log已完成的功能，避免重复开发，确保持续开发
-4. **按 Phase 渐进式开发**（Phase 编号从 0 开始）：
-   - 按顺序依次执行每个 Phase。
-   - 每个 Phase 完成后，向用户汇报进度（如"Phase 1/5 已完成"）。
-   - 每个 Phase 执行后必须运行项目构建与单元测试命令（以项目实际技术栈为准）确认通过。
-     - 自动修复测试失败的问题
- 5. **每个 phase 完成后，必须**：
-    - 按 plan 文档中 commit 内容提交代码
-    - 参考模板 `@.pi/references/develop_commit_template.md`
- 6. **交付规范**：参考 `@.pi/references/develop_deliverable_template.md`
+### Must Follow
+1. **plan**: Complete all planned tasks strictly in the order of phases in plan doc (no skipping or omission)
+2. **Follow YAGNI**
+3. **Technical Spec**: Read [frontend_ts_code_spec.md](.pi/references/frontend_ts_code_spec.md)
+4. **Forbidden**: Overwriting plan content in any form is prohibited
+
+### Follow YAGNI Principle for Plan Implementation‑Code Restraint & Reflection
+1. If an implementation already exists in the codebase, reuse existing functions and modules directly.
+2. If solvable by the standard library, use the standard library.
+3. If solvable by existing dependencies, use current dependencies.
+4. If achievable in one‑line code, avoid over‑engineering; simplify and combine sub‑functions to meet business goals.
+5. **Documentation and code comments shall be concise, highlight key points only, avoid lengthy and redundant descriptions.**
+
+### Phase Development Workflow
+1. **Pre‑check**:
+   - Verify whether the plan file exists. Prompt the user and terminate if missing.
+   - Check if the file contains sections marked `## Phase <index>`. If not, report "Invalid plan file".
+     - Examples: `Phase 0: xxx`, `Phase 1: xxx`.
+2. **Parse Plan**: Read the plan file and understand all phases, their task lists and acceptance criteria.
+3. **Git Log Check**
+   - Read recent completed features from git‑log to avoid duplicate work and ensure continuous development.
+4. **Incremental Development by Phase** (Phase index starts from 0):
+   - Execute each phase sequentially.
+   - Report progress to user after finishing each phase (e.g. "Phase 1/5 completed").
+   - Run project build and unit‑test commands (based on actual tech stack) after every phase to confirm success.
+     - Auto‑fix failed tests.
+5. **Mandatory actions after each phase**:
+   - **Commit must be recorded after each phase completes**
+   - **Commit code following the commit instructions defined in the plan document**
+   - `Read` the template [develop_commit_template](.pi/references/develop_commit_template.md)
+6. **Deliverable Specification**: `Read` the template [develop_deliverable_template](.pi/references/develop_deliverable_template.md)
 
 ---
-## 交付项
-<!-- Phase 5 (173) C17: Path convention clarification -->
-**路径约定**：Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
-<!-- Template-TODO: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等） -->
-<!-- Template-TODO: 配置项目技术栈 stack（如 frontend_ts / java），develop 按 .pi/references/{stack}_code_spec.md 读取对应规范 -->
+## Deliverables
+1. Commit document must be generated following the specification in [develop_commit_template](.pi/references/develop_commit_template.md)
 
 ## Checkpoint discipline (crash-resilient output)
 - Create the deliverable file early (skeleton with section headers), then append content in ≤2KB chunks.

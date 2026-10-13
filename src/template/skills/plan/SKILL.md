@@ -5,76 +5,61 @@ userInvocable: false
 disable-model-invocation: true
 ---
 
-## 流程边界
-1. 禁止修改任何源代码文件
-2. 仅做方案实现步骤规划
-
-## 输入
-- **需求理解结果**：必须是有明确的方案决策信息(需求目标、范围、方案选择)，不能有模糊的，未确定的方案新进入plan阶段
-- **源文件**：`design`阶段读取的需求、澄清描述文件（如 `docs/design/{index}_{xxx}.md`）
-  - 注意：`{index}`、`{xxx}` 是占位符，如：15_command_flow_skip.md
-
-## 必须遵循规则
-1. 设计-规划双向可追溯：规划阶段必须引用设计方案（点）。
-2. 规划定稿前全量覆盖检查
-3. 不能超越问题澄清、方案决策的范围
-
----
 ## workflow
 
-### 1. 进入条件
-- 在 `design` SKILL 确认 `full-und?` 后进入本阶段。
+### Mandatory
+1. The plan guides development in the develop phase. Plan content shall be definite solution descriptions, without options, ambiguity, redundant or useless text.
+2. Must refer to `4. Follow YAGNI Principle‑Code Restraint & Reflection`.
+3. Must balance feature implementation and performance; do not introduce technical debt.
+4. Split long tasks reasonably. Large task phases can be split into separate phases to keep phases cohesive;
+5. Keep phases independent. If dependencies exist, plan the provider phase in advance in sequence and mark e.g. **Depends on phase 0**
 
-### 2. 输入采集
-- 读取`docs/design/{index}_{xxx}.md` 理解结果（从需求描述文件中提取）。
-- 确认用户指定的规划文件输出路径。
+### Process Boundaries
+1. Modification of any source‑code files is prohibited.
+2. Only implementation‑step planning for solutions shall be performed.
 
-### 3. 生成规划文档
-- 规划内容必须包含：
-    - **Summary**：简明扼要描述要解决的问题。
-    - **Phase {x}**：每个 Phase 包含目标、任务列表、验收标准。
-    - **任务列表**：修改的文件范围、新增文件、新增接口/数据结构、重构方式、具体逻辑实现。
-    - **验收标准**：每个 Phase 的构建与测试验证要求（以项目实际技术栈为准）。
-    - **Commit 规范**：符合 Conventional Commits 规范，如：
-      - feat(scope): new feature; fix(scope): bug fix; docs(scope): documentation changes; chore(scope): maintenance tasks; refactor(scope): code refactoring; test(scope): adding or updating tests
-      - scope: scope is Core Modifications, e.g: fulfillment, kernel-picker, rfm
-- 参考模板 `@.pi/references/plan_template.md` 生成完整规划。
-- **规划文件路径**：用户指定的 `_plan.md` 输出路径
-  - 举例：`docs/design/01_e2e_flow_v1_plan.md`
+### Input
+- **Requirement Understanding Result**: Must contain clear solution‑decision information (requirement goals, scope, solution selection). No ambiguous or undecided solutions may enter the plan phase.
+- **Source File**: Requirement and clarification document read in the `design` phase (e.g. `docs/design/{index}_{xxx}.md`)
+  - Note: `{index}` and `{xxx}` are placeholders, example: 15_command_flow_skip.md
 
-### 4. 输出要求
-1. 言简意赅，突出重点、边界，避免冗余及与问题、方案不相关的内容。
-2. **禁止输出**：开发耗时、工作量评估等。
+### Plan Must satisfy
+1. Two‑way traceability between design and plan: The planning phase must reference specific points from the design solution.
+2. Full‑coverage review before finalizing the plan.
+3. Shall not exceed the scope of issue clarification and solution decisions.
 
-### 5. plan review
-1. 完成 plan 后**必须 review plan** 是否完全覆盖了方案、澄清的问题，如果存在遗漏则补充完整
+### Follow YAGNI Principle‑Code Restraint & Reflection
+1. Is there an existing implementation in codebase? Reuse existing functions and modules.
+2. Can it be solved by standard library? Use standard‑library solutions.
+3. Can it be solved by existing dependencies? Reuse current dependencies.
+4. Can it be done in one line? Avoid over‑engineering; adopt simple implementation to meet requirements.
+5. If none of above applies, design reasonable and maintainable code.
 
-### 6. not commit design and plan docs
-1. 设计、规划文档 local 存储，不需要 commit
+### Generate Planning Document
+#### Planning content must include(**out put Language for [plan_template.md](.pi/references/plan_template.md)**):
+  1. **Summary**: Concise description of the problem to be solved
+  2. **Phase {x}**: Each Phase contains objectives, task list and acceptance criteria
+  3. **Task List**: Scope of files to modify, new files, new interfaces / data‑structures, refactoring approach and detailed logic implementation
+  4. **Acceptance Criteria**: Validation requirements of `compile` + `unit test` for each Phase
+  5. **Unit Tests Core**: Describe key unit‑test objectives for the phase, including new or updated tests
+  6. **Commit Specification**: Compliant with git commit convention, example:
+    - feat(scope):scope is Core Modifications，e.g: fulfillment,kernel‑picker,rfm
 
-### 7. Checkpoint discipline (crash-resilient output)
+#### Generate the complete plan referencing template [plan_template](.pi/references/plan_template.md).
+#### **Plan File Path**: User‑specified output path for `_plan.md`
+  - Example：`docs/design/01_e2e_flow_v1_plan.md`
+
+### Output Requirements
+1. Keep content concise, highlight key points and boundaries; avoid redundant or irrelevant content.
+2. **Forbidden output**: Development time estimation, workload assessment, etc.
+
+### Plan Review
+1. After finishing the plan, **must review it** to verify full coverage of solutions and clarified issues; supplement content if anything is missing.
+2. refer `### Mandatory`
+
+### Do Not Commit Design and Plan Docs
+1. Store design and planning documents locally; no commit required.
+
+### Checkpoint discipline (crash-resilient output)
 - Create the deliverable file early (skeleton with section headers), then append content in ≤2KB chunks.
 - Never accumulate the full result for a single final write — at any crash point, the sunk cost is at most the last unwritten chunk.
-
-### 8. Authorized design-review update mode (distinct from ordinary plan mode)
-When the plugin dispatches plan work with a `design_review_update_prompt` section
-(YAML-configured; built-in default when the key is absent), you are in
-AUTHORIZED UPDATE mode, not fresh-planning mode:
-- Read the referenced review report; edit the existing plan document and write
-  the process receipt to the TWO exact paths the prompt names.
-- Do NOT modify source code or the requirement document; do NOT add
-  clarification rounds or fabricate user confirmation.
-- The plan document carries the ACTUAL fixes only (cite the plan Phase numbers
-  you edited); the plan body must NOT gain or edit any `## Design Review Update`
-  protocol section — that contract is historical and rejected for new updates.
-- The STANDALONE receipt document (path given as `updateReceiptDoc` in the
-  prompt) carries the exact `## Design Review Update` section with the seven
-  identity rows (Pipeline / Plan / Review Operation / Report / Round /
-  Operation / Baseline Hash) and one disposition row (`fixed` / `deferred` /
-  `rejected`, or the owner sentinels `new-decision` / `unfixable`) per report
-  issue, each with justification.
-- Record concrete change points under `### Changes Made` (with the plan Phase
-  location for every `fixed` issue) for the next review round; fix QUALITY is
-  judged by the next design-review, not by this step.
-The plugin verifies the receipt structurally and re-reviews automatically —
-no manual confirm checkpoint applies in this mode.

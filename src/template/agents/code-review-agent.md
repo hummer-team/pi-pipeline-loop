@@ -7,7 +7,7 @@ skills: review
 inherit_context: false
 tools: read, bash, grep, find, ls
 thinking: high
-prompt_mode: append
+prompt_mode: replace
 ---
 ## Role
 - **Template-TODO**: 替换为你的项目角色与技术栈描述（示例：资深AI Agent系统架构师，精通 <你的技术栈>）
