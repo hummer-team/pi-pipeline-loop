@@ -13,6 +13,7 @@ import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
+import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
 import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler } from "./utils/subagent-rpc";
@@ -103,6 +104,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // spawn paths fall back immediately (zero dead wait).
     wireSubagentsReadyListener(pi);
 
+    // Phase 0 / 200_Bug (G2-1, G2-2): subscribe to subagent lifecycle events
+    // and maintain the in-memory registry for wake-up diagnostics.
+    wireSubagentLifecycleListeners(pi);
+
     // Phase 0 (189): register fix-executor-completion handler via DI.
     // Breaks circular dependency: utils/subagent-rpc no longer imports core modules.
     setFixExecutorCompletedHandler(handleFixExecutorCompleted);
@@ -154,6 +159,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           },
         );
 
+
+        // Phase 0 / 200_Bug (G2-1): update the lifecycle registry meta accessor
+        // so event handlers can read currentStage/pipelineId from the owner session.
+        setOwnerMetaAccessor(() => rctx.session.getMeta());
         return h.handler(rctx);
       });
     }
