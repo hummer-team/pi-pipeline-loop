@@ -70,6 +70,12 @@ export interface ChainHarness {
   devArtifact: string;
   config: PipelineConfig;
   session: ReturnType<typeof createSessionState>;
+  /**
+   * 200 Bug Phase 5: the owner-side pi mock (event bus + sendUserMessage),
+   * exposed so regression tests can wire the PRODUCTION lifecycle listeners
+   * exactly as index.ts does at composition time.
+   */
+  ownerPi: unknown;
   ownerEntries: unknown[];
   childEntries: BindingEntryLike[];
   wakeMessages: string[];
@@ -327,6 +333,7 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
     devArtifact,
     config,
     session,
+    ownerPi,
     ownerEntries,
     childEntries,
     wakeMessages,
