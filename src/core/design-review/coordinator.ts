@@ -68,6 +68,7 @@ import {
 } from "./verification-snapshot";
 import { prepareUpdateDispatch } from "./update-preparation";
 import { decideDesignReviewRoute } from "./decision-policy";
+import { isPausedReportEditable } from "./write-policy";
 import {
   applyHumanDecisionChoice,
   beginHumanDecisionMenu,
@@ -1417,12 +1418,47 @@ async function presentHumanDecisionForPendingState(
  * or plan, or a plan content change are ALL refusals — the old choice never
  * approves a different snapshot.
  */
-async function revalidateHumanDecisionSnapshot(
+/**
+ * 200 Bug Phase 4: exported for direct unit verification of the lazy
+ * re-anchor contract — public routing currently reaches this engine only
+ * inside decision-anchor windows (where the exemption keeps it strict).
+ */
+export async function revalidateHumanDecisionSnapshot(
   ctx: CoordinatorContext,
   meta: SessionMeta,
   decision: HumanDecision,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const vr = await runVerification(ctx.config, meta, [], ctx.verificationOptions);
+  // 200 Bug Phase 4: the shared verification engine builds a review context
+  // only for review_running and paused("decision-pending") (193 Phase 2,
+  // task 9). A decision that survives into a NON-exempt editable paused
+  // window (Phase 3's scoped report release) therefore has no context to be
+  // re-measured in — yet that is exactly where a legal rewrite must be
+  // observed so the lazy re-anchor below can converge the anchor. Normalize
+  // the VERIFICATION VIEW ONLY (never persisted): the full 193 decision-
+  // binding gate (current review operation + decision bound to it + non-
+  // empty hash) still has to hold; `new-decision`/`drift`-style unknown
+  // pauses that are NOT editable windows stay context-free exactly as before.
+  const drStateForView = meta.designReview;
+  const verifyMeta: SessionMeta =
+    drStateForView &&
+    isPausedReportEditable(drStateForView) &&
+    drStateForView.operation &&
+    drStateForView.operation.kind === "review" &&
+    drStateForView.decision &&
+    drStateForView.decision.reviewIdentity.operationId === drStateForView.operation.operationId &&
+    drStateForView.decision.reportHash !== ""
+      ? {
+          ...meta,
+          designReview: {
+            ...drStateForView,
+            // Purely a context-gate key: the decision-pending window and the
+            // editable decision windows share the SAME binding requirements;
+            // re-anchor eligibility is re-checked against the REAL reason.
+            pauseReason: "decision-pending",
+          },
+        }
+      : meta;
+  const vr = await runVerification(ctx.config, verifyMeta, [], ctx.verificationOptions);
   const outcome = vr.designReviewOutcome;
   if (!outcome) return { ok: false, reason: "verification_unavailable" };
   if (outcome.kind === "invalid") return { ok: false, reason: "report_invalid" };
@@ -1431,7 +1467,17 @@ async function revalidateHumanDecisionSnapshot(
   // The decision binds a FAIL. A PASS now means the snapshot changed — and a
   // fresh PASS must NOT be treated as the old choice having been granted.
   if (outcome.verdict !== "fail") return { ok: false, reason: "verdict_not_fail" };
-  if (outcome.reportHash !== decision.reportHash) return { ok: false, reason: "report_hash_drift" };
+  if (outcome.reportHash !== decision.reportHash) {
+    // 200 Bug Phase 4 (G3-1): lazy re-anchor. A report rewritten inside a
+    // NON-exempt paused window is a LEGAL edit (exactly the scoped release
+    // Phase 3 opened), not snapshot drift — pin the decision to the measured
+    // hash and continue the ok flow. Everything else (decision-anchor
+    // windows, identity mismatch, commit conflict) keeps the original
+    // `report_hash_drift` refusal with zero behavior change.
+    if (!(await tryReanchorDecisionReportHash(ctx, meta, decision, outcome))) {
+      return { ok: false, reason: "report_hash_drift" };
+    }
+  }
   const id = outcome.identity;
   if (
     id.operationId !== decision.reviewIdentity.operationId
@@ -1448,6 +1494,72 @@ async function revalidateHumanDecisionSnapshot(
     return { ok: false, reason: "plan_unreadable" };
   }
   return { ok: true };
+}
+
+/**
+ * 200 Bug Phase 4 (G3-1): re-anchor the decision's reportHash to the CURRENT
+ * measured hash when the report was edited through the paused scoped release.
+ *
+ * Guards (ALL must hold, otherwise this returns false and the caller keeps
+ * the strict `report_hash_drift` refusal):
+ * - `isPausedReportEditable(state)` — the SAME single predicate source that
+ *   opened the scoped write in Phase 3 (paused, not a decision-anchor reason);
+ * - the current operation is a bound `review`;
+ * - identity fields `operationId` / `reportDoc` still match the decision
+ *   (a different round/operation is real drift, never a legal edit);
+ * - the strict commit PERSISTS (conflict/unavailable ⇒ refuse, fail-closed).
+ *
+ * Persistence goes through the existing `strictCommitMeta` dual-write channel,
+ * pinned on the decision id/state so a racing chooser can never be clobbered.
+ * No write-time hook is introduced (YAGNI): the only moment the anchor must
+ * converge is before the decision executes — the revalidation itself.
+ */
+async function tryReanchorDecisionReportHash(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  decision: HumanDecision,
+  outcome: Extract<DesignReviewVerificationOutcome, { kind: "report" }>,
+): Promise<boolean> {
+  const drState = meta.designReview;
+  if (!drState || !isPausedReportEditable(drState)) return false;
+  const operation = drState.operation;
+  if (!operation || operation.kind !== "review") return false;
+  if (outcome.identity.operationId !== decision.reviewIdentity.operationId) return false;
+  const bound = typeof drState.reportDoc === "string" ? drState.reportDoc : "";
+  if (!bound || path.resolve(bound) !== path.resolve(decision.reportDoc)) return false;
+  const reanchoredState: DesignReviewState = {
+    ...drState,
+    decision: { ...decision, reportHash: outcome.reportHash },
+    updatedAt: Date.now(),
+  };
+  const res = strictCommitMeta(ctx.session, { designReview: reanchoredState }, {
+    pipelineId: meta.pipelineId ?? "unknown",
+    authorizationId: drState.authorizationId,
+    round: drState.round,
+    operationId: operation.operationId,
+    phase: "paused",
+    stateUpdatedAt: drState.updatedAt,
+    decisionId: decision.decisionId,
+    decisionState: decision.state,
+  });
+  if (res.status !== "persisted") {
+    // The commit did not land: refuse exactly like before (drift park).
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "decision_report_reanchor_refused",
+      decisionId: decision.decisionId,
+      commitStatus: res.status,
+      reason: res.reason,
+    }, "warn");
+    return false;
+  }
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "decision_report_reanchored",
+    decisionId: decision.decisionId,
+    operationId: outcome.identity.operationId,
+    oldHash: decision.reportHash,
+    newHash: outcome.reportHash,
+  });
+  return true;
 }
 
 /**
@@ -1615,7 +1727,19 @@ async function handleDecisionPending(
     trigger,
     round: String(drState.round),
   });
-  return await actOnHumanDecision(ctx, meta, drState, decision);
+  // 200 Bug Phase 4: the re-anchor above may have committed a newer decision
+  // snapshot (re-anchored reportHash) than this handler's local copies. Act
+  // on the LIVE record when it still carries OUR decision, so the
+  // develop-transition hashes and strict-commit anchors match the store.
+  const live = ctx.session.getMeta();
+  const liveState = live?.designReview;
+  const liveDecision = liveState?.decision;
+  const act =
+    live && liveState && liveDecision &&
+    liveDecision.state === "chosen" && liveDecision.decisionId === decision.decisionId
+      ? { meta: live, drState: liveState, decision: liveDecision }
+      : { meta, drState, decision };
+  return await actOnHumanDecision(ctx, act.meta, act.drState, act.decision);
 }
 
 /**
