@@ -501,18 +501,41 @@ describe("194 Phase 3 (C4): tool-guard finished release allows develop writes, r
 // ─── guard integration: refusal rows ─────────────────────────────────────────
 
 describe("194 Phase 3 (C4): guard refuses paused, unproven-finished and identity-incomplete loops", () => {
-  it("paused (executor-failed) → write refused with the paused scope text", async () => {
+  // 200 Bug Phase 3 (G3-1/G3-2): the OLD contract refused every write while
+  // paused. The new one releases ONLY the bound current review report during
+  // a non-decision pause, so the same state now permits the report write and
+  // still refuses everything else with the scoped out-of-scope text.
+  it("paused (executor-failed) → current report writable, everything else refused", async () => {
     const config = makeTestConfig({ projectRoot });
     const meta = makeDrMeta(
       "design-review",
       makeDrState("paused", makeOp("review", UUID_A), { pauseReason: "executor-failed" }),
+    );
+    const allowed = await runGuard(config, meta, "write", {
+      file_path: reportDoc,
+      content: "attempt",
+    }).result;
+    expect(allowed?.block).toBeUndefined();
+    const refused = await runGuard(config, meta, "write", {
+      file_path: planDoc,
+      content: "attempt",
+    }).result;
+    expect(refused?.block).toBe(true);
+    expect(refused?.reason).toContain("dynamic write scope");
+  });
+
+  it("paused (decision-pending) keeps the full freeze (anchor-window exemption)", async () => {
+    const config = makeTestConfig({ projectRoot });
+    const meta = makeDrMeta(
+      "design-review",
+      makeDrState("paused", makeOp("review", UUID_A), { pauseReason: "decision-pending" }),
     );
     const res = await runGuard(config, meta, "write", {
       file_path: reportDoc,
       content: "attempt",
     }).result;
     expect(res?.block).toBe(true);
-    expect(res?.reason).toContain("executor-failed");
+    expect(res?.reason).toContain("awaits a human plan-revision decision");
   });
 
   it("finished WITHOUT trusted receipt → bash source write still refused (fail closed)", async () => {

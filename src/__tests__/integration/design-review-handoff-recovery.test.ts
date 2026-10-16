@@ -77,9 +77,23 @@ function forbiddenPi(calls: string[]) {
   };
 }
 
-/** The day-rotated audit text (async appends get a small settle grace). */
-async function auditText(h: ChainHarness): Promise<string> {
-  await new Promise((r) => setTimeout(r, 30));
+/**
+ * The day-rotated audit text. Audit appends are async, so a fixed grace is a
+ * race under parallel load: poll until the expected marker has landed (or a
+ * generous deadline) before the caller asserts on the content.
+ */
+async function auditText(h: ChainHarness, expectMarker?: string): Promise<string> {
+  const deadline = Date.now() + 2000;
+  let text = "";
+  for (;;) {
+    text = await readAuditText(h);
+    if (!expectMarker || text.includes(expectMarker)) return text;
+    if (Date.now() >= deadline) return text;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+async function readAuditText(h: ChainHarness): Promise<string> {
   const auditDir = path.join(h.projectRoot, ".pi", "audit");
   const contents: string[] = [];
   
@@ -183,7 +197,7 @@ describe("194 Phase 4: handoff recovery and terminal identity rules", () => {
     expect(h.run()!.consecutiveFailures).toBe(1); // never recounted
     expect(h.wakeMessages.length).toBe(wakesBefore); // no second wake
     expect(forbidden).toEqual([]); // no forbidden side call attempted
-    expect(await auditText(h)).toContain("duplicate_ignored");
+    expect(await auditText(h, "duplicate_ignored")).toContain("duplicate_ignored");
   });
 
   test("a superseded run's late event is late_ignored — the current record stays untouched", async () => {
@@ -212,7 +226,7 @@ describe("194 Phase 4: handoff recovery and terminal identity rules", () => {
     expect(canonicalRun(h.run()!)).toBe(before);
     expect(h.wakeMessages.length).toBe(wakesBefore);
     expect(forbidden).toEqual([]);
-    expect(await auditText(h)).toContain("late_event_ignored");
+    expect(await auditText(h, "late_event_ignored")).toContain("late_event_ignored");
   });
 
   test("a child bound to an older run is refused as child-stale with ZERO writes", async () => {

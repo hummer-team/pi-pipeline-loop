@@ -659,15 +659,30 @@ describe("buildStageWriteScope / loop status share the design-review write polic
     expect(prompt).toContain(`- ${REPORT_R1}`);
   });
 
-  it("a paused loop never promises a writable file in STAGE WRITE SCOPE", async () => {
+  // 200 Bug Phase 3 (G3-1/G3-2): the decision-anchor window keeps the old
+  // all-freeze promise text; a recovery pause instead advertises the exact
+  // report path — the prompt shares the guard's single policy source.
+  it("a paused loop in the decision-anchor window never promises a writable file in STAGE WRITE SCOPE", async () => {
+    const meta = makeDrMeta({
+      currentStage: "plan",
+      operation: makeOp("review", REVIEW_OP),
+      stateOverrides: { phase: "paused", pauseReason: "decision-pending", reportDoc: REPORT_R1 },
+    });
+    const prompt = await render(meta);
+    expect(prompt).toContain("Write Scope: nothing — the loop is paused waiting for the owner (paused:decision-pending)");
+    expect(prompt).not.toContain(`- Write Scope: EXACTLY`);
+  });
+
+  it("a paused loop in a recovery window promises EXACTLY the bound report in STAGE WRITE SCOPE", async () => {
     const meta = makeDrMeta({
       currentStage: "plan",
       operation: makeOp("review", REVIEW_OP),
       stateOverrides: { phase: "paused", pauseReason: "executor-failed", reportDoc: REPORT_R1 },
     });
     const prompt = await render(meta);
-    expect(prompt).toContain("Write Scope: nothing — the loop is paused waiting for the owner (paused:executor-failed)");
-    expect(prompt).not.toContain(`- Write Scope: EXACTLY`);
+    expect(prompt).toContain("- Write Scope: EXACTLY these files (everything else is read-only):");
+    expect(prompt).toContain(`- ${REPORT_R1}`);
+    expect(prompt).not.toContain("the loop is paused waiting for the owner");
   });
 
   it("an unprovable identity fails closed in the shared scope text", async () => {

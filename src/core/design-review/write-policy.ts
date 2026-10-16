@@ -18,8 +18,12 @@
  *   document). Everything else — requirement docs, source code, other rounds'
  *   reports, other operations' receipts — stays read-only.
  * - `readonly` — the loop is paused waiting for the owner (human decision or
- *   executor recovery): no writes at all, and the prompt must not advertise a
- *   writable report.
+ *   executor recovery): no write is advertised, and the prompt must not
+ *   advertise a writable report. One narrow exception (200 Bug Phase 3,
+ *   G3-1/G3-2): during a NON-decision pause the current review operation's
+ *   already-bound reportDoc stays editable through a `scoped` grant exactly
+ *   like a live review round — see `isPausedReportEditable`. Decision-anchor
+ *   windows (`decision-pending` / `new-decision`) keep the full freeze.
  * - `blocked`  — the governing identity cannot be proven (incomplete state or
  *   an unprovable output binding): fail closed, never inherit a newer
  *   executor's permissions.
@@ -145,6 +149,49 @@ function resolveFinishedRelease(state: DesignReviewState): DesignReviewWritePoli
 }
 
 /**
+ * 200 Bug Phase 3 (G3-2): the two pause reasons that mark a HUMAN decision
+ * anchor window. During these the owner is reading the report the pending
+ * decision is hash-anchored against, so the model must not rewrite it — the
+ * decision basis would move silently under the reader. Every other pause
+ * reason is a recovery state where persisting the current report is exactly
+ * what unblocks the loop.
+ */
+const DECISION_ANCHOR_PAUSE_REASONS: ReadonlySet<string> = new Set([
+  "decision-pending",
+  "new-decision",
+]);
+
+/**
+ * 200 Bug Phase 3 (G3-1/G3-2): may a paused loop still edit its OWN current
+ * review report?
+ *
+ * True only when: the loop is `paused`, the current operation is a bound
+ * `review`, its `reportDoc` is a non-empty string, and the pause reason is
+ * NOT a decision-anchor window. A legacy record without `pauseReason` counts
+ * as editable (consistent with the `paused` reason-rendering fallback).
+ * `update` receipts / planDoc and the fail-closed unbound-report contract are
+ * untouched: the predicate simply never fires for them.
+ *
+ * Phase 4 reuses this as the single source of truth for the lazy decision
+ * reportHash re-anchor guard.
+ */
+export function isPausedReportEditable(state: DesignReviewState): boolean {
+  if (state.phase !== "paused") return false;
+  const operation = state.operation;
+  if (!operation || operation.kind !== "review") return false;
+  const report = state.reportDoc;
+  if (typeof report !== "string" || report.length === 0) return false;
+  // Undefined reason (historical records) behaves like the rendered "paused".
+  if (
+    state.pauseReason !== undefined &&
+    DECISION_ANCHOR_PAUSE_REASONS.has(state.pauseReason)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Resolve the write policy from persisted meta ONLY.
  *
  * The standalone receipt path comes from the operation's pinned descriptor
@@ -187,8 +234,23 @@ export function resolveDesignReviewWritePolicy(
     };
   }
 
-  // C4: a paused loop waits for the owner; no automatic write is advertised.
+  // C4: a paused loop waits for the owner; no automatic write is advertised
+  // — except the bound current review report during a non-decision pause
+  // (200 Bug Phase 3, G3-1/G3-2): the executor must be able to persist its
+  // report while the owner arranges recovery. Decision-anchor windows stay
+  // frozen so the human reads exactly the content a decision hashes against.
   if (state.phase === "paused") {
+    if (isPausedReportEditable(state) && operation.kind === "review") {
+      const report = state.reportDoc;
+      if (typeof report === "string" && report.length > 0) {
+        return {
+          mode: "scoped",
+          operationKind: operation.kind,
+          phase,
+          writable: Object.freeze([path.resolve(report)]),
+        };
+      }
+    }
     return {
       mode: "readonly",
       operationKind: operation.kind,

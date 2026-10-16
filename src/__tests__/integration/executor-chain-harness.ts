@@ -301,8 +301,21 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
     auditDir: ".pi/audit",
   });
 
+  // Async lifecycle/wake observers run through promise chains whose length
+  // varies with scheduler load, so a fixed timer is a flake. Poll until the
+  // observable state (run record + wake queue) repeats across two
+  // consecutive ticks before declaring the chain settled.
   const flush = async (): Promise<void> => {
-    await new Promise((r) => setTimeout(r, 10));
+    let lastSnapshot = "";
+    for (let tick = 0; tick < 100; tick++) {
+      await new Promise((r) => setTimeout(r, 10));
+      const snapshot =
+        JSON.stringify(session.getMeta()?.stageExecutorRun ?? null) +
+        "|" +
+        wakeMessages.length;
+      if (snapshot === lastSnapshot) return;
+      lastSnapshot = snapshot;
+    }
   };
 
   const harness: ChainHarness = {
