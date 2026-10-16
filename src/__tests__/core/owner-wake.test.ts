@@ -24,6 +24,7 @@ describe('owner-wake (Phase 1 / 200_Bug G1-1, G1-2)', () => {
       updateMeta: mockUpdateMeta,
       sendFollowUp: mockSendFollowUp,
       audit: mockAudit,
+      syncStatusBar: () => {}, // Phase 2 / 200_Bug: Fallback path sync
     };
 
     setOwnerWakeDeps(mockDeps);

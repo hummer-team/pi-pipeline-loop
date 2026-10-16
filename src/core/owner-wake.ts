@@ -37,6 +37,8 @@ export interface OwnerWakeDeps {
   sendFollowUp: (summary: string) => void;
   /** Audit log writer */
   audit: (event: string, payload: Record<string, unknown>) => void;
+  /** Phase 2 / 200_Bug: Fallback path - immediate status bar refresh at terminal event */
+  syncStatusBar: () => void;
 }
 
 /**
@@ -130,6 +132,14 @@ function evaluateWake(
       pipelineId: pipelineId ?? "",
     });
     return;
+  }
+
+  // Phase 2 / 200_Bug: Fallback path - immediate status bar refresh at terminal event
+  // This ensures status bar updates even if main path (child context) cannot reach owner TUI
+  try {
+    deps.syncStatusBar();
+  } catch {
+    // fail-open: UI errors must not block owner wake logic
   }
 
   // Predicate 4: Unprocessed pipeline work

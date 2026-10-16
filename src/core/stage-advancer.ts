@@ -22,7 +22,7 @@
 
 import * as fs from "node:fs/promises";
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn, ConfirmMode, StageConfig } from "../types";
-import { createPipelineUI } from "./pipeline-ui";
+import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
 import { autoAdvanceAfterVerify } from "./verify-advance";
 import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
@@ -329,7 +329,7 @@ async function handleConfirmOverflow(
  */
 async function routeConfirmReject(
   config: PipelineConfig,
-  ctx: { session: { updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined }; ui?: { notify: (msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void }; pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } },
+  ctx: { session: { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined }; ui?: { notify: (msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void }; pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } },
   meta: SessionMeta,
   fromStage: PipelineStage,
   toStage: PipelineStage,
@@ -534,7 +534,7 @@ async function routeConfirmReject(
  */
 export async function routeReviewFailAuto(
   config: PipelineConfig,
-  ctx: { session: { updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined }; ui?: { notify: (msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void }; pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } },
+  ctx: { session: { getMeta: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined }; ui?: { notify: (msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void }; pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void } },
   meta: SessionMeta,
   ui: { notify: (ctx: unknown, msg: string) => void; transition?: (ctx: unknown, from: string, to: string) => void },
   opts?: { reason?: string },
@@ -549,6 +549,8 @@ export async function routeReviewFailAuto(
   if (routed && ui.transition) {
     ui.transition(ctx, "review", "fix");
   }
+  // Phase 2 / 200_Bug: immediate status bar refresh at routing point (main path)
+  syncStageStatusBar(createPipelineUI(config), ctx);
 }
 
 /**
@@ -1751,6 +1753,8 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           };
         }
         const updatedMeta = ctx.session.getMeta() as SessionMeta;
+        // Phase 2 / 200_Bug: immediate status bar refresh at routing point (main path)
+        syncStageStatusBar(createPipelineUI(config), ctx);
         return { success: true, message: "Review declared fail. Routed to fix.", currentStage: updatedMeta.currentStage };
       }
       // reviewConclusion === "pass" or not provided → fall through to original verify + confirm gate flow

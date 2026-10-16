@@ -15,6 +15,7 @@ import { parseCommandArgs } from "./utils/command-args";
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
 import { registerOwnerWakeObserver, setOwnerWakeDeps } from "./core/owner-wake";
+import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
 import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler } from "./utils/subagent-rpc";
@@ -189,6 +190,14 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
               auditLog.safeWriteAuditLog(event, payload);
             } catch {
               // Fail-safe: audit errors must not crash the pipeline
+            }
+          },
+          // Phase 2 / 200_Bug: fallback path - immediate status bar refresh at terminal event
+          syncStatusBar: () => {
+            try {
+              syncStageStatusBar(createPipelineUI(config), rctx);
+            } catch {
+              // Fail-safe: UI errors must not crash the pipeline
             }
           },
         });
