@@ -425,6 +425,18 @@ export interface SessionMeta {
   stageVisitOrder?: PipelineStage[];
 
   /**
+   * Phase 1 / 200_Bug (G1-1): Terminal wake dedup record.
+   * Records the last wake trigger (agentId + stage + visitOrder) to prevent
+   * duplicate wake signals for the same terminal event.
+   */
+  terminalWake?: {
+    agentId: string;
+    stage: PipelineStage;
+    visitOrder: number;
+    at: number;
+  };
+
+  /**
    * Phase 0 (195_Bug): Count of loop budget extensions via "set rounds" (question 24-B).
    * Incremented when the owner grants additional loop cycles after exhaustion.
    * Consumed by Phase 5/6 budget-extension gating.

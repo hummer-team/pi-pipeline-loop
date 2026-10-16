@@ -63,6 +63,32 @@ export interface SubagentLifecycleEntry {
 const registry = new Map<string, SubagentLifecycleEntry>();
 
 /**
+ * Terminal observer registry: Phase 1 can subscribe to terminal events.
+ * Called after each terminal registration.
+ */
+type TerminalObserver = (entry: SubagentLifecycleEntry) => void;
+const terminalObservers: Set<TerminalObserver> = new Set();
+
+/**
+ * Registers a terminal observer. Called after each terminal event registration.
+ * Phase 1 (G1-1/G1-2) uses this to check if owner wake is needed.
+ *
+ * @param observer - Function to call with the terminal entry
+ * @returns Cleanup function that removes the observer
+ */
+export function registerTerminalObserver(observer: TerminalObserver): () => void {
+  terminalObservers.add(observer);
+  return () => { terminalObservers.delete(observer); };
+}
+
+/** Notify all registered terminal observers of a terminal event */
+function notifyTerminalObservers(entry: SubagentLifecycleEntry): void {
+  for (const observer of terminalObservers) {
+    try { observer(entry); } catch { /* observer errors must not break registration */ }
+  }
+}
+
+/**
  * Module-level reference to the most recent owner session meta accessor.
  *
  * Updated on every hook invocation — always reflects the latest owner state.
@@ -178,6 +204,9 @@ export function registerTerminal(
     pipelineId: pipelineId ?? "",
     terminalAt: now,
   });
+
+  // Notify terminal observers (Phase 1 G1-1/G1-2 wake logic)
+  notifyTerminalObservers(existing ?? registry.get(agentId)!);
 }
 
 /**
@@ -332,8 +361,9 @@ export function wireSubagentLifecycleListeners(
   };
 }
 
-/** Test-only reset: clears the entire registry and accessor. */
+/** Test-only reset: clears the entire registry, accessor, and observers. */
 export function __resetLifecycleRegistry(): void {
   registry.clear();
   _ownerMetaAccessor = null;
+  terminalObservers.clear();
 }

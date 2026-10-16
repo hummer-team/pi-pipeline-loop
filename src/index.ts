@@ -14,6 +14,7 @@ import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
+import { registerOwnerWakeObserver, setOwnerWakeDeps } from "./core/owner-wake";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
 import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler } from "./utils/subagent-rpc";
@@ -108,6 +109,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // and maintain the in-memory registry for wake-up diagnostics.
     wireSubagentLifecycleListeners(pi);
 
+    // Phase 1 / 200_Bug (G1-1, G1-2): register owner wake observer
+    // When a subagent reaches terminal state, check if owner should be woken
+    registerOwnerWakeObserver();
+
     // Phase 0 (189): register fix-executor-completion handler via DI.
     // Breaks circular dependency: utils/subagent-rpc no longer imports core modules.
     setFixExecutorCompletedHandler(handleFixExecutorCompleted);
@@ -163,6 +168,30 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         // Phase 0 / 200_Bug (G2-1): update the lifecycle registry meta accessor
         // so event handlers can read currentStage/pipelineId from the owner session.
         setOwnerMetaAccessor(() => rctx.session.getMeta());
+
+        // Phase 1 / 200_Bug (G1-1, G1-2): update owner wake deps
+        // so the observer can read session meta and send followUp messages.
+        setOwnerWakeDeps({
+          getMeta: () => rctx.session.getMeta(),
+          updateMeta: (patch) => rctx.session.updateMeta(patch),
+          sendFollowUp: (summary) => {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (pi as any).sendUserMessage?.(summary, { deliverAs: "followUp" });
+            } catch {
+              // Fail-safe: sendUserMessage errors must not crash the pipeline
+            }
+          },
+          audit: (event, payload) => {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const auditLog = require("./utils/auditLog");
+              auditLog.safeWriteAuditLog(event, payload);
+            } catch {
+              // Fail-safe: audit errors must not crash the pipeline
+            }
+          },
+        });
         return h.handler(rctx);
       });
     }

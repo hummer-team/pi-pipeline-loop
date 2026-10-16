@@ -1,0 +1,217 @@
+/**
+ * @module owner-wake
+ * Phase 1 / 200_Bug (G1-1, G1-2): Terminal event-driven owner wake.
+ *
+ * When a subagent reaches terminal state, check if the owner should be woken
+ * via pi.sendUserMessage(followUp). Wake conditions:
+ *
+ * 1. Terminal reason ∈ {completed, steered, error, aborted}; `stopped` is exempt (G1-2).
+ * 2. Terminal agentId must match an activeSpawns[*].agentId (stage executor).
+ * 3. No in-flight executors: all other activeSpawns agentIds must be non-live
+ *    (probe via probeAgentState).
+ * 4. Unprocessed pipeline work: pendingSpawns non-empty OR current stage not closed.
+ *
+ * Dedup: terminalWake: { agentId, stage, visitOrder, at } in SessionMeta.
+ *
+ * @see docs/design/200_Bug_plan.md#Phase 1
+ */
+
+import type { SessionMeta, PipelineStage } from "../types";
+import { registerTerminalObserver, type SubagentLifecycleEntry } from "../utils/subagent-lifecycle-registry";
+import { probeAgentState } from "../utils/subagents-introspect";
+
+/**
+ * Terminal reasons that trigger wake. `stopped` is exempt (G1-2).
+ */
+const WAKE_TRIGGER_REASONS = new Set(["completed", "steered", "error", "aborted"]);
+
+/**
+ * Owner wake observer dependencies.
+ */
+export interface OwnerWakeDeps {
+  /** Read current SessionMeta */
+  getMeta: () => SessionMeta | undefined;
+  /** Update SessionMeta (for dedup) */
+  updateMeta: (patch: Partial<SessionMeta>) => void;
+  /** Send followUp message to owner */
+  sendFollowUp: (summary: string) => void;
+  /** Audit log writer */
+  audit: (event: string, payload: Record<string, unknown>) => void;
+}
+
+/**
+ * Module-level owner wake deps accessor.
+ * Updated on every hook invocation to ensure we always have the latest session context.
+ * Works around SDK limitation: no session context in global events.
+ */
+let _ownerWakeDeps: OwnerWakeDeps | null = null;
+
+/**
+ * Sets the owner wake deps accessor.
+ * Called on every hook invocation to keep deps fresh.
+ *
+ * @param deps - Owner wake dependencies
+ */
+export function setOwnerWakeDeps(deps: OwnerWakeDeps): void {
+  _ownerWakeDeps = deps;
+}
+
+/**
+ * Registers the owner wake observer.
+ * Called once during plugin init (owner instance only).
+ *
+ * @returns Cleanup function that removes the observer
+ */
+export function registerOwnerWakeObserver(): () => void {
+  return registerTerminalObserver((entry: SubagentLifecycleEntry) => {
+    try {
+      if (!_ownerWakeDeps) return;
+      evaluateWake(entry, _ownerWakeDeps);
+    } catch {
+      // Fail-safe: observer errors must not crash the pipeline
+    }
+  });
+}
+
+/**
+ * Evaluates whether owner wake is needed for a terminal event.
+ */
+function evaluateWake(
+  entry: SubagentLifecycleEntry,
+  deps: OwnerWakeDeps,
+): void {
+  const meta = deps.getMeta();
+  if (!meta) return;
+
+  const { agentId, agentType, reason, stage: entryStage } = entry;
+  const pipelineId = meta.pipelineId;
+
+  // Predicate 1: Terminal reason must be in wake trigger set (stopped is exempt per G1-2)
+  if (!WAKE_TRIGGER_REASONS.has(reason ?? "")) {
+    deps.audit("owner_wake_skipped", {
+      agentId,
+      reason: "status_exempt",
+      status: reason ?? "",
+      pipelineId: pipelineId ?? "",
+    });
+    return;
+  }
+
+  // Predicate 2: Terminal agentId must match an activeSpawns[*].agentId
+  const activeSpawns = meta.activeSpawns ?? {};
+  const matchingStage = Object.entries(activeSpawns).find(
+    ([, spawn]) => spawn.agentId === agentId,
+  )?.[0] as PipelineStage | undefined;
+
+  if (!matchingStage) {
+    deps.audit("owner_wake_skipped", {
+      agentId,
+      reason: "not_stage_executor",
+      pipelineId: pipelineId ?? "",
+    });
+    return;
+  }
+
+  // Predicate 3: No in-flight executors (all other activeSpawns agentIds must be non-live)
+  const otherAgentIds = Object.entries(activeSpawns)
+    .filter(([s]) => s !== matchingStage)
+    .map(([, spawn]) => spawn.agentId)
+    .filter((id): id is string => !!id);
+
+  const hasLivePeer = otherAgentIds.some((peerId) => {
+    const state = probeAgentState(peerId);
+    return state === "live";
+  });
+
+  if (hasLivePeer) {
+    deps.audit("owner_wake_skipped", {
+      agentId,
+      reason: "has_live_peer",
+      pipelineId: pipelineId ?? "",
+    });
+    return;
+  }
+
+  // Predicate 4: Unprocessed pipeline work
+  const pendingSpawns = meta.pendingSpawns ?? {};
+  const hasPendingSpawns = Object.keys(pendingSpawns).length > 0;
+  const currentStageClosed = meta.summaries?.[matchingStage]?.status === "valid";
+
+  if (!hasPendingSpawns && currentStageClosed) {
+    deps.audit("owner_wake_skipped", {
+      agentId,
+      reason: "no_pending_work",
+      pipelineId: pipelineId ?? "",
+    });
+    return;
+  }
+
+  // Dedup: check if we've already fired for this (agentId + stage + visitOrder)
+  const visitOrder = meta.stageVisitOrder?.length ?? 0;
+  const existingWake = meta.terminalWake;
+  if (
+    existingWake &&
+    existingWake.agentId === agentId &&
+    existingWake.stage === matchingStage &&
+    existingWake.visitOrder === visitOrder
+  ) {
+    deps.audit("owner_wake_skipped", {
+      agentId,
+      reason: "dedup",
+      pipelineId: pipelineId ?? "",
+    });
+    return;
+  }
+
+  // Fire wake
+  deps.updateMeta({
+    terminalWake: {
+      agentId,
+      stage: matchingStage,
+      visitOrder,
+      at: Date.now(),
+    },
+  });
+
+  // Build summary
+  const summary = buildWakeSummary(agentId, matchingStage, pipelineId, hasPendingSpawns);
+  deps.sendFollowUp(summary);
+
+  deps.audit("owner_wake_on_terminal", {
+    agentId,
+    agentType: agentType ?? "",
+    stage: matchingStage,
+    status: reason ?? "",
+    pipelineId: pipelineId ?? "",
+    visitOrder,
+    stageName: entryStage ?? "",
+  });
+}
+
+/**
+ * Builds the wake summary message for the owner.
+ */
+function buildWakeSummary(
+  agentId: string,
+  stage: PipelineStage,
+  pipelineId: string | undefined,
+  hasPendingSpawns: boolean,
+): string {
+  const parts = [
+    `Subagent "${agentId}" (stage: ${stage}) has reached terminal state.`,
+  ];
+
+  if (hasPendingSpawns) {
+    parts.push("There are pending spawn requests that need processing.");
+  } else {
+    parts.push("The current stage has not been closed yet.");
+  }
+
+  if (pipelineId) {
+    parts.push(`Pipeline: ${pipelineId}`);
+  }
+
+  parts.push("Please review and take appropriate action.");
+
+  return parts.join(" ");
+}
