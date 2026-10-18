@@ -2189,7 +2189,28 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
     await fs.rm(testTmp, { recursive: true, force: true });
   });
 
-  it("review stage narrows code_review_* glob to requirementDoc basename", async () => {
+  it("review stage narrows review-report glob (legacy Code_Review_* families) to requirementDoc basename", async () => {
+    const config = makeTestConfig({ projectRoot: "/tmp/test" });
+    const meta = makeTestMeta({
+      currentStage: "review",
+      requirementDoc: "docs/design/50_Feat.md",
+    });
+    const rules = {
+      keywords: [],
+      mode: "or" as const,
+      requiredFiles: ["docs/review/Code_Review_*.md"],
+      fileContentPattern: [
+        { path: "docs/review/Code_Review_*.md", pattern: "结论：(通过|不通过)" },
+      ],
+    };
+
+    const result = await applyConcreteStageDocPaths(rules, config, meta);
+
+    expect(result.requiredFiles).toEqual(["docs/review/Code_Review_50_Feat_Develop_Commit_*.md"]);
+    expect(result.fileContentPattern![0].path).toBe("docs/review/Code_Review_50_Feat_Develop_Commit_*.md");
+  });
+
+  it("review stage narrows LEGACY code_review_* glob to the NEW basename pattern (dual read)", async () => {
     const config = makeTestConfig({ projectRoot: "/tmp/test" });
     const meta = makeTestMeta({
       currentStage: "review",
@@ -2206,14 +2227,16 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
 
-    expect(result.requiredFiles).toEqual(["docs/review/code_review_50_Feat*.md"]);
-    expect(result.fileContentPattern![0].path).toBe("docs/review/code_review_50_Feat*.md");
+    // Legacy authored glob is still DETECTED and narrowed to the NEW concrete glob
+    expect(result.requiredFiles).toEqual(["docs/review/Code_Review_50_Feat_Develop_Commit_*.md"]);
+    expect(result.fileContentPattern![0].path).toBe("docs/review/Code_Review_50_Feat_Develop_Commit_*.md");
   });
 
   it("narrowed glob does NOT match historical files from different requirementDoc", () => {
     // Verify the narrowed glob pattern doesn't match a historical file
     expect(isCommitDocGlob("docs/design/80_Fix_*_commit.md")).toBe(false);
     expect(isReviewDocGlob("docs/review/code_review_50_Feat*.md")).toBe(false);
+    expect(isReviewDocGlob("docs/review/Code_Review_50_Feat_Develop_Commit_*.md")).toBe(false);
   });
 
   it("preserves original glob when requirementDoc is empty", async () => {

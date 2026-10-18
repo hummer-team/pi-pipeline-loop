@@ -76,10 +76,10 @@ disable-model-invocation: true
 2. Mark **Blocker**, **High**, **Medium** items as `To‑Fix` or `待修复`; LOW items require no fixes.
 
 ### 8.1 Review Output Directory: `docs/review`
-1. File naming rule: `code_review_{file}_plan_{index}.md`
+1. File naming rule: `Code_Review_{file}_Develop_Commit_{index}.md`
    - `{file}`: Plan file name
    - `{index}`: Review round number, starting from 1
-   - Example: `docs/review/code_review_xx_plan_1.md`
+   - Example: `docs/review/Code_Review_xx_Plan_Develop_Commit_1.md`
 2. Strictly follow the content template. Output type‑safety, regression‑side‑effect detection issues via template if found. If no issues exist, briefly summarize review scope inside `Summary`.
 3. use `read` tool report format flow [review_report_template.md](.pi/references/review_report_template.md)
 

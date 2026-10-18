@@ -1,6 +1,6 @@
 ---
 rules:
-  path: "docs/review/code_review_*.md"
+  path: "docs/review/Code_Review_*.md"
   groups:
     - name: review-report-ready
       ruleMode: and

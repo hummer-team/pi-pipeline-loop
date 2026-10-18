@@ -209,7 +209,8 @@ export async function planDocHasConfirmMarker(planDocPath: string): Promise<bool
  *   legacy `docs/design/*_commit.md`) → `docs/design/{reqBase}_Develop_Commit.md`
  *   (201 Phase 2: narrowed to the exact new-name path — no wildcard infix allowed;
  *   legacy name is read-compatible but never generated)
- * - review: `docs/review/code_review_*.md` → `docs/review/code_review_{reqBase}*.md`
+ * - review: review-report globs (new `Code_Review_*` / legacy `code_review_*`)
+ *   → `docs/review/Code_Review_{reqBase}_Develop_Commit_*.md` (201 Phase 3)
  *
  * When `meta.requirementDoc` is empty, globs are preserved as-is (fallback).
  * When concrete resolution fails, the original glob is preserved (fallback).
@@ -256,8 +257,10 @@ export async function applyConcreteStageDocPaths(
   }
 
   if (stage === "review") {
-    // Narrow review doc glob to requirementDoc basename
-    concreteGlob = `docs/review/code_review_${reqBase}*.md`;
+    // 201 Phase 3: Narrow review doc glob to requirementDoc basename with the
+    // NEW naming prefix; legacy authored `code_review_*` globs count too and
+    // are narrowed to the same new concrete glob (dual read).
+    concreteGlob = `docs/review/Code_Review_${reqBase}_Develop_Commit_*.md`;
     return replaceGlobInRules(result, isReviewDocGlob, concreteGlob);
   }
 
@@ -352,11 +355,19 @@ export function isCommitDocGlob(pattern: string): boolean {
 }
 
 /**
- * Checks whether a path pattern matches the review doc glob `docs/review/code_review_*.md`.
- * 168 Phase 3: Used by applyConcreteStageDocPaths to narrow review globs.
+ * Checks whether a path pattern matches a review-report glob (dual read, 201
+ * Phase 3): the new `docs/review/Code_Review_*.md` and the legacy
+ * `docs/review/code_review_*.md` forms both count, so authored verify rule
+ * sets still narrow to the current review deliverable.
+ * Used by applyConcreteStageDocPaths to narrow review globs.
  */
 export function isReviewDocGlob(pattern: string): boolean {
-  return pattern === "docs/review/code_review_*.md" || pattern === "docs\\review\\code_review_*.md";
+  return (
+    pattern === "docs/review/Code_Review_*.md" ||
+    pattern === "docs\\review\\Code_Review_*.md" ||
+    pattern === "docs/review/code_review_*.md" ||
+    pattern === "docs\\review\\code_review_*.md"
+  );
 }
 
 /**

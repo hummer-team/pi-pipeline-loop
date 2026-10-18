@@ -1043,7 +1043,7 @@ Verify the delivery items...
 
 ```yaml
 rules:
-  path: "docs/review/code_review_*.md"   # 文件级默认路径
+  path: "docs/review/Code_Review_*.md"   # 文件级默认路径
   groups: ...
 ```
 

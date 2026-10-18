@@ -3,7 +3,8 @@
  * Review report parser for the review decision chain (Bug 4).
  *
  * Extracts the verdict (pass/fail) from the latest code review report in
- * `docs/review/code_review_*.md`. Priority:
+ * `docs/review/` (201 Phase 3 dual read: `Code_Review_*` new family and
+ * legacy `code_review_*`). Priority:
  * 1. Blocker/High/Medium open items → fail (matches `- 等级：Blocker`,
  *    `- [ ] Blocker`, `## Blocker`, `NOT PASS` formats)
  * 2. Conclusion/Verdict line (bilingual, bold/italic tolerant, Phase 0 / 175) → verdict from line
@@ -40,8 +41,13 @@ export interface ReviewVerdict {
   warn?: string;
 }
 
+import { NEW_CODE_REVIEW_RE, LEGACY_CODE_REVIEW_RE } from "../core/naming/doc-naming";
+
 /**
- * Finds the latest review report file in docs/review/code_review_*.md by mtime.
+ * Finds the latest review report file in `docs/review/` by mtime (201 Phase 3
+ * dual read): the new `Code_Review_{reqBase}_Develop_Commit_{index}.md` family
+ * and the legacy `code_review_{...}.md` family are both recognized; the newest
+ * file wins regardless of which family it belongs to.
  *
  * @param projectRoot - Absolute path to the project root
  * @returns Absolute path to the latest review report, or null if none exists
@@ -50,7 +56,10 @@ export async function findLatestReviewReport(projectRoot: string): Promise<strin
   const reviewDir = path.join(projectRoot, "docs", "review");
   try {
     const entries = await fs.readdir(reviewDir);
-    const reviewFiles = entries.filter((e) => e.startsWith("code_review_") && e.endsWith(".md"));
+    // 201 Phase 3: family recognition via the doc-naming dual patterns
+    const reviewFiles = entries.filter(
+      (e) => NEW_CODE_REVIEW_RE.test(e) || LEGACY_CODE_REVIEW_RE.test(e),
+    );
     if (reviewFiles.length === 0) return null;
 
     let bestFile: string | null = null;

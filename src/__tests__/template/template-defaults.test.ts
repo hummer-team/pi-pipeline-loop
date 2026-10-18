@@ -340,10 +340,10 @@ describe("Phase 3 / 176: template engine smoke", () => {
   }
 
   it("review: compliant report passes; missing verdict fails with group tag", async () => {
-    await writeDoc("docs/review/code_review_1.md", "**pipeline**: p-1\n\n## 结论\n结论：通过\n");
+    await writeDoc("docs/review/Code_Review_1.md", "**pipeline**: p-1\n\n## 结论\n结论：通过\n");
     expect((await runTemplate("review", "p-1")).passed).toBe(true);
 
-    await writeDoc("docs/review/code_review_1.md", "**pipeline**: p-1\n\n## 结论\nno verdict\n");
+    await writeDoc("docs/review/Code_Review_1.md", "**pipeline**: p-1\n\n## 结论\nno verdict\n");
     const fail = await runTemplate("review", "p-1");
     expect(fail.passed).toBe(false);
     expect(fail.failures.every((f) => f.group === "review-report-ready")).toBe(true);

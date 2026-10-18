@@ -52,6 +52,34 @@ describe("findLatestReviewReport", () => {
     expect(result).toBe(newer);
     await rm(TMP, { recursive: true, force: true });
   });
+
+  it("recognizes BOTH families (dual read): new Code_Review_* wins by mtime over legacy (201 Phase 3)", async () => {
+    const TMP = join(tmpdir(), "pi-rc-dual-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+
+    const legacy = join(reviewDir, "code_review_old.md");
+    await writeFile(legacy, "legacy content");
+    await new Promise(r => setTimeout(r, 50));
+    const modern = join(reviewDir, "Code_Review_50_Feat_Develop_Commit_1.md");
+    await writeFile(modern, "new-family content");
+
+    const result = await findLatestReviewReport(TMP);
+    expect(result).toBe(modern);
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("ignores non-review files and legacy new-name lookalikes (dual read discrimination)", async () => {
+    const TMP = join(tmpdir(), "pi-rc-ignore-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "review_notes.md"), "not a review");
+    await writeFile(join(reviewDir, "Code_Review_unclosed.md"), "no Develop_Commit infix → not new family");
+    await writeFile(join(reviewDir, "code_review_txt.log"), "not markdown");
+    const result = await findLatestReviewReport(TMP);
+    expect(result).toBeNull();
+    await rm(TMP, { recursive: true, force: true });
+  });
 });
 
 describe("parseReviewConclusion", () => {
