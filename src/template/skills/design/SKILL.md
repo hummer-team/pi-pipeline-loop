@@ -23,9 +23,11 @@ disable-model-invocation: true
 
 ### 1. Requirement Understanding & Clarification
 1. Read requirement descriptions from the user‑specified file.
-2. Start the current round; **append your questions, solution options and rationale for recommended solutions to the end of this file**, follow the format in [clarify_template](.pi/references/clarify_template.md).
+2. Start the current round; **append your questions, solution options and rationale for recommended solutions to the end of this file**, following the format defined in `@.pi/references/clarify_template.md`.
 3. Wait for user’s **answer** or **additional questions**.
-4. After analyzing and appending clarification questions, **explicitly prompt the user**: "If requirements are fully understood, enter `full-und?` to trigger confirmation workflow".
+4. After analyzing and appending clarification questions, **end your user‑facing output with two complete, copy‑pasteable next‑step command lines** (carrying the full document path and the real agent name): `@<agent> <doc> <round+1> 答` and `@<agent> <doc> full-und?`. It is **禁止** (forbidden) to emit placeholder literals such as `{file}` in user‑facing prompts.
+5. **Explicitly prompt the user**: "If requirements are fully understood, enter `full-und?` to trigger confirmation workflow".
+6. Every round (including decision‑archive / summary rounds) must be written in the full Q/A structure: question + options A/B + pros / cons / recommendation + `答：`; summary rounds follow the same Q/A form with no exemption.
 
 **Examples**:
 - `@feat-design-plan-agent docs/design/{index}_{xxx}.md 1` → Enter Round 1 clarification, append questions and solutions.
@@ -42,7 +44,7 @@ disable-model-invocation: true
    - Full understanding of requirement context (goals, boundaries).
    - Clear solution selection, no ambiguity and no side‑effects.
 3. **If criteria are met**:
-   - use `read` tool read [clarify_template](.pi/references/clarify_template.md) for confirmation workflow (includes `## 模型确认` record‑keeping protocol).
+   - use `read` tool to read `@.pi/references/clarify_template.md` for the confirmation workflow (includes the `## 模型确认` record‑keeping protocol).
    - Append question summary & final solution decision to `{index}_{xxx}.md`.
 4. **If criteria are not met** → Proceed to the next clarification round.
 

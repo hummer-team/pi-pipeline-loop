@@ -43,6 +43,12 @@ disable-model-invocation: true
 ## Deliverables
 1. Commit document must be generated following the specification in [develop_commit_template](.pi/references/develop_commit_template.md)
 
+### Path Convention
+<!-- Phase 5 (173) C17: Path convention clarification -->
+**Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
+<!-- Template-TODO: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等） -->
+<!-- Template-TODO: 配置项目技术栈 stack（如 frontend_ts / java），develop 按 .pi/references/{stack}_code_spec.md 读取对应规范 -->
+
 ## Checkpoint discipline (crash-resilient output)
 - Create the deliverable file early (skeleton with section headers), then append content in ≤2KB chunks.
 - Never accumulate the full result for a single final write — at any crash point, the sunk cost is at most the last unwritten chunk.

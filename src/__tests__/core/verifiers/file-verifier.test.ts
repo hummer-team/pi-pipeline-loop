@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { verifyRequiredFiles, verifyFileContentPattern, globMatchFiles } from "../../../core/verifiers/file-verifier";
@@ -502,6 +503,13 @@ describe("verifyFileContentPattern — 148 clarify conditional lookahead (4 stat
 describe("verifyFileContentPattern — Phase 3 / 179 solution-line pattern + example", () => {
   const SOLUTION_PATTERN = "^[ \\t]*[-*][ \\t]*\\*{0,2}(?:方案|Option|Plan)[ \\t]*[A-Z]";
 
+  // Real-world corpus (R5 question 1): `docs/` is gitignored and historical
+  // documents are archived under `docs/design/history/`, so resolve the corpus
+  // path first and skip the replay when no local copy exists.
+  const CORPUS_179 = ["docs/design/179_Bug.md", "docs/design/history/179_Bug.md"]
+    .map((rel) => path.join(__dirname, "..", "..", "..", "..", rel))
+    .find((candidate) => existsSync(candidate)) ?? null;
+
   it("matches a 2-space-indented bold solution line", async () => {
     await fs.writeFile(path.join(TMP, "doc.md"), "  - **方案 A：** foo\n");
     const r = await verifyFileContentPattern([{ path: "doc.md", pattern: SOLUTION_PATTERN }], TMP);
@@ -546,11 +554,10 @@ describe("verifyFileContentPattern — Phase 3 / 179 solution-line pattern + exa
     expect(r.detail).not.toContain("; expected:");
   });
 
-  it("replay: 179_Bug.md round-3 indented solution line matches the relaxed pattern", async () => {
-    // Real-world corpus (R5 question 1): the round-3 section uses 6-space-indented
-    // `      - 方案 A：...` lines that the old `^- ` pattern rejected.
-    const docPath = path.join(__dirname, "..", "..", "..", "..", "docs", "design", "179_Bug.md");
-    const content = await fs.readFile(docPath, "utf-8");
+  it.skipIf(CORPUS_179 === null)("replay: 179_Bug.md round-3 indented solution line matches the relaxed pattern", async () => {
+    // The round-3 section uses 6-space-indented `      - 方案 A：...` lines that
+    // the old `^- ` pattern rejected.
+    const content = await fs.readFile(CORPUS_179 as string, "utf-8");
     expect(new RegExp(SOLUTION_PATTERN, "m").test(content)).toBe(true);
   });
 

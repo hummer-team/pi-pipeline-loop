@@ -76,6 +76,7 @@ disable-model-invocation: true
 2. Mark **Blocker**, **High**, **Medium** items as `To‑Fix` or `待修复`; LOW items require no fixes.
 
 ### 8.1 Review Output Directory: `docs/review`
+0. **Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
 1. File naming rule: `Code_Review_{file}_Develop_Commit_{index}.md`
    - `{file}`: Plan file name
    - `{index}`: Review round number, starting from 1
