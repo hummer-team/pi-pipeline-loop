@@ -3,9 +3,10 @@
  * Phase 1 / 200_Bug (G1-1, G1-2): Terminal event-driven owner wake.
  *
  * When a subagent reaches terminal state, check if the owner should be woken
- * via pi.sendUserMessage(followUp). Wake conditions:
+ * via pi.sendUserMessage(followUp). Wake conditions (203_Bug Phase 0:
+ * reason check is a blacklist — only `stopped`/empty/unknown are exempt):
  *
- * 1. Terminal reason ∈ {completed, steered, error, aborted}; `stopped` is exempt (G1-2).
+ * 1. Terminal reason exempt-set: `stopped` (and explicit empty/unknown) skip wake.
  * 2. Terminal agentId must match an activeSpawns[*].agentId (stage executor).
  * 3. No in-flight executors: all other activeSpawns agentIds must be non-live
  *    (probe via probeAgentState).
@@ -21,9 +22,13 @@ import { registerTerminalObserver, type SubagentLifecycleEntry } from "../utils/
 import { probeAgentState } from "../utils/subagents-introspect";
 
 /**
- * Terminal reasons that trigger wake. `stopped` is exempt (G1-2).
+ * 203_Bug Phase 0: Terminal-reason normalization switched from whitelist to
+ * blacklist. Only `stopped` (plus explicit empty/unknown) are exempt from
+ * waking. Any other observed reason (including the previously unchecked
+ * "terminal" caused by SDK `subagents:*` payload field mismatch) proceeds to
+ * activeSpawns matching; the raw value is always audited.
  */
-const WAKE_TRIGGER_REASONS = new Set(["completed", "steered", "error", "aborted"]);
+const WAKE_EXEMPT_REASONS = new Set(["stopped"]);
 
 /**
  * Owner wake observer dependencies.
@@ -88,12 +93,20 @@ function evaluateWake(
   const { agentId, agentType, reason, stage: entryStage } = entry;
   const pipelineId = meta.pipelineId;
 
-  // Predicate 1: Terminal reason must be in wake trigger set (stopped is exempt per G1-2)
-  if (!WAKE_TRIGGER_REASONS.has(reason ?? "")) {
+  // Predicate 1: 203_Bug Phase 0 — normalized blacklist. Only `stopped`
+  // (and explicit empty/unknown) are exempt; every other reason proceeds to
+  // activeSpawns matching. Raw value kept in the audit for observability.
+  const normalizedReason = (reason ?? "").trim().toLowerCase();
+  if (
+    normalizedReason === ""
+    || normalizedReason === "unknown"
+    || WAKE_EXEMPT_REASONS.has(normalizedReason)
+  ) {
     deps.audit("owner_wake_skipped", {
       agentId,
       reason: "status_exempt",
       status: reason ?? "",
+      rawStatus: reason ?? "",
       pipelineId: pipelineId ?? "",
     });
     return;

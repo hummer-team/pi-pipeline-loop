@@ -15,6 +15,7 @@ import { parseCommandArgs } from "./utils/command-args";
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
 import { registerOwnerWakeObserver, setOwnerWakeDeps } from "./core/owner-wake";
+import { registerOwnerEscalationObserver, setOwnerEscalationDeps } from "./core/owner-escalation";
 import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
@@ -114,6 +115,13 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // When a subagent reaches terminal state, check if owner should be woken
     registerOwnerWakeObserver();
 
+    // 203_Bug Phase 0 (RC1): register owner escalation observer on the event
+    // bus. When a child freeze broadcast arrives, wake the owner via followUp
+    // (the decision menu itself is still rendered by the settle chain).
+    // Cleanup returned for dispose wiring; plugin factory has no dispose hook,
+    // subscription lifetime equals the registerOwnerWakeObserver precedent.
+    registerOwnerEscalationObserver(pi);
+
     // Phase 0 (189): register fix-executor-completion handler via DI.
     // Breaks circular dependency: utils/subagent-rpc no longer imports core modules.
     setFixExecutorCompletedHandler(handleFixExecutorCompleted);
@@ -172,34 +180,49 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
 
         // Phase 1 / 200_Bug (G1-1, G1-2): update owner wake deps
         // so the observer can read session meta and send followUp messages.
+        // 203_Bug Phase 0: the same wake/audit/status-bar channels are shared
+        // with owner-escalation deps (same-source data, one set of callbacks).
+        const wakeFollowUp = (summary: string) => {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (pi as any).sendUserMessage?.(summary, { deliverAs: "followUp" });
+          } catch {
+            // Fail-safe: sendUserMessage errors must not crash the pipeline
+          }
+        };
+        const wakeAudit = (event: string, payload: Record<string, unknown>) => {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const auditLog = require("./utils/auditLog");
+            auditLog.safeWriteAuditLog(event, payload);
+          } catch {
+            // Fail-safe: audit errors must not crash the pipeline
+          }
+        };
+        const wakeSyncStatusBar = () => {
+          try {
+            syncStageStatusBar(createPipelineUI(config), rctx);
+          } catch {
+            // Fail-safe: UI errors must not crash the pipeline
+          }
+        };
+
         setOwnerWakeDeps({
           getMeta: () => rctx.session.getMeta(),
           updateMeta: (patch) => rctx.session.updateMeta(patch),
-          sendFollowUp: (summary) => {
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              (pi as any).sendUserMessage?.(summary, { deliverAs: "followUp" });
-            } catch {
-              // Fail-safe: sendUserMessage errors must not crash the pipeline
-            }
-          },
-          audit: (event, payload) => {
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const auditLog = require("./utils/auditLog");
-              auditLog.safeWriteAuditLog(event, payload);
-            } catch {
-              // Fail-safe: audit errors must not crash the pipeline
-            }
-          },
+          sendFollowUp: wakeFollowUp,
+          audit: wakeAudit,
           // Phase 2 / 200_Bug: fallback path - immediate status bar refresh at terminal event
-          syncStatusBar: () => {
-            try {
-              syncStageStatusBar(createPipelineUI(config), rctx);
-            } catch {
-              // Fail-safe: UI errors must not crash the pipeline
-            }
-          },
+          syncStatusBar: wakeSyncStatusBar,
+        });
+
+        // 203_Bug Phase 0 (RC1): owner escalation deps — refreshed per hook
+        // invocation, same source data as owner-wake deps.
+        setOwnerEscalationDeps({
+          getMeta: () => rctx.session.getMeta(),
+          sendFollowUp: wakeFollowUp,
+          syncStatusBar: wakeSyncStatusBar,
+          audit: wakeAudit,
         });
         return h.handler(rctx);
       });

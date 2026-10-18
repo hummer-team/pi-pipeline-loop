@@ -65,6 +65,73 @@ describe('owner-wake (Phase 1 / 200_Bug G1-1, G1-2)', () => {
       });
     });
 
+    // 203_Bug Phase 0: "terminal" (SDK payload field-mismatch value) was
+    // previously excluded by the whitelist; the blacklist now lets it reach
+    // activeSpawns matching and fire the wake. rawStatus must be audited.
+    it('203_Bug Phase 0: should proceed with wake when reason is "terminal"', () => {
+      const meta: SessionMeta = {
+        pipelineId: 'pipe-1',
+        currentStage: 'develop',
+        stageStartTime: Date.now(),
+        summaries: {},
+        loopCount: 0,
+        currentStepIndex: 0,
+        maxLoops: 3,
+        activeSpawns: { develop: { agentId: 'agent-123', agentName: 'develop-agent', startedAt: Date.now() } },
+        terminalWake: undefined,
+        pendingSpawns: { develop: { agentName: 'develop-agent', requestedAt: Date.now(), attempts: 0 } },
+        domain: {} as any,
+      };
+
+      mockDeps.getMeta = () => meta;
+      const auditVars: Array<{ event: string; payload: Record<string, unknown> }> = [];
+      mockDeps.audit = (event, payload) => { auditVars.push({ event, payload }); };
+      let followUpCalled = false;
+      mockDeps.sendFollowUp = (_summary: string) => { followUpCalled = true; };
+
+      registerTerminal('develop-agent', 'agent-123', 'terminal', 'terminal', 'develop', 'pipe-1');
+
+      expect(followUpCalled).toBe(true);
+      const wakeAudit = auditVars.find((e) => e.event === 'owner_wake_on_terminal');
+      expect(wakeAudit).toBeDefined();
+      expect(wakeAudit?.payload.status).toBe('terminal');
+    });
+
+    // 203_Bug Phase 0: empty and unknown reasons remain exempt (blacklist).
+    it('203_Bug Phase 0: should skip wake when reason is empty or "unknown"', () => {
+      const meta: SessionMeta = {
+        pipelineId: 'pipe-1',
+        currentStage: 'develop',
+        stageStartTime: Date.now(),
+        summaries: {},
+        loopCount: 0,
+        currentStepIndex: 0,
+        maxLoops: 3,
+        activeSpawns: { develop: { agentId: 'agent-123', agentName: 'develop-agent', startedAt: Date.now() } },
+        terminalWake: undefined,
+        domain: {} as any,
+      };
+
+      mockDeps.getMeta = () => meta;
+      const auditVars: Array<{ event: string; payload: Record<string, unknown> }> = [];
+      mockDeps.audit = (event, payload) => { auditVars.push({ event, payload }); };
+
+      // Empty reason
+      auditVars.length = 0;
+      registerTerminal('develop-agent', 'agent-123', 'terminal', '', 'develop', 'pipe-1');
+      expect(auditVars).toHaveLength(1);
+      expect(auditVars[0].event).toBe('owner_wake_skipped');
+      expect(auditVars[0].payload.reason).toBe('status_exempt');
+      expect(auditVars[0].payload.rawStatus).toBe('');
+
+      // "unknown" reason
+      registerTerminal('develop-agent', 'agent-123', 'terminal', 'unknown', 'develop', 'pipe-1');
+      expect(auditVars).toHaveLength(2);
+      expect(auditVars[1].event).toBe('owner_wake_skipped');
+      expect(auditVars[1].payload.reason).toBe('status_exempt');
+      expect(auditVars[1].payload.rawStatus).toBe('unknown');
+    });
+
     it('should proceed with wake when reason is "completed"', () => {
       const meta: SessionMeta = {
         pipelineId: 'pipe-1',

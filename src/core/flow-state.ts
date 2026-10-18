@@ -27,6 +27,8 @@ import { designReviewAuthorisationGate } from "./design-review/authorization";
 import { guardGenericFlowDecision } from "./design-review/flow-decision-guard";
 import { strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { isAuthorizationValid } from "./design-review/state";
+import { broadcastEscalation } from "../utils/escalation-bus";
+import type { EscalationPayload } from "../utils/escalation-bus";
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
 
@@ -80,6 +82,12 @@ export interface FlowStateCtx {
   };
   /** @internal ExtensionContext for terminal compact (W3 wiring). Optional for backward compat. */
   _ctx?: TerminalCompactCtx["_ctx"];
+  /**
+   * 203_Bug Phase 0 (RC1): Raw pi ExtensionAPI for event-bus broadcast.
+   * Optional for backward compat; structurally compatible with RuntimeCtx.pi.
+   * Used to broadcast child-side freeze escalation (see escalation-bus).
+   */
+  pi?: unknown;
 }
 
 // ─── Decision Types ─────────────────────────────────────────────────────────
@@ -1684,6 +1692,25 @@ export async function freezeAndPrompt(
     // Phase 6 (195): Flag owner to show menu once on next interaction (15-B/C)
     ctx.session.updateMeta({ menuEscalationPending: true });
     await safeWriteAuditLog("menu_escalation_armed", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      reason,
+    });
+
+    // 203_Bug Phase 0 (RC1): Broadcast the freeze escalation on the event bus
+    // so the owner instance can wake immediately (followUp), instead of
+    // waiting for its next settle/shortcut/replay — freezes previously sat
+    // silent for tens of hours. Wake ≠ popup: promptDecisionMenu remains the
+    // single popup entry (owner consumes menuEscalationPending at end of turn).
+    // Fail-safe: broadcastEscalation never throws.
+    const escalationPayload: EscalationPayload = {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      reason,
+      at: Date.now(),
+    };
+    broadcastEscalation(ctx.pi, escalationPayload);
+    await safeWriteAuditLog("menu_escalation_broadcast", {
       pipelineId: meta.pipelineId,
       stage: meta.currentStage,
       reason,

@@ -53,31 +53,10 @@ function extractSessionFile(runtimeCtx: unknown): string | undefined {
   return sm?.getSessionFile?.();
 }
 
-/**
- * Minimal EventBus interface expected from pi.events.
- * Uses structural typing to avoid importing the SDK type.
- */
-interface EventBus {
-  emit(event: string, payload: Record<string, unknown>): void;
-  on(event: string, handler: (payload: unknown) => void): void;
-  off?(event: string, handler: (payload: unknown) => void): void;
-}
-
-/**
- * Minimal pi SDK interface for subagent RPC operations.
- */
-interface PiWithEvents {
-  events: EventBus;
-}
-
-/**
- * Type guard to check if pi has an events property.
- */
-function hasEventBus(pi: unknown): pi is PiWithEvents {
-  return !!pi && typeof (pi as PiWithEvents).events === "object"
-    && typeof (pi as PiWithEvents).events.emit === "function"
-    && typeof (pi as PiWithEvents).events.on === "function";
-}
+// 203_Bug Phase 0: EventBus/PiWithEvents/hasEventBus moved to the shared
+// "./pi-event-bus" module (single source). The imported type guard keeps the
+// same call-site narrowing behavior for `pi.events` access.
+import { hasEventBus } from "./pi-event-bus";
 
 /**
  * Generates a unique request ID for RPC correlation.

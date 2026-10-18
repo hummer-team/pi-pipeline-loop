@@ -37,6 +37,30 @@ import type { SessionMeta } from "../types";
 import { safeWriteAuditLog } from "./auditLog";
 
 /**
+ * 203_Bug Phase 0: Builds a leak-safe key summary of a raw SDK event payload.
+ * Emits only the keys (and value types), never the values themselves, so
+ * payload content is never written to the audit log.
+ *
+ * @param payload - Raw event payload (structural)
+ * @returns Comma-joined "key:type" list, or empty string when unindexable
+ */
+function summarizeKeys(payload: unknown): string {
+  try {
+    if (payload === null || typeof payload !== "object") {
+      return typeof payload;
+    }
+    return Object.keys(payload as Record<string, unknown>)
+      .map((key) => {
+        const value = (payload as Record<string, unknown>)[key];
+        return `${key}:${typeof value}`;
+      })
+      .join(",");
+  } catch {
+    return "";
+  }
+}
+
+/**
  * A single subagent lifecycle entry in the in-memory registry.
  * Keyed by agentId (the subagent's unique identifier).
  */
@@ -160,6 +184,9 @@ export function registerStarted(
  * @param reason - Terminal reason: "completed", "failed", or error message
  * @param stage - Pipeline stage (optional, for late-arriving entries)
  * @param pipelineId - Pipeline ID (optional)
+ * @param rawPayload - 203_Bug Phase 0: raw SDK event payload (optional); a
+ *   key-value summary is included in the `subagent_lifecycle` audit to expose
+ *   field-mismatch root causes without leaking values.
  */
 export function registerTerminal(
   agentType: string,
@@ -168,6 +195,7 @@ export function registerTerminal(
   reason?: string,
   stage?: string,
   pipelineId?: string,
+  rawPayload?: unknown,
 ): void {
   const now = new Date().toISOString();
   const existing = registry.get(agentId);
@@ -194,15 +222,21 @@ export function registerTerminal(
   }
 
   // Audit log — fire-and-forget
+  // 203_Bug Phase 0: additional rawPayload key summary (keys only, no values)
+  // to diagnose SDK payload field mismatches without leaking content.
   safeWriteAuditLog("subagent_lifecycle", {
     event: "terminal",
     agentType,
     agentId,
     status,
     reason: reason ?? "",
+    rawStatus: reason ?? "",
     stage: stage ?? "",
     pipelineId: pipelineId ?? "",
     terminalAt: now,
+    ...(rawPayload !== undefined
+      ? { rawPayload: summarizeKeys(rawPayload) }
+      : {}),
   });
 
   // Notify terminal observers (Phase 1 G1-1/G1-2 wake logic)
@@ -302,21 +336,26 @@ export function wireSubagentLifecycleListeners(
     // subagents:completed → register as terminal (completed)
     const offCompleted = bus.on("subagents:completed", (payload: unknown) => {
       try {
-        const event = payload as { id?: string; type?: string };
+        // 203_Bug Phase 0: defensively resolve the terminal reason — some SDK
+        // payload shapes carry it as `reason`, others as `status` (field
+        // mismatch defensiveness). Falls back to the event-name-derived value.
+        const event = payload as { id?: string; type?: string; reason?: string; status?: string };
         if (!event.id) return;
-        
+        const rawReason = event.reason ?? event.status;
+
         // Get current stage and pipelineId from the owner meta accessor
         const meta = _ownerMetaAccessor?.();
         const stage = meta?.currentStage;
         const pipelineId = meta?.pipelineId;
-        
+
         registerTerminal(
           event.type ?? "unknown",
           event.id,
           "terminal",
-          "completed",
+          rawReason !== undefined && rawReason !== "" ? rawReason : "completed",
           stage,
           pipelineId,
+          event,
         );
       } catch {
         // Fail-safe
@@ -327,22 +366,25 @@ export function wireSubagentLifecycleListeners(
     // subagents:failed → register as terminal (failed)
     const offFailed = bus.on("subagents:failed", (payload: unknown) => {
       try {
-        const event = payload as { id?: string; type?: string; requestId?: string };
+        // 203_Bug Phase 0: same defensive reason resolution as "completed".
+        const event = payload as { id?: string; type?: string; requestId?: string; reason?: string; status?: string };
         const agentId = event.id ?? event.requestId;
         if (!agentId) return;
-        
+        const rawReason = event.reason ?? event.status;
+
         // Get current stage and pipelineId from the owner meta accessor
         const meta = _ownerMetaAccessor?.();
         const stage = meta?.currentStage;
         const pipelineId = meta?.pipelineId;
-        
+
         registerTerminal(
           event.type ?? "unknown",
           agentId,
           "terminal",
-          "failed",
+          rawReason !== undefined && rawReason !== "" ? rawReason : "failed",
           stage,
           pipelineId,
+          event,
         );
       } catch {
         // Fail-safe

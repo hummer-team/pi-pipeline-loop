@@ -1692,6 +1692,16 @@ describe("Phase 6 (195): menuEscalationPending lifecycle", () => {
   });
 
   it("child freeze sets menuEscalationPending and writes menu_escalation_armed audit", async () => {
+    // 203_Bug Phase 0 (RC1): mock pi event bus to observe escalation broadcast
+    const emitted: Array<{ event: string; payload: unknown }> = [];
+    const mockPi = {
+      events: {
+        emit: (event: string, payload: Record<string, unknown>) => {
+          emitted.push({ event, payload });
+        },
+        on: (_event: string, _handler: (payload: unknown) => void) => {},
+      },
+    };
     const meta = makeTestMeta({ flowState: "running" });
     const childCtx = {
       session: {
@@ -1712,6 +1722,7 @@ describe("Phase 6 (195): menuEscalationPending lifecycle", () => {
           getSessionFile: () => "/tmp/child-session.jsonl",
         },
       },
+      pi: mockPi,
     } as any;
 
     const config = makeTestConfig();
@@ -1725,6 +1736,21 @@ describe("Phase 6 (195): menuEscalationPending lifecycle", () => {
     expect(armedAudit).toBeDefined();
     expect(armedAudit?.message?.pipelineId).toBe(meta.pipelineId);
     expect(armedAudit?.message?.stage).toBe(meta.currentStage);
+
+    // 203_Bug Phase 0 (RC1): Verify escalation broadcast fired exactly once
+    // on the pi event bus with pipeline/stage/reason payload
+    const escalations = emitted.filter(e => e.event === "pipeline:escalation-armed");
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0].payload).toMatchObject({
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      reason: "loop_overflow",
+    });
+
+    // Verify menu_escalation_broadcast audit was written after the armed audit
+    const broadcastAudit = auditEvents.find(e => e.stage === "menu_escalation_broadcast");
+    expect(broadcastAudit).toBeDefined();
+    expect(broadcastAudit?.message?.pipelineId).toBe(meta.pipelineId);
 
     __setSafeWriteAuditLogOverride(null);
   });
