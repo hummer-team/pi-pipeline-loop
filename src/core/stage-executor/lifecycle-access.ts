@@ -26,7 +26,7 @@
  */
 
 import * as path from "node:path";
-import { reqBaseFromPlanStem } from "../naming/doc-naming";
+import { LEGACY_DESIGN_REVIEW_RE, NEW_DESIGN_REVIEW_RE } from "../naming/doc-naming";
 import type { DesignReviewState, SessionMeta } from "../../types";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { toProjectRelative } from "../../utils/protect";
@@ -152,11 +152,6 @@ export function resolveLifecycleWriteAccess(
   return { policy, callerRole: role };
 }
 
-/** Escape a literal string for embedding in a RegExp (shared idiom). */
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
  * The caller's OWN session file from runtime evidence: `RuntimeCtx.selfSessionFile`
  * (set by the bridge in production), falling back to the session manager read —
@@ -215,15 +210,16 @@ export function isFinishedReleaseProtectedPath(
   if (path.dirname(rel) !== path.dirname(planRel)) return false;
 
   const name = path.basename(rel);
-  // Every round's review report of THIS plan (dual read, 201 Phase 4):
-  // new `Design_Review_{round}_{reqBase}_Design.md` and legacy
-  // `review-design-{round}-{planBasename}`.
-  const reqBase = reqBaseFromPlanStem(path.parse(state.planDoc).name);
-  const reportPattern = new RegExp(
-    `(?:^review-design-\\d+-${escapeRegex(path.basename(state.planDoc))}$)` +
-      `|(?:^Design_Review_\\d+_${escapeRegex(reqBase)}_Design\\.md$)`,
-  );
-  if (reportPattern.test(name)) return true;
+  // Every round's review report of THIS cycle's plan directory (dual read,
+  // 201 Phase 4 task 3 — both families, sourced from the doc-naming single
+  // source, 201 review issue 2/3):
+  // - legacy family `review-design-{round}-{...}.md`: the generic matcher
+  //   covers BOTH historical base-name shapes on disk (`{planBasename}` and
+  //   `{reqBase}` forms; previously the branch was anchored to the current
+  //   `_Plan.md` basename and missed the historical shapes);
+  // - new family `Design_Review_{round}_{...}_Design.md`.
+  if (LEGACY_DESIGN_REVIEW_RE.test(name)) return true;
+  if (NEW_DESIGN_REVIEW_RE.test(name)) return true;
   // Every standalone update receipt of THIS plan (hard switch, 201 Phase 4):
   // `Design_Review_Update_{round}_{operationId(36)}_{reqBase}_Design.md`
   const receiptPattern = new RegExp(

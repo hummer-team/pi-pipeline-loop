@@ -69,8 +69,18 @@ export function updateReceiptFileName(reqBase: string, round: number, operationI
 /** New design-review report name: `Design_Review_{round}_{...}_Design.md`. */
 export const NEW_DESIGN_REVIEW_RE = /^Design_Review_\d+_.+_Design\.md$/;
 
-/** Legacy design-review report name: `review-design-{round}-{...}.md`. */
-export const LEGACY_DESIGN_REVIEW_RE = /^review-design-\d+-.+\.md$/;
+/**
+ * Legacy design-review report name: `review-design-{round}-{...}.md`.
+ *
+ * The body after the round is intentionally GENERIC (`.+`) so one matcher
+ * covers BOTH historical base-name shapes seen on disk — the old plan-name
+ * form (`review-design-1-{planBasename}.md`, e.g. `..._plan.md`) and the
+ * bare requirement form (`review-design-1-{reqBase}.md`). The round is a
+ * capturing group so round-aware consumers (round allocation / release
+ * guards) can reuse this matcher as-is instead of re-deriving their own
+ * regex (201 review issue 2/3 — single source of truth).
+ */
+export const LEGACY_DESIGN_REVIEW_RE = /^review-design-(\d+)-.+\.md$/;
 
 /** New code review report name: `Code_Review_{reqBase}_Develop_Commit_{index}.md`. */
 export const NEW_CODE_REVIEW_RE = /^Code_Review_.+_Develop_Commit_\d+\.md$/;
@@ -83,3 +93,38 @@ export const NEW_COMMIT_RE = /_Develop_Commit\.md$/;
 
 /** Legacy develop/fix commit doc name: `{...}_commit.md`. */
 export const LEGACY_COMMIT_RE = /_commit\.md$/;
+
+// ─── Verify-rule glob literals (single source for authored verify paths) ─────
+//
+// Authored verify rule sets (verify.md `path:` fields) reference these globs.
+// The glob detectors in verify-path-resolver compare against the constants
+// below so the glob literals live in ONE place alongside the file-name
+// matchers (201 Phase 0/2/3; Windows backslash variants are derived, never
+// re-typed at call sites).
+
+/** Plan-doc verify glob (201 Phase 1 hard switch — legacy `*_plan.md` no longer matches). */
+export const PLAN_DOC_GLOB = "docs/design/*_Plan.md";
+
+/** New develop/fix commit-doc verify glob (201 Phase 2). */
+export const NEW_COMMIT_DOC_GLOB = "docs/design/*_Develop_Commit.md";
+
+/** Legacy develop/fix commit-doc verify glob (dual read). */
+export const LEGACY_COMMIT_DOC_GLOB = "docs/design/*_commit.md";
+
+/** New code-review report verify glob (201 Phase 3). */
+export const NEW_REVIEW_DOC_GLOB = "docs/review/Code_Review_*.md";
+
+/** Legacy code-review report verify glob (dual read). */
+export const LEGACY_REVIEW_DOC_GLOB = "docs/review/code_review_*.md";
+
+/** Windows path-separator variant of a verify glob (verbatim match on separators). */
+function winGlobVariant(glob: string): string {
+  return glob.replace(/\//g, "\\");
+}
+
+/** Windows variants of the verify globs above. */
+export const PLAN_DOC_GLOB_WIN = winGlobVariant(PLAN_DOC_GLOB);
+export const NEW_COMMIT_DOC_GLOB_WIN = winGlobVariant(NEW_COMMIT_DOC_GLOB);
+export const LEGACY_COMMIT_DOC_GLOB_WIN = winGlobVariant(LEGACY_COMMIT_DOC_GLOB);
+export const NEW_REVIEW_DOC_GLOB_WIN = winGlobVariant(NEW_REVIEW_DOC_GLOB);
+export const LEGACY_REVIEW_DOC_GLOB_WIN = winGlobVariant(LEGACY_REVIEW_DOC_GLOB);

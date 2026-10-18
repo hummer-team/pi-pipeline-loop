@@ -21,7 +21,19 @@ import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 import type { VerifyRules, VerifyGroupRuleNode } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
 import { escapeRegExp } from "../utils/regex-utils";
-import { commitDocFileName } from "./naming/doc-naming";
+import {
+  commitDocFileName,
+  PLAN_DOC_GLOB,
+  PLAN_DOC_GLOB_WIN,
+  NEW_COMMIT_DOC_GLOB,
+  NEW_COMMIT_DOC_GLOB_WIN,
+  LEGACY_COMMIT_DOC_GLOB,
+  LEGACY_COMMIT_DOC_GLOB_WIN,
+  NEW_REVIEW_DOC_GLOB,
+  NEW_REVIEW_DOC_GLOB_WIN,
+  LEGACY_REVIEW_DOC_GLOB,
+  LEGACY_REVIEW_DOC_GLOB_WIN,
+} from "./naming/doc-naming";
 // 192 Phase 3: canonical report path derivation for the design-review stage
 /**
  * Resolve the commit document path for a given requirement base name.
@@ -335,9 +347,10 @@ function replaceGlobInRules(
 /**
  * Checks whether a path pattern matches the plan doc glob `docs/design/*_Plan.md`
  * (201 Phase 1 hard switch — legacy `_plan.md` no longer matches).
+ * The glob literals are the doc-naming single-source constants (201 review issue 3).
  */
 export function isPlanDocGlob(pattern: string): boolean {
-  return pattern === "docs/design/*_Plan.md" || pattern === "docs\\design\\*_Plan.md";
+  return pattern === PLAN_DOC_GLOB || pattern === PLAN_DOC_GLOB_WIN;
 }
 
 /**
@@ -346,13 +359,14 @@ export function isPlanDocGlob(pattern: string): boolean {
  * `docs/design/*_commit.md` form both count, so naming drift in authored
  * verify rule sets still narrows to the single concrete deliverable path.
  * Used by applyConcreteStageDocPaths to narrow develop/fix globs.
+ * Glob literals come from the doc-naming single source (201 review issue 3).
  */
 export function isCommitDocGlob(pattern: string): boolean {
   return (
-    pattern === "docs/design/*_Develop_Commit.md" ||
-    pattern === "docs\\design\\*_Develop_Commit.md" ||
-    pattern === "docs/design/*_commit.md" ||
-    pattern === "docs\\design\\*_commit.md"
+    pattern === NEW_COMMIT_DOC_GLOB ||
+    pattern === NEW_COMMIT_DOC_GLOB_WIN ||
+    pattern === LEGACY_COMMIT_DOC_GLOB ||
+    pattern === LEGACY_COMMIT_DOC_GLOB_WIN
   );
 }
 
@@ -362,13 +376,14 @@ export function isCommitDocGlob(pattern: string): boolean {
  * `docs/review/code_review_*.md` forms both count, so authored verify rule
  * sets still narrow to the current review deliverable.
  * Used by applyConcreteStageDocPaths to narrow review globs.
+ * Glob literals come from the doc-naming single source (201 review issue 3).
  */
 export function isReviewDocGlob(pattern: string): boolean {
   return (
-    pattern === "docs/review/Code_Review_*.md" ||
-    pattern === "docs\\review\\Code_Review_*.md" ||
-    pattern === "docs/review/code_review_*.md" ||
-    pattern === "docs\\review\\code_review_*.md"
+    pattern === NEW_REVIEW_DOC_GLOB ||
+    pattern === NEW_REVIEW_DOC_GLOB_WIN ||
+    pattern === LEGACY_REVIEW_DOC_GLOB ||
+    pattern === LEGACY_REVIEW_DOC_GLOB_WIN
   );
 }
 

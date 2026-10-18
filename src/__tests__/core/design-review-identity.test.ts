@@ -403,19 +403,43 @@ describe("192 Phase 0: entry.ts shared extraction", () => {
     expect(docs.planExists).toBe(false);
   });
 
-  it("collectExistingReviewRounds: strict pattern only, per-plan isolation", () => {
+  it("collectExistingReviewRounds: dual mode recognises legacy names in BOTH disk base-name shapes (201 review issue 2)", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dr-rounds-legacy-"));
+    try {
+      // plan = `195_Bug_Plan.md` (201 hard-switch name). Historical legacy
+      // reports on disk exist under BOTH base-name shapes:
+      // `review-design-1-195_Bug.md` (reqBase form) and
+      // `review-design-1-195_Bug_plan.md` (pre-201 plan-name form).
+      fs.writeFileSync(path.join(tmp, "195_Bug_Plan.md"), "# plan\n");
+      fs.writeFileSync(path.join(tmp, "review-design-1-195_Bug.md"), "reqBase shape");
+      fs.writeFileSync(path.join(tmp, "review-design-2-195_Bug_plan.md"), "planBasename shape");
+      const rounds = collectExistingReviewRounds(path.join(tmp, "195_Bug_Plan.md")).sort();
+      expect(rounds).toEqual([1, 2]);
+      expect(pickSafeNextRound(path.join(tmp, "195_Bug_Plan.md"))).toBe(3);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("collectExistingReviewRounds: legacy family is generic (cross-plan legacy files skip ahead safely), modern family stays per-plan strict", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dr-rounds-"));
     try {
       fs.writeFileSync(path.join(tmp, "X_plan.md"), "# plan\n");
       fs.writeFileSync(path.join(tmp, "review-design-1-X_plan.md"), "r1");
       fs.writeFileSync(path.join(tmp, "review-design-2-X_plan.md"), "r2");
-      // Not matching the strict pattern for X_plan.md:
+      // Legacy family is intentionally generic (201 review issue 2): a
+      // legacy-shaped report of another plan also occupies a round slot
+      // (never-overwrite direction — allocation only ever skips ahead).
       fs.writeFileSync(path.join(tmp, "review-design-7-Y_plan.md"), "other plan");
       fs.writeFileSync(path.join(tmp, "review-design-ab-X_plan.md"), "bad round");
       fs.writeFileSync(path.join(tmp, "review-design-0-X_plan.md"), "round zero rejected");
+      // Modern family remains anchored to THIS plan's reqBase: another plan's
+      // new-name report must NOT count.
+      fs.writeFileSync(path.join(tmp, "Design_Review_5_Y_Design.md"), "other plan modern");
       const rounds = collectExistingReviewRounds(path.join(tmp, "X_plan.md")).sort();
-      expect(rounds).toEqual([1, 2]);
-      expect(pickSafeNextRound(path.join(tmp, "X_plan.md"))).toBe(3);
+      expect(rounds).toEqual([1, 2, 7]);
+      // allocateNextRoundSafe = max+1: the cross-plan legacy slot safely skips ahead.
+      expect(pickSafeNextRound(path.join(tmp, "X_plan.md"))).toBe(8);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

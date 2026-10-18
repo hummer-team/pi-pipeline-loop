@@ -14,7 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { reqBaseFromPlanStem } from "../naming/doc-naming";
+import { reqBaseFromPlanStem, LEGACY_DESIGN_REVIEW_RE } from "../naming/doc-naming";
 import type { PipelineConfig, SessionMeta, StageConfig } from "../../types";
 import { allocateNextRoundSafe } from "./state";
 
@@ -91,12 +91,21 @@ export function resolveDesignReviewEntryDocs(
  * (dual read, 201 Phase 4):
  * - new: `Design_Review_{round}_{reqBase}_Design.md`, where `{reqBase}` is the
  *   plan stem with the trailing `_Plan` marker stripped;
- * - legacy: `review-design-{round}-{planBasename}` (historical disk shapes).
+ * - legacy: `review-design-{round}-{...}.md` — the round matches BOTH historical
+ *   base-name shapes on disk (`{planBasename}` from the pre-201 plan-name era
+ *   AND the bare `{reqBase}` form), via the doc-naming single-source matcher
+ *   `LEGACY_DESIGN_REVIEW_RE` (201 review issue 2: the old code anchored the
+ *   legacy branch to the CURRENT `_Plan.md` basename and therefore missed the
+ *   historical `review-design-{n}-{reqBase}.md` and
+ *   `review-design-{n}-{planBasename}.md` shapes).
  * Round must be a positive integer in both shapes.
  */
 function reviewFileNamePattern(planBasename: string): RegExp {
   const reqBase = reqBaseFromPlanStem(planBasename.replace(/\.[^.]+$/, ""));
-  const legacy = `^review-design-(\\d+)-${escapeRegex(planBasename)}$`;
+  // Legacy: generic family matcher from doc-naming (round is its capture group 1).
+  const legacy = LEGACY_DESIGN_REVIEW_RE.source;
+  // Modern: anchored to THIS plan's reqBase so round allocation only counts
+  // this plan's reports (Plan 201 Phase 4 task 2: strict per-plan modern branch).
   const modern = `^Design_Review_(\\d+)_${escapeRegex(reqBase)}_Design\\.md$`;
   return new RegExp(`(?:${legacy})|(?:${modern})`);
 }

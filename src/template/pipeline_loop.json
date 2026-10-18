@@ -76,7 +76,7 @@
       "skillPath": "develop/SKILL.md",
       "nextStage": "review",
       "allowedReadOnlyPaths": [
-        "docs/design/*_plan.md"
+        "docs/design/*_Plan.md"
       ],
       "verify": {
         "require": true,
@@ -99,7 +99,7 @@
       "skillPath": "fix/SKILL.md",
       "nextStage": "review",
       "allowedReadOnlyPaths": [
-        "docs/design/*_plan.md"
+        "docs/design/*_Plan.md"
       ],
       "verify": {
         "require": true,

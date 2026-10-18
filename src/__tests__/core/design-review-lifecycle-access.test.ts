@@ -390,11 +390,15 @@ describe("194 Phase 3 (C4): finished-cycle artifacts are bounded, not a director
     expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", "req_plan_commit.md"), s)).toBe(false);
   });
 
-  it("does NOT match lookalikes outside the plan directory or with foreign shapes", () => {
+  it("does NOT match lookalikes outside the plan directory or foreign-name files", () => {
     const s = finishedState();
     fs.mkdirSync(path.join(projectRoot, "docs", "sub"), { recursive: true });
+    // BESIDE the plan: the generic legacy family (201 Phase 4, plan task 3)
+    // now counts ANY same-directory `review-design-{round}-{...}.md` — both
+    // historical base-name shapes AND other-plan legacy files are protected
+    // (never-overwrite direction).
     expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", "sub", "review-design-1-plan.md"), s)).toBe(false);
-    expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", "review-design-1-other.md"), s)).toBe(false);
+    expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", "review-design-1-other.md"), s)).toBe(true);
     expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", "plan-update-x-1-plan.md"), s)).toBe(false);
   });
 
