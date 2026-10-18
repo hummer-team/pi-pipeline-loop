@@ -1457,6 +1457,50 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 配置修改后 `/reload` 即可生效（reload 重建扩展即重读配置，无需重启进程）。
 
+### 14.7 子代理会话持久化与 JOIN 证据级联（204 / 决策 11）
+
+**三个开关的真实语义**
+
+| 开关 | 位置 | 是否生效 | 出厂值 |
+|---|---|---|---|
+| `rememberAgents` | `subagents.json` | ✅ 生效（全局默认） | `true` |
+| `persist_session` | agent frontmatter | ✅ 生效（覆盖全局） | 未声明 |
+| `persistSession` | `subagents.json` | ❌ **无效键**（`@tintinweb/pi-subagents@0.22.0` 静默忽略） | — |
+
+三种会导致子代理会话 in-memory（不落盘）的情形：
+
+1. **嵌套 spawn**——恒不落盘，与上述任何开关无关；
+2. `rememberAgents: false`；
+3. agent frontmatter 声明 `persist_session: false`。
+
+`rememberAgents` 是**可选项，不是前置条件**：本插件不校验、不阻断、不改写该配置。
+
+**in-memory 会话的事实**
+
+- `sessionFile=""`，且 header 中无 `parentSession`；
+- `registerSession()` 对空串 early-return——不写空键、不留审计；
+- 因此旧的「`parentSession` 存在才算子会话」判定会把这类会话判成 dormant。
+
+**JOIN 证据级联**
+
+| 层 | 证据 | 说明 |
+|---|---|---|
+| L1 | `parentSession` → registry | 运行时父子关系，不可伪造，**优先命中即停** |
+| L2 | 首条用户消息的 `Pipeline:` 标记 | 需目标 `meta.json` 可读；审计记 `via=first_message` |
+| L3 | 无证据 | 审计 `reason=no_evidence` + 保持 dormant |
+
+- `session_join_parent` 审计新增 `via`（`parent_session` / `first_message`）与 `persisted`（`sessionFile !== ""`）。
+- L2 仅对**插件发起**的 spawn 生效（其 prompt 带 `Pipeline:` 标记）；无标记的误触发嵌套 spawn 仍落 L3 dormant。
+- L1 命中时不读消息，旧标记不会覆盖运行时父子关系。
+
+**关闭持久化的能力损失**
+
+- 无法用 `/resume` 恢复该子代理会话；
+- 审计缺少 `sessionFile` 链接；
+- 不记录 executor binding（L2 命中的 executor overlay 保持 inert）。
+
+**阶段产出不受影响**——JOIN 成功后 `pipeline_state` / `generate_stage_summary` / `stage_advance` / `loop_check` 均可用。
+
 ---
 
 ## 15. 断点恢复路径汇总

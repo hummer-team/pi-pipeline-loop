@@ -535,3 +535,27 @@ describe("Phase 0 (186): PIPELINE AUTOMATION RULES in sop.md template", () => {
     expect(content).toContain("stage_advance");
   });
 });
+
+// ─── 204 Phase 4: guide.md subagent persistence contract ────────────────────
+
+describe("204 Phase 4: guide.md subagent persistence + JOIN cascade contract", () => {
+  const GUIDE_PATH = path.join(__dirname, "../../template/guide.md");
+
+  it("documents all three persistence switches (incl. the invalid key)", () => {
+    const content = fs.readFileSync(GUIDE_PATH, "utf-8");
+    expect(content).toContain("rememberAgents");
+    expect(content).toContain("persist_session");
+    expect(content).toContain("persistSession");
+  });
+
+  it("documents the JOIN evidence cascade audit markers", () => {
+    const content = fs.readFileSync(GUIDE_PATH, "utf-8");
+    expect(content).toContain("via=first_message");
+    expect(content).toContain("no_evidence");
+  });
+
+  it("does not present persistence as a prerequisite", () => {
+    const content = fs.readFileSync(GUIDE_PATH, "utf-8");
+    expect(content).not.toContain("必须开启持久化");
+  });
+});
