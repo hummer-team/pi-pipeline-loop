@@ -14,6 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { reqBaseFromPlanStem } from "../naming/doc-naming";
 import type { PipelineConfig, SessionMeta, StageConfig } from "../../types";
 import { allocateNextRoundSafe } from "./state";
 
@@ -86,11 +87,18 @@ export function resolveDesignReviewEntryDocs(
 }
 
 /**
- * Strict report file name pattern for a given plan document basename:
- * `review-design-{round}-{planBasename}` with round a positive integer.
+ * Strict report file name patterns for a given plan document basename
+ * (dual read, 201 Phase 4):
+ * - new: `Design_Review_{round}_{reqBase}_Design.md`, where `{reqBase}` is the
+ *   plan stem with the trailing `_Plan` marker stripped;
+ * - legacy: `review-design-{round}-{planBasename}` (historical disk shapes).
+ * Round must be a positive integer in both shapes.
  */
 function reviewFileNamePattern(planBasename: string): RegExp {
-  return new RegExp(`^review-design-(\\d+)-${escapeRegex(planBasename)}$`);
+  const reqBase = reqBaseFromPlanStem(planBasename.replace(/\.[^.]+$/, ""));
+  const legacy = `^review-design-(\\d+)-${escapeRegex(planBasename)}$`;
+  const modern = `^Design_Review_(\\d+)_${escapeRegex(reqBase)}_Design\\.md$`;
+  return new RegExp(`(?:${legacy})|(?:${modern})`);
 }
 
 function escapeRegex(str: string): string {
@@ -120,7 +128,8 @@ export function collectExistingReviewRounds(planDoc: string): number[] {
   for (const entry of entries) {
     const m = re.exec(entry);
     if (m) {
-      const round = Number.parseInt(m[1]!, 10);
+      const roundSource = m[1] ?? m[2] ?? "";
+      const round = Number.parseInt(roundSource, 10);
       if (Number.isInteger(round) && round >= 1) {
         rounds.push(round);
       }

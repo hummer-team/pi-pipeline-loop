@@ -274,7 +274,9 @@ export async function applyConcreteStageDocPaths(
     if (dr) {
       const reportPath = dr.reportDoc ?? deriveReportPath(dr.planDoc, dr.round);
       const rel = path.relative(config.projectRoot, reportPath);
-      const concretes = replaceGlobInRules(result, (p) => /review-design-.*\.md$/.test(p) || p === rel, rel);
+      // 201 Phase 4: the authored report glob may target either the new
+      // `Design_Review_*` family or the legacy `review-design-*` family.
+      const concretes = replaceGlobInRules(result, (p) => /review-design-.*\.md$/.test(p) || /Design_Review_.*\.md$/.test(p) || p === rel, rel);
       // 192 Phase 3 (task 5, issue-2 fix): identity placeholders inside
       // design-review contract patterns are substituted from the SAME
       // authoritative meta state (never from tool args), so the groups

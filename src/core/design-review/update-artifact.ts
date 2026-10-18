@@ -6,7 +6,7 @@
  * body any more. New operations pin a descriptor pointing at an independent
  * receipt document that lives next to the original plan:
  *
- *   `{planDir}/plan-update-{round}-{operationId}-{planBase}.md`
+ *   `{planDir}/Design_Review_Update_{round}_{operationId}_{reqBase}_Design.md`
  *
  * The path is ALWAYS plugin-derived (never model-supplied), so a revision
  * attempt can neither escape the plan directory nor pick "the latest file".
@@ -22,6 +22,7 @@
 
 import crypto from "node:crypto";
 import path from "node:path";
+import { reqBaseFromPlanStem, updateReceiptFileName } from "../naming/doc-naming";
 
 /** Format discriminator of a standalone update descriptor. */
 export const STANDALONE_UPDATE_FORMAT = "standalone-v1" as const;
@@ -29,8 +30,11 @@ export const STANDALONE_UPDATE_FORMAT = "standalone-v1" as const;
 /** Heading of the legacy embedded receipt section inside a plan body. */
 export const LEGACY_UPDATE_SECTION_HEADING = "Design Review Update";
 
-/** File-name prefix shared by every standalone receipt document. */
-const RECEIPT_FILE_PREFIX = "plan-update";
+/**
+ * 201 Phase 4: standalone receipts adopt the doc-naming contract
+ * (`Design_Review_Update_{round}_{operationId}_{reqBase}_Design.md`,
+ * hard switch). The prefix constant was therefore removed.
+ */
 
 /**
  * Plugin operation ids are UUID v4. The pattern doubles as the path-injection
@@ -89,9 +93,10 @@ export function deriveStandaloneReceiptPath(
   }
   const base = path.parse(planDoc).name; // spaces / CJK are preserved verbatim
   if (base.length === 0) return null;
+  const reqBase = reqBaseFromPlanStem(base);
   return path.join(
     path.dirname(planDoc),
-    `${RECEIPT_FILE_PREFIX}-${round}-${operationId}-${base}.md`,
+    updateReceiptFileName(reqBase, round, operationId),
   );
 }
 

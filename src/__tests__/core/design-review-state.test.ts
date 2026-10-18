@@ -63,38 +63,38 @@ describe("design-review-state pure functions", () => {
     test("derives report path from plan path and round", () => {
       const planDoc = "/project/docs/design/plan.md";
       const reportPath = deriveReportPath(planDoc, 1);
-      expect(reportPath).toBe("/project/docs/design/review-design-1-plan.md");
+      expect(reportPath).toBe("/project/docs/design/Design_Review_1_plan_Design.md");
     });
 
     test("handles round 2", () => {
       const planDoc = "/project/docs/design/plan.md";
       const reportPath = deriveReportPath(planDoc, 2);
-      expect(reportPath).toBe("/project/docs/design/review-design-2-plan.md");
+      expect(reportPath).toBe("/project/docs/design/Design_Review_2_plan_Design.md");
     });
 
     test("handles complex plan filename", () => {
-      const planDoc = "/project/docs/design/191_Feat_plan.md";
+      const planDoc = "/project/docs/design/195_Bug_Plan.md";
       const reportPath = deriveReportPath(planDoc, 3);
-      expect(reportPath).toBe("/project/docs/design/review-design-3-191_Feat_plan.md");
+      expect(reportPath).toBe("/project/docs/design/Design_Review_3_195_Bug_Design.md");
     });
   });
 
   describe("isReportForRound", () => {
     test("returns true for matching report path", () => {
       const planDoc = "/project/docs/design/plan.md";
-      const reportPath = "/project/docs/design/review-design-1-plan.md";
+      const reportPath = "/project/docs/design/Design_Review_1_plan_Design.md";
       expect(isReportForRound(reportPath, planDoc, 1)).toBe(true);
     });
 
     test("returns false for non-matching round", () => {
       const planDoc = "/project/docs/design/plan.md";
-      const reportPath = "/project/docs/design/review-design-2-plan.md";
+      const reportPath = "/project/docs/design/Design_Review_2_plan_Design.md";
       expect(isReportForRound(reportPath, planDoc, 1)).toBe(false);
     });
 
     test("handles relative vs absolute paths", () => {
-      const planDoc = "docs/design/plan.md";
-      const reportPath = "docs/design/review-design-1-plan.md";
+      const planDoc = "docs/design/195_Bug_Plan.md";
+      const reportPath = "docs/design/Design_Review_1_195_Bug_Design.md";
       expect(isReportForRound(reportPath, planDoc, 1)).toBe(true);
     });
   });

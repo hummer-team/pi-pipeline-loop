@@ -106,7 +106,7 @@ describe("design-review multi-entrypoint consistency", () => {
   }
 
   async function writePassReport(): Promise<void> {
-    const reportDoc = join(tempDir, "review-design-1-plan.md");
+    const reportDoc = join(tempDir, "Design_Review_1_plan_Design.md");
     await writeFile(reportDoc, reviewReportContent({
       pipelineId: "pipe-test-001",
       planDoc,
@@ -237,7 +237,7 @@ describe("design-review multi-entrypoint consistency", () => {
     });
 
     test("identity-invalid report is verify_failed on every trigger", async () => {
-      const reportDoc = join(tempDir, "review-design-1-plan.md");
+      const reportDoc = join(tempDir, "Design_Review_1_plan_Design.md");
       await writeFile(reportDoc, reviewReportContent({
         pipelineId: "foreign-pipeline",
         planDoc,
@@ -309,7 +309,7 @@ describe("design-review multi-entrypoint consistency", () => {
     /** Report that parses as a review report but breaks the 193 structure contract. */
     async function writeContractInvalidReport(): Promise<void> {
       await writeFile(
-        join(tempDir, "review-design-1-plan.md"),
+        join(tempDir, "Design_Review_1_plan_Design.md"),
         reviewReportContent({
           pipelineId: "pipe-test-001",
           planDoc,

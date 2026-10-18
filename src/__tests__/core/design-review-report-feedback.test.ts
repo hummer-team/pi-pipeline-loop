@@ -219,7 +219,7 @@ describe("193 Phase 0: corrective feedback renders the TRUSTED identity", () => 
     // report path comes from the trusted persisted state
     expect(msg).toContain(feedback!.reportDoc);
     expect(feedback!.reportDoc).toBe(
-      path.join(path.dirname(planDoc), "review-design-1-" + path.basename(planDoc)),
+      path.join(path.dirname(planDoc), "Design_Review_1_193_Feat_Design.md"),
     );
     // identity rows carry the CURRENT run's real values
     expect(msg).toContain(`**pipeline**: ${PIPELINE_ID}`);

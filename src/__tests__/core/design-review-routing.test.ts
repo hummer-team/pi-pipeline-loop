@@ -115,7 +115,7 @@ describe("design-review-coordinator routing", () => {
   }
 
   async function writeReport(text: string): Promise<string> {
-    const reportDoc = join(tempDir, "review-design-1-plan.md");
+    const reportDoc = join(tempDir, "Design_Review_1_plan_Design.md");
     await writeFile(reportDoc, text, "utf-8");
     return reportDoc;
   }

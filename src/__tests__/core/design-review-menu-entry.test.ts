@@ -120,7 +120,7 @@ describe("192 Phase 4: entry pre-checks", () => {
     const after: SessionMeta = ctx.session.getMeta();
     expect(after.currentStage).toBe("design-review");
     expect(after.designReview?.round).toBe(3); // history-scanned safe round
-    expect(after.designReview?.reportDoc).toBe(path.join(projectRoot, "docs", "design", "review-design-3-190_Feat_Plan.md"));
+    expect(after.designReview?.reportDoc).toBe(path.join(projectRoot, "docs", "design", "Design_Review_3_190_Feat_Design.md"));
     // no report overwritten
     expect(fs.readFileSync(path.join(projectRoot, "docs", "design", "review-design-1-190_Feat_Plan.md"), "utf-8")).toBe("old1");
     // choice → exactly ONE immediate dispatch via coordinator
@@ -167,7 +167,7 @@ describe("192 Phase 4: entry pre-checks", () => {
     if (res.ok) {
       expect(res.state.requirementDoc).toBe(path.join(projectRoot, "docs", "design", "190_Feat.md"));
       expect(res.state.pipelineId).toBe("pipe-entry-1");
-      expect(res.state.reportDoc).toContain("review-design-1-");
+      expect(res.state.reportDoc).toContain("Design_Review_1_190_Feat_Design");
     }
   });
 

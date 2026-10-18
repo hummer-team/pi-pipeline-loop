@@ -421,6 +421,36 @@ describe("192 Phase 0: entry.ts shared extraction", () => {
     }
   });
 
+  it("collectExistingReviewRounds: dual mode recognises NEW Design_Review_* names (201 Phase 4)", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dr-rounds-new-"));
+    try {
+      fs.writeFileSync(path.join(tmp, "195_Bug_Plan.md"), "# plan\n");
+      fs.writeFileSync(path.join(tmp, "Design_Review_1_195_Bug_Design.md"), "r1");
+      fs.writeFileSync(path.join(tmp, "Design_Review_2_195_Bug_Design.md"), "r2");
+      const rounds = collectExistingReviewRounds(path.join(tmp, "195_Bug_Plan.md")).sort();
+      expect(rounds).toEqual([1, 2]);
+      expect(pickSafeNextRound(path.join(tmp, "195_Bug_Plan.md"))).toBe(3);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("collectExistingReviewRounds: rejects error rounds in BOTH name families", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dr-rounds-badr-"));
+    try {
+      fs.writeFileSync(path.join(tmp, "195_Bug_Plan.md"), "# plan\n");
+      fs.writeFileSync(path.join(tmp, "review-design-0-195_Bug_Plan.md"), "round zero rejected");
+      fs.writeFileSync(path.join(tmp, "review-design-ab-195_Bug_Plan.md"), "bad round legacy");
+      fs.writeFileSync(path.join(tmp, "Design_Review_0_195_Bug_Design.md"), "round zero rejected new");
+      fs.writeFileSync(path.join(tmp, "Design_Review_ab_195_Bug_Design.md"), "bad round new");
+      const rounds = collectExistingReviewRounds(path.join(tmp, "195_Bug_Plan.md")).sort();
+      expect(rounds).toEqual([]);
+      expect(pickSafeNextRound(path.join(tmp, "195_Bug_Plan.md"))).toBe(1);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("pickSafeNextRound on unreadable directory falls back to round 1", () => {
     expect(pickSafeNextRound(path.join(os.tmpdir(), "definitely-missing-dir-192", "Z_plan.md"))).toBe(1);
   });

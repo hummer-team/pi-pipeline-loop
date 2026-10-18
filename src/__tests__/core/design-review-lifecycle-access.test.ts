@@ -12,8 +12,9 @@
  *   `pi-pipeline:executor-binding` entry that does not match the owner's
  *   current run inherits NOTHING, not even the scoped files);
  * - `isFinishedReleaseProtectedPath` bounded matching (plan, every round's
- *   review-design-* report, plan-update-* receipts, pinned receipts) with
- *   `{reqBase}_plan_commit.md` and source files explicitly NOT matched;
+ *   design-review report in new/legacy naming, Design_Review_Update_* receipts,
+ *   pinned receipts) with `{reqBase}_Develop_Commit.md` and source files
+ *   explicitly NOT matched;
  * - real-guard integration for write/edit and bash: finished develop writes
  *   work, artifacts stay refused (even via sessionAllowedWritePaths), and
  *   blocked/readonly lifecycles refuse mutating bash and git commands.
@@ -378,7 +379,7 @@ describe("194 Phase 3 (C4): finished-cycle artifacts are bounded, not a director
         reportHash: "a".repeat(64),
       },
     } as DesignReviewState;
-    expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", `plan-update-1-${UUID_B}-plan.md`), s)).toBe(true);
+    expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", `Design_Review_Update_1_${UUID_B}_plan_Design.md`), s)).toBe(true);
     expect(isFinishedReleaseProtectedPath(projectRoot, path.join(projectRoot, "docs", "elsewhere-consumed.md"), s)).toBe(true);
   });
 
@@ -437,7 +438,7 @@ describe("194 Phase 3 (C4): tool-guard finished release allows develop writes, r
     }).result;
     expect(resReport?.block).toBe(true);
     const resReceipt = await runGuard(config, finishedTrustedMeta(), "write", {
-      file_path: path.join(projectRoot, "docs", `plan-update-1-${UUID_B}-plan.md`),
+      file_path: path.join(projectRoot, "docs", `Design_Review_Update_1_${UUID_B}_plan_Design.md`),
       content: "forged receipt",
     }).result;
     expect(resReceipt?.block).toBe(true);

@@ -1581,7 +1581,7 @@ design-review 派发的子代理（plan-review / update / develop-executor）对
 
 ### 18.2 独立 update receipt（194 C1）
 
-FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立回执文档（`{updateReceiptDoc}`，形如 `<plan 目录>/plan-update-<round>-<operationId>-<plan>.md`），update prompt 的两个来源（内置默认与 YAML 自定义）均强制携带该 token。自定义 YAML 模板缺少 `{updateReceiptDoc}` 时 dispatch 以 `missing-token` **阻断**（不回退默认模板）。plan 正文出现 `## Design Review Update` 协议段将被验证拒绝；`completionMarker` 预检机制仅属于 clarify 交互阶段，**不能**用于 update 的代理验证。
+FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立回执文档（`{updateReceiptDoc}`，形如 `<plan 目录>/Design_Review_Update_<round>_<operationId>_<reqBase>_Design.md`，201 Phase 4 统一命名），update prompt 的两个来源（内置默认与 YAML 自定义）均强制携带该 token。自定义 YAML 模板缺少 `{updateReceiptDoc}` 时 dispatch 以 `missing-token` **阻断**（不回退默认模板）。plan 正文出现 `## Design Review Update` 协议段将被验证拒绝；`completionMarker` 预检机制仅属于 clarify 交互阶段，**不能**用于 update 的代理验证。
 
 ### 18.3 部署预检与资源阻断
 

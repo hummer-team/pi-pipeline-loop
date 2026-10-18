@@ -26,7 +26,7 @@ describe("194 Phase 0 C1: deriveStandaloneReceiptPath", () => {
   it("pins the receipt beside the original plan with round+operation+planBase", () => {
     const planDoc = path.join("/tmp", "proj", "docs", "design", "10_Feat_fn_ecom_plan.md");
     const receipt = deriveStandaloneReceiptPath(planDoc, 2, UUID_A);
-    expect(receipt).toBe(path.join("/tmp/proj/docs/design", `plan-update-2-${UUID_A}-10_Feat_fn_ecom_plan.md`));
+    expect(receipt).toBe(path.join("/tmp/proj/docs/design", `Design_Review_Update_2_${UUID_A}_10_Feat_fn_ecom_Design.md`));
   });
 
   it("supports spaces and CJK in the plan name without shell/path tricks", () => {
@@ -36,7 +36,7 @@ describe("194 Phase 0 C1: deriveStandaloneReceiptPath", () => {
     expect(receipt!.startsWith(path.dirname(planDoc) + path.sep)).toBe(true);
     expect(path.basename(receipt!)).toContain("194_Bug 计划");
     // Exactly one derived file name — no wildcard / "latest file" semantics.
-    expect(path.basename(receipt!)).toBe(`plan-update-1-${UUID_B}-194_Bug 计划.md`);
+    expect(path.basename(receipt!)).toBe(`Design_Review_Update_1_${UUID_B}_194_Bug 计划_Design.md`);
   });
 
   it("same operation retries on the same path, a new operation changes it", () => {

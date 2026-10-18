@@ -12,6 +12,10 @@
 
 import * as crypto from "node:crypto";
 import * as path from "node:path";
+import {
+  designReviewDocFileName,
+  reqBaseFromPlanStem,
+} from "../naming/doc-naming";
 import type {
   DesignReviewState,
   DesignReviewPhase,
@@ -41,7 +45,9 @@ export function computeHash(content: string): string {
 
 /**
  * Derive the report document path for a given plan and round.
- * Format: {dirname(planDoc)}/review-design-{round}-{basename(planDoc)}
+ * Format: {dirname(planDoc)}/Design_Review_{round}_{reqBase}_Design.md, where
+ * {reqBase} = plan stem with the trailing `_Plan` marker stripped (doc-naming
+ * 201 Phase 4); legacy `review-design-*` names remain read-compatible.
  *
  * @param planDoc - Absolute path to the plan document
  * @param round - Round number (1-based)
@@ -49,8 +55,8 @@ export function computeHash(content: string): string {
  */
 export function deriveReportPath(planDoc: string, round: number): string {
   const dir = path.dirname(planDoc);
-  const base = path.basename(planDoc);
-  return path.join(dir, `review-design-${round}-${base}`);
+  const reqBase = reqBaseFromPlanStem(path.parse(planDoc).name);
+  return path.join(dir, designReviewDocFileName(reqBase, round));
 }
 
 /**

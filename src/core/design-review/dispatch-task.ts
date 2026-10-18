@@ -161,7 +161,7 @@ function buildDevelopTask(input: DesignReviewDispatchTaskInput): DesignReviewDis
     "Deliverables: code changes, `bun run typecheck` + `bun run build` + `bun test` passing, " +
       "per-phase commits, and the develop summary document.",
     `Review report (read-only BACKGROUND, not a task input): ${input.reportDoc}`,
-    "Historical `## Design Review Update` sections and plan-update receipts are NOT tasks: " +
+    "Historical `## Design Review Update` sections and Design_Review_Update receipts are NOT tasks: " +
       "do not re-open, re-revise or replay them.",
   ];
   return {

@@ -18,13 +18,15 @@
  * - the write policy releases `finished` to the ordinary chain ONLY with the
  *   current develop-handoff's trusted success receipt (see write-policy);
  * - a released loop keeps its artifacts read-only: the plan, every round's
- *   `review-design-*` report of that plan, and every `plan-update-*` receipt
+ *   design-review report of that plan (new `Design_Review_*` or legacy
+ *   `review-design-*` names), and every `Design_Review_Update_*` receipt
  *   of that plan (plus the bounded consumed-report receipt). A legitimate
- *   `{reqBase}_plan_commit.md` matches none of these patterns and stays
+ *   `{reqBase}_Develop_Commit.md` matches none of these patterns and stays
  *   writable through the normal stage chain.
  */
 
 import * as path from "node:path";
+import { reqBaseFromPlanStem } from "../naming/doc-naming";
 import type { DesignReviewState, SessionMeta } from "../../types";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { toProjectRelative } from "../../utils/protect";
@@ -179,11 +181,11 @@ function readSelfSessionFile(ctx: RuntimeCtx): string | null {
  * True when `absPath` targets a document of the FINISHED design-review cycle
  * that must stay read-only after the release (C4: "plan and review artifacts
  * read-only", "development must not overwrite the current report, that plan's
- * review-design-* files or known receipts").
+ * design-review report files or known receipts").
  *
  * Matching is bounded to the cycle's own identity: exact pinned paths first,
  * then the plan-directory's derived report/receipt file-name patterns — no
- * globs beyond those two shapes, so an unrelated `{reqBase}_plan_commit.md`
+ * globs beyond those two shapes, so an unrelated `{reqBase}_Develop_Commit.md`
  * or any source file never matches.
  */
 export function isFinishedReleaseProtectedPath(
@@ -213,11 +215,20 @@ export function isFinishedReleaseProtectedPath(
   if (path.dirname(rel) !== path.dirname(planRel)) return false;
 
   const name = path.basename(rel);
-  // Every round's review report of THIS plan: review-design-{round}-{planBasename}
-  const reportPattern = new RegExp(`^review-design-\\d+-${escapeRegex(path.basename(state.planDoc))}$`);
+  // Every round's review report of THIS plan (dual read, 201 Phase 4):
+  // new `Design_Review_{round}_{reqBase}_Design.md` and legacy
+  // `review-design-{round}-{planBasename}`.
+  const reqBase = reqBaseFromPlanStem(path.parse(state.planDoc).name);
+  const reportPattern = new RegExp(
+    `(?:^review-design-\\d+-${escapeRegex(path.basename(state.planDoc))}$)` +
+      `|(?:^Design_Review_\\d+_${escapeRegex(reqBase)}_Design\\.md$)`,
+  );
   if (reportPattern.test(name)) return true;
-  // Every standalone update receipt of THIS plan: plan-update-{round}-{operationId}-{planBase}.md
-  const receiptPattern = new RegExp(`^plan-update-\\d+-.+-${escapeRegex(path.parse(state.planDoc).name)}\\.md$`);
+  // Every standalone update receipt of THIS plan (hard switch, 201 Phase 4):
+  // `Design_Review_Update_{round}_{operationId(36)}_{reqBase}_Design.md`
+  const receiptPattern = new RegExp(
+    `^Design_Review_Update_\\d+_[0-9a-f-]{36}_.+_Design\\.md$`,
+  );
   return receiptPattern.test(name);
 }
 
