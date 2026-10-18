@@ -57,9 +57,9 @@ let _ownerWakeDeps: OwnerWakeDeps | null = null;
  * Sets the owner wake deps accessor.
  * Called on every hook invocation to keep deps fresh.
  *
- * @param deps - Owner wake dependencies
+ * @param deps - Owner wake dependencies (null clears the accessor)
  */
-export function setOwnerWakeDeps(deps: OwnerWakeDeps): void {
+export function setOwnerWakeDeps(deps: OwnerWakeDeps | null): void {
   _ownerWakeDeps = deps;
 }
 

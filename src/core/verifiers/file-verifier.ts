@@ -12,6 +12,18 @@ import type { AuditLogFn } from "../../types";
 export interface VerifierResult {
   passed: boolean;
   detail: string;
+  /**
+   * 203_Bug Phase 2 (RC3): set true when the failure is ENVIRONMENTAL ONLY —
+   * structurally unsatisfiable for the current stage (e.g. working-tree dirt
+   * confined to pipeline-managed/ignored paths). Such failures must be
+   * persisted but NOT counted against verifyAttempts. Optional for backward
+   * compatibility; all existing producers leave it undefined.
+   */
+  nonCountable?: boolean;
+  /**
+   * 203_Bug Phase 2 (RC3): paths that dirtied the tree (diagnostic, optional).
+   */
+  changedPaths?: string[];
 }
 
 /**

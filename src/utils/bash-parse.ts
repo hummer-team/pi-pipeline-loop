@@ -71,7 +71,9 @@ export const READ_ONLY_BASH_COMMANDS: ReadonlySet<string> = new Set([
  * Pattern for fd-to-fd redirection (e.g., 2>&1, 1>&2, >&2).
  * These are NOT file write targets — they just copy one fd to another.
  */
-const FD_REDIRECT_PATTERN = /^\d*[<>]&\d+$/;
+// 203_Bug Phase 2 (RC3b): single source shared with git-protect pathspec
+// filtering (fd redirect tokens must be stripped before dry-run args).
+export const FD_REDIRECT_PATTERN = /^\d*[<>]&\d+$/;
 
 /**
  * Checks if a path is a /dev/* device path (not a real file write target).

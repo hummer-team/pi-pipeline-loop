@@ -5,6 +5,7 @@
 
 import type { ExecFn, AuditLogFn } from "../../types";
 import type { VerifierResult } from "./file-verifier";
+import { classifyWorkingTree } from "../../utils/git-env-classify";
 
 /**
  * Parses a time-window string (e.g., "10min", "1h", "30s") into seconds.
@@ -120,6 +121,22 @@ export async function verifyRequiredGit(
       const status = (await runCmd(["status", "--porcelain"])).trim();
 
       if (status.length > 0) {
+        // 203_Bug Phase 2 (RC3): classify the dirtiness — when ALL changes
+        // live under pipeline-managed/ignored paths the failure is
+        // environmental: record warn detail + guidance and mark the result
+        // nonCountable (verify-advance will not increment verifyAttempts).
+        // Mixed failures (e.g. an outdated commit OR an unmanaged path) stay
+        // countable — only a purely environmental result may short-circuit.
+        const classification = await classifyWorkingTree(projectRoot, execFn);
+        if (classification.environmental && failures.length === 0) {
+          return {
+            passed: false,
+            detail:
+              `Working tree is not clean (uncommitted changes detected): ${classification.guidance}`,
+            nonCountable: true,
+            changedPaths: classification.changedPaths,
+          };
+        }
         failures.push("Working tree is not clean (uncommitted changes detected)");
       }
     } catch (err) {

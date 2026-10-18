@@ -78,7 +78,7 @@ import type { PipelineConfig, SessionMeta } from "../../types";
 
 /** Tool execution helper mirroring the sibling integration suites. */
 async function exec(
-  tool: { execute: (args: Record<string, unknown>, ctx?: unknown) => Promise<unknown> },
+  tool: { execute: (...args: any[]) => Promise<unknown> },
   args: Record<string, unknown>,
   ctx: unknown,
 ): Promise<Record<string, any>> {
@@ -149,7 +149,7 @@ describe("200 Bug Phase 5 chain A: routed fix spawn wakes the idle owner once, r
     // (harness session) and the capture sinks (wake messages / audits).
     const wakeSends: string[] = [];
     const wakeAudits: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    setOwnerMetaAccessor(() => h.meta() as unknown as Record<string, unknown>);
+    setOwnerMetaAccessor(() => h.meta());
     cleanups.push(() => setOwnerMetaAccessor(null));
     const offWire = wireSubagentLifecycleListeners(h.ownerPi);
     cleanups.push(offWire);
@@ -367,7 +367,12 @@ describe("200 Bug Phase 5 chain B: decision window READ-ONLY, drift window scope
       pi: { sendUserMessage: () => {} },
       actor: { isChild: false, sessionFile: OWNER_FILE_B },
       interactionSource: opts.interactionSource ?? "auto",
-      spawnOverride: async (_cfg, stage, _m, extraArgs) => {
+      spawnOverride: async (
+        _cfg: PipelineConfig,
+        stage: string,
+        _m: SessionMeta,
+        extraArgs?: string,
+      ) => {
         spawnLog.push({ stage, ...(extraArgs !== undefined ? { prompt: extraArgs } : {}) });
         return {
           spawned: true,

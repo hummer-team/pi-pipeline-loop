@@ -208,7 +208,15 @@ async function evaluateNode(
         options?.execFn,
         options?.logError,
       );
-      return result.passed ? [] : [{ ruleType: "requiredGit", detail: result.detail }];
+      return result.passed
+        ? []
+        : [{
+          ruleType: "requiredGit",
+          detail: result.detail,
+          // 203_Bug Phase 2 (RC3): environmental-only failure passthrough
+          ...(result.nonCountable ? { nonCountable: true as const } : {}),
+          ...(result.changedPaths ? { changedPaths: result.changedPaths } : {}),
+        }];
     }
     case "modelRuntimeResult": {
       const result = verifyModelRuntimeResult(

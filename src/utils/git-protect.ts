@@ -16,7 +16,7 @@
 import type { ExecFn } from "../types";
 import type { ProtectState } from "./protect";
 import { isPathProtectedForGit } from "./protect";
-import { tokenize } from "./bash-parse";
+import { tokenize, FD_REDIRECT_PATTERN } from "./bash-parse";
 import { safeWriteAuditLog } from "./auditLog";
 
 /**
@@ -119,7 +119,12 @@ export async function checkGitAdd(
     const allTokens = tokenize(command);
     // Find "add" subcommand index and collect remaining tokens as pathspec
     const addIndex = allTokens.indexOf("add");
-    const afterAddTokens = addIndex >= 0 ? allTokens.slice(addIndex + 1) : [];
+    // 203_Bug Phase 2 (RC3b): strip fd-redirect tokens (e.g. `2>&1`, `>&2`) —
+    // they are shell redirections, NOT pathspecs; leaving them in produced a
+    // false "git add" dry-run failure → git_protect degrade noise.
+    const afterAddTokens = addIndex >= 0
+      ? allTokens.slice(addIndex + 1).filter((t) => !FD_REDIRECT_PATTERN.test(t))
+      : [];
 
     // Phase 0 (182): Force flag bypass detection.
     // When -f/--force is present, normal dry-run would succeed even for gitignored

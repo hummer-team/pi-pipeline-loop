@@ -86,6 +86,14 @@ export interface VerifyFailure {
    * produced by the groups engine; surfaced as `[group:name][ruleType] detail`.
    */
   group?: string;
+  /**
+   * 203_Bug Phase 2 (RC3): true when the failure is ENVIRONMENTAL ONLY
+   * (structurally unsatisfiable for the current stage, e.g. dirty tree
+   * confined to pipeline-managed paths). Propagated to
+   * StructuredVerifyResult.failures → VerifyFailureItem and consumed by
+   * verify-advance's isEnvironmentalOnly downgrade.
+   */
+  nonCountable?: boolean;
 }
 
 /**
@@ -238,7 +246,12 @@ export async function executeStructuredRules(
   // 3. Required git state check
   const gitResult = await verifyRequiredGit(rules.requiredGit, projectRoot, execFn, logError);
   if (!gitResult.passed) {
-    failures.push({ ruleType: "requiredGit", detail: gitResult.detail });
+    // 203_Bug Phase 2 (RC3): pass through the environmental-only marker
+    failures.push({
+      ruleType: "requiredGit",
+      detail: gitResult.detail,
+      ...(gitResult.nonCountable ? { nonCountable: true as const } : {}),
+    });
   }
 
   // 4. File content pattern check

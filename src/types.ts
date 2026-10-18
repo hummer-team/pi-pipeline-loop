@@ -333,6 +333,14 @@ export interface VerifyFailureItem {
    * compatible — present only for failures produced by the groups engine.
    */
   group?: string;
+  /**
+   * 203_Bug Phase 2 (RC3): true when this failure is ENVIRONMENTAL ONLY —
+   * structurally unsatisfiable for the current stage (e.g. dirty tree
+   * confined to pipeline-managed/ignored paths). Only environmental failures
+   * carry this flag; when ALL failures are nonCountable, verify-advance
+   * persists them WITHOUT incrementing verifyAttempts.
+   */
+  nonCountable?: boolean;
   /** Unix timestamp (ms) when the failure was recorded */
   timestamp: number;
 }

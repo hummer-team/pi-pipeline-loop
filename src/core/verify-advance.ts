@@ -53,7 +53,15 @@ interface VerifyAdvanceCtx {
  * and the runVerification return shape.
  */
 interface VerifyAdvanceResult {
-  structuredResult?: { failures: { ruleType: string; detail: string; group?: string }[] };
+  structuredResult?: {
+    failures: {
+      ruleType: string;
+      detail: string;
+      group?: string;
+      /** 203_Bug Phase 2 (RC3): environmental-only failure marker passthrough */
+      nonCountable?: boolean;
+    }[];
+  };
   ruleMissing: string[];
   verifyResult?: { structured: { passed: boolean }; overallPassed: boolean } | null;
   /** Phase 9: rule set source file path (relative to projectRoot) */
@@ -138,6 +146,31 @@ export function isConfigError(failures: { ruleType: string; detail: string }[]):
       // is unresolved in a requiredFiles path — same config-class root cause)
       (f.ruleType === "fileContentPattern" || f.ruleType === "requiredFiles") &&
       /EISDIR|is a directory|points to a directory|path is empty|requirementDoc not set/.test(f.detail),
+  );
+}
+
+/**
+ * 203_Bug Phase 2 (RC3): Detects whether ALL failures are environmental-only
+ * — structurally unsatisfiable for the current stage (e.g. requiredGit
+ * cleanWorkingTree dirtied solely by pipeline-managed/ignored paths).
+ * Exported for unit tests and potential reuse.
+ *
+ * @param failures - Failure items carrying the optional nonCountable marker
+ * @returns true when the set is non-empty and every item is nonCountable
+ */
+export function isEnvironmentalOnly(
+  failures: { nonCountable?: boolean }[],
+): boolean {
+  return failures.length > 0 && failures.every((f) => f.nonCountable === true);
+}
+
+/** Owner-facing guidance for environmental (non-countable) verification blocks. */
+function envGuidance(failures: VerifyFailureItem[]): string {
+  return (
+    `Verification blocked by environmental conditions only (${failures.map((f) => f.ruleType).join(", ")}) ` +
+    "— not counted against verify attempts. " +
+    "Fix the environment or re-commit stage outputs in their expected locations; " +
+    "see .pi/references/develop_spec/verify.md."
   );
 }
 
@@ -405,6 +438,8 @@ export async function applyVerifyFail(
         ruleType: f.ruleType,
         detail: f.detail,
         ...(f.group ? { group: f.group } : {}),
+        // 203_Bug Phase 2 (RC3): propagate the environmental-only marker
+        ...(f.nonCountable === true ? { nonCountable: true } : {}),
         timestamp: now,
       });
     }
@@ -466,6 +501,34 @@ export async function applyVerifyFail(
       success: false,
       passed: false,
       message: `Verification config error — frozen. Use the decision menu to proceed: ${failureSummary}`,
+      failures: verifyFailures,
+    };
+  }
+
+  // 203_Bug Phase 2 (RC3): ENVIRONMENTAL-ONLY downgrade — when every failure
+  // is structurally unsatisfiable for the current stage (managed-path tree
+  // dirt), persist the failures but DO NOT count them against verifyAttempts
+  // (no overflow freeze). Mirrors the isConfigError short-circuit above.
+  if (config && isEnvironmentalOnly(verifyFailures)) {
+    ctx.session.updateMeta({
+      verifyFailures,
+    });
+
+    await writeAuditLog("auto_verify_env_blocked", {
+      pipelineId: meta.pipelineId,
+      stage: stageName,
+      method,
+      failureCount: String(verifyFailures.length),
+      failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
+      details: verifyFailures.map((f) => f.detail).join("; "),
+    }, "warn");
+
+    ui?.notify(ctx, envGuidance(verifyFailures));
+
+    return {
+      success: false,
+      passed: false,
+      message: envGuidance(verifyFailures),
       failures: verifyFailures,
     };
   }
