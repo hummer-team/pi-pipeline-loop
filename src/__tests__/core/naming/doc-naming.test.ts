@@ -6,6 +6,8 @@
 import { describe, it, expect } from "bun:test";
 import {
   reqBaseFromPlanStem,
+  reqBaseFromRequirementDoc,
+  planDocRelPathFromRequirementDoc,
   planDocFileName,
   commitDocFileName,
   designReviewDocFileName,
@@ -154,5 +156,47 @@ describe("doc-naming dual-pattern matchers", () => {
       expect(NEW_COMMIT_RE.test("195_Bug_Plan.md")).toBe(false);
       expect(LEGACY_COMMIT_RE.test("195_Bug_Plan.md")).toBe(false);
     });
+  });
+});
+
+// ─── 204 Phase 2: requirement-doc → plan-doc naming derivation ──────────────
+
+describe("204 Phase 2: reqBaseFromRequirementDoc", () => {
+  it("derives the base from a requirement doc path", () => {
+    expect(reqBaseFromRequirementDoc("docs/design/12_Feat.md")).toBe("12_Feat");
+    expect(reqBaseFromRequirementDoc("204_Bug.md")).toBe("204_Bug");
+  });
+
+  it("strips an existing _Plan / _plan suffix (never doubles it)", () => {
+    expect(reqBaseFromRequirementDoc("docs/design/195_Bug_Plan.md")).toBe("195_Bug");
+    expect(reqBaseFromRequirementDoc("docs/design/195_Bug_plan.md")).toBe("195_Bug");
+  });
+
+  it("normalizes Windows separators", () => {
+    expect(reqBaseFromRequirementDoc("docs\\design\\204_Bug.md")).toBe("204_Bug");
+  });
+
+  it("returns empty string for empty / extension-less input", () => {
+    expect(reqBaseFromRequirementDoc("")).toBe("");
+    expect(reqBaseFromRequirementDoc("docs/design/204_Bug")).toBe("");
+  });
+});
+
+describe("204 Phase 2: planDocRelPathFromRequirementDoc", () => {
+  it("keeps the requirement doc directory", () => {
+    expect(planDocRelPathFromRequirementDoc("docs/design/204_Bug.md")).toBe("docs/design/204_Bug_Plan.md");
+  });
+
+  it("returns a bare file name when there is no directory prefix", () => {
+    expect(planDocRelPathFromRequirementDoc("204_Bug.md")).toBe("204_Bug_Plan.md");
+  });
+
+  it("normalizes Windows backslashes to /", () => {
+    expect(planDocRelPathFromRequirementDoc("docs\\design\\204_Bug.md")).toBe("docs/design/204_Bug_Plan.md");
+  });
+
+  it("does not produce _Plan_Plan for an already-suffixed doc", () => {
+    expect(planDocRelPathFromRequirementDoc("docs/design/195_Bug_Plan.md")).toBe("docs/design/195_Bug_Plan.md");
+    expect(planDocRelPathFromRequirementDoc("docs/design/195_Bug_plan.md")).toBe("docs/design/195_Bug_Plan.md");
   });
 });

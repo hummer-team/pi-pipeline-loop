@@ -2154,3 +2154,71 @@ describe("buildViolationPrompt (M11)", () => {
     expect(result).not.toContain("CLOSING PHASE");
   });
 });
+
+// ─── 204 Phase 2: plan-stage naming constraint injection ────────────────────
+
+describe("204 Phase 2: plan-stage naming constraint", () => {
+  beforeEach(() => {
+    resetGitignoreCache();
+    resetPromptConfigCache();
+  });
+
+  afterEach(() => {
+    resetPromptConfigCache();
+  });
+
+  async function runPlan(requirementDoc: string | undefined, yml: string) {
+    const TMP = join(tmpdir(), "pi-prompt-plan-naming-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8));
+    await mkdir(TMP, { recursive: true });
+    await writePromptYml(TMP, yml);
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc });
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler({ session: { getMeta: () => meta } } as any))!;
+    const prompt = result.systemPrompt!;
+    await rm(TMP, { recursive: true, force: true });
+    return prompt;
+  }
+
+  const YML = 'stage_deliverable_plan: "Write the plan document now."\n';
+
+  it("injects the real target path and structure rules", async () => {
+    const prompt = await runPlan("docs/design/204_Bug.md", YML);
+    expect(prompt).toContain("docs/design/204_Bug_Plan.md");
+    expect(prompt).toContain("## 用户确认");
+    expect(prompt).toContain("Plan doc file MUST be named exactly");
+    // requirementDoc known → the Target file line carries the REAL path,
+    // never the literal `{reqBase}` placeholder (the constraint text that
+    // documents the pattern legitimately still mentions `{reqBase}`).
+    expect(prompt).toContain("**Target file**: `docs/design/204_Bug_Plan.md`");
+    expect(prompt).not.toContain("**Target file**: `docs/design/{reqBase}_Plan.md`");
+  });
+
+  it("falls back to the generic placeholder when requirementDoc is absent", async () => {
+    const prompt = await runPlan(undefined, YML);
+    expect(prompt).toContain("docs/design/{reqBase}_Plan.md");
+    expect(prompt).toContain("Plan doc file MUST be named exactly");
+  });
+
+  it("still injects the naming section when the yml key is missing", async () => {
+    const prompt = await runPlan("docs/design/204_Bug.md", 'stage_deliverable_clarify: "x"\n');
+    expect(prompt).toContain("docs/design/204_Bug_Plan.md");
+    expect(prompt).toContain("STAGE DELIVERABLES (PLUGIN)");
+  });
+
+  it("does not leak the plan constraint into develop or clarify", async () => {
+    const TMP = join(tmpdir(), "pi-prompt-plan-scope-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await writePromptYml(TMP, YML);
+    const config = makeTestConfig({ projectRoot: TMP });
+
+    for (const stage of ["develop", "clarify"] as const) {
+      resetPromptConfigCache();
+      const meta = makeTestMeta({ currentStage: stage, requirementDoc: "docs/design/204_Bug.md" });
+      const hook = createPromptInjector(config);
+      const result = (await hook.handler({ session: { getMeta: () => meta } } as any))!;
+      expect(result.systemPrompt!).not.toContain("Plan doc file MUST be named exactly");
+    }
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

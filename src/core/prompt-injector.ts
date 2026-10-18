@@ -25,7 +25,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
+import { planDocRelPathFromRequirementDoc } from "./naming/doc-naming";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot, setAuditPipelineContext } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -1409,20 +1410,35 @@ async function buildStageDeliverables(
   const promptConfig = await loadPromptConfig(config.projectRoot);
   const value = promptConfig[ymlKey];
 
-  if (!value || !value.trim()) {
+  // 204 Phase 2: the plan-stage naming constraint is deterministic, so it must be
+  // injected even when the yml key is missing — the early return therefore
+  // depends on BOTH sources being empty.
+  const isPlanStage = meta.currentStage === "plan";
+  const targetFile = meta.requirementDoc
+    ? `\`${planDocRelPathFromRequirementDoc(meta.requirementDoc)}\``
+    : "`docs/design/{reqBase}_Plan.md` (same directory as the requirement doc)";
+  const planSuffix = isPlanStage
+    ? `\n\n**Naming**: ${PLAN_DOC_NAMING_CONSTRAINT}\n**Target file**: ${targetFile}`
+    : "";
+
+  const hasYmlValue = !!value && !!value.trim();
+  if (!hasYmlValue && !planSuffix) {
     return null;
   }
 
   // 168 Phase 3: substitute {pipelineId} so the model sees real pipelineId
   const pipelineId = meta.pipelineId ?? "";
-  const rendered = value.trim().replaceAll("{pipelineId}", pipelineId);
+  const rendered = hasYmlValue ? value.trim().replaceAll("{pipelineId}", pipelineId) : "";
 
   // Phase 3 (182) Task 3: append commit doc naming constraint for develop/fix
   // stages so the model sees the rule at the point of writing commit docs.
   const isLoopStage = meta.currentStage === "develop" || meta.currentStage === "fix";
-  const namingSuffix = isLoopStage ? `\n\n**Naming**: ${COMMIT_DOC_NAMING_CONSTRAINT}` : "";
+  const namingSuffix = isLoopStage ? `\n\n**Naming**: ${COMMIT_DOC_NAMING_CONSTRAINT}` : planSuffix;
 
-  return `# STAGE DELIVERABLES (PLUGIN)\n${rendered}${namingSuffix}`;
+  // 204 Phase 2: an absent yml value must not leave an empty line under the header.
+  return rendered
+    ? `# STAGE DELIVERABLES (PLUGIN)\n${rendered}${namingSuffix}`
+    : `# STAGE DELIVERABLES (PLUGIN)${namingSuffix}`;
 }
 
 // ─── skillsDedup: gated deduplication of <available_skills> blocks ──────────

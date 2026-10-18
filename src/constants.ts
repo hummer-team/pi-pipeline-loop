@@ -472,6 +472,18 @@ export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
 export const COMMIT_DOC_NAMING_CONSTRAINT =
   "Commit doc file MUST be named exactly `{reqBase}_Develop_Commit.md` (e.g. `106_Feat.md` → `docs/design/106_Feat_Develop_Commit.md`). Per-phase commit ids MUST be appended to the single file's `**dev commit id**` line; NEVER create per-phase files (`_phase0_`, `_dev_`, `_develop_` suffixes forbidden).";
 
+/**
+ * 204 Phase 2: plan-stage naming constraint, mirrored on COMMIT_DOC_NAMING_CONSTRAINT.
+ * Injected into the plan-stage deliverables prompt so the model learns the exact
+ * file name and required structure BEFORE writing (previously only an after-the-fact
+ * verify glob guarded this).
+ */
+export const PLAN_DOC_NAMING_CONSTRAINT =
+  "Plan doc file MUST be named exactly `{reqBase}_Plan.md` (same directory as the requirement doc). " +
+  "The document MUST contain the six sections Summary / Phase {x} / Task List / Acceptance Criteria / " +
+  "Unit Tests Core / Commit Specification, and MUST end with a `## 用户确认` (or `## User Confirmation`) " +
+  "section — never invent an alternative file name or heading layout.";
+
 /** Default write scope by stage type (tools and bash prefixes no longer restricted) */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   string,

@@ -41,6 +41,33 @@ export function planDocFileName(reqBase: string): string {
   return `${reqBase}_Plan.md`;
 }
 
+/**
+ * 204 Phase 2: derives the requirement base from a requirement DOC path.
+ * `docs/design/204_Bug.md` → `204_Bug`; tolerates `.MD`, `\` separators and
+ * an already-`_Plan`-suffixed stem. Returns "" for empty / extension-less input.
+ */
+export function reqBaseFromRequirementDoc(reqDoc: string): string {
+  if (!reqDoc || typeof reqDoc !== "string") return "";
+  const normalized = reqDoc.replace(/\\/g, "/");
+  const base = normalized.split("/").pop() ?? "";
+  const m = /^(.+)\.(md|MD)$/.exec(base);
+  if (!m) return "";
+  return reqBaseFromPlanStem(m[1]);
+}
+
+/**
+ * 204 Phase 2: plan doc path relative to the requirement doc's directory.
+ * `docs/design/204_Bug.md` → `docs/design/204_Bug_Plan.md`;
+ * a bare `204_Bug.md` yields the bare file name.
+ */
+export function planDocRelPathFromRequirementDoc(reqDoc: string): string {
+  const normalized = String(reqDoc ?? "").replace(/\\/g, "/");
+  const idx = normalized.lastIndexOf("/");
+  const dir = idx === -1 ? "" : normalized.slice(0, idx + 1);
+  const name = planDocFileName(reqBaseFromRequirementDoc(normalized));
+  return `${dir}${name}`;
+}
+
 /** develop/fix commit document file name: `{reqBase}_Develop_Commit.md`. */
 export function commitDocFileName(reqBase: string): string {
   return `${reqBase}_Develop_Commit.md`;
