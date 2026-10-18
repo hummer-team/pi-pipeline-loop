@@ -30,10 +30,13 @@ interface PiWithEvents {
  * with `emit`/`on` methods.
  */
 export function hasEventBus(pi: unknown): pi is PiWithEvents {
-  return !!pi
-    && typeof (pi as PiWithEvents).events === "object"
-    && typeof (pi as PiWithEvents).events.emit === "function"
-    && typeof (pi as PiWithEvents).events.on === "function";
+  // `typeof null === "object"` — the explicit null check is required so that
+  // `{ events: null }` cannot pass the guard and blow up on `.emit` later.
+  const events = (pi as Partial<PiWithEvents> | null | undefined)?.events;
+  return events !== null
+    && typeof events === "object"
+    && typeof events.emit === "function"
+    && typeof events.on === "function";
 }
 
 /**

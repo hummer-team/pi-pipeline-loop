@@ -485,7 +485,7 @@ export function createAgentSettled(
               // the pipeline (flowState blocked + decision menu) — a returned
               // "frozen" string alone leaves the loop running.
               await freezeAndPrompt(
-                { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
+                { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
                 ctx.session.getMeta() ?? freshMeta,
                 coordinatorResult.reason,
                 config,

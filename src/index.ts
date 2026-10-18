@@ -16,6 +16,7 @@ import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
 import { registerOwnerWakeObserver, setOwnerWakeDeps } from "./core/owner-wake";
 import { registerOwnerEscalationObserver, setOwnerEscalationDeps } from "./core/owner-escalation";
+import { detectSessionRole } from "./core/session-role";
 import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
@@ -115,12 +116,12 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // When a subagent reaches terminal state, check if owner should be woken
     registerOwnerWakeObserver();
 
-    // 203_Bug Phase 0 (RC1): register owner escalation observer on the event
-    // bus. When a child freeze broadcast arrives, wake the owner via followUp
-    // (the decision menu itself is still rendered by the settle chain).
-    // Cleanup returned for dispose wiring; plugin factory has no dispose hook,
-    // subscription lifetime equals the registerOwnerWakeObserver precedent.
-    registerOwnerEscalationObserver(pi);
+    // 203_Bug Phase 0 (RC1): the owner escalation observer is NOT registered
+    // here. Owner and child sessions share this module in the same process, and
+    // the role is only knowable from a runtime ctx — registering unconditionally
+    // would subscribe the child too (duplicate wakes on a shared bus) and the
+    // child's hook would overwrite the module-level deps. Registration is
+    // deferred to the first OWNER hook invocation (see the hook bridge below).
 
     // Phase 0 (189): register fix-executor-completion handler via DI.
     // Breaks circular dependency: utils/subagent-rpc no longer imports core modules.
@@ -143,6 +144,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     }
 
     // ── Hooks registration (bridge: SDK (event, ctx) → internal RuntimeCtx) ──
+    // 203_Bug Phase 0 (RC1): lazy, owner-scoped observer registration flag.
+    // The first owner hook attaches the escalation observer; child sessions
+    // never register it (role gate below).
+    let ownerEscalationObserverAttached = false;
     const hooks = [
       createSessionStarter(config),
       createPromptInjector(config),
@@ -157,6 +162,15 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (pi.on as any)(h.event, async (event: unknown, ctx: ExtensionContext) => {
         const rctx = buildRuntimeCtx(pi, ctx, event as Record<string, unknown>, config);
+
+        // 203_Bug Phase 0 (RC1): owner/child role gate for escalation wiring.
+        // Fail-open on detection errors (conservative: treat as owner).
+        let isChildSession = false;
+        try {
+          isChildSession = detectSessionRole(rctx).isChild;
+        } catch {
+          isChildSession = false;
+        }
 
         // G4 (188): update the module-level owner session accessor so that
         // validateSubagentCreated (triggered by the global subagents:created
@@ -216,14 +230,29 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           syncStatusBar: wakeSyncStatusBar,
         });
 
-        // 203_Bug Phase 0 (RC1): owner escalation deps — refreshed per hook
-        // invocation, same source data as owner-wake deps.
-        setOwnerEscalationDeps({
-          getMeta: () => rctx.session.getMeta(),
-          sendFollowUp: wakeFollowUp,
-          syncStatusBar: wakeSyncStatusBar,
-          audit: wakeAudit,
-        });
+        // 203_Bug Phase 0 (RC1): owner escalation deps — refreshed per OWNER
+        // hook invocation, same source data as owner-wake deps. Child hooks
+        // must not install/overwrite them: the child shares this module, and a
+        // child-bound deps snapshot would make its own broadcast self-wake
+        // (writing owner_wake_escalation) while the owner stays unwoken.
+        if (!isChildSession) {
+          setOwnerEscalationDeps({
+            getMeta: () => rctx.session.getMeta(),
+            sendFollowUp: wakeFollowUp,
+            syncStatusBar: wakeSyncStatusBar,
+            audit: wakeAudit,
+            isOwner: true,
+          });
+
+          // Register the observer once, from the first owner hook where the
+          // role is knowable. Cleanup is intentionally not wired: the plugin
+          // factory has no dispose hook (same lifetime as the owner-wake
+          // observer precedent).
+          if (!ownerEscalationObserverAttached) {
+            ownerEscalationObserverAttached = true;
+            registerOwnerEscalationObserver(pi);
+          }
+        }
         return h.handler(rctx);
       });
     }

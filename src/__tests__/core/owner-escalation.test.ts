@@ -217,6 +217,24 @@ describe('owner-escalation (203_Bug Phase 0 / RC1)', () => {
       expect(calls.audits.some((a) => a.event === 'owner_wake_escalation_skipped')).toBe(true);
     });
 
+    it('child-bound deps never wake (no followUp, no owner_wake_escalation)', () => {
+      const meta = blockedMeta();
+      const { calls, deps } = makeDeps(meta);
+      // Defense in depth: even if child deps were installed, the role gate
+      // must refuse the wake and audit the skip reason.
+      setOwnerEscalationDeps({ ...deps, isOwner: false });
+      const mock = makeMockPi();
+      cleanup = registerOwnerEscalationObserver(mock.pi);
+
+      mock.fire(PIPELINE_ESCALATION_EVENT, basePayload());
+
+      expect(calls.followUps).toHaveLength(0);
+      expect(calls.statusBars).toBe(0);
+      expect(calls.audits.some((a) => a.event === 'owner_wake_escalation')).toBe(false);
+      const skip = calls.audits.find((a) => a.event === 'owner_wake_escalation_skipped');
+      expect(skip?.payload.reason).toBe('child_session');
+    });
+
     it('no meta accessor ⇒ skipped with no_meta', () => {
       const { calls, deps } = makeDeps(undefined);
       setOwnerEscalationDeps(deps);

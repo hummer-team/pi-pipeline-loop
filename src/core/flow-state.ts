@@ -277,6 +277,26 @@ export async function executeDecision(
         ? (meta.previousStage ?? "clarify")
         : meta.currentStage;
 
+      // 203_Bug Phase 1 (RC2): resolve the spawn-ledger residue target and
+      // liveness evidence from the CALLER SNAPSHOT *before* updateMeta.
+      // - The cleanup target is the stage the pipeline resumes INTO (`toStage`):
+      //   resuming from `awaiting_human` goes back to `previousStage`, so
+      //   cleaning `meta.currentStage` (awaiting_human) would leave the real
+      //   stage's spawnedStages/pendingSpawns residue behind and
+      //   duplicate_spawn_guarded would still block re-dispatch.
+      // - Reading after updateMeta would depend on whether the session adapter
+      //   mutates the snapshot in place (test mock) or replaces it (production).
+      const spawn = meta.activeSpawns?.[toStage];
+      const executorAgentId = spawn?.agentId ?? spawn?.agentName;
+      const executorLive = (() => {
+        if (!executorAgentId) return false;
+        try {
+          return probeAgentState(executorAgentId) === "live";
+        } catch {
+          return false;
+        }
+      })();
+
       // 203_Bug Phase 1: single-source continue-reset checklist replaces the
       // hardcoded patch — all cyclic counters (loopCycleCount / budget
       // extensions / rewinds / warned flag / escalation + wake one-shots)
@@ -294,25 +314,15 @@ export async function executeDecision(
           : {}),
       });
 
-      // 203_Bug Phase 1 (RC2): clear the current stage's spawn ledger residue
+      // 203_Bug Phase 1 (RC2): clear the resumed stage's spawn ledger residue
       // (activeSpawns/spawnedStages/pendingSpawns) so a re-dispatch after
       // unfreeze is not blocked by duplicate_spawn_guarded. Live-protect:
       // when the stage executor is still actually live, keep the record.
-      const spawn = meta.activeSpawns?.[meta.currentStage];
-      const executorAgentId = spawn?.agentId ?? spawn?.agentName;
-      const executorLive = (() => {
-        if (!executorAgentId) return false;
-        try {
-          return probeAgentState(executorAgentId) === "live";
-        } catch {
-          return false;
-        }
-      })();
       if (!executorLive) {
-        clearStageSpawnResidue(ctx.session, meta.currentStage);
+        clearStageSpawnResidue(ctx.session, toStage);
       } else {
         ctx.ui?.notify?.(
-          `Stage "${meta.currentStage}" executor still live — spawn residue kept.`,
+          `Stage "${toStage}" executor still live — spawn residue kept.`,
         );
       }
 

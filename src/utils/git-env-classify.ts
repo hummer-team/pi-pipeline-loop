@@ -81,14 +81,16 @@ export async function classifyWorkingTree(
   const unmanaged: string[] = [];
   for (const path of changedPaths) {
     try {
-      // git check-ignore -q <path>: exit 0 = ignored (managed)
+      // git check-ignore -q <path>: exit 0 = ignored (managed).
+      // Exit code 1 means NOT ignored (no rule matched) — that is a normal,
+      // non-ignored path and must continue through prefix matching below.
       const ignore = await execFn("git", ["check-ignore", "-q", path], projectRoot);
-      const ignoredByGit = ignore.code === 0;
-      if (ignoredByGit) continue;
-    } catch (err) {
-      // A throw-classified exec implementation may route nonzero exit via throw.
-      if (isNonZeroExit(err)) continue; // ignored (managed)
-      // Real execution failure → fail-closed to original semantics
+      if (ignore.code === 0) continue;
+    } catch {
+      // Fail-closed: a throwing exec (including wrappers that surface a
+      // NON-ZERO EXIT as a throw) must never be interpreted as "ignored".
+      // Treating exit 1 (rule not matched) as managed would silently
+      // downgrade a genuinely dirty working tree to environmental.
       return notEnvironmental(changedPaths);
     }
     const matchedByPrefix = managedMatchers.some((m) => path.startsWith(m));
@@ -134,15 +136,6 @@ export function parsePorcelainPaths(statusOutput: string): string[] {
     if (unquoted) paths.push(unquoted);
   }
   return paths;
-}
-
-/** Detects the exec-wrapper shape used when exit codes are surfaces via throw. */
-function isNonZeroExit(err: unknown): boolean {
-  return !!err
-    && typeof err === "object"
-    && "code" in (err as Record<string, unknown>)
-    && typeof (err as { code?: unknown }).code === "number"
-    && (err as { code: number }).code !== 0;
 }
 
 /** Builds the owner-facing guidance for environmental-only dirtiness. */

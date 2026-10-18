@@ -623,6 +623,30 @@ describe("executeDecision", () => {
     expect(meta.confirmGateDeferredAt).toBeUndefined();
   });
 
+  it("203_Bug Phase 1 (RC2): awaiting_human resume clears the TARGET stage spawn residue", async () => {
+    const meta = makeTestMeta({
+      currentStage: "awaiting_human",
+      previousStage: "develop",
+      flowState: "blocked",
+      activeSpawns: {
+        develop: { agentName: "develop-executor", startedAt: Date.now() },
+      },
+      spawnedStages: { develop: Date.now() },
+      pendingSpawns: {
+        develop: { agentName: "develop-executor", requestedAt: Date.now(), attempts: 0 },
+      },
+    });
+    const ctx = makeCtx(meta);
+
+    await executeDecision(ctx, meta, "resume", config);
+
+    expect(meta.currentStage).toBe("develop");
+    // The resumed stage (previousStage) must be clean, not `awaiting_human`.
+    expect(meta.activeSpawns?.develop).toBeUndefined();
+    expect(meta.spawnedStages?.develop).toBeUndefined();
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+  });
+
   // ─── Phase 5 (195): set_budget ───────────────────────────────────────────
 
   describe("Phase 5 (195): set_budget", () => {

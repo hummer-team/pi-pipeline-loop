@@ -16,6 +16,9 @@ describe('pi-event-bus (203_Bug Phase 0)', () => {
     it('returns false when events is not an object', () => {
       expect(hasEventBus({ events: 'not-an-object' })).toBe(false);
       expect(hasEventBus({ events: 42 })).toBe(false);
+      // `typeof null === 'object'` must not pass the type guard.
+      expect(hasEventBus({ events: null })).toBe(false);
+      expect(hasEventBus({ events: undefined })).toBe(false);
     });
 
     it('returns false when emit or on is missing (no `on` case)', () => {
@@ -38,6 +41,8 @@ describe('pi-event-bus (203_Bug Phase 0)', () => {
       expect(getEventBus(undefined)).toBeNull();
       expect(getEventBus({})).toBeNull();
       expect(getEventBus({ events: {} })).toBeNull();
+      expect(getEventBus({ events: null })).toBeNull();
+      expect(getEventBus({ events: undefined })).toBeNull();
     });
 
     it('returns the bus without invoking emit (emit throwing is irrelevant to access)', () => {

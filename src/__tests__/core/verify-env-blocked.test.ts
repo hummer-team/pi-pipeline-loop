@@ -23,6 +23,7 @@ const config: PipelineConfig = makeTestConfig({ projectRoot: TMP });
 function createCtx(meta: SessionMeta) {
   const notifications: string[] = [];
   const updates: SessionMeta[] = [];
+  const followUps: string[] = [];
   return {
     session: {
       getMeta: () => meta,
@@ -38,9 +39,15 @@ function createCtx(meta: SessionMeta) {
         notifications.push(msg);
       },
     },
+    pi: {
+      sendUserMessage: (msg: string) => {
+        followUps.push(msg);
+      },
+    },
     pipelineUI: createPipelineUI(config),
     notifications,
     updates,
+    followUps,
   };
 }
 
@@ -129,6 +136,40 @@ describe("applyVerifyFail environmental downgrade", () => {
 
     expect(meta.verifyAttempts ?? 0).toBe(0);
     expect(meta.flowState).not.toBe("blocked");
+  });
+
+  it("wakes the agent for a hook-mode environmental block, damping identical repeats", async () => {
+    const meta = makeTestMeta({ currentStage: "review", pipelineId: "pipe-env-rule-wake-001" });
+    const ctx = createCtx(meta);
+    const shared = {
+      structuredResult: {
+        failures: [{
+          ruleType: "requiredGit",
+          detail: "Working tree is not clean: docs-only changes",
+          nonCountable: true,
+        }],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    // Hook mode: the agent must receive the guidance (equivalent to verify_fail_wake).
+    await applyVerifyFail(ctx as never, meta, "review", shared, "rule", ctx.pipelineUI, config);
+
+    expect(ctx.followUps).toHaveLength(1);
+    expect(ctx.followUps[0]).toContain("environmental");
+    expect(ctx.followUps[0]).toContain("verify.md");
+
+    // Identical repeat within the window: no second wake, no extra notify spam.
+    await applyVerifyFail(ctx as never, meta, "review", shared, "rule", ctx.pipelineUI, config);
+    expect(ctx.followUps).toHaveLength(1);
+    expect(meta.verifyAttempts ?? 0).toBe(0);
+
+    const logContent = await readFile(
+      auditLogFileFor(AUDIT_ROOT, "pipe-env-rule-wake-001"),
+      "utf-8",
+    );
+    expect(logContent).toContain("verify_env_blocked_wake");
   });
 
   it("keeps counting when environmental and ordinary failures are mixed", async () => {

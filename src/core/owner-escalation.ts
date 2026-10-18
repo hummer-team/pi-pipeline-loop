@@ -38,6 +38,14 @@ export interface OwnerEscalationDeps {
   syncStatusBar: () => void;
   /** Audit log writer */
   audit: (event: string, payload: Record<string, unknown>) => void;
+  /**
+   * Role gate: `false` when these deps belong to a child session.
+   * Owner/child share this module in-process, so the evaluation itself must
+   * refuse to wake for child-bound deps (defense in depth — the index bridge
+   * already avoids installing child deps). Defaults to `true` for callers
+   * that predate the gate.
+   */
+  isOwner?: boolean;
 }
 
 /** Module-level deps accessor (refreshed on every hook invocation). */
@@ -86,6 +94,19 @@ export function evaluateEscalationWake(
   payload: EscalationPayload,
   deps: OwnerEscalationDeps,
 ): void {
+  // Role gate (203_Bug review fix): a child session shares this module with
+  // the owner. If child-bound deps were ever installed (or an observer fires
+  // in the child instance), the broadcast must NOT wake the child itself and
+  // must never emit `owner_wake_escalation`.
+  if (deps.isOwner === false) {
+    deps.audit("owner_wake_escalation_skipped", {
+      reason: "child_session",
+      pipelineId: payload.pipelineId,
+      stage: payload.stage,
+    });
+    return;
+  }
+
   const meta = deps.getMeta();
   if (!meta) {
     deps.audit("owner_wake_escalation_skipped", {

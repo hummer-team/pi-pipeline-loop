@@ -175,6 +175,37 @@ function envGuidance(failures: VerifyFailureItem[]): string {
 }
 
 /**
+ * 203_Bug Phase 2 (review fix): de-duplication window for environmental-block
+ * feedback. The condition is structural (managed/ignored paths) and therefore
+ * repeats on every settle; re-auditing / re-notifying / re-waking on each turn
+ * would either add noise or create a wake loop. Feedback is re-emitted when the
+ * signature changes (pipeline/stage/details) or the window expires, so the
+ * agent still gets a periodic reminder while the block persists.
+ */
+const ENV_BLOCKED_FEEDBACK_WINDOW_MS = 10 * 60 * 1000;
+
+let lastEnvBlockedFeedback: { key: string; at: number } | null = null;
+
+/**
+ * Returns true when environmental-block feedback should be emitted for this
+ * signature, updating the window memo.
+ *
+ * @param key - Stable failure signature (pipeline/stage/failure details)
+ * @param now - Current timestamp
+ */
+function shouldEmitEnvBlockedFeedback(key: string, now: number): boolean {
+  if (
+    lastEnvBlockedFeedback !== null
+    && lastEnvBlockedFeedback.key === key
+    && now - lastEnvBlockedFeedback.at < ENV_BLOCKED_FEEDBACK_WINDOW_MS
+  ) {
+    return false;
+  }
+  lastEnvBlockedFeedback = { key, at: now };
+  return true;
+}
+
+/**
  * Handles successful verification: advances to next stage (or handles terminal stage).
  *
  * Shared between agent_settled hook (method="rule", handleTerminal=false, returnResult=false)
@@ -514,21 +545,55 @@ export async function applyVerifyFail(
       verifyFailures,
     });
 
-    await writeAuditLog("auto_verify_env_blocked", {
-      pipelineId: meta.pipelineId,
-      stage: stageName,
-      method,
-      failureCount: String(verifyFailures.length),
-      failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
-      details: verifyFailures.map((f) => f.detail).join("; "),
-    }, "warn");
+    const guidance = envGuidance(verifyFailures);
+    // Stable signature: pipeline + stage + failure identity. A changed failure
+    // set always re-emits; identical repeats are damped by the window.
+    const feedbackKey = [
+      meta.pipelineId ?? "",
+      stageName,
+      verifyFailures.map((f) => `${f.ruleType}:${f.detail}`).sort().join(";"),
+    ].join("|");
 
-    ui?.notify(ctx, envGuidance(verifyFailures));
+    if (shouldEmitEnvBlockedFeedback(feedbackKey, now)) {
+      await writeAuditLog("auto_verify_env_blocked", {
+        pipelineId: meta.pipelineId,
+        stage: stageName,
+        method,
+        failureCount: String(verifyFailures.length),
+        failureTypes: verifyFailures.map((f) => f.ruleType).join(","),
+        details: verifyFailures.map((f) => f.detail).join("; "),
+      }, "warn");
+
+      ui?.notify(ctx, guidance);
+
+      // 203_Bug Phase 2 (review fix): mirror the ordinary `verify_fail_wake`
+      // channel. In hook mode the TUI notify alone leaves the agent feedback-
+      // blind, so the pipeline neither advances nor freezes — an invisible
+      // stall. Wake the model with the same guidance (tool mode returns it in
+      // the structured response instead).
+      if (method === "rule" && ctx.pi && typeof ctx.pi.sendUserMessage === "function") {
+        try {
+          ctx.pi.sendUserMessage(guidance, { deliverAs: "followUp" });
+          await writeAuditLog("verify_env_blocked_wake", {
+            pipelineId: meta.pipelineId,
+            stage: stageName,
+            method,
+            failureCount: String(verifyFailures.length),
+          });
+        } catch (err) {
+          await writeAuditLog("verify_env_blocked_wake_failed", {
+            pipelineId: meta.pipelineId,
+            stage: stageName,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
 
     return {
       success: false,
       passed: false,
-      message: envGuidance(verifyFailures),
+      message: guidance,
       failures: verifyFailures,
     };
   }

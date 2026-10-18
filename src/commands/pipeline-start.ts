@@ -665,7 +665,7 @@ export async function dispatchAfterResume(
         // 192 Phase 4 (task 8): real freeze on budget exhaustion at resume
         const { freezeAndPrompt } = await import("../core/flow-state");
         await freezeAndPrompt(
-          { session: ctx.session, ui, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
+          { session: ctx.session, ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
           ctx.session.getMeta() ?? freshMeta,
           coordinatorResult.reason,
           config,

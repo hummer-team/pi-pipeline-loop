@@ -27,6 +27,7 @@ function makeExec(options: {
   status: string;
   ignored?: string[];
   failStatus?: boolean;
+  failCheckIgnore?: boolean;
 }): { exec: ExecFn; calls: string[][] } {
   const calls: string[][] = [];
   const ignored = new Set(options.ignored ?? []);
@@ -37,6 +38,7 @@ function makeExec(options: {
       return { stdout: options.status, stderr: "", code: 0 };
     }
     if (args[0] === "check-ignore") {
+      if (options.failCheckIgnore) throw new Error("git check-ignore exploded");
       const path = args[args.length - 1];
       return ignored.has(path)
         ? { stdout: "", stderr: "", code: 0 }
@@ -80,6 +82,24 @@ describe("classifyWorkingTree", () => {
     const result = await classifyWorkingTree("/repo", exec);
     expect(result.environmental).toBe(true);
     expect(result.changedPaths).toEqual([".pi/runtime/cache.bin"]);
+  });
+
+  it("fails closed when git check-ignore throws (never treat a throw as ignored)", async () => {
+    const { exec } = makeExec({
+      status: "?? docs/design/new-plan.md\n",
+      failCheckIgnore: true,
+    });
+    const result = await classifyWorkingTree("/repo", exec);
+    expect(result.environmental).toBe(false);
+    expect(result.changedPaths).toEqual(["docs/design/new-plan.md"]);
+    expect(result.guidance).toBe("");
+  });
+
+  it("treats a non-zero check-ignore exit without a throw as NOT ignored", async () => {
+    const { exec } = makeExec({ status: "?? artifacts/report.json\n" });
+    const result = await classifyWorkingTree("/repo", exec);
+    expect(result.environmental).toBe(false);
+    expect(result.changedPaths).toEqual(["artifacts/report.json"]);
   });
 
   it("fails closed when git status throws", async () => {
