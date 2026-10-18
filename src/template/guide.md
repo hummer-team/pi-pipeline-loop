@@ -351,7 +351,7 @@ bun add @earendil-works/pi-pipeline
 **设计意图**：
 - **保护 plan 本体只读**：develop/fix 阶段可自由编写代码，但 plan 文档（`*_Plan.md`）在整个实现周期内不可修改，确保需求与设计的完整性
 - **建议使用精确形态 `*_Plan.md`**：glob 中 `*` 匹配 `[^/]*`（不含路径分隔符），`*_Plan.md` 精确匹配 plan 文档本身，不会意外覆盖 commit 文档等衍生文件
-- **`_plan_commit.md` 属框架契约交付物，已被判定层豁免**：develop/fix 阶段写入 `docs/design/{reqBase}_plan_commit.md` 时，判定层自动跳过只读拦截（审计事件 `readonly_exempt_applied`），无需手动配置白名单
+- **`_Develop_Commit.md` 属框架契约交付物，已被判定层豁免**：develop/fix 阶段写入 `docs/design/{reqBase}_Develop_Commit.md`（201 命名 v2；历史 `*_plan_commit.md` 旧名同样豁免）时，判定层自动跳过只读拦截（审计事件 `readonly_exempt_applied`），无需手动配置白名单
 
 **优先级**：只读优先于写白名单（F8 设计）——当路径同时命中 `allowedWritePaths` 和 `allowedReadOnlyPaths` 时，只读拦截生效（豁免路径除外）。
 
@@ -1346,6 +1346,21 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 | 审计日志 | `{auditDir}/{pipelineId}/log/YYYYMMDD_audit.log` | 插件内部产物；无归属事件落入 `{auditDir}/system/log/` |
 
 **路径约定（C17）**：业务交付物一律写入 `docs/design/` 等用户可见路径。`{auditDir}/` 仅存放插件内部产物（summary/audit/registry），不应作为业务交付目录。
+
+### 设计交付文档命名规范（v2，201）
+
+所有设计交付文档名由命名单一事实源 `src/core/naming/doc-naming.ts` 派生：`{reqBase}` = 需求文档 basename 去扩展名（plan 文档名将剥离尾部 `_Plan`/`_plan` 标记得到 `{reqBase}`）。
+
+| 交付物 | 新命名（v2） | 切换策略 / 读取兼容 |
+|---|---|---|
+| 需求/base 文档 | `docs/design/{index}_{xxx}.md` | 不变 |
+| plan 文档 | `{reqBase}_Plan.md` | 硬切换（不再生成旧名） |
+| develop/fix commit 文档 | `{reqBase}_Develop_Commit.md` | 生成新名；读取双模式（旧 `*_commit.md` 兼容） |
+| design review 报告 | `Design_Review_{round}_{reqBase}_Design.md` | 生成新名；读取双模式（旧 `review-design-{round}-{plan名}` 兼容，含旧两种基名形态） |
+| code review 报告 | `docs/review/Code_Review_{reqBase}_Develop_Commit_{index}.md` | 生成新名；读取双模式（旧 `code_review_*` 兼容） |
+| design review update 回执 | `Design_Review_Update_{round}_{operationId}_{reqBase}_Design.md` | 硬切换；回执路径始终由插件派生（token `{updateReceiptDoc}`） |
+
+**兼容矩阵**：凡是「读取双模式」分类，历史会话中的旧命名文件仍被扫描/引用；软件层新写入一律使用 v2 命名。verify-path-resolver 与 lifecycle-access 的保护正则同时覆盖新旧两族文件名。
 
 ---
 
