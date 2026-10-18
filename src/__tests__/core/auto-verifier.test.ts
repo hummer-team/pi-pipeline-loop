@@ -2101,7 +2101,7 @@ describe("168 Phase 3: resolvePlaceholders {pipelineId} replacement", () => {
 });
 
 describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)", () => {
-  it("develop stage narrows *_commit.md glob to exact {reqBase}_plan_commit.md", async () => {
+  it("develop stage narrows commit glob to exact {reqBase}_Develop_Commit.md", async () => {
     const config = makeTestConfig({ projectRoot: "/tmp/test" });
     const meta = makeTestMeta({
       currentStage: "develop",
@@ -2118,12 +2118,12 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
 
-    // 189 Phase 0: narrowed to exact path (no wildcard infix)
-    expect(result.requiredFiles).toEqual(["docs/design/80_Fix_plan_commit.md"]);
-    expect(result.fileContentPattern![0].path).toBe("docs/design/80_Fix_plan_commit.md");
+    // 189 Phase 0 + 201 Phase 2: narrowed to the exact NEW name (no wildcard infix)
+    expect(result.requiredFiles).toEqual(["docs/design/80_Fix_Develop_Commit.md"]);
+    expect(result.fileContentPattern![0].path).toBe("docs/design/80_Fix_Develop_Commit.md");
   });
 
-  it("fix stage narrows *_commit.md glob to exact {reqBase}_plan_commit.md", async () => {
+  it("fix stage narrows commit glob to exact {reqBase}_Develop_Commit.md", async () => {
     const config = makeTestConfig({ projectRoot: "/tmp/test" });
     const meta = makeTestMeta({
       currentStage: "fix",
@@ -2136,7 +2136,7 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
     };
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
-    expect(result.requiredFiles).toEqual(["docs/design/99_Bug_plan_commit.md"]);
+    expect(result.requiredFiles).toEqual(["docs/design/99_Bug_Develop_Commit.md"]);
   });
 
   it("exact path does not accept per-phase suffixes like _phase0_", async () => {
@@ -2176,13 +2176,13 @@ describe("168 Phase 3: applyConcreteStageDocPaths narrowing (develop/fix/review)
       verify: { require: true, verifyFile: "verify.md" },
     } as any;
     
-    // Run precheck - it should fail because the narrowed path (106_Feat_plan_commit.md) doesn't exist
+    // Run precheck - it should fail because the narrowed path (106_Feat_Develop_Commit.md) doesn't exist
     const result = await precheckRequiredFiles(config, meta);
     
     // The narrowing should have converted the glob to the exact path
-    // Since only 106_Feat_phase0_commit.md exists (not 106_Feat_plan_commit.md), the check should fail
+    // Since only 106_Feat_phase0_commit.md exists (not 106_Feat_Develop_Commit.md), the check should fail
     expect(result.passed).toBe(false);
-    expect(result.missing).toContain("docs/design/106_Feat_plan_commit.md");
+    expect(result.missing).toContain("docs/design/106_Feat_Develop_Commit.md");
     expect(result.missing).not.toContain("docs/design/106_Feat_phase0_commit.md");
     
     // Cleanup

@@ -12,5 +12,5 @@ disable-model-invocation: true
    - Fix issues one‑by‑one
    - Commit code after fixes, complying with git commit conventions
    - Update the `Fixed‑status` or `是否修复` field of corresponding issues to: `Fixed` or `已修复`
-5. **Fallback rule**: If `{plan}_commit.md` does not exist (not created during development), create it as a fallback per `develop_commit_template.md` contract, record the dev commit id, then continue.
+5. **Fallback rule**: If `{reqBase}_Develop_Commit.md` does not exist (not created during development), create it as a fallback per `develop_commit_template.md` contract, record the dev commit id, then continue.
 6. **Forbidden**: Modify issues unrelated to pending fixes

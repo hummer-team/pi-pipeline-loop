@@ -796,10 +796,10 @@ Verify develop commit doc.`,
     const histDir = path.join(TMP, "docs", "design");
     await fs.mkdir(histDir, { recursive: true });
     const pipelineId = "pipe-test-phase3";
-    // File name must match exact narrowed path: docs/design/80_Req_plan_commit.md (189 Phase 0)
+    // File name must match exact narrowed path: docs/design/80_Req_Develop_Commit.md (201 Phase 2)
     await fs.writeFile(
-      path.join(histDir, "80_Req_plan_commit.md"),
-      `**plan doc**: \`docs/design/80_Req_plan.md\`\n**pipeline**: ${pipelineId}\n`,
+      path.join(histDir, "80_Req_Develop_Commit.md"),
+      `**plan doc**: \`docs/design/80_Req_Plan.md\`\n**pipeline**: ${pipelineId}\n`,
     );
 
     const vrDir = path.join(TMP, ".pi", "references", "develop_spec");

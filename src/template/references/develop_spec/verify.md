@@ -1,6 +1,6 @@
 ---
 rules:
-  path: "docs/design/*_commit.md"
+  path: "docs/design/*_Develop_Commit.md"
   groups:
     - name: commit-ready
       ruleMode: and
@@ -13,4 +13,4 @@ rules:
         - type: requiredGit
           cleanWorkingTree: true
 ---
-验证 develop 已产出提交记录文档（docs/design/{requirementDoc-stem}_plan_commit.md），且引用了 plan doc 和当前 pipelineId。工作树必须干净（所有变更已提交）。
+验证 develop 已产出提交记录文档（docs/design/{requirementDoc-stem}_Develop_Commit.md），且引用了 plan doc 和当前 pipelineId。工作树必须干净（所有变更已提交）。

@@ -433,9 +433,9 @@ clarify → plan → design-review → develop → review ⇄ fix → review (lo
 | **clarify** | 分析需求文档，识别歧义，提出澄清问题；获得用户 full-und? 确认后完成。full-und? 确认标记（`## 模型确认`）落盘后由 agent_settled 自动验证推进 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + completionMarker 预检） |
 | **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
 | **design-review** | 审查规划文档质量，可选自动或人工审查；PASS→develop，FAIL→plan 修正 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证） |
-| **develop** | 按规划编写代码，运行测试，产出 _commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
+| **develop** | 按规划编写代码，运行测试，产出 _Develop_Commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **review** | 审查代码质量，产出 code review 报告；verify 校验 `结论：(通过|不通过)`；结论由模型经 stage_advance 声明：fail→自动转 fix，pass→confirm 门通过后→completed | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
-| **fix** | 根据审查反馈修复问题，产出 _commit.md；修复后→review 复验。fix 阶段必须经 review 复验才能进入终态（completed / awaiting_human），不允许直接跳转 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
+| **fix** | 根据审查反馈修复问题，产出 _Develop_Commit.md；修复后→review 复验。fix 阶段必须经 review 复验才能进入终态（completed / awaiting_human），不允许直接跳转 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
 | **awaiting_human** | 流水线冻结，等待人工介入（仅用于兜底） | read（受限） |
 | **completed** | 终端状态，流水线结束 | 无 |
 
@@ -443,7 +443,7 @@ clarify → plan → design-review → develop → review ⇄ fix → review (lo
 
 **selfVerifySkip 语义**：develop/fix 配置 `verify.selfVerifySkip: true` 时，插件根据工具调用记录判定模型是否已在本 stage 成功执行过相同 requiredCommand（命令 token 前缀匹配，`./mvnw`/`mvnw` 归一化）。命中且 exitCode=0 则跳过重执行、仅写 audit（`method:"self_verified"`）；此后若有 write/edit 成功记录则失效强制重验。Phase 6 (139) 新增 VERIFIED_COMMANDS 协议识别——子 agent 通过 task 返回的 `VERIFIED_COMMANDS: cmd1,cmd2` 行也计入已验证命令集合。
 
-**commit doc 命名规范**：develop/fix 阶段产出的 `_commit.md` 文件名必须从需求文档 basename 派生（`{reqBase}_*_commit.md`），不得从规划文档名派生。例如需求文档为 `docs/design/182_Bug.md` 时，commit doc 应命名为 `docs/design/182_Bug_dev_commit.md`。验证路径解析器（verify-path-resolver）会自动将 `*_commit.md` glob 收窄至 `docs/design/{reqBase}_*_commit.md`。
+**commit doc 命名规范**：develop/fix 阶段产出的 commit 文档必须从需求文档 basename 派生（`{reqBase}_Develop_Commit.md`），不得从规划文档名派生。例如需求文档为 `docs/design/182_Bug.md` 时，commit doc 应命名为 `docs/design/182_Bug_Develop_Commit.md`。验证路径解析器（verify-path-resolver）会自动将 commit doc glob（新版 `*_Develop_Commit.md` / 旧版 `*_commit.md` 双模式）收窄至 `docs/design/{reqBase}_Develop_Commit.md`。
 
 **质量环**（review ⇄ fix → review，confirm 通过→completed）：
 - review 声明 `reviewConclusion: "fail"` → 自动转 fix（不经 confirm 门）；声明 pass / 未声明 → verify + confirm 门

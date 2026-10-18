@@ -11,7 +11,7 @@ import { auditLogFileFor } from "../helpers";
 /**
  * 195 Phase 1: Deliverable exemption tests.
  *
- * Verifies that the commit doc (`{reqBase}_plan_commit.md`) is exempted
+ * Verifies that the commit doc (`{reqBase}_Develop_Commit.md`) is exempted
  * from read-only interception in develop/fix stages when requirementDoc
  * is present, even when a business-custom wide glob (e.g. `*_plan*.md`)
  * would otherwise block it.
@@ -35,8 +35,8 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
     await initAuditLog(config);
 
     // Create the plan doc and commit doc
-    const planDoc = join(TMP, "docs", "design", `${reqBase}_plan.md`);
-    const commitDoc = join(TMP, "docs", "design", `${reqBase}_plan_commit.md`);
+    const planDoc = join(TMP, "docs", "design", `${reqBase}_Plan.md`);
+    const commitDoc = join(TMP, "docs", "design", `${reqBase}_Develop_Commit.md`);
     await writeFile(planDoc, "plan content");
     await writeFile(commitDoc, "commit content");
 
@@ -54,9 +54,10 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
           skillPath: "s.md",
           nextStage: "review",
           requireDomain: false,
-          // Business custom wide glob: matches both _plan.md and _plan_commit.md
+          // Business custom wide glob: covers both docs (_Plan.md and the
+          // _Develop_Commit.md deliverable) so the negative cases stay blocked
           allowedWritePaths: ["**"],
-          allowedReadOnlyPaths: ["docs/design/*_plan*.md"],
+          allowedReadOnlyPaths: ["docs/design/*_Plan*.md", "docs/design/*_Commit.md"],
         },
       },
     } as any);
@@ -132,7 +133,7 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
           nextStage: "completed",
           requireDomain: false,
           allowedWritePaths: ["**"],
-          allowedReadOnlyPaths: ["docs/design/*_plan*.md"],
+          allowedReadOnlyPaths: ["docs/design/*_Plan*.md", "docs/design/*_Commit.md"],
         },
       },
     } as any);
@@ -184,7 +185,7 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
     const exemptEvent = events.find(e => e.includes('readonly_exempt_applied'));
     expect(exemptEvent).toBeDefined();
     expect(exemptEvent).toMatch(/stage=develop/);
-    expect(exemptEvent).toMatch(/relPath=docs\/design\/195_Bug_plan_commit\.md/);
+    expect(exemptEvent).toMatch(/relPath=docs\/design\/195_Bug_Develop_Commit\.md/);
     expect(exemptEvent).toMatch(/tool=write/);
 
     await rm(TMP, { recursive: true, force: true });
@@ -270,7 +271,7 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
           nextStage: "review",
           requireDomain: false,
           allowedWritePaths: ["**"],
-          allowedReadOnlyPaths: ["docs/design/*_plan*.md"],
+          allowedReadOnlyPaths: ["docs/design/*_Plan*.md", "docs/design/*_Commit.md"],
         },
       },
     } as any);

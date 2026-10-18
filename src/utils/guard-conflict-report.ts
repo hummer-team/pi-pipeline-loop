@@ -147,7 +147,7 @@ export async function checkDispatchConflicts(
   // Conflict i: Check if contract-required write target hits read-only AND exemption does NOT apply.
   // When requirementDoc exists: check exact deliverable path against read-only + exemption.
   // When requirementDoc is MISSING: exemption does not apply (getStageDeliverableExemptions returns []),
-  // and the contract-required write target pattern is `docs/design/*_plan_commit.md`.
+  // and the contract-required write target pattern is `docs/design/*_Develop_Commit.md` (201 Phase 2, narrowed by resolveCommitDocPath).
   // Use a representative instance of that pattern to probe for pattern-level intersection.
   if (stage === "develop" || stage === "fix") {
     if (meta.requirementDoc) {
@@ -170,7 +170,7 @@ export async function checkDispatchConflicts(
       }
     } else if (allowedReadOnlyPaths?.length) {
       // requirementDoc missing: exemption does NOT apply.
-      // Contract-required write target pattern: docs/design/*_plan_commit.md.
+      // Contract-required write target pattern: docs/design/*_Develop_Commit.md.
       // Probe with a representative instance — if it hits read-only, the pattern is blocked.
       const contractPatternProbe = resolveCommitDocPath("plan");
       if (isPathReadOnly(contractPatternProbe, allowedReadOnlyPaths)) {

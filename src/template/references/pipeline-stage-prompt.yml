@@ -427,7 +427,7 @@ stage_deliverable_develop: |
   - **MUST** commit changes
   - **MUST** include `**pipeline**: {pipelineId}` in the artifact file header
   - **MUST NOT** directly write to `.pi/audit/`; use `generate_stage_summary(commitIds: [...])` tool to record commit IDs in the stage summary
-  - **MUST** write a human-readable commit record to `docs/design/` (e.g. `{plan_stem}_plan_commit.md`)
+  - **MUST** write a human-readable commit record to `docs/design/` (e.g. `{reqBase}_Develop_Commit.md`)
 
 stage_deliverable_review: |
   - **MUST** include `**pipeline**: {pipelineId}` in the artifact file header
@@ -440,7 +440,7 @@ stage_deliverable_fix: |
   - **MUST** include `**pipeline**: {pipelineId}` in the artifact file header
   - **MUST** fix the identified issues from the review report
   - **MUST NOT** directly write to `.pi/audit/`; use `generate_stage_summary(commitIds: [...])` tool to record commit IDs in the stage summary
-  - **MUST** write a human-readable commit record to `docs/design/` (e.g. `{plan_stem}_plan_commit.md`)
+  - **MUST** write a human-readable commit record to `docs/design/` (e.g. `{reqBase}_Develop_Commit.md`)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Per-stage Verify Execution Prompts (5 keys)

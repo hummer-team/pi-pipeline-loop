@@ -217,7 +217,7 @@ function buildHardcodedForbiddenReason(relPath: string, _hardcoded: string[]): s
     return (
       base +
       " To record commit IDs: call `generate_stage_summary(commitIds: [\"<hash>\", ...])` — the tool writes to .pi/audit/ internally." +
-      " To create a human-readable commit record: write to docs/design/ (e.g. {plan_stem}_plan_commit.md)."
+      " To create a human-readable commit record: write to docs/design/ (e.g. {reqBase}_Develop_Commit.md)."
     );
   }
   return base;

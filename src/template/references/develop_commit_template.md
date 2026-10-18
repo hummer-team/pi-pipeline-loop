@@ -6,7 +6,7 @@
 
 **pipeline**: <当前 pipeline 的 pipelineId，从会话元数据获取>
 ## example
-**plan doc**: `docs/design/04_feat_fn_ecom_fulfillment_efficiency_plan.md`
+**plan doc**: `docs/design/04_feat_fn_ecom_fulfillment_efficiency_Plan.md`
 **dev commit id**: dc7deba8,25c126c6,bed8917d
 **fix commit id**: dc7deba3,25c126cf
 **pipeline**: pipe-1723456789-abc123

@@ -1358,7 +1358,7 @@ async function buildStageExecutor(
     // Phase 2 / 175 (R2Q5A) + Phase 4 / 177 (D7④): the plugin owns spawning.
     lines.push(`**Scheduling**: The plugin owns spawning of \`${executor.subagent_type}\` on stage entry. If the main thread calls \`${executor.subagent_type}\` via the Agent/task tool, the call is intercepted and rewritten to the plugin spawn path — do NOT rely on self-invocation.`);
     lines.push(`**Return protocol**: Sub-agent returns \`nextStage: <stage>\` suggestion; main thread calls stage_advance.`);
-    lines.push(`**Context**: context_arg filled by main thread from document artifacts (e.g. \`_Plan.md\`, \`_commit.md\`)`);
+    lines.push(`**Context**: context_arg filled by main thread from document artifacts (e.g. \`_Plan.md\`, \`_Develop_Commit.md\`)`);
   } else {
     // lightweight-advance: plan stage — receive @feat-design-plan-agent return then advance
     lines.push(`This stage uses \`${executor.subagent_type}\` (lightweight advance mode).`);

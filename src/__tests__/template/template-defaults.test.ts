@@ -350,10 +350,10 @@ describe("Phase 3 / 176: template engine smoke", () => {
   });
 
   it("develop: compliant commit doc passes; missing plan doc reference fails", async () => {
-    await writeDoc("docs/design/x_commit.md", "**plan doc**: docs/design/x_plan.md\n**pipeline**: p-2\n");
+    await writeDoc("docs/design/x_Develop_Commit.md", "**plan doc**: docs/design/x_Plan.md\n**pipeline**: p-2\n");
     expect((await runTemplate("develop", "p-2")).passed).toBe(true);
 
-    await writeDoc("docs/design/x_commit.md", "**pipeline**: p-2\n");
+    await writeDoc("docs/design/x_Develop_Commit.md", "**pipeline**: p-2\n");
     const fail = await runTemplate("develop", "p-2");
     expect(fail.passed).toBe(false);
     expect(fail.failures.every((f) => f.group === "commit-ready")).toBe(true);
@@ -473,8 +473,8 @@ describe("Phase 3 (182): COMMIT_DOC_NAMING_CONSTRAINT constant & injection", () 
   it("COMMIT_DOC_NAMING_CONSTRAINT is exported and contains the naming rule", () => {
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toBeDefined();
     expect(typeof COMMIT_DOC_NAMING_CONSTRAINT).toBe("string");
-    // 189 Phase 0: must specify the exact {reqBase}_plan_commit.md rule
-    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("{reqBase}_plan_commit.md");
+    // 201 Phase 2: must specify the exact {reqBase}_Develop_Commit.md rule
+    expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("{reqBase}_Develop_Commit.md");
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("MUST");
     expect(COMMIT_DOC_NAMING_CONSTRAINT).toContain("dev commit id");
   });

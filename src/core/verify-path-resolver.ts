@@ -21,16 +21,22 @@ import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 import type { VerifyRules, VerifyGroupRuleNode } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
 import { escapeRegExp } from "../utils/regex-utils";
+import { commitDocFileName } from "./naming/doc-naming";
 // 192 Phase 3: canonical report path derivation for the design-review stage
 /**
  * Resolve the commit document path for a given requirement base name.
- * Single source of truth for the contract deliverable path (195 Phase 1).
+ * Single source of truth for the contract deliverable path.
+ *
+ * 201 Phase 2: generated name is the new `{reqBase}_Develop_Commit.md`
+ * (derived from the doc-naming single source); legacy `{reqBase}_plan_commit.md`
+ * remains READ-compatible via the dual-mode glob detectors but is never
+ * generated any more.
  *
  * @param reqBase - Requirement document base name (without .md extension)
  * @returns Relative path to the commit document
  */
 export function resolveCommitDocPath(reqBase: string): string {
-  return `docs/design/${reqBase}_plan_commit.md`;
+  return `docs/design/${commitDocFileName(reqBase)}`;
 }
 
 /**
@@ -199,8 +205,10 @@ export async function planDocHasConfirmMarker(planDocPath: string): Promise<bool
  *
  * 168 Phase 3: Extended beyond "plan" stage to cover develop/fix/review.
  * - plan: `docs/design/*_Plan.md` → concrete plan doc path (via resolvePlanDocPath)
- * - develop/fix: `docs/design/*_commit.md` → `docs/design/{reqBase}_plan_commit.md`
- *   (189 Phase 0: narrowed to exact path — no wildcard infix allowed)
+ * - develop/fix: commit-doc globs (new `docs/design/*_Develop_Commit.md` or
+ *   legacy `docs/design/*_commit.md`) → `docs/design/{reqBase}_Develop_Commit.md`
+ *   (201 Phase 2: narrowed to the exact new-name path — no wildcard infix allowed;
+ *   legacy name is read-compatible but never generated)
  * - review: `docs/review/code_review_*.md` → `docs/review/code_review_{reqBase}*.md`
  *
  * When `meta.requirementDoc` is empty, globs are preserved as-is (fallback).
@@ -239,10 +247,10 @@ export async function applyConcreteStageDocPaths(
   }
 
   if (stage === "develop" || stage === "fix") {
-    // 189 Phase 0: Narrow commit doc glob to exact path (no wildcard infix).
-    // Any commit doc MUST be named `{reqBase}_plan_commit.md` — this replaces
-    // the loose `{reqBase}_*_commit.md` pattern that previously accepted
-    // per-phase suffixes like `_phase0_`, `_dev_`, `_develop_` drift.
+    // 189 Phase 0 + 201 Phase 2: Narrow commit doc glob to the exact NEW path
+    // (no wildcard infix). Any commit doc MUST be named
+    // `{reqBase}_Develop_Commit.md` — legacy `{reqBase}_plan_commit.md` globs
+    // are still DETECTED (dual read) but always narrowed to the new name.
     concreteGlob = resolveCommitDocPath(reqBase);
     return replaceGlobInRules(result, isCommitDocGlob, concreteGlob);
   }
@@ -328,11 +336,19 @@ export function isPlanDocGlob(pattern: string): boolean {
 }
 
 /**
- * Checks whether a path pattern matches the commit doc glob `docs/design/*_commit.md`.
- * 168 Phase 3: Used by applyConcreteStageDocPaths to narrow develop/fix globs.
+ * Checks whether a path pattern matches a commit-doc glob (dual read, 201
+ * Phase 2): the new `docs/design/*_Develop_Commit.md` and the legacy
+ * `docs/design/*_commit.md` form both count, so naming drift in authored
+ * verify rule sets still narrows to the single concrete deliverable path.
+ * Used by applyConcreteStageDocPaths to narrow develop/fix globs.
  */
 export function isCommitDocGlob(pattern: string): boolean {
-  return pattern === "docs/design/*_commit.md" || pattern === "docs\\design\\*_commit.md";
+  return (
+    pattern === "docs/design/*_Develop_Commit.md" ||
+    pattern === "docs\\design\\*_Develop_Commit.md" ||
+    pattern === "docs/design/*_commit.md" ||
+    pattern === "docs\\design\\*_commit.md"
+  );
 }
 
 /**

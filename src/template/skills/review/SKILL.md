@@ -6,9 +6,9 @@ disable-model-invocation: true
 ---
 
 ## workflow
-1. **Parse Input**: Extract file path `code‑review‑agent {file}_commit.md` from task description passed by upstream Agent.
-2. Read `{file}_commit.md`. Terminate review and output "Missing plan document, please supplement" if `plan doc` is absent; terminate review and report error if `commit id` is missing.
-3. Read references inside `{file}_commit.md`
+1. **Parse Input**: Extract file path `code‑review‑agent {file}_Develop_Commit.md` from task description passed by upstream Agent.
+2. Read `{file}_Develop_Commit.md`. Terminate review and output "Missing plan document, please supplement" if `plan doc` is absent; terminate review and report error if `commit id` is missing.
+3. Read references inside `{file}_Develop_Commit.md`
    - `plan doc`: Read and understand the plan
    - `commit id`: Perform review based on dev commit id or fix commit id
 4. Complete review per steps below
@@ -20,7 +20,7 @@ disable-model-invocation: true
 4. If achievable in one‑line code, avoid over‑engineering; simplify and combine sub‑functions to meet business goals.
 
 ### 1. Scope Compliance
-‑ Check whether changes from dev/fix commit id in `{file}_commit.md` contain unexpected modifications to files unrelated to plan; mark severity as `High` if found.
+‑ Check whether changes from dev/fix commit id in `{file}_Develop_Commit.md` contain unexpected modifications to files unrelated to plan; mark severity as `High` if found.
 ‑ Note: Ignore historical incremental changes not included in commit diff during review.
 ‑ Check whether new files are explicitly specified in plan document; mark as `Medium` if not defined in plan.
 

@@ -455,19 +455,22 @@ export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
 // ─── Commit Doc Naming Constraint (Phase 3 / 182, Phase 0 / 189) ─────────────
 
 /**
- * Naming constraint for `*_commit.md` deliverables (develop/fix stages).
+ * Naming constraint for commit-doc deliverables (develop/fix stages).
  *
  * 189 Phase 0: Narrowed from the loose `{reqBase}_*_commit.md` pattern to the
- * exact filename `{reqBase}_plan_commit.md`. Per-phase commit ids are appended
- * to a single file's `**dev commit id**` line; never split into per-phase files.
- * This eliminates `_phase0_`, `_dev_`, `_develop_` drift that previously
- * bypassed verification (audit 106_Feat commit-doc misname).
+ * exact single-file-per-requirement contract. 
+ * 201 Phase 2: Generated name is `{reqBase}_Develop_Commit.md`; legacy
+ * `{reqBase}_plan_commit.md` remains read-compatible but is never generated.
+ * Per-phase commit ids are appended to a single file's `**dev commit id**`
+ * line; never split into per-phase files. This eliminates `_phase0_`, `_dev_`,
+ * `_develop_` drift that previously bypassed verification (audit 106_Feat
+ * commit-doc misname).
  *
  * Appended to the stage deliverables prompt by prompt-injector so the model
  * sees the constraint at the point of writing commit docs.
  */
 export const COMMIT_DOC_NAMING_CONSTRAINT =
-  "Commit doc file MUST be named exactly `{reqBase}_plan_commit.md` (e.g. `106_Feat.md` → `docs/design/106_Feat_plan_commit.md`). Per-phase commit ids MUST be appended to the single file's `**dev commit id**` line; NEVER create per-phase files (`_phase0_`, `_dev_`, `_develop_` suffixes forbidden).";
+  "Commit doc file MUST be named exactly `{reqBase}_Develop_Commit.md` (e.g. `106_Feat.md` → `docs/design/106_Feat_Develop_Commit.md`). Per-phase commit ids MUST be appended to the single file's `**dev commit id**` line; NEVER create per-phase files (`_phase0_`, `_dev_`, `_develop_` suffixes forbidden).";
 
 /** Default write scope by stage type (tools and bash prefixes no longer restricted) */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<
