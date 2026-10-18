@@ -1446,3 +1446,46 @@ describe("Phase 0 (186): applyVerifyPass clears pendingSpawns on terminal states
     expect(meta.pendingSpawns).toEqual({});
   });
 });
+
+// ─── 204 Phase 3: plan-doc feedback integration ─────────────────────────────
+
+describe("204 Phase 3: plan-doc feedback in verify failures", () => {
+  it("plan format failure wins over ordinary failures in message + wake text", async () => {
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/204_Bug.md",
+      verifyAttempts: 0,
+    });
+    const ctx = createCtx(meta);
+    const sentMessages: string[] = [];
+    (ctx as any).pi = { sendUserMessage: (msg: string) => { sentMessages.push(msg); } };
+
+    // Mixed failures: a plan FORMAT defect coexists with an unrelated keyword miss.
+    const sharedResult = {
+      structuredResult: {
+        failures: [
+          { ruleType: "requiredFiles", detail: "Missing files: docs/design/204_Bug_Plan.md" },
+          { ruleType: "keywords", detail: "Missing keywords: x" },
+        ],
+      },
+      ruleMissing: [],
+      verifyResult: null,
+    };
+
+    const config = makeTestConfig({ projectRoot: TMP, maxVerifyAttempts: 5 });
+    const result = await applyVerifyFail(
+      ctx as any, meta, "plan", sharedResult, "rule", ctx.pipelineUI, config,
+    );
+
+    expect(result.message).toContain("Plan doc verification failed for \"plan\"");
+    expect(result.message).toContain("docs/design/204_Bug_Plan.md");
+    expect(result.message).not.toContain("Please strictly follow the SKILL output format requirements");
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]).toContain("docs/design/204_Bug_Plan.md");
+
+    // budget accounting untouched (the `plan_doc_feedback` audit assertion lives
+    // in plan-doc-feedback.test.ts, where the audit pipeline context is clean)
+    expect(meta.verifyAttempts).toBe(1);
+  });
+});
