@@ -485,14 +485,14 @@ export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   },
   develop: {
     allowedWritePaths: [ALLOWED_WRITE_ALL],
-    allowedReadOnlyPaths: ["docs/design/*_plan.md"],
+    allowedReadOnlyPaths: ["docs/design/*_Plan.md"],
   },
   review: {
     allowedWritePaths: DEFAULT_READONLY_WRITE_PATHS,
   },
   fix: {
     allowedWritePaths: [ALLOWED_WRITE_ALL],
-    allowedReadOnlyPaths: ["docs/design/*_plan.md"],
+    allowedReadOnlyPaths: ["docs/design/*_Plan.md"],
   },
 };
 

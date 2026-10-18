@@ -30,7 +30,7 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
     // Create plan doc for marker write
     const planDir = path.join(stageTmp, "docs", "design");
     await fs.mkdir(planDir, { recursive: true });
-    const planDoc = path.join(planDir, "Test_plan.md");
+    const planDoc = path.join(planDir, "Test_Plan.md");
     await fs.writeFile(planDoc, "# Test Plan\n");
 
     // Create real agent file for design-review stage so resolveAgentMention succeeds

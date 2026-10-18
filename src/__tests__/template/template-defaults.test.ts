@@ -360,10 +360,10 @@ describe("Phase 3 / 176: template engine smoke", () => {
   });
 
   it("plan: confirmation marker passes; missing marker fails", async () => {
-    await writeDoc("docs/design/x_plan.md", "# Plan\n\n## 用户确认\n");
+    await writeDoc("docs/design/x_Plan.md", "# Plan\n\n## 用户确认\n");
     expect((await runTemplate("plan", "p-3")).passed).toBe(true);
 
-    await writeDoc("docs/design/x_plan.md", "# Plan\n\nno marker\n");
+    await writeDoc("docs/design/x_Plan.md", "# Plan\n\nno marker\n");
     const fail = await runTemplate("plan", "p-3");
     expect(fail.passed).toBe(false);
     expect(fail.failures.every((f) => f.group === "plan-ready")).toBe(true);

@@ -240,7 +240,7 @@ describe("Phase 1 / 176: defer penetration into groups", () => {
     await writeDoc("verify.md", [
       "---",
       "rules:",
-      "  path: \"docs/design/*_plan.md\"",
+      "  path: \"docs/design/*_Plan.md\"",
       "  groups:",
       "    - name: plan-ready",
       "      rules:",

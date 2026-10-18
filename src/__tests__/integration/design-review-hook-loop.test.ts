@@ -55,7 +55,7 @@ function makeHarness(): Harness {
   fs.mkdirSync(path.join(projectRoot, "docs"), { recursive: true });
   fs.mkdirSync(path.join(projectRoot, "agents"), { recursive: true });
   fs.mkdirSync(path.join(projectRoot, ".pi", "audit"), { recursive: true });
-  const planDoc = path.join(projectRoot, "docs", "191_Feat_plan.md");
+  const planDoc = path.join(projectRoot, "docs", "191_Feat_Plan.md");
   fs.writeFileSync(planDoc, "# Plan\ninitial design\n", "utf-8");
   // 192 issue-6: the requirement doc must exist for the direct-entry gate
   // (drift owner-confirm re-authorisation runs the production gate).

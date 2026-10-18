@@ -1693,25 +1693,25 @@ describe("Phase 1 (141): resolvePlanDocPath", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("derives plan doc path from requirementDoc (77_Config.md → 77_Config_plan.md)", async () => {
+  it("derives plan doc path from requirementDoc (77_Config.md → 77_Config_Plan.md)", async () => {
     const config = makeTestConfig({ projectRoot: tmpDir });
     const meta = makeTestMeta({ requirementDoc: "docs/design/77_Config.md" });
     const result = await resolvePlanDocPath(config, meta);
-    expect(result).toBe(path.join(tmpDir, "docs/design/77_Config_plan.md"));
+    expect(result).toBe(path.join(tmpDir, "docs/design/77_Config_Plan.md"));
   });
 
-  it("prevents _plan duplication (xxx_plan.md stays as-is)", async () => {
+  it("prevents _Plan duplication (xxx_Plan.md stays as-is)", async () => {
     const config = makeTestConfig({ projectRoot: tmpDir });
-    const meta = makeTestMeta({ requirementDoc: "docs/design/77_Config_plan.md" });
+    const meta = makeTestMeta({ requirementDoc: "docs/design/77_Config_Plan.md" });
     const result = await resolvePlanDocPath(config, meta);
-    expect(result).toBe(path.join(tmpDir, "docs/design/77_Config_plan.md"));
+    expect(result).toBe(path.join(tmpDir, "docs/design/77_Config_Plan.md"));
   });
 
   it("falls back to glob mtime when requirementDoc is empty", async () => {
     await fs.mkdir(path.join(tmpDir, "docs", "design"), { recursive: true });
     // Create two plan files with different mtimes
-    const older = path.join(tmpDir, "docs/design/older_plan.md");
-    const newer = path.join(tmpDir, "docs/design/newer_plan.md");
+    const older = path.join(tmpDir, "docs/design/older_Plan.md");
+    const newer = path.join(tmpDir, "docs/design/newer_Plan.md");
     await fs.writeFile(older, "older content");
     // Set older mtime to 1 second ago
     const olderTime = new Date(Date.now() - 1000);
@@ -1873,7 +1873,7 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("replaces docs/design/*_plan.md glob with concrete path in requiredFiles and fileContentPattern", async () => {
+  it("replaces docs/design/*_Plan.md glob with concrete path in requiredFiles and fileContentPattern", async () => {
     // Set up so resolvePlanDocPath can derive the path
     const config = makeTestConfig({ projectRoot: tmpDir });
     const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
@@ -1881,9 +1881,9 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
     const rules = {
       keywords: [],
       mode: "or" as const,
-      requiredFiles: ["docs/design/*_plan.md", "src/index.ts"],
+      requiredFiles: ["docs/design/*_Plan.md", "src/index.ts"],
       fileContentPattern: [
-        { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+        { path: "docs/design/*_Plan.md", pattern: "^## 用户确认" },
         { path: "src/index.ts", pattern: "export" },
       ],
     };
@@ -1891,9 +1891,9 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
     const result = await applyConcreteStageDocPaths(rules, config, meta);
 
     // Glob should be replaced with concrete relative path
-    expect(result.requiredFiles).toEqual(["docs/design/77_Config_plan.md", "src/index.ts"]);
+    expect(result.requiredFiles).toEqual(["docs/design/77_Config_Plan.md", "src/index.ts"]);
     expect(result.fileContentPattern).toEqual([
-      { path: "docs/design/77_Config_plan.md", pattern: "^## 用户确认" },
+      { path: "docs/design/77_Config_Plan.md", pattern: "^## 用户确认" },
       { path: "src/index.ts", pattern: "export" },
     ]);
   });
@@ -1901,23 +1901,23 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
   it("preserves glob when resolvePlanDocPath derivation fails (no requirementDoc, no glob match)", async () => {
     const config = makeTestConfig({ projectRoot: tmpDir });
     const meta = makeTestMeta({ currentStage: "plan", requirementDoc: undefined });
-    // No docs/design/*_plan.md files exist → glob fallback returns null → rules unchanged
+    // No docs/design/*_Plan.md files exist → glob fallback returns null → rules unchanged
 
     const rules = {
       keywords: [],
       mode: "or" as const,
-      requiredFiles: ["docs/design/*_plan.md"],
+      requiredFiles: ["docs/design/*_Plan.md"],
       fileContentPattern: [
-        { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+        { path: "docs/design/*_Plan.md", pattern: "^## 用户确认" },
       ],
     };
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
 
     // Glob should be preserved as-is (derivation failed)
-    expect(result.requiredFiles).toEqual(["docs/design/*_plan.md"]);
+    expect(result.requiredFiles).toEqual(["docs/design/*_Plan.md"]);
     expect(result.fileContentPattern).toEqual([
-      { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+      { path: "docs/design/*_Plan.md", pattern: "^## 用户确认" },
     ]);
   });
 
@@ -1928,18 +1928,18 @@ describe("Phase 1 (141): applyConcreteStageDocPaths", () => {
     const rules = {
       keywords: [],
       mode: "or" as const,
-      requiredFiles: ["docs/design/*_plan.md"],
+      requiredFiles: ["docs/design/*_Plan.md"],
       fileContentPattern: [
-        { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+        { path: "docs/design/*_Plan.md", pattern: "^## 用户确认" },
       ],
     };
 
     const result = await applyConcreteStageDocPaths(rules, config, meta);
 
-    // Develop stage only narrows *_commit.md globs; *_plan.md globs pass through unchanged
-    expect(result.requiredFiles).toEqual(["docs/design/*_plan.md"]);
+    // Develop stage only narrows *_commit.md globs; *_Plan.md globs pass through unchanged
+    expect(result.requiredFiles).toEqual(["docs/design/*_Plan.md"]);
     expect(result.fileContentPattern).toEqual([
-      { path: "docs/design/*_plan.md", pattern: "^## 用户确认" },
+      { path: "docs/design/*_Plan.md", pattern: "^## 用户确认" },
     ]);
   });
 });

@@ -45,14 +45,14 @@ function makePlanConfigWithConfirm(root: string, confirmMode: "auto" | "manual" 
 async function createPlanDoc(content: string) {
   const docsDir = path.join(tmpDir, "docs", "design");
   await fs.mkdir(docsDir, { recursive: true });
-  const planPath = path.join(docsDir, "77_Config_plan.md");
+  const planPath = path.join(docsDir, "77_Config_Plan.md");
   await fs.writeFile(planPath, content, "utf-8");
   return planPath;
 }
 
 describe("Phase 3 (162): confirm gate helpers", () => {
   it("PLAN_CONFIRM_MARKER_RULE has correct path and pattern", () => {
-    expect(PLAN_CONFIRM_MARKER_RULE.path).toBe("docs/design/*_plan.md");
+    expect(PLAN_CONFIRM_MARKER_RULE.path).toBe("docs/design/*_Plan.md");
     expect(PLAN_CONFIRM_MARKER_RULE.pattern).toBe("^## (用户确认|User Confirmation)");
   });
 
@@ -437,7 +437,7 @@ describe("Phase 3 (162): review stage confirm gate scenarios", () => {
     expect(result.result).toBe("handled");
     // Read back the plan doc — user content must be intact
     const docsDir = path.join(tmpDir, "docs", "design");
-    const planPath = path.join(docsDir, "77_Config_plan.md");
+    const planPath = path.join(docsDir, "77_Config_Plan.md");
     const after = await fs.readFile(planPath, "utf-8");
     expect(after).toContain("## 用户确认流程");
     expect(after).toContain("> 用户需要在文档中手写确认");
@@ -580,7 +580,7 @@ describe("Phase 3 (162): confirm marker allowedWritePaths enforcement", () => {
     // Create plan doc outside allowed paths
     const docsDir = path.join(tmpDir, "other", "design");
     await fs.mkdir(docsDir, { recursive: true });
-    const planPath = path.join(docsDir, "77_Config_plan.md");
+    const planPath = path.join(docsDir, "77_Config_Plan.md");
     await fs.writeFile(planPath, "# Plan\n", "utf-8");
 
     // Config with restricted allowedWritePaths (does not include "other/")

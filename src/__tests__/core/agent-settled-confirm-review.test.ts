@@ -34,7 +34,7 @@ describe("Phase 4 (162): agent_settled confirm gate integration", () => {
   async function createPlanDoc(root: string, content: string) {
     const docsDir = join(root, "docs", "design");
     await mkdir(docsDir, { recursive: true });
-    const planPath = join(docsDir, "77_Config_plan.md");
+    const planPath = join(docsDir, "77_Config_Plan.md");
     await writeFile(planPath, content, "utf-8");
     return planPath;
   }
@@ -77,7 +77,7 @@ describe("Phase 4 (162): agent_settled confirm gate integration", () => {
     // verify.md with requiredFiles pointing to existing plan doc → passes
     await createVerifyMd(stageTmp, `---
 requiredFiles:
-  - "docs/design/77_Config_plan.md"
+  - "docs/design/77_Config_Plan.md"
 ---
 Verify plan quality.`);
 
@@ -95,7 +95,7 @@ Verify plan quality.`);
     expect(logContent).toContain("confirm_auto_write");
 
     // Plan doc should have bilingual marker
-    const planDoc = await readFile(join(stageTmp, "docs", "design", "77_Config_plan.md"), "utf-8");
+    const planDoc = await readFile(join(stageTmp, "docs", "design", "77_Config_Plan.md"), "utf-8");
     expect(planDoc).toContain("## 用户确认：确认无误");
     expect(planDoc).toContain("## User Confirmation: Confirmed");
 
@@ -110,7 +110,7 @@ Verify plan quality.`);
     const config = makePlanConfigWithConfirm(stageTmp, "manual");
     const planPath = await createPlanDoc(stageTmp, "# Plan\nplan content here\n");
     // verify.md with requiredFiles pointing to existing plan doc → passes
-    const relPlanPath = "docs/design/77_Config_plan.md";
+    const relPlanPath = "docs/design/77_Config_Plan.md";
     await createVerifyMd(stageTmp, `---
 requiredFiles:
   - "${relPlanPath}"
@@ -148,7 +148,7 @@ Verify plan.`);
     await createPlanDoc(root, "# Plan\nplan content here\n");
     await createVerifyMd(root, `---
 requiredFiles:
-  - "docs/design/77_Config_plan.md"
+  - "docs/design/77_Config_Plan.md"
 ---
 Verify plan.`);
 
@@ -185,7 +185,7 @@ Verify plan.`);
     await createPlanDoc(root, "# Plan\nplan content here\n");
     await createVerifyMd(root, `---
 requiredFiles:
-  - "docs/design/77_Config_plan.md"
+  - "docs/design/77_Config_Plan.md"
 ---
 Verify plan.`);
 
@@ -234,7 +234,7 @@ Verify plan.`);
       await createPlanDoc(root, "# Plan\nplan content here\n");
       await createVerifyMd(root, `---
 requiredFiles:
-  - "docs/design/77_Config_plan.md"
+  - "docs/design/77_Config_Plan.md"
 ---
 Verify plan.`);
 
@@ -282,9 +282,9 @@ Verify plan.`);
     // verify.md with a requiredFiles rule (passes) + the plan marker rule that should be deferred
     await createVerifyMd(stageTmp, `---
 requiredFiles:
-  - "docs/design/77_Config_plan.md"
+  - "docs/design/77_Config_Plan.md"
 fileContentPattern:
-  - path: "docs/design/*_plan.md"
+  - path: "docs/design/*_Plan.md"
     pattern: "^## (用户确认|User Confirmation)"
 ---
 Verify plan.`);
@@ -321,7 +321,7 @@ Verify plan.`);
     await createPlanDoc(stageTmp, "# Plan\nplan content here\n");
     await createVerifyMd(stageTmp, `---
 requiredFiles:
-  - "docs/design/77_Config_plan.md"
+  - "docs/design/77_Config_Plan.md"
 ---
 Verify plan.`);
 

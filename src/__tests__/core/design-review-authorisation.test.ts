@@ -30,7 +30,7 @@ describe("designReviewAuthorisationGate", () => {
     await writeFile(requirementDoc, "# Requirements\n\nTest requirements");
 
     // Create plan document (derived from requirement doc)
-    planDoc = join(projectRoot, "requirements_plan.md");
+    planDoc = join(projectRoot, "requirements_Plan.md");
     await writeFile(planDoc, "# Plan\n\nTest plan content");
 
     // Mock RuntimeCtx
@@ -215,7 +215,7 @@ describe("designReviewAuthorisationGate", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.state).toBeDefined();
-        expect(result.state.planDoc).toContain("requirements_plan.md");
+        expect(result.state.planDoc).toContain("requirements_Plan.md");
         expect(result.state.authorizationSource).toBe("direct-entry");
         expect(result.state.round).toBe(1);
         expect(result.state.planHash).toBeDefined();
@@ -230,7 +230,7 @@ describe("designReviewAuthorisationGate", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.state.planDoc).toContain("requirements_plan.md");
+        expect(result.state.planDoc).toContain("requirements_Plan.md");
       }
     });
 
@@ -241,7 +241,7 @@ describe("designReviewAuthorisationGate", () => {
 
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.state.planDoc).toContain("requirements_plan.md");
+        expect(result.state.planDoc).toContain("requirements_Plan.md");
       }
     });
   });

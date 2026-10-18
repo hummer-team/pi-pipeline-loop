@@ -30,8 +30,8 @@ describe("192 Phase 4: entry pre-checks", () => {
   beforeEach(async () => {
     projectRoot = fs.mkdtempSync(path.join(tmpdir(), "dr-entry-"));
     fs.mkdirSync(path.join(projectRoot, "docs", "design"), { recursive: true });
-    planRel = "docs/design/190_Feat_plan.md";
-    planDoc = path.join(projectRoot, "docs", "design", "190_Feat_plan.md");
+    planRel = "docs/design/190_Feat_Plan.md";
+    planDoc = path.join(projectRoot, "docs", "design", "190_Feat_Plan.md");
     fs.writeFileSync(planDoc, "# Plan\nv1\n", "utf-8");
     fs.writeFileSync(path.join(projectRoot, "docs", "design", "190_Feat.md"), "# Req\n", "utf-8");
     // Own the audit directory: full-suite runs share the module-global audit
@@ -100,8 +100,8 @@ describe("192 Phase 4: entry pre-checks", () => {
 
   it("menu: valid choice authorizes ONCE with strict scanned round and immediate single dispatch", async () => {
     // historical reports occupy rounds 1 and 2 → new authorization must start at 3
-    fs.writeFileSync(path.join(projectRoot, "docs", "design", "review-design-1-190_Feat_plan.md"), "old1", "utf-8");
-    fs.writeFileSync(path.join(projectRoot, "docs", "design", "review-design-2-190_Feat_plan.md"), "old2", "utf-8");
+    fs.writeFileSync(path.join(projectRoot, "docs", "design", "review-design-1-190_Feat_Plan.md"), "old1", "utf-8");
+    fs.writeFileSync(path.join(projectRoot, "docs", "design", "review-design-2-190_Feat_Plan.md"), "old2", "utf-8");
 
     const config = baseConfig();
     const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/190_Feat.md", pipelineId: "pipe-entry-1" });
@@ -120,9 +120,9 @@ describe("192 Phase 4: entry pre-checks", () => {
     const after: SessionMeta = ctx.session.getMeta();
     expect(after.currentStage).toBe("design-review");
     expect(after.designReview?.round).toBe(3); // history-scanned safe round
-    expect(after.designReview?.reportDoc).toBe(path.join(projectRoot, "docs", "design", "review-design-3-190_Feat_plan.md"));
+    expect(after.designReview?.reportDoc).toBe(path.join(projectRoot, "docs", "design", "review-design-3-190_Feat_Plan.md"));
     // no report overwritten
-    expect(fs.readFileSync(path.join(projectRoot, "docs", "design", "review-design-1-190_Feat_plan.md"), "utf-8")).toBe("old1");
+    expect(fs.readFileSync(path.join(projectRoot, "docs", "design", "review-design-1-190_Feat_Plan.md"), "utf-8")).toBe("old1");
     // choice → exactly ONE immediate dispatch via coordinator
     expect(dispatched).toBe(1);
   });

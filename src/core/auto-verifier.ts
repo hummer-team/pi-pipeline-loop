@@ -668,8 +668,8 @@ async function runVerificationBase(
   // when the marker will be written later by the confirm gate (C2 ordering fix).
   //
   // Glob-aware matching: `applyConcreteStageDocPaths` above replaces plan doc globs
-  // (e.g. `docs/design/*_plan.md`) with the concrete relative path (e.g.
-  // `docs/design/162_Confirm_plan.md`). The caller's defer entries may still use the
+  // (e.g. `docs/design/*_Plan.md`) with the concrete relative path (e.g.
+  // `docs/design/162_Confirm_Plan.md`). The caller's defer entries may still use the
   // glob form. We resolve globs in the defer list using the same concrete path
   // derivation so that pattern equality comparison works on both glob and non-glob inputs.
   const deferList = options?.deferContentPatterns;

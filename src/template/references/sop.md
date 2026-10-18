@@ -23,7 +23,7 @@
 ## 🤖 Subagent Scheduling SOP
 ```
 Requirement Doc → design-und → full-und? → design-plan → develop → code-review
-(Request File)  (Append clarify) (User and model Confirm) (Output _plan.md) (Phase-wise Dev) (Review Report)
+(Request File)  (Append clarify) (User and model Confirm) (Output _Plan.md) (Phase-wise Dev) (Review Report)
 ```
 | # | Rule | Description |
 |---|------|-------------|

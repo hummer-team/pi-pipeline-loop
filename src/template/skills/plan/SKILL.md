@@ -46,8 +46,8 @@ disable-model-invocation: true
     - feat(scope):scope is Core Modifications，e.g: fulfillment,kernel‑picker,rfm
 
 #### Generate the complete plan referencing template [plan_template](.pi/references/plan_template.md).
-#### **Plan File Path**: User‑specified output path for `_plan.md`
-  - Example：`docs/design/01_e2e_flow_v1_plan.md`
+#### **Plan File Path**: User‑specified output path for `_Plan.md`
+  - Example：`docs/design/01_e2e_flow_v1_Plan.md`
 
 ### Output Requirements
 1. Keep content concise, highlight key points and boundaries; avoid redundant or irrelevant content.

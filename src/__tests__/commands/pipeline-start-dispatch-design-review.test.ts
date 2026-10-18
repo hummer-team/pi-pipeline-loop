@@ -37,7 +37,7 @@ function makeDesignReviewConfig(root: string) {
 async function createPlanDoc(content: string = "# Plan\n\nTest plan content.") {
   const docsDir = path.join(tmpDir, "docs", "design");
   await fs.mkdir(docsDir, { recursive: true });
-  const planPath = path.join(docsDir, "77_Config_plan.md");
+  const planPath = path.join(docsDir, "77_Config_Plan.md");
   await fs.writeFile(planPath, content, "utf-8");
   return planPath;
 }
@@ -54,7 +54,7 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
     
     const meta = makeTestMeta({
       currentStage: "design-review",
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-n3-dispatch",
       designReview: drState,
     });
@@ -96,7 +96,7 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
     
     const meta = makeTestMeta({
       currentStage: "design-review",
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-n3-finished",
       designReview: drState,
     });
@@ -126,7 +126,7 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
     
     const meta = makeTestMeta({
       currentStage: "design-review",
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-n3-no-auth",
       designReview: undefined,
     });

@@ -43,9 +43,9 @@ export function validateDesignReviewStageAssets(
 
 /**
  * Resolve the requirement/plan document context for a design-review entry.
- * Convention (same as the plan stage): the plan doc is the requirement doc
- * with the `.md` suffix replaced by `_plan.md`. Paths become absolute against
- * projectRoot and are checked for existence.
+ * Convention (same as the plan stage, 201 Phase 1: `_Plan.md`): the plan doc
+ * is the requirement doc with the `.md` suffix replaced by `_Plan.md`. Paths
+ * become absolute against projectRoot and are checked for existence.
  *
  * @returns resolved absolute paths plus existence flags; callers decide how
  *   to report each missing document.
@@ -64,7 +64,7 @@ export function resolveDesignReviewEntryDocs(
 
   const requirementDoc = meta.requirementDoc ? toAbsolute(meta.requirementDoc) : undefined;
   const planDoc = meta.requirementDoc
-    ? toAbsolute(meta.requirementDoc.replace(/\.md$/, "_plan.md"))
+    ? toAbsolute(meta.requirementDoc.replace(/\.md$/, "_Plan.md"))
     : undefined;
 
   const exists = (p: string | undefined): boolean => {

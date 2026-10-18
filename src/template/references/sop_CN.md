@@ -22,7 +22,7 @@
 ## 🤖 Subagent 调度 SOP
 ```
 需求文档 → design-und → full-und? → design-plan → develop → code-review
-(请求文件)   (追加澄清)    (用户确认)    (输出_plan.md)  (按Phase开发)  (审查报告)
+(请求文件)   (追加澄清)    (用户确认)    (输出_Plan.md)  (按Phase开发)  (审查报告)
 ```
 | # | 规则 | 说明 |
 |---|------|------|

@@ -127,9 +127,9 @@ export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): Veri
 /**
  * Resolves the plan document path from session metadata's requirementDoc.
  *
- * Derivation: `{dirname}/{basename_without_.md}_plan.md`
- * - Prevents `_plan` duplication: if already `xxx_plan.md`, returns as-is
- * - Falls back to glob `docs/design/*_plan.md` (latest mtime) when derivation is unavailable
+ * Derivation: `{dirname}/{basename_without_.md}_Plan.md` (201 Phase 1 hard switch)
+ * - Prevents `_Plan` duplication: if already `xxx_Plan.md`, returns as-is
+ * - Falls back to glob `docs/design/*_Plan.md` (latest mtime) when derivation is unavailable
  * - Returns null if no plan doc can be found
  *
  * @param config - Pipeline configuration (for projectRoot)
@@ -145,15 +145,15 @@ export async function resolvePlanDocPath(
   if (reqDoc && reqDoc.endsWith(".md")) {
     const dir = path.dirname(reqDoc);
     const base = path.basename(reqDoc, ".md");
-    // Prevent _plan duplication
-    const planBase = base.endsWith("_plan") ? base : `${base}_plan`;
+    // Prevent _Plan duplication (201 Phase 1: new naming is `_Plan` hard switch)
+    const planBase = base.endsWith("_Plan") ? base : `${base}_Plan`;
     const derived = path.join(dir, `${planBase}.md`);
     return path.isAbsolute(derived) ? derived : path.join(config.projectRoot, derived);
   }
 
-  // Fallback: glob docs/design/*_plan.md, return latest by mtime
+  // 201 Phase 1: fallback glob docs/design/*_Plan.md, return latest by mtime
   try {
-    const matches = await globMatchFiles("docs/design/*_plan.md", config.projectRoot);
+    const matches = await globMatchFiles("docs/design/*_Plan.md", config.projectRoot);
     if (matches.length === 0) return null;
 
     // Resolve to absolute paths and get mtime
@@ -198,7 +198,7 @@ export async function planDocHasConfirmMarker(planDocPath: string): Promise<bool
  * the current requirementDoc basename.
  *
  * 168 Phase 3: Extended beyond "plan" stage to cover develop/fix/review.
- * - plan: `docs/design/*_plan.md` → concrete plan doc path (via resolvePlanDocPath)
+ * - plan: `docs/design/*_Plan.md` → concrete plan doc path (via resolvePlanDocPath)
  * - develop/fix: `docs/design/*_commit.md` → `docs/design/{reqBase}_plan_commit.md`
  *   (189 Phase 0: narrowed to exact path — no wildcard infix allowed)
  * - review: `docs/review/code_review_*.md` → `docs/review/code_review_{reqBase}*.md`
@@ -320,10 +320,11 @@ function replaceGlobInRules(
 }
 
 /**
- * Checks whether a path pattern matches the plan doc glob `docs/design/*_plan.md`.
+ * Checks whether a path pattern matches the plan doc glob `docs/design/*_Plan.md`
+ * (201 Phase 1 hard switch — legacy `_plan.md` no longer matches).
  */
 export function isPlanDocGlob(pattern: string): boolean {
-  return pattern === "docs/design/*_plan.md" || pattern === "docs\\design\\*_plan.md";
+  return pattern === "docs/design/*_Plan.md" || pattern === "docs\\design\\*_Plan.md";
 }
 
 /**

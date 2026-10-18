@@ -43,7 +43,7 @@ function makeDesignReviewConfig(root: string) {
 async function createPlanDoc(content: string = "# Plan\n\nTest plan content.") {
   const docsDir = path.join(tmpDir, "docs", "design");
   await fs.mkdir(docsDir, { recursive: true });
-  const planPath = path.join(docsDir, "77_Config_plan.md");
+  const planPath = path.join(docsDir, "77_Config_Plan.md");
   await fs.writeFile(planPath, content, "utf-8");
   return planPath;
 }
@@ -54,7 +54,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-pipeline-1",
     });
     // Fix: pass selectReturn to createMockCtx so ctx.ui.select returns "Auto Review Plan"
@@ -86,7 +86,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-pipeline-2",
     });
     // Fix: pass selectReturn to createMockCtx so ctx.ui.select returns "Auto Review Plan"
@@ -112,7 +112,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-pipeline-3",
     });
     // Fix: pass selectReturn to createMockCtx so ctx.ui.select returns "Auto Review Plan"
@@ -139,7 +139,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-pipeline-4",
       verifyAttempts: 5,
       verifyFailures: [{ ruleType: "test", detail: "test failure", timestamp: Date.now() }],
@@ -168,7 +168,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-pipeline-5",
     });
     
@@ -202,7 +202,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-pipeline-6",
     });
     const ctx = createMockCtx(meta);
@@ -247,7 +247,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "test-pipeline-7",
     });
     // Fix: pass selectReturn to createMockCtx so ctx.ui.select returns "Auto Review Plan"
@@ -276,7 +276,7 @@ describe("Round 4 Issue #1: Auto Review Plan handler", () => {
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({ 
       currentStage: "plan", 
-      requirementDoc: "docs/design/nonexistent_plan.md",
+      requirementDoc: "docs/design/nonexistent_Plan.md",
       pipelineId: "test-pipeline-8",
     });
     // Fix: pass selectReturn to createMockCtx so ctx.ui.select returns "Auto Review Plan"
@@ -344,7 +344,7 @@ describe("192 issue-7: Auto Review Plan authorization commits reliably (fail-clo
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({
       currentStage: "plan",
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "pipe-issue7-legacy",
     });
     const harness = legacyAdapterCtx(meta, "Auto Review Plan");
@@ -375,7 +375,7 @@ describe("192 issue-7: Auto Review Plan authorization commits reliably (fail-clo
     const config = makeDesignReviewConfig(tmpDir);
     const meta = makeTestMeta({
       currentStage: "plan",
-      requirementDoc: "docs/design/77_Config_plan.md",
+      requirementDoc: "docs/design/77_Config_Plan.md",
       pipelineId: "pipe-issue7-ok",
     });
     const ctx = createMockCtx(meta, { selectReturn: "Auto Review Plan" });

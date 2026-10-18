@@ -72,7 +72,7 @@ export type ConfirmGateResult =
  * Exported for use by agent-settled.ts when constructing deferContentPatterns.
  */
 export const PLAN_CONFIRM_MARKER_RULE = {
-  path: "docs/design/*_plan.md",
+  path: "docs/design/*_Plan.md",
   pattern: "^## (用户确认|User Confirmation)",
 };
 
@@ -114,7 +114,7 @@ export function resolveConfirmMaxRejections(config: PipelineConfig, stageConfig:
 /**
  * Resolves the stage document path for writing confirm markers.
  * - plan: uses resolvePlanDocPath
- * - review: returns the latest code_review_*.md path
+ * - review: returns the latest code review report path
  * Returns null if no path can be resolved.
  */
 async function resolveStageDocPath(

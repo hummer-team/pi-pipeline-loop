@@ -375,11 +375,11 @@ describe("192 Phase 0: entry.ts shared extraction", () => {
     if (!res.ok) expect(res.error).toBe("design_review_config_invalid");
   });
 
-  it("resolveDesignReviewEntryDocs: derives _plan.md absolute path and existence flags", () => {
+  it("resolveDesignReviewEntryDocs: derives _Plan.md absolute path and existence flags", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dr-entry-"));
     try {
       const reqDoc = path.join(tmp, "docs", "190_Feat.md");
-      const planDoc = path.join(tmp, "docs", "190_Feat_plan.md");
+      const planDoc = path.join(tmp, "docs", "190_Feat_Plan.md");
       fs.mkdirSync(path.join(tmp, "docs"), { recursive: true });
       fs.writeFileSync(reqDoc, "# Requirement\n");
       fs.writeFileSync(planDoc, "# Plan\n");

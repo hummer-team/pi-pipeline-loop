@@ -47,7 +47,7 @@ export function makePlanConfigWithConfirm(root: string, confirmMode: "auto" | "m
 export async function createPlanDoc(content: string): Promise<string> {
   const docsDir = path.join(tmpDir, "docs", "design");
   await fs.mkdir(docsDir, { recursive: true });
-  const planPath = path.join(docsDir, "77_Config_plan.md");
+  const planPath = path.join(docsDir, "77_Config_Plan.md");
   await fs.writeFile(planPath, content, "utf-8");
   return planPath;
 }

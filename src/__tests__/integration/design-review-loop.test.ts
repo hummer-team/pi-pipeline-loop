@@ -71,7 +71,7 @@ function makeLoopHarness(): LoopHarness {
   fs.mkdirSync(path.join(projectRoot, "verify"), { recursive: true });
   fs.mkdirSync(path.join(projectRoot, ".pi", "audit"), { recursive: true });
   const reqDoc = path.join(projectRoot, "docs", "design", "191_Feat.md");
-  const planDoc = path.join(projectRoot, "docs", "design", "191_Feat_plan.md");
+  const planDoc = path.join(projectRoot, "docs", "design", "191_Feat_Plan.md");
   fs.writeFileSync(reqDoc, "# Requirements\ncontent\n", "utf-8");
   fs.writeFileSync(planDoc, "# Plan\ninitial design\n", "utf-8");
 
@@ -94,7 +94,7 @@ function makeLoopHarness(): LoopHarness {
   const planVerifyFile = path.join(projectRoot, "verify", "plan-verify.md");
   fs.writeFileSync(
     planVerifyFile,
-    "---\nrules:\n  requiredFiles:\n    - \"docs/design/191_Feat_plan.md\"\n---\nplan gate\n",
+    "---\nrules:\n  requiredFiles:\n    - \"docs/design/191_Feat_Plan.md\"\n---\nplan gate\n",
     "utf-8",
   );
   config.stages["plan"] = {
