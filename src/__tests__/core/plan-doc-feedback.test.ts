@@ -1,0 +1,221 @@
+import { describe, it, expect } from "bun:test";
+import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { buildPlanDocFeedback } from "../../core/plan-doc-feedback";
+import { applyVerifyFail } from "../../core/verify-advance";
+import { planDocRelPathFromRequirementDoc } from "../../core/naming/doc-naming";
+import { makeTestConfig, makeTestMeta, auditLogFileFor } from "../helpers";
+import { initAuditLog, setAuditPipelineContext } from "../../utils/auditLog";
+import { createPipelineUI } from "../../core/pipeline-ui";
+import type { SessionMeta, VerifyFailureItem } from "../../types";
+
+const REQ = "docs/design/204_Bug.md";
+const EXPECTED = "docs/design/204_Bug_Plan.md";
+
+function fail(ruleType: string, detail = "Missing files: docs/design/204_Bug_Plan.md"): VerifyFailureItem {
+  return { ruleType, detail, timestamp: Date.now() };
+}
+
+async function makeRoot(name: string): Promise<string> {
+  const dir = join(tmpdir(), `pi-plan-feedback-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function meta(overrides: Record<string, unknown> = {}): SessionMeta {
+  return makeTestMeta({ currentStage: "plan", requirementDoc: REQ, ...overrides });
+}
+
+describe("204 Phase 3: buildPlanDocFeedback", () => {
+  it("surfaces an existing near-name candidate plus the expected path", async () => {
+    const TMP = await makeRoot("candidate");
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    await writeFile(join(TMP, "docs", "design", "12_Feat_x_fix_plan.md"), "# stale plan");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.candidates).toEqual(["docs/design/12_Feat_x_fix_plan.md"]);
+    expect(res!.message).toContain(EXPECTED);
+    expect(res!.message).toContain("docs/design/12_Feat_x_fix_plan.md");
+    expect(res!.message).toContain("Found non-conforming candidate(s)");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("says no plan-like document was found when the directory has none", async () => {
+    const TMP = await makeRoot("none");
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    await writeFile(join(TMP, "docs", "design", "204_Bug.md"), "# requirement");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFiles")],
+    });
+
+    expect(res!.candidates).toEqual([]);
+    expect(res!.message).toContain("No plan-like document found");
+    expect(res!.message).toContain(EXPECTED);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("does not fire outside plan / without requirementDoc / on unrelated rule types", async () => {
+    const TMP = await makeRoot("nofire");
+    const config = makeTestConfig({ projectRoot: TMP });
+
+    expect(await buildPlanDocFeedback({ config, meta: meta(), stageName: "develop", failures: [fail("requiredFile")] })).toBeNull();
+    expect(await buildPlanDocFeedback({ config, meta: meta({ requirementDoc: undefined }), stageName: "plan", failures: [fail("requiredFile")] })).toBeNull();
+    expect(await buildPlanDocFeedback({ config, meta: meta(), stageName: "plan", failures: [fail("keywords"), fail("requiredCommand")] })).toBeNull();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("degrades to null without config and fail-opens on a missing directory", async () => {
+    expect(await buildPlanDocFeedback({ meta: meta(), stageName: "plan", failures: [fail("requiredFile")] })).toBeNull();
+
+    const TMP = await makeRoot("nodir");
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("fileContentPattern")],
+    });
+    expect(res!.candidates).toEqual([]);
+    expect(res!.message).toContain(EXPECTED);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("reuses the Phase 2 naming single source verbatim", async () => {
+    const TMP = await makeRoot("naming");
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+    expect(res!.planDoc).toBe(planDocRelPathFromRequirementDoc(REQ));
+    expect(res!.planDoc).toBe(EXPECTED);
+    expect(res!.message).toContain("## 用户确认");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});
+
+describe("204 Phase 3: verify-advance integration", () => {
+  it("plan requiredFile failure → plan feedback in message/wake + audit, verifyAttempts still +1", async () => {
+    setAuditPipelineContext("");
+    const TMP = await makeRoot("integration");
+    await mkdir(join(TMP, "docs", "design"), { recursive: true });
+    await writeFile(join(TMP, "docs", "design", "204_Bug_x_plan_fix.md"), "# stale plan");
+
+    const config = makeTestConfig({ projectRoot: TMP, maxVerifyAttempts: 5 });
+    await initAuditLog(config);
+
+    const m = meta({ pipelineId: "pipe-plan-fb-1", verifyAttempts: 0 });
+    const updates: SessionMeta[] = [];
+    const notifications: string[] = [];
+    const wakes: string[] = [];
+    const pipelineUI = createPipelineUI(config);
+
+    const ctx = {
+      session: {
+        getMeta: () => m,
+        updateMeta: (patch: SessionMeta) => {
+          const merged = { ...m, ...patch } as SessionMeta;
+          updates.push(merged);
+          Object.assign(m, merged);
+          return merged;
+        },
+        setModel: async () => {},
+      },
+      ui: {
+        notify: (msg: string) => notifications.push(msg),
+        setStatus: () => {},
+        select: async () => undefined,
+      },
+      pi: { sendUserMessage: (msg: string) => wakes.push(msg) },
+    } as any;
+
+    const result = await applyVerifyFail(
+      ctx,
+      m,
+      "plan",
+      {
+        passed: false,
+        ruleMissing: [],
+        structuredResult: { failures: [{ ruleType: "requiredFiles", detail: "Missing files: docs/design/204_Bug_Plan.md" }] },
+      } as any,
+      "rule",
+      pipelineUI,
+      config,
+    );
+
+    // message + wake text both carry the actionable plan feedback
+    expect(result.message).toContain(EXPECTED);
+    expect(result.message).toContain("204_Bug_x_plan_fix.md");
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toContain(EXPECTED);
+    expect(wakes[0]).toContain("204_Bug_x_plan_fix.md");
+
+    // TUI label reflects the plan-doc class of failure
+    expect(notifications).toContain("[ pipe-plan-fb-1 • plan ] ⚠ plan doc invalid");
+
+    // budget accounting is untouched
+    expect(m.verifyAttempts).toBe(1);
+
+    const log = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), "pipe-plan-fb-1"), "utf-8");
+    expect(log).toContain("plan_doc_feedback");
+    expect(log).toContain("planDoc=docs/design/204_Bug_Plan.md");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("generic verify failure still uses the legacy text and label", async () => {
+    setAuditPipelineContext("");
+    const TMP = await makeRoot("generic");
+    const config = makeTestConfig({ projectRoot: TMP, maxVerifyAttempts: 5 });
+    await initAuditLog(config);
+
+    const m = meta({ pipelineId: "pipe-plan-fb-2", verifyAttempts: 0 });
+    const notifications: string[] = [];
+    const pipelineUI = createPipelineUI(config);
+    const ctx = {
+      session: {
+        getMeta: () => m,
+        updateMeta: (patch: SessionMeta) => Object.assign(m, patch),
+        setModel: async () => {},
+      },
+      ui: { notify: (msg: string) => notifications.push(msg), setStatus: () => {}, select: async () => undefined },
+      pi: { sendUserMessage: () => {} },
+    } as any;
+
+    const result = await applyVerifyFail(
+      ctx,
+      m,
+      "plan",
+      {
+        passed: false,
+        ruleMissing: [],
+        structuredResult: { failures: [{ ruleType: "keywords", detail: "Missing keywords: x" }] },
+      } as any,
+      "tool",
+      pipelineUI,
+      config,
+    );
+
+    expect(result.message).toContain("strictly follow the SKILL output format");
+    expect(notifications).toContain("[ pipe-plan-fb-2 • plan ] ⚠ verify failed");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

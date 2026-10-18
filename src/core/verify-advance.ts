@@ -15,6 +15,7 @@ import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 // 193 Phase 0: report-domain failures carry the complete corrective template
 import { buildDesignReviewReportFeedback } from "./design-review/report-feedback";
+import { buildPlanDocFeedback } from "./plan-doc-feedback";
 // 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
 import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard";
 import { recordStageVisit, effectiveMax, remainingRoundsOf } from "../utils/stage-visit";
@@ -697,8 +698,33 @@ export async function applyVerifyFail(
     }, "warn");
   }
 
+  // 204 Phase 3: a PLAN DOCUMENT format defect gets the exact expected path and
+  // the non-conforming candidates already on disk, instead of the generic
+  // "follow the SKILL output format" hint. Report feedback keeps priority.
+  const planFeedback = await buildPlanDocFeedback({
+    config,
+    meta,
+    stageName,
+    failures: verifyFailures,
+  });
+  if (planFeedback) {
+    await safeWriteAuditLog("plan_doc_feedback", {
+      pipelineId: meta.pipelineId,
+      stage: stageName,
+      method,
+      planDoc: planFeedback.planDoc,
+      candidateCount: String(planFeedback.candidates.length),
+    }, "warn");
+  }
+
+  // One corrective text for every consumer below (report wins over plan).
+  const correctiveMessage = reportFeedback?.message ?? planFeedback?.message;
+  let failLabel = "verify failed";
+  if (planFeedback) failLabel = "plan doc invalid";
+  if (reportFeedback) failLabel = "report format invalid";
+
   // TUI failure output (gated by output.pipelineStage)
-  ui?.fail(ctx, stageName, reportFeedback ? "report format invalid" : "verify failed");
+  ui?.fail(ctx, stageName, failLabel);
 
   // Circuit breaker: if verifyAttempts reaches maxVerifyAttempts, freeze pipeline
   if (config) {
@@ -729,8 +755,8 @@ export async function applyVerifyFail(
         passed: false,
         message: isEmptyOrParseFailed
           ? describeEmptyOrInvalidRuleSet(stageName, verifyResult.rulesSource, verifyResult.parseError)
-          : reportFeedback
-          ? `Design-review report is invalid and the verify budget is exhausted — pipeline frozen. ${reportFeedback.message}`
+          : correctiveMessage
+          ? `Verification failed and the verify budget is exhausted — pipeline frozen. ${correctiveMessage}`
           : `Verification failed for "${stageName}" (attempt overflow — frozen): ${failureSummary}`,
         failures: verifyFailures,
       };
@@ -745,8 +771,8 @@ export async function applyVerifyFail(
       ctx.pi.sendUserMessage(
         isEmptyOrParseFailed
           ? describeEmptyOrInvalidRuleSet(stageName, verifyResult.rulesSource, verifyResult.parseError)
-          : reportFeedback
-          ? reportFeedback.message
+          : correctiveMessage
+          ? correctiveMessage
           : `Verification failed for "${stageName}": ${failureSummary}. Fix the issues and re-run verification. Please strictly follow the SKILL output format requirements.`,
         { deliverAs: "followUp" },
       );
@@ -763,10 +789,10 @@ export async function applyVerifyFail(
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  } else if (method === "rule" && reportFeedback) {
+  } else if (method === "rule" && correctiveMessage) {
     // Hook path with no pi wake channel: the corrective template would otherwise
     // never reach the model, so surface it through the UI notification path.
-    ctx.ui?.notify(reportFeedback.message);
+    ctx.ui?.notify(correctiveMessage);
   }
 
   return {
@@ -774,8 +800,8 @@ export async function applyVerifyFail(
     passed: false,
     message: isEmptyOrParseFailed
       ? describeEmptyOrInvalidRuleSet(stageName, verifyResult.rulesSource, verifyResult.parseError)
-      : reportFeedback
-      ? `${reportFeedback.message}`
+      : correctiveMessage
+      ? `${correctiveMessage}`
       : `Verification failed for "${stageName}": ${failureSummary}. Please strictly follow the SKILL output format requirements.`,
     failures: verifyFailures,
   };
