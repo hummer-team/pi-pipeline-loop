@@ -172,7 +172,9 @@ describe("buildDecisionMenu", () => {
       ]);
     });
 
-    it("max_loop_cycles with no budget remaining hides resume", () => {
+    // 203_Bug Phase 1: menu gating removed — set_budget/rewind/resume are
+    // always offered; only the structural rework-gate condition remains.
+    it("max_loop_cycles with no budget remaining still shows resume (gates removed)", () => {
       // Use backward edge to ensure deriveReworkLoopGate returns non-null
       const meta = makeTestMeta({
         flowState: "blocked",
@@ -189,11 +191,11 @@ describe("buildDecisionMenu", () => {
         "回退上一轮",
         "Restart & New",
         "Abort & Exit",
+        "Resume",
       ]);
-      expect(menu).not.toContain("Resume");
     });
 
-    it("max_loop_cycles with loopBudgetExtensionCount >= 1 hides set_budget", () => {
+    it("max_loop_cycles with loopBudgetExtensionCount >= 1 still shows set_budget (gates removed)", () => {
       // Use backward edge to ensure deriveReworkLoopGate returns non-null
       const meta = makeTestMeta({
         flowState: "blocked",
@@ -206,14 +208,15 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
+        "设置轮次",
         "回退上一轮",
         "Restart & New",
         "Abort & Exit",
+        "Resume",
       ]);
-      expect(menu).not.toContain("设置轮次");
     });
 
-    it("max_loop_cycles with loopRewindCount >= 1 hides rewind_last_round (N8)", () => {
+    it("max_loop_cycles with loopRewindCount >= 1 still shows rewind_last_round (gates removed)", () => {
       // Use backward edge to ensure deriveReworkLoopGate returns non-null
       const meta = makeTestMeta({
         flowState: "blocked",
@@ -227,10 +230,11 @@ describe("buildDecisionMenu", () => {
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
         "设置轮次",
+        "回退上一轮",
         "Restart & New",
         "Abort & Exit",
+        "Resume",
       ]);
-      expect(menu).not.toContain("回退上一轮");
     });
 
     it("max_loop_cycles with no rework gate (null) hides rewind_last_round", () => {
@@ -248,11 +252,12 @@ describe("buildDecisionMenu", () => {
         "设置轮次",
         "Restart & New",
         "Abort & Exit",
+        "Resume",
       ]);
       expect(menu).not.toContain("回退上一轮");
     });
 
-    it("max_loop_cycles with all limits reached shows only restart + abort", () => {
+    it("max_loop_cycles with all limits reached shows all 5 items (gates removed)", () => {
       // Use backward edge to ensure deriveReworkLoopGate returns non-null
       const meta = makeTestMeta({
         flowState: "blocked",
@@ -265,8 +270,11 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
+        "设置轮次",
+        "回退上一轮",
         "Restart & New",
         "Abort & Exit",
+        "Resume",
       ]);
     });
 
@@ -679,7 +687,9 @@ describe("executeDecision", () => {
       expect(result.message).toContain("must be greater than");
     });
 
-    it("reject: one-time limit (loopBudgetExtensionCount >= 1)", async () => {
+    // 203_Bug Phase 1: one-shot guard removed — budget extension is no longer
+    // capped; a second set_budget overwrites maxLoopCycles.
+    it("203_Bug Phase 1: second set_budget allowed (one-time limit removed)", async () => {
       const meta = makeTestMeta({
         flowState: "blocked",
         loopCycleCount: 5,
@@ -689,10 +699,10 @@ describe("executeDecision", () => {
 
       const result = await executeDecision(ctx, meta, "set_budget", config, { budgetValue: 10 });
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain("已上调过");
-      expect(meta.maxLoopCycles).toBeUndefined(); // unchanged
-      expect(meta.loopBudgetExtensionCount).toBe(1); // unchanged
+      expect(result.success).toBe(true);
+      expect(meta.maxLoopCycles).toBe(10);
+      expect(meta.loopBudgetExtensionCount).toBe(2); // still counted (audit telemetry)
+      expect(meta.flowState).toBe("running");
     });
 
     it("works with various blockedReason values", async () => {
@@ -761,20 +771,22 @@ describe("executeDecision", () => {
       expect(result.message).toContain("not frozen");
     });
 
-    it("reject: one-time limit (loopRewindCount >= 1)", async () => {
+    // 203_Bug Phase 1: one-shot guard removed — repeated rewinds are allowed;
+    // the rewind counter keeps incrementing for audit telemetry.
+    it("203_Bug Phase 1: second rewind allowed (one-time limit removed)", async () => {
       const meta = makeTestMeta({
+        currentStage: "fix",
         flowState: "blocked",
         loopRewindCount: 1,
-        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix"],
+        stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "review", "fix"],
       });
       const ctx = makeCtx(meta);
 
       const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
-      expect(result.success).toBe(false);
-      expect(result.message).toContain("已回退过");
-      expect(meta.currentStage).toBe("develop"); // unchanged
-      expect(meta.loopRewindCount).toBe(1); // unchanged
+      expect(result.success).toBe(true);
+      expect(meta.loopRewindCount).toBe(2); // counted again (audit telemetry)
+      expect(meta.flowState).toBe("running");
     });
 
     it("reject: no rework loop gate found (null gate)", async () => {

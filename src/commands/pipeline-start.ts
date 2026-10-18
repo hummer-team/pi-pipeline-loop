@@ -30,6 +30,7 @@ import {
 } from "../core/template-residue-check";
 import { registerSession } from "../utils/session-registry";
 import { spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
+import { buildNewPeriodResetFields } from "../core/meta-reset";
 // Phase 0 (182): name-probe for out-of-band agent detection before dispatch
 import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { isSubagentsReady } from "../utils/subagent-availability";
@@ -272,6 +273,11 @@ function buildRestartMeta(
 ): { pipelineId: string; newMeta: SessionMeta } {
   const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const newMeta: SessionMeta = {
+    // 203_Bug Phase 1: single-source new-period reset checklist (unified口径
+    // with executeDecision("restart")) — stage chain, spawn residue, design
+    // review session state, and all cyclic counters.
+    ...buildNewPeriodResetFields(meta, config),
+
     currentStage: "clarify",
     stageStartTime: Date.now(),
     pipelineId,
@@ -285,39 +291,6 @@ function buildRestartMeta(
     verifyAttempts: 0,
     verifyFailures: [],
     requirementDoc,
-
-    // RC3: explicitly clear stage-chain residue so the new clarify pipeline does not
-    // inherit old plan/develop chain state via updateMeta's spread merge semantics.
-    // Without these explicit clears, stale fields from the previous pipeline would
-    // persist and risk pipeline-handoff cycle-detection misfires / stale contextFiles.
-    previousStage: undefined,
-    stageVisitOrder: ["clarify"],
-    contextFiles: undefined,
-    violations: [],
-    advancedThisTurn: undefined,
-    reviewConclusionDeclared: undefined,
-    loopCycleCount: undefined,
-    verifyConfigError: undefined,
-    blockedReason: undefined,
-    terminated: undefined,
-    terminateReason: undefined,
-    // Phase 4 (162): reset confirm rejection counter on restart
-    confirmRejections: undefined,
-    // Phase 4 (169): clear terminal compaction flag on restart
-    terminalCompact: undefined,
-    // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages so the new pipeline's
-    // idempotency guard starts fresh. Without this, restart's spread-merge updateMeta
-    // would retain the previous pipeline's guard keys (harmless in practice because
-    // stageStartTime is reset, but leaves stale data in meta.json).
-    spawnedStages: undefined,
-    // Phase 4 (171) High A: clear activeSpawns on restart to prevent stale spawn records
-    activeSpawns: undefined,
-    // Phase 4 (191): clear designReview authorization on restart — new pipeline must not
-    // inherit stale authorization from previous run (prevents authorization reuse attacks)
-    designReview: undefined,
-    // 193 Phase 3 (task 6): a restart is a NEW pipeline — drop any armed
-    // RECHECK marker from the old run together with the authorization.
-    designReviewRecheck: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -352,6 +325,10 @@ export function buildStartMeta(
     : buildResumeVisitOrder(config, startStage);
 
   const newMeta: SessionMeta = {
+    // 203_Bug Phase 1: single-source new-period reset checklist (unified口径
+    // with executeDecision("restart") / buildRestartMeta).
+    ...buildNewPeriodResetFields(meta, config),
+
     currentStage: startStage,
     stageStartTime: Date.now(),
     pipelineId,
@@ -366,38 +343,9 @@ export function buildStartMeta(
     verifyFailures: [],
     requirementDoc,
 
-    // Spec jump: rebuilt stage chain
+    // Spec jump: rebuilt stage chain (overrides the builder's clarify defaults)
     previousStage,
     stageVisitOrder,
-
-    // Clear stage-chain residue (same as buildRestartMeta)
-    contextFiles: undefined,
-    violations: [],
-    advancedThisTurn: undefined,
-    reviewConclusionDeclared: undefined,
-    loopCycleCount: undefined,
-    verifyConfigError: undefined,
-    blockedReason: undefined,
-    terminated: undefined,
-    terminateReason: undefined,
-    // Phase 4 (162): reset confirm rejection counter on start
-    confirmRejections: undefined,
-    // Phase 4 (169): clear terminal compaction flag on start
-    terminalCompact: undefined,
-    // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages on new pipeline start
-    // to prevent cross-pipeline guard key residue via updateMeta spread merge.
-    spawnedStages: undefined,
-    // Phase 4 (171) High A: clear activeSpawns on new pipeline start
-    activeSpawns: undefined,
-    // 187: clear pendingSpawns on new pipeline start — no stale deferred spawns
-    // should survive from a prior run into the fresh pipeline.
-    pendingSpawns: {},
-    // Phase 4 (191): clear designReview authorization on start — new pipeline must not
-    // inherit stale authorization from previous run (prevents authorization reuse attacks)
-    designReview: undefined,
-    // 193 Phase 3 (task 6): a fresh pipeline never inherits an armed RECHECK
-    // marker from a previous run.
-    designReviewRecheck: undefined,
   };
   return { pipelineId, newMeta };
 }
@@ -470,7 +418,12 @@ export function buildResumeMeta(
   config: PipelineConfig,
 ): SessionMeta {
   return {
-    // Preserved fields
+    // 203_Bug Phase 1: new-period clear list inlined here for unified口径 —
+    // the same cyclic counters / residue clears as a fresh start.
+    ...buildNewPeriodResetFields(meta, config),
+
+    // Preserved fields (resume semantics unchanged: pipelineId, stage,
+    // design-review authorization kept for recovery)
     pipelineId: meta.pipelineId,
     currentStage: meta.currentStage,
     requirementDoc: meta.requirementDoc,
@@ -488,37 +441,14 @@ export function buildResumeMeta(
     previousStage: resolvePreviousStage(config, meta.currentStage),
     stageVisitOrder: buildResumeVisitOrder(config, meta.currentStage),
 
-    // Cleared counters / transient state
-    loopCount: 0,
-    currentStepIndex: 0,
-    verifyAttempts: 0,
-    verifyFailures: [],
-    violations: [],
-    advancedThisTurn: undefined,
-    reviewConclusionDeclared: undefined,
-    loopCycleCount: undefined,
-    verifyConfigError: undefined,
-    // Phase 4 (162): reset confirm rejection counter on resume
-    confirmRejections: undefined,
-    // Phase 1 (169) P2-8 fix: explicitly clear spawnedStages on resume so the
-    // resumed run's idempotency guard starts fresh. stageStartTime is reset below,
-    // so stale guard keys would not mis-fire, but they leave residual data in meta.json.
-    spawnedStages: undefined,
-    // Phase 4 (171) High A: clear activeSpawns on resume so stale spawn records
-    // from the previous run do not cause false-positive duplicate-spawn blocks.
-    activeSpawns: undefined,
-    // 187: clear pendingSpawns on resume — stale deferred spawns from the prior
-    // run must not survive into the resumed pipeline (double-insurance with Phase 3 guard).
-    pendingSpawns: {},
-
-    // Cleared terminal / blocked state
-    blockedReason: undefined,
-    terminated: undefined,
-    terminateReason: undefined,
-
     // Lifecycle
     flowState: "running",
     stageStartTime: Date.now(),
+
+    // Required-numeric baseline (removed from the legacy explicit block; now
+    // anchored explicitly because the builder is a Partial)
+    loopCount: 0,
+    currentStepIndex: 0,
   };
 }
 

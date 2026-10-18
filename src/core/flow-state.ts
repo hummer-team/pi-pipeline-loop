@@ -29,6 +29,9 @@ import { strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { isAuthorizationValid } from "./design-review/state";
 import { broadcastEscalation } from "../utils/escalation-bus";
 import type { EscalationPayload } from "../utils/escalation-bus";
+import { buildContinueResetFields, buildNewPeriodResetFields } from "./meta-reset";
+import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
+import { probeAgentState } from "../utils/subagents-introspect";
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
 
@@ -147,10 +150,8 @@ export function isFrozen(meta: SessionMeta): boolean {
  * Phase 6 (195): Now accepts blockedReason and config to dynamically adjust menu items.
  *
  * - aborted → null (do not show menu)
- * - blockedReason === "max_loop_cycles" → [resume?/设置轮次/回退上一轮/restart/abort]
- *   - resume only when effectiveMax(meta, config) > (meta.loopCycleCount ?? 0)
- *   - set_budget hidden when loopBudgetExtensionCount >= 1
- *   - rewind_last_round hidden when deriveReworkLoopGate(meta, config) === null OR loopRewindCount >= 1
+ * - blockedReason === "max_loop_cycles" → [set_budget/回退上一轮/restart/abort/resume] (203_Bug Phase 1: all always offered)
+ *   - rewind only when deriveReworkLoopGate(meta, config) !== null (structural gate)
  * - Other blocked / awaiting_human → 6 items (resume/skip/rollback/restart/abort/choose_stage)
  * - running → 2 items (restart/abort)
  */
@@ -161,35 +162,29 @@ export function buildDecisionMenu(meta: SessionMeta, blockedReason?: string, con
 
   if (fs === "blocked" || meta.currentStage === "awaiting_human") {
     // Phase 6 (195): max_loop_cycles gets a specialized 4-item menu
+    // 203_Bug Phase 1: 弹门禁放开 — set_budget / rewind / resume are always
+    // offered (the one-shot "extension/rewind already used" guards were
+    // removed; only the structural rework-loop-gate condition remains).
     if (blockedReason === "max_loop_cycles") {
       const items: string[] = [];
-      
-      // Plan menu order: [set_budget?, rewind?, restart, abort, resume?] —
-      // resume is appended only when budget remains; the first item must be
-      // 设置轮次 per Phase 6 acceptance, so resume never leads.
-      const maxCycles = effectiveMax(meta, config);
-      const currentCycles = meta.loopCycleCount ?? 0;
-      
-      // set_budget hidden when already extended once
-      if ((meta.loopBudgetExtensionCount ?? 0) < 1) {
-        items.push(DECISION_LABELS.set_budget);
-      }
-      
-      // rewind_last_round hidden when gate cannot be derived OR already rewound once
+
+      // Plan menu order: [set_budget, rewind, restart, abort, resume] —
+      // all five items always present for a max_loop_cycles freeze.
+      items.push(DECISION_LABELS.set_budget);
+
+      // rewind_last_round offered whenever the rework gate can be derived
       const rewindGate = deriveReworkLoopGate(meta, config);
-      if (rewindGate !== null && (meta.loopRewindCount ?? 0) < 1) {
+      if (rewindGate !== null) {
         items.push(DECISION_LABELS.rewind_last_round);
       }
-      
+
       // restart and abort always present
       items.push(DECISION_LABELS.restart);
       items.push(DECISION_LABELS.abort);
-      
-      // Resume appended last, only when budget remains
-      if (maxCycles > currentCycles) {
-        items.push(DECISION_LABELS.resume);
-      }
-      
+
+      // Resume always available (budget extension via set_budget)
+      items.push(DECISION_LABELS.resume);
+
       return items;
     }
     
@@ -282,17 +277,12 @@ export async function executeDecision(
         ? (meta.previousStage ?? "clarify")
         : meta.currentStage;
 
+      // 203_Bug Phase 1: single-source continue-reset checklist replaces the
+      // hardcoded patch — all cyclic counters (loopCycleCount / budget
+      // extensions / rewinds / warned flag / escalation + wake one-shots)
+      // return to initial values so the next threshold can freeze again.
       ctx.session.updateMeta({
-        flowState: "running",
-        blockedReason: undefined,
-        loopCount: 0,
-        verifyAttempts: 0,
-        verifyFailures: [],
-        violations: [],
-        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
-        transientRetryCount: undefined, // 189 Phase 2: clear retry counter on decision
-        // Phase 1 (190) Fix-B: reset dismiss count on decision (resume/choose_stage)
-        dismissCount: 0,
+        ...buildContinueResetFields(meta, config),
         ...(meta.currentStage === "awaiting_human"
           ? {
               currentStage: meta.previousStage ?? "clarify",
@@ -303,6 +293,28 @@ export async function executeDecision(
             }
           : {}),
       });
+
+      // 203_Bug Phase 1 (RC2): clear the current stage's spawn ledger residue
+      // (activeSpawns/spawnedStages/pendingSpawns) so a re-dispatch after
+      // unfreeze is not blocked by duplicate_spawn_guarded. Live-protect:
+      // when the stage executor is still actually live, keep the record.
+      const spawn = meta.activeSpawns?.[meta.currentStage];
+      const executorAgentId = spawn?.agentId ?? spawn?.agentName;
+      const executorLive = (() => {
+        if (!executorAgentId) return false;
+        try {
+          return probeAgentState(executorAgentId) === "live";
+        } catch {
+          return false;
+        }
+      })();
+      if (!executorLive) {
+        clearStageSpawnResidue(ctx.session, meta.currentStage);
+      } else {
+        ctx.ui?.notify?.(
+          `Stage "${meta.currentStage}" executor still live — spawn residue kept.`,
+        );
+      }
 
       await safeWriteAuditLog("pipeline_decision", {
         pipelineId: meta.pipelineId,
@@ -445,37 +457,15 @@ export async function executeDecision(
       // clearDecisionTimer always targets the superseded pipeline.
       const oldPipelineId = meta.pipelineId;
 
+      // 203_Bug Phase 1: single-source new-period reset checklist replaces the
+      // handwritten clears — 补齐 loop-budget counters (loopCycleCount /
+      // loopBudgetExtensionCount / loopRewindCount / loopBudgetWarned / maxLoopCycles
+      // → config default), dismiss/confirm counters, escalation + wake one-shots,
+      // lastVerifyResult, designReview authorization. No cross-period residue.
       ctx.session.updateMeta({
+        ...buildNewPeriodResetFields(meta, config),
         pipelineId: newPipelineId,
         currentStage: "clarify",
-        previousStage: undefined,
-        stageStartTime: Date.now(),
-        flowState: "running",
-        blockedReason: undefined,
-        terminated: undefined,
-        terminateReason: undefined,
-        summaries: {},
-        loopCount: 0,
-        currentStepIndex: 0,
-        verifyAttempts: 0,
-        verifyFailures: [],
-        verifyConfigError: undefined,
-        violations: [],
-        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
-        transientRetryCount: undefined, // 189 Phase 2: clear retry counter on decision
-        // Phase 4 (169): clear terminal compaction flag on restart
-        terminalCompact: undefined,
-        // Phase 1 (180): restart starts a fresh pipeline — clear the deferral stamp.
-        confirmGateDeferredAt: undefined,
-        // 187: clear spawn residue on restart — pendingSpawns from the prior run
-        // must not survive into the new pipeline (double-insurance with Phase 3 guard).
-        pendingSpawns: {},
-        spawnedStages: undefined,
-        activeSpawns: undefined,
-        // 193 Phase 3 (task 6): a truly NEW pipeline never inherits an old
-        // RECHECK marker (the marker additionally binds to its pipelineId).
-        designReviewRecheck: undefined,
-        // Preserve: requirementDoc, domain (spread from meta by updateMeta merge)
       });
 
       // Phase 1 (197): bind audit routing to new pipeline identity (3rd birth point)
@@ -773,14 +763,13 @@ export async function executeDecision(
         return { success: false, message: `Cannot set budget: value (${budgetValue}) must be greater than current loopCycleCount (${currentCycleCount}).` };
       }
 
-      const extensionCount = meta.loopBudgetExtensionCount ?? 0;
-      if (extensionCount >= 1) {
-        return { success: false, message: "本期已上调过轮次额度，请继续或重启" };
-      }
+      // 203_Bug Phase 1: one-shot "already extended once" guard removed —
+      // the budget gate is no longer capped; a later set_budget simply
+      // overwrites maxLoopCycles (value must exceed current cycles).
 
       ctx.session.updateMeta({
         maxLoopCycles: budgetValue,
-        loopBudgetExtensionCount: extensionCount + 1,
+        loopBudgetExtensionCount: (meta.loopBudgetExtensionCount ?? 0) + 1,
         flowState: "running",
         blockedReason: undefined,
       });
@@ -804,10 +793,9 @@ export async function executeDecision(
         return { success: false, message: "Cannot rewind: pipeline is not frozen." };
       }
 
-      const rewindCount = meta.loopRewindCount ?? 0;
-      if (rewindCount >= 1) {
-        return { success: false, message: "本期已回退过一次，请继续或重启" };
-      }
+      // 203_Bug Phase 1: one-shot "already rewound once" guard removed —
+      // repeated rewinds are permitted (calculator reset via continue does
+      // restore the guard anyway); rewind itself keeps baseline continuity.
 
       const gate = deriveReworkLoopGate(meta, config);
       
@@ -833,7 +821,7 @@ export async function executeDecision(
         currentStage: gate,
         previousStage: prevStage,
         loopCycleCount: 0,
-        loopRewindCount: rewindCount + 1,
+        loopRewindCount: (meta.loopRewindCount ?? 0) + 1,
         flowState: "running",
         blockedReason: undefined,
         stageVisitOrder: visitOrder,

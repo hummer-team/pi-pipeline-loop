@@ -427,16 +427,14 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
     const menu = buildDecisionMenu(frozenMeta, "max_loop_cycles", config);
 
-    // Menu should contain exactly: set_budget, rewind_last_round, restart, abort
+    // 203_Bug Phase 1: gating removed — service menu always contains all 5 items
     expect(menu).not.toBeNull();
-    expect(menu!.length).toBe(4);
+    expect(menu!.length).toBe(5);
     expect(menu).toContain("设置轮次");
     expect(menu).toContain("回退上一轮");
     expect(menu).toContain("Restart & New");
     expect(menu).toContain("Abort & Exit");
-
-    // Resume should NOT be present (no budget remaining)
-    expect(menu).not.toContain("Resume");
+    expect(menu).toContain("Resume");
 
     // First item must be set_budget (设置轮次)
     expect(menu![0]).toBe("设置轮次");

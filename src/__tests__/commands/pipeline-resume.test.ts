@@ -516,6 +516,39 @@ describe("createPipelineResumeCommand", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
+    // 203_Bug Phase 1 (RC2): --force-resume must clear the current stage's
+    // spawn ledger residue (activeSpawns/spawnedStages/pendingSpawns) so the
+    // executor can be re-dispatched instead of being blocked by
+    // duplicate_spawn_guarded. Live agent is not probed in mock ctx (global
+    // manager registry is empty → non-live) → residue cleared.
+    it("203_Bug Phase 1 (RC2): --force-resume clears stage spawn residue", async () => {
+      const TMP = join(tmpdir(), "pi-resume-residue-" + Date.now());
+      await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+      const config = makeTestConfig({ projectRoot: TMP });
+      await initAuditLog(config);
+
+      const meta = makeTestMeta({
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        loopCycleCount: 5,
+        maxLoopCycles: 10,
+        activeSpawns: { develop: { agentId: "agent-x", agentName: "develop-agent", startedAt: Date.now() } },
+        spawnedStages: { develop: Date.now() },
+        pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 1 } },
+      });
+      const baseCtx = createMockCtx(meta);
+      const ctx = { ...baseCtx, ui: { ...baseCtx.ui, select: undefined } } as any;
+      const cmd = createPipelineResumeCommand(config);
+      await cmd.execute({ forceResume: true }, ctx);
+
+      expect(meta.flowState).toBe("running");
+      expect(meta.activeSpawns?.develop).toBeUndefined();
+      expect(meta.spawnedStages?.develop).toBeUndefined();
+      expect(meta.pendingSpawns?.develop).toBeUndefined();
+
+      await rm(TMP, { recursive: true, force: true });
+    });
+
     it("child session without --force-resume does NOT resume, audits child_session", async () => {
       const TMP = join(tmpdir(), "pi-resume-child-" + Date.now());
       await mkdir(join(TMP, ".pi", "audit"), { recursive: true });

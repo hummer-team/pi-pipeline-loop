@@ -193,7 +193,7 @@ describe("Phase 4-2 (191): Authorization invalidation", () => {
       expect(meta.designReview).toBeDefined();
     });
 
-    it("restart: does NOT invalidate design-review authorization (handled by buildStartMeta)", async () => {
+    it("restart: clears design-review authorization (203_Bug Phase 1: new-period reset unifies口径)", async () => {
       const meta = makeTestMeta({
         flowState: "blocked",
         currentStage: "design-review",
@@ -206,9 +206,11 @@ describe("Phase 4-2 (191): Authorization invalidation", () => {
       const result = await executeDecision(ctx, meta, "restart", config);
 
       expect(result.success).toBe(true);
-      // Authorization is cleared by buildStartMeta, not by executeDecision
-      // So it should still be present here (but will be cleared when new pipeline starts)
-      expect(meta.designReview).toBeDefined();
+      // 203_Bug Phase 1: executeDecision("restart") now applies the unified
+      // new-period reset checklist which clears designReview itself (a truly
+      // NEW pipeline never inherits an old authorization).
+      expect(meta.designReview).toBeUndefined();
+      expect(meta.designReviewRecheck).toBeUndefined();
     });
   });
 

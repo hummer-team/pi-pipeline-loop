@@ -87,7 +87,10 @@ describe("Phase 3 (190) Fix-F: choose_stage resets loopCycleCount", () => {
     expect(visitResult.patch.loopCycleCount).toBe(0);
   });
 
-  it("resume does NOT reset loopCycleCount (regression test)", async () => {
+  // 203_Bug Phase 1: continue-reset unifies the computation reset口径 — the
+  // decision-menu Resume now resets loopCycleCount so the next threshold can
+  // freeze again (supersedes the 190 regression's no-reset semantics).
+  it("resume resets loopCycleCount (203_Bug Phase 1 continue-reset口径)", async () => {
     const meta = makeTestMeta({
       currentStage: "develop",
       flowState: "blocked",
@@ -109,7 +112,11 @@ describe("Phase 3 (190) Fix-F: choose_stage resets loopCycleCount", () => {
     const result = await executeDecision(ctx as any, meta, "resume", config);
 
     expect(result.success).toBe(true);
-    // loopCycleCount should remain 2 (not reset to 0)
-    expect(meta.loopCycleCount).toBe(2);
+    // loopCycleCount must be reset to 0 (continue-reset checklist)
+    expect(meta.loopCycleCount).toBe(0);
+    // Companion budget fields reset with the same checklist
+    expect(meta.loopBudgetWarned).toBe(false);
+    expect(meta.loopBudgetExtensionCount).toBe(0);
+    expect(meta.menuEscalationPending).toBe(false);
   });
 });

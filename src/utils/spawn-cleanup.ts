@@ -115,3 +115,74 @@ export function clearStageSpawnRecords(
     session.updateMeta(patch);
   }
 }
+
+/**
+ * 203_Bug Phase 1 (RC2): Clears ALL spawn ledger residue for ONE stage —
+ * activeSpawns + spawnedStages + pendingSpawns — so a stage executor can be
+ * re-dispatched after an unfreeze instead of being blocked by
+ * `duplicate_spawn_guarded` and running in a degraded context.
+ *
+ * Live-protect is the CALLER's job (probe the agentId first); this helper is
+ * unconditional. Pending-spawn clearing keeps the 195-Bug ownership guard
+ * contract: legacy (pipelineId-less) entries are cleared, entries bound to a
+ * DIFFERENT pipelineId are discarded too (stale by definition — the pipeline
+ * is being unfrozen in the current pipelineId).
+ *
+ * @param session - Session with getMeta/updateMeta interface
+ * @param stage - Pipeline stage whose residue should be cleared
+ */
+export function clearStageSpawnResidue(
+  session: SessionLike,
+  stage: PipelineStage,
+): void {
+  const meta = session.getMeta();
+  if (!meta) return;
+
+  const patch: Partial<SessionMeta> = {};
+  let changed = false;
+
+  if (meta.activeSpawns?.[stage]) {
+    const clearedSpawns = { ...meta.activeSpawns };
+    delete clearedSpawns[stage];
+    patch.activeSpawns = clearedSpawns;
+    changed = true;
+  }
+
+  if (meta.spawnedStages?.[stage] !== undefined) {
+    const clearedSpawned = { ...meta.spawnedStages };
+    delete clearedSpawned[stage];
+    patch.spawnedStages = clearedSpawned;
+    changed = true;
+  }
+
+  if (meta.pendingSpawns?.[stage]) {
+    const clearedPending = removePendingSpawnsEntry(meta.pendingSpawns, stage);
+    if (clearedPending) {
+      patch.pendingSpawns = clearedPending;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    session.updateMeta(patch);
+  }
+}
+
+/**
+ * 203_Bug Phase 1: Immutably removes a pendingSpawns entry from an existing
+ * map (shared by clearStageSpawnResidue here and clearPendingSpawn in
+ * subagent-rpc — single deletion logic, no duplication).
+ *
+ * @param pendingSpawns - Current pending map (non-null)
+ * @param stage - Stage entry to remove
+ * @returns A new map without the entry, or the ORIGINAL map when it was empty
+ */
+export function removePendingSpawnsEntry(
+  pendingSpawns: NonNullable<SessionMeta["pendingSpawns"]>,
+  stage: PipelineStage,
+): NonNullable<SessionMeta["pendingSpawns"]> | undefined {
+  if (!pendingSpawns[stage]) return undefined;
+  const next = { ...pendingSpawns };
+  delete next[stage];
+  return next;
+}

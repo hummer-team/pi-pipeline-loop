@@ -715,8 +715,10 @@ function buildPipelineStateSection(
 /**
  * Phase 4 (task 4): Build low-budget warning section for remainingRounds === 1.
  * Single-trigger: only when exactly 1 round remains and not yet warned.
+ * 203_Bug Phase 1: exported for direct unit coverage of the window-close reset
+ * (the full before_agent_start handler needs a fully configured stage harness).
  */
-async function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, ctx?: RuntimeCtx): Promise<string> {
+export async function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, ctx?: RuntimeCtx): Promise<string> {
   const maxCycles = effectiveMax(meta, config);
   const loopCycleCount = meta.loopCycleCount ?? 0;
   // c0Used: derive from deriveReworkLoopGate - first visit to gate stage resets count
@@ -725,6 +727,17 @@ async function buildLowBudgetWarning(config: PipelineConfig, meta: SessionMeta, 
   
   // Single-trigger: only when remainingRounds === 1
   if (remainingRounds !== 1) {
+    // 203_Bug Phase 1: window-close reset — the budget window is driven by
+    // loopCycleCount/set_budget, so once it moves away from the "1 round
+    // remaining" boundary a previously-armed warning flag must be cleared;
+    // the next approach to the threshold can warn again (one warning per window).
+    if (meta.loopBudgetWarned && ctx && ctx.session) {
+      try {
+        ctx.session.updateMeta({ loopBudgetWarned: false });
+      } catch {
+        // Fail-safe: reset failure must not block injection
+      }
+    }
     return "";
   }
   

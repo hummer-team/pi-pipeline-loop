@@ -749,7 +749,8 @@ describe("createPipelineStartCommand", () => {
       expect(updatedMeta.contextFiles).toBeUndefined();
       expect(updatedMeta.violations).toEqual([]);
       expect(updatedMeta.advancedThisTurn).toBeUndefined();
-      expect(updatedMeta.loopCycleCount).toBeUndefined();
+      // 203_Bug Phase 1: 统一复位口径 — new-period reset zeroes loopCycleCount
+      expect(updatedMeta.loopCycleCount).toBe(0);
       expect(updatedMeta.verifyConfigError).toBeUndefined();
 
       // Counter / transient fields must also be reset
@@ -1048,7 +1049,8 @@ describe("createPipelineStartCommand", () => {
       expect(updatedMeta.loopCount).toBe(0);
       expect(updatedMeta.currentStepIndex).toBe(0);
       expect(updatedMeta.advancedThisTurn).toBeUndefined();
-      expect(updatedMeta.loopCycleCount).toBeUndefined();
+      // 203_Bug Phase 1: 统一复位口径 — buildResumeMeta now resets loopCycleCount
+      expect(updatedMeta.loopCycleCount).toBe(0);
       expect(updatedMeta.verifyConfigError).toBeUndefined();
       expect(updatedMeta.blockedReason).toBeUndefined();
       expect(updatedMeta.terminated).toBeUndefined();

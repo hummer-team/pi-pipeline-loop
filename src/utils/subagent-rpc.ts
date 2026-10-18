@@ -15,7 +15,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { safeWriteAuditLog } from "./auditLog";
-import { clearActiveSpawnRecord } from "./spawn-cleanup";
+import { clearActiveSpawnRecord, removePendingSpawnsEntry } from "./spawn-cleanup";
 import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
 import { findLatestReviewReport } from "./review-conclusion";
@@ -1177,9 +1177,12 @@ export function clearPendingSpawn(
       return;
     }
   }
-  const next = { ...meta.pendingSpawns };
-  delete next[stage];
-  session.updateMeta({ pendingSpawns: next });
+  // 203_Bug Phase 1: deletion logic delegated to the shared spawn-cleanup
+  // helper (DRY single source for pending-entry removal).
+  const next = removePendingSpawnsEntry(meta.pendingSpawns, stage);
+  if (next) {
+    session.updateMeta({ pendingSpawns: next });
+  }
 }
 
 /**
