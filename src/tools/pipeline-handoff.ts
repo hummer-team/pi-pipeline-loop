@@ -14,7 +14,7 @@ import { checkStageSummaryHash } from "../utils/summary-hash";
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
 import { toProjectRelative } from "../utils/path-display";
-import { isDormant } from "../core/dormancy";
+import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
 import { maybeHandleConfirmGate, formatConfirmGatePendingCopy } from "../core/stage-advancer";
 import { detectSessionRole } from "../core/session-role";
@@ -76,7 +76,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 2b (173) C3: dormant guard — guidance message
       if (!rawMeta || isDormant(rawMeta)) {
-        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+        return { message: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
 

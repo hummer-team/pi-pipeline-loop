@@ -8,7 +8,7 @@ import type { PipelineConfig, Command, SessionMeta, PipelineStage } from "../typ
 import { checkTemplateDrift } from "../utils/template-drift";
 import { resolvePiWorkDir } from "../utils/work-dir";
 import { buildProtectedPaths } from "../utils/protect";
-import { isDormant } from "../core/dormancy";
+import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 // 193 Phase 3 (task 8): read-only pending-decision display (shared view).
 import {
   buildDesignReviewPendingDecisionView,
@@ -41,7 +41,7 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
       const rawMeta: SessionMeta | undefined = ctx.session.getMeta();
       // Phase 2b (173) C3: dormant guard — dormant output
       if (!rawMeta || isDormant(rawMeta)) {
-        return { success: true, content: "No active pipeline. Run /pipeline-start <doc>." };
+        return { success: true, content: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
       const stageConfig = config.stages[meta.currentStage as PipelineStage];

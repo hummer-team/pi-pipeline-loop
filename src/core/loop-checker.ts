@@ -13,7 +13,7 @@
 
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { createPipelineUI } from "./pipeline-ui";
-import { isDormant } from "./dormancy";
+import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "./dormancy";
 import { freezeAndPrompt } from "./flow-state";
 import { safeWriteStageAudit } from "../utils/auditLog";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
@@ -65,7 +65,7 @@ export function createLoopChecker(config: PipelineConfig): Tool {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 2b (173) C3: dormant guard — guidance message
       if (!rawMeta || isDormant(rawMeta)) {
-        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+        return { message: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
       const currentStage = meta.currentStage;

@@ -13,7 +13,7 @@ import { createPipelineUI } from "../core/pipeline-ui";
 import { extractAssistantMessages } from "../core/session-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
-import { isDormant } from "../core/dormancy";
+import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
 // 194 Phase 3 (C5): shared caller gate for the stage-side tools
 import { gateStageToolCall } from "../core/stage-executor/tool-consumption";
@@ -96,7 +96,7 @@ export function createPipelineVerify(
       const rawMeta = sessionCtx.session.getMeta() as SessionMeta | undefined;
       // Phase 2b (173) C3: dormant guard — guidance message
       if (!rawMeta || isDormant(rawMeta)) {
-        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+        return { message: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
 

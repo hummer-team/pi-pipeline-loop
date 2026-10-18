@@ -9,7 +9,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
-import { isDormant } from "../core/dormancy";
+import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 
 /**
  * Creates the `validate_summary` tool.
@@ -57,7 +57,7 @@ export function createValidateSummary(config: PipelineConfig): Tool {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 2b (173) C3: dormant guard — guidance message
       if (!rawMeta || isDormant(rawMeta)) {
-        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+        return { message: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
       const stage = args.stage as string;

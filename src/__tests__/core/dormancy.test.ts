@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { isDormant, DORMANT_KEEP_PROTECTION, getHostRole } from "../../core/dormancy";
+import { isDormant, DORMANT_KEEP_PROTECTION, DORMANT_NO_PIPELINE_MESSAGE, getHostRole } from "../../core/dormancy";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { createToolGuard } from "../../core/tool-guard";
 import { createAgentSettled } from "../../core/agent-settled";
@@ -25,6 +25,7 @@ import { createGenerateSummary } from "../../tools/generate-summary";
 import { createValidateSummary } from "../../tools/validate-summary";
 import { createPipelineHandoff } from "../../tools/pipeline-handoff";
 import { createPipelineVerify } from "../../tools/pipeline-verify";
+import { createStageAdvancer } from "../../core/stage-advancer";
 import type { SessionMeta, PipelineConfig } from "../../types";
 import type { RuntimeCtx } from "../../core/runtime-ctx";
 import { makeTestConfig, makeTestMeta, createMockRuntimeCtx } from "../helpers";
@@ -218,5 +219,53 @@ describe("Phase 2a (173) C6: no-meta defensive guards", () => {
     await settledHook.handler(ctx as unknown as RuntimeCtx);
 
     expect(updateCalled).toBe(false);
+  });
+});
+
+// ─── 204 Phase 1: dormant message single source of truth ────────────────────
+
+describe("204 Phase 1: DORMANT_NO_PIPELINE_MESSAGE single source", () => {
+  /** All 7 dormant entry points, invoked with no meta. */
+  async function collectDormantMessages(): Promise<string[]> {
+    const config = makeTestConfig();
+    const ctx = { session: { getMeta: () => undefined } } as unknown as RuntimeCtx;
+    const tools = [
+      createPipelineState(config),
+      createLoopChecker(config),
+      createStageAdvancer(config),
+      createGenerateSummary(config),
+      createValidateSummary(config),
+      createPipelineHandoff(config),
+      createPipelineVerify(config),
+    ];
+    const messages: string[] = [];
+    for (const tool of tools) {
+      const result = await tool.execute({}, ctx);
+      messages.push((result as Record<string, string>).message);
+    }
+    return messages;
+  }
+
+  it("all 7 dormant entry points return the exact same message", async () => {
+    const messages = await collectDormantMessages();
+    expect(messages).toHaveLength(7);
+    for (const message of messages) {
+      expect(message).toBe(DORMANT_NO_PIPELINE_MESSAGE);
+    }
+  });
+
+  it("message keeps the pre-204 prefix (backward compatibility)", () => {
+    expect(DORMANT_NO_PIPELINE_MESSAGE.startsWith("No active pipeline. Run /pipeline-start <doc>.")).toBe(true);
+  });
+
+  it("message carries the anti-hallucination clause", () => {
+    expect(DORMANT_NO_PIPELINE_MESSAGE).toContain("never infer, guess or quote a pipelineId");
+    expect(DORMANT_NO_PIPELINE_MESSAGE).toContain("subagent not mounted to pipeline");
+  });
+
+  it("no dormant entry point can be misread as a missing session mount", () => {
+    // The 204 root cause: the old text was single-purpose and invited guessing
+    // a pipelineId. The message must now be identical everywhere (no drift).
+    expect(DORMANT_NO_PIPELINE_MESSAGE).not.toContain("{pipelineId}");
   });
 });

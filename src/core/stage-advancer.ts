@@ -41,7 +41,7 @@ import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
 import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
-import { isDormant } from "./dormancy";
+import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "./dormancy";
 import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
@@ -1537,7 +1537,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       setAuditPipelineContext(rawMeta?.pipelineId);
       // Phase 2b (173) C3: dormant guard — guidance message
       if (!rawMeta || isDormant(rawMeta)) {
-        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+        return { message: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
       const currentStage: PipelineStage = meta.currentStage;

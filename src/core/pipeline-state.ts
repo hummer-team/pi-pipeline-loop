@@ -8,7 +8,7 @@ import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { buildStageSequence } from "../utils/stage-sequence";
 import { safeWriteStageAudit } from "../utils/auditLog";
 import { verifySummaryHash } from "../utils/summary-hash";
-import { isDormant } from "./dormancy";
+import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "./dormancy";
 // 193 Phase 3 (task 8): read-only pending-decision display (shared view).
 import {
   buildDesignReviewPendingDecisionView,
@@ -44,7 +44,7 @@ export function createPipelineState(config: PipelineConfig): Tool {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 2b (173) C3: dormant guard — guidance message
       if (!rawMeta || isDormant(rawMeta)) {
-        return { message: "No active pipeline. Run /pipeline-start <doc>." };
+        return { message: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
       const currentStage = meta.currentStage;

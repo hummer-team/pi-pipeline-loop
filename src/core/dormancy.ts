@@ -41,6 +41,18 @@ import type { RuntimeCtx } from "./runtime-ctx";
 export const DORMANT_KEEP_PROTECTION = false;
 
 /**
+ * Single source of truth for the dormant "no pipeline" tool message.
+ *
+ * 204 Phase 1: previously copy-pasted across 7 dormant entry points. The added
+ * sentence is an anti-hallucination guard — in the 204 incident an unmounted
+ * subagent misread the old text as "session not mounted" and fabricated a
+ * pipelineId. Never infer one; report and defer to the owner session.
+ */
+export const DORMANT_NO_PIPELINE_MESSAGE =
+  "No active pipeline. Run /pipeline-start <doc>. " +
+  "If you are a subagent session whose parent pipeline is running, report 'subagent not mounted to pipeline' and ask the owner session to continue — never infer, guess or quote a pipelineId.";
+
+/**
  * Determines whether the pipeline is in a dormant (silent) state.
  *
  * Dormant conditions (any one ⇒ dormant):
