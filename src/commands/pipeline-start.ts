@@ -39,6 +39,7 @@ import { deriveClarifyForwardArgs } from "../utils/clarify-args";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
+import { appendPipelineIdMarker } from "../utils/pipeline-id-marker";
 // Round 5 (N-3): coordinator for design-review dispatch
 import { coordinateDesignReview } from "../core/design-review/coordinator";
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "../core/design-review/state";
@@ -1054,8 +1055,10 @@ async function maybeAutoLaunchClarify(
     return;
   }
 
-  const message = `@${agentName} ${file} ${effectiveArgs}`;
-  const prompt = `${file} ${effectiveArgs}`;
+  // 204 Phase 0: carry the `Pipeline: {id}` marker so the spawned clarify session
+  // can JOIN back even when it is in-memory (no `parentSession` header).
+  const prompt = appendPipelineIdMarker(`${file} ${effectiveArgs}`.trim(), meta.pipelineId);
+  const message = `@${agentName} ${prompt}`;
 
   // Phase 1 / 175 (R2Q2A): description — explicit carries args verbatim;
   // derived carries ONLY file (no round/args suffix to avoid misleading labels).

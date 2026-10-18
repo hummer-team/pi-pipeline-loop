@@ -1780,7 +1780,7 @@ describe("createPipelineStartCommand", () => {
 
       expect(result.success).toBe(true);
       expect(sentMessages).toHaveLength(1);
-      expect(sentMessages[0]).toBe("@feat-design-plan-agent req.md 1");
+      expect(sentMessages[0]).toMatch(/^@feat-design-plan-agent req\.md 1 Pipeline: pipe-\d+-[a-z0-9]{6}$/);
     });
 
     it("agentPath file without frontmatter name → fallback to basename", async () => {
@@ -1826,7 +1826,7 @@ describe("createPipelineStartCommand", () => {
 
       expect(result.success).toBe(true);
       expect(sentMessages).toHaveLength(1);
-      expect(sentMessages[0]).toBe("@my-clarify-agent req.md 1");
+      expect(sentMessages[0]).toMatch(/^@my-clarify-agent req\.md 1 Pipeline: pipe-\d+-[a-z0-9]{6}$/);
     });
 
     // Medium #4 fix: agentPath file missing → no @mention inject, notify fallback only
@@ -2054,7 +2054,7 @@ describe("createPipelineStartCommand", () => {
       expect(result.success).toBe(true);
       expect(result.currentStage).toBe("clarify");
       expect(sentMessages).toHaveLength(1);
-      expect(sentMessages[0]).toBe("@clarify-agent req.md 1");
+      expect(sentMessages[0]).toMatch(/^@clarify-agent req\.md 1 Pipeline: pipe-\d+-[a-z0-9]{6}$/);
     });
   });
 });

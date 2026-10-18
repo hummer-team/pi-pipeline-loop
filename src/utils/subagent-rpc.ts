@@ -18,6 +18,7 @@ import { safeWriteAuditLog } from "./auditLog";
 import { clearActiveSpawnRecord, removePendingSpawnsEntry } from "./spawn-cleanup";
 import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
+import { appendPipelineIdMarker } from "./pipeline-id-marker";
 import { findLatestReviewReport } from "./review-conclusion";
 import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
@@ -1674,7 +1675,8 @@ export async function spawnClarifyStageSubagent(
   const sessionFile = extractSessionFile(opts?.runtimeCtx);
   const { description } = resolveClarifyDescription(file, meta.lastClarifyTurnArgs);
   const argsSuffix = meta.lastClarifyTurnArgs?.trim() ? ` ${meta.lastClarifyTurnArgs.trim()}` : "";
-  const prompt = `${file}${argsSuffix}`.trim();
+  // 204 Phase 0: marker shared by the RPC path and the `[plugin auto-handoff]` fallback.
+  const prompt = appendPipelineIdMarker(`${file}${argsSuffix}`.trim(), meta.pipelineId);
 
   // RPC path (availability latch driven).
   if (hasEventBus(pi) && isSubagentsReady()) {

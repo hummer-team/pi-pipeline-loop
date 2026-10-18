@@ -15,6 +15,7 @@ import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerm
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 import { parseRequirementDocPath } from "../utils/doc-path";
+import { parsePipelineIdMarker } from "../utils/pipeline-id-marker";
 import { extractFirstUserMessageText } from "./session-state";
 import { execSync } from "node:child_process";
 import { checkTemplateDrift, formatDriftNotification } from "../utils/template-drift";
@@ -193,6 +194,41 @@ function recordChildExecutorBinding(ctx: RuntimeCtx, parentSession: string, sess
 }
 
 /**
+ * 204 Phase 0: cascading JOIN identity evidence resolution.
+ *
+ * L1 (`parent_session`) wins and stops — the first-message marker is never read
+ * on a hit, so a stale marker can never override the runtime parent relation.
+ * L2 (`first_message`) requires BOTH a strictly validated `Pipeline: {id}` marker
+ * and a readable target `meta.json` (the marker is used as a path component).
+ * L3 (`null`) leaves the session dormant, exactly as before.
+ */
+async function resolveJoinTarget(
+  config: PipelineConfig,
+  ctx: RuntimeCtx,
+  parentSession: string,
+): Promise<{ pipelineId: string; via: "parent_session" | "first_message" } | null> {
+  // L1: runtime parent session → registry
+  const fromRegistry = await lookupParentPipeline(config, parentSession);
+  if (fromRegistry) return { pipelineId: fromRegistry, via: "parent_session" };
+
+  // L2: first user message marker, gated on a readable meta.json
+  const markerId = parsePipelineIdMarker(
+    extractFirstUserMessageText(ctx._ctx as Parameters<typeof extractFirstUserMessageText>[0]),
+  );
+  if (markerId) {
+    const metaPath = path.resolve(config.projectRoot, resolveAuditDir(config), markerId, "meta.json");
+    try {
+      await fs.readFile(metaPath, "utf-8");
+      return { pipelineId: markerId, via: "first_message" };
+    } catch {
+      // Unreadable marker target — fall through to L3.
+    }
+  }
+
+  return null;
+}
+
+/**
  * Handles JOIN: loads parent pipeline meta and merges into current session.
  * Returns true if JOIN succeeded, false if it fell through to missing-registry path.
  */
@@ -203,16 +239,20 @@ async function handleSubagentJoin(
   parentSession: string,
   sessionFile: string,
 ): Promise<boolean> {
-  const parentPipelineId = await lookupParentPipeline(config, parentSession);
-  if (!parentPipelineId) {
-    // Registry miss — degrade to new pipeline with warn
+  const joinTarget = await resolveJoinTarget(config, ctx, parentSession);
+  if (!joinTarget) {
+    // L3 `no_evidence` — degrade to dormant with warn
+    const markerPipelineId = parsePipelineIdMarker(
+      extractFirstUserMessageText(ctx._ctx as Parameters<typeof extractFirstUserMessageText>[0]),
+    );
     await safeWriteAuditLog(
       "session_join_missing_registry",
-      { parentSession, sessionFile },
+      { reason: "no_evidence", parentSession, sessionFile, ...(markerPipelineId ? { markerPipelineId } : {}) },
       "warn",
     );
     return false;
   }
+  const parentPipelineId = joinTarget.pipelineId;
 
   // Read parent pipeline meta.json
   const auditDir = resolveAuditDir(config);
@@ -279,6 +319,9 @@ async function handleSubagentJoin(
     stage: parentMeta.currentStage,
     flowState: getFlowState(parentMeta),
     spawnTrigger,
+    // 204 Phase 0: how identity was proven + whether the child session is persisted.
+    via: joinTarget.via,
+    persisted: sessionFile !== "",
   });
 
   // 194 Phase 0 (C3): a JOIN inherits the parent's meta SNAPSHOT, including
@@ -456,29 +499,28 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
       if (!meta?.currentStage) {
         // ── Subagent/fork JOIN detection (Q7) ──────────────────────────
         const { parentSession, isSubagent } = detectSubagentSession(ctx);
-        if (isSubagent && parentSession) {
+        // 204 Phase 0: the JOIN entry is reachable for EVERY subagent signal —
+        // a missing `parentSession` is no longer a dead end (resolveJoinTarget
+        // falls back to the first-message marker evidence).
+        if (isSubagent) {
           const sm = ((ctx._ctx as unknown) as Record<string, unknown>)?.sessionManager as
             | { getSessionFile?: () => string } | undefined;
           const sessionFile = sm?.getSessionFile?.() ?? "";
-          const joined = await handleSubagentJoin(config, ctx, ui, parentSession, sessionFile);
+          const joined = await handleSubagentJoin(config, ctx, ui, parentSession ?? "", sessionFile);
           if (joined) {
             // 194 Phase 3 (C3, task 2): the JOINED child records its OWN
             // executor binding from runtime evidence — meta is inherited,
             // identity is NOT. A run bound to this child's session file gets
             // a local `pi-pipeline:executor-binding` entry (idempotent);
             // anything unprovable records nothing (overlay stays inert).
-            recordChildExecutorBinding(ctx, parentSession, sessionFile);
+            // 204 Phase 0: L2 (`first_message`) has no runtime parent session, so
+            // there is no child identity to prove — the overlay stays inert.
+            if (parentSession) {
+              recordChildExecutorBinding(ctx, parentSession, sessionFile);
+            }
             return; // JOIN succeeded — child inherits parent pipeline
           }
-          // JOIN failed (registry miss / meta read fail) — fall through to dormant
-        } else if (isSubagent && !parentSession) {
-          // Only secondary/fork signal matched but no parentSession available for lookup.
-          // Audit warn so the missing-registry path is observable (plan Phase 1).
-          await safeWriteAuditLog(
-            "session_join_missing_registry",
-            { reason: "subagent_signal_without_parent_session" },
-            "warn",
-          );
+          // JOIN failed (L3 no_evidence / meta read fail) — fall through to dormant
         }
 
         // Phase 2b (173) C4: V1 auto-pipeline creation REMOVED.
