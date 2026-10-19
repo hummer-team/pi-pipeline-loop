@@ -1490,7 +1490,7 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 | L3 | 无证据 | 审计 `reason=no_evidence` + 保持 dormant |
 
 - `session_join_parent` 审计新增 `via`（`parent_session` / `first_message`）与 `persisted`（`sessionFile !== ""`）。
-- L2 仅对**插件发起**的 spawn 生效（其 prompt 带 `Pipeline:` 标记）；无标记的误触发嵌套 spawn 仍落 L3 dormant。
+- L2 只信任**格式合法（`^pipe-\d+-[a-z0-9]{6}$`）且目标 `meta.json` 可读**的标记：插件发起的 spawn（clarify / 阶段执行器）会自动携带该标记，但实现**不校验标记来源**——手写标记（例如人工 `@agent docs/design/x.md 1 Pipeline: pipe-xxx`）同样会被信任，并 JOIN 到 `pipe-xxx`。因此 L2 属**弱证据**：它能挡住「无标记的误触发嵌套 spawn」（这类仍落 L3 dormant），但不能识别伪造/手写标记；跨 pipeline 隔离的强度以 L1（`parentSession` → registry，运行时关系不可伪造）为界。审计侧对策：`session_join_parent` 的 `via` 字段可区分两种证据等级（`first_message` = 弱证据）。
 - L1 命中时不读消息，旧标记不会覆盖运行时父子关系。
 
 **关闭持久化的能力损失**

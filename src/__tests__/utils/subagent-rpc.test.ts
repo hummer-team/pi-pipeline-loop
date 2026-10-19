@@ -1856,7 +1856,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     } as any);
     const meta = makeTestMeta({
       currentStage: "clarify",
-      pipelineId: "pipe-clarify-id",
+      pipelineId: "pipe-1723456789-clr004",
       requirementDoc: "docs/design/x.md",
       // Synthetic reserved evidence written by the Phase 4 takeover block.
       activeSpawns: {
@@ -1886,6 +1886,62 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     expect(result.spawned).toBe(true);
     expect(meta.activeSpawns?.clarify?.agentId).toBe("real-clarify-id");
     expect(meta.activeSpawns?.clarify?.agentId).not.toContain("takeover-");
+
+    // 204 Phase 0 (fix issue 1): the clarify RPC prompt — the exact path that
+    // produced the 204 incident — must carry the `Pipeline: {id}` JOIN marker.
+    const spawnEvent = bus.emitted.find((e) => e.event === "subagents:rpc:spawn");
+    expect(spawnEvent).toBeDefined();
+    expect(spawnEvent!.payload.prompt).toMatch(/ Pipeline: pipe-\d+-[a-z0-9]{6}$/);
+    expect(spawnEvent!.payload.prompt).toContain(" Pipeline: pipe-1723456789-clr004");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("clarify fallback (latch=false) carries the Pipeline marker inside [plugin auto-handoff]", async () => {
+    // 204 Phase 0 (fix issue 1): the fallback path shares the SAME `prompt`
+    // variable as the RPC path, so the marker must survive here too.
+    __resetSubagentsReady();
+    const tmpDir = path.join(tmpdir(), "pi-clarify-marker-" + Date.now());
+    fs.mkdirSync(path.join(tmpDir, "agents"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "agents", "clarify-agent.md"),
+      "---\nname: feat-design-plan-agent\n---\n",
+    );
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      stages: {
+        ...makeTestConfig().stages,
+        clarify: {
+          agentPath: "agents/clarify-agent.md",
+          skillPath: "design/SKILL.md",
+          nextStage: "plan",
+          requireDomain: false,
+        },
+      },
+    } as any);
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      pipelineId: "pipe-1723456789-clr004",
+      requirementDoc: "docs/design/x.md",
+    });
+    const bus = createMockEventBus();
+    const sent: string[] = [];
+    const mockPi = {
+      events: bus,
+      sendUserMessage: (msg: string) => { sent.push(msg); },
+    };
+
+    const result = await spawnClarifyStageSubagent(mockPi, config, meta, {
+      ui: { notify: () => {} },
+    });
+
+    expect(result.spawned).toBe(true);
+    expect(result.fallback).toBe(true);
+    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.startsWith("[plugin auto-handoff] @feat-design-plan-agent ")).toBe(true);
+    expect(sent[0]).toMatch(/ Pipeline: pipe-\d+-[a-z0-9]{6}$/);
+    expect(sent[0]).toContain(" Pipeline: pipe-1723456789-clr004");
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

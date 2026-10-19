@@ -714,10 +714,21 @@ export async function applyVerifyFail(
       method,
       planDoc: planFeedback.planDoc,
       candidateCount: String(planFeedback.candidates.length),
+      // 204 fix: an unreadable plan-doc directory is a different incident from
+      // "no plan doc written yet" and must be diagnosable from the audit alone.
+      scanFailed: String(planFeedback.scanFailed),
     }, "warn");
   }
 
   // One corrective text for every consumer below (report wins over plan).
+  //
+  // 204 invariant (review issue 3): the `??` precedence is UNCONSTRUCTIBLE as a
+  // both-present case, not merely untested. `buildDesignReviewReportFeedback()`
+  // can only fire on the design-review stages and `buildPlanDocFeedback()` can
+  // only fire when `stageName === "plan"`, so at most one of the two is ever
+  // non-null here. Do NOT "fix" the ordering by adding a precedence test — a
+  // test for it cannot exist. Keep the stage gates in those two builders as the
+  // single source of this contract.
   const correctiveMessage = reportFeedback?.message ?? planFeedback?.message;
   let failLabel = "verify failed";
   if (planFeedback) failLabel = "plan doc invalid";

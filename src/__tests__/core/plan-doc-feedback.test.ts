@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildPlanDocFeedback } from "../../core/plan-doc-feedback";
@@ -21,6 +21,26 @@ async function makeRoot(name: string): Promise<string> {
   const dir = join(tmpdir(), `pi-plan-feedback-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   await mkdir(dir, { recursive: true });
   return dir;
+}
+
+/** Concatenates every audit file under `<root>/.pi/audit` (path-shape agnostic). */
+async function allAuditText(root: string): Promise<string> {
+  const base = join(root, ".pi", "audit");
+  let rel: string[];
+  try {
+    rel = await readdir(base, { recursive: true }) as string[];
+  } catch {
+    return "";
+  }
+  const parts: string[] = [];
+  for (const relPath of rel) {
+    try {
+      parts.push(await readFile(join(base, relPath), "utf-8"));
+    } catch {
+      // directory entry
+    }
+  }
+  return parts.join("\n");
 }
 
 function meta(overrides: Record<string, unknown> = {}): SessionMeta {
@@ -91,6 +111,88 @@ describe("204 Phase 3: buildPlanDocFeedback", () => {
     });
     expect(res!.candidates).toEqual([]);
     expect(res!.message).toContain(EXPECTED);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("ranks this requirement's family first and labels other requirements' plan docs (review issue 4)", async () => {
+    const TMP = await makeRoot("foreign");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    // Other requirements' plan docs (must never be renamed/overwritten).
+    await writeFile(join(dir, "201_Feat_plan.md"), "# other");
+    await writeFile(join(dir, "201_Feat_plan_commit.md"), "# other");
+    await writeFile(join(dir, "203_Bug_Plan.md"), "# other");
+    // This requirement's near-name candidate.
+    await writeFile(join(dir, "204_Bug_plan_draft.md"), "# mine");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    expect(res).not.toBeNull();
+    // reqBase family is ranked first even though "201_..." sorts earlier.
+    expect(res!.candidates[0]).toBe("docs/design/204_Bug_plan_draft.md");
+    expect(res!.candidates).toEqual([
+      "docs/design/204_Bug_plan_draft.md",
+      "docs/design/201_Feat_plan.md",
+      "docs/design/201_Feat_plan_commit.md",
+      "docs/design/203_Bug_Plan.md",
+    ]);
+    // ...and the foreign ones are explicitly flagged as off-limits.
+    expect(res!.message).toContain("never rename, move or overwrite them");
+    expect(res!.message).toContain("docs/design/201_Feat_plan.md");
+    expect(res!.message).not.toContain("never rename, move or overwrite them: docs/design/204_Bug_plan_draft.md");
+    expect(res!.scanFailed).toBe(false);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("distinguishes an unreadable directory from an empty one and audits the failure (review issue 5)", async () => {
+    setAuditPipelineContext("");
+    const TMP = await makeRoot("unreadable");
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    // `docs/design` exists but as a FILE → readdir fails with ENOTDIR, which is
+    // "unreadable", not "not created yet".
+    await mkdir(join(TMP, "docs"), { recursive: true });
+    await writeFile(join(TMP, "docs", "design"), "not a directory");
+
+    const res = await buildPlanDocFeedback({
+      config,
+      meta: meta({ pipelineId: "pipe-plan-fb-scan" }),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.scanFailed).toBe(true);
+    expect(res!.candidates).toEqual([]);
+    expect(res!.message).toContain("UNREADABLE");
+    // The factually wrong claim must NOT be emitted for an unreadable dir.
+    expect(res!.message).not.toContain("No plan-like document found");
+
+    const audit = await allAuditText(TMP);
+    expect(audit).toContain("plan_doc_feedback_scan_failed");
+    expect(audit).toContain("code=ENOTDIR");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("treats a not-yet-created directory as empty instead of a scan failure (review issue 5)", async () => {
+    const TMP = await makeRoot("missing-dir");
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    expect(res!.scanFailed).toBe(false);
+    expect(res!.message).toContain("No plan-like document found");
 
     await rm(TMP, { recursive: true, force: true });
   });
