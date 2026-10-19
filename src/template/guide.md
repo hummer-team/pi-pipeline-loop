@@ -355,6 +355,81 @@ bun add @earendil-works/pi-pipeline
 
 **优先级**：只读优先于写白名单（F8 设计）——当路径同时命中 `allowedWritePaths` 和 `allowedReadOnlyPaths` 时，只读拦截生效（豁免路径除外）。
 
+### 3.5 候选文档目录（docs.stageDirs）
+
+配置 `/pipeline-start` 文档候选菜单扫描的目录：stage → 项目相对目录，菜单只列出该目录下的候选 `.md` 文档。
+
+```jsonc
+{
+  "docs": {
+    "stageDirs": {
+      "clarify": "docs/design",
+      "plan": "docs/design",
+      "design-review": "docs/design",
+      "develop": "docs/design",
+      "review": "docs/design",
+      "fix": "docs/review"
+    }
+  }
+}
+```
+
+**自动匹配规则**（未配置 `docs` 块时内置生效，无需手写）：
+- `clarify` / `plan` / `design-review` / `develop` / `review` → `docs/design`
+- `fix` → `docs/review`
+
+**候选菜单行为（Q3-A）**：
+- 候选按 **mtime 降序**（最新优先），**最多 5 个**单选
+- 未传 `doc_file` 且存在有效候选时弹出 TUI 菜单；显式传入 `doc_file` 的行为不变
+- 每个阶段按角色过滤候选：`clarify`/`plan` → 需求文档（`^\d+_.+\.md$`，排除 `*_Plan.md` 与 `Code_Review_*`）；`design-review`/`develop` → `*_Plan.md`；`review` → `*_Develop_Commit.md`；`fix` → `Code_Review_*.md`
+- 无候选时兜底：跨 `archive.dirs` 全部目录取**最新**文档并提示；全无 → 提供手动输入路径 / 取消（取消保持原 `doc_file` 必填错误提示）
+
+**边界**：
+- 目录不存在或无匹配文件 → 静默跳过该目录（不报错）
+- `docs.stageDirs` **不参与** `protect` 保护链（不豁免也不额外拦截）
+
+### 3.6 归档配置（archive.dirs / archive.dest）与 /pipeline-archive 命令
+
+```jsonc
+{
+  "archive": {
+    "dirs": ["docs/design", "docs/review"],   // 扫描范围（项目相对）
+    "dest": "pi-pipeline-archive"             // 归档落点目录名
+  }
+}
+```
+
+**scan 范围规则**：
+- `archive.dirs` 逐项**递归**扫描，收集**所有文件类型**；`history/` 子目录**不排除**
+- `.pi/audit` 审计目录**恒定**额外纳入扫描（无需配置）
+- 未配置 `archive.dirs` 时 → 回落取 `docs.stageDirs` 的目录值；仍未配置 → `["docs"]`
+- 时间过滤：`now − mtime > 阈值 × 86_400_000`（严格 `>`；恰好 N 天旧的文件**不**归档，多 1ms 即归档）
+
+**落点解析规则（dest）**：
+- 相对值（默认）→ 解析到 `<os.homedir()>/<dest>`；默认 `pi-pipeline-archive`
+- `~/foo` → 展开到用户 HOME；绝对路径 → 原样使用
+- 含 `..` 段的非法值 → 警告并回落 `pi-pipeline-archive`
+- 执行前 `mkdir -p` 创建落点目录
+
+**zip 命名规则**：`yyyy_MM_dd_HHmmsss_pipeline.zip`（第 2 个 `s` 段为两位秒，第 3 个 `s` 是每 100ms 间隔的近秒位后缀）；同名冲突自动追加 `_1`、`_2` 序号。zip 内部路径为**项目相对**路径。
+
+**活跃文档保护**：当前 pipeline 的 `requirementDoc` 及其同 base 衍生文档（`*_Plan.md`、`*_Develop_Commit.md`、`Design_Review_*_Design.md`、`Code_Review_*_Develop_Commit_*.md`、`Design_Review_Update_*` 回执）**永不**纳入扫描/删除。
+
+**/pipeline-archive 命令**（TUI-only、无参数）：
+
+| 步骤 | 说明 |
+|------|------|
+| 1. TUI 守卫 | 无交互会话（无 `ui.select`）→ 提示后中止，写 `pipeline_archive_no_ui` 审计，**不执行任何变更** |
+| 2. 阈值菜单 | 三选一：7 天 / 3 天 / 1 天（内置常量，不可配置）；Esc/取消即中止 |
+| 3. 扫描 + 审计 | 递归收集目标并写 `pipeline_archive_scan`（阈值、数量、字节数、缺失目录、跳过数） |
+| 4. dry-run 预览 | `ui.content` markdown 列出待归档文件（≤10 行 + 溢出提示）、总大小与落点 |
+| 5. 动作菜单 | **Move to zip**（打包后删源）/ **Delete permanently**（直接删除）/ Cancel |
+| 6. 二次确认 | `ui.confirm` 或等价 Yes/No 弹窗；**默认取消**语义——只有显式确认才执行 |
+| 7. 执行 | zip 失败**永不**删除源文件；成功后删除源并清理空目录（扫描范围根目录本身保留） |
+| 8. 结果反馈 | 完成消息 + `pipeline_archive_executed`（action=move/delete、zipPath、删除计数）；失败写 `pipeline_archive_error`（含错误详情） |
+
+**取消/失败安全汇总**：任意取消路径零变更并存审计；zip 不可用或失败 → 源文件原样保留 + error 级审计；删除单个文件失败不影响其余删除，错误全量反馈。
+
 ---
 
 ## 4. 启动 pipeline-start
@@ -378,6 +453,7 @@ bun add @earendil-works/pi-pipeline
   - 若已有 `meta.requirementDoc`（非空）→ 保留原值、正常 restart
   - 若 `meta.requirementDoc` 为空 → 同样返回必填提示，不静默续跑
 - **running / blocked**：拒绝启动，提示使用 decision menu 处理
+- **TUI 候选菜单（206 新增）**：交互式会话中未传 `doc_file` 时，先按 `docs.stageDirs`（§3.5）弹出候选文档单选菜单；选中候选则等价传入 `doc_file`。取消菜单或无 UI 会话 → 保持上述原必填错误提示，行为不变。
 
 ### 4.1b startStageMode 启动模式
 
