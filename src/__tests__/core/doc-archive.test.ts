@@ -9,9 +9,10 @@
  * - Symlinks skipped.
  * - `resolveArchiveDestDir`: relative → `$HOME`, `~` expansion, absolute,
  *   `..` → fallback default.
- * - `buildArchiveZipName` / `formatArchiveTimestamp`: fixed date incl. the
- *   three-`s` tail.
- * - `uniqueZipPath`: `_1` / `_2` on collision.
+ * - `buildArchiveZipName` / `formatArchiveTimestamp`: fixed date with the
+ *   207 millisecond tail.
+ * - 207 naming contract: `sanitizeArchiveName`, `buildArchiveZipPath`
+ *   (deterministic) and the fail-closed `assertZipPathAvailable`.
  * - `createArchiveZip`: fake execFn asserts batched argv + failure-keeps-source;
  *   `probeZipAvailable` availability both ways.
  * - `deleteArchiveTargets`: deletes files + prunes empty dirs + preserves
@@ -27,8 +28,10 @@ import { resolveArchiveScope, collectArchiveTargets, isActivePipelineDoc } from 
 import {
   formatArchiveTimestamp,
   buildArchiveZipName,
+  sanitizeArchiveName,
+  buildArchiveZipPath,
+  assertZipPathAvailable,
   resolveArchiveDestDir,
-  uniqueZipPath,
   probeZipAvailable,
   createArchiveZip,
   deleteArchiveTargets,
@@ -166,7 +169,7 @@ describe("isActivePipelineDoc (206 Phase 3)", () => {
   });
 });
 
-describe("resolveArchiveDestDir / buildArchiveZipName / uniqueZipPath (206 Phase 3)", () => {
+describe("resolveArchiveDestDir / archive naming contract (206 Phase 3 + 207 Phase 1)", () => {
   it("relative dest resolves under the user home", () => {
     const dest = resolveArchiveDestDir("pi-pipeline-archive");
     expect(dest.absDir).toBe(path.join(os.homedir(), "pi-pipeline-archive"));
@@ -185,24 +188,88 @@ describe("resolveArchiveDestDir / buildArchiveZipName / uniqueZipPath (206 Phase
     expect(resolveArchiveDestDir("../escape").absDir).toBe(path.join(os.homedir(), "pi-pipeline-archive"));
   });
 
-  it("formatArchiveTimestamp / buildArchiveZipName use fixed date with 3 s-tail", () => {
+  it("formatArchiveTimestamp pads the millisecond tail to 3 digits", () => {
     const d = new Date(2026, 9, 19, 14, 25, 7, 420); // Oct 19 2026 14:25:07.420
-    expect(formatArchiveTimestamp(d)).toBe("2026_10_19_1425074");
-    expect(buildArchiveZipName(d)).toBe("2026_10_19_1425074_pipeline");
+    expect(formatArchiveTimestamp(d)).toBe("2026_10_19_142507420");
+    // millisecond boundaries: 0 / 7 / 999 all pad to 3 digits
+    expect(formatArchiveTimestamp(new Date(2026, 0, 2, 3, 4, 5, 0))).toBe("2026_01_02_030405000");
+    expect(formatArchiveTimestamp(new Date(2026, 0, 2, 3, 4, 5, 7))).toBe("2026_01_02_030405007");
+    expect(formatArchiveTimestamp(new Date(2026, 0, 2, 3, 4, 5, 999))).toBe("2026_01_02_030405999");
   });
 
-  it("uniqueZipPath allocates _1 / _2 on collision", async () => {
+  it("buildArchiveZipName: no suffix keeps legacy shape; suffix is appended", () => {
+    const d = new Date(2026, 9, 19, 14, 25, 7, 420);
+    expect(buildArchiveZipName(d)).toBe("2026_10_19_142507420_pipeline");
+    expect(buildArchiveZipName(d, "pi-pipeline-loop")).toBe(
+      "2026_10_19_142507420_pipeline_pi-pipeline-loop",
+    );
+  });
+
+  it("sanitizeArchiveName: whitespace/separators/reserved chars → single dash", () => {
+    expect(sanitizeArchiveName("my project")).toBe("my-project");
+    expect(sanitizeArchiveName("a/b\\c:d")).toBe("a-b-c-d");
+    expect(sanitizeArchiveName("a?b*c")).toBe("a-b-c");
+    expect(sanitizeArchiveName("a  --  b")).toBe("a-b");
+    // leading/trailing `.`/`-` stripped (double-pass: replace exposes new edges)
+    expect(sanitizeArchiveName("-.my-project.-")).toBe("my-project");
+    expect(sanitizeArchiveName(". / . .")).toBe("");
+    // Unicode preserved
+    expect(sanitizeArchiveName("我的 项目")).toBe("我的-项目");
+    expect(sanitizeArchiveName("Über-Projekt 🚀")).toBe("Über-Projekt-🚀");
+  });
+
+  it("sanitizeArchiveName caps at 64 code points and blocks traversal", () => {
+    expect(Array.from(sanitizeArchiveName("a".repeat(70))).length).toBe(64);
+    // path traversal: `../evil` → separators/space replaced, edges stripped
+    expect(sanitizeArchiveName("../evil")).toBe("evil");
+    expect(sanitizeArchiveName("..\\..\\evil")).toBe("evil");
+    // pure separators / empty become empty (no suffix)
+    expect(sanitizeArchiveName("///")).toBe("");
+    expect(sanitizeArchiveName(".")).toBe("");
+    expect(sanitizeArchiveName("")).toBe("");
+  });
+
+  it("buildArchiveZipPath builds the deterministic absolute path", () => {
+    const d = new Date(2026, 9, 19, 14, 25, 7, 420);
+    expect(buildArchiveZipPath(ROOT, undefined, d)).toBe(
+      path.join(ROOT, "2026_10_19_142507420_pipeline.zip"),
+    );
+    expect(buildArchiveZipPath(ROOT, "pi-pipeline-loop", d)).toBe(
+      path.join(ROOT, "2026_10_19_142507420_pipeline_pi-pipeline-loop.zip"),
+    );
+  });
+
+  it("assertZipPathAvailable resolves when absent, rejects existing file/dir", async () => {
     await fsp.mkdir(ROOT, { recursive: true });
-    const first = await uniqueZipPath(ROOT, "2026_10_19_x_pipeline");
-    expect(first).toBe(path.join(ROOT, "2026_10_19_x_pipeline.zip"));
-    await fsSync.promises.writeFile(first, "z");
-    expect(await uniqueZipPath(ROOT, "2026_10_19_x_pipeline")).toBe(
-      path.join(ROOT, "2026_10_19_x_pipeline_1.zip"),
-    );
-    await fsSync.promises.writeFile(path.join(ROOT, "2026_10_19_x_pipeline_1.zip"), "z");
-    expect(await uniqueZipPath(ROOT, "2026_10_19_x_pipeline")).toBe(
-      path.join(ROOT, "2026_10_19_x_pipeline_2.zip"),
-    );
+    const missing = path.join(ROOT, "missing.zip");
+    await expect(assertZipPathAvailable(missing)).resolves.toBeUndefined();
+
+    // Broken symlink follows `stat` semantics → ENOENT branch → resolves
+    const target = path.join(ROOT, "gone.txt");
+    await fsp.writeFile(target, "z");
+    const link = path.join(ROOT, "dangling.zip");
+    await fsp.symlink(target, link);
+    await fsp.rm(target);
+    await expect(assertZipPathAvailable(link)).resolves.toBeUndefined();
+
+    // Existing file → fail-closed
+    const existing = path.join(ROOT, "taken.zip");
+    await fsp.writeFile(existing, "z");
+    await expect(assertZipPathAvailable(existing)).rejects.toThrow(/already exists/);
+
+    // Existing directory → also fail-closed
+    const dir = path.join(ROOT, "adir.zip");
+    await fsp.mkdir(dir);
+    await expect(assertZipPathAvailable(dir)).rejects.toThrow(/already exists/);
+  });
+
+  it("assertZipPathAvailable rejects non-ENOENT stat errors (ENOTDIR via file-parent)", async () => {
+    await fsp.mkdir(ROOT, { recursive: true });
+    const file = path.join(ROOT, "plainfile");
+    await fsp.writeFile(file, "z");
+    // path under a regular file → ENOTDIR, must be rethrown (not swallowed)
+    const underFile = path.join(file, "nested.zip");
+    await expect(assertZipPathAvailable(underFile)).rejects.toThrow();
   });
 });
 

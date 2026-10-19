@@ -1,9 +1,20 @@
 /**
  * @module core/archive/runner
  * 206 Phase 3: archive execution engine — zip-name/timestamp formatting,
- * destination resolution, unique-path allocation, system-`zip` invocation
- * (zero new dependencies, 206_Feat Q7-A) and deletion with empty-directory
- * pruning.
+ * destination resolution, deterministic zip path construction, system-`zip`
+ * invocation (zero new dependencies, 206_Feat Q7-A) and deletion with
+ * empty-directory pruning.
+ *
+ * 207 naming contract (replaces the 206 ten-millisecond digit and the
+ * `_1`/`_2` collision probing previously done by the unique-path allocator):
+ * - `formatArchiveTimestamp` emits milliseconds: `yyyy_MM_dd_HHmmssSSS`
+ *   (local timezone, 9-digit tail). Two archives in the same clock second
+ *   now produce distinct names, and the zip path is built deterministically.
+ * - Optional `archiveNameSuffix` (from `archive.namesuffix`) is sanitized via
+ *   {@link sanitizeArchiveName} and appended as `_{suffix}` when non-empty.
+ * - The built path is checked ONCE via {@link assertZipPathAvailable};
+ *   an existing target FAILS CLOSED (no zip, no source deletion) and the
+ *   command layer writes the error audit.
  *
  * Failure contract (206_Feat Round 6 / hard constraints):
  * - `createArchiveZip` NEVER deletes source files; the command layer deletes
@@ -19,24 +30,86 @@ import type { ExecFn, PipelineConfig } from "../../types";
 import { DEFAULT_ARCHIVE_DEST } from "../../constants";
 
 /**
- * Formats a Date into the archive timestamp `yyyy_MM_dd_HHmmsss`.
+ * Formats a Date into the archive timestamp `yyyy_MM_dd_HHmmssSSS`.
  *
- * The trailing triple `s` segment is intentional and comes verbatim from the
- * locked 206_Feat requirement («命名 yyyy_MM_dd_HHmmsss_pipeline.zip»): the
- * last group is TWO-digit seconds PLUS one extra digit encoding
- * `Math.floor(milliseconds / 100)` (0–9). So `HH`/`mm`/`ss`/`s` — THREE
- * `s` characters total in the mask. Preserved bit-for-bit so existing zip
- * names remain grep-able.
+ * 207: millisecond precision (the 206 ten-millisecond digit `s` is replaced
+ * by the full 3-digit millisecond tail `SSS`), local timezone, 9-digit tail.
+ * Example: 2026-10-19 14:25:07.420 → `"2026_10_19_142507420"`.
  */
 export function formatArchiveTimestamp(d: Date): string {
   const p2 = (n: number): string => String(n).padStart(2, "0");
-  const tenthSecond = Math.floor(d.getMilliseconds() / 100);
-  return `${d.getFullYear()}_${p2(d.getMonth() + 1)}_${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}${tenthSecond}`;
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${d.getFullYear()}_${p2(d.getMonth() + 1)}_${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}${ms}`;
 }
 
-/** Builds the zip base name for the archive run: `yyyy_MM_dd_HHmmsss_pipeline`. */
-export function buildArchiveZipName(d: Date = new Date()): string {
-  return `${formatArchiveTimestamp(d)}_pipeline`;
+/**
+ * 207: Characters/carrier-runs that must never appear in an archive zip
+ * file name. Includes whitespace, path separators (`/`, `\`) — this also
+ * blocks `../` traversal — and Windows-reserved characters plus control chars.
+ */
+const UNSAFE_ARCHIVE_NAME_RE = /[\s/\\:*?"<>|\u0000-\u001F\u007F]+/g;
+
+/**
+ * 207: Sanitizes a raw archive name suffix into a filesystem-safe fragment.
+ *
+ * Rules (207_Feat Round 5 Q3):
+ * - trim, then replace every unsafe run (whitespace, `/`, `\`, `:*?"<>|`,
+ *   control chars) with a single `-`, collapsing consecutive `-` runs;
+ * - strip leading/trailing `.` and `-` (twice — replacing unsafe runs can
+ *   expose new edge runs);
+ * - cap at 64 code points;
+ * - a result that ends up empty means "no suffix" (caller must fall back to
+ *   the plain `{timestamp}_pipeline` name).
+ */
+export function sanitizeArchiveName(raw: string): string {
+  const collapsed = raw.trim().replace(UNSAFE_ARCHIVE_NAME_RE, "-").replace(/-+/g, "-");
+  const trimmed = collapsed.replace(/^[.-]+|[.-]+$/g, "");
+  const capped = Array.from(trimmed).slice(0, 64).join("");
+  return capped.replace(/^[.-]+|[.-]+$/g, "");
+}
+
+/**
+ * Builds the zip base name for the archive run:
+ * `{timestamp}_pipeline` — or `{timestamp}_pipeline_{suffix}` when the
+ * sanitized `nameSuffix` (207) is non-empty. `d` stays the first parameter
+ * for compatibility with existing callers/tests.
+ */
+export function buildArchiveZipName(d: Date = new Date(), nameSuffix?: string): string {
+  const base = `${formatArchiveTimestamp(d)}_pipeline`;
+  const suffix = sanitizeArchiveName(nameSuffix ?? "");
+  return suffix.length > 0 ? `${base}_${suffix}` : base;
+}
+
+/**
+ * 207: Builds the deterministic archive zip path for the run. No collision
+ * probing — an existing target is handled fail-closed by
+ * {@link assertZipPathAvailable} (call right before zip creation).
+ */
+export function buildArchiveZipPath(
+  destDirAbs: string,
+  nameSuffix?: string,
+  d: Date = new Date(),
+): string {
+  return path.join(destDirAbs, `${buildArchiveZipName(d, nameSuffix)}.zip`);
+}
+
+/**
+ * 207: Fail-closed existence check for the resolved zip path.
+ *
+ * - Path does not exist (including broken-symlink, via `stat` semantics) →
+ *   resolves normally.
+ * - Path exists (file or directory) → throws `/already exists/`.
+ * - Any other stat error (`EACCES`/`EPERM`/`ENOTDIR`/…) is rethrown as-is —
+ *   the command layer audits and aborts; nothing is silently swallowed.
+ */
+export async function assertZipPathAvailable(zipAbsPath: string): Promise<void> {
+  try {
+    await fsp.stat(zipAbsPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    throw err; // EACCES/EPERM/ENOTDIR … → command layer audits and aborts
+  }
+  throw new Error(`Archive path already exists: ${zipAbsPath}`);
 }
 
 /**
@@ -81,31 +154,6 @@ export async function ensureArchiveDestDir(dest: string | undefined): Promise<Ar
   const resolved = resolveArchiveDestDir(dest);
   await fsp.mkdir(resolved.absDir, { recursive: true });
   return resolved;
-}
-
-/**
- * Allocates a non-colliding zip path: when `{dir}/{base}.zip` already exists,
- * `pipeline_1.zip`, `pipeline_2.zip`, … (inserted before the extension).
- */
-export async function uniqueZipPath(destDirAbs: string, baseName: string): Promise<string> {
-  const first = path.join(destDirAbs, `${baseName}.zip`);
-  let exists = true;
-  try {
-    await fsp.access(first);
-  } catch {
-    exists = false;
-  }
-  if (!exists) return first;
-  for (let i = 1; i < 100_000; i++) {
-    const candidate = path.join(destDirAbs, `${baseName}_${i}.zip`);
-    try {
-      await fsp.access(candidate);
-    } catch {
-      return candidate;
-    }
-  }
-  // Defensive cap (never hit in practice)
-  return path.join(destDirAbs, `${baseName}_${Date.now()}.zip`);
 }
 
 /**

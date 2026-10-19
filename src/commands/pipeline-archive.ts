@@ -24,13 +24,13 @@ import * as path from "node:path";
 import type { ExecFn, PipelineConfig } from "../types";
 import { collectArchiveTargets, archiveScopeRoots, type ArchiveTarget } from "../core/archive/scanner";
 import {
-  buildArchiveZipName,
+  assertZipPathAvailable,
+  buildArchiveZipPath,
   createArchiveZip,
   deleteArchiveTargets,
   ensureArchiveDestDir,
   probeZipAvailable,
   resolveArchiveDestDir,
-  uniqueZipPath,
 } from "../core/archive/runner";
 import { safeWriteAuditLog } from "../utils/auditLog";
 
@@ -274,8 +274,13 @@ async function executeMove(
   }
 
   try {
+    // 207: deterministic zip path (millisecond timestamp + optional
+    // archiveNameSuffix) + fail-closed availability check — an existing
+    // target throws here and lands in the catch below (error audit, no zip,
+    // no source deletion).
     const dest = await ensureArchiveDestDir(config.archiveDest);
-    const zipAbs = await uniqueZipPath(dest.absDir, buildArchiveZipName());
+    const zipAbs = buildArchiveZipPath(dest.absDir, config.archiveNameSuffix);
+    await assertZipPathAvailable(zipAbs);
     const zipResult = await createArchiveZip(execFn, config, zipAbs, targets);
     if (!zipResult.ok) {
       ctx.ui?.notify?.(`Zip failed; no files were deleted: ${zipResult.error}`);

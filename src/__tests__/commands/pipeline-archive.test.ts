@@ -14,7 +14,7 @@
  * - "Delete permanently" + confirm → files deleted + executed(action=delete).
  * - Edge: missing ctx.session (activeDoc undefined); absolute archiveDest.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from "bun:test";
 import * as fsp from "node:fs/promises";
 import fsSync from "node:fs";
 import * as os from "node:os";
@@ -222,6 +222,76 @@ describe("pipeline-archive command (206 Phase 4)", () => {
     expect(result.message).toContain("Zip failed");
     expect(fsSync.existsSync(path.join(ROOT, "docs/design/206_Old.md"))).toBe(true);
     expect((await readAudit())).toContain("pipeline_archive_error");
+  });
+
+  it("honors archiveNameSuffix → *_pipeline_pi-pipeline-loop.zip is produced", async () => {
+    const suffixCfg = makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs/design"],
+      auditDir: ".pi/audit",
+      archiveDest: HOME_DIR,
+      archiveNameSuffix: "pi-pipeline-loop",
+    });
+    await initAuditLog(suffixCfg);
+    const execFn: ExecFn = async (_cmd, args) => {
+      const zipped = args[2];
+      if (typeof zipped === "string" && zipped.endsWith(".zip")) {
+        await fsp.writeFile(zipped, "PK-fake-zip-bytes", "utf-8");
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+    await writeOld("docs/design/207_Suffixed.md");
+
+    const ctx = withScriptedSelects(
+      makeTuiCtx({ confirmReturn: true }),
+      ["7 days", "Move to zip"],
+    );
+    const result: any = await createPipelineArchiveCommand(suffixCfg, { execFn }).execute({}, ctx as any);
+
+    expect(result.success).toBe(true);
+    const homeFiles = await fsp.readdir(HOME_DIR);
+    expect(homeFiles.find((f) => f.endsWith("_pipeline_pi-pipeline-loop.zip"))).toBeDefined();
+    expect(fsSync.existsSync(path.join(ROOT, "docs/design/207_Suffixed.md"))).toBe(false);
+  });
+
+  it("existing target zip → fail-closed: no zip, no source deletion, error audit", async () => {
+    // Freeze the clock so the deterministic zip name is exactly predictable.
+    setSystemTime(new Date(2026, 9, 19, 14, 25, 7, 420));
+    try {
+      // Availability probe passes; real zip batches must NEVER be invoked —
+      // the existence check aborts before any zip call.
+      const zipBatchCalls: string[][] = [];
+      const execFn: ExecFn = async (_cmd, args) => {
+        if (args.length === 1 && args[0] === "-h") {
+          return { stdout: "", stderr: "", code: 0 };
+        }
+        zipBatchCalls.push(args);
+        return { stdout: "", stderr: "", code: 0 };
+      };
+      const presetZip = path.join(HOME_DIR, "2026_10_19_142507420_pipeline.zip");
+      await fsp.writeFile(presetZip, "PRECIOUS-UNCHANGED", "utf-8");
+      await writeOld("docs/design/207_Preserved.md");
+
+      const ctx = withScriptedSelects(
+        makeTuiCtx({ confirmReturn: true }),
+        ["7 days", "Move to zip"],
+      );
+      const result: any = await createPipelineArchiveCommand(cfg, { execFn }).execute({}, ctx as any);
+
+      // Same flow contract as the zip-failure case: success=true + failure message.
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("already exists");
+      expect(ctx.notifications.some((n) => n.includes("already exists"))).toBe(true);
+      // Source file untouched
+      expect(fsSync.existsSync(path.join(ROOT, "docs/design/207_Preserved.md"))).toBe(true);
+      // Pre-created zip content not overwritten
+      expect(await fsp.readFile(presetZip, "utf-8")).toBe("PRECIOUS-UNCHANGED");
+      // No real zip batch was invoked (existence check aborted first)
+      expect(zipBatchCalls.length).toBe(0);
+      expect((await readAudit())).toContain("pipeline_archive_error");
+    } finally {
+      setSystemTime(); // restore real clock
+    }
   });
 
   it("Delete permanently + second confirm No → no changes + cancelled audit", async () => {
