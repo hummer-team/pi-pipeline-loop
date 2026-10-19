@@ -44,7 +44,7 @@
     "dirs": ["docs/design", "docs/review"],
     "dest": "pi-pipeline-archive"
   },
-  "_comment_archive": "dirs is the /pipeline-archive scan scope (recursively, all file types, mtime-based); the .pi/audit directory is ALWAYS scanned on top of it. dest is the archive landing directory resolved against your HOME directory (relative values) — zip files are named yyyy_MM_dd_HHmmsss_pipeline.zip. When dirs is absent the scan scope is derived from docs.stageDirs values, falling back to [\"docs\"]. The active pipeline's requirementDoc and its same-base Plan/Commit/Review documents are never archived or deleted.",
+  "_comment_archive": "dirs is the /pipeline-archive scan scope (recursively, all file types, mtime-based); the .pi/audit directory is ALWAYS scanned on top of it. dest is the archive landing directory resolved against your HOME directory (relative values) — zip files are named yyyy_MM_dd_HHmmssSSS_pipeline.zip (local timezone, millisecond tail). Optional namesuffix appends a sanitized project-name fragment: ..._pipeline_my-project.zip; whitespace/reserved filename characters of namesuffix are replaced with '-', an empty sanitized result is ignored (plain naming). When the target zip already exists the run FAILS CLOSED (no zip, no source deletion). When dirs is absent the scan scope is derived from docs.stageDirs values, falling back to [\"docs\"]. The active pipeline's requirementDoc and its same-base Plan/Commit/Review documents are never archived or deleted.",
   "stages": {
     "clarify": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",

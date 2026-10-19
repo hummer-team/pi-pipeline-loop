@@ -388,13 +388,14 @@ bun add @earendil-works/pi-pipeline
 - 目录不存在或无匹配文件 → 静默跳过该目录（不报错）
 - `docs.stageDirs` **不参与** `protect` 保护链（不豁免也不额外拦截）
 
-### 3.6 归档配置（archive.dirs / archive.dest）与 /pipeline-archive 命令
+### 3.6 归档配置（archive.namesuffix / archive.dirs / archive.dest）与 /pipeline-archive 命令
 
 ```jsonc
 {
   "archive": {
-    "dirs": ["docs/design", "docs/review"],   // 扫描范围（项目相对）
-    "dest": "pi-pipeline-archive"             // 归档落点目录名
+    "namesuffix": "pi-pipeline-loop",          // 可选；多项目归档区分
+    "dirs": ["docs/design", "docs/review"],    // 扫描范围（项目相对）
+    "dest": "pi-pipeline-archive"              // 归档落点目录名
   }
 }
 ```
@@ -411,7 +412,9 @@ bun add @earendil-works/pi-pipeline
 - 含 `..` 段的非法值 → 警告并回落 `pi-pipeline-archive`
 - 执行前 `mkdir -p` 创建落点目录
 
-**zip 命名规则**：`yyyy_MM_dd_HHmmsss_pipeline.zip`（第 2 个 `s` 段为两位秒，第 3 个 `s` 是每 100ms 间隔的近秒位后缀）；同名冲突自动追加 `_1`、`_2` 序号。zip 内部路径为**项目相对**路径。
+**zip 命名规则**：`yyyy_MM_dd_HHmmssSSS_pipeline[_namesuffix].zip`（本地时区，末尾为 3 位毫秒 `SSS`；示例 `2026_10_19_142507420_pipeline_pi-pipeline-loop.zip`）。
+- `namesuffix`（可选）：配置后追加 `_{清洗后的值}`；值中的空白与非法文件名字符（`/`、`\`、`:*?"<>|` 等）替换为单个 `-` 并合并连续 `-`、去除首尾 `.`/`-`、限长 64 个字符，清洗结果为空则忽略（不含 `.zip` 扩展名，命名层统一追加）。
+- **fail-closed**：目标 zip 已存在时归档失败——不 zip、不删除源文件，写 `pipeline_archive_error` 审计。zip 内部路径为**项目相对**路径。
 
 **活跃文档保护**：当前 pipeline 的 `requirementDoc` 及其同 base 衍生文档（`*_Plan.md`、`*_Develop_Commit.md`、`Design_Review_*_Design.md`、`Code_Review_*_Develop_Commit_*.md`、`Design_Review_Update_*` 回执）**永不**纳入扫描/删除。
 

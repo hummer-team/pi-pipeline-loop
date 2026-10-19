@@ -28,10 +28,12 @@ describe("Template docs/archive key assertion (206 Phase 5)", () => {
       fix: "docs/review",
     });
 
-    // archive.dirs / archive.dest
+    // archive.dirs / archive.dest (207: the template has NO default namesuffix
+    // — legacy `{timestamp}_pipeline.zip` naming stays the default behavior)
     expect(template).toHaveProperty("archive.dirs");
     expect(template.archive.dirs).toEqual(["docs/design", "docs/review"]);
     expect(template.archive.dest).toBe("pi-pipeline-archive");
+    expect(Object.keys(template.archive).sort()).toEqual(["dest", "dirs"]);
   });
 
   it("comment annotation keys exist for discoverability", () => {
@@ -41,7 +43,24 @@ describe("Template docs/archive key assertion (206 Phase 5)", () => {
     expect(templateContent).toContain("\"_comment_docs\"");
     expect(templateContent).toContain("do NOT interact with protect");
     expect(templateContent).toContain("\"_comment_archive\"");
-    expect(templateContent).toContain("yyyy_MM_dd_HHmmsss_pipeline.zip");
+    // 207: millisecond naming format + namesuffix discoverability
+    expect(templateContent).toContain("yyyy_MM_dd_HHmmssSSS_pipeline");
+    expect(templateContent).toContain("namesuffix");
+  });
+
+  it("guide key wording is kept in sync between src/template and .pi overlays", () => {
+    const srcGuide = fs.readFileSync(path.join(__dirname, "../../template/guide.md"), "utf-8");
+    const piGuide = fs.readFileSync(path.join(__dirname, "../../../.pi/guide.md"), "utf-8");
+    // Format string, fail-closed wording and the optional key must match.
+    for (const marker of [
+      "yyyy_MM_dd_HHmmssSSS_pipeline[_namesuffix].zip",
+      "namesuffix",
+      "fail-closed",
+      "不 zip、不删除源文件",
+    ]) {
+      expect(srcGuide).toContain(marker);
+      expect(piGuide).toContain(marker);
+    }
   });
 
   it("template parses through the production loadJsonConfig loader", () => {
