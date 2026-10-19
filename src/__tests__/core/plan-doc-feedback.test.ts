@@ -151,6 +151,60 @@ describe("204 Phase 3: buildPlanDocFeedback", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 
+  it("treats a case-mixed sibling as this requirement's own doc, not a foreign one (review issue 1)", async () => {
+    // Repo reality: `_plan.md` / `_Plan.md` casings are both in use. With a bare
+    // case-sensitive `includes(reqBase)` test the ONLY candidate on disk is
+    // reported as "belongs to OTHER requirement(s) — never rename" AND asked to
+    // be renamed, so the model would create a second plan document.
+    const TMP = await makeRoot("case-mixed");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "204_bug_Plan.md"), "# mine, wrong casing");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    expect(res!.candidates).toEqual(["docs/design/204_bug_Plan.md"]);
+    // Ranked as our own family (first) and therefore NOT labelled off-limits.
+    expect(res!.message).not.toContain("never rename, move or overwrite");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("does not absorb a near-index foreign doc as this requirement's family (review issue 2)", async () => {
+    // `1204_Bugfix` contains "204_Bug" as a bare substring; an unanchored test
+    // would rank it 0 and drop its off-limits label, exposing another
+    // requirement's document to a rename.
+    const TMP = await makeRoot("near-index");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "1204_Bugfix_Plan.md"), "# other requirement");
+    await writeFile(join(dir, "204_Bug_plan_draft.md"), "# mine");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    // Own family first (rank 0), the near-index foreign doc last (rank 2)...
+    expect(res!.candidates).toEqual([
+      "docs/design/204_Bug_plan_draft.md",
+      "docs/design/1204_Bugfix_Plan.md",
+    ]);
+    // ...and it IS flagged off-limits.
+    expect(res!.message).toContain(
+      "never rename, move or overwrite them: docs/design/1204_Bugfix_Plan.md",
+    );
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
   it("distinguishes an unreadable directory from an empty one and audits the failure (review issue 5)", async () => {
     setAuditPipelineContext("");
     const TMP = await makeRoot("unreadable");

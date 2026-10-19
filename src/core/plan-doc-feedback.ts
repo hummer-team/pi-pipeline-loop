@@ -51,9 +51,11 @@ const MAX_CANDIDATES = 5;
 /**
  * A plan doc that clearly belongs to SOME requirement
  * (`{index}_{name}_Plan.md` / `{index}_{name}_Plan_commit.md`). Such a candidate
- * is "foreign" only when it does not mention this requirement's `reqBase`.
+ * is "foreign" only when it does not belong to this requirement's `reqBase`
+ * family (see `belongsToReqFamily()`). Case-insensitive because plan-doc casing
+ * is inconsistent on disk (`_plan.md` / `_Plan.md` are both in use).
  */
-const INDEXED_PLAN_DOC = /^\d+_.+_[Pp]lan(?:_[Cc]ommit)?\.md$/;
+const INDEXED_PLAN_DOC = /^\d+_.+_plan(?:_commit)?\.md$/i;
 
 const STRUCTURE_REQUIREMENT =
   "The document MUST contain the six sections Summary / Phase {x} / Task List / Acceptance Criteria / " +
@@ -138,8 +140,29 @@ function describeCandidates(candidates: readonly string[], scanFailed: boolean, 
 function isForeignPlanDoc(relPath: string, reqBase: string): boolean {
   if (!reqBase) return false;
   const name = relPath.slice(relPath.lastIndexOf("/") + 1);
-  if (name.includes(reqBase)) return false;
-  return INDEXED_PLAN_DOC.test(name);
+  return !belongsToReqFamily(name, reqBase) && INDEXED_PLAN_DOC.test(name);
+}
+
+/**
+ * Single source of truth for "is this file name THIS requirement's own plan-doc
+ * family?" — shared by the off-limits classification and the ranking so the two
+ * can never disagree (labelling a file foreign while ranking it as our own would
+ * ask the model to rename a file it is simultaneously forbidden to touch).
+ *
+ * Two properties the bare `name.includes(reqBase)` substring test lacked:
+ * - **Case-insensitive**: `204_bug_Plan.md` IS this requirement's own doc for
+ *   `reqBase === "204_Bug"` (the repo mixes `_plan.md` / `_Plan.md`).
+ * - **Anchored at a separator**: `1204_Bugfix_Plan.md` is NOT ours — a bare
+ *   substring test would swallow it as "contains 204_Bug" and silently drop its
+ *   off-limits label, exposing another requirement's document to a rename.
+ *
+ * Accepts a bare file name (path components are stripped by the caller).
+ */
+function belongsToReqFamily(name: string, reqBase: string): boolean {
+  if (!reqBase) return false;
+  const stem = name.replace(/\.md$/i, "").toLowerCase();
+  const base = reqBase.toLowerCase();
+  return stem === base || stem.startsWith(`${base}_`);
 }
 
 /**
@@ -178,7 +201,7 @@ async function scanPlanLikeCandidates(opts: {
   // Rank: this requirement's family first (a wrongly-named 204 doc is the real
   // fix target), then near-name docs, then other requirements' plan docs.
   const rank = (name: string): number => {
-    if (opts.reqBase && name.includes(opts.reqBase)) return 0;
+    if (belongsToReqFamily(name, opts.reqBase)) return 0;
     return INDEXED_PLAN_DOC.test(name) ? 2 : 1;
   };
 
