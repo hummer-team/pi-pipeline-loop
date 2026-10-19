@@ -226,8 +226,11 @@ describe("204 Phase 3: buildPlanDocFeedback", () => {
     // Excluded from the rename candidates...
     expect(res!.candidates).toEqual([]);
     expect(res!.message).not.toContain("Found non-conforming candidate(s)");
-    // ...and reported on its own "keep it" line instead.
-    expect(res!.message).toContain("This requirement's OWN commit doc is NOT the plan doc — KEEP it");
+    // ...and reported on the KEEP line instead (one line for every own
+    // non-plan artifact — the requirement doc and this commit doc).
+    expect(res!.message).toContain(
+      "This requirement's OWN non-plan artifact(s) are NOT the plan doc — KEEP them",
+    );
     expect(res!.message).toContain("docs/design/204_Bug_Plan_commit.md");
     // The plan doc genuinely does not exist yet.
     expect(res!.message).toContain("No plan-like document found");
@@ -256,9 +259,75 @@ describe("204 Phase 3: buildPlanDocFeedback", () => {
       "docs/design/204_Bug_plan_draft.md",
       "docs/design/203_Bug_Plan.md",
     ]);
-    expect(res!.message).toContain("KEEP it, never rename, move or overwrite it to docs/design/204_Bug_Plan.md");
+    expect(res!.message).toContain(
+      "KEEP them, never rename, move or overwrite to docs/design/204_Bug_Plan.md",
+    );
     // The commit doc is neither a candidate nor off-limits (it is ours).
     expect(res!.message).not.toContain("never rename, move or overwrite them: docs/design/204_Bug_Plan_commit.md");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("never offers the requirement doc itself as a rename candidate when its title contains 'plan' (review issue 1)", async () => {
+    // `docs/design/208_Replan.md` → reqBase `208_Replan`, expected
+    // `208_Replan_Plan.md`. The requirement doc's OWN name mentions "plan", so it
+    // satisfied the candidate filter AND ranked 0 as reqBase family — the message
+    // then pointed `Fix in place: rename the file` at the pipeline's only input,
+    // and `git mv 208_Replan.md 208_Replan_Plan.md` would leave every later stage
+    // resolving `meta.requirementDoc` at a missing path.
+    const TMP = await makeRoot("req-doc-itself");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "208_Replan.md"), "# requirement");
+    await writeFile(join(dir, "208_Replan_plan_commit.md"), "# commit ids");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta({ requirementDoc: "docs/design/208_Replan.md" }),
+      stageName: "plan",
+      failures: [fail("requiredFile", "Missing files: docs/design/208_Replan_Plan.md")],
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.planDoc).toBe("docs/design/208_Replan_Plan.md");
+    // Neither own artifact is a rename target...
+    expect(res!.candidates).toEqual([]);
+    expect(res!.message).not.toContain("Found non-conforming candidate(s)");
+    // ...both are on the single KEEP line, each with its own reason.
+    expect(res!.message).toContain(
+      "This requirement's OWN non-plan artifact(s) are NOT the plan doc — KEEP them",
+    );
+    expect(res!.message).toContain("docs/design/208_Replan.md (the requirement input");
+    expect(res!.message).toContain("docs/design/208_Replan_plan_commit.md (it records the commit ids)");
+    // The empty-candidate line must not read like an empty directory.
+    expect(res!.message).toContain("No plan-like document found");
+    expect(res!.message).toContain("only this requirement's OWN non-plan artifacts are present");
+    // The expected path stays the single fix target.
+    expect(res!.message).toContain("Expected EXACTLY: docs/design/208_Replan_Plan.md");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("keeps the requirement doc out of the candidates while a real draft stays the fix target (review issue 1)", async () => {
+    const TMP = await makeRoot("req-doc-plus-draft");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "208_Replan.md"), "# requirement");
+    await writeFile(join(dir, "208_Replan_plan_draft.md"), "# mine");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta({ requirementDoc: "docs/design/208_Replan.md" }),
+      stageName: "plan",
+      failures: [fail("requiredFile", "Missing files: docs/design/208_Replan_Plan.md")],
+    });
+
+    // The draft is the only rename candidate, and it is first.
+    expect(res!.candidates).toEqual(["docs/design/208_Replan_plan_draft.md"]);
+    expect(res!.message).toContain("Found non-conforming candidate(s): docs/design/208_Replan_plan_draft.md");
+    // The requirement doc is neither a candidate nor off-limits (it is ours).
+    expect(res!.message).toContain("docs/design/208_Replan.md (the requirement input");
+    expect(res!.message).not.toContain("candidate(s): docs/design/208_Replan.md");
 
     await rm(TMP, { recursive: true, force: true });
   });

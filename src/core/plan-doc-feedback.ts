@@ -23,10 +23,15 @@ export interface PlanDocFeedback {
    * This requirement's near-name candidates come first; other requirements'
    * plan docs follow and are labelled separately in `message`.
    *
-   * This requirement's OWN commit doc (`{reqBase}_plan_commit.md`) is NOT a
-   * candidate: it is excluded here and reported on its own `message` line as
-   * "KEEP it" — renaming it to the plan-doc path would destroy a non-
-   * regenerable artifact (it records the commit ids).
+   * This requirement's OWN non-plan artifacts are NOT candidates: they are
+   * excluded here and reported on the `message` "KEEP" line instead — both are
+   * non-regenerable pipeline inputs, and renaming either onto the plan-doc path
+   * silently destroys it:
+   * - the requirement doc (`{reqBase}.md`, `meta.requirementDoc`) — moving it
+   *   desynchronises every later stage (plan/develop/review resolves the
+   *   requirement by that exact path);
+   * - the plan-stage commit doc (`{reqBase}_plan_commit*.md`) — it records the
+   *   dev/fix commit ids.
    */
   candidates: string[];
   /**
@@ -99,6 +104,10 @@ export async function buildPlanDocFeedback(opts: {
     relDir: dir,
     expectedName: path.posix.basename(planDoc),
     reqBase,
+    // The requirement doc's OWN file name keeps it out of the rename
+    // candidates: a requirement title that itself contains "plan"
+    // (`208_Replan.md`) satisfies the candidate filter and ranks 0.
+    reqDocName: path.posix.basename(String(reqDoc).replace(/\\/g, "/")),
   });
   const candidates = scan.candidates;
 
@@ -106,7 +115,12 @@ export async function buildPlanDocFeedback(opts: {
   // corrective instruction is scoped to THIS requirement only.
   const foreign = candidates.filter((rel) => isForeignPlanDoc(rel, reqBase));
 
-  const candidateLine = describeCandidates(candidates, scan.scanFailed, dir);
+  const candidateLine = describeCandidates(
+    candidates,
+    scan.scanFailed,
+    dir,
+    scan.ownArtifacts.length,
+  );
 
   const message = [
     `Plan doc verification failed for "${opts.stageName}" — the deliverable is a FORMAT problem, the stage must not advance.`,
@@ -115,9 +129,9 @@ export async function buildPlanDocFeedback(opts: {
     ...(foreign.length > 0
       ? [`These belong to OTHER requirement(s) — never rename, move or overwrite them: ${foreign.join(", ")}`]
       : []),
-    ...(scan.ownCommitDocs.length > 0
+    ...(scan.ownArtifacts.length > 0
       ? [
-        `This requirement's OWN commit doc is NOT the plan doc — KEEP it, never rename, move or overwrite it to ${planDoc} (it records the commit ids): ${scan.ownCommitDocs.join(", ")}`,
+        `This requirement's OWN non-plan artifact(s) are NOT the plan doc — KEEP them, never rename, move or overwrite to ${planDoc}: ${scan.ownArtifacts.map((a) => `${a.rel} (${OWN_ARTIFACT_REASON[a.kind]})`).join("; ")}`,
       ]
       : []),
     `Fix in place: create or rename the file to the expected path (keep the existing content), then re-run pipeline_verify. Do not create a second plan document and do not invent another name.`,
@@ -133,13 +147,59 @@ export async function buildPlanDocFeedback(opts: {
  * "no plan-like document" for an unreadable directory sends the model to
  * CREATE a file instead of investigating the directory.
  */
-function describeCandidates(candidates: readonly string[], scanFailed: boolean, dir: string): string {
+function describeCandidates(
+  candidates: readonly string[],
+  scanFailed: boolean,
+  dir: string,
+  ownArtifactCount: number,
+): string {
   const where = dir || ".";
   if (candidates.length > 0) return `Found non-conforming candidate(s): ${candidates.join(", ")}`;
   if (scanFailed) {
     return `Directory ${where} is UNREADABLE (scan failed, see audit \`plan_doc_feedback_scan_failed\`) — inspect the directory itself before creating any file.`;
   }
+  // An empty candidate list alongside own artifacts on disk is NOT the same
+  // state as an empty directory: never let the model read the requirement doc
+  // as "the only plan-like file" and move it onto the plan path.
+  if (ownArtifactCount > 0) {
+    return `No plan-like document found in ${where} (only this requirement's OWN non-plan artifacts are present — see the KEEP line below).`;
+  }
   return `No plan-like document found in ${where}.`;
+}
+
+/**
+ * The kinds of THIS requirement's own deliverables that are NOT the plan doc
+ * and must never be renamed onto it.
+ */
+type OwnArtifactKind = "requirement-doc" | "commit-doc";
+
+/** One own non-plan artifact found on disk. */
+interface OwnArtifact {
+  /** Path relative to the PROJECT ROOT (same base as `planDoc`). */
+  rel: string;
+  kind: OwnArtifactKind;
+}
+
+/** Why each own artifact must be kept — rendered into the single KEEP line. */
+const OWN_ARTIFACT_REASON: Record<OwnArtifactKind, string> = {
+  "requirement-doc": "the requirement input every later stage resolves by this exact path",
+  "commit-doc": "it records the commit ids",
+};
+
+/**
+ * `true` when `name` is THIS requirement's own requirement doc
+ * (`{reqBase}.md` === `meta.requirementDoc`, case-insensitive).
+ *
+ * A requirement title may itself contain "plan" (`208_Replan.md`), which makes it
+ * satisfy the "name mentions 'plan' but is not the expected name" candidate
+ * filter and rank 0 as `reqBase` family — the FIRST file the corrective message
+ * would tell the model to rename. Moving it silently breaks the pipeline's only
+ * input: `meta.requirementDoc`, every later stage's requirement resolution and
+ * `planDocRelPathFromRequirementDoc()` would all point at a missing file.
+ */
+function isOwnRequirementDoc(name: string, reqDocName: string): boolean {
+  if (!reqDocName) return false;
+  return name.toLowerCase() === reqDocName.toLowerCase();
 }
 
 /**
@@ -156,6 +216,26 @@ function isOwnPlanCommitDoc(name: string, reqBase: string): boolean {
   if (!reqBase) return false;
   const stem = name.replace(/\.md$/i, "").toLowerCase();
   return stem.startsWith(`${reqBase.toLowerCase()}_plan_commit`);
+}
+
+/**
+ * Predicate SET for "is `name` one of THIS requirement's OWN non-plan
+ * deliverables?". Lives at the SAME layer as `isOwnPlanCommitDoc()` /
+ * `belongsToReqFamily()` so a new member is added HERE rather than as another
+ * ad-hoc filter at the scan call site (that is exactly how the requirement-doc
+ * member went missing in review round 3).
+ *
+ * Returns the artifact kind (so the KEEP line can carry a per-item reason), or
+ * `null` when the file is an ordinary rename candidate.
+ */
+function ownNonPlanArtifactKind(
+  name: string,
+  reqBase: string,
+  reqDocName: string,
+): OwnArtifactKind | null {
+  if (isOwnRequirementDoc(name, reqDocName)) return "requirement-doc";
+  if (isOwnPlanCommitDoc(name, reqBase)) return "commit-doc";
+  return null;
 }
 
 /**
@@ -205,7 +285,9 @@ async function scanPlanLikeCandidates(opts: {
   relDir: string;
   expectedName: string;
   reqBase: string;
-}): Promise<{ candidates: string[]; ownCommitDocs: string[]; scanFailed: boolean }> {
+  /** `path.posix.basename(meta.requirementDoc)` — never a rename candidate. */
+  reqDocName: string;
+}): Promise<{ candidates: string[]; ownArtifacts: OwnArtifact[]; scanFailed: boolean }> {
   let entries: string[];
   try {
     entries = await fs.readdir(path.resolve(opts.projectRoot, opts.relDir));
@@ -213,7 +295,7 @@ async function scanPlanLikeCandidates(opts: {
     const code = (err as NodeJS.ErrnoException)?.code;
     // A directory that does not exist yet is the ordinary "plan doc not written
     // yet" state — no candidates, no log noise.
-    if (code === "ENOENT") return { candidates: [], ownCommitDocs: [], scanFailed: false };
+    if (code === "ENOENT") return { candidates: [], ownArtifacts: [], scanFailed: false };
     await safeWriteAuditLog("plan_doc_feedback_scan_failed", {
       projectRoot: opts.projectRoot,
       relDir: opts.relDir || ".",
@@ -221,7 +303,7 @@ async function scanPlanLikeCandidates(opts: {
       error: err instanceof Error ? err.message : String(err),
       stack: (err instanceof Error ? (err.stack ?? "") : "").slice(0, 500),
     }, "warn");
-    return { candidates: [], ownCommitDocs: [], scanFailed: true };
+    return { candidates: [], ownArtifacts: [], scanFailed: true };
   }
 
   const toRel = (name: string): string => (opts.relDir ? `${opts.relDir}/${name}` : name);
@@ -231,13 +313,16 @@ async function scanPlanLikeCandidates(opts: {
     .filter((name) => name.toLowerCase().includes("plan"))
     .filter((name) => name !== opts.expectedName);
 
-  // This requirement's OWN commit doc is split out BEFORE ranking: as `reqBase`
-  // family it would rank 0, i.e. exactly the file the model would rename to the
-  // expected plan path. It is reported on its own "KEEP it" line instead.
-  const ownCommitDocs = planLike
-    .filter((name) => isOwnPlanCommitDoc(name, opts.reqBase))
-    .sort()
-    .map(toRel);
+  // This requirement's OWN non-plan artifacts are split out BEFORE ranking: as
+  // `reqBase` family they would rank 0, i.e. exactly the files the model would
+  // rename to the expected plan path. One predicate set
+  // (`ownNonPlanArtifactKind`) drives both this split and the exclusion below,
+  // so the KEEP line and the candidate list can never disagree.
+  const ownArtifacts: OwnArtifact[] = planLike
+    .map((name) => ({ name, kind: ownNonPlanArtifactKind(name, opts.reqBase, opts.reqDocName) }))
+    .filter((entry): entry is { name: string; kind: OwnArtifactKind } => entry.kind !== null)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map((entry) => ({ rel: toRel(entry.name), kind: entry.kind }));
 
   // Rank the remaining candidates: this requirement's family first (a wrongly
   // named 204 doc is the real fix target), then near-name docs, then other
@@ -248,7 +333,7 @@ async function scanPlanLikeCandidates(opts: {
   };
 
   const candidates = planLike
-    .filter((name) => !isOwnPlanCommitDoc(name, opts.reqBase))
+    .filter((name) => ownNonPlanArtifactKind(name, opts.reqBase, opts.reqDocName) === null)
     // Sort BEFORE capping so the visible set never depends on the filesystem's
     // enumeration order. Explicit comparator: deterministic UTF-16 code-unit
     // order, locale-independent.
@@ -256,5 +341,5 @@ async function scanPlanLikeCandidates(opts: {
     .slice(0, MAX_CANDIDATES)
     .map(toRel);
 
-  return { candidates, ownCommitDocs, scanFailed: false };
+  return { candidates, ownArtifacts, scanFailed: false };
 }
