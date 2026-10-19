@@ -27,7 +27,7 @@ export interface PlanDocFeedback {
    * excluded here and reported on the `message` "KEEP" line instead — both are
    * non-regenerable pipeline inputs, and renaming either onto the plan-doc path
    * silently destroys it:
-   * - the requirement doc (`{reqBase}.md`, `meta.requirementDoc`) — moving it
+   * - the requirement doc (`basename(meta.requirementDoc)`) — moving it
    *   desynchronises every later stage (plan/develop/review resolves the
    *   requirement by that exact path);
    * - the plan-stage commit doc (`{reqBase}_plan_commit*.md`) — it records the
@@ -99,15 +99,23 @@ export async function buildPlanDocFeedback(opts: {
   const relDir = path.posix.dirname(planDoc);
   const dir = relDir === "." ? "" : relDir;
   const reqBase = reqBaseFromRequirementDoc(reqDoc);
+  // The requirement doc's OWN file name keeps it out of the rename
+  // candidates: a requirement title that itself contains "plan"
+  // (`208_Replan.md`) satisfies the candidate filter and ranks 0.
+  const reqDocName = path.posix.basename(String(reqDoc).replace(/\\/g, "/"));
+  // Degenerate-but-real shape: the requirement doc's stem ALREADY ends with
+  // `_Plan` (`docs/design/208_Plan.md`). `reqBaseFromRequirementDoc()` strips
+  // that suffix before the plan path is rebuilt, so the "expected" plan path
+  // comes back as the requirement doc ITSELF. There is then no second file to
+  // create or rename to — the only legal fix is to complete that file in place.
+  const expectedIsRequirementDoc =
+    reqDocName !== "" && path.posix.basename(planDoc).toLowerCase() === reqDocName.toLowerCase();
   const scan = await scanPlanLikeCandidates({
     projectRoot: opts.config.projectRoot,
     relDir: dir,
     expectedName: path.posix.basename(planDoc),
     reqBase,
-    // The requirement doc's OWN file name keeps it out of the rename
-    // candidates: a requirement title that itself contains "plan"
-    // (`208_Replan.md`) satisfies the candidate filter and ranks 0.
-    reqDocName: path.posix.basename(String(reqDoc).replace(/\\/g, "/")),
+    reqDocName,
   });
   const candidates = scan.candidates;
 
@@ -120,6 +128,7 @@ export async function buildPlanDocFeedback(opts: {
     scan.scanFailed,
     dir,
     scan.ownArtifacts.length,
+    expectedIsRequirementDoc ? reqDocName : "",
   );
 
   const message = [
@@ -134,7 +143,9 @@ export async function buildPlanDocFeedback(opts: {
         `This requirement's OWN non-plan artifact(s) are NOT the plan doc — KEEP them, never rename, move or overwrite to ${planDoc}: ${scan.ownArtifacts.map((a) => `${a.rel} (${OWN_ARTIFACT_REASON[a.kind]})`).join("; ")}`,
       ]
       : []),
-    `Fix in place: create or rename the file to the expected path (keep the existing content), then re-run pipeline_verify. Do not create a second plan document and do not invent another name.`,
+    expectedIsRequirementDoc
+      ? `Fix in place: the expected path already EXISTS — it is \`meta.requirementDoc\` itself, so complete THAT file in place (add the missing sections below), then re-run pipeline_verify. Do not create a second plan document, do not rename this or any other file, and do not invent another name.`
+      : `Fix in place: create or rename the file to the expected path (keep the existing content), then re-run pipeline_verify. Do not create a second plan document and do not invent another name.`,
     STRUCTURE_REQUIREMENT,
   ].join("\n");
 
@@ -152,11 +163,19 @@ function describeCandidates(
   scanFailed: boolean,
   dir: string,
   ownArtifactCount: number,
+  /** Non-empty when the expected plan path IS the requirement doc itself. */
+  expectedIsReqDocName: string,
 ): string {
   const where = dir || ".";
   if (candidates.length > 0) return `Found non-conforming candidate(s): ${candidates.join(", ")}`;
   if (scanFailed) {
     return `Directory ${where} is UNREADABLE (scan failed, see audit \`plan_doc_feedback_scan_failed\`) — inspect the directory itself before creating any file.`;
+  }
+  // The expected path already exists as `meta.requirementDoc`: reporting "no
+  // plan-like document" here directly contradicts the `Expected EXACTLY` line
+  // above it and sends the model hunting for a file to create or rename.
+  if (expectedIsReqDocName) {
+    return `The expected path IS this requirement's own document (\`${expectedIsReqDocName}\`) — it already exists on disk; no file needs to be created, found or renamed.`;
   }
   // An empty candidate list alongside own artifacts on disk is NOT the same
   // state as an empty directory: never let the model read the requirement doc
@@ -212,10 +231,19 @@ function isOwnRequirementDoc(name: string, reqDocName: string): boolean {
  * `Fix in place: rename the file to the expected path` straight at it and the
  * model renames away a non-regenerable artifact.
  */
-function isOwnPlanCommitDoc(name: string, reqBase: string): boolean {
-  if (!reqBase) return false;
+function isOwnPlanCommitDoc(name: string, reqBase: string, reqDocName: string): boolean {
   const stem = name.replace(/\.md$/i, "").toLowerCase();
-  return stem.startsWith(`${reqBase.toLowerCase()}_plan_commit`);
+  const prefixes: string[] = [];
+  if (reqBase) prefixes.push(`${reqBase.toLowerCase()}_plan_commit`);
+  // When the requirement doc's stem already ends with `_Plan`
+  // (`208_Plan.md`), `reqBaseFromRequirementDoc()` strips that suffix to `208`
+  // BEFORE the plan path is built, so this requirement's commit doc is named
+  // after the FULL requirement stem — `208_Plan_plan_commit.md`. Without the
+  // reqDoc-derived prefix it falls through to the candidate list and becomes
+  // the model's first rename target.
+  const reqDocStem = reqDocName.replace(/\.md$/i, "").toLowerCase();
+  if (reqDocStem) prefixes.push(`${reqDocStem}_plan_commit`);
+  return prefixes.some((prefix) => stem.startsWith(prefix));
 }
 
 /**
@@ -234,7 +262,7 @@ function ownNonPlanArtifactKind(
   reqDocName: string,
 ): OwnArtifactKind | null {
   if (isOwnRequirementDoc(name, reqDocName)) return "requirement-doc";
-  if (isOwnPlanCommitDoc(name, reqBase)) return "commit-doc";
+  if (isOwnPlanCommitDoc(name, reqBase, reqDocName)) return "commit-doc";
   return null;
 }
 

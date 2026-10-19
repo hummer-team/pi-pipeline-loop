@@ -332,6 +332,76 @@ describe("204 Phase 3: buildPlanDocFeedback", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 
+  it("never offers the plan-stage commit doc of a `_Plan`-suffixed requirement doc (review issue 1, round 5)", async () => {
+    // `docs/design/208_Plan.md` → `reqBaseFromRequirementDoc()` strips the
+    // trailing `_Plan` and yields `208`, so the "expected" plan path comes back
+    // as the requirement doc ITSELF and the commit doc is named after the FULL
+    // stem: `208_Plan_plan_commit.md`. The `{reqBase}_plan_commit` prefix alone
+    // (`208_plan_commit`) misses it, so it surfaced as the model's FIRST rename
+    // target — renaming it onto the plan path overwrites the requirement doc and
+    // destroys the only record of the commit ids.
+    const TMP = await makeRoot("req-doc-plan-suffix-commit");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "208_Plan.md"), "# requirement");
+    await writeFile(join(dir, "208_Plan_plan_commit.md"), "# commit ids");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta({ requirementDoc: "docs/design/208_Plan.md" }),
+      stageName: "plan",
+      failures: [fail("requiredFile", "Missing files: docs/design/208_Plan.md")],
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.planDoc).toBe("docs/design/208_Plan.md");
+    // The commit doc is neither a rename candidate nor off-limits (it is ours)...
+    expect(res!.candidates).toEqual([]);
+    expect(res!.message).not.toContain("Found non-conforming candidate(s)");
+    expect(res!.message).not.toContain("never rename, move or overwrite them:");
+    // ...it is on the own-artifact KEEP line with its own reason.
+    expect(res!.message).toContain(
+      "This requirement's OWN non-plan artifact(s) are NOT the plan doc — KEEP them",
+    );
+    expect(res!.message).toContain("docs/design/208_Plan_plan_commit.md (it records the commit ids)");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("reports the `_Plan`-suffixed requirement doc as already existing, not as missing (review issue 1, round 5)", async () => {
+    // Same degenerate shape with NO other file on disk: the expected path is
+    // `208_Plan.md`, which is the requirement doc. Saying "No plan-like document
+    // found" contradicts the `Expected EXACTLY: docs/design/208_Plan.md` line
+    // right above it and invites a `create or rename` action that can only
+    // overwrite the pipeline's only input.
+    const TMP = await makeRoot("req-doc-plan-suffix-alone");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "208_Plan.md"), "# requirement");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta({ requirementDoc: "docs/design/208_Plan.md" }),
+      stageName: "plan",
+      failures: [fail("requiredFile", "Missing files: docs/design/208_Plan.md")],
+    });
+
+    expect(res).not.toBeNull();
+    expect(res!.candidates).toEqual([]);
+    expect(res!.message).toContain("Expected EXACTLY: docs/design/208_Plan.md");
+    // No "not found" state for a file that is right there...
+    expect(res!.message).not.toContain("No plan-like document found");
+    // ...and the corrective action is in-place completion, not a rename.
+    expect(res!.message).toContain(
+      "The expected path IS this requirement's own document (`208_Plan.md`) — it already exists on disk",
+    );
+    expect(res!.message).toContain("complete THAT file in place");
+    expect(res!.message).not.toContain("create or rename the file to the expected path");
+    expect(res!.message).toContain("## 用户确认");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
   it("distinguishes an unreadable directory from an empty one and audits the failure (review issue 5)", async () => {
     setAuditPipelineContext("");
     const TMP = await makeRoot("unreadable");
