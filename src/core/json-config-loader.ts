@@ -6,8 +6,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  ArchiveJsonConfig,
   ConfirmConfig,
   ConfirmMode,
+  DocsJsonConfig,
   PipelineConfig,
   PipelineJsonConfig,
   PipelineStage,
@@ -25,6 +27,8 @@ import {
   DEFAULT_CONFIRM_OVERFLOW,
   DEFAULT_SPAWN_WAIT_TIMEOUT_MS,
   DEFAULT_MAX_LOOP_CYCLES,
+  DEFAULT_DOCS_FALLBACK_DIRS,
+  DEFAULT_ARCHIVE_DEST,
   STAGE_TYPE_TOOL_DEFAULTS,
   resolveStagePath,
 } from "../constants";
@@ -106,6 +110,9 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
         ? json.confirmOverflow
         : undefined,
     compact: parseCompactConfig(json.compact),
+    // 206 Phase 0: docs.stageDirs and archive scan/dest configuration
+    docs: parseDocsConfig(json.docs),
+    archive: parseArchiveConfig(json.archive),
   };
 }
 
@@ -595,6 +602,134 @@ function parseCompactConfig(raw: unknown): { enabled?: boolean; tokenThreshold?:
 }
 
 /**
+ * 206 Phase 0: Parses the docs.stageDirs mapping from JSON config.
+ *
+ * Validation:
+ * - Non-object (including null / array / string) → warn + undefined.
+ * - Each key must be a valid pipeline stage; unknown keys warn + are ignored.
+ * - Each value must be a non-empty string; invalid values warn + are ignored.
+ * - No valid entries remain → undefined (treated as "not configured").
+ */
+export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid docs config — expected object, got ${Array.isArray(raw) ? "array" : typeof raw}`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const stageDirs = obj.stageDirs;
+  if (stageDirs === undefined) return undefined;
+  if (typeof stageDirs !== "object" || stageDirs === null || Array.isArray(stageDirs)) {
+    console.warn(
+      `[pi-pipeline] Invalid docs.stageDirs — expected object, got ${Array.isArray(stageDirs) ? "array" : typeof stageDirs}`,
+    );
+    return undefined;
+  }
+  const parsed: Partial<Record<PipelineStage, string>> = {};
+  for (const [stage, value] of Object.entries(stageDirs as Record<string, unknown>)) {
+    if (!VALID_STAGES.has(stage as PipelineStage)) {
+      console.warn(
+        `[pi-pipeline] Unknown docs.stageDirs stage "${stage}" in pipeline_loop.json — ignoring`,
+      );
+      continue;
+    }
+    if (typeof value !== "string" || value.trim().length === 0) {
+      console.warn(
+        `[pi-pipeline] Invalid docs.stageDirs.${stage} "${String(value)}" — expected non-empty string, ignoring`,
+      );
+      continue;
+    }
+    parsed[stage as PipelineStage] = value;
+  }
+  if (Object.keys(parsed).length === 0) return undefined;
+  return { stageDirs: parsed };
+}
+
+/**
+ * 206 Phase 0: Parses the archive configuration from JSON config.
+ *
+ * Validation:
+ * - Non-object → warn + undefined.
+ * - `dirs`: only non-empty string arrays are kept (empty entries filtered,
+ *   duplicates removed); an invalid entry warns and is dropped individually.
+ * - `dest`: only a non-empty string is kept; otherwise warn + ignore.
+ * - Object with no valid fields → undefined (treated as "not configured").
+ */
+export function parseArchiveConfig(raw: unknown): ArchiveJsonConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid archive config — expected object, got ${Array.isArray(raw) ? "array" : typeof raw}`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const result: ArchiveJsonConfig = {};
+
+  if (obj.dirs !== undefined) {
+    if (Array.isArray(obj.dirs)) {
+      const cleaned: string[] = [];
+      for (const item of obj.dirs) {
+        if (typeof item === "string" && item.trim().length > 0) {
+          if (!cleaned.includes(item)) cleaned.push(item);
+        } else {
+          console.warn(
+            `[pi-pipeline] Invalid archive.dirs entry "${String(item)}" — expected non-empty string, ignoring entry`,
+          );
+        }
+      }
+      if (cleaned.length > 0) result.dirs = cleaned;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid archive.dirs — expected string array, got ${typeof obj.dirs}, ignoring`,
+      );
+    }
+  }
+
+  if (obj.dest !== undefined) {
+    if (typeof obj.dest === "string" && obj.dest.trim().length > 0) {
+      result.dest = obj.dest;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid archive.dest "${String(obj.dest)}" — expected non-empty string, ignoring`,
+      );
+    }
+  }
+
+  if (Object.keys(result).length === 0) return undefined;
+  return result;
+}
+
+/**
+ * 206 Phase 0: Derives the resolved archive scan directories.
+ *
+ * Priority:
+ * 1. `json.archive?.dirs` when non-empty (after parse-time cleanup).
+ * 2. Deduped values of `json.docs?.stageDirs` (the doc-menu directories are a
+ *    natural archive scope).
+ * 3. `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]).
+ *
+ * NOTE: values are NOT passed through `rewritePiPrefix` — they are plain
+ * project-relative doc paths that never start with ".pi/"; the constant
+ * ".pi/audit" directory is added by the archive scanner itself.
+ */
+function deriveArchiveDirs(
+  archive?: ArchiveJsonConfig,
+  docs?: DocsJsonConfig,
+): string[] {
+  const configured = archive?.dirs;
+  if (configured && configured.length > 0) return [...configured];
+  const stageValues = docs?.stageDirs
+    ? Object.values(docs.stageDirs).filter((v): v is string => typeof v === "string")
+    : [];
+  const deduped = [...new Set(stageValues)];
+  if (deduped.length > 0) return deduped;
+  return [...DEFAULT_DOCS_FALLBACK_DIRS];
+}
+
+/**
  * Parses and validates allowedWritePaths from JSON stage config.
  * Must be string[] (each entry is a path prefix or "**").
  * Invalid types are logged as warnings and ignored (returns undefined).
@@ -862,6 +997,18 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       json.maxConfirmRejections ?? DEFAULT_CONFIRM_MAX_REJECTIONS,
     confirmOverflow: parseConfirmOverflow(json.confirmOverflow),
     compact: json.compact,
+    // 206 Phase 0: resolved docs/archive fields with defaults (see deriveArchiveDirs
+    // and parseDocsConfig for priority chains; no rewritePiPrefix applied — these
+    // are plain project-relative doc paths, never ".pi/" prefixed).
+    docsStageDirs:
+      json.docs?.stageDirs && Object.keys(json.docs.stageDirs).length > 0
+        ? json.docs.stageDirs
+        : undefined,
+    archiveDirs: deriveArchiveDirs(
+      parseArchiveConfig(json.archive),
+      json.docs && Object.keys(json.docs).length > 0 ? json.docs : undefined,
+    ),
+    archiveDest: parseArchiveConfig(json.archive)?.dest ?? DEFAULT_ARCHIVE_DEST,
     // 192 Phase 4 (task 2): pre-reconnection original targets of the
     // design-review chain, captured BEFORE any disabled-target reconnection
     // (diagnostic only). Attached ONLY when non-empty so existing deep-equality

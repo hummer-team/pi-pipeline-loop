@@ -1290,3 +1290,138 @@ describe("confirm config (Phase 1 — 162)", () => {
     });
   });
 });
+
+// ─── 206 Phase 0: docs.stageDirs / archive.dirs / archive.dest ──────────────
+
+describe("206 Phase 0: docs & archive config", () => {
+  it("parses a valid docs.stageDirs map", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      docs: { stageDirs: { clarify: "docs/design", fix: "docs/review" } },
+    });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.docs).toEqual({ stageDirs: { clarify: "docs/design", fix: "docs/review" } });
+    const resolved = resolvePipelineConfig(json);
+    expect(resolved.docsStageDirs).toEqual({ clarify: "docs/design", fix: "docs/review" });
+  });
+
+  it("drops unknown stage keys in docs.stageDirs", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      docs: { stageDirs: { clarify: "docs/design", unknown_stage: "docs/x" } },
+    });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.docs).toEqual({ stageDirs: { clarify: "docs/design" } });
+  });
+
+  it("drops non-string values in docs.stageDirs", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      docs: { stageDirs: { clarify: "docs/design", fix: 42 } },
+    });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.docs).toEqual({ stageDirs: { clarify: "docs/design" } });
+  });
+
+  it("docs.stageDirs empty object → docs undefined → docsStageDirs undefined", async () => {
+    await writeJson({ stages: { clarify: {} }, docs: { stageDirs: {} } });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.docs).toBeUndefined();
+    const resolved = resolvePipelineConfig(json);
+    expect(resolved.docsStageDirs).toBeUndefined();
+  });
+
+  it("docs / archive non-object values (null, array, string) are rejected", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      docs: "nope",
+      archive: ["nope"],
+    });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.docs).toBeUndefined();
+    expect(json.archive).toBeUndefined();
+    // Fallback defaults still applied
+    const resolved = resolvePipelineConfig(json);
+    expect(resolved.archiveDirs).toEqual(["docs"]);
+    expect(resolved.archiveDest).toBe("pi-pipeline-archive");
+  });
+
+  it("archive.dirs keeps valid entries, filters empty items and dedupes", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      archive: { dirs: ["docs/design", "docs/review", "", "docs/design"] },
+    });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.archive?.dirs).toEqual(["docs/design", "docs/review"]);
+  });
+
+  it("archive.dirs non-array → ignored", async () => {
+    await writeJson({ stages: { clarify: {} }, archive: { dirs: "not-an-array" } });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.archive).toBeUndefined();
+  });
+
+  it("archive.dest missing → resolved default pi-pipeline-archive", async () => {
+    await writeJson({ stages: { clarify: {} }, archive: { dirs: ["docs/design"] } });
+    const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
+    expect(resolved.archiveDest).toBe("pi-pipeline-archive");
+  });
+
+  it("archive.dest empty string → ignored → default", async () => {
+    await writeJson({ stages: { clarify: {} }, archive: { dest: "" } });
+    const json = loadJsonConfig(jsonPath);
+    expect(json.archive).toBeUndefined();
+    const resolved = resolvePipelineConfig(json);
+    expect(resolved.archiveDest).toBe("pi-pipeline-archive");
+  });
+
+  it("archive.dirs empty array → configured-but-empty → falls back to stageDirs derivation", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      docs: { stageDirs: { clarify: "docs/design", fix: "docs/review", plan: "docs/review" } },
+      archive: { dirs: [] },
+    });
+    const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
+    // stageDirs values deduped in insertion order: clarify → fix → plan
+    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
+  });
+
+  it("archive.dirs missing and docs.stageDirs present → derived deduped from stageDirs", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      docs: { stageDirs: { clarify: "docs/design", fix: "docs/design" } },
+    });
+    const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
+    expect(resolved.archiveDirs).toEqual(["docs/design"]);
+  });
+
+  it("both docs and archive missing → archiveDirs defaults to ['docs']", async () => {
+    await writeJson({ stages: { clarify: {} } });
+    const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
+    expect(resolved.archiveDirs).toEqual(["docs"]);
+  });
+
+  it("protect.allow default behavior unchanged with docs/archive present", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      protect: { allow: ["docs/"] },
+      docs: { stageDirs: { clarify: "docs/design" } },
+      archive: { dirs: ["docs/design"], dest: "archive-x" },
+    });
+    const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
+    expect(resolved.protect!.allow).toEqual(["docs/"]);
+    expect(resolved.protect!.gitignore).toBe(true);
+    expect(resolved.archiveDest).toBe("archive-x");
+  });
+
+  it("template pipeline_loop.json parses with docs/archive keys", async () => {
+    const json = loadJsonConfig("src/template/pipeline_loop.json");
+    expect(json.docs?.stageDirs?.clarify).toBe("docs/design");
+    expect(json.archive?.dirs).toEqual(["docs/design", "docs/review"]);
+    expect(json.archive?.dest).toBe("pi-pipeline-archive");
+    const resolved = resolvePipelineConfig(json);
+    expect(resolved.docsStageDirs?.fix).toBe("docs/review");
+    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
+    expect(resolved.archiveDest).toBe("pi-pipeline-archive");
+  });
+});

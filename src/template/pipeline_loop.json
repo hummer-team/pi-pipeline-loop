@@ -29,6 +29,22 @@
   "init": {
     "conflictCheck": "model"
   },
+  "docs": {
+    "stageDirs": {
+      "clarify": "docs/design",
+      "plan": "docs/design",
+      "design-review": "docs/design",
+      "develop": "docs/design",
+      "review": "docs/design",
+      "fix": "docs/review"
+    }
+  },
+  "_comment_docs": "stageDirs maps each pipeline stage to the project-relative directory whose .md documents are offered as candidates by the /pipeline-start doc menu (single-select, newest first, max 5). When this block is absent the plugin auto-matches: docs/design for clarify/plan/design-review/develop/review and docs/review for fix. These directories do NOT interact with protect.",
+  "archive": {
+    "dirs": ["docs/design", "docs/review"],
+    "dest": "pi-pipeline-archive"
+  },
+  "_comment_archive": "dirs is the /pipeline-archive scan scope (recursively, all file types, mtime-based); the .pi/audit directory is ALWAYS scanned on top of it. dest is the archive landing directory resolved against your HOME directory (relative values) — zip files are named yyyy_MM_dd_HHmmsss_pipeline.zip. When dirs is absent the scan scope is derived from docs.stageDirs values, falling back to [\"docs\"]. The active pipeline's requirementDoc and its same-base Plan/Commit/Review documents are never archived or deleted.",
   "stages": {
     "clarify": {
       "agentPath": ".pi/agents/feat-design-plan-agent.md",

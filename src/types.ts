@@ -1422,6 +1422,24 @@ export interface PipelineConfig {
   // ─── Phase 3 / 175: Config staleness tracking (internal fields) ───────────
 
   /**
+   * 206 Phase 0: RESOLVED stage → candidate-document directory map.
+   * Present only when `docs.stageDirs` in pipeline_loop.json is configured
+   * and contains at least one valid entry; `undefined` when unconfigured
+   * (runtime auto-matches `DEFAULT_STAGE_DOC_DIRS` per stage).
+   * Consumed by the `/pipeline-start` doc menu and archive-scope derivation.
+   */
+  docsStageDirs?: Partial<Record<PipelineStage, string>>;
+
+  /**
+   * 206 Phase 0: RESOLVED archive scan directories (project-relative).
+   * Priority: `archive.dirs` (non-empty) → deduped values of
+   * `docs.stageDirs` → `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]).
+   * The scanner ALSO always adds the constant `.pi/audit` directory.
+   * Always filled by resolvePipelineConfig; optional so handcrafted configs stay valid.
+   */
+  archiveDirs?: string[];
+
+  /**
    * Internal: absolute path to the pipeline_loop.json source file.
    * Set by createPipelineFromJson at load time. Used by config-staleness detection.
    * Not part of the user-facing config API.
@@ -1442,9 +1460,49 @@ export interface PipelineConfig {
    * Not part of the user-facing config API.
    */
   isFallbackTemplate?: boolean;
+
+  /**
+   * 206 Phase 0: RESOLVED archive landing directory NAME (NOT project-root
+   * relative). Resolved against the user's home directory at execution time:
+   * relative values → `<os.homedir()>/<dest>`; `~`-prefixed → expanded;
+   * absolute → used as-is. Default: `DEFAULT_ARCHIVE_DEST`
+   * (`"pi-pipeline-archive"`). Always filled by resolvePipelineConfig.
+   */
+  archiveDest?: string;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
+
+/**
+ * 206 Phase 0: stage → candidate-document directory mapping in pipeline_loop.json.
+ *
+ * Keys are pipeline stages (`clarify` / `plan` / `design-review` / `develop` /
+ * `review` / `fix`). Values are project-relative directory paths scanned by
+ * the `/pipeline-start` document-candidate menu.
+ *
+ * This mapping is used ONLY for menu candidate discovery and archive-scope
+ * derivation — it does NOT interact with `protect` in any way.
+ */
+export interface DocsJsonConfig {
+  /** Stage → project-relative doc directory (partial by design). */
+  stageDirs?: Partial<Record<PipelineStage, string>>;
+}
+
+/**
+ * 206 Phase 0: archive behavior configuration in pipeline_loop.json.
+ *
+ * - `dirs`: project-relative scan scope for `/pipeline-archive` (the constant
+ *   `.pi/audit` directory is ALWAYS added on top by the scanner).
+ * - `dest`: archive landing directory resolved against `os.homedir()`
+ *   (relative values) — see `resolveArchiveDestDir`; default
+ *   `DEFAULT_ARCHIVE_DEST` (`"pi-pipeline-archive"`).
+ */
+export interface ArchiveJsonConfig {
+  /** Project-relative scan directories (deduped; empty entries filtered). */
+  dirs?: string[];
+  /** Archive landing directory (relative → resolved under the user's home). */
+  dest?: string;
+}
 
 /**
  * Verification configuration in pipeline_loop.json.
@@ -1640,6 +1698,20 @@ export interface PipelineJsonConfig {
     /** Custom instructions for the compaction (overrides DEFAULT_COMPACT_INSTRUCTIONS) */
     customInstructions?: string;
   };
+
+  /**
+   * 206 Phase 0: stage → candidate-document directory mapping for the
+   * `/pipeline-start` doc menu. See {@link DocsJsonConfig}.
+   * Does NOT interact with `protect`.
+   */
+  docs?: DocsJsonConfig;
+
+  /**
+   * 206 Phase 0: archive scan scope and landing directory for
+   * `/pipeline-archive`. See {@link ArchiveJsonConfig}.
+   * The scanner ALWAYS adds the constant `.pi/audit` directory on top.
+   */
+  archive?: ArchiveJsonConfig;
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────

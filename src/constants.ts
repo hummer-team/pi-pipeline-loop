@@ -511,6 +511,51 @@ export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   },
 };
 
+// ─── Doc Menu / Archive Configuration (206 Phase 0) ──────────────────────────
+
+/**
+ * 206 Phase 0: built-in age thresholds (in days) offered by the
+ * `/pipeline-archive` threshold menu. Not configurable — the values 7/3/1 are
+ * fixed constants per the 206_Feat final decision matrix.
+ */
+export const ARCHIVE_THRESHOLD_DAYS: readonly number[] = [7, 3, 1];
+
+/**
+ * 206 Phase 0: default archive landing directory name. Resolved against the
+ * user's home directory at execution time (`<os.homedir()>/<dest>`).
+ * Used when `archive.dest` is missing/invalid in pipeline_loop.json.
+ */
+export const DEFAULT_ARCHIVE_DEST = "pi-pipeline-archive";
+
+/**
+ * 206 Phase 0: fallback archive scan directories when neither `archive.dirs`
+ * nor `docs.stageDirs` values are configured. Project-relative.
+ */
+export const DEFAULT_DOCS_FALLBACK_DIRS: readonly string[] = ["docs"];
+
+/**
+ * 206 Phase 0: built-in stage → candidate-document directory map used when
+ * `docs.stageDirs` is NOT configured (auto-match mode). Values are
+ * project-relative directory paths.
+ *
+ * - clarify/plan/design-review/develop/review → "docs/design"
+ * - fix → "docs/review" (code-review reports live there)
+ */
+export const DEFAULT_STAGE_DOC_DIRS: Readonly<Partial<Record<PipelineStage, string>>> = {
+  clarify: "docs/design",
+  plan: "docs/design",
+  "design-review": "docs/design",
+  develop: "docs/design",
+  review: "docs/design",
+  fix: "docs/review",
+};
+
+/**
+ * 206 Phase 0: maximum number of candidate documents shown in the
+ * `/pipeline-start` doc-candidate menu (Q3-A: single-select, ≤5, mtime desc).
+ */
+export const MAX_DOC_CANDIDATES = 5;
+
 /** Resolve a path template by replacing {stage} with the actual stage name */
 export function resolveStagePath(template: string, stage: string): string {
   return template.replace(/\{stage\}/g, stage);
