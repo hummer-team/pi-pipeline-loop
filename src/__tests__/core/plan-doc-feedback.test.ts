@@ -205,6 +205,64 @@ describe("204 Phase 3: buildPlanDocFeedback", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 
+  it("never offers this requirement's own commit doc as a rename candidate (review issue 1)", async () => {
+    // `{reqBase}_plan_commit.md` is the Phase-1 deliverable that records the
+    // commit ids and is NOT regenerable. It satisfies "contains 'plan' and is
+    // not the expected name", and the reqBase-family rank would put it FIRST —
+    // so a bare candidate list makes the model `git mv` it onto the plan path.
+    const TMP = await makeRoot("own-commit");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "204_Bug_Plan_commit.md"), "# commit ids");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    expect(res).not.toBeNull();
+    // Excluded from the rename candidates...
+    expect(res!.candidates).toEqual([]);
+    expect(res!.message).not.toContain("Found non-conforming candidate(s)");
+    // ...and reported on its own "keep it" line instead.
+    expect(res!.message).toContain("This requirement's OWN commit doc is NOT the plan doc — KEEP it");
+    expect(res!.message).toContain("docs/design/204_Bug_Plan_commit.md");
+    // The plan doc genuinely does not exist yet.
+    expect(res!.message).toContain("No plan-like document found");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("keeps the real plan draft first when the own commit doc is also on disk (review issue 1)", async () => {
+    const TMP = await makeRoot("own-commit-plus-draft");
+    const dir = join(TMP, "docs", "design");
+    await mkdir(dir, { recursive: true });
+    // Same reqBase family, but a "`P`" (80) < "`p`" (112) code-unit order would
+    // put the commit doc first and push the real fix target to slot 2.
+    await writeFile(join(dir, "204_Bug_Plan_commit.md"), "# commit ids");
+    await writeFile(join(dir, "204_Bug_plan_draft.md"), "# mine");
+    await writeFile(join(dir, "203_Bug_Plan.md"), "# other");
+
+    const res = await buildPlanDocFeedback({
+      config: makeTestConfig({ projectRoot: TMP }),
+      meta: meta(),
+      stageName: "plan",
+      failures: [fail("requiredFile")],
+    });
+
+    expect(res!.candidates).toEqual([
+      "docs/design/204_Bug_plan_draft.md",
+      "docs/design/203_Bug_Plan.md",
+    ]);
+    expect(res!.message).toContain("KEEP it, never rename, move or overwrite it to docs/design/204_Bug_Plan.md");
+    // The commit doc is neither a candidate nor off-limits (it is ours).
+    expect(res!.message).not.toContain("never rename, move or overwrite them: docs/design/204_Bug_Plan_commit.md");
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
   it("distinguishes an unreadable directory from an empty one and audits the failure (review issue 5)", async () => {
     setAuditPipelineContext("");
     const TMP = await makeRoot("unreadable");
