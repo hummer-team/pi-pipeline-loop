@@ -33,6 +33,24 @@ export interface ArchiveScope {
 }
 
 /**
+ * Synchronous list of ALL scope roots as ABSOLUTE paths (no fs probing).
+ * Used by the delete step to bound empty-directory pruning and mirrors the
+ * deduped `archiveDirs + .pi/audit` union resolved by {@link resolveArchiveScope}.
+ */
+export function archiveScopeRoots(config: PipelineConfig): string[] {
+  const dirRels = [...(config.archiveDirs ?? []), resolveAuditDir({ auditDir: config.auditDir, piWorkDir: config.piWorkDir })];
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const dirRel of dirRels) {
+    const abs = path.isAbsolute(dirRel) ? dirRel : path.resolve(config.projectRoot, dirRel);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    roots.push(abs);
+  }
+  return roots;
+}
+
+/**
  * Resolves the archive scan scope: every configured `archive.dirs` entry
  * plus the constant `.pi/audit` audit directory (always included, per
  * 206_Feat). Duplicated absolute paths are deduped; entries that do not

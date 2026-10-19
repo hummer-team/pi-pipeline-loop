@@ -57,6 +57,10 @@ export function parseCommandArgs(
       return {};
     case "pipeline-quit":
       return {};
+    case "pipeline-archive":
+      // 206 Phase 4: /pipeline-archive is TUI-only with no argument parsing —
+      // the interactive menu collects everything (threshold/action/confirms).
+      return { raw: args };
     default:
       return { raw: args };
   }

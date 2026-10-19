@@ -51,6 +51,7 @@ import { createPipelineStartCommand } from "./commands/pipeline-start";
 import { createPipelineInitCommand } from "./commands/pipeline-init";
 import { createPipelineQuitCommand } from "./commands/pipeline-quit";
 import { createPipelineResumeCommand } from "./commands/pipeline-resume";
+import { createPipelineArchiveCommand } from "./commands/pipeline-archive";
 
 // Agent settled and session shutdown lifecycle hooks
 import { createAgentSettled } from "./core/agent-settled";
@@ -329,6 +330,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createPipelineInitCommand(config),
       createPipelineQuitCommand(config),
       createPipelineResumeCommand(config),
+      // 206 Phase 4: archive command gets the wrapped execFn for system-zip DI
+      createPipelineArchiveCommand(config, { execFn }),
     ];
     for (const cmd of commands) {
       pi.registerCommand(cmd.name, {
