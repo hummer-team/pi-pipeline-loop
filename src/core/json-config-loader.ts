@@ -655,6 +655,9 @@ export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
  * - `dirs`: only non-empty string arrays are kept (empty entries filtered,
  *   duplicates removed); an invalid entry warns and is dropped individually.
  * - `dest`: only a non-empty string is kept; otherwise warn + ignore.
+ * - `namesuffix` (207): only a non-empty string is kept (trimmed); otherwise
+ *   warn + ignore. Illegal filename characters are sanitized later at naming
+ *   time (`sanitizeArchiveName`), not here.
  * - Object with no valid fields → undefined (treated as "not configured").
  */
 export function parseArchiveConfig(raw: unknown): ArchiveJsonConfig | undefined {
@@ -694,6 +697,18 @@ export function parseArchiveConfig(raw: unknown): ArchiveJsonConfig | undefined 
     } else {
       console.warn(
         `[pi-pipeline] Invalid archive.dest "${String(obj.dest)}" — expected non-empty string, ignoring`,
+      );
+    }
+  }
+
+  // 207: optional archive filename suffix (trim-only here; sanitization happens
+  // at naming time in sanitizeArchiveName).
+  if (obj.namesuffix !== undefined) {
+    if (typeof obj.namesuffix === "string" && obj.namesuffix.trim().length > 0) {
+      result.namesuffix = obj.namesuffix.trim();
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid archive.namesuffix "${String(obj.namesuffix)}" — expected non-empty string, ignoring`,
       );
     }
   }
@@ -907,6 +922,10 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     drOriginalTargets["design-review"] = stages["design-review"].nextStage!;
   }
 
+  // 207: parse the archive config ONCE and reuse it for archiveDirs /
+  // archiveDest / archiveNameSuffix below (previously parsed twice).
+  const archiveConfig = parseArchiveConfig(json.archive);
+
   // Post-process: reconnect nextStage chains around disabled stages
   if (disabledStages.size > 0) {
     const STAGE_ORDER: PipelineStage[] = [
@@ -999,16 +1018,21 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     compact: json.compact,
     // 206 Phase 0: resolved docs/archive fields with defaults (see deriveArchiveDirs
     // and parseDocsConfig for priority chains; no rewritePiPrefix applied — these
-    // are plain project-relative doc paths, never ".pi/" prefixed).
+    // are plain project-relative doc paths, never ".pi/" prefixed). 207 reuses
+    // the single `archiveConfig` parse declared above.
     docsStageDirs:
       json.docs?.stageDirs && Object.keys(json.docs.stageDirs).length > 0
         ? json.docs.stageDirs
         : undefined,
     archiveDirs: deriveArchiveDirs(
-      parseArchiveConfig(json.archive),
+      archiveConfig,
       json.docs && Object.keys(json.docs).length > 0 ? json.docs : undefined,
     ),
-    archiveDest: parseArchiveConfig(json.archive)?.dest ?? DEFAULT_ARCHIVE_DEST,
+    archiveDest: archiveConfig?.dest ?? DEFAULT_ARCHIVE_DEST,
+    // 207: attach the resolved archive filename suffix ONLY when configured,
+    // matching the designReviewOriginalTargets optional-field pattern so
+    // existing deep-equality config-shape assertions stay untouched.
+    ...(archiveConfig?.namesuffix ? { archiveNameSuffix: archiveConfig.namesuffix } : {}),
     // 192 Phase 4 (task 2): pre-reconnection original targets of the
     // design-review chain, captured BEFORE any disabled-target reconnection
     // (diagnostic only). Attached ONLY when non-empty so existing deep-equality

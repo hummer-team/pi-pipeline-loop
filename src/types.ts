@@ -1469,6 +1469,13 @@ export interface PipelineConfig {
    * (`"pi-pipeline-archive"`). Always filled by resolvePipelineConfig.
    */
   archiveDest?: string;
+
+  /**
+   * 207: RESOLVED optional archive filename suffix (from `archive.namesuffix`).
+   * Undefined when unconfigured — archive names keep the legacy shape
+   * (`{timestamp}_pipeline.zip`).
+   */
+  archiveNameSuffix?: string;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -1502,6 +1509,12 @@ export interface ArchiveJsonConfig {
   dirs?: string[];
   /** Archive landing directory (relative → resolved under the user's home). */
   dest?: string;
+  /**
+   * 207: Optional project-name suffix appended to the archive zip file
+   * (`{timestamp}_pipeline_{namesuffix}.zip`). Non-empty string only;
+   * illegal filename characters are sanitized at naming time.
+   */
+  namesuffix?: string;
 }
 
 /**
