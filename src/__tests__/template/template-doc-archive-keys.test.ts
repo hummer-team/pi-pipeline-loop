@@ -50,15 +50,24 @@ describe("Template docs/archive key assertion (206 Phase 5)", () => {
 
   it("guide key wording is kept in sync between src/template and .pi overlays", () => {
     const srcGuide = fs.readFileSync(path.join(__dirname, "../../template/guide.md"), "utf-8");
-    const piGuide = fs.readFileSync(path.join(__dirname, "../../../.pi/guide.md"), "utf-8");
     // Format string, fail-closed wording and the optional key must match.
-    for (const marker of [
+    const markers = [
       "yyyy_MM_dd_HHmmssSSS_pipeline[_namesuffix].zip",
       "namesuffix",
       "fail-closed",
       "不 zip、不删除源文件",
-    ]) {
+    ];
+    for (const marker of markers) {
       expect(srcGuide).toContain(marker);
+    }
+
+    // `.pi/` is git-ignored and only exists after `/pipeline-init` has deployed
+    // the template. Treat the overlay as an optional deployment artifact so the
+    // test stays hermetic in a clean checkout (no ENOENT regression).
+    const piGuidePath = path.join(__dirname, "../../../.pi/guide.md");
+    if (!fs.existsSync(piGuidePath)) return;
+    const piGuide = fs.readFileSync(piGuidePath, "utf-8");
+    for (const marker of markers) {
       expect(piGuide).toContain(marker);
     }
   });

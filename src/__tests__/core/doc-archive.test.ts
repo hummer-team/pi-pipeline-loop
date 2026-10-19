@@ -223,10 +223,15 @@ describe("resolveArchiveDestDir / archive naming contract (206 Phase 3 + 207 Pha
     // path traversal: `../evil` → separators/space replaced, edges stripped
     expect(sanitizeArchiveName("../evil")).toBe("evil");
     expect(sanitizeArchiveName("..\\..\\evil")).toBe("evil");
-    // pure separators / empty become empty (no suffix)
+    // pure separators / whitespace / empty become empty (no suffix)
     expect(sanitizeArchiveName("///")).toBe("");
+    expect(sanitizeArchiveName("   ")).toBe("");
     expect(sanitizeArchiveName(".")).toBe("");
     expect(sanitizeArchiveName("")).toBe("");
+    // blank suffixes fall back to the legacy name at the build layer
+    const d = new Date(2026, 9, 19, 14, 25, 7, 420);
+    expect(buildArchiveZipName(d, "   ")).toBe("2026_10_19_142507420_pipeline");
+    expect(buildArchiveZipName(d, "///")).toBe("2026_10_19_142507420_pipeline");
   });
 
   it("buildArchiveZipPath builds the deterministic absolute path", () => {
@@ -269,7 +274,7 @@ describe("resolveArchiveDestDir / archive naming contract (206 Phase 3 + 207 Pha
     await fsp.writeFile(file, "z");
     // path under a regular file → ENOTDIR, must be rethrown (not swallowed)
     const underFile = path.join(file, "nested.zip");
-    await expect(assertZipPathAvailable(underFile)).rejects.toThrow();
+    await expect(assertZipPathAvailable(underFile)).rejects.toMatchObject({ code: "ENOTDIR" });
   });
 });
 

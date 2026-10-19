@@ -101,6 +101,12 @@ export function buildArchiveZipPath(
  * - Path exists (file or directory) → throws `/already exists/`.
  * - Any other stat error (`EACCES`/`EPERM`/`ENOTDIR`/…) is rethrown as-is —
  *   the command layer audits and aborts; nothing is silently swallowed.
+ *
+ * @param zipAbsPath Absolute zip path to check.
+ * @throws {Error} `Archive path already exists: <path>` when the target exists
+ *   as a file or directory.
+ * @throws {NodeJS.ErrnoException} Any non-`ENOENT` `stat` error (for example
+ *   `EACCES`, `EPERM`, `ENOTDIR`), rethrown unchanged.
  */
 export async function assertZipPathAvailable(zipAbsPath: string): Promise<void> {
   try {

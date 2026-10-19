@@ -70,27 +70,30 @@ describe("207 Phase 0: archive.namesuffix config", () => {
   it("empty / whitespace-only / non-string values warn and are ignored", async () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
 
-    // Empty string
-    await writeJson({ stages: { clarify: {} }, archive: { namesuffix: "" } });
-    let json = loadJsonConfig(jsonPath);
-    expect(json.archive).toBeUndefined();
-    expect(resolvePipelineConfig(json).archiveNameSuffix).toBeUndefined();
-
-    // Whitespace only
-    await writeJson({ stages: { clarify: {} }, archive: { namesuffix: "   " } });
-    json = loadJsonConfig(jsonPath);
-    expect(json.archive).toBeUndefined();
-
-    // Number / array / object
-    for (const bad of [42, ["x"], { name: "x" }]) {
-      await writeJson({ stages: { clarify: {} }, archive: { namesuffix: bad } });
-      json = loadJsonConfig(jsonPath);
+    try {
+      // Empty string
+      await writeJson({ stages: { clarify: {} }, archive: { namesuffix: "" } });
+      let json = loadJsonConfig(jsonPath);
       expect(json.archive).toBeUndefined();
       expect(resolvePipelineConfig(json).archiveNameSuffix).toBeUndefined();
-    }
 
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+      // Whitespace only
+      await writeJson({ stages: { clarify: {} }, archive: { namesuffix: "   " } });
+      json = loadJsonConfig(jsonPath);
+      expect(json.archive).toBeUndefined();
+
+      // Number / array / object
+      for (const bad of [42, ["x"], { name: "x" }]) {
+        await writeJson({ stages: { clarify: {} }, archive: { namesuffix: bad } });
+        json = loadJsonConfig(jsonPath);
+        expect(json.archive).toBeUndefined();
+        expect(resolvePipelineConfig(json).archiveNameSuffix).toBeUndefined();
+      }
+
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("namesuffix coexists with dirs and dest (all three preserved)", async () => {
