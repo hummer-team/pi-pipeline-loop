@@ -43,6 +43,8 @@ import { appendPipelineIdMarker } from "../utils/pipeline-id-marker";
 // Round 5 (N-3): coordinator for design-review dispatch
 import { coordinateDesignReview } from "../core/design-review/coordinator";
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "../core/design-review/state";
+// 206 Phase 2: doc-candidate menu for empty-file starts
+import { listDocCandidates, findLatestDocForStage, type DocCandidate } from "../core/doc-discovery";
 // 193 Phase 3 (tasks 1/2): shared safe coordinator builder + single consumer
 import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
 import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/design-review/entry-result";
@@ -806,6 +808,111 @@ export async function dispatchAfterResume(
 }
 
 /**
+ * 206 Phase 2: local minimal structural type for the optional `ui.input` API.
+ * Declared instead of `any` (code-spec rule): the pi SDK hosts differ on
+ * whether a free-text input dialog is exposed; the plugin only relies on
+ * this optional method when it is present.
+ */
+type DocInputUi = { input?: (message: string) => Promise<string | undefined> };
+
+/**
+ * 206 Phase 2: manual-path input for the doc-candidate menu.
+ * Returns the entered path resolved to a usable file argument
+ * (project-relative when inside projectRoot, absolute otherwise), or
+ * `null` when the input dialog is unavailable / the value is invalid.
+ */
+async function promptManualDocPath(
+  ctx: unknown,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+): Promise<string | null> {
+  const inputUi = (ctx as DocInputUi | undefined)?.input;
+  if (typeof inputUi !== "function") {
+    ui.notify(ctx as any, "Manual path input unavailable in this session.");
+    return null;
+  }
+  const raw = await inputUi("Enter requirement document path (relative to project root):");
+  if (!raw || raw.trim().length === 0) return null;
+  const cleaned = raw.trim();
+  const abs = path.isAbsolute(cleaned) ? cleaned : path.join(config.projectRoot, cleaned);
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    ui.notify(ctx as any, `Path is not an existing file: ${cleaned}`);
+    return null;
+  }
+  const relInside = path.relative(config.projectRoot, abs);
+  if (relInside.startsWith("..") || path.isAbsolute(relInside)) {
+    return cleaned; // outside project → keep the user's absolute path
+  }
+  return relInside.split(path.sep).join("/");
+}
+
+/**
+ * 206 Phase 2: interactive document-candidate menu for empty-file starts
+ * (206_Feat Round 2/3/4 decisions):
+ *
+ * - No TUI (`ctx.ui.select` missing) → `null`; the caller degrades to the
+ *   original "run /pipeline-start <doc_file>" error message.
+ * - Candidates exist → single-select (≤5, mtime desc) + manual input + cancel.
+ * - No candidates → cross-`archiveDirs` fallback auto-picks the newest match
+ *   (with an English notify); nothing at all → manual input / cancel.
+ *
+ * @param stage - The starting stage; drives the stage-specific candidate filter
+ * @param reason - Audit reason tag ("start")
+ * @returns Selected file path, or `null` when the user cancelled / no UI
+ */
+async function promptDocSelection(
+  ctx: unknown,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  stage: PipelineStage,
+  reason: string,
+): Promise<string | null> {
+  if (typeof (ctx as { ui?: { select?: unknown } })?.ui?.select !== "function") {
+    return null; // caller degrades to original error message
+  }
+
+  const candidates = await listDocCandidates(config, stage);
+  if (candidates.length > 0) {
+    const options = [
+      ...candidates.map((c: DocCandidate) => c.relPath),
+      "Manual input path",
+      "Cancel",
+    ];
+    const choice = await (ctx as any).ui.select(
+      `Select document for the "${stage}" stage:`,
+      options,
+    );
+    if (!choice || choice === "Cancel") return null;
+    if (choice === "Manual input path") {
+      return promptManualDocPath(ctx, config, ui);
+    }
+    const matched = candidates.find((c) => c.relPath === choice);
+    if (matched) return matched.relPath;
+    return promptManualDocPath(ctx, config, ui);
+  }
+
+  // No candidates → cross-archiveDirs fallback: auto-select newest match (Q2-A)
+  const latest = await findLatestDocForStage(config, stage);
+  if (latest) {
+    ui.notify(ctx as any, `Auto-selected latest document: ${latest.relPath}`);
+    await safeWriteAuditLog("pipeline_start_doc_menu_autoselect", {
+      stage,
+      reason,
+      requirementDoc: latest.relPath,
+    });
+    return latest.relPath;
+  }
+
+  // Nothing anywhere → manual input / cancel
+  const choice = await (ctx as any).ui.select(
+    `No candidate document found for ${stage}.`,
+    ["Manual input path", "Cancel"],
+  );
+  if (choice !== "Manual input path") return null;
+  return promptManualDocPath(ctx, config, ui);
+}
+
+/**
  * Unified new-pipeline execution path for fresh / spec-stage / ask-new flows.
  *
  * Steps:
@@ -839,17 +946,32 @@ async function startNewPipeline(
   missingStages?: PipelineStage[];
   suggestion?: string;
 }> {
+  // 206 Phase 2 (integration point A): empty-file starts open the interactive
+  // doc-candidate menu. Cancel / no-UI / invalid manual input keep the ORIGINAL
+  // error string for backward compatibility with existing tests and users.
+  let docFile = file;
+  if (!file) {
+    const selected = await promptDocSelection(ctx, config, ui, startStage, "start");
+    if (selected === null) {
+      return {
+        success: false,
+        error: "run /pipeline-start <doc_file> start pipeline loop",
+      };
+    }
+    docFile = selected;
+  }
+
   // Step 1: Read requirement file
-  const docPath = path.join(config.projectRoot, file);
+  const docPath = path.join(config.projectRoot, docFile);
   let content: string;
   try {
     content = fs.readFileSync(docPath, "utf-8");
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await safeWriteAuditLog("pipeline_start_error", { file, error: errMsg }, "error");
+    await safeWriteAuditLog("pipeline_start_error", { file: docFile, error: errMsg }, "error");
     return {
       success: false,
-      error: `File not found: ${file} (${errMsg})`,
+      error: `File not found: ${docFile} (${errMsg})`,
     };
   }
 
@@ -882,7 +1004,7 @@ async function startNewPipeline(
   }
 
   // Step 3: Build meta and initialize
-  const { pipelineId, newMeta } = buildStartMeta(existingMeta, config, file, startStage);
+  const { pipelineId, newMeta } = buildStartMeta(existingMeta, config, docFile, startStage);
   await prepareAuditPipelineLog(pipelineId);
   ctx?.session?.updateMeta?.(newMeta);
   syncStageStatusBar(ui, ctx);
@@ -896,26 +1018,26 @@ async function startNewPipeline(
   // Step 4: Audit (with mode and startStage fields for traceability)
   const auditMode = startStage === "clarify" ? "fresh" : "spec";
   await safeWriteStageAudit(config, "pipeline_start", newMeta, {
-    command: `/pipeline-start ${file}`,
-    file,
+    command: `/pipeline-start ${docFile}`,
+    file: docFile,
     mode: auditMode,
     startStage,
     previousStage: auditMode === "fresh" ? "none" : (existingMeta?.currentStage ?? "none"),
   });
   const messagePrefix = isRestart
     ? `Pipeline restarted as "${pipelineId}" at stage "${startStage}".`
-    : `Pipeline "${pipelineId}" started with document: ${file}.`;
+    : `Pipeline "${pipelineId}" started with document: ${docFile}.`;
   // Phase 2b (173) D2: completed wake-up superseded message
   const supersededSuffix = isCompletedWake
     ? ` Previous pipeline at "completed" superseded by new run.`
     : "";
   const messageSuffix = startStage === "clarify"
-    ? ` Next: run @feat-design-plan-agent ${file} ${forwardArgs || "1"} to start requirement clarification`
+    ? ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
     : "";
 
   // Phase 2 (144) + Phase 3 (171): Auto-launch clarify subagent with forwardArgs passthrough
   if (startStage === "clarify") {
-    await maybeAutoLaunchClarify(ctx, config, ui, newMeta, file, forwardArgs);
+    await maybeAutoLaunchClarify(ctx, config, ui, newMeta, docFile, forwardArgs);
   }
 
   // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
@@ -1170,12 +1292,11 @@ async function handleAbortedPipeline(
     };
   }
 
-  // --- No requirementDoc && no file → prompt user (skip for completed → fresh) ---
+  // --- No requirementDoc && no file → 206 Phase 2 (integration point D):
+  // pass through to the unified new-pipeline path, where the doc-candidate
+  // menu fires and degrades to the original error string on cancel/no-UI.
   if (!meta.requirementDoc && !file && meta.currentStage !== "completed") {
-    return {
-      success: false,
-      error: "run /pipeline-start <doc_file> start pipeline loop",
-    };
+    return startNewPipeline(ctx, config, ui, file, "clarify", meta, forwardArgs);
   }
 
   // --- Start new pipeline (different file, or no requirementDoc with file provided) ---
@@ -1188,13 +1309,8 @@ async function handleAbortedPipeline(
   }
 
   // No existing requirementDoc or completed → use new file via unified path
-  if (!file && meta.currentStage !== "completed") {
-    return {
-      success: false,
-      error: "run /pipeline-start <doc_file> start pipeline loop",
-    };
-  }
-  // review#2 M2: forwardArgs passthrough preserved on the no-reqDoc + new-file branch
+  // 206 Phase 2 (integration point D): empty-file aborted starts open the
+  // doc-candidate menu instead of rejecting outright.
   return startNewPipeline(ctx, config, ui, file || meta.requirementDoc || "", "clarify", meta, forwardArgs);
 }
 
@@ -1327,13 +1443,10 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
       }
 
       // ── Branch: fresh start (no existing pipeline) ──────────────────────
-      // No file → reject
-      if (!file) {
-        return {
-          success: false,
-          error: "run /pipeline-start <doc_file> start pipeline loop",
-        };
-      }
+      // 206 Phase 2 (integration point B): no file no longer rejects here —
+      // control flows to startNewPipeline / handleAskMenu, where the
+      // doc-candidate menu (integration point A) handles empty-file starts
+      // and degrades to the original error message on cancel / no-UI.
 
       // Phase 3 (171) Q4-A: scan auditDir for adoptable non-terminal flows before fresh start.
       // If the current session has no usable pipeline but an aborted flow exists for the same doc,
@@ -1546,10 +1659,9 @@ async function handleAskMenu(
         }
       }
     }
-    // Need a file for new pipeline
-    if (!file) {
-      return { success: false, error: "run /pipeline-start <doc_file> start pipeline loop" };
-    }
+    // 206 Phase 2 (integration point C): empty-file starts no longer reject
+    // here — startNewPipeline fires the doc-candidate menu after this existing
+    // menu flow (Round 2 Q1-A timing) and keeps the original error on cancel.
     // review#2 M2: forwardArgs passthrough on ask-menu "New pipeline" branch
     return startNewPipeline(ctx, config, ui, file, "clarify", existingMeta, forwardArgs);
   }
@@ -1579,9 +1691,8 @@ async function handleAskMenu(
       }
     }
 
-    if (!file) {
-      return { success: false, error: "run /pipeline-start <doc_file> start pipeline loop" };
-    }
+    // 206 Phase 2 (integration point C): no file → doc-candidate menu inside
+    // startNewPipeline keeps the original cancel/no-UI error message.
     // review#2 M2: forwardArgs passthrough on ask-menu "Spec stage" branch
     return startNewPipeline(ctx, config, ui, file, selectedStage, existingMeta, forwardArgs);
   }
