@@ -808,41 +808,47 @@ export async function dispatchAfterResume(
 }
 
 /**
- * 206 Phase 2: local minimal structural type for the optional `ui.input` API.
- * Declared instead of `any` (code-spec rule): the pi SDK hosts differ on
- * whether a free-text input dialog is exposed; the plugin only relies on
- * this optional method when it is present.
+ * 206 Phase 2: local minimal structural view of the host context used by the
+ * doc-candidate menu. Declared instead of `any` (code-spec rule) because the
+ * pi SDK exposes the TUI dialogs on `ctx.ui` only in some hosts; the plugin
+ * relies on these optional methods only when present.
  */
-type DocInputUi = { input?: (message: string) => Promise<string | undefined> };
+type DocMenuCtx = {
+  ui?: {
+    select?: (message: string, options: string[]) => Promise<string | undefined>;
+    input?: (message: string) => Promise<string | undefined>;
+  };
+};
 
 /**
  * 206 Phase 2: manual-path input for the doc-candidate menu.
- * Returns the entered path resolved to a usable file argument
- * (project-relative when inside projectRoot, absolute otherwise), or
+ * Returns the entered path resolved to a project-relative file argument, or
  * `null` when the input dialog is unavailable / the value is invalid.
+ *
+ * The host input dialog lives on `ctx.ui.input` (SDK TUI surface); the call is
+ * made as a method so the host's `this` receiver is preserved.
  */
 async function promptManualDocPath(
-  ctx: unknown,
+  ctx: DocMenuCtx | undefined,
   config: PipelineConfig,
   ui: ReturnType<typeof createPipelineUI>,
 ): Promise<string | null> {
-  const inputUi = (ctx as DocInputUi | undefined)?.input;
-  if (typeof inputUi !== "function") {
-    ui.notify(ctx as any, "Manual path input unavailable in this session.");
+  const uiCtx = ctx?.ui;
+  if (typeof uiCtx?.input !== "function") {
+    ui.notify(ctx, "Manual path input unavailable in this session.");
     return null;
   }
-  const raw = await inputUi("Enter requirement document path (relative to project root):");
+  const raw = await uiCtx.input("Enter requirement document path (relative to project root):");
   if (!raw || raw.trim().length === 0) return null;
   const cleaned = raw.trim();
   const abs = path.isAbsolute(cleaned) ? cleaned : path.join(config.projectRoot, cleaned);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
-    ui.notify(ctx as any, `Path is not an existing file: ${cleaned}`);
+    ui.notify(ctx, `Path is not an existing file: ${cleaned}`);
     return null;
   }
+  // Always return a project-relative path: downstream consumers re-root with
+  // `path.join(projectRoot, docFile)`, which would corrupt an absolute input.
   const relInside = path.relative(config.projectRoot, abs);
-  if (relInside.startsWith("..") || path.isAbsolute(relInside)) {
-    return cleaned; // outside project → keep the user's absolute path
-  }
   return relInside.split(path.sep).join("/");
 }
 
@@ -861,13 +867,14 @@ async function promptManualDocPath(
  * @returns Selected file path, or `null` when the user cancelled / no UI
  */
 async function promptDocSelection(
-  ctx: unknown,
+  ctx: DocMenuCtx | undefined,
   config: PipelineConfig,
   ui: ReturnType<typeof createPipelineUI>,
   stage: PipelineStage,
   reason: string,
 ): Promise<string | null> {
-  if (typeof (ctx as { ui?: { select?: unknown } })?.ui?.select !== "function") {
+  const uiCtx = ctx?.ui;
+  if (typeof uiCtx?.select !== "function") {
     return null; // caller degrades to original error message
   }
 
@@ -878,7 +885,7 @@ async function promptDocSelection(
       "Manual input path",
       "Cancel",
     ];
-    const choice = await (ctx as any).ui.select(
+    const choice = await uiCtx.select(
       `Select document for the "${stage}" stage:`,
       options,
     );
@@ -894,7 +901,7 @@ async function promptDocSelection(
   // No candidates → cross-archiveDirs fallback: auto-select newest match (Q2-A)
   const latest = await findLatestDocForStage(config, stage);
   if (latest) {
-    ui.notify(ctx as any, `Auto-selected latest document: ${latest.relPath}`);
+    ui.notify(ctx, `Auto-selected latest document: ${latest.relPath}`);
     await safeWriteAuditLog("pipeline_start_doc_menu_autoselect", {
       stage,
       reason,
@@ -904,7 +911,7 @@ async function promptDocSelection(
   }
 
   // Nothing anywhere → manual input / cancel
-  const choice = await (ctx as any).ui.select(
+  const choice = await uiCtx.select(
     `No candidate document found for ${stage}.`,
     ["Manual input path", "Cancel"],
   );
@@ -962,7 +969,9 @@ async function startNewPipeline(
   }
 
   // Step 1: Read requirement file
-  const docPath = path.join(config.projectRoot, docFile);
+  // Absolute docFile values are used verbatim; a bare `path.join` would re-root
+  // them under projectRoot and break the lookup (206 review issue 2).
+  const docPath = path.isAbsolute(docFile) ? docFile : path.join(config.projectRoot, docFile);
   let content: string;
   try {
     content = fs.readFileSync(docPath, "utf-8");

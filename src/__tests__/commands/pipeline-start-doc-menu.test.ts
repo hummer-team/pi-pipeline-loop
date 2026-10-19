@@ -31,6 +31,7 @@ interface DocMenuCtx {
     setStatus: (key: string, text: string | undefined) => void;
     select?: (message: string, options: string[]) => Promise<string | undefined>;
     confirm?: (message: string) => Promise<boolean>;
+    input?: (message: string) => Promise<string | undefined>;
   };
   metadataUpdates: SessionMeta[];
   notifications: string[];
@@ -198,5 +199,49 @@ describe("pipeline-start doc-candidate menu (206 Phase 2)", () => {
     expect(selectCalls).toBe(0);
     const update = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
     expect(update.requirementDoc).toBe(doc);
+  });
+
+  it("'Manual input path' → valid relative path starts the pipeline (review issue 1)", async () => {
+    await scaffoldSkills();
+    const doc = await touch("docs/design/206_Feat.md", NOW);
+
+    // No candidate in the stage dir so the manual branch is offered directly,
+    // then the host input dialog returns a project-relative path.
+    const ctx = makeDocMenuCtx(freshMeta(), "Manual input path");
+    (ctx.ui as NonNullable<DocMenuCtx["ui"]>).input = async () => doc;
+
+    const result: any = await createPipelineStartCommand(makeTestConfig({ projectRoot: ROOT })).execute(
+      {},
+      ctx as any,
+    );
+
+    expect(result.success).toBe(true);
+    const update = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+    expect(update.requirementDoc).toBe(doc);
+    expect(update.currentStage).toBe("clarify");
+  });
+
+  it("'Manual input path' → absolute path outside projectRoot is re-rooted safely (review issue 2)", async () => {
+    await scaffoldSkills();
+    const outsideRoot = fsSync.mkdtempSync(path.join(os.tmpdir(), "pi-doc-outside-"));
+    try {
+      const abs = path.join(outsideRoot, "206_Feat.md");
+      await fsp.writeFile(abs, "# outside requirement\n", "utf-8");
+
+      const ctx = makeDocMenuCtx(freshMeta(), "Manual input path");
+      (ctx.ui as NonNullable<DocMenuCtx["ui"]>).input = async () => abs;
+
+      const result: any = await createPipelineStartCommand(makeTestConfig({ projectRoot: ROOT })).execute(
+        {},
+        ctx as any,
+      );
+
+      expect(result.success).toBe(true);
+      const update = ctx.metadataUpdates[ctx.metadataUpdates.length - 1];
+      // Stored as a project-relative path that still resolves to the same file.
+      expect(path.resolve(ROOT, update.requirementDoc!)).toBe(abs);
+    } finally {
+      await fsp.rm(outsideRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -14,9 +14,9 @@
  * expected by internal Command.execute() implementations.
  *
  * IMPORTANT: case labels MUST match the command registration names exposed to
- * the user (see src/commands/*.ts `name` field). All four pipeline commands
+ * the user (see src/commands/*.ts `name` field). All six pipeline commands
  * use hyphenated names: pipeline-init / pipeline-start / pipeline-status /
- * pipeline-quit.
+ * pipeline-quit / pipeline-resume / pipeline-archive.
  */
 export function parseCommandArgs(
   commandName: string,

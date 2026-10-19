@@ -11,8 +11,9 @@
  * - Naming contract is reused from `core/naming/doc-naming.ts` (never re-typed).
  *
  * Reused naming constants/functions (206_Feat Round 3/4 decisions):
- * - `PLAN_DOC_GLOB` file-name form: `*_Plan.md`
- * - `NEW_COMMIT_DOC_GLOB` file-name form: `*_Develop_Commit.md`
+ * - `REQUIREMENT_DOC_FILE_RE`: `^\d+_.+\.md$` (requirement / design-und docs)
+ * - `PLAN_DOC_FILE_RE`: `*_Plan.md` (file-name form of `PLAN_DOC_GLOB`)
+ * - `NEW_COMMIT_RE`: `*_Develop_Commit.md` (file-name form of `NEW_COMMIT_DOC_GLOB`)
  * - `NEW_CODE_REVIEW_RE`: `^Code_Review_.+_Develop_Commit_\d+\.md$`
  * - `reqBaseFromRequirementDoc` for active-doc base derivation (Phase 3 usage).
  */
@@ -24,6 +25,14 @@ import {
   DEFAULT_STAGE_DOC_DIRS,
   MAX_DOC_CANDIDATES,
 } from "../constants";
+import {
+  CODE_REVIEW_DOC_PREFIX,
+  MD_FILE_EXTENSION_RE,
+  NEW_CODE_REVIEW_RE,
+  NEW_COMMIT_RE,
+  PLAN_DOC_FILE_RE,
+  REQUIREMENT_DOC_FILE_RE,
+} from "./naming/doc-naming";
 
 /**
  * One candidate document surfaced by the /pipeline-start doc menu.
@@ -84,35 +93,29 @@ export function resolveStageDocDir(
  *
  * All other stages return a constant `false` (no candidates offered).
  *
- * Matching tolerates `.MD` uppercase, consistent with `doc-naming.ts` readers.
+ * The patterns are the authoritative `doc-naming.ts` definitions (never
+ * re-typed here); requirement/plan matchers tolerate `.MD`, commit/code-review
+ * matchers use the exact exported matchers from `doc-naming.ts`.
  */
 export function stageDocCandidateFilter(stage: PipelineStage): (fileName: string) => boolean {
   switch (stage) {
     case "clarify":
-    case "plan": {
+    case "plan":
       // Q3-1 方案 A: requirement doc pattern minus Plan/Code_Review derivatives
-      const requirementRe = /^\d+_.+\.md$/i;
-      const planSuffixRe = /_Plan\.md$/i;
       return (fileName: string) =>
-        requirementRe.test(fileName) && !planSuffixRe.test(fileName) && !fileName.startsWith("Code_Review_");
-    }
+        REQUIREMENT_DOC_FILE_RE.test(fileName)
+        && !PLAN_DOC_FILE_RE.test(fileName)
+        && !fileName.startsWith(CODE_REVIEW_DOC_PREFIX);
     case "design-review":
-    case "develop": {
-      // *_Plan.md (PLAN_DOC_GLOB file-name form)
-      const planRe = /_Plan\.md$/i;
-      return (fileName: string) => planRe.test(fileName);
-    }
-    case "review": {
-      // *_Develop_Commit.md (NEW_COMMIT_DOC_GLOB file-name form)
-      const commitRe = /_Develop_Commit\.md$/i;
-      return (fileName: string) => commitRe.test(fileName);
-    }
-    case "fix": {
-      // Code_Review_{reqBase}_Develop_Commit_{n}.md (NEW_CODE_REVIEW_RE;
-      // case-insensitive here to tolerate .MD on case-insensitive filesystems)
-      const codeReviewRe = /^Code_Review_.+_Develop_Commit_\d+\.md$/i;
-      return (fileName: string) => codeReviewRe.test(fileName);
-    }
+    case "develop":
+      // *_Plan.md (file-name form of PLAN_DOC_GLOB)
+      return (fileName: string) => PLAN_DOC_FILE_RE.test(fileName);
+    case "review":
+      // *_Develop_Commit.md (file-name form of NEW_COMMIT_DOC_GLOB)
+      return (fileName: string) => NEW_COMMIT_RE.test(fileName);
+    case "fix":
+      // Code_Review_{reqBase}_Develop_Commit_{n}.md (NEW_CODE_REVIEW_RE)
+      return (fileName: string) => NEW_CODE_REVIEW_RE.test(fileName);
     default:
       // awaiting_human / completed: no candidate documents
       return () => false;
@@ -150,7 +153,7 @@ export async function listDocCandidates(
   for (const entry of entries) {
     if (!entry.isFile()) continue; // subdirectories (e.g. history/) excluded
     if (!filter(entry.name)) continue;
-    if (!/\.md$/i.test(entry.name)) continue;
+    if (!MD_FILE_EXTENSION_RE.test(entry.name)) continue;
     const absPath = path.join(absDir, entry.name);
     try {
       const stat = await fsp.stat(absPath);
@@ -241,7 +244,7 @@ async function newestMatchingRecursive(
       const childRel = relDir.length > 0 ? `${relDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         await walk(childAbs, childRel, depth + 1);
-      } else if (entry.isFile() && filter(entry.name) && /\.md$/i.test(entry.name)) {
+      } else if (entry.isFile() && filter(entry.name) && MD_FILE_EXTENSION_RE.test(entry.name)) {
         try {
           const stat = await fsp.stat(childAbs);
           // Project-relative path: scope name + scope-relative descent

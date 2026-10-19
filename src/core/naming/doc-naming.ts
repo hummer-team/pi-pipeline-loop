@@ -121,6 +121,31 @@ export const NEW_COMMIT_RE = /_Develop_Commit\.md$/;
 /** Legacy develop/fix commit doc name: `{...}_commit.md`. */
 export const LEGACY_COMMIT_RE = /_commit\.md$/;
 
+// ─── File-name form matchers (basename-only, for directory scans) ────────────
+//
+// 206 Phase 1: directory scanners (stage-doc candidate discovery / menus) match
+// on bare file names, so the file-name form of the glob literals below lives
+// here beside them — call sites never re-type the patterns (single source).
+
+/**
+ * Plan document file name (file-name form of `PLAN_DOC_GLOB`): `*_Plan.md`.
+ * Case-insensitive to tolerate `.MD`/`.md` on case-insensitive filesystems,
+ * consistent with the surrounding readers.
+ */
+export const PLAN_DOC_FILE_RE = /_Plan\.md$/i;
+
+/**
+ * Requirement / design-und document file name: `{index}_{name}.md`
+ * (e.g. `206_Feat.md`). Case-insensitive on the extension.
+ */
+export const REQUIREMENT_DOC_FILE_RE = /^\d+_.+\.md$/i;
+
+/** File-name prefix guard for code-review reports (`Code_Review_*`). */
+export const CODE_REVIEW_DOC_PREFIX = "Code_Review_";
+
+/** Markdown file-extension test (case-insensitive) for directory scans. */
+export const MD_FILE_EXTENSION_RE = /\.md$/i;
+
 // ─── Verify-rule glob literals (single source for authored verify paths) ─────
 //
 // Authored verify rule sets (verify.md `path:` fields) reference these globs.
