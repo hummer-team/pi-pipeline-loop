@@ -258,14 +258,23 @@ describe("208 Phase 2: freezeAndPrompt J6 reason change", () => {
     expect(audits.some((a) => a.event === "pipeline_block_reason_changed")).toBe(false);
 
     // Second freeze with a DIFFERENT reason while that timer is still pending:
-    // freezeAndPrompt records the transition, the scheduler must not repeat it.
-    q("Resume");
+    // freezeAndPrompt records the transition (single write point), so the
+    // scheduler's own J6 observation of the same transition must be suppressed.
+    // The popup is dismissed again (stays frozen) — otherwise the pipeline would
+    // unfreeze and the scheduler's J6 branch (which requires isFrozen) would
+    // never run, making this assertion blind to the dedupe token.
+    q(undefined);
     await freezeAndPrompt(ctx, meta, "verify_failure_loop_overflow", config);
 
+    // Still frozen on the NEW reason, with a fresh backoff timer armed.
+    expect(meta.flowState).toBe("blocked");
+    expect(meta.blockedReason).toBe("verify_failure_loop_overflow");
+    expect(__decisionTimerCount()).toBe(1);
+
+    // Exactly ONE audit despite two write points (freeze entry + scheduler).
     const change = audits.filter((a) => a.event === "pipeline_block_reason_changed");
     expect(change.length).toBe(1);
     expect(change[0].message?.previousReason).toBe("loop_overflow");
     expect(change[0].message?.reason).toBe("verify_failure_loop_overflow");
-    expect(__decisionTimerCount()).toBe(0);
   });
 });
