@@ -12,7 +12,7 @@ import { safeWriteAuditLog, writeAuditLog, setAuditPipelineContext } from "../ut
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
-import { isFrozen, getFlowState, formatFrozenReason, promptDecisionMenu, formatAbortedNotifyText, scheduleDecisionRetry, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, ensureDecisionMenu, formatAbortedNotifyText, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
 import { isDormant } from "./dormancy";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
@@ -146,21 +146,15 @@ export function createAgentSettled(
             doc,
           );
         };
-        const promptOutcome = await promptDecisionMenu(
-          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof promptDecisionMenu>[0],
+        // 208 Phase 2: single scheduler entry — interrupted re-prompting (with
+        // backoff) is owned by ensureDecisionMenu; the settle entry no longer
+        // arms scheduleDecisionRetry itself.
+        await ensureDecisionMenu(
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof ensureDecisionMenu>[0],
           meta,
           config,
-          { onStageChanged: onStageChangedForSettled },
+          { source: "settle", onStageChanged: onStageChangedForSettled },
         );
-        if (promptOutcome === "interrupted") {
-          scheduleDecisionRetry(
-            { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof promptDecisionMenu>[0],
-            meta,
-            config,
-            1,
-            { onStageChanged: onStageChangedForSettled },
-          );
-        }
         return;
       }
 

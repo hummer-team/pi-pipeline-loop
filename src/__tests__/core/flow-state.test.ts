@@ -924,14 +924,15 @@ describe("freezeAndPrompt", () => {
     expect(lastUpdate.blockedReason).toBe("loop_overflow");
   });
 
-  it("is idempotent: does not re-update if already blocked", async () => {
+  it("is idempotent: does not re-update if already blocked with same reason", async () => {
     const meta = makeTestMeta({ flowState: "blocked", blockedReason: "existing_reason" });
     const ctx = makeCtx(meta);
     const config = makeTestConfig();
 
-    await freezeAndPrompt(ctx, meta, "new_reason", config);
+    await freezeAndPrompt(ctx, meta, "existing_reason", config);
 
-    // Should NOT have called updateMeta since already blocked
+    // Should NOT have called updateMeta since already blocked with same reason
+    // (J6: only a CHANGED reason re-updates + re-prompts).
     expect(ctx.updates.length).toBe(0);
   });
 

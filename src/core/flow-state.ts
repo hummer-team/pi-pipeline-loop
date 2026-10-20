@@ -1847,18 +1847,107 @@ export function scheduleDecisionRetry(
 // ─── freezeAndPrompt ────────────────────────────────────────────────────────
 
 /**
+ * Phase 1 (173) C7: Detects the session role for freeze-time attribution.
+ * Child sessions still freeze (the blocked state is a fact) but do NOT
+ * present the menu or schedule retries — the owner side is responsible
+ * for rendering the decision menu (via settle re-popup, shortcut, replay,
+ * or /pipeline-start). Degradation: missing _ctx or detection error → owner.
+ */
+function detectHostRole(ctx: FlowStateCtx): "owner" | "child" {
+  try {
+    const { isChild } = detectSessionRole(buildRoleCtxForGate(ctx));
+    return isChild ? "child" : "owner";
+  } catch {
+    // Fail-open: role detection error → treat as owner (conservative)
+    return "owner";
+  }
+}
+
+/**
+ * Phase 6 (195): Arms the child-side escalation path.
+ * Flags the owner via `menuEscalationPending`, writes the
+ * `menu_escalation_armed` audit and broadcasts the freeze on the event bus
+ * so the owner instance wakes immediately (followUp), instead of waiting
+ * for its next settle/shortcut/replay — freezes previously sat silent for
+ * tens of hours. Wake ≠ popup: the decision menu remains the single popup
+ * entry (owner consumes menuEscalationPending at end of turn).
+ * Fail-safe: broadcastEscalation never throws.
+ */
+async function armChildEscalation(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  reason: string,
+): Promise<void> {
+  ctx.session.updateMeta({ menuEscalationPending: true });
+  await safeWriteAuditLog("menu_escalation_armed", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    reason,
+  });
+
+  const escalationPayload: EscalationPayload = {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    reason,
+    at: Date.now(),
+  };
+  broadcastEscalation(ctx.pi, escalationPayload);
+  await safeWriteAuditLog("menu_escalation_broadcast", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    reason,
+  });
+}
+
+/**
+ * Audit `pipeline_blocked` (warn level).
+ * Phase 1 (171) C14: enriched with nextStage (information field) and nextAction.
+ * Phase 1 (173) C7: hostRole field for attribution (owner vs child).
+ * Phase 0 (195_Bug): blockedNextStage is display-only — it never influences
+ * stage transitions (flowState=blocked is the single source of truth).
+ */
+function writePipelineBlockedAudit(
+  meta: SessionMeta,
+  reason: string,
+  config: PipelineConfig,
+  hostRole: "owner" | "child",
+): Promise<void> {
+  const blockedNextStage = config.stages[meta.currentStage]?.nextStage ?? null;
+  return safeWriteAuditLog("pipeline_blocked", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    reason,
+    nextStage: blockedNextStage ?? "null",
+    nextAction: formatDecisionMenuHint(),
+    hostRole,
+    loopCycleCount: String(meta.loopCycleCount ?? 0),
+    maxLoopCycles: String(effectiveMax(meta, config)),
+    remainingRounds: String(remainingRoundsOf(meta, config)),
+  }, "warn");
+}
+
+/**
  * Freezes the pipeline and prompts the user for a decision via TUI select.
  *
- * Idempotent: only transitions from "running" → "blocked" on the first call.
- * Subsequent calls (already blocked) skip the state mutation and do NOT
- * re-prompt — callers who want to re-trigger the menu while frozen should
- * invoke `promptDecisionMenu` directly.
+ * Idempotent baseline: only transitions from "running" → "blocked" on the
+ * first call; subsequent calls (already blocked/aborted) skip the state
+ * mutation and do NOT re-audit or re-prompt. J6 exception: an already
+ * blocked pipeline whose freeze reason CHANGED re-raises the menu for the
+ * new cause.
  *
  * Behavior:
- * 1. If flowState is already blocked → return early (idempotent)
- * 2. If flowState is "running" → set flowState="blocked" + blockedReason=reason
- * 3. Write audit `pipeline_blocked` (warn)
- * 4. Delegate to `promptDecisionMenu` for the actual UI interaction
+ * 1. Detect hostRole (owner/child) first — needed by both branches
+ * 2. If flowState is "running" → set flowState="blocked" + blockedReason=reason,
+ *    audit `pipeline_blocked`, notify, then owner → `ensureDecisionMenu`
+ *    (single-flight scheduler) / child → `armChildEscalation` (no menu/timer)
+ * 3. If flowState is "blocked" with a different reason → update blockedReason,
+ *    audit `pipeline_block_reason_changed`, then the same owner/child split
+ * 4. If flowState is "aborted" → return early (no re-freeze, no re-popup)
+ *
+ * 208 Phase 2: the owner prompt is delegated to `ensureDecisionMenu`; this
+ * function no longer calls `scheduleDecisionRetry` directly. An interrupted
+ * first prompt (streaming dismiss < 1500ms) is re-armed by the scheduler's
+ * backoff retry instead of a local post-prompt timer.
  *
  * Phase 0 (195_Bug): blockedNextStage (line 1472) is display-only — it reads
  * config.stages[currentStage].nextStage for audit/UI context, but does NOT
@@ -1877,55 +1966,63 @@ export async function freezeAndPrompt(
   config: PipelineConfig,
   opts?: {
     ui?: FlowStateCtx["ui"];
-    /** Phase 0 (182): forwarded to promptDecisionMenu for choose_stage aftermath. */
+    /** Phase 0 (182): forwarded to the decision menu for choose_stage aftermath. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
     /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
     budgetValue?: number;
   },
 ): Promise<void> {
-  // Idempotent: only transition running → blocked, and only perform
-  // audit + menu prompt on the transition moment (not on repeated calls).
-  const currentState = getFlowState(meta);
-  if (currentState !== "running") {
-    // Already frozen/aborted — do not re-freeze, re-audit, or re-prompt.
-    return;
-  }
+  // Role detection first: needed by both the running and the blocked branches
+  // (J6 reason-change must escalate/popup even while already frozen).
+  const hostRole = detectHostRole(ctx);
+  const menuCtx = opts?.ui ? { ...ctx, ui: opts.ui } : ctx;
 
-  // Phase 1 (173) C7: Detect session role before freezing.
-  // Child sessions still freeze (the blocked state is a fact) but do NOT
-  // present the menu or schedule retries — the owner side is responsible
-  // for rendering the decision menu (via settle re-popup, shortcut, replay,
-  // or /pipeline-start). Degradation: missing _ctx → treat as owner.
-  let hostRole: "owner" | "child" = "owner";
-  try {
-    const { isChild } = detectSessionRole(buildRoleCtxForGate(ctx));
-    if (isChild) {
-      hostRole = "child";
+  const liveMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+  const currentState = getFlowState(liveMeta);
+
+  if (currentState !== "running") {
+    // Already blocked/aborted — no re-freeze, no re-audit, no re-popup.
+    // J6: the sole exception is a "blocked" state whose reason just changed.
+    const reasonChanged = currentState === "blocked" && liveMeta.blockedReason !== reason;
+    if (!reasonChanged) {
+      return;
     }
-  } catch {
-    // Fail-open: role detection error → treat as owner (conservative)
+
+    // J6 (208 Phase 2, fixes R6): the old freeze reason is stale — refresh it
+    // and re-raise the menu so the user decides against the new cause.
+    // Snapshot BEFORE the update: getMeta() may return the live object, and
+    // the in-place mutation would otherwise shadow the previous reason.
+    const previousReason = liveMeta.blockedReason ?? "unknown";
+    ctx.session.updateMeta({ blockedReason: reason });
+    await safeWriteAuditLog("pipeline_block_reason_changed", {
+      pipelineId: liveMeta.pipelineId,
+      stage: liveMeta.currentStage,
+      previousReason,
+      reason,
+    }, "warn");
+
+    if (hostRole === "child") {
+      await armChildEscalation(ctx, liveMeta, reason);
+      return;
+    }
+    // In-flight menu: runDecisionMenu joins it (no second select) and the new
+    // reason takes effect on the next attempt/backoff re-read of the meta.
+    await ensureDecisionMenu(menuCtx, { ...liveMeta, blockedReason: reason }, config, {
+      source: "freeze",
+      onStageChanged: opts?.onStageChanged,
+      budgetValue: opts?.budgetValue,
+    });
+    return;
   }
 
   ctx.session.updateMeta({
     flowState: "blocked",
     blockedReason: reason,
   });
+  const frozenMeta = { ...liveMeta, flowState: "blocked" as const, blockedReason: reason };
 
   // Audit: pipeline blocked (warn level)
-  // Phase 1 (171) C14: enriched with nextStage (information field) and nextAction
-  // Phase 1 (173) C7: hostRole field for attribution (owner vs child)
-  const blockedNextStage = config.stages[meta.currentStage]?.nextStage ?? null;
-  await safeWriteAuditLog("pipeline_blocked", {
-    pipelineId: meta.pipelineId,
-    stage: meta.currentStage,
-    reason,
-    nextStage: blockedNextStage ?? "null",
-    nextAction: formatDecisionMenuHint(),
-    hostRole,
-    loopCycleCount: String(meta.loopCycleCount ?? 0),
-    maxLoopCycles: String(effectiveMax(meta, config)),
-    remainingRounds: String(remainingRoundsOf(meta, config)),
-  }, "warn");
+  await writePipelineBlockedAudit(meta, reason, config, hostRole);
 
   // Phase 4 (189): Notify regardless of hostRole — child TUI shows the block,
   // owner TUI shows both notify and menu (notify complements the menu).
@@ -1939,49 +2036,17 @@ export async function freezeAndPrompt(
   // Phase 1 (173) C7: Child sessions skip menu prompt and retry scheduling.
   // The freeze state is recorded (owner will see it on next settle/shortcut/replay).
   if (hostRole === "child") {
-    // Phase 6 (195): Flag owner to show menu once on next interaction (15-B/C)
-    ctx.session.updateMeta({ menuEscalationPending: true });
-    await safeWriteAuditLog("menu_escalation_armed", {
-      pipelineId: meta.pipelineId,
-      stage: meta.currentStage,
-      reason,
-    });
-
-    // 203_Bug Phase 0 (RC1): Broadcast the freeze escalation on the event bus
-    // so the owner instance can wake immediately (followUp), instead of
-    // waiting for its next settle/shortcut/replay — freezes previously sat
-    // silent for tens of hours. Wake ≠ popup: promptDecisionMenu remains the
-    // single popup entry (owner consumes menuEscalationPending at end of turn).
-    // Fail-safe: broadcastEscalation never throws.
-    const escalationPayload: EscalationPayload = {
-      pipelineId: meta.pipelineId,
-      stage: meta.currentStage,
-      reason,
-      at: Date.now(),
-    };
-    broadcastEscalation(ctx.pi, escalationPayload);
-    await safeWriteAuditLog("menu_escalation_broadcast", {
-      pipelineId: meta.pipelineId,
-      stage: meta.currentStage,
-      reason,
-    });
+    await armChildEscalation(ctx, frozenMeta, reason);
     return;
   }
 
-  // Delegate to promptDecisionMenu for the UI interaction
-  const frozenMeta = { ...meta, flowState: "blocked" as const, blockedReason: reason };
-  // Fix: do NOT pre-schedule timer here — it would fire during the awaited first
-  // prompt, creating a concurrent second select (stacking violation per review #1b).
-  // Instead, if the first prompt returns "interrupted" (streaming dismiss < 1500ms),
-  // arm the retry scheduler AFTER the prompt returns. This prevents stacking while
-  // still ensuring the menu re-appears after streaming settles.
-  const outcome = await promptDecisionMenu(ctx, frozenMeta, config, {
-    ...opts,
+  // 208 Phase 2: delegate to ensureDecisionMenu for the UI interaction.
+  // Do NOT pre-schedule a local timer — the single-flight scheduler owns the
+  // timer mutex and backoff retries; an "interrupted" first prompt (streaming
+  // dismiss < 1500ms) is re-armed there instead of via scheduleDecisionRetry.
+  await ensureDecisionMenu(menuCtx, frozenMeta, config, {
+    source: "freeze",
     onStageChanged: opts?.onStageChanged,
+    budgetValue: opts?.budgetValue,
   });
-  if (outcome === "interrupted") {
-    scheduleDecisionRetry(ctx, frozenMeta, config, 1, {
-      onStageChanged: opts?.onStageChanged,
-    });
-  }
 }

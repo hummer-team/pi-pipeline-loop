@@ -11,7 +11,7 @@ import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
-import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, promptDecisionMenu, scheduleDecisionRetry } from "./flow-state";
+import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, ensureDecisionMenu } from "./flow-state";
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 import { parseRequirementDocPath } from "../utils/doc-path";
@@ -695,8 +695,8 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
               );
             }
             // Phase 0 (182): inject onStageChanged for choose_stage dispatch.
-            // Extracted to a variable so both promptDecisionMenu and
-            // scheduleDecisionRetry (retry path) share the same callback.
+            // Extracted to a variable so ensureDecisionMenu and the scheduler's
+            // backoff retries share the same callback.
             const onStageChangedForReplay = async (fresh: SessionMeta): Promise<void> => {
               const doc = fresh.requirementDoc ?? "";
               await dispatchAfterResume(
@@ -707,7 +707,9 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
                 doc,
               );
             };
-            const replayOutcome = await promptDecisionMenu(
+            // 208 Phase 2: single scheduler entry — same semantics as settle;
+            // interrupted re-prompting is owned by ensureDecisionMenu.
+            await ensureDecisionMenu(
               { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
               meta,
               config,
@@ -718,15 +720,6 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
                 onStageChanged: onStageChangedForReplay,
               },
             );
-            if (replayOutcome === "interrupted") {
-              scheduleDecisionRetry(
-                { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
-                meta,
-                config,
-                1,
-                { onStageChanged: onStageChangedForReplay },
-              );
-            }
           }
           // Child sessions: frozen state is visible via registry; owner handles presentation.
         } else if (flowState === "aborted") {
