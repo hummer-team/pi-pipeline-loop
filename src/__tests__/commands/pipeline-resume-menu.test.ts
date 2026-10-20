@@ -13,7 +13,9 @@
  *    exactly one command-side notify (notifyOnUnavailable: false);
  * 5. --force-resume unchanged (no menu, direct executeDecision("resume"));
  * 6. guard-rejected decision (rewind with no rework gate) → "Decision not
- *    applied: …" + failureReason guard_rejected + retryArmed=true copies.
+ *    applied: …" + failureReason guard_rejected + retryArmed=true copies;
+ * 7. slow Esc → cancelled: "remains frozen" message, no runtime notify
+ *    (review round 2, single user-facing channel).
  */
 import { describe, it, expect, beforeEach, afterEach, jest } from "bun:test";
 import { createPipelineResumeCommand } from "../../commands/pipeline-resume";
@@ -243,5 +245,25 @@ describe("208 Phase 3: /pipeline-resume menu semantics", () => {
     const notApplied = audits.find((a) => a.event === "decision_not_applied");
     expect(notApplied?.message?.["reason"]).toBe("guard_rejected");
     expect(notApplied?.message?.["decision"]).toBe("rewind_last_round");
+  });
+
+  it("test 7: slow Esc → cancelled, 'remains frozen' message, no runtime notify", async () => {
+    const meta = freshMeta();
+    const ctx = makeMenuCtx(meta);
+    jest.useFakeTimers();
+    ctx.ui!.select = async (message: string, options: string[]) => {
+      selectCalls.push({ message, options });
+      jest.advanceTimersByTime(1600); // >= DECISION_DISMISS_INTERRUPT_MS → user Esc
+      return undefined;
+    };
+    const config = makeTestConfig();
+    const cmd = createPipelineResumeCommand(config);
+    const result: any = await cmd.execute({}, ctx as any);
+
+    expect((result as any).message).toContain("Pipeline remains frozen");
+    expect((result as any).message).not.toContain("No decision menu is available");
+    // notifyOnCancel: false → the command message is the only channel
+    expect(ctx.notifyCalls.length).toBe(0);
+    expect(__hasDecisionTimer(meta.pipelineId)).toBe(false);
   });
 });

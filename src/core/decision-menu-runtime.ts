@@ -78,6 +78,13 @@ export interface EnsureDecisionMenuOpts {
    * double/contradictory notify described in Design_Review_1 #3).
    */
   notifyOnUnavailable?: boolean;
+  /**
+   * Default true. A user cancel (slow Esc in the primary or secondary menu, or
+   * a cancelled `set_budget` input dialog) notifies "Pipeline frozen: …" so the
+   * user learns the pipeline stays frozen. Command entries pass `false` and
+   * return the message themselves, keeping exactly one user-facing channel.
+   */
+  notifyOnCancel?: boolean;
 }
 
 /** Result of an ensureDecisionMenu call (added by the Phase 1 scheduler). */
@@ -147,6 +154,13 @@ interface PipelineMenuRuntime {
   /** blockedReason snapshot of the most recent presentation (J6 change audit). */
   lastPresentedReason?: string;
   /**
+   * 208 (J6 dedupe): reason transitions (`previous->next`) already audited by
+   * an outer entry (e.g. `freezeAndPrompt`) while this runtime existed. The
+   * next presentation consumes the matching token instead of writing the same
+   * `pipeline_block_reason_changed` event a second time.
+   */
+  auditedReasonTransitions?: Set<string>;
+  /**
    * Set by {@link clearAllDecisionTimers} (session shutdown). An in-flight
    * chain keeps its `rt` reference after the table entry is dropped, so this
    * flag is the only way to stop it from re-arming a timer OUTSIDE the table
@@ -174,6 +188,25 @@ function getOrCreateRuntime(pipelineId: string): PipelineMenuRuntime {
     menuRuntime.set(pipelineId, rt);
   }
   return rt;
+}
+
+/**
+ * 208 (J6 dedupe): records that an outer entry already wrote
+ * `pipeline_block_reason_changed` for this transition while the runtime still
+ * holds a stale `lastPresentedReason`. The next presentation notices the new
+ * reason but consumes this token instead of auditing the change again.
+ *
+ * No-op when no runtime entry exists: nothing was presented for this pipeline
+ * in this process, so the scheduler has no stale snapshot to reconcile.
+ */
+export function markReasonChangeAudited(
+  pipelineId: string,
+  previousReason: string,
+  reason: string,
+): void {
+  const rt = menuRuntime.get(pipelineId);
+  if (!rt) return;
+  (rt.auditedReasonTransitions ??= new Set()).add(`${previousReason}->${reason}`);
 }
 
 /**
@@ -307,20 +340,25 @@ async function attemptAndMaybeRetry(
   }
   // J6 (as seen by the scheduler): a presentation against a DIFFERENT
   // freeze reason than the previous one is audited so reason drift is
-  // observable even without a freeze call (the freeze site itself audited
-  // the change too — duplicated entries are intentional noise reduction).
+  // observable even without a freeze call. When the freeze entry already
+  // audited this exact transition, the token it left behind suppresses the
+  // duplicate (single write point).
   if (
     rt.lastPresentedReason !== undefined
     && live.blockedReason !== undefined
     && live.blockedReason !== rt.lastPresentedReason
     && deps.isFrozen(live)
   ) {
-    await safeWriteAuditLog("pipeline_block_reason_changed", {
-      pipelineId,
-      stage: live.currentStage,
-      previousReason: rt.lastPresentedReason,
-      reason: live.blockedReason,
-    }, "warn");
+    const transition = `${rt.lastPresentedReason}->${live.blockedReason}`;
+    const alreadyAudited = rt.auditedReasonTransitions?.delete(transition) ?? false;
+    if (!alreadyAudited) {
+      await safeWriteAuditLog("pipeline_block_reason_changed", {
+        pipelineId,
+        stage: live.currentStage,
+        previousReason: rt.lastPresentedReason,
+        reason: live.blockedReason,
+      }, "warn");
+    }
   }
   rt.lastPresentedReason = live.blockedReason;
   const retryable = detail.retryable

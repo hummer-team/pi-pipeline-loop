@@ -54,6 +54,169 @@ import {
 
 const MANAGER_KEY = Symbol.for("pi-subagents:manager");
 
+// ─── Shared composition harness (208 review round 2, issue 3) ────────────────
+//
+// Both integration chain files assemble the SAME production composition root:
+// a temp project, the shared meta store, an owner/child session pair on one
+// event bus, the real `agent_settled` hook and the real command entries. Only
+// the scripted TUI dialogs differ. Keeping that assembly in one place means a
+// composition-root change (new listener, new bus shape) cannot drift between
+// the design-review chains and the freeze-escalation chains.
+
+/** Options for {@link makeCompositionHarness}. */
+export interface CompositionHarnessOptions {
+  /** Extra directories created under the temp project root. */
+  dirs?: string[];
+  /** Owner session file name under the temp root (default `owner.jsonl`). */
+  ownerFileName?: string;
+  /** Child session file name under the temp root (default `child-exec.jsonl`). */
+  childFileName?: string;
+  /** Child session name; must keep the `#id` suffix for child detection. */
+  childSessionName?: string;
+  /** Bus emit interceptor; return `true` when the event is fully consumed. */
+  onEmit?: (event: string, payload: Record<string, unknown>) => boolean;
+  /** Adjust the generated config / write fixture files before assets deploy. */
+  configure?: (config: PipelineConfig, projectRoot: string) => void;
+  /** Omit dispatch assets so the production preflight blocks. */
+  skipDispatchAssets?: boolean;
+}
+
+/** Structural subset of the pi session manager used by the composition. */
+export interface SessionManagerStub {
+  getEntries: () => unknown[];
+  getBranch: () => unknown[];
+  getSessionFile: () => string;
+  getSessionName: () => string;
+  getHeader: () => unknown;
+}
+
+/** The shared production composition backing an integration chain. */
+export interface CompositionHarness {
+  projectRoot: string;
+  config: PipelineConfig;
+  ownerFile: string;
+  childFile: string;
+  ownerEntries: unknown[];
+  childEntries: unknown[];
+  /** Messages delivered through `pi.sendUserMessage` (wake channel). */
+  wakeMessages: string[];
+  bus: {
+    emit: (event: string, payload: Record<string, unknown>) => void;
+    on: (event: string, handler: (payload: unknown) => void) => void;
+    off: (event: string, handler: (payload: unknown) => void) => void;
+  };
+  ownerPi: {
+    appendEntry: (customType: string, data: unknown) => void;
+    events: CompositionHarness["bus"];
+    sendUserMessage: (message: string) => void;
+  };
+  childPi: CompositionHarness["ownerPi"];
+  ownerManager: SessionManagerStub;
+  childManager: SessionManagerStub;
+  ownerSession: ReturnType<typeof createSessionState>;
+  childSession: ReturnType<typeof createSessionState>;
+  cleanup(): void;
+}
+
+/**
+ * Builds the real production composition (shared meta store + event bus +
+ * owner/child sessions). The ONLY mock is the TUI/SDK boundary: dialogs and
+ * bus RPC replies are scripted by each chain.
+ */
+export function makeCompositionHarness(opts: CompositionHarnessOptions = {}): CompositionHarness {
+  const projectRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "pipe-composition-"));
+  for (const dir of ["docs/design", ".pi/audit", ...(opts.dirs ?? [])]) {
+    fs.mkdirSync(path.join(projectRoot, dir), { recursive: true });
+  }
+
+  const ownerFile = path.join(projectRoot, opts.ownerFileName ?? "owner.jsonl");
+  const childFile = path.join(projectRoot, opts.childFileName ?? "child-exec.jsonl");
+
+  const config = makeTestConfig({ projectRoot }) as PipelineConfig;
+  opts.configure?.(config, projectRoot);
+  if (!opts.skipDispatchAssets) {
+    deployDispatchAssets(config);
+  }
+  void initAuditLog(config);
+
+  // Shared runtime channel: children and owner observe the same handlers.
+  const handlers = new Map<string, Array<(p: unknown) => void>>();
+  const ownerEntries: unknown[] = [];
+  const childEntries: unknown[] = [];
+  const wakeMessages: string[] = [];
+
+  const bus: CompositionHarness["bus"] = {
+    emit: (event, payload) => {
+      if (opts.onEmit?.(event, payload)) return;
+      for (const h of handlers.get(event) ?? []) h(payload);
+    },
+    on: (event, handler) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+    off: (event, handler) => {
+      handlers.set(event, (handlers.get(event) ?? []).filter((x) => x !== handler));
+    },
+  };
+
+  const makePi = (entries: unknown[]): CompositionHarness["ownerPi"] => ({
+    appendEntry: (customType, data) => {
+      entries.push({ type: "custom", customType, data });
+    },
+    events: bus,
+    sendUserMessage: (message) => {
+      wakeMessages.push(message);
+    },
+  });
+  const ownerPi = makePi(ownerEntries);
+  const childPi = makePi(childEntries);
+
+  const ownerManager: SessionManagerStub = {
+    getEntries: () => ownerEntries,
+    getBranch: () => ownerEntries,
+    getSessionFile: () => ownerFile,
+    getSessionName: () => "owner",
+    getHeader: () => undefined,
+  };
+  const childManager: SessionManagerStub = {
+    getEntries: () => childEntries,
+    getBranch: () => childEntries,
+    getSessionFile: () => childFile,
+    getSessionName: () => opts.childSessionName ?? "child-exec#a1b2c3d4",
+    getHeader: () => ({ parentSession: ownerFile }),
+  };
+
+  const ownerSession = createSessionState(ownerPi as never, { sessionManager: ownerManager } as never, {
+    projectRoot,
+    auditDir: ".pi/audit",
+  });
+  const childSession = createSessionState(childPi as never, { sessionManager: childManager } as never, {
+    projectRoot,
+    auditDir: ".pi/audit",
+  });
+
+  return {
+    projectRoot,
+    config,
+    ownerFile,
+    childFile,
+    ownerEntries,
+    childEntries,
+    wakeMessages,
+    bus,
+    ownerPi,
+    childPi,
+    ownerManager,
+    childManager,
+    ownerSession,
+    childSession,
+    cleanup: () => {
+      __resetAuditDirPath();
+      __resetSharedStateDir();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    },
+  };
+}
+
 export interface ChainHarnessOptions {
   /** Omit dispatch assets so the production preflight blocks (task 2 case). */
   skipDispatchAssets?: boolean;
@@ -118,127 +281,109 @@ export interface ChainHarness {
 }
 
 export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
-  const projectRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "dr-exec-chain-"));
   const prevManager = (globalThis as Record<symbol, unknown>)[MANAGER_KEY];
-  fs.mkdirSync(path.join(projectRoot, "docs", "design"), { recursive: true });
-  fs.mkdirSync(path.join(projectRoot, "agents"), { recursive: true });
-  fs.mkdirSync(path.join(projectRoot, "verify"), { recursive: true });
-  fs.mkdirSync(path.join(projectRoot, ".pi", "audit"), { recursive: true });
 
-  const reqDoc = path.join(projectRoot, "docs", "design", "191_Feat.md");
-  const planDoc = path.join(projectRoot, "docs", "design", "191_Feat_Plan.md");
-  fs.writeFileSync(reqDoc, "# Requirements\ncontent\n", "utf-8");
-  fs.writeFileSync(planDoc, "# Plan\ninitial design\n", "utf-8");
-
-  const ownerFile = path.join(projectRoot, "owner.jsonl");
-  const childFile = path.join(projectRoot, "develop-executor.jsonl");
-  const devArtifact = path.join(projectRoot, "docs", "design", "191_Feat_dev.md");
-
-  const config = makeTestConfig({ projectRoot }) as PipelineConfig;
-  for (const [stage, agent] of [
-    ["design-review", "design-review-agent"],
-    ["plan", "plan-agent"],
-    ["develop", "develop-agent"],
-  ] as const) {
-    const agentRel = `agents/${agent}.md`;
-    fs.writeFileSync(path.join(projectRoot, agentRel), `---\nname: ${agent}\n---\nbody\n`, "utf-8");
-    config.stages[stage] = { ...config.stages[stage], agentPath: agentRel };
-  }
-  config.stages["design-review"] = {
-    ...config.stages["design-review"]!,
-    verify: { require: true },
-  };
-  const planVerifyFile = path.join(projectRoot, "verify", "plan-verify.md");
-  fs.writeFileSync(
-    planVerifyFile,
-    "---\nrules:\n  requiredFiles:\n    - \"docs/design/191_Feat_Plan.md\"\n---\nplan gate\n",
-    "utf-8",
-  );
-  config.stages["plan"] = {
-    ...config.stages["plan"]!,
-    verify: { require: true, verifyFile: planVerifyFile },
-    confirm: { mode: "manual" },
-  };
-  // develop keeps its REAL next stage (the plan forbids hiding consumption
-  // behind a null terminal) and runs in TOOL mode: the owner consumes the
-  // trusted terminal through the real `pipeline_verify` entry.
-  const developVerifyFile = path.join(projectRoot, "verify", "develop-verify.md");
-  fs.writeFileSync(
-    developVerifyFile,
-    "---\nrules:\n  requiredFiles:\n    - \"docs/design/191_Feat_dev.md\"\n---\ndevelop gate\n",
-    "utf-8",
-  );
-  config.stages["develop"] = {
-    ...config.stages["develop"]!,
-    nextStage: "review",
-    verify: { require: true, mode: "tool", verifyFile: developVerifyFile },
-  };
-  if (!opts?.skipDispatchAssets) {
-    deployDispatchAssets(config);
-  }
-  void initAuditLog(config);
-
-  // The composition root registers exactly this handler (index.ts:114).
-  setDesignReviewTerminalHandler(handleDesignReviewOperationTerminal);
-  markSubagentsReady();
-
-  // ── fake RPC bus (the ONLY mock) ─────────────────────────────────────────
-  const handlers = new Map<string, Array<(p: unknown) => void>>();
-  const ownerEntries: unknown[] = [];
+  // ── design-review chain RPC state (the ONLY mock: the RPC boundary) ──────
   const rpcPrompts: string[] = [];
   const spawnIds: string[] = [];
-  const wakeMessages: string[] = [];
   let rpcCount = 0;
   let nextId = 0;
   // Lifecycle-aware registry: production records move out of the live set
   // when the run ends, so report consumption is never deferred forever.
   const agentRecords = new Map<string, { status: string; sessionFile: string }>();
-  const ownerPi = {
-    appendEntry: (customType: string, data: unknown) => {
-      ownerEntries.push({ type: "custom", customType, data });
+
+  let reqDoc = "";
+  let planDoc = "";
+  let devArtifact = "";
+  let busApi: CompositionHarness["bus"] | undefined;
+
+  const composition = makeCompositionHarness({
+    dirs: ["agents", "verify"],
+    childFileName: "develop-executor.jsonl",
+    childSessionName: "develop-executor#a1b2c3d4",
+    skipDispatchAssets: opts?.skipDispatchAssets,
+    configure: (config, projectRoot) => {
+      reqDoc = path.join(projectRoot, "docs", "design", "191_Feat.md");
+      planDoc = path.join(projectRoot, "docs", "design", "191_Feat_Plan.md");
+      devArtifact = path.join(projectRoot, "docs", "design", "191_Feat_dev.md");
+      fs.writeFileSync(reqDoc, "# Requirements\ncontent\n", "utf-8");
+      fs.writeFileSync(planDoc, "# Plan\ninitial design\n", "utf-8");
+
+      for (const [stage, agent] of [
+        ["design-review", "design-review-agent"],
+        ["plan", "plan-agent"],
+        ["develop", "develop-agent"],
+      ] as const) {
+        const agentRel = `agents/${agent}.md`;
+        fs.writeFileSync(path.join(projectRoot, agentRel), `---\nname: ${agent}\n---\nbody\n`, "utf-8");
+        config.stages[stage] = { ...config.stages[stage], agentPath: agentRel };
+      }
+      config.stages["design-review"] = {
+        ...config.stages["design-review"]!,
+        verify: { require: true },
+      };
+      const planVerifyFile = path.join(projectRoot, "verify", "plan-verify.md");
+      fs.writeFileSync(
+        planVerifyFile,
+        "---\nrules:\n  requiredFiles:\n    - \"docs/design/191_Feat_Plan.md\"\n---\nplan gate\n",
+        "utf-8",
+      );
+      config.stages["plan"] = {
+        ...config.stages["plan"]!,
+        verify: { require: true, verifyFile: planVerifyFile },
+        confirm: { mode: "manual" },
+      };
+      // develop keeps its REAL next stage (the plan forbids hiding consumption
+      // behind a null terminal) and runs in TOOL mode: the owner consumes the
+      // trusted terminal through the real `pipeline_verify` entry.
+      const developVerifyFile = path.join(projectRoot, "verify", "develop-verify.md");
+      fs.writeFileSync(
+        developVerifyFile,
+        "---\nrules:\n  requiredFiles:\n    - \"docs/design/191_Feat_dev.md\"\n---\ndevelop gate\n",
+        "utf-8",
+      );
+      config.stages["develop"] = {
+        ...config.stages["develop"]!,
+        nextStage: "review",
+        verify: { require: true, mode: "tool", verifyFile: developVerifyFile },
+      };
     },
-    events: {
-      emit: (event: string, payload: Record<string, unknown>) => {
-        if (event === "subagents:rpc:spawn") {
-          rpcCount++;
-          const id = `agent-chain-${++nextId}`;
-          spawnIds.push(id);
-          agentRecords.set(id, { status: "running", sessionFile: childFile });
-          rpcPrompts.push(String(payload.prompt ?? ""));
-          setTimeout(() => {
-            for (const h of handlers.get(`subagents:rpc:spawn:reply:${payload.requestId}`) ?? []) {
-              h({ success: true, data: { id } });
-            }
-          }, 0);
-          return;
-        }
-        for (const h of handlers.get(event) ?? []) h(payload);
-      },
-      on: (event: string, h: (p: unknown) => void) => {
-        handlers.set(event, [...(handlers.get(event) ?? []), h]);
-      },
-      off: (event: string, h: (p: unknown) => void) => {
-        handlers.set(event, (handlers.get(event) ?? []).filter((x) => x !== h));
-      },
+    onEmit: (event, payload) => {
+      if (event !== "subagents:rpc:spawn") return false;
+      rpcCount++;
+      const id = `agent-chain-${++nextId}`;
+      spawnIds.push(id);
+      agentRecords.set(id, { status: "running", sessionFile: composition.childFile });
+      rpcPrompts.push(String(payload.prompt ?? ""));
+      setTimeout(() => {
+        busApi?.emit(`subagents:rpc:spawn:reply:${payload.requestId}`, {
+          success: true,
+          data: { id },
+        });
+      }, 0);
+      return true;
     },
-    sendUserMessage: (m: string) => {
-      wakeMessages.push(m);
-    },
-  };
+  });
+  busApi = composition.bus;
+
+  const { projectRoot, config, ownerFile, childFile, ownerEntries, wakeMessages } = composition;
+  const childEntries = composition.childEntries as BindingEntryLike[];
+  const ownerPi = composition.ownerPi;
+  const childPi = composition.childPi;
+  const childManager = composition.childManager;
+  const childSession = composition.childSession;
+  const session = composition.ownerSession;
+
+  // The composition root registers exactly this handler (index.ts:114).
+  setDesignReviewTerminalHandler(handleDesignReviewOperationTerminal);
+  markSubagentsReady();
+
   // Registry probe: the executor session file is PROVEN, exactly like the
   // runtime registry evidence C3 requires (one unique record per id).
   (globalThis as Record<symbol, unknown>)[MANAGER_KEY] = {
     getRecord: (id: string) => agentRecords.get(id),
     listRecords: () => spawnIds.map((id) => ({ id, ...agentRecords.get(id) })),
   };
-
-  const ownerAdapterCtx = {
-    sessionManager: { getEntries: () => ownerEntries, getBranch: () => ownerEntries },
-  };
-  const session = createSessionState(ownerPi as never, ownerAdapterCtx as never, {
-    projectRoot,
-    auditDir: ".pi/audit",
-  });
 
   session.updateMeta(
     makeTestMeta({
@@ -286,27 +431,7 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
   };
   const hook = createAgentSettled(config);
 
-  // ── child session (the bound develop executor) ───────────────────────────
-  const childEntries: BindingEntryLike[] = [];
-  const childPi = {
-    appendEntry: (customType: string, data: unknown) => {
-      childEntries.push({ type: "custom", customType, data });
-    },
-    events: ownerPi.events, // same bus: children share the runtime channel
-    sendUserMessage: (_m: string) => {},
-  };
-  const childManager = {
-    getEntries: () => childEntries,
-    getBranch: () => childEntries,
-    getSessionFile: () => childFile,
-    getSessionName: () => "develop-executor#a1b2c3d4",
-    getHeader: () => ({ parentSession: ownerFile }),
-  };
-  const childSession = createSessionState(childPi as never, { sessionManager: childManager } as never, {
-    projectRoot,
-    auditDir: ".pi/audit",
-  });
-
+  // ── child session (the bound develop executor, from the composition) ─────
   // Async lifecycle/wake observers run through promise chains whose length
   // varies with scheduler load, so a fixed timer is a flake. Poll until the
   // observable state (run record + wake queue) repeats across two
@@ -436,9 +561,7 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
       if (prevManager === undefined) delete (globalThis as Record<symbol, unknown>)[MANAGER_KEY];
       else (globalThis as Record<symbol, unknown>)[MANAGER_KEY] = prevManager;
       __resetSubagentsReady();
-      __resetAuditDirPath();
-      __resetSharedStateDir();
-      fs.rmSync(projectRoot, { recursive: true, force: true });
+      composition.cleanup();
     },
   };
   return harness;

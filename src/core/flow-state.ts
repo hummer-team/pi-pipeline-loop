@@ -37,6 +37,7 @@ import { probeAgentState } from "../utils/subagents-introspect";
 import {
   markInputUnavailable,
   isInputUnavailable,
+  markReasonChangeAudited,
 } from "./decision-menu-runtime";
 import type {
   EnsureDecisionMenuOpts,
@@ -1345,6 +1346,11 @@ async function promptStageSelectionDetailed(
     budgetValue?: number;
     /** 208 G5: presentation attempt index for the `decision_menu_presented` audit. */
     attempt?: number;
+    /**
+     * 208: command entries pass `false` — they own the single user-facing
+     * message, so the runtime must not notify on Esc/cancel.
+     */
+    notifyOnCancel?: boolean;
   },
 ): Promise<MenuAttemptDetail> {
   const { ui, source, tuiEnabled } = opts;
@@ -1420,7 +1426,7 @@ async function promptStageSelectionDetailed(
       stage: meta.currentStage,
       context: "choose_stage_secondary",
     });
-    if (tuiEnabled) {
+    if (tuiEnabled && opts.notifyOnCancel !== false) {
       ui.notify?.(
         `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint()}`,
       );
@@ -1544,6 +1550,7 @@ async function presentDecisionMenuCore(
           onStageChanged: opts.onStageChanged,
           budgetValue: opts.budgetValue,
           attempt,
+          notifyOnCancel: opts.notifyOnCancel,
         });
       }
 
@@ -1587,7 +1594,7 @@ async function presentDecisionMenuCore(
           stage: meta.currentStage,
         });
 
-        if (tuiEnabled) {
+        if (tuiEnabled && opts.notifyOnCancel !== false) {
           const freshMeta = ctx.session.getMeta() ?? meta;
           ui.notify?.(
             `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint()}`,
@@ -1610,6 +1617,7 @@ async function presentDecisionMenuCore(
             onStageChanged: opts.onStageChanged,
             budgetValue: opts.budgetValue,
             attempt,
+            notifyOnCancel: opts.notifyOnCancel,
           });
         }
 
@@ -1617,6 +1625,13 @@ async function presentDecisionMenuCore(
         if (decision === "set_budget") {
           const input = await promptBudgetValue(ui, freshMeta, config);
           if (input.kind === "cancelled") {
+            // 208: same cancel semantics as Esc — keep frozen and (unless the
+            // command owns the message) tell the user why nothing changed.
+            if (tuiEnabled && opts.notifyOnCancel !== false) {
+              ui.notify?.(
+                `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint()}`,
+              );
+            }
             return { outcome: "cancelled", applied: false, decision };
           }
           if (input.kind === "unavailable") {
@@ -2000,6 +2015,9 @@ export async function freezeAndPrompt(
       previousReason,
       reason,
     }, "warn");
+    // Single write point (J6): tell the scheduler that this transition is
+    // already recorded, so the next presentation does not duplicate it.
+    markReasonChangeAudited(liveMeta.pipelineId, previousReason, reason);
 
     if (hostRole === "child") {
       await armChildEscalation(ctx, liveMeta, reason);

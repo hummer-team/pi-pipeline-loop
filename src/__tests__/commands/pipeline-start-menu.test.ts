@@ -8,7 +8,10 @@
  *    existing "Decision executed." success string (contract unchanged);
  * 3. awaiting_human / blocked branches without UI → success=false, error
  *    contains the decision-menu hint plus stage/formatFrozenReason, and
- *    NOTHING is notified (notify call count 0, single message channel).
+ *    NOTHING is notified (notify call count 0, single message channel);
+ * 4. cancelled attribution (review round 2): primary Esc, cancelled
+ *    set_budget input and secondary-menu Esc all return the "remains frozen"
+ *    message exactly once — never the no-menu fallback, never a runtime notify.
  */
 import { describe, it, expect, beforeEach, afterEach, jest } from "bun:test";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
@@ -170,5 +173,67 @@ describe("208 Phase 3: /pipeline-start menu semantics", () => {
     expect(result.error).toContain(formatDecisionMenuHint());
     expect(notifications.filter((m) => m.includes("No decision menu is available")).length).toBe(0);
     expect(selectCalls.length).toBe(0);
+  });
+
+  // ─── cancelled attribution (review round 2, issue 1) ─────────────────────
+  // A user cancel is NOT a no-menu condition: the command must return the
+  // "remains frozen" message exactly once (runtime notify suppressed).
+
+  it("test 4a: primary slow Esc → cancelled branch, 'remains frozen', no runtime notify", async () => {
+    const meta = freshMeta();
+    const { ctx, notifications } = makeStartCtx(meta);
+    jest.useFakeTimers();
+    ctx.ui!.select = async () => {
+      jest.advanceTimersByTime(1600); // >= DECISION_DISMISS_INTERRUPT_MS → user Esc
+      return undefined;
+    };
+    const config = makeTestConfig({ projectRoot: TMP });
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`Pipeline remains frozen at "${meta.currentStage}"`);
+    expect(result.error).toContain(formatDecisionMenuHint());
+    expect(result.error).not.toContain("No decision menu is available");
+    expect(notifications.length).toBe(0); // command owns the single message
+    expect(__hasDecisionTimer(meta.pipelineId)).toBe(false);
+  });
+
+  it("test 4b: cancelled set_budget input → cancelled branch, 'remains frozen', no notify", async () => {
+    const meta = freshMeta({ blockedReason: "max_loop_cycles" });
+    const { ctx, notifications } = makeStartCtx(meta);
+    (ctx.ui as { input?: unknown }).input = async () => undefined;
+    q("设置轮次");
+    const config = makeTestConfig({ projectRoot: TMP });
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`Pipeline remains frozen at "${meta.currentStage}"`);
+    expect(result.error).not.toContain("No decision menu is available");
+    expect(notifications.length).toBe(0);
+    expect(meta.flowState).toBe("blocked");
+  });
+
+  it("test 4c: secondary menu slow Esc → cancelled branch, 'remains frozen', no notify", async () => {
+    const meta = freshMeta();
+    const { ctx, notifications } = makeStartCtx(meta);
+    jest.useFakeTimers();
+    let call = 0;
+    ctx.ui!.select = async () => {
+      call++;
+      if (call === 1) return "Choose stage…";
+      jest.advanceTimersByTime(1600); // user Esc in the secondary list
+      return undefined;
+    };
+    const config = makeTestConfig({ projectRoot: TMP });
+    const cmd = createPipelineStartCommand(config);
+    const result: any = await cmd.execute({ file: "req.md" }, ctx as any);
+
+    expect(call).toBe(2);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`Pipeline remains frozen at "${meta.currentStage}"`);
+    expect(result.error).not.toContain("No decision menu is available");
+    expect(notifications.length).toBe(0);
   });
 });

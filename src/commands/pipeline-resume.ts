@@ -296,6 +296,9 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
               onStageChanged: onStageChangedForResume,
               // Commands own the single user-facing no-menu message (no second notify).
               notifyOnUnavailable: false,
+              // Same rule for Esc/cancelled input: the returned message is the
+              // only channel, so the runtime must not notify as well.
+              notifyOnCancel: false,
             },
           );
           const current = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;

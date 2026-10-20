@@ -1412,6 +1412,7 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
                 source: "command",
                 onStageChanged,
                 notifyOnUnavailable: false, // command returns the message; no second notify
+                notifyOnCancel: false, // same single-channel rule for Esc / cancelled input
               },
             );
             const retrySeconds = Math.max(1, Math.round((menu.retryDelayMs ?? 5000) / 1000));
@@ -1431,7 +1432,17 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
                 : "run /pipeline-resume to reopen it.";
               return { success: false, error: `Decision menu interrupted; ${reopen}` };
             }
-            // no-menu / cancelled: keep stage + freeze reason (do not degrade to
+            // cancelled (primary Esc / secondary Esc / cancelled budget input):
+            // the pipeline stays frozen. The command owns the single message —
+            // `notifyOnCancel: false` suppressed the runtime notify.
+            if (menu.outcome === "cancelled") {
+              const fresh = (ctx.session.getMeta() as SessionMeta | undefined) ?? frozenMeta;
+              return {
+                success: false,
+                error: `Pipeline remains frozen at "${fresh.currentStage}" (${formatFrozenReason(fresh)}). ${formatDecisionMenuHint()}`,
+              };
+            }
+            // no-menu: keep stage + freeze reason (do not degrade to
             // a bare "Pipeline frozen").
             const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? frozenMeta;
             const unavailable = menu.unavailableReason ?? "unknown";

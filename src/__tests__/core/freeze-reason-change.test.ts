@@ -11,7 +11,7 @@
  * 5. reason change with an in-flight menu → join (select still 1), no extra
  *    popup for the new reason, only the `pipeline_block_reason_changed` audit.
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, jest } from "bun:test";
 import {
   freezeAndPrompt,
   ensureDecisionMenu,
@@ -120,6 +120,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  jest.useRealTimers();
   __setSafeWriteAuditLogOverride(null);
   clearAllDecisionTimers();
 });
@@ -241,6 +242,30 @@ describe("208 Phase 2: freezeAndPrompt J6 reason change", () => {
     await Promise.all([p1, p2]);
     // Still exactly one select for both the original and the joined callers
     expect(selectCalls.length).toBe(1);
+    expect(__decisionTimerCount()).toBe(0);
+  });
+
+  it("test 6: interrupted popup + pending timer, then a different reason → audit written once", async () => {
+    begin({ flowState: "running", blockedReason: undefined });
+    jest.useFakeTimers();
+    clearAllDecisionTimers();
+
+    // First freeze: the popup is dismissed instantly (streaming interrupt) and
+    // the scheduler keeps a pending backoff timer + lastPresentedReason.
+    q(undefined);
+    await freezeAndPrompt(ctx, meta, "loop_overflow", config);
+    expect(__decisionTimerCount()).toBe(1);
+    expect(audits.some((a) => a.event === "pipeline_block_reason_changed")).toBe(false);
+
+    // Second freeze with a DIFFERENT reason while that timer is still pending:
+    // freezeAndPrompt records the transition, the scheduler must not repeat it.
+    q("Resume");
+    await freezeAndPrompt(ctx, meta, "verify_failure_loop_overflow", config);
+
+    const change = audits.filter((a) => a.event === "pipeline_block_reason_changed");
+    expect(change.length).toBe(1);
+    expect(change[0].message?.previousReason).toBe("loop_overflow");
+    expect(change[0].message?.reason).toBe("verify_failure_loop_overflow");
     expect(__decisionTimerCount()).toBe(0);
   });
 });
