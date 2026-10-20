@@ -1478,11 +1478,14 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 #### 13.3.1 /pipeline-resume 菜单化契约（Phase 1 / 182）
 
-- frozen 态 + 有 UI → 弹出六项一级决策菜单（owner-only，子会话不弹）
-- frozen 态 + 无 UI（child 会话 / TUI 不可用）→ fail-soft 回退旧路径（executeDecision("resume") + syncStageStatusBar + dispatch）
-- `--force-resume` flag → 跳过菜单直走旧 resume 路径（逃生开关，用于菜单化交互不符合预期的场景）
-- 菜单 cancelled / interrupted → 保持冻结状态，返回冻结提示（不静默解冻）
-- 菜单 decided + choose_stage → 状态栏即时同步 + 自动派发 stage executor（Phase 0 善后）
+- frozen 态 + 有 UI → 弹出决策菜单（owner-only，子会话不弹）
+- frozen 态 + 无 UI（child 会话 / TUI 不可用）→ **保持冻结**：notify 冻结原因 + `/pipeline-resume` 提示，
+  写 `resume_skipped_no_menu`（reason = `no_ui` / `child_session` / `select_error`），不静默解冻
+- 菜单被流式输出打断（<1500ms 的 `undefined`）或决策未生效 → 5s 起指数退避自动重弹（封顶 60s）；
+  用户 Esc（>=1500ms）后停止主动重试，下一次 agent settle 仍会重弹
+- `--force-resume` flag → 跳过菜单直走旧 resume 路径（逃生开关）
+- 菜单能力降级：宿主无 `ui.input` 时 `max_loop_cycles` 菜单不提供「设置轮次」，请用 Resume（重置轮次计数）或 Restart & New
+- 菜单 decided 且 choose_stage → 状态栏即时同步 + 自动派发 stage executor
 - awaiting_human 的 "Resume" 特例行为不变（回跳 previousStage，173-C9 语义）
 
 ---
