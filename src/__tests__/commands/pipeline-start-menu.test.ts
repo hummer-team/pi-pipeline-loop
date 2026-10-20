@@ -203,7 +203,7 @@ describe("208 Phase 3: /pipeline-start menu semantics", () => {
     const meta = freshMeta({ blockedReason: "max_loop_cycles" });
     const { ctx, notifications } = makeStartCtx(meta);
     (ctx.ui as { input?: unknown }).input = async () => undefined;
-    q("设置轮次");
+    q("Set round budget");
     const config = makeTestConfig({ projectRoot: TMP });
     const cmd = createPipelineStartCommand(config);
     const result: any = await cmd.execute({ file: "req.md" }, ctx as any);

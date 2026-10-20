@@ -397,7 +397,7 @@ describe("208 Phase 1: option forwarding and meta freshness", () => {
     jest.useFakeTimers();
     meta.blockedReason = "max_loop_cycles";
     meta.loopCycleCount = 2;
-    q(undefined, "设置轮次");
+    q(undefined, "Set round budget");
     (ctx.ui as NonNullable<FlowStateCtx["ui"]>).input = async () => "9";
 
     const r1 = await ensureDecisionMenu(ctx, meta, config, { source: "freeze" });
@@ -467,7 +467,7 @@ describe("208 Phase 1: restart re-binding", () => {
   it("test 16: old pid timer self-destructs; new pid presents, set_budget returns", async () => {
     begin();
     jest.useFakeTimers();
-    q(undefined, "设置轮次");
+    q(undefined, "Set round budget");
     (ctx.ui as NonNullable<FlowStateCtx["ui"]>).input = async () => "8";
     markInputUnavailable("pipe-old");
 
@@ -515,7 +515,7 @@ describe("208 Phase 1: input error handling (J3/D2)", () => {
   it("test 18: ui.input throws → retryable=false, no timer armed", async () => {
     begin();
     meta.blockedReason = "max_loop_cycles";
-    q("设置轮次");
+    q("Set round budget");
     (ctx.ui as NonNullable<FlowStateCtx["ui"]>).input = async () => {
       throw new Error("input dialog exploded");
     };
@@ -638,7 +638,7 @@ describe("208 Phase 1: scheduler table ownership after a shutdown clear", () => 
     await drain();
     expect(selectCalls.length).toBe(2);
 
-    release1("设置轮次");
+    release1("Set round budget");
     const r1 = await p1;
     expect(r1.retryArmed).toBe(false);
 

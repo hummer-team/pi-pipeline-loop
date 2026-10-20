@@ -111,7 +111,7 @@ describe("208 Phase 0: set_budget via ui.input", () => {
     const meta = maxLoopMeta();
     const notify = (msg: string) => notifyCalls.push(msg);
     const ctx = makeCtx(meta, {
-      select: async () => "设置轮次",
+      select: async () => "Set round budget",
       input: async () => "8",
       notify,
     });
@@ -128,7 +128,7 @@ describe("208 Phase 0: set_budget via ui.input", () => {
   it("test 2: ui.input undefined → cancelled, no decision_not_applied (J1: empty/cancel never retried)", async () => {
     const meta = maxLoopMeta();
     const ctx = makeCtx(meta, {
-      select: async () => "设置轮次",
+      select: async () => "Set round budget",
       input: async () => undefined,
       notify: (msg: string) => notifyCalls.push(msg),
     });
@@ -144,7 +144,7 @@ describe("208 Phase 0: set_budget via ui.input", () => {
   it("test 3a: ui.input 'abc' (cycle 3) → interrupted, notify 'positive number', not audited", async () => {
     const meta = maxLoopMeta({ loopCycleCount: 3 });
     const ctx = makeCtx(meta, {
-      select: async () => "设置轮次",
+      select: async () => "Set round budget",
       input: async () => "abc",
       notify: (msg: string) => notifyCalls.push(msg),
     });
@@ -160,7 +160,7 @@ describe("208 Phase 0: set_budget via ui.input", () => {
   it("test 3b: ui.input '2' (cycle 3) → interrupted, notify 'must be greater than', not audited", async () => {
     const meta = maxLoopMeta({ loopCycleCount: 3 });
     const ctx = makeCtx(meta, {
-      select: async () => "设置轮次",
+      select: async () => "Set round budget",
       input: async () => "2",
       notify: (msg: string) => notifyCalls.push(msg),
     });
@@ -176,7 +176,7 @@ describe("208 Phase 0: set_budget via ui.input", () => {
   it("test 4: ui.input throws → decided+applied=false, audited input_error, capability dropped", async () => {
     const meta = maxLoopMeta();
     const ctx = makeCtx(meta, {
-      select: async () => "设置轮次",
+      select: async () => "Set round budget",
       input: async () => {
         throw new Error("dialog exploded");
       },
@@ -202,11 +202,11 @@ describe("208 Phase 0: set_budget via ui.input", () => {
 // ─── 5: menu capability degradation ─────────────────────────────────────────
 
 describe("208 Phase 0: buildDecisionMenu capability filter (J1)", () => {
-  it("test 5a: with rework back-edge + input:false → 4 items, no 设置轮次", () => {
+  it("test 5a: with rework back-edge + input:false → 4 items, no Set round budget", () => {
     const meta = maxLoopMeta();
     const config = makeTestConfig();
     const menu = buildDecisionMenu(meta, "max_loop_cycles", config, { input: false });
-    expect(menu).toEqual(["回退上一轮", "Restart & New", "Abort & Exit", "Resume"]);
+    expect(menu).toEqual(["Rewind last_round", "Restart & New", "Abort & Exit", "Resume"]);
   });
 
   it("test 5b: without rework back-edge + input:false → 3 items", () => {
@@ -220,8 +220,8 @@ describe("208 Phase 0: buildDecisionMenu capability filter (J1)", () => {
     const meta = maxLoopMeta();
     const config = makeTestConfig();
     const menu = buildDecisionMenu(meta, "max_loop_cycles", config);
-    expect(menu).toContain("设置轮次");
-    expect(menu).toContain("回退上一轮");
+    expect(menu).toContain("Set round budget");
+    expect(menu).toContain("Rewind last_round");
   });
 });
 

@@ -83,7 +83,7 @@ function buildRoleCtxForGate(ctx: FlowStateCtx): RuntimeCtx {
   // SAFETY: FlowStateCtx contains a subset of RuntimeCtx fields (_ctx, ui, session).
   // This cast is safe because we only use role-detection APIs that don't access
   // other RuntimeCtx properties (toolCall, etc.). Verified by session-role.ts contract.
-  return { 
+  return {
     _ctx: ctx._ctx,
     ui: ctx.ui,
     session: ctx.session
@@ -138,8 +138,8 @@ const DECISION_LABELS: Record<PipelineDecision, string> = {
   restart: "Restart & New",
   abort: "Abort & Exit",
   choose_stage: "Choose stage…",
-  set_budget: "设置轮次",
-  rewind_last_round: "回退上一轮",
+  set_budget: "Set round budget",
+  rewind_last_round: "Rewind last_round",
 };
 
 // ─── getFlowState ───────────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ export function isFrozen(meta: SessionMeta): boolean {
  * Phase 6 (195): Now accepts blockedReason and config to dynamically adjust menu items.
  *
  * - aborted → null (do not show menu)
- * - blockedReason === "max_loop_cycles" → [set_budget/回退上一轮/restart/abort/resume] (203_Bug Phase 1: all always offered)
+ * - blockedReason === "max_loop_cycles" → [set_budget/Rewind last_round/restart/abort/resume] (203_Bug Phase 1: all always offered)
  *   - rewind only when deriveReworkLoopGate(meta, config) !== null (structural gate)
  *   - 208 (J1): `set_budget` is offered only when `capabilities.input === true`
  *     (menu degradation when the host has no usable `ui.input`)
@@ -231,7 +231,7 @@ export function buildDecisionMenu(
 
       return items;
     }
-    
+
     // Other blocked reasons: standard 6-item menu (E17)
     return [
       DECISION_LABELS.resume,
@@ -867,7 +867,7 @@ export async function executeDecision(
       // restore the guard anyway); rewind itself keeps baseline continuity.
 
       const gate = deriveReworkLoopGate(meta, config);
-      
+
       if (gate === null) {
         await safeWriteAuditLog("rewind_target_unresolved", {
           pipelineId: meta.pipelineId,
@@ -876,7 +876,7 @@ export async function executeDecision(
           reason: "No valid rework loop gate found in stageVisitOrder",
           ...(opts?.source ? { source: opts.source } : {}),
         });
-        return { success: false, message: "未能定位上一轮返工起点" };
+        return { success: false, message: "Failed to locate the starting point of previous rework" };
       }
 
       if (gate === "completed" || gate === "awaiting_human") {

@@ -162,10 +162,10 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       // Plan Phase 6 order: base 4 items fixed, resume appended when budget
-      // remains — first item must be 设置轮次 (menu-order acceptance).
+      // remains — first item must be Set round budget (menu-order acceptance).
       expect(menu).toEqual([
-        "设置轮次",
-        "回退上一轮",
+        "Set round budget",
+        "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
         "Resume",
@@ -187,8 +187,8 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
-        "设置轮次",
-        "回退上一轮",
+        "Set round budget",
+        "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
         "Resume",
@@ -208,8 +208,8 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
-        "设置轮次",
-        "回退上一轮",
+        "Set round budget",
+        "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
         "Resume",
@@ -229,8 +229,8 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
-        "设置轮次",
-        "回退上一轮",
+        "Set round budget",
+        "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
         "Resume",
@@ -249,12 +249,12 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
-        "设置轮次",
+        "Set round budget",
         "Restart & New",
         "Abort & Exit",
         "Resume",
       ]);
-      expect(menu).not.toContain("回退上一轮");
+      expect(menu).not.toContain("Rewind last_round");
     });
 
     it("max_loop_cycles with all limits reached shows all 5 items (gates removed)", () => {
@@ -270,8 +270,8 @@ describe("buildDecisionMenu", () => {
       });
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
-        "设置轮次",
-        "回退上一轮",
+        "Set round budget",
+        "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
         "Resume",
@@ -1045,7 +1045,7 @@ describe("freezeAndPrompt", () => {
     const meta = makeTestMeta({ flowState: "running" });
     const notifications: string[] = [];
     let selectCalled = false;
-    
+
     // Create a child context with parentSession in header
     const childCtx = {
       session: {
@@ -1078,11 +1078,11 @@ describe("freezeAndPrompt", () => {
     // Child should still freeze
     expect(meta.flowState).toBe("blocked");
     expect(meta.blockedReason).toBe("loop_overflow");
-    
+
     // Notify should be called (Phase 4 behavior)
     expect(notifications.length).toBe(1);
     expect(notifications[0]).toContain("loop_overflow");
-    
+
     // But select (menu) should NOT be called (child-role suppression)
     expect(selectCalled).toBe(false);
   });

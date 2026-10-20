@@ -1484,7 +1484,7 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 - 菜单被流式输出打断（<1500ms 的 `undefined`）或决策未生效 → 5s 起指数退避自动重弹（封顶 60s）；
   用户 Esc（>=1500ms）后停止主动重试，下一次 agent settle 仍会重弹
 - `--force-resume` flag → 跳过菜单直走旧 resume 路径（逃生开关）
-- 菜单能力降级：宿主无 `ui.input` 时 `max_loop_cycles` 菜单不提供「设置轮次」，请用 Resume（重置轮次计数）或 Restart & New
+- 菜单能力降级：宿主无 `ui.input` 时 `max_loop_cycles` 菜单不提供「Set round budget」，请用 Resume（重置轮次计数）或 Restart & New
 - 菜单 decided 且 choose_stage → 状态栏即时同步 + 自动派发 stage executor
 - awaiting_human 的 "Resume" 特例行为不变（回跳 previousStage，173-C9 语义）
 

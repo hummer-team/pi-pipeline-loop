@@ -1,10 +1,10 @@
 /**
  * Issue 195 Phase 10 — Field replay integration test
- * 
+ *
  * Reproduces the vaultmind-equivalent scenario: develop→review→fix→review loop
  * with maxLoopCycles=5, verifies freeze at review on 6th attempt, and validates
  * set_budget/rewind_last_round decision exits.
- * 
+ *
  * Test structure:
  * - Uses template chain from pipeline_loop.json (fix→review, maxLoopCycles=5)
  * - Drives 5 rounds of review→fix→review using recordStageVisit
@@ -56,7 +56,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
   test("5 rounds of review→fix→review, freeze at round 6 review", () => {
     const pipelineId = "pipe-issue195-replay-1";
-    
+
     // Initial meta at develop stage
     let meta: SessionMeta = {
       currentStage: "develop",
@@ -81,7 +81,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
       // review→fix
       result = recordStageVisit(meta, "fix", maxCycles, config);
       expect(result.ok).toBe(true);
-      
+
       // Round 1: C0 first visit (not counted), Rounds 2+: C3 loop_return (counted)
       if (round === 1) {
         expect(result.edgeKind).toBe("first");
@@ -109,14 +109,14 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
     // Round 6: review→fix attempt should freeze
     result = recordStageVisit(meta, "fix", maxCycles, config);
     expect(result.ok).toBe(false);
-    
+
     // Type guard: check ok is false before accessing wouldFreeze
     if (!result.ok) {
       expect(result.wouldFreeze).toBe(true);
       expect(result.edgeKind).toBe("loop_return");
       expect(result.counted).toBe(true);
       expect(result.patch.loopCycleCount).toBe(5);
-      
+
       // Verify stageVisitOrder after freeze attempt
       const visitOrder = result.patch.stageVisitOrder!;
       expect(visitOrder.length).toBe(15); // initial 3 + develop→review (1) + 5 rounds × 2 (10) + freeze attempt (1)
@@ -132,14 +132,14 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
       const gate = deriveReworkLoopGate(frozenMeta, config);
       expect(gate).toBe("review");
     }
-    
+
     // Freeze at review (currentStage unchanged)
     expect(meta.currentStage).toBe("review");
   });
 
   test("set_budget extends max and unblocks", async () => {
     const pipelineId = "pipe-issue195-replay-2";
-    
+
     // Set up frozen meta at review with loopCycleCount=5
     let meta: SessionMeta = {
       currentStage: "review",
@@ -184,7 +184,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
   test("rewind_last_round rewinds to review and resets state", async () => {
     const pipelineId = "pipe-issue195-replay-3";
-    
+
     // Set up frozen meta at review with loopCycleCount=5
     let meta: SessionMeta = {
       currentStage: "review",
@@ -234,7 +234,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
   test("set_budget rejects when not frozen", async () => {
     const pipelineId = "pipe-issue195-replay-4";
-    
+
     let meta: SessionMeta = {
       currentStage: "review",
       flowState: "running", // not frozen
@@ -263,7 +263,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
   test("rewind_last_round rejects when not frozen", async () => {
     const pipelineId = "pipe-issue195-replay-5";
-    
+
     let meta: SessionMeta = {
       currentStage: "review",
       flowState: "running", // not frozen
@@ -290,7 +290,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
   test("set_budget rejects when budgetValue <= current loopCycleCount", async () => {
     const pipelineId = "pipe-issue195-replay-6";
-    
+
     let meta: SessionMeta = {
       currentStage: "review",
       flowState: "blocked",
@@ -321,7 +321,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
   test("rewind_last_round rejects when gate is null", async () => {
     const pipelineId = "pipe-issue195-replay-7";
-    
+
     // Set up frozen meta with no counted edges in stageVisitOrder
     let meta: SessionMeta = {
       currentStage: "review",
@@ -347,7 +347,7 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
     const result = await executeDecision(ctx as any, meta, "rewind_last_round", config);
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain("未能定位上一轮返工起点");
+    expect(result.message).toContain("Failed to locate the starting point of previous rework");
 
     // Verify audit event
     const unresolvedAudit = auditEvents.find(e => e.stage === "rewind_target_unresolved");
@@ -430,13 +430,13 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
     // 203_Bug Phase 1: gating removed — service menu always contains all 5 items
     expect(menu).not.toBeNull();
     expect(menu!.length).toBe(5);
-    expect(menu).toContain("设置轮次");
-    expect(menu).toContain("回退上一轮");
+    expect(menu).toContain("Set round budget");
+    expect(menu).toContain("Rewind last_round");
     expect(menu).toContain("Restart & New");
     expect(menu).toContain("Abort & Exit");
     expect(menu).toContain("Resume");
 
-    // First item must be set_budget (设置轮次)
-    expect(menu![0]).toBe("设置轮次");
+    // First item must be set_budget (Set round budget)
+    expect(menu![0]).toBe("Set round budget");
   });
 });

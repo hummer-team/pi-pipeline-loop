@@ -233,7 +233,7 @@ describe("208 Phase 3: /pipeline-resume menu semantics", () => {
   it("test 6: guard-rejected rewind → 'Decision not applied' + guard_rejected + auto reopen copy", async () => {
     const meta = freshMeta(); // no stageVisitOrder → rewind gate unresolved
     const ctx = makeMenuCtx(meta);
-    q("回退上一轮");
+    q("Rewind last_round");
     const config = makeTestConfig();
     const cmd = createPipelineResumeCommand(config);
     const result: any = await cmd.execute({}, ctx as any);
