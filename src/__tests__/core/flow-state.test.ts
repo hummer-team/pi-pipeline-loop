@@ -824,7 +824,7 @@ describe("executeDecision", () => {
       const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(false);
-      expect(result.message).toContain("未能定位");
+      expect(result.message).toContain("Failed to locate the starting point of previous rework");
       expect(meta.flowState).toBe("blocked"); // frozen state maintained
       expect(meta.currentStage).toBe("develop"); // unchanged
     });
@@ -840,7 +840,7 @@ describe("executeDecision", () => {
       const result = await executeDecision(ctx, meta, "rewind_last_round", templateChainConfig);
 
       expect(result.success).toBe(false);
-      expect(result.message).toContain("未能定位");
+      expect(result.message).toContain("Failed to locate the starting point of previous rework");
       expect(meta.flowState).toBe("blocked"); // frozen state maintained
     });
 
