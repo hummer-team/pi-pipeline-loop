@@ -40,8 +40,10 @@ import {
 } from "./decision-menu-runtime";
 import type {
   EnsureDecisionMenuOpts,
+  EnsureDecisionMenuResult,
   MenuAttemptDetail,
   DecisionMenuCapabilities,
+  DecisionMenuRuntimeDeps,
 } from "./decision-menu-runtime";
 import type { PromptDecisionOutcome as RuntimePromptDecisionOutcome } from "./decision-menu-runtime";
 
@@ -1775,30 +1777,54 @@ export async function promptDecisionMenuDetailed(
   return detail;
 }
 
-// ─── Phase 6 (172) G5: Decision retry scheduler ──────────────────────────────
+// ─── 208 Phase 1: ensureDecisionMenu binding + legacy scheduler wrapper ──────
+
+// Explicit imports create LOCAL bindings: `export { … } from "…"` alone would
+// not make these names visible inside this module (used below by the legacy
+// wrapper and the re-export surface).
+import {
+  runDecisionMenu,
+  scheduleMenuRetry,
+  clearDecisionTimer,
+  clearAllDecisionTimers,
+  __decisionTimerCount,
+  __hasDecisionTimer,
+} from "./decision-menu-runtime";
+
+// Re-export the runtime surface (callers keep importing from flow-state).
+export {
+  clearDecisionTimer,
+  clearAllDecisionTimers,
+  __decisionTimerCount,
+  __hasDecisionTimer,
+};
+
+/** 208: runtime deps closure — the presentation implementation stays local. */
+function buildDeps(
+  ctx: FlowStateCtx,
+  config: PipelineConfig,
+): DecisionMenuRuntimeDeps {
+  return {
+    readMeta: () => ctx.session.getMeta() as SessionMeta | undefined,
+    isFrozen,
+    present: (live, presentOpts, attempt) =>
+      promptDecisionMenuDetailed(ctx, live, config, presentOpts, attempt),
+  };
+}
+
+/** 208: single entry for every decision-menu presentation. */
+export async function ensureDecisionMenu(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  config: PipelineConfig,
+  opts: EnsureDecisionMenuOpts = {},
+): Promise<EnsureDecisionMenuResult> {
+  return runDecisionMenu(buildDeps(ctx, config), meta.pipelineId, opts);
+}
 
 /**
- * Module-level timer registry for decision menu retry scheduling.
- * Maps pipelineId to its active retry timer. Single implementation point
- * prevents double-scheduling and enables cleanup on shutdown.
- */
-const decisionRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-/** Base delay for the first retry (ms). Subsequent retries use exponential backoff. */
-const RETRY_BASE_DELAY_MS = 5000;
-/** Maximum delay cap for exponential backoff (ms). */
-const RETRY_MAX_DELAY_MS = 60000;
-/** Backoff multiplier for each retry. */
-const RETRY_BACKOFF_FACTOR = 2;
-
-/**
- * Schedules an exponential-backoff retry for the decision menu when the pipeline
- * remains frozen after an interrupted select. Only one timer per pipelineId at a time.
- *
- * @param ctx - FlowStateCtx for re-prompting
- * @param meta - Current SessionMeta
- * @param config - Pipeline configuration
- * @param attempt - Current attempt number (for backoff calculation)
+ * Legacy signature preserved (tests + `freezeAndPrompt` extras): arms a
+ * direct backoff retry without an immediate presentation.
  */
 export function scheduleDecisionRetry(
   ctx: FlowStateCtx,
@@ -1806,93 +1832,16 @@ export function scheduleDecisionRetry(
   config: PipelineConfig,
   attempt: number = 1,
   opts?: {
-    /** Phase 0 (182): forwarded to promptDecisionMenu for choose_stage aftermath. */
+    /** Phase 0 (182): forwarded to the presentation for choose_stage aftermath. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
-    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    /** Phase 5 (195) / 208 F3: budget value survives the retry (was dropped before). */
     budgetValue?: number;
   },
 ): void {
-  const pipelineId = meta.pipelineId;
-  // Clear existing timer for this pipeline (prevent stacking)
-  clearDecisionTimer(pipelineId);
-
-  const delay = Math.min(RETRY_BASE_DELAY_MS * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_MS);
-
-  const timer = setTimeout(async () => {
-    decisionRetryTimers.delete(pipelineId);
-
-    // Re-read meta: self-destruct on any of three conditions:
-    // 1. No meta at all (session cleared)
-    // 2. No longer frozen (user or another channel resolved the block)
-    // 3. Pipeline ID changed (restart swapped the flow — orphaned timer from old flow)
-    //    This is the Phase 1 (173) C7 self-destruct guard that prevents the ×24
-    //    retry storm (V4): after restart the old timer keeps firing against the
-    //    superseded pipelineId, but the current session now belongs to a new flow.
-    const freshMeta = ctx.session.getMeta() as SessionMeta | undefined;
-    if (!freshMeta || !isFrozen(freshMeta) || freshMeta.pipelineId !== pipelineId) {
-      // Ownership mismatch or flow resolved — ensure timer is cleaned up
-      clearDecisionTimer(pipelineId);
-      return;
-    }
-
-    // Re-prompt (single in-flight select, no stacking)
-    const outcome = await promptDecisionMenu(ctx, freshMeta, config, {
-      onStageChanged: opts?.onStageChanged,
-    });
-
-    // Fix: cancelled (user Esc) or decided (user chose action) → stop retry loop.
-    // Only interrupted (streaming dismiss) continues the retry cycle.
-    if (outcome === "cancelled" || outcome === "decided") {
-      return;
-    }
-
-    // If still frozen after prompt, schedule next retry
-    const postMeta = ctx.session.getMeta() as SessionMeta | undefined;
-    if (postMeta && isFrozen(postMeta)) {
-      scheduleDecisionRetry(ctx, postMeta, config, attempt + 1, opts);
-    }
-  }, delay);
-
-  decisionRetryTimers.set(pipelineId, timer);
-}
-
-/**
- * Clears the decision retry timer for a specific pipeline.
- */
-export function clearDecisionTimer(pipelineId: string): void {
-  const timer = decisionRetryTimers.get(pipelineId);
-  if (timer) {
-    clearTimeout(timer);
-    decisionRetryTimers.delete(pipelineId);
-  }
-}
-
-/**
- * Clears all decision retry timers. Called on session shutdown to prevent leaks.
- */
-export function clearAllDecisionTimers(): void {
-  for (const [_id, timer] of decisionRetryTimers) {
-    clearTimeout(timer);
-  }
-  decisionRetryTimers.clear();
-}
-
-/**
- * Test-only helper: returns the number of active decision retry timers.
- * Used by restart-rebind.test.ts to verify that executeDecision("restart")
- * clears the stale timer for the superseded pipeline (V7 mutation self-check).
- * @internal
- */
-export function __decisionTimerCount(): number {
-  return decisionRetryTimers.size;
-}
-
-/**
- * Test-only helper: returns whether a timer exists for the given pipelineId.
- * @internal
- */
-export function __hasDecisionTimer(pipelineId: string): boolean {
-  return decisionRetryTimers.has(pipelineId);
+  scheduleMenuRetry(buildDeps(ctx, config), meta.pipelineId, attempt, {
+    onStageChanged: opts?.onStageChanged,
+    budgetValue: opts?.budgetValue,
+  });
 }
 
 // ─── freezeAndPrompt ────────────────────────────────────────────────────────
