@@ -32,6 +32,33 @@ import type { EscalationPayload } from "../utils/escalation-bus";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "./meta-reset";
 import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
 import { probeAgentState } from "../utils/subagents-introspect";
+// 208: explicit imports create LOCAL bindings — `export { … } from "…"` alone
+// would not make these names visible inside this module (TS2304).
+import {
+  markInputUnavailable,
+  isInputUnavailable,
+} from "./decision-menu-runtime";
+import type {
+  EnsureDecisionMenuOpts,
+  MenuAttemptDetail,
+  DecisionMenuCapabilities,
+} from "./decision-menu-runtime";
+import type { PromptDecisionOutcome as RuntimePromptDecisionOutcome } from "./decision-menu-runtime";
+
+// 208: PromptDecisionOutcome moved down into decision-menu-runtime (Design J4);
+// re-exported here so callers keep importing from flow-state unchanged.
+export type {
+  PromptDecisionOutcome,
+  EnsureDecisionMenuOpts,
+  EnsureDecisionMenuResult,
+  MenuAttemptDetail,
+  DecisionMenuCapabilities,
+  DecisionMenuFailureReason,
+  DecisionMenuUnavailableReason,
+} from "./decision-menu-runtime";
+
+/** Local alias for internal signatures (public type is re-exported above). */
+type PromptDecisionOutcome = RuntimePromptDecisionOutcome;
 
 // ─── Role Detection Helper ──────────────────────────────────────────────────
 
@@ -80,6 +107,8 @@ export interface FlowStateCtx {
   };
   ui?: {
     select?: (message: string, options: string[]) => Promise<string | undefined>;
+    /** 208 (J1/J3): host input dialog — collects the `set_budget` loop budget. */
+    input?: (message: string) => Promise<string | undefined>;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     notify?: (msg: string, ...args: any[]) => void;
   };
@@ -152,10 +181,17 @@ export function isFrozen(meta: SessionMeta): boolean {
  * - aborted → null (do not show menu)
  * - blockedReason === "max_loop_cycles" → [set_budget/回退上一轮/restart/abort/resume] (203_Bug Phase 1: all always offered)
  *   - rewind only when deriveReworkLoopGate(meta, config) !== null (structural gate)
+ *   - 208 (J1): `set_budget` is offered only when `capabilities.input === true`
+ *     (menu degradation when the host has no usable `ui.input`)
  * - Other blocked / awaiting_human → 6 items (resume/skip/rollback/restart/abort/choose_stage)
  * - running → 2 items (restart/abort)
  */
-export function buildDecisionMenu(meta: SessionMeta, blockedReason?: string, config?: PipelineConfig): string[] | null {
+export function buildDecisionMenu(
+  meta: SessionMeta,
+  blockedReason?: string,
+  config?: PipelineConfig,
+  capabilities: DecisionMenuCapabilities = { input: true },
+): string[] | null {
   const fs = getFlowState(meta);
 
   if (fs === "aborted") return null;
@@ -168,9 +204,14 @@ export function buildDecisionMenu(meta: SessionMeta, blockedReason?: string, con
     if (blockedReason === "max_loop_cycles") {
       const items: string[] = [];
 
-      // Plan menu order: [set_budget, rewind, restart, abort, resume] —
-      // all five items always present for a max_loop_cycles freeze.
-      items.push(DECISION_LABELS.set_budget);
+      // Plan menu order: [set_budget, rewind, restart, abort, resume].
+      // 208 (J1): `set_budget` requires a usable `ui.input` — degrade (hide the
+      // item) when the host input capability is unavailable. All other item
+      // counts/order unchanged; the final item count therefore varies with the
+      // rework gate (4 items with a back-edge, 3 without).
+      if (capabilities.input) {
+        items.push(DECISION_LABELS.set_budget);
+      }
 
       // rewind_last_round offered whenever the rework gate can be derived
       const rewindGate = deriveReworkLoopGate(meta, config);
@@ -212,6 +253,25 @@ export function labelToDecision(label: string): PipelineDecision | undefined {
     if (val === label) return key as PipelineDecision;
   }
   return undefined;
+}
+
+/**
+ * 208 (F2): Numeric legality for `set_budget` (shared by menu input and
+ * executeDecision). Frozen-state and `budgetValue` presence guards remain in
+ * `executeDecision`: they are not numeric checks and are protected by
+ * dedicated tests.
+ */
+export function validateBudgetValue(
+  value: number,
+  currentCycleCount: number,
+): { ok: true } | { ok: false; message: string } {
+  if (!Number.isFinite(value) || value <= 0) {
+    return { ok: false, message: "Cannot set budget: budgetValue must be a positive number." };
+  }
+  if (value <= currentCycleCount) {
+    return { ok: false, message: `Cannot set budget: value (${value}) must be greater than current loopCycleCount (${currentCycleCount}).` };
+  }
+  return { ok: true };
 }
 
 // ─── executeDecision ────────────────────────────────────────────────────────
@@ -764,14 +824,10 @@ export async function executeDecision(
         return { success: false, message: "Cannot set budget: budgetValue is required." };
       }
 
-      if (typeof budgetValue !== "number" || budgetValue <= 0) {
-        return { success: false, message: "Cannot set budget: budgetValue must be a positive number." };
-      }
-
-      const currentCycleCount = meta.loopCycleCount ?? 0;
-      if (budgetValue <= currentCycleCount) {
-        return { success: false, message: `Cannot set budget: value (${budgetValue}) must be greater than current loopCycleCount (${currentCycleCount}).` };
-      }
+      // 208 (F2): numeric legality lives in the shared helper (menu input and
+      // executeDecision both validate through validateBudgetValue).
+      const verdict = validateBudgetValue(budgetValue, meta.loopCycleCount ?? 0);
+      if (!verdict.ok) return { success: false, message: verdict.message };
 
       // 203_Bug Phase 1: one-shot "already extended once" guard removed —
       // the budget gate is no longer capped; a later set_budget simply
@@ -1213,19 +1269,67 @@ export function formatDecisionMenuHint(): string {
   return "Run /pipeline-resume to open the decision menu, or /pipeline-resume --force-resume to resume directly.";
 }
 
-export type PromptDecisionOutcome = "cancelled" | "interrupted" | "decided" | "no-menu";
+// (208: PromptDecisionOutcome type moved to decision-menu-runtime.ts and
+// re-exported near the imports above — no inline definition here anymore.)
 
 /**
- * Phase 3 (173) C9: Secondary stage-selection menu helper.
+ * 208 (J1/J3): collect an absolute loop budget from the host input dialog.
+ * Cancel → cancelled (respect Esc, never retried); invalid → invalid (retried
+ * by the caller as `interrupted`); throw → error (no retry, capability drops).
+ *
+ * Discretionary resolution (Design_Review_1 #5): an EMPTY input string is
+ * treated as a cancel (per requirement J1), not as an invalid value.
+ */
+async function promptBudgetValue(
+  ui: NonNullable<FlowStateCtx["ui"]>,
+  meta: SessionMeta,
+  config: PipelineConfig,
+): Promise<BudgetInputResult> {
+  if (typeof ui.input !== "function") return { kind: "unavailable" };
+  const current = meta.loopCycleCount ?? 0;
+  const configured = effectiveMax(meta, config);
+  try {
+    const raw = await ui.input(
+      `Set loop budget (current cycle ${current}, configured max ${configured}; enter an absolute value > ${current}):`,
+    );
+    if (raw === undefined || raw.trim().length === 0) return { kind: "cancelled" };
+    const parsed = Number(raw.trim());
+    const verdict = validateBudgetValue(parsed, current);
+    if (!verdict.ok) return { kind: "invalid", reason: verdict.message };
+    return { kind: "value", value: parsed };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog(
+      "pipeline_decision_error",
+      { pipelineId: meta.pipelineId, stage: meta.currentStage, context: "input", error: reason },
+      "error",
+    );
+    return { kind: "error", reason };
+  }
+}
+
+/** Result of one host-input dialog collection for `set_budget`. */
+type BudgetInputResult =
+  | { kind: "value"; value: number }
+  | { kind: "cancelled" }
+  | { kind: "invalid"; reason: string }
+  | { kind: "unavailable" }
+  | { kind: "error"; reason: string };
+
+/**
+ * Phase 3 (173) C9: Secondary stage-selection menu helper (208 detailed form).
  *
  * Extracted so that shortcut/start/replay/re-popup entries can bypass the
  * first-level 6-item menu when the user's intent is already "choose stage"
  * (e.g. shortcut → Choose stage… should go straight to the stage list
  * instead of re-prompting the entire first-level menu).
  *
- * @returns "decided" on successful choose_stage, "cancelled" on Esc
+ * 208 (F1/F2): returns a full {@link MenuAttemptDetail} instead of a bare
+ * outcome — `interrupted` carries `interruptedStage: "secondary"`, a missed
+ * target stage carries `failureReason: "stage_not_found"`, and the
+ * `executeDecision` success flag is propagated as `applied`.
  */
-async function promptStageSelection(
+async function promptStageSelectionDetailed(
   ctx: FlowStateCtx,
   meta: SessionMeta,
   config: PipelineConfig,
@@ -1235,10 +1339,12 @@ async function promptStageSelection(
     tuiEnabled: boolean;
     /** Phase 0 (182): forwarded to executeDecision for choose_stage aftermath. */
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
-    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    /** Phase 5 (195): forwarded to executeDecision (208 F3: no longer dropped). */
     budgetValue?: number;
+    /** 208 G5: presentation attempt index for the `decision_menu_presented` audit. */
+    attempt?: number;
   },
-): Promise<PromptDecisionOutcome> {
+): Promise<MenuAttemptDetail> {
   const { ui, source, tuiEnabled } = opts;
   const inferenceResult = inferResumeStage(meta, config);
   const inferred = inferenceResult.stage;
@@ -1267,6 +1373,20 @@ async function promptStageSelection(
     }
   }
 
+  // 208 G5: the secondary dialog counts as a real presentation — write the
+  // audit BEFORE `ui.select` so secondary appearances pair with retry events.
+  // Direct retry entries (directStageSelect, e.g. post-secondary interrupt)
+  // hit this write on their first call (menuKind is "secondary" there too).
+  await safeWriteAuditLog("decision_menu_presented", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    source,
+    attempt: String(opts.attempt ?? 1),
+    blockedReason: meta.blockedReason ?? "unknown",
+    menuSize: String(menuItems.length),
+    menuKind: "secondary",
+  });
+
   const attemptAt = Date.now();
   const stageSelection = await ui.select!(
     effectiveInferred
@@ -1278,7 +1398,7 @@ async function promptStageSelection(
   if (stageSelection === undefined) {
     // Phase 3 (173) §3.2 + 172-G5 precedent: distinguish streaming dismiss (<1500ms)
     // from real user Esc. Fast dismiss = system interrupt → return "interrupted" so
-    // replay/freezeAndPrompt arm can scheduleDecisionRetry. Slow dismiss = user Esc
+    // the scheduler arms a directly targeted secondary retry. Slow dismiss = user Esc
     // → audit cancelled and return "cancelled".
     const elapsed = Date.now() - attemptAt;
     if (elapsed < DECISION_DISMISS_INTERRUPT_MS) {
@@ -1288,7 +1408,7 @@ async function promptStageSelection(
         elapsedMs: String(elapsed),
         context: "choose_stage_secondary",
       });
-      return "interrupted";
+      return { outcome: "interrupted", applied: false, interruptedStage: "secondary" };
     }
 
     // User pressed Esc in secondary menu: audit + notify, consistent with primary Esc path.
@@ -1303,44 +1423,70 @@ async function promptStageSelection(
         `Pipeline frozen: ${formatFrozenReason(meta)}. ${formatDecisionMenuHint()}`,
       );
     }
-    return "cancelled";
+    return { outcome: "cancelled", applied: false };
   }
 
   // Find the selected stage
   const selectedIdx = menuItems.indexOf(stageSelection);
   const targetStage = orderedChoices[selectedIdx];
-  if (targetStage) {
-    await executeDecision(ctx, meta, "choose_stage", config, {
-      source,
-      targetStage,
-      basis: inferenceBasis,
-      onStageChanged: opts.onStageChanged,
-    });
+  if (!targetStage) {
+    // 208 (F4): a picked label that resolves to no stage is a real failure —
+    // surface it instead of silently reporting "decided".
+    const message = `Selected stage not found: ${stageSelection}`;
+    ui.notify?.(message);
+    return {
+      outcome: "decided",
+      applied: false,
+      decision: "choose_stage",
+      message,
+      failureReason: "stage_not_found",
+    };
   }
-  return "decided";
+  const res = await executeDecision(ctx, meta, "choose_stage", config, {
+    source,
+    targetStage,
+    basis: inferenceBasis,
+    onStageChanged: opts.onStageChanged,
+    budgetValue: opts.budgetValue,
+  });
+  if (res.success) {
+    return { outcome: "decided", applied: true, decision: "choose_stage", message: res.message };
+  }
+  return {
+    outcome: "decided",
+    applied: false,
+    decision: "choose_stage",
+    message: res.message,
+    failureReason: "guard_rejected",
+  };
 }
 
-export async function promptDecisionMenu(
+/**
+ * 208: single presentation implementation. Keeps the legacy
+ * `promptDecisionMenu` behaviour and adds outcome/attribution detail:
+ * - unavailable reasons (`aborted` / `child_session` / `no_ui` / `select_error`)
+ * - `applied` propagation from `executeDecision` (F1/F2)
+ * - capability-aware menu composition (no `ui.input` → no `set_budget` item)
+ * - `decision_menu_presented` audit before every `ui.select` (G5)
+ * - `notifyOnUnavailable: false` suppresses the no-UI notify (commands own the message)
+ */
+async function presentDecisionMenuCore(
   ctx: FlowStateCtx,
   meta: SessionMeta,
   config: PipelineConfig,
-  opts?: {
-    ui?: FlowStateCtx["ui"];
-    source?: string;
-    directStageSelect?: boolean;
-    /** Phase 0 (182): forwarded to executeDecision via promptStageSelection for choose_stage aftermath. */
-    onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
-    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
-    budgetValue?: number;
-  },
-): Promise<PromptDecisionOutcome> {
-  const ui = opts?.ui ?? ctx.ui;
-  
-
-  // Phase 6 (195): Pass blockedReason and config to buildDecisionMenu for dynamic menu composition
-  const menu = buildDecisionMenu(meta, meta.blockedReason, config);
+  opts: EnsureDecisionMenuOpts & { ui?: FlowStateCtx["ui"] },
+  attempt: number,
+): Promise<MenuAttemptDetail> {
+  const ui = opts.ui ?? ctx.ui;
   const tuiEnabled = config.output?.pipelineStage !== false;
-  const source = opts?.source ?? "menu";
+  const source = opts.source ?? "menu";
+
+  // 208: capability-aware menu build — `set_budget` disappears when the host
+  // has no usable `ui.input` (or the capability was dropped after a thrown dialog).
+  const capabilities: DecisionMenuCapabilities = {
+    input: typeof ui?.input === "function" && !isInputUnavailable(meta.pipelineId),
+  };
+  const menu = buildDecisionMenu(meta, meta.blockedReason, config, capabilities);
 
   if (!menu) {
     // aborted → do not prompt
@@ -1350,7 +1496,7 @@ export async function promptDecisionMenu(
       stage: meta.currentStage,
       context: "aborted",
     });
-    return "no-menu";
+    return { outcome: "no-menu", applied: false, unavailableReason: "aborted" };
   }
 
   // Phase 1 (173) C7: Owner-only menu gate.
@@ -1363,9 +1509,9 @@ export async function promptDecisionMenu(
       await safeWriteAuditLog("pipeline_menu_suppressed_child", {
         pipelineId: meta.pipelineId,
         stage: meta.currentStage,
-        ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts.source ? { source: opts.source } : {}),
       });
-      return "no-menu";
+      return { outcome: "no-menu", applied: false, unavailableReason: "child_session" };
     }
   } catch {
     // Fail-open: role detection error → treat as owner (conservative, same as session-role.ts:14-15)
@@ -1386,15 +1532,31 @@ export async function promptDecisionMenu(
     try {
       // Phase 3 (173) C9 fix (review round 2): directStageSelect bypasses the
       // first-level 6-item menu and goes straight to the secondary stage list.
-      // Used by shortcut routing when the user already selected "Choose stage…"
-      // from the shortcut — avoids silently discarding the user's intent if
-      // they pick a different top-level item in the re-prompted first menu.
-      if (opts?.directStageSelect) {
+      // Used by shortcut routing and post-secondary-interrupt retries (208 G5).
+      if (opts.directStageSelect) {
         const freshMeta = ctx.session.getMeta() ?? meta;
-        return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled, onStageChanged: opts.onStageChanged });
+        return await promptStageSelectionDetailed(ctx, freshMeta, config, {
+          ui,
+          source,
+          tuiEnabled,
+          onStageChanged: opts.onStageChanged,
+          budgetValue: opts.budgetValue,
+          attempt,
+        });
       }
 
       const reason = meta.blockedReason ?? meta.terminateReason ?? "unknown";
+      // 208 G5: audit BEFORE the real `ui.select` so primary appearances pair
+      // with `decision_menu_retry_*` sequences.
+      await safeWriteAuditLog("decision_menu_presented", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        source,
+        attempt: String(attempt),
+        blockedReason: reason,
+        menuSize: String(menu.length),
+        menuKind: "primary",
+      });
       const attemptAt = Date.now();
       const selection = await ui.select(
         `Pipeline blocked: ${reason}. Choose an action:`,
@@ -1412,7 +1574,7 @@ export async function promptDecisionMenu(
             stage: meta.currentStage,
             elapsedMs: String(elapsed),
           });
-          return "interrupted";
+          return { outcome: "interrupted", applied: false, interruptedStage: "primary" };
         }
 
         // User pressed Esc — keep blocked, notify with reason
@@ -1429,7 +1591,7 @@ export async function promptDecisionMenu(
             `Pipeline frozen: ${formatFrozenReason(freshMeta)}. ${formatDecisionMenuHint()}`,
           );
         }
-        return "cancelled";
+        return { outcome: "cancelled", applied: false };
       }
 
       const decision = labelToDecision(selection);
@@ -1439,12 +1601,93 @@ export async function promptDecisionMenu(
 
         // Phase 3 (173) C9: choose_stage → secondary menu (via shared helper)
         if (decision === "choose_stage") {
-          return await promptStageSelection(ctx, freshMeta, config, { ui, source, tuiEnabled, onStageChanged: opts?.onStageChanged });
+          return await promptStageSelectionDetailed(ctx, freshMeta, config, {
+            ui,
+            source,
+            tuiEnabled,
+            onStageChanged: opts.onStageChanged,
+            budgetValue: opts.budgetValue,
+            attempt,
+          });
         }
 
-        await executeDecision(ctx, freshMeta, decision, config, { source });
+        // 208 (J1/J3): set_budget collects the absolute value through `ui.input`.
+        if (decision === "set_budget") {
+          const input = await promptBudgetValue(ui, freshMeta, config);
+          if (input.kind === "cancelled") {
+            return { outcome: "cancelled", applied: false, decision };
+          }
+          if (input.kind === "unavailable") {
+            markInputUnavailable(meta.pipelineId);
+            return { outcome: "interrupted", applied: false, decision, message: "ui.input unavailable" };
+          }
+          if (input.kind === "invalid") {
+            // Retryable invalid input: notify the concrete legality failure and
+            // let the scheduler re-prompt. Not audited (input_invalid is
+            // deliberately absent from the audit code table).
+            ui.notify?.(input.reason);
+            return {
+              outcome: "interrupted",
+              applied: false,
+              decision,
+              message: input.reason,
+              failureReason: "input_invalid",
+            };
+          }
+          if (input.kind === "error") {
+            // Non-recoverable: the input dialog itself threw — drop capability
+            // and stop retrying for this presentation chain (J3/D2).
+            markInputUnavailable(meta.pipelineId);
+            ui.notify?.(input.reason);
+            return {
+              outcome: "decided",
+              applied: false,
+              decision,
+              retryable: false,
+              message: input.reason,
+              failureReason: "input_error",
+            };
+          }
+          const res = await executeDecision(ctx, freshMeta, decision, config, {
+            source,
+            budgetValue: input.value,
+          });
+          if (res.success) {
+            return { outcome: "decided", applied: true, decision, message: res.message };
+          }
+          return {
+            outcome: "decided",
+            applied: false,
+            decision,
+            message: res.message,
+            failureReason: "guard_rejected",
+          };
+        }
+
+        // 208 (F2): propagate the actual application result — "user picked" no
+        // longer implies "state changed".
+        const res = await executeDecision(ctx, freshMeta, decision, config, { source });
+        if (res.success) {
+          return { outcome: "decided", applied: true, decision, message: res.message };
+        }
+        return {
+          outcome: "decided",
+          applied: false,
+          decision,
+          message: res.message,
+          failureReason: "guard_rejected",
+        };
       }
-      return "decided";
+
+      // 208 (F4): unknown labels were previously swallowed as decided.
+      const message = `Unrecognized menu option: ${selection}`;
+      ui.notify?.(message);
+      return {
+        outcome: "decided",
+        applied: false,
+        message,
+        failureReason: "unknown_option",
+      };
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       await safeWriteAuditLog("pipeline_decision_error", {
@@ -1452,11 +1695,21 @@ export async function promptDecisionMenu(
         stage: meta.currentStage,
         error: errMsg,
       }, "error");
-      return "no-menu";
+      // 208: the interrupted audit gains a machine-readable context so the
+      // no-menu event can be attributed (select/execute threw).
+      await safeWriteAuditLog("pipeline_decision_interrupted", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        context: "select_error",
+        error: errMsg,
+      });
+      return { outcome: "no-menu", applied: false, unavailableReason: "select_error" };
     }
   } else {
-    // No UI available — notify via available channel (gated by pipelineStage)
-    if (tuiEnabled) {
+    // No UI available — notify via available channel (gated by pipelineStage).
+    // 208: command entries pass `notifyOnUnavailable: false` and own the single
+    // user-facing message.
+    if (tuiEnabled && opts.notifyOnUnavailable !== false) {
       const frozenMeta = ctx.session.getMeta() ?? meta;
       ui?.notify?.(
         `Pipeline frozen: ${formatFrozenReason(frozenMeta)} ${formatDecisionMenuHint()}`,
@@ -1468,8 +1721,58 @@ export async function promptDecisionMenu(
       stage: meta.currentStage,
       context: "no_ui",
     });
-    return "no-menu";
+    return { outcome: "no-menu", applied: false, unavailableReason: "no_ui" };
   }
+}
+
+/**
+ * 208: the original `promptDecisionMenu` entry keeps its legacy signature and
+ * `PromptDecisionOutcome` return type (all existing call sites/tests intact),
+ * while the audit-attributed detailed result is routed through
+ * {@link presentDecisionMenuCore} plus the `decision_not_applied` audit.
+ */
+export async function promptDecisionMenu(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  config: PipelineConfig,
+  opts?: {
+    ui?: FlowStateCtx["ui"];
+    source?: string;
+    directStageSelect?: boolean;
+    /** Phase 0 (182): forwarded to executeDecision via promptStageSelection for choose_stage aftermath. */
+    onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+    /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
+    budgetValue?: number;
+  },
+): Promise<PromptDecisionOutcome> {
+  return (await promptDecisionMenuDetailed(ctx, meta, config, opts ?? {}, 1)).outcome;
+}
+
+/**
+ * 208: detailed presentation core. Writes the `decision_not_applied` audit
+ * for every `decided && !applied` result (cancelled / interrupted / no-menu
+ * are deliberately NOT audited as failures).
+ */
+export async function promptDecisionMenuDetailed(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  config: PipelineConfig,
+  opts: EnsureDecisionMenuOpts & { ui?: FlowStateCtx["ui"] } = {},
+  attempt = 1,
+): Promise<MenuAttemptDetail> {
+  const detail = await presentDecisionMenuCore(ctx, meta, config, opts, attempt);
+  if (detail.outcome === "decided" && detail.applied === false) {
+    await safeWriteAuditLog("decision_not_applied", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      decision: detail.decision ?? "unknown",
+      source: opts.source ?? "menu",
+      attempt: String(attempt),
+      reason: detail.failureReason ?? "guard_rejected",
+      ...(detail.message !== undefined ? { message: detail.message } : {}),
+    });
+  }
+  return detail;
 }
 
 // ─── Phase 6 (172) G5: Decision retry scheduler ──────────────────────────────

@@ -201,8 +201,15 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           try {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (pi as any).sendUserMessage?.(summary, { deliverAs: "followUp" });
-          } catch {
-            // Fail-safe: sendUserMessage errors must not crash the pipeline
+          } catch (err) {
+            // Fail-safe: sendUserMessage errors must not crash the pipeline.
+            // 208 (J5): wake failures stay observable via audit.
+            const meta = rctx.session.getMeta();
+            wakeAudit("owner_wake_escalation_failed", {
+              pipelineId: meta?.pipelineId ?? "unknown",
+              stage: meta?.currentStage ?? "unknown",
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         };
         const wakeAudit = (event: string, payload: Record<string, unknown>) => {

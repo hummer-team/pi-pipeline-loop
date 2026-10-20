@@ -16,6 +16,7 @@
  */
 
 import { getEventBus } from "./pi-event-bus";
+import { safeWriteAuditLog } from "./auditLog";
 import type { PipelineStage } from "../types";
 
 /** Event name broadcast when a child freeze arms a menu escalation. */
@@ -41,8 +42,20 @@ export function broadcastEscalation(pi: unknown, payload: EscalationPayload): vo
     const bus = getEventBus(pi);
     if (!bus) return;
     bus.emit(PIPELINE_ESCALATION_EVENT, payload as unknown as Record<string, unknown>);
-  } catch {
-    // Fail-safe: broadcast errors must not affect freeze semantics
+  } catch (err) {
+    // Fail-safe + observable: audit must never re-throw into freeze semantics.
+    // 208 (J5): a failed broadcast was previously silent — now every production
+    // broadcast error (including bus.emit listener explosions) leaves a trace.
+    try {
+      safeWriteAuditLog("escalation_broadcast_failed", {
+        pipelineId: payload.pipelineId,
+        stage: payload.stage,
+        reason: payload.reason,
+        error: err instanceof Error ? err.message : String(err),
+      }, "error", payload.pipelineId);
+    } catch {
+      // Fail-safe: audit errors must not affect freeze semantics
+    }
   }
 }
 
