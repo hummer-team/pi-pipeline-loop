@@ -45,16 +45,18 @@ bun add @earendil-works/pi-pipeline
 ```
 
 该命令执行以下操作：
+
 1. 在项目根目录创建 `.pi/` 目录
 2. 复制模板文件到 `.pi/` 下对应子目录：
    - `.pi/agents/*.md` — 各阶段 agent 定义文件（平铺，无子目录）
    - `.pi/skills/{clarify,plan,develop,review,fix}/` — 各阶段 skill 指令文件
-    - `.pi/references/` — 模板引用文件（SOP、反模式、pipeline-stage-prompt.yml 提示词配置、verify 规则等）
+   - `.pi/references/` — 模板引用文件（SOP、反模式、pipeline-stage-prompt.yml 提示词配置、verify 规则等）
    - `.pi/domains/` — 业务域定义模板
 3. 复制 `pipeline_loop.json` 到项目根目录
 4. 复制 `guide.md` 到 `.pi/` 目录
 
 **多次执行提示**：如果 `.pi/` 目录已存在模板文件，命令会弹出交互选项：
+
 1. **强制覆盖** — 覆盖所有已存在文件（含 guide.md）
 2. **跳过已存在文件** — 不覆盖已有文件（guide.md 例外，始终覆盖）
 3. **重新执行 verify 生成** — 按跳过策略复制后追加执行 verify 生成
@@ -129,6 +131,7 @@ bun add @earendil-works/pi-pipeline
 ```
 
 **关键字段说明**：
+
 - `stages.{stage}.agentPath`：**必配**，agent 定义文件路径（相对于 projectRoot）。`/pipeline-start` 启动时校验所有 active stage 均已配置，缺失则阻止启动
 - `stages.{stage}.require`：设为 `false` 则该阶段使用默认空配置（相当于从流水线中移除）
 - `stages.{stage}.nextStage`：下一阶段名称，`null` 为终端
@@ -238,6 +241,7 @@ bun add @earendil-works/pi-pipeline
 插件提供三层文件保护机制，防止 Agent 在 develop/fix 阶段误修改关键文件：
 
 **保护层级**（优先级从高到低）：
+
 1. **硬编码保护**：`.pi/`、`AGENTS.md`、`.git/` — 始终受保护，无法通过 `allow` 放开
 2. **动态保护**：解析项目 `.gitignore` 文件，匹配的路径受保护（支持嵌套 `.gitignore`、`**` 通配、`!` 取反）
 3. **Allow 例外**：仅放开 gitignore 动态保护的**编辑**权限（如 `docs/design/`、`src/template/`）
@@ -245,11 +249,13 @@ bun add @earendil-works/pi-pipeline
    - ⚠️ `allow` **不影响**硬编码保护路径
 
 **拦截反馈机制**：
+
 - 拦截返回 `{ block: true, reason: "FORBIDDEN: ..." }`，reason 自动反馈给模型
 - TUI 显示 `notify` 提示（门控 `output.pipelineStage`，默认开启）
 - develop/fix 阶段的 Loop Status 动态展示 allow 列表与受保护路径（事前告知）
 
-**Bash 命令特殊放行规则 (Phase 2 / 139)**：
+**Bash 命令特殊放行规则**：
+
 - fd 重定向（`2>&1`、`1>&2`、`>&2` 等）不视为写目标，不会触发 FORBIDDEN
 - `/dev/*` 设备路径（`> /dev/null`、`> /dev/stderr` 等）不视为写目标
 - 重定向类目标（kind=redirect）位于项目外时放行（`/dev/*`、`/tmp/*`、绝对路径重定向均放行）
@@ -265,6 +271,7 @@ bun add @earendil-works/pi-pipeline
 3. **Allow edits for this session** → 本次 + 该路径在当前会话中免询问
 
 **触发范围**：
+
 - Agent 工具调用（write/edit/bash 修改）受保护路径时
 - `/pipeline-init 1` 对**已存在** verify.md 的 merge 覆盖写入（详见 §9.4.2）
 - **首次生成**的 verify.md 不弹窗（创建不弹窗、覆盖才确认）
@@ -272,11 +279,13 @@ bun add @earendil-works/pi-pipeline
 **降级**：Esc / 无 UI → 按默认（block）处理。每次决策都审计为 `pipeline_protect_ask` 事件。
 
 **拦截不中断流程**：
+
 - 仅 block 当次工具调用并反馈 reason
 - **不冻结 pipeline**、不计入 loop 失败计数
 - 模型改道继续推进当前 stage
 
 **运维指引**：
+
 - 若 gitignore 中被保护的文件/目录需要模型编辑，将其加入 `allow`
 - 例如：`"allow": ["docs/design/", "src/template/"]` 允许编辑设计文档和模板文件
 - 但 git add/commit 仍会拦截这些路径（gitignore 中的路径本不应提交）
@@ -301,28 +310,33 @@ bun add @earendil-works/pi-pipeline
 ```
 
 **默认值**（未显式配置时自动应用）：
+
 - `clarify` / `plan` / `review`：`["docs/", "doc/", "documentation/"]` — 仅允许写文档目录
 - `develop` / `fix`：`["**"]` — 全放开，维持原有全局保护链
 
 **语义规则**：
+
 - `"**"`：全放开，本 stage 不做写限制（全局 protect 链照常生效）
 - `[]`：完全禁写，本 stage 不允许任何写操作
 - `["docs/", "src/"]`：目录前缀匹配，仅允许写这些目录下的文件
 - 显式配置会**覆盖**默认值；未配置则落到 stage 类型默认值
 
 **与全局 protect 的关系**：
+
 - Stage 白名单命中 → **豁免**全局 gitignore 写保护（白名单即本 stage 授权）
 - 硬编码保护路径（`.pi/`、`AGENTS.md`、`.git/`）**不可豁免**，即使白名单命中仍 block
 - `git add` / `git commit` 仍走全局内容级保护，不受 stage 白名单影响
 - 读通道（read 工具、只读 bash）不受白名单限制
 
 **clarify/plan/review 默认行为**：
+
 - 写范围：`docs/`、`doc/`、`documentation/`（可通过 `allowedWritePaths` 覆盖）
 - Bash：仅允许只读 git 子命令（`git log`、`git status`、`git diff`、`git show`），`git add`/`git commit`/`git push` 因不匹配任何前缀天然被拒
 - 可读取全项目（读不受限）
 - review 启用 verify：`结论：(通过|不通过)` 由 verify.md 规则校验结论存在；结论由模型经 `stage_advance({ reviewConclusion: "fail" })` 声明后自动路由至 fix；未声明则退回 verify + confirm 门
 
 **违规反馈**：
+
 - 拦截返回 `{ block: true, reason: "FORBIDDEN: '<path>' not in allowed write paths for '<stage>' stage." }`
 - Reason 自动包含目标路径与当前 stage，喂回模型可自解释
 - 不冻结 pipeline、不计入 loop 失败计数（沿用全局保护语义）
@@ -349,6 +363,7 @@ bun add @earendil-works/pi-pipeline
 ```
 
 **设计意图**：
+
 - **保护 plan 本体只读**：develop/fix 阶段可自由编写代码，但 plan 文档（`*_Plan.md`）在整个实现周期内不可修改，确保需求与设计的完整性
 - **建议使用精确形态 `*_Plan.md`**：glob 中 `*` 匹配 `[^/]*`（不含路径分隔符），`*_Plan.md` 精确匹配 plan 文档本身，不会意外覆盖 commit 文档等衍生文件
 - **`_Develop_Commit.md` 属框架契约交付物，已被判定层豁免**：develop/fix 阶段写入 `docs/design/{reqBase}_Develop_Commit.md`（201 命名 v2；历史 `*_plan_commit.md` 旧名同样豁免）时，判定层自动跳过只读拦截（审计事件 `readonly_exempt_applied`），无需手动配置白名单
@@ -375,16 +390,19 @@ bun add @earendil-works/pi-pipeline
 ```
 
 **自动匹配规则**（未配置 `docs` 块时内置生效，无需手写）：
+
 - `clarify` / `plan` / `design-review` / `develop` / `review` → `docs/design`
 - `fix` → `docs/review`
 
 **候选菜单行为（Q3-A）**：
+
 - 候选按 **mtime 降序**（最新优先），**最多 5 个**单选
 - 未传 `doc_file` 且存在有效候选时弹出 TUI 菜单；显式传入 `doc_file` 的行为不变
 - 每个阶段按角色过滤候选：`clarify`/`plan` → 需求文档（`^\d+_.+\.md$`，排除 `*_Plan.md` 与 `Code_Review_*`）；`design-review`/`develop` → `*_Plan.md`；`review` → `*_Develop_Commit.md`；`fix` → `Code_Review_*.md`
 - 无候选时兜底：跨 `archive.dirs` 全部目录取**最新**文档并提示；全无 → 提供手动输入路径 / 取消（取消保持原 `doc_file` 必填错误提示）
 
 **边界**：
+
 - 目录不存在或无匹配文件 → 静默跳过该目录（不报错）
 - `docs.stageDirs` **不参与** `protect` 保护链（不豁免也不额外拦截）
 
@@ -401,18 +419,21 @@ bun add @earendil-works/pi-pipeline
 ```
 
 **scan 范围规则**：
+
 - `archive.dirs` 逐项**递归**扫描，收集**所有文件类型**；`history/` 子目录**不排除**
 - `.pi/audit` 审计目录**恒定**额外纳入扫描（无需配置）
 - 未配置 `archive.dirs` 时 → 回落取 `docs.stageDirs` 的目录值；仍未配置 → `["docs"]`
 - 时间过滤：`now − mtime > 阈值 × 86_400_000`（严格 `>`；恰好 N 天旧的文件**不**归档，多 1ms 即归档）
 
 **落点解析规则（dest）**：
+
 - 相对值（默认）→ 解析到 `<os.homedir()>/<dest>`；默认 `pi-pipeline-archive`
 - `~/foo` → 展开到用户 HOME；绝对路径 → 原样使用
 - 含 `..` 段的非法值 → 警告并回落 `pi-pipeline-archive`
 - 执行前 `mkdir -p` 创建落点目录
 
 **zip 命名规则**：`yyyy_MM_dd_HHmmssSSS_pipeline[_namesuffix].zip`（本地时区，末尾为 3 位毫秒 `SSS`；示例 `2026_10_19_142507420_pipeline_pi-pipeline-loop.zip`）。
+
 - `namesuffix`（可选）：配置后追加 `_{清洗后的值}`；值中的空白与非法文件名字符（`/`、`\`、`:*?"<>|` 等）替换为单个 `-` 并合并连续 `-`、去除首尾 `.`/`-`、限长 64 个字符，清洗结果为空则忽略（不含 `.zip` 扩展名，命名层统一追加）。
 - **fail-closed**：目标 zip 已存在时归档失败——不 zip、不删除源文件，写 `pipeline_archive_error` 审计。zip 内部路径为**项目相对**路径。
 
@@ -420,16 +441,16 @@ bun add @earendil-works/pi-pipeline
 
 **/pipeline-archive 命令**（TUI-only、无参数）：
 
-| 步骤 | 说明 |
-|------|------|
-| 1. TUI 守卫 | 无交互会话（无 `ui.select`）→ 提示后中止，写 `pipeline_archive_no_ui` 审计，**不执行任何变更** |
-| 2. 阈值菜单 | 三选一：7 天 / 3 天 / 1 天（内置常量，不可配置）；Esc/取消即中止 |
-| 3. 扫描 + 审计 | 递归收集目标并写 `pipeline_archive_scan`（阈值、数量、字节数、缺失目录、跳过数） |
-| 4. dry-run 预览 | `ui.content` markdown 列出待归档文件（≤10 行 + 溢出提示）、总大小与落点 |
-| 5. 动作菜单 | **Move to zip**（打包后删源）/ **Delete permanently**（直接删除）/ Cancel |
-| 6. 二次确认 | `ui.confirm` 或等价 Yes/No 弹窗；**默认取消**语义——只有显式确认才执行 |
-| 7. 执行 | zip 失败**永不**删除源文件；成功后删除源并清理空目录（扫描范围根目录本身保留） |
-| 8. 结果反馈 | 完成消息 + `pipeline_archive_executed`（action=move/delete、zipPath、删除计数）；失败写 `pipeline_archive_error`（含错误详情） |
+| 步骤            | 说明                                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 1. TUI 守卫     | 无交互会话（无 `ui.select`）→ 提示后中止，写 `pipeline_archive_no_ui` 审计，**不执行任何变更**                                 |
+| 2. 阈值菜单     | 三选一：7 天 / 3 天 / 1 天（内置常量，不可配置）；Esc/取消即中止                                                               |
+| 3. 扫描 + 审计  | 递归收集目标并写 `pipeline_archive_scan`（阈值、数量、字节数、缺失目录、跳过数）                                               |
+| 4. dry-run 预览 | `ui.content` markdown 列出待归档文件（≤10 行 + 溢出提示）、总大小与落点                                                        |
+| 5. 动作菜单     | **Move to zip**（打包后删源）/ **Delete permanently**（直接删除）/ Cancel                                                      |
+| 6. 二次确认     | `ui.confirm` 或等价 Yes/No 弹窗；**默认取消**语义——只有显式确认才执行                                                          |
+| 7. 执行         | zip 失败**永不**删除源文件；成功后删除源并清理空目录（扫描范围根目录本身保留）                                                 |
+| 8. 结果反馈     | 完成消息 + `pipeline_archive_executed`（action=move/delete、zipPath、删除计数）；失败写 `pipeline_archive_error`（含错误详情） |
 
 **取消/失败安全汇总**：任意取消路径零变更并存审计；zip 不可用或失败 → 源文件原样保留 + error 级审计；删除单个文件失败不影响其余删除，错误全量反馈。
 
@@ -444,6 +465,7 @@ bun add @earendil-works/pi-pipeline
 ```
 
 启动后插件执行：
+
 1. 读取需求文档内容
 2. 生成唯一 `pipelineId`
 3. 设置 `currentStage = "clarify"`，并将需求文档路径写入 `meta.requirementDoc`
@@ -462,11 +484,11 @@ bun add @earendil-works/pi-pipeline
 
 `pipeline_loop.json` 顶层配置 `startStageMode` 控制 `/pipeline-start` 的启动行为：
 
-| 模式 | 行为 | 适用场景 |
-|------|------|---------|
-| `"auto"`（默认） | 零交互。fresh→clarify；aborted→resume/new 矩阵（与 142 一致） | CI/自动化 |
-| `"confirm"` | aborted+可 resume 时弹出一次确认「Resume at {stage}?」 | 轻量防误操作 |
-| `"ask"` | TUI 四选菜单：Resume stage / New pipeline / Spec stage / Cancel | 灵活跳级启动 |
+| 模式             | 行为                                                            | 适用场景     |
+| ---------------- | --------------------------------------------------------------- | ------------ |
+| `"auto"`（默认） | 零交互。fresh→clarify；aborted→resume/new 矩阵（与 142 一致）   | CI/自动化    |
+| `"confirm"`      | aborted+可 resume 时弹出一次确认「Resume at {stage}?」          | 轻量防误操作 |
+| `"ask"`          | TUI 四选菜单：Resume stage / New pipeline / Spec stage / Cancel | 灵活跳级启动 |
 
 ```json
 {
@@ -476,7 +498,7 @@ bun add @earendil-works/pi-pipeline
 ```
 
 - **Spec stage**（ask 模式）：支持从任意 active stage 启动（排除 awaiting_human/completed），自动重建 `previousStage` 和 `stageVisitOrder` 阶段链。
-- **自动注入**（Phase 2）：fresh/spec→clarify 成功后，通过 `pi.sendUserMessage("@<agent名> ${file} ${effectiveArgs}")` 自动进入澄清流程。降级路径：无 pi SDK / 无 agentPath 时 notify 提示，不阻断启动。
+- **自动注入**：fresh/spec→clarify 成功后，通过 `pi.sendUserMessage("@<agent名> ${file} ${effectiveArgs}")` 自动进入澄清流程。降级路径：无 pi SDK / 无 agentPath 时 notify 提示，不阻断启动。
 - **checkVerifyFiles 起始感知**：仅校验起始 stage 及后续可达 stage 的 verify.md，spec 跳级不会因前置 stage 的 verify.md 缺失而被拦截。
 
 ### 4.2 `{requirementDoc}` 占位符解析规则
@@ -507,24 +529,25 @@ clarify → plan → design-review → develop → review ⇄ fix → review (lo
                          └── FAIL→plan 修正
 ```
 
-| 阶段 | 目标 | 工具权限 |
-|------|------|---------|
-| **clarify** | 分析需求文档，识别歧义，提出澄清问题；获得用户 full-und? 确认后完成。full-und? 确认标记（`## 模型确认`）落盘后由 agent_settled 自动验证推进 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + completionMarker 预检） |
-| **plan** | 将澄清后的需求拆解为可执行的开发规划文档 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
-| **design-review** | 审查规划文档质量，可选自动或人工审查；PASS→develop，FAIL→plan 修正 | read, bash, write, edit, stage_advance（写限 docs/；hook 验证） |
-| **develop** | 按规划编写代码，运行测试，产出 _Develop_Commit.md | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
-| **review** | 审查代码质量，产出 code review 报告；verify 校验 `结论：(通过|不通过)`；结论由模型经 stage_advance 声明：fail→自动转 fix，pass→confirm 门通过后→completed | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门） |
-| **fix** | 根据审查反馈修复问题，产出 _Develop_Commit.md；修复后→review 复验。fix 阶段必须经 review 复验才能进入终态（completed / awaiting_human），不允许直接跳转 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip） |
-| **awaiting_human** | 流水线冻结，等待人工介入（仅用于兜底） | read（受限） |
-| **completed** | 终端状态，流水线结束 | 无 |
+| 阶段               | 目标                                                                                                                                                    | 工具权限                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **clarify**        | 分析需求文档，识别歧义，提出澄清问题；获得用户 full-und? 确认后完成。full-und? 确认标记（`## 模型确认`）落盘后由 agent_settled 自动验证推进             | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + completionMarker 预检）     |
+| **plan**           | 将澄清后的需求拆解为可执行的开发规划文档                                                                                                                | read, bash, write, edit, stage_advance（写限 docs/；hook 验证 + confirm 门）                |
+| **design-review**  | 审查规划文档质量，可选自动或人工审查；PASS→develop，FAIL→plan 修正                                                                                      | read, bash, write, edit, stage_advance（写限 docs/；hook 验证）                             |
+| **develop**        | 按规划编写代码，运行测试，产出 _Develop_Commit.md                                                                                                       | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip）                        |
+| **review**         | 审查代码质量，产出 code review 报告；verify 校验 `结论：(通过                                                                                           | 不通过)`；结论由模型经 stage_advance 声明：fail→自动转 fix，pass→confirm 门通过后→completed |
+| **fix**            | 根据审查反馈修复问题，产出 _Develop_Commit.md；修复后→review 复验。fix 阶段必须经 review 复验才能进入终态（completed / awaiting_human），不允许直接跳转 | read, bash, write, edit, stage_advance（hook 验证 + selfVerifySkip）                        |
+| **awaiting_human** | 流水线冻结，等待人工介入（仅用于兜底）                                                                                                                  | read（受限）                                                                                |
+| **completed**      | 终端状态，流水线结束                                                                                                                                    | 无                                                                                          |
 
 **阶段交接流程**：验证模式为 `hook` 时，Agent 完成工作后进入 idle 状态，插件在 `agent_settled` hook 自动执行验证，通过则自动进入下一阶段。配置了 confirm 门的阶段（plan/review），verify 通过后还需通过 confirm 门（TUI 确认对话框）才能推进。
 
-**selfVerifySkip 语义**：develop/fix 配置 `verify.selfVerifySkip: true` 时，插件根据工具调用记录判定模型是否已在本 stage 成功执行过相同 requiredCommand（命令 token 前缀匹配，`./mvnw`/`mvnw` 归一化）。命中且 exitCode=0 则跳过重执行、仅写 audit（`method:"self_verified"`）；此后若有 write/edit 成功记录则失效强制重验。Phase 6 (139) 新增 VERIFIED_COMMANDS 协议识别——子 agent 通过 task 返回的 `VERIFIED_COMMANDS: cmd1,cmd2` 行也计入已验证命令集合。
+**selfVerifySkip 语义**：develop/fix 配置 `verify.selfVerifySkip: true` 时，插件根据工具调用记录判定模型是否已在本 stage 成功执行过相同 requiredCommand（命令 token 前缀匹配，`./mvnw`/`mvnw` 归一化）。命中且 exitCode=0 则跳过重执行、仅写 audit（`method:"self_verified"`）；此后若有 write/edit 成功记录则失效强制重验。新增 VERIFIED_COMMANDS 协议识别——子 agent 通过 task 返回的 `VERIFIED_COMMANDS: cmd1,cmd2` 行也计入已验证命令集合。
 
 **commit doc 命名规范**：develop/fix 阶段产出的 commit 文档必须从需求文档 basename 派生（`{reqBase}_Develop_Commit.md`），不得从规划文档名派生。例如需求文档为 `docs/design/182_Bug.md` 时，commit doc 应命名为 `docs/design/182_Bug_Develop_Commit.md`。验证路径解析器（verify-path-resolver）会自动将 commit doc glob（新版 `*_Develop_Commit.md` / 旧版 `*_commit.md` 双模式）收窄至 `docs/design/{reqBase}_Develop_Commit.md`。
 
 **质量环**（review ⇄ fix → review，confirm 通过→completed）：
+
 - review 声明 `reviewConclusion: "fail"` → 自动转 fix（不经 confirm 门）；声明 pass / 未声明 → verify + confirm 门
 - review 报告有 Blocker/High/Medium → confirm 门拒绝→fix → 修复后→review 复验
 - review confirm 门通过 → completed
@@ -552,18 +575,20 @@ verify 通过后，confirm 门提供第二道人工/智能确认。配置：
 
 **三模式行为**：
 
-| mode | 行为 |
-|------|------|
-| `auto` | 插件自动写双语标记（`## 用户确认：确认无误` + `## User Confirmation: Confirmed`），verify 自然通过，无 TUI 对话框 |
+| mode     | 行为                                                                                                                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `auto`   | 插件自动写双语标记（`## 用户确认：确认无误` + `## User Confirmation: Confirmed`），verify 自然通过，无 TUI 对话框                                                                                                  |
 | `manual` | verify 通过后弹出 TUI 英文确认对话框。plan：3 选项（Approve & Advance / Reject & Rework / Cancel）；review：2 选项（Approve & Complete / Reject & Send to Fix），Esc=取消。拒绝=声明 fail 或人工拒绝（同计数语义） |
-| `smart` | Agent 自评复杂度：复杂→写 `## 智能确认：复杂` + `stage_advance({ needConfirm: true })` 触发确认门；非复杂→`stage_advance()` 自动推进（audit `confirm_smart_skip`） |
+| `smart`  | Agent 自评复杂度：复杂→写 `## 智能确认：复杂` + `stage_advance({ needConfirm: true })` 触发确认门；非复杂→`stage_advance()` 自动推进（audit `confirm_smart_skip`）                                                 |
 
 **拒绝去向矩阵**：
+
 - plan 拒绝 → clarify（重新澄清）
 - review 拒绝 → fix（修复后回 review 复验）
 - review 确认通过 → completed
 
 **循环上限**：`confirmRejections` 独立计数（不复用 maxLoops/maxVerifyAttempts）。超限行为由 `confirmOverflow` 控制：
+
 - `"ask"`（默认）：弹出 Continue/Terminate 选择
 - `"terminate"`：直接 `flowState: "aborted"`
 
@@ -606,33 +631,33 @@ verify 通过后，confirm 门提供第二道人工/智能确认。配置：
 
 yml 顶层包含 25 个 key，分为七组：
 
-| Key | 说明 |
-|-----|------|
-| `clarify` | clarify 阶段提示词模板 |
-| `plan` | plan 阶段提示词模板 |
-| `develop` | develop 阶段提示词模板 |
-| `review` | review 阶段提示词模板 |
-| `fix` | fix 阶段提示词模板 |
-| `stage_executor_clarify` | clarify 阶段执行者调度段 |
-| `stage_executor_plan` | plan 阶段执行者调度段 |
-| `stage_executor_develop` | develop 阶段执行者调度段 |
-| `stage_executor_review` | review 阶段执行者调度段 |
-| `stage_executor_fix` | fix 阶段执行者调度段 |
-| `stage_deliverable_develop` | develop 阶段插件默认交付项（verify 规则层 + 注入层） |
-| `stage_deliverable_review` | review 阶段插件默认交付项 |
-| `stage_deliverable_fix` | fix 阶段插件默认交付项 |
-| `verify_clarify` | clarify 阶段执行验证时的 modelPrompt |
-| `verify_plan` | plan 阶段执行验证时的 modelPrompt |
-| `verify_develop` | develop 阶段执行验证时的 modelPrompt |
-| `verify_review` | review 阶段执行验证时的 modelPrompt |
-| `verify_fix` | fix 阶段执行验证时的 modelPrompt |
-| `verify_extract_clarify` | clarify 阶段生成 verify.md 时 LLM 提取交付项提示词 |
-| `verify_extract_plan` | plan 阶段生成 verify.md 时 LLM 提取交付项提示词 |
-| `verify_extract_develop` | develop 阶段生成 verify.md 时 LLM 提取交付项提示词 |
-| `verify_extract_review` | review 阶段生成 verify.md 时 LLM 提取交付项提示词 |
-| `verify_extract_fix` | fix 阶段生成 verify.md 时 LLM 提取交付项提示词 |
-| `verify_extract` | 全局提取提示词回退默认（当 per-stage verify_extract_{stage} 为空时使用） |
-| `conflict_check_prompt` | SKILL vs Plugin 冲突检测的全局提示词（支持 per-stage 变体 `conflict_check_prompt_{stage}`） |
+| Key                         | 说明                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------- |
+| `clarify`                   | clarify 阶段提示词模板                                                                      |
+| `plan`                      | plan 阶段提示词模板                                                                         |
+| `develop`                   | develop 阶段提示词模板                                                                      |
+| `review`                    | review 阶段提示词模板                                                                       |
+| `fix`                       | fix 阶段提示词模板                                                                          |
+| `stage_executor_clarify`    | clarify 阶段执行者调度段                                                                    |
+| `stage_executor_plan`       | plan 阶段执行者调度段                                                                       |
+| `stage_executor_develop`    | develop 阶段执行者调度段                                                                    |
+| `stage_executor_review`     | review 阶段执行者调度段                                                                     |
+| `stage_executor_fix`        | fix 阶段执行者调度段                                                                        |
+| `stage_deliverable_develop` | develop 阶段插件默认交付项（verify 规则层 + 注入层）                                        |
+| `stage_deliverable_review`  | review 阶段插件默认交付项                                                                   |
+| `stage_deliverable_fix`     | fix 阶段插件默认交付项                                                                      |
+| `verify_clarify`            | clarify 阶段执行验证时的 modelPrompt                                                        |
+| `verify_plan`               | plan 阶段执行验证时的 modelPrompt                                                           |
+| `verify_develop`            | develop 阶段执行验证时的 modelPrompt                                                        |
+| `verify_review`             | review 阶段执行验证时的 modelPrompt                                                         |
+| `verify_fix`                | fix 阶段执行验证时的 modelPrompt                                                            |
+| `verify_extract_clarify`    | clarify 阶段生成 verify.md 时 LLM 提取交付项提示词                                          |
+| `verify_extract_plan`       | plan 阶段生成 verify.md 时 LLM 提取交付项提示词                                             |
+| `verify_extract_develop`    | develop 阶段生成 verify.md 时 LLM 提取交付项提示词                                          |
+| `verify_extract_review`     | review 阶段生成 verify.md 时 LLM 提取交付项提示词                                           |
+| `verify_extract_fix`        | fix 阶段生成 verify.md 时 LLM 提取交付项提示词                                              |
+| `verify_extract`            | 全局提取提示词回退默认（当 per-stage verify_extract_{stage} 为空时使用）                    |
+| `conflict_check_prompt`     | SKILL vs Plugin 冲突检测的全局提示词（支持 per-stage 变体 `conflict_check_prompt_{stage}`） |
 
 Stage key 的 value 为空或缺失时，插件自动使用内置默认提示词。verify_{stage} 为空时回退内置默认验证提示词。verify_extract_{stage} 为空时回退到全局 `verify_extract`，再空则回退内置默认。
 
@@ -640,18 +665,18 @@ Stage key 的 value 为空或缺失时，插件自动使用内置默认提示词
 
 模板中支持 10 个动态占位符，运行时由流水线状态替换为实际值：
 
-| 占位符 | 注入内容 | 适用 stage |
-|--------|---------|-----------|
-| `{{context_reference}}` | 前一阶段验证通过的 summary 路径 + 本阶段上下文文件 + clarify 阶段需求文档路径 | 所有 stage |
-| `{{domain_skill}}` | 业务域规则内容（启用 domain 时） | 所有 stage |
-| `{{stage_skill}}` | 当前阶段 skill 文件内容（.pi/skills/{skillPath}） | 所有 stage |
-| `{{loop_status}}` | 循环工程状态（当前步骤/尝试次数/保护路径/写范围） | develop、fix |
-| `{{pipeline_status}}` | 流水线状态（pipelineId/当前阶段/域/验证状态） | 所有 stage |
-| `{{verify_failures}}` | 上一阶段验证失败列表 | 所有 stage |
-| `{{verify_tool_guidance}}` | 验证模式工具指引（tool 模式时） | 所有 stage |
-| `{{stage_write_scope}}` | 写范围说明（非循环阶段） | clarify、plan、review |
-| `{{stage_executor}}` | 阶段执行者调度段（哪个子 agent 执行、如何返回） | clarify、plan、develop、review、fix |
-| `{{stage_deliverables}}` | Part 10：插件默认交付项（develop/review/fix 有值，其他 stage 为空） | 所有 stage（空则不渲染） |
+| 占位符                     | 注入内容                                                                      | 适用 stage                          |
+| -------------------------- | ----------------------------------------------------------------------------- | ----------------------------------- |
+| `{{context_reference}}`    | 前一阶段验证通过的 summary 路径 + 本阶段上下文文件 + clarify 阶段需求文档路径 | 所有 stage                          |
+| `{{domain_skill}}`         | 业务域规则内容（启用 domain 时）                                              | 所有 stage                          |
+| `{{stage_skill}}`          | 当前阶段 skill 文件内容（.pi/skills/{skillPath}）                             | 所有 stage                          |
+| `{{loop_status}}`          | 循环工程状态（当前步骤/尝试次数/保护路径/写范围）                             | develop、fix                        |
+| `{{pipeline_status}}`      | 流水线状态（pipelineId/当前阶段/域/验证状态）                                 | 所有 stage                          |
+| `{{verify_failures}}`      | 上一阶段验证失败列表                                                          | 所有 stage                          |
+| `{{verify_tool_guidance}}` | 验证模式工具指引（tool 模式时）                                               | 所有 stage                          |
+| `{{stage_write_scope}}`    | 写范围说明（非循环阶段）                                                      | clarify、plan、review               |
+| `{{stage_executor}}`       | 阶段执行者调度段（哪个子 agent 执行、如何返回）                               | clarify、plan、develop、review、fix |
+| `{{stage_deliverables}}`   | Part 10：插件默认交付项（develop/review/fix 有值，其他 stage 为空）           | 所有 stage（空则不渲染）            |
 
 **段落格式**：每个占位符独占一段，段间以 `---` 分隔。当占位符的动态值为空时，该段（两个 `---` 之间的内容）自动从渲染结果中移除。
 
@@ -716,6 +741,7 @@ YYYY-MM-DD HH:mm:ss - [INFO] prompt_snapshot | stage=clarify | pipelineId=xxx | 
 - 旧文件 `.pi/references/verify_prompt.md` 已废弃，插件不再读取
 
 Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提取逻辑：
+
 - 回退链：`verify_extract_{stage}` → 全局 `verify_extract` → 内置默认
 - 未配置 per-stage key 时自动回退到全局 `verify_extract`
 
@@ -729,17 +755,20 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 ### 7.7 验证提示词说明
 
 **执行阶段验证提示词**（`verify_{stage}`）：
+
 - 验证时作为 modelPrompt 注入模型，指导 LLM 判断阶段交付是否达标
 - 为空/缺失 → 回退到 verify.md body → 再空则使用内置默认验证提示词
 - rules 始终来自 verify.md frontmatter（与 verify_{stage} 无关）
 
 **生成阶段提取提示词**（`verify_extract_{stage}`）：
+
 - 生成 verify.md 时用于 LLM 提取交付项
 - 回退链：`verify_extract_{stage}` → 全局 `verify_extract` → 内置默认
 
 ### 7.8 老项目迁移说明
 
 已初始化项目升级到新版本后：
+
 1. 重跑 `/pipeline-init 0` 复制新文件 `pipeline-stage-prompt.yml`
 2. 旧文件 `prompt-injector.yml` 不再被读取，插件自动回退到内置默认提示词
 3. 如用户自定义过旧 yml 内容，需手动将自定义内容迁移到新文件 `pipeline-stage-prompt.yml`
@@ -751,75 +780,75 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 
 所有管线推进/查询事件通过 `writeStageAudit` 统一写入审计日志（`.pi/audit/{pipelineId}/log/YYYYMMDD_audit.log`）。
 
-| 事件 | 触发时机 | 关键字段 |
-|------|---------|---------|
-| `stage_advance` | 成功推进到下一阶段 | pipelineId, stage, sequence, fromStage, toStage, override |
-| `stage_advance_failed` | 推进失败（非法 nextStage/同 stage/verify 失败） | fromStage, reason |
-| `pipeline_completed` | 进入 completed 终态 | finalStage, loopCycleCount, stageVisitOrder |
-| `pipeline_start` | /pipeline-start 成功 | file, previousStage, command, mode (fresh/resume/spec), startStage |
-| `pipeline_start_launch` | clarify 子 agent 自动注入成功 | agentName, requirementDoc, pipelineId |
-| `pipeline_start_launch_skipped` | 无 pi SDK，降级 notify 提示 | agentName, reason |
-| `pipeline_state` | 每次 pipeline_state 查询 | snapshot (完整状态 JSON) |
-| `loop_check` | 每次 loop_check 调用 | action (advance/retry/halt), loopCount, summary |
-| `review_auto_route_fix` | review 声明 `reviewConclusion: "fail"` 自动路由至 fix | stage, toStage, confirmRejections, reason |
-| `review_declaration_missing` | review settle 未声明 reviewConclusion，退回 verify + confirm 门 | stage, reason |
-| `review_conclusion_ignored` | 非 review 阶段传入 reviewConclusion 参数，被忽略 | stage, reviewConclusion |
-| `review_auto_route_overflow_terminate` | review fail 声明连续超限触发终止 | stage, confirmRejections |
-| `confirm_rejected` | confirm 门人工拒绝（plan/review） | stage, toStage, confirmRejections |
-| `confirm_approved` | confirm 门人工批准 | stage, toStage |
-| `confirm_pending` | confirm 门无 UI 可用（无 `ui.select`）而等待交互 | stage, reason |
-| `confirm_gate_dismissed` | confirm 门被真实用户 Esc 取消（elapsedMs ≥ 1500） | stage, mode, action, elapsedMs, reaskCount, source |
-| `confirm_gate_dismiss_interrupted` | confirm 门 <1500ms 被连带取消（collateral suspect） | stage, mode, action, elapsedMs, reaskCount, source |
-| `confirm_defer_to_stage_advance` | pipeline_verify 对 confirm 非 auto 阶段返回 pending | stage, confirmMode |
+| 事件                                   | 触发时机                                                        | 关键字段                                                           |
+| -------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `stage_advance`                        | 成功推进到下一阶段                                              | pipelineId, stage, sequence, fromStage, toStage, override          |
+| `stage_advance_failed`                 | 推进失败（非法 nextStage/同 stage/verify 失败）                 | fromStage, reason                                                  |
+| `pipeline_completed`                   | 进入 completed 终态                                             | finalStage, loopCycleCount, stageVisitOrder                        |
+| `pipeline_start`                       | /pipeline-start 成功                                            | file, previousStage, command, mode (fresh/resume/spec), startStage |
+| `pipeline_start_launch`                | clarify 子 agent 自动注入成功                                   | agentName, requirementDoc, pipelineId                              |
+| `pipeline_start_launch_skipped`        | 无 pi SDK，降级 notify 提示                                     | agentName, reason                                                  |
+| `pipeline_state`                       | 每次 pipeline_state 查询                                        | snapshot (完整状态 JSON)                                           |
+| `loop_check`                           | 每次 loop_check 调用                                            | action (advance/retry/halt), loopCount, summary                    |
+| `review_auto_route_fix`                | review 声明 `reviewConclusion: "fail"` 自动路由至 fix           | stage, toStage, confirmRejections, reason                          |
+| `review_declaration_missing`           | review settle 未声明 reviewConclusion，退回 verify + confirm 门 | stage, reason                                                      |
+| `review_conclusion_ignored`            | 非 review 阶段传入 reviewConclusion 参数，被忽略                | stage, reviewConclusion                                            |
+| `review_auto_route_overflow_terminate` | review fail 声明连续超限触发终止                                | stage, confirmRejections                                           |
+| `confirm_rejected`                     | confirm 门人工拒绝（plan/review）                               | stage, toStage, confirmRejections                                  |
+| `confirm_approved`                     | confirm 门人工批准                                              | stage, toStage                                                     |
+| `confirm_pending`                      | confirm 门无 UI 可用（无 `ui.select`）而等待交互                | stage, reason                                                      |
+| `confirm_gate_dismissed`               | confirm 门被真实用户 Esc 取消（elapsedMs ≥ 1500）               | stage, mode, action, elapsedMs, reaskCount, source                 |
+| `confirm_gate_dismiss_interrupted`     | confirm 门 <1500ms 被连带取消（collateral suspect）             | stage, mode, action, elapsedMs, reaskCount, source                 |
+| `confirm_defer_to_stage_advance`       | pipeline_verify 对 confirm 非 auto 阶段返回 pending             | stage, confirmMode                                                 |
 
 **通用字段**：所有 `writeStageAudit` 事件自动携带 `pipelineId`、`stage`、`sequence`（沿 nextStage 链到 completed）、`loopCount`、`maxLoops`。
 
 **Phase 0-4 / 179 新增审计事件**（G2~G9 修复引入）：
 
-| 事件 | 触发时机 | 关键字段 |
-|------|---------|---------|
-| `agent_settled_bare_turn_matched` | settle gate 以「裸文本（无 @ 前缀）+ 绑定需求文档路径」判定为 pipeline turn | stage, messagePreview |
-| `subagents_mention_model_detected` | session_start / pipeline-init 只读探测到 `.pi/subagents.json` `agentMentions:"model"` | projectRoot |
-| `stage_spawn_deferred` | 同名 agent 在另一 stage 仍 live，新 spawn 挂起等待其 settle | stage, agentName, oldChildId, evidenceStage |
-| `pending_spawn_wait_timeout` | 挂起等待超过 `spawnWaitTimeoutMs`，转人工（不消耗重试次数） | stage, agentName, waitedMs, oldChildId, evidenceStage |
-| `chain_terminal_wake` | 自动推进链到达终态（completed / 无下一 stage），向 owner 注入链摘要 | fromStage, terminalStage, stageVisitOrder |
-| `chain_terminal_wake_skipped` | 链未真正终止（有未消费 pendingSpawns / pi 不可用）而跳过唤醒 | fromStage, reason |
-| `chain_terminal_wake_failed` | 链尾唤醒 `sendUserMessage` 抛错（warn 级别） | fromStage, error |
-| `confirm_gate_deferred` | 确认弹窗因存在顶层子代理 live 而后置 | stage, reason |
-| `confirm_gate_defer_timeout` | 后置等待超过 `spawnWaitTimeoutMs`，照常弹窗 + hint | stage, waitedMs |
-| `confirm_gate_defer_repeat` | 同一后置窗口内再次 defer（节流审计，不 notify） | stage, waitedMs, source |
-| `confirm_gate_suppressed_child` | child/subagent 会话触达真实确认门：抑制弹窗、零状态写入并保持 pending | pipelineId, stage, source, sessionFile |
-| `out_of_stage_spawn_allowed_review_fix` | review→fix 合法人工推进放行（3e 唯一例外路径） | stage, tool, subagentType, targetStage |
-| `out_of_stage_spawn_blocked` | 当前 stage 直接 spawn 其他 stage 执行体，被拦截并给路由提示 | stage, tool, subagentType, targetStage |
-| `pipeline_resume_deferred` | `/pipeline-resume` 因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, requirementDoc, reason |
-| `pipeline_handoff_deferred` | handoff 工具因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队） | stage, reason |
-| `duplicate_spawn_suspect` | 带外 spawn（`spawnTrigger=manual_or_external`）且当前 stage 已有 probe-live 的 spawn 记录（仅提示不阻断） | stage, existingAgentId, joiningSessionFile |
+| 事件                                    | 触发时机                                                                                                  | 关键字段                                              |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `agent_settled_bare_turn_matched`       | settle gate 以「裸文本（无 @ 前缀）+ 绑定需求文档路径」判定为 pipeline turn                               | stage, messagePreview                                 |
+| `subagents_mention_model_detected`      | session_start / pipeline-init 只读探测到 `.pi/subagents.json` `agentMentions:"model"`                     | projectRoot                                           |
+| `stage_spawn_deferred`                  | 同名 agent 在另一 stage 仍 live，新 spawn 挂起等待其 settle                                               | stage, agentName, oldChildId, evidenceStage           |
+| `pending_spawn_wait_timeout`            | 挂起等待超过 `spawnWaitTimeoutMs`，转人工（不消耗重试次数）                                               | stage, agentName, waitedMs, oldChildId, evidenceStage |
+| `chain_terminal_wake`                   | 自动推进链到达终态（completed / 无下一 stage），向 owner 注入链摘要                                       | fromStage, terminalStage, stageVisitOrder             |
+| `chain_terminal_wake_skipped`           | 链未真正终止（有未消费 pendingSpawns / pi 不可用）而跳过唤醒                                              | fromStage, reason                                     |
+| `chain_terminal_wake_failed`            | 链尾唤醒 `sendUserMessage` 抛错（warn 级别）                                                              | fromStage, error                                      |
+| `confirm_gate_deferred`                 | 确认弹窗因存在顶层子代理 live 而后置                                                                      | stage, reason                                         |
+| `confirm_gate_defer_timeout`            | 后置等待超过 `spawnWaitTimeoutMs`，照常弹窗 + hint                                                        | stage, waitedMs                                       |
+| `confirm_gate_defer_repeat`             | 同一后置窗口内再次 defer（节流审计，不 notify）                                                           | stage, waitedMs, source                               |
+| `confirm_gate_suppressed_child`         | child/subagent 会话触达真实确认门：抑制弹窗、零状态写入并保持 pending                                     | pipelineId, stage, source, sessionFile                |
+| `out_of_stage_spawn_allowed_review_fix` | review→fix 合法人工推进放行（3e 唯一例外路径）                                                            | stage, tool, subagentType, targetStage                |
+| `out_of_stage_spawn_blocked`            | 当前 stage 直接 spawn 其他 stage 执行体，被拦截并给路由提示                                               | stage, tool, subagentType, targetStage                |
+| `pipeline_resume_deferred`              | `/pipeline-resume` 因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队）                 | stage, requirementDoc, reason                         |
+| `pipeline_handoff_deferred`             | handoff 工具因同名 agent 在另一 stage 仍 live 而挂起（等待旧子 settle 后自动出队）                        | stage, reason                                         |
+| `duplicate_spawn_suspect`               | 带外 spawn（`spawnTrigger=manual_or_external`）且当前 stage 已有 probe-live 的 spawn 记录（仅提示不阻断） | stage, existingAgentId, joiningSessionFile            |
 
 **Phase 0-6 / 182 新增审计事件**（5 项缺陷修复引入）：
 
-| 事件 | 触发时机 | 关键字段 |
-|------|---------|---------|
-| `advance_deferred_stage_agent_live` | owner settle 触发 auto-advance 前检测到 stage executor 仍 live（账本或 name-probe 证据） | stage, expectedAgent, basis, agentId |
-| `stage_advance_failed.reason=fix_terminal_blocked` | fix 阶段尝试直接推进至 completed/awaiting_human，被硬守卫拦截 | fromStage, target |
-| `spawn_suppressed.basis=manual_live_probe` | 模型 spawn 调用被抑制，因同名 agent 在 manager 注册表中 live（带外/manual 来源） | stage, agentId, evidenceStage |
-| `on_stage_changed_error` | choose_stage 善后回调（dispatch 执行体）抛错（fail-open，不影响 choose_stage 结果） | stage, error |
-| `pipeline_resume_dispatch_skipped` | dispatchAfterResume 因 name-probe 命中而跳过 spawn（避免同名双开） | stage, agentId, reason |
+| 事件                                               | 触发时机                                                                                 | 关键字段                             |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------ |
+| `advance_deferred_stage_agent_live`                | owner settle 触发 auto-advance 前检测到 stage executor 仍 live（账本或 name-probe 证据） | stage, expectedAgent, basis, agentId |
+| `stage_advance_failed.reason=fix_terminal_blocked` | fix 阶段尝试直接推进至 completed/awaiting_human，被硬守卫拦截                            | fromStage, target                    |
+| `spawn_suppressed.basis=manual_live_probe`         | 模型 spawn 调用被抑制，因同名 agent 在 manager 注册表中 live（带外/manual 来源）         | stage, agentId, evidenceStage        |
+| `on_stage_changed_error`                           | choose_stage 善后回调（dispatch 执行体）抛错（fail-open，不影响 choose_stage 结果）      | stage, error                         |
+| `pipeline_resume_dispatch_skipped`                 | dispatchAfterResume 因 name-probe 命中而跳过 spawn（避免同名双开）                       | stage, agentId, reason               |
 
 **Phase 0-2 / 183 新增审计事件**（`<available_skills>` 重复块去重引入）：
 
-| 事件 | 触发时机 | 关键字段 |
-|------|---------|---------|
-| `prompt_skills_dedup` | 拦截时刻检测到一致重复 `<available_skills>` 块并完成切除（info） | stage, pipelineId, removed_pairs, removed_bytes, hash_before, hash_after |
-| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn） | stage, pipelineId, reason (mismatch/malformed) |
+| 事件                          | 触发时机                                                         | 关键字段                                                                 |
+| ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `prompt_skills_dedup`         | 拦截时刻检测到一致重复 `<available_skills>` 块并完成切除（info） | stage, pipelineId, removed_pairs, removed_bytes, hash_before, hash_after |
+| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn）              | stage, pipelineId, reason (mismatch/malformed)                           |
 
 **Agent 速查表**：
 
-| Agent | 阶段 | 文件名 | 职责 |
-|-------|------|--------|------|
-| `feat-design-plan-agent` | clarify/plan | `.pi/agents/feat-design-plan-agent.md` | 方案设计与规划 |
-| `develop-agent` | develop | `.pi/agents/develop-agent.md` | 功能开发 |
-| `code-review-agent` | review | `.pi/agents/code-review-agent.md` | 代码审查 |
-| `code-review-withfix-agent` | fix | `.pi/agents/code-review-withfix-agent.md` | 修复 Blocker/High/Medium |
+| Agent                       | 阶段         | 文件名                                    | 职责                     |
+| --------------------------- | ------------ | ----------------------------------------- | ------------------------ |
+| `feat-design-plan-agent`    | clarify/plan | `.pi/agents/feat-design-plan-agent.md`    | 方案设计与规划           |
+| `develop-agent`             | develop      | `.pi/agents/develop-agent.md`             | 功能开发                 |
+| `code-review-agent`         | review       | `.pi/agents/code-review-agent.md`         | 代码审查                 |
+| `code-review-withfix-agent` | fix          | `.pi/agents/code-review-withfix-agent.md` | 修复 Blocker/High/Medium |
 
 ### 7.9 clarify 双入口与 stage skill 注入
 
@@ -834,20 +863,20 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 
 **审计定位**：当 `config.audit.promptSnapshot` 为 `full`（默认）时，audit log 包含以下独立事件，可精确区分 base 与 plugin 内容：
 
-| 事件 | 内容 |
-|------|------|
-| `prompt_snapshot` | 合并后的完整 system prompt（base + plugin） |
-| `prompt_snapshot_base` | pi 基础 system prompt（无 base 时写入占位文本） |
-| `prompt_snapshot_plugin` | 插件注入的 prompt（含 stage skill） |
+| 事件                     | 内容                                            |
+| ------------------------ | ----------------------------------------------- |
+| `prompt_snapshot`        | 合并后的完整 system prompt（base + plugin）     |
+| `prompt_snapshot_base`   | pi 基础 system prompt（无 base 时写入占位文本） |
+| `prompt_snapshot_plugin` | 插件注入的 prompt（含 stage skill）             |
 
 以上快照事件均携带 `prompt_hash` 字段，便于内容比对与去重分析。
 
 此外，以下 skills 去重事件不受 `promptSnapshot` 开关控制，在拦截时刻按条件独立写入：
 
-| 事件 | 内容 |
-|------|------|
-| `prompt_skills_dedup` | 检测到一致重复 `<available_skills>` 块并完成切除（info；含 removed_pairs / removed_bytes / hash_before / hash_after） |
-| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn 含 reason；catch 异常时为 error 级并含 error 详情） |
+| 事件                          | 内容                                                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `prompt_skills_dedup`         | 检测到一致重复 `<available_skills>` 块并完成切除（info；含 removed_pairs / removed_bytes / hash_before / hash_after） |
+| `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn 含 reason；catch 异常时为 error 级并含 error 详情）                 |
 
 去重事件使用 `hash_before` / `hash_after` 字段（非 `prompt_hash`）。
 
@@ -865,10 +894,10 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 
 各阶段配置支持以下 `guard` 可选键：
 
-| 键 | 类型 | 生效阶段 | 说明 |
-|----|------|---------|------|
-| `blockedTools` | `string[]` | 所有阶段 | 拦截指定工具调用（如 `["bash"]` 拦截 bash），用于答案收集阶段防止信息泄露 |
-| `suppressDuplicateSpawn` | `boolean` | 仅 clarify/plan | 启用后，当同名 stage executor agent 已在运行时，拦截重复的 `Agent` 工具调用并提示等待结果。需要配合 pi-subagents manager 单例探测或 activeSpawns 记录使用 |
+| 键                       | 类型       | 生效阶段        | 说明                                                                                                                                                      |
+| ------------------------ | ---------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blockedTools`           | `string[]` | 所有阶段        | 拦截指定工具调用（如 `["bash"]` 拦截 bash），用于答案收集阶段防止信息泄露                                                                                 |
+| `suppressDuplicateSpawn` | `boolean`  | 仅 clarify/plan | 启用后，当同名 stage executor agent 已在运行时，拦截重复的 `Agent` 工具调用并提示等待结果。需要配合 pi-subagents manager 单例探测或 activeSpawns 记录使用 |
 
 示例（plan 阶段启用防重复 spawn）：
 
@@ -883,6 +912,7 @@ clarify 阶段支持两种启动方式，两者均创建 fork 子会话并触发
 当 pi-subagents 扩展配置为 `"agentMentions": "model"`（默认值）时，用户通过 `@agent <text>` 手动启动**未在跑的 agent**，pi-subagents 会将当前会话克隆到 off-screen 会话，由 clone 的模型自行撰写 `Agent(subagent_type, prompt)` 调用——即 **mention prompt 会被模型改写**（参见 pi-subagents README §Starting a new agent）。
 
 **已知边界**：
+
 - `agentMentions: "model"` 仅在"启动未在跑的 agent"时代笔；对运行中/已完成 agent 的 messaging/resume 两模式均为原文直传。
 - 若需要原文保真（如流水线场景传递 `full-und?` 等精确参数），建议：
   - 将 `.pi/subagents.json` 的 `agentMentions` 改为 `"direct"`（原文直传，无代笔）
@@ -935,6 +965,7 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 **现象**：所有工具调用被阻止，Agent 无法执行操作。
 
 **解决**：
+
 - 查看审计日志（`.pi/audit/{pipelineId}/log/`）了解冻结原因
 - 重新开始流水线（运行 /pipeline-start REQUIREMENT.md 开启新流水线），或手动修改会话元数据恢复
 
@@ -943,6 +974,7 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 **现象**：流水线在 develop → review → fix 之间循环达到上限后终止。
 
 **解决**：
+
 - 检查测试失败原因，修复根本问题
 - 调高 `maxLoops`（单阶段测试重试上限）或 `maxLoopCycles`（返工轮次上限，默认 5）配置
 - 使用 /pipeline-start REQUIREMENT.md 重新开始流水线
@@ -950,12 +982,15 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 ### 8.3 受保护路径写入被拒
 
 **现象**：Agent 在 develop/fix 阶段尝试修改受保护路径时报错 `FORBIDDEN`。受保护路径包括：
+
 - 内置硬编码路径：`.pi/`、`.git/`、`AGENTS.md`
 - `.gitignore` 中匹配的动态路径
 
 **解决**：
+
 - 内置硬编码路径无法放开，请在非循环阶段（clarify/plan/review）修改
 - 动态保护路径如需编辑，将其加入 `protect.allow` 配置：
+
   ```jsonc
   "protect": {
     "allow": ["docs/design/", "src/template/"]
@@ -967,11 +1002,13 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 
 当业务 `.gitignore` 包含 `docs/**` 时，`docs/` 下的文件会被 gitignore 保护机制拦截。
 正确做法是将 `docs/` 加入 `protect.allow`（前缀匹配豁免 gitignore）：
+
 ```jsonc
 "protect": {
   "allow": ["docs/"]
 }
 ```
+
 此时 Agent 可以编辑 `docs/` 下的文件，但 `git add docs/**` 仍被 git 保护拦截（符合 `.gitignore` 不入库的原意）。
 
 **⚠️ 反例警示：不要用 allowedWritePaths 作为豁免通道**
@@ -985,6 +1022,7 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 **现象**：Agent 尝试执行危险命令（如 `sudo`、`rm -rf /`、`mkfs` 等）时被拦截。
 
 **拦截机制**：
+
 - 插件维护破坏性命令黑名单，匹配的命令会触发用户确认对话框
 - 对话框提供三个选项：
   1. **Follow default rules (block, default)** — 按默认规则拦截
@@ -993,6 +1031,7 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 - 若 `protect.ask: false`（默认），破坏性命令直接拦截，需修改命令或启用 `protect.ask: true`
 
 **解决**：
+
 - 启用 `protect.ask: true` 以允许用户确认对话框
 - 避免使用危险命令，改用安全的替代方案
 - 对于项目内文件操作，确保路径在 `allowedWritePaths` 范围内
@@ -1002,11 +1041,13 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 **现象**：Agent 执行 `git add` 或 `git commit` 时报错 `FORBIDDEN`。
 
 **拦截机制**：
+
 - `git add`：使用 `git add --dry-run` 预览将被暂存的文件，命中保护路径则拦截
 - `git add -f`（force）：绕过 gitignore 的强制暂存也会被检测——插件剔除 `-f` 标志后复跑 dry-run，若 git 因 gitignore 拒绝该路径且路径受保护，则同样拦截并提示 `protect.allow` 豁免方式
 - `git commit`：检查 `git diff --cached`（staged 文件）；若带 `-a`/`--all` 还检查 unstaged 文件
 
 **解决**：
+
 - ⚠️ `allow` **不放开** git 通道 — gitignore 中的路径本不应提交
 - 若确需将 gitignore 中的文件纳入版本管理，先在 `.gitignore` 中移除对应条目
 - `git add -f` 不能绕过保护——force 暂存 gitignore-protected 路径会被拦截
@@ -1020,16 +1061,17 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 
 插件支持两种验证触发模式：
 
-| 模式 | 触发时机 | 适用阶段 |
-|------|---------|---------|
+| 模式           | 触发时机                                                  | 适用阶段                    |
+| -------------- | --------------------------------------------------------- | --------------------------- |
 | `hook`（默认） | Agent 进入 idle 状态时，`agent_settled` hook 自动执行验证 | clarify, plan, develop, fix |
-| `tool` | Agent 调用 `stage_advance` 工具时，工具内部执行验证门 | 任意（需配置） |
+| `tool`         | Agent 调用 `stage_advance` 工具时，工具内部执行验证门     | 任意（需配置）              |
 
 **推荐实践**：clarify/plan/develop/review/fix 均使用 hook 模式（agent_settled 自动触发）。review 启用 verify 将「结论：(通过|不通过)」作为规则校验结论存在（review_spec/verify.md 含 `结论：(通过|不通过)` pattern）；结论由模型调用 `stage_advance({ reviewConclusion: "fail" })` 声明后自动路由至 fix；声明 pass 或未声明则走 verify + confirm 门（避免 review↔fix 死循环）。
 
 ### 9.2 selfVerifySkip 机制
 
 develop/fix 阶段配置 `verify.selfVerifySkip: true` 时：
+
 - 插件根据**工具调用记录**（非文本声明）判定模型是否已在本 stage 成功执行过相同 requiredCommand
 - 匹配规则：命令 token 前缀匹配（归一化后 `./mvnw`/`mvnw` 等价）
 - **文件变更失效**：matching 之后若有 write/edit 成功记录，该命令不跳过
@@ -1046,16 +1088,16 @@ develop/fix 阶段配置 `verify.selfVerifySkip: true` 时：
 
 当 `llmExtract: true` 时，插件在 LLM 提取 verify.md 规则前自动探测项目技术栈：
 
-| 探测文件 | 技术栈 | 推荐命令 |
-|---------|--------|---------|
-| `pom.xml` / `mvnw` | Maven | `./mvnw clean compile` + `./mvnw clean test` |
-| `build.gradle` / `gradlew` | Gradle | `./gradlew build` + `./gradlew test` |
-| `package.json` + `bun.lockb` | bun | `bun run build` + `bun test` |
-| `package.json` + `pnpm-lock.yaml` | pnpm | `pnpm run build` + `pnpm test` |
-| `package.json` + `yarn.lock` | yarn | `yarn build` + `yarn test` |
-| `package.json` | npm | `npm run build` + `npm test` |
-| `Cargo.toml` | cargo | `cargo build` + `cargo test` |
-| `pyproject.toml` | python | `python -m build` + `python -m pytest` |
+| 探测文件                          | 技术栈 | 推荐命令                                     |
+| --------------------------------- | ------ | -------------------------------------------- |
+| `pom.xml` / `mvnw`                | Maven  | `./mvnw clean compile` + `./mvnw clean test` |
+| `build.gradle` / `gradlew`        | Gradle | `./gradlew build` + `./gradlew test`         |
+| `package.json` + `bun.lockb`      | bun    | `bun run build` + `bun test`                 |
+| `package.json` + `pnpm-lock.yaml` | pnpm   | `pnpm run build` + `pnpm test`               |
+| `package.json` + `yarn.lock`      | yarn   | `yarn build` + `yarn test`                   |
+| `package.json`                    | npm    | `npm run build` + `npm test`                 |
+| `Cargo.toml`                      | cargo  | `cargo build` + `cargo test`                 |
+| `pyproject.toml`                  | python | `python -m build` + `python -m pytest`       |
 
 探测到的技术栈上下文会注入到 LLM 提取提示词，确保 LLM 生成项目相关命令而非默认示例。
 
@@ -1063,13 +1105,13 @@ develop/fix 阶段配置 `verify.selfVerifySkip: true` 时：
 
 重跑 `/pipeline-init 1` 时，verify.md 已存在的处理逻辑：
 
-| 情况 | 行为 | status | 显示文案 |
-|------|------|--------|---------|
-| 旧 verify.md 规则缺失某些 expected 命令/文件 | 补入缺失规则，body 保留 | `merged` | `Merged (rules added to existing verify.md):` |
-| 旧 verify.md 含 `groups:` 声明（v6 模板或用户自定义） | 跳过，保护声明（避免新模板重跑 init 被覆盖） | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
-| 旧 verify.md 含自定义规则（expectOutput 等）或扁平 `fileContentPattern` | 跳过，保护人工规则或存量扁平内容模式（避免 init merge 静默丢弃） | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected` |
-| 旧 verify.md 已覆盖所有 expected 规则 | 跳过，无变化 | `skipped` (reason: `exists`) | `rules already present` |
-| 用户通过 protect.ask 拒绝覆盖（见 §9.4.1） | 该 stage 跳过，其余继续 | `skipped` (reason: `user_declined`) | `user declined overwrite` |
+| 情况                                                                    | 行为                                                             | status                              | 显示文案                                      |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------- | --------------------------------------------- |
+| 旧 verify.md 规则缺失某些 expected 命令/文件                            | 补入缺失规则，body 保留                                          | `merged`                            | `Merged (rules added to existing verify.md):` |
+| 旧 verify.md 含 `groups:` 声明（v6 模板或用户自定义）                   | 跳过，保护声明（避免新模板重跑 init 被覆盖）                     | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected`        |
+| 旧 verify.md 含自定义规则（expectOutput 等）或扁平 `fileContentPattern` | 跳过，保护人工规则或存量扁平内容模式（避免 init merge 静默丢弃） | `skipped` (reason: `exists_custom`) | `user-authored custom rules protected`        |
+| 旧 verify.md 已覆盖所有 expected 规则                                   | 跳过，无变化                                                     | `skipped` (reason: `exists`)        | `rules already present`                       |
+| 用户通过 protect.ask 拒绝覆盖（见 §9.4.1）                              | 该 stage 跳过，其余继续                                          | `skipped` (reason: `user_declined`) | `user declined overwrite`                     |
 
 #### 9.4.1 损坏 frontmatter 自动清洗（Bug 3-C 修复）
 
@@ -1130,24 +1172,24 @@ rules:
 
 ##### 2. `groups` 组属性
 
-| 字段 | 取值 | 说明 |
-|------|------|------|
-| `name` | 字符串 | 组名；失败回流前缀 `[group:name]` |
-| `when` | regex 字符串 | 门禁触发器：文档中无命中 → 本组恒过（不查） |
-| `scope` | `section` / 缺省 | `section`=按轮次标题逐节各自求值；缺省=整文档求值 |
-| `ruleMode` | `and`（缺省）/ `or` | 组内多个规则节点之间的组合 |
-| `runtime` | `roundHeading` | 组级运行时锚点：标记本组 `when` 的 pattern 兼作轮次推导源 |
-| `rules` | 规则节点列表 | 见下 |
+| 字段       | 取值                | 说明                                                      |
+| ---------- | ------------------- | --------------------------------------------------------- |
+| `name`     | 字符串              | 组名；失败回流前缀 `[group:name]`                         |
+| `when`     | regex 字符串        | 门禁触发器：文档中无命中 → 本组恒过（不查）               |
+| `scope`    | `section` / 缺省    | `section`=按轮次标题逐节各自求值；缺省=整文档求值         |
+| `ruleMode` | `and`（缺省）/ `or` | 组内多个规则节点之间的组合                                |
+| `runtime`  | `roundHeading`      | 组级运行时锚点：标记本组 `when` 的 pattern 兼作轮次推导源 |
+| `rules`    | 规则节点列表        | 见下                                                      |
 
 ##### 3. 规则节点（三合一 `{ type, mode?, patterns[], path?, runtime?, ... }`）
 
-| `type` | 必需字段 | 说明 |
-|--------|---------|------|
-| `requiredFile` | `path`（可继承） | 文件/glob 存在性 |
-| `fileContentPattern` | `path`（可继承）+ `patterns` | 文件内容正则（`m` 标志、存在匹配） |
-| `requiredCommand` | `cmd`（`expectExit`/`expectOutput` 可选） | 命令执行校验 |
-| `requiredGit` | `lastCommitWithin`/`branch`/`cleanWorkingTree` 至少一个 | Git 状态校验 |
-| `modelRuntimeResult` | `patterns` | 对本 stage 聚合 assistant 消息做正则匹配 |
+| `type`               | 必需字段                                                | 说明                                     |
+| -------------------- | ------------------------------------------------------- | ---------------------------------------- |
+| `requiredFile`       | `path`（可继承）                                        | 文件/glob 存在性                         |
+| `fileContentPattern` | `path`（可继承）+ `patterns`                            | 文件内容正则（`m` 标志、存在匹配）       |
+| `requiredCommand`    | `cmd`（`expectExit`/`expectOutput` 可选）               | 命令执行校验                             |
+| `requiredGit`        | `lastCommitWithin`/`branch`/`cleanWorkingTree` 至少一个 | Git 状态校验                             |
+| `modelRuntimeResult` | `patterns`                                              | 对本 stage 聚合 assistant 消息做正则匹配 |
 
 `mode`（节点级，缺省 `and`）控制该节点 `patterns` 列表内的组合。单条 `pattern: x` 是 `patterns: [x]` 的糖，parser 双兼容。
 
@@ -1171,12 +1213,12 @@ rules:
 
 `runtime:` 标记"该处 pattern 兼职为运行时锚点"，运行时代码从部署 verify.md 读取，不再内置正则。
 
-| 锚点 | 宿主 | 校验 | 消费方 |
-|------|------|------|--------|
-| `roundHeading` | 组级（标记 `when`） | `when` 须含命名组 `roundZh`/`roundEn` | clarify 轮次推导 |
-| `answerField` | 节点级（标记 `patterns`） | — | clarify await-answer 判定 |
-| `modelConfirm` | 节点级 | — | clarify confirmed 判定 |
-| `verdict` | 节点级 | 每条 pattern 须含捕获组 1 | review→completed/fix 路由 |
+| 锚点           | 宿主                      | 校验                                  | 消费方                    |
+| -------------- | ------------------------- | ------------------------------------- | ------------------------- |
+| `roundHeading` | 组级（标记 `when`）       | `when` 须含命名组 `roundZh`/`roundEn` | clarify 轮次推导          |
+| `answerField`  | 节点级（标记 `patterns`） | —                                     | clarify await-answer 判定 |
+| `modelConfirm` | 节点级                    | —                                     | clarify confirmed 判定    |
+| `verdict`      | 节点级                    | 每条 pattern 须含捕获组 1             | review→completed/fix 路由 |
 
 ⚠️ **警示**：带 `runtime` 属性的节点/组是运行时的唯一声明源。删除该节点或其 `runtime` 属性会导致运行时降级（fail-open）：轮次推导回退 `fresh(1)`、review 走"未声明"分支，并记 `contract_anchor_unavailable` 错误审计 + 英文 notify。**不可随意删除。**
 
@@ -1241,12 +1283,12 @@ rules:
 
 ##### 11. 诊断与错误码
 
-| 错误码 | 触发条件 |
-|--------|---------|
-| `group_missing_name` | 组缺少 `name` |
+| 错误码                  | 触发条件                                        |
+| ----------------------- | ----------------------------------------------- |
+| `group_missing_name`    | 组缺少 `name`                                   |
 | `group_runtime_invalid` | 组级 `runtime` 非 `roundHeading`，或缺少 `when` |
-| `node_runtime_invalid` | 节点级 `runtime` 非法值 |
-| `anchor_validation` | `roundHeading` 缺命名组 / `verdict` 缺捕获组 1 |
+| `node_runtime_invalid`  | 节点级 `runtime` 非法值                         |
+| `anchor_validation`     | `roundHeading` 缺命名组 / `verdict` 缺捕获组 1  |
 
 静态诊断失败 → 跳过验证（视为通过）+ TUI 提示 + audit `verify_config_skip`。运行时配置错误（EISDIR/目录/未解析占位符）→ freeze + 决策菜单。
 
@@ -1262,10 +1304,12 @@ rules:
 插件维护破坏性命令黑名单，自动拦截危险操作（如 `sudo`、`rm -rf /`、`mkfs`、`dd of=/dev/` 等）。
 
 **检测机制**：
+
 - **模式匹配**：检查命令是否匹配预定义的破坏性模式
 - **路径启发式**：检查 `rm`/`mv`/`chmod`/`chown` 是否 targeting 系统路径（如 `/etc`、`/usr`、`.git`）
 
 **用户确认**：当 `protect.ask: true` 时，破坏性命令触发三选一对话框：
+
 1. 按默认规则拦截（block）
 2. 本次放行（allow once）
 3. 本次会话放行（allow for session）
@@ -1279,6 +1323,7 @@ clarify → plan → develop → review ⇄ fix → review (loop) → completed 
 ```
 
 老项目迁移步骤：
+
 1. 确认 `pipeline_loop.json` 的 `review.nextStage` 为 `"completed"`（163 收敛：通过→completed；fail 由 `reviewConclusion` 声明自动路由至 fix）
 2. 更新 `fix.nextStage` 从 `"completed"` 改为 `"review"`（修复后回 review 复验，完成由 review 确认门收敛）
 3. （可选）更新 review `verify.md` 规则：`结论：通过` → `结论：(通过|不通过)`（163 规则放宽，verify 仅校验结论存在）
@@ -1301,12 +1346,14 @@ clarify → plan → develop → review ⇄ fix → review (loop) → completed 
 ```
 
 **工作机制**：
+
 1. Agent settled 触发时，若配置了 `completionMarker`，先预检需求文档（`meta.requirementDoc`）是否包含该标记文本
 2. **标记已落盘** → 正常执行验证流程
 3. **标记未落盘** → 跳过验证、不推进阶段、**不计 verifyAttempts**（防止冻结循环）
 4. 审计记录 `verify_completion_marker_pending` 事件
 
 **设计原则**：
+
 - 纯配置驱动，不依赖 verify.md 规则
 - `requirementDoc` 未设置或文件读取失败 → 视为未落盘（返回 false）
 - 未配置 `completionMarker` 的 stage 行为完全不变（向后兼容）
@@ -1369,12 +1416,12 @@ rmdir .pi/agents/clarify .pi/agents/develop .pi/agents/review .pi/agents/fix
 
 ### 11.1 模块矩阵（index.ts 注册面）
 
-| 类别 | 数量 | 模块 |
-|---|---|---|
-| Hooks | 6 | session-starter, prompt-injector, tool-guard, loop-breaker, agent-settled, session-shutdown |
-| Tools | 6+1 | pipeline-state, loop-checker, stage-advancer, generate-summary, validate-summary, pipeline-handoff + pipeline-verify（条件注册） |
-| Commands | 5 | pipeline-start, pipeline-quit, pipeline-resume, pipeline-status, pipeline-init |
-| 事件监听 | 1 | model_select（只读记录） |
+| 类别     | 数量 | 模块                                                                                                                             |
+| -------- | ---- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Hooks    | 6    | session-starter, prompt-injector, tool-guard, loop-breaker, agent-settled, session-shutdown                                      |
+| Tools    | 6+1  | pipeline-state, loop-checker, stage-advancer, generate-summary, validate-summary, pipeline-handoff + pipeline-verify（条件注册） |
+| Commands | 5    | pipeline-start, pipeline-quit, pipeline-resume, pipeline-status, pipeline-init                                                   |
+| 事件监听 | 1    | model_select（只读记录）                                                                                                         |
 
 ### 11.2 数据流
 
@@ -1398,30 +1445,30 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 ### 12.1 七阶段 × flowState 二维矩阵
 
 | flowState \ stage | clarify | plan | develop | review | fix | awaiting_human | completed |
-|---|---|---|---|---|---|---|---|
-| running | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
-| blocked | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| aborted | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| ----------------- | ------- | ---- | ------- | ------ | --- | -------------- | --------- |
+| running           | ✓       | ✓    | ✓       | ✓      | ✓   | —              | —         |
+| blocked           | ✓       | ✓    | ✓       | ✓      | ✓   | ✓              | —         |
+| aborted           | ✓       | ✓    | ✓       | ✓      | ✓   | ✓              | ✓         |
 
 ### 12.2 流转语义
 
 - **正常流转**: clarify → plan → develop → review → completed（fix→review 回环）
 - **Skip**: 跳过当前阶段到 nextStage，当前阶段 summary 标 skipped
 - **Rollback**: 回退到 previousStage，目标阶段 summary 标 invalid
-- **choose_stage (Phase 3/173)**: 跳到任意阶段（二级菜单），推断链默认选中
+- **choose_stage**: 跳到任意阶段（二级菜单），推断链默认选中
 - **override**: 通过 stage_advance 强制推进
 
 ### 12.3 产物路径矩阵
 
-| 产物类型 | 路径 | 说明 |
-|---|---|---|
-| 需求文档 | `docs/design/*.md` | 用户可见交付物 |
-| 设计简报 | `docs/design/*.md` | clarify 阶段产出 |
-| 计划文档 | `docs/design/*.md` | plan 阶段产出 |
-| 代码实现 | `src/**` | develop 阶段产出 |
-| 审查报告 | `docs/review/*.md` | review 阶段产出 |
-| 修复代码 | `src/**` | fix 阶段产出 |
-| 阶段摘要 | `{auditDir}/{pipelineId}/{stage}.md` | 插件内部产物 |
+| 产物类型 | 路径                                             | 说明                                                  |
+| -------- | ------------------------------------------------ | ----------------------------------------------------- |
+| 需求文档 | `docs/design/*.md`                               | 用户可见交付物                                        |
+| 设计简报 | `docs/design/*.md`                               | clarify 阶段产出                                      |
+| 计划文档 | `docs/design/*.md`                               | plan 阶段产出                                         |
+| 代码实现 | `src/**`                                         | develop 阶段产出                                      |
+| 审查报告 | `docs/review/*.md`                               | review 阶段产出                                       |
+| 修复代码 | `src/**`                                         | fix 阶段产出                                          |
+| 阶段摘要 | `{auditDir}/{pipelineId}/{stage}.md`             | 插件内部产物                                          |
 | 审计日志 | `{auditDir}/{pipelineId}/log/YYYYMMDD_audit.log` | 插件内部产物；无归属事件落入 `{auditDir}/system/log/` |
 
 **路径约定（C17）**：业务交付物一律写入 `docs/design/` 等用户可见路径。`{auditDir}/` 仅存放插件内部产物（summary/audit/registry），不应作为业务交付目录。
@@ -1430,14 +1477,14 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 所有设计交付文档名由命名单一事实源 `src/core/naming/doc-naming.ts` 派生：`{reqBase}` = 需求文档 basename 去扩展名（plan 文档名将剥离尾部 `_Plan`/`_plan` 标记得到 `{reqBase}`）。
 
-| 交付物 | 新命名（v2） | 切换策略 / 读取兼容 |
-|---|---|---|
-| 需求/base 文档 | `docs/design/{index}_{xxx}.md` | 不变 |
-| plan 文档 | `{reqBase}_Plan.md` | 硬切换（不再生成旧名） |
-| develop/fix commit 文档 | `{reqBase}_Develop_Commit.md` | 生成新名；读取双模式（旧 `*_commit.md` 兼容） |
-| design review 报告 | `Design_Review_{round}_{reqBase}_Design.md` | 生成新名；读取双模式（旧 `review-design-{round}-{plan名}` 兼容，含旧两种基名形态） |
-| code review 报告 | `docs/review/Code_Review_{reqBase}_Develop_Commit_{index}.md` | 生成新名；读取双模式（旧 `code_review_*` 兼容） |
-| design review update 回执 | `Design_Review_Update_{round}_{operationId}_{reqBase}_Design.md` | 硬切换；回执路径始终由插件派生（token `{updateReceiptDoc}`） |
+| 交付物                    | 新命名（v2）                                                     | 切换策略 / 读取兼容                                                                |
+| ------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 需求/base 文档            | `docs/design/{index}_{xxx}.md`                                   | 不变                                                                               |
+| plan 文档                 | `{reqBase}_Plan.md`                                              | 硬切换（不再生成旧名）                                                             |
+| develop/fix commit 文档   | `{reqBase}_Develop_Commit.md`                                    | 生成新名；读取双模式（旧 `*_commit.md` 兼容）                                      |
+| design review 报告        | `Design_Review_{round}_{reqBase}_Design.md`                      | 生成新名；读取双模式（旧 `review-design-{round}-{plan名}` 兼容，含旧两种基名形态） |
+| code review 报告          | `docs/review/Code_Review_{reqBase}_Develop_Commit_{index}.md`    | 生成新名；读取双模式（旧 `code_review_*` 兼容）                                    |
+| design review update 回执 | `Design_Review_Update_{round}_{operationId}_{reqBase}_Design.md` | 硬切换；回执路径始终由插件派生（token `{updateReceiptDoc}`）                       |
 
 **兼容矩阵**：凡是「读取双模式」分类，历史会话中的旧命名文件仍被扫描/引用；软件层新写入一律使用 v2 命名。verify-path-resolver 与 lifecycle-access 的保护正则同时覆盖新旧两族文件名。
 
@@ -1447,12 +1494,12 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 ### 13.1 四熔断阈值
 
-| 熔断器 | 阈值 | 触发条件 |
-|---|---|---|
-| maxLoops | 默认 3 | 连续测试失败次数 |
-| maxVerifyAttempts | 默认 3 | 验证失败次数 |
-| DEFAULT_MAX_VIOLATIONS | 3 | 违规拦截次数 |
-| dismissCount (Phase 4/173) | 5 | ask 弹窗快速 dismiss 次数（< 1500ms） |
+| 熔断器                 | 阈值   | 触发条件                              |
+| ---------------------- | ------ | ------------------------------------- |
+| maxLoops               | 默认 3 | 连续测试失败次数                      |
+| maxVerifyAttempts      | 默认 3 | 验证失败次数                          |
+| DEFAULT_MAX_VIOLATIONS | 3      | 违规拦截次数                          |
+| dismissCount           | 5      | ask 弹窗快速 dismiss 次数（< 1500ms） |
 
 ### 13.2 六项决策菜单
 
@@ -1463,18 +1510,18 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 3. **Rollback** — 回退到 previousStage
 4. **Restart & New** — 重启新流（新 pipelineId，旧流存档）
 5. **Abort & Exit** — 中止并退出
-6. **Choose stage…** (Phase 3/173) — 二级菜单选任意阶段断点续传
+6. **Choose stage…**  — 二级菜单选任意阶段断点续传
 
 **frozen-at-fix 特殊过滤**：当 pipeline 冻结在 fix 阶段时，二级菜单（Choose stage…）不含 `completed` 终态项。fix 必须先经过 review 才能进入终态（Phase 6 / 182 G5 强约束：进入 fix 必经 review）。`awaiting_human` 原本就不在二级菜单列表中。
 
 ### 13.3 四入口
 
-| 入口 | 触发方式 | 说明 |
-|---|---|---|
-| 自动弹出 | 熔断触发 | freezeAndPrompt 直接弹 |
-| 重放 | session_start (Phase 3/173) | frozen 流 reload/startup 时重放 |
-| /pipeline-start | 命令 | blocked 态就地弹菜单 |
-| /pipeline-resume (Phase 1/182) | 命令 | frozen 态弹六项一级决策菜单；`--force-resume` 保留旧直解冻语义（逃生开关） |
+| 入口             | 触发方式      | 说明                                                                       |
+| ---------------- | ------------- | -------------------------------------------------------------------------- |
+| 自动弹出         | 熔断触发      | freezeAndPrompt 直接弹                                                     |
+| 重放             | session_start | frozen 流 reload/startup 时重放                                            |
+| /pipeline-start  | 命令          | blocked 态就地弹菜单                                                       |
+| /pipeline-resume | 命令          | frozen 态弹六项一级决策菜单；`--force-resume` 保留旧直解冻语义（逃生开关） |
 
 #### 13.3.1 /pipeline-resume 菜单化契约（Phase 1 / 182）
 
@@ -1496,27 +1543,27 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 **核心语义**：未 `/pipeline-start` = 插件等同不存在。
 
-| 暴露面 | dormant 行为 |
-|---|---|
-| session_start | 静默（drift/预热保留） |
-| before_agent_start | 零注入零 snapshot |
-| tool_call | 全放行（保护链一并失效 🔴-1） |
-| tool_result | 零计数 |
-| agent_settled | 短路（compact 豁免先行） |
-| session_shutdown | 身份审计 + 清 timer |
-| 7 tools | 引导语 |
-| commands | status 输出"无活跃管道" |
+| 暴露面             | dormant 行为                  |
+| ------------------ | ----------------------------- |
+| session_start      | 静默（drift/预热保留）        |
+| before_agent_start | 零注入零 snapshot             |
+| tool_call          | 全放行（保护链一并失效 🔴-1） |
+| tool_result        | 零计数                        |
+| agent_settled      | 短路（compact 豁免先行）      |
+| session_shutdown   | 身份审计 + 清 timer           |
+| 7 tools            | 引导语                        |
+| commands           | status 输出"无活跃管道"       |
 
 ### 14.2 事件表
 
-| 事件 | 行为 |
-|---|---|
+| 事件    | 行为                                  |
+| ------- | ------------------------------------- |
 | startup | 仅 running 僵尸 → stale_startup abort |
-| reload | frozen → 重放菜单 |
-| quit | aborted + user_quit → dormant |
-| fork | 新流（不继承父流） |
-| resume | 恢复模型 + frozen notify |
-| new | dormant（不建流） |
+| reload  | frozen → 重放菜单                     |
+| quit    | aborted + user_quit → dormant         |
+| fork    | 新流（不继承父流）                    |
+| resume  | 恢复模型 + frozen notify              |
+| new     | dormant（不建流）                     |
 
 ### 14.3 子会话 JOIN + spawnTrigger
 
@@ -1543,11 +1590,11 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 **三个开关的真实语义**
 
-| 开关 | 位置 | 是否生效 | 出厂值 |
-|---|---|---|---|
-| `rememberAgents` | `subagents.json` | ✅ 生效（全局默认） | `true` |
-| `persist_session` | agent frontmatter | ✅ 生效（覆盖全局） | 未声明 |
-| `persistSession` | `subagents.json` | ❌ **无效键**（`@tintinweb/pi-subagents@0.22.0` 静默忽略） | — |
+| 开关              | 位置              | 是否生效                                                  | 出厂值 |
+| ----------------- | ----------------- | --------------------------------------------------------- | ------ |
+| `rememberAgents`  | `subagents.json`  | ✅ 生效（全局默认）                                        | `true` |
+| `persist_session` | agent frontmatter | ✅ 生效（覆盖全局）                                        | 未声明 |
+| `persistSession`  | `subagents.json`  | ❌ **无效键**（`@tintinweb/pi-subagents@0.22.0` 静默忽略） | —      |
 
 三种会导致子代理会话 in-memory（不落盘）的情形：
 
@@ -1565,11 +1612,11 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 **JOIN 证据级联**
 
-| 层 | 证据 | 说明 |
-|---|---|---|
-| L1 | `parentSession` → registry | 运行时父子关系，不可伪造，**优先命中即停** |
-| L2 | 首条用户消息的 `Pipeline:` 标记 | 需目标 `meta.json` 可读；审计记 `via=first_message` |
-| L3 | 无证据 | 审计 `reason=no_evidence` + 保持 dormant |
+| 层  | 证据                            | 说明                                                |
+| --- | ------------------------------- | --------------------------------------------------- |
+| L1  | `parentSession` → registry      | 运行时父子关系，不可伪造，**优先命中即停**          |
+| L2  | 首条用户消息的 `Pipeline:` 标记 | 需目标 `meta.json` 可读；审计记 `via=first_message` |
+| L3  | 无证据                          | 审计 `reason=no_evidence` + 保持 dormant            |
 
 - `session_join_parent` 审计新增 `via`（`parent_session` / `first_message`）与 `persisted`（`sessionFile !== ""`）。
 - L2 只信任**格式合法（`^pipe-\d+-[a-z0-9]{6}$`）且目标 `meta.json` 可读**的标记：插件发起的 spawn（clarify / 阶段执行器）会自动携带该标记，但实现**不校验标记来源**——手写标记（例如人工 `@agent docs/design/x.md 1 Pipeline: pipe-xxx`）同样会被信任，并 JOIN 到 `pipe-xxx`。因此 L2 属**弱证据**：它能挡住「无标记的误触发嵌套 spawn」（这类仍落 L3 dormant），但不能识别伪造/手写标记；跨 pipeline 隔离的强度以 L1（`parentSession` → registry，运行时关系不可伪造）为界。审计侧对策：`session_join_parent` 的 `via` 字段可区分两种证据等级（`first_message` = 弱证据）。
@@ -1627,12 +1674,14 @@ The pipeline distinguishes two categories of failures, each with its own escalat
 ### 16.1 Format Verification Failures (verify_fail_wake)
 
 Format failures occur when the stage deliverable doesn't meet structural requirements:
+
 - `requiredFiles`: expected files not found
 - `fileContentPattern`: file content doesn't match expected patterns
 - `requiredCommands`: build/test commands fail
 - `keywords`: expected keywords not found in output
 
 **Escalation path:**
+
 1. First failure → `verify_fail_wake` — model is woken via `sendUserMessage` with failure details
 2. Repeated failures → `verifyAttempts` counter increments
 3. Cap reached (`maxVerifyAttempts`, default 3) → `verify_attempt_overflow` freeze + decision menu
@@ -1642,12 +1691,14 @@ Format failures occur when the stage deliverable doesn't meet structural require
 ### 16.2 Behavioral Violations (violation_overflow)
 
 Behavioral violations occur when the model attempts prohibited actions:
+
 - `git_protected`: git write commands in protected stages
 - `write_protected`: file writes outside stage whitelist
 - `bash_destructive`: destructive shell commands
 - `frozen`: tool calls when pipeline is frozen
 
 **Escalation path:**
+
 1. Each violation → `recordViolation` appends to `meta.violations`
 2. Cap reached (`DEFAULT_MAX_VIOLATIONS=3`) → `violation_overflow` freeze + decision menu
 
@@ -1655,10 +1706,10 @@ Behavioral violations occur when the model attempts prohibited actions:
 
 ### 16.3 Summary
 
-| Category | Counter | Cap | Freeze Reason | Recovery |
-|----------|---------|-----|---------------|----------|
-| Format failures | `verifyAttempts` | `maxVerifyAttempts` (default 3) | `verify_attempt_overflow` | Decision menu |
-| Behavioral violations | `meta.violations.length` | `DEFAULT_MAX_VIOLATIONS` (3) | `violation_overflow` | Decision menu |
+| Category              | Counter                  | Cap                             | Freeze Reason             | Recovery      |
+| --------------------- | ------------------------ | ------------------------------- | ------------------------- | ------------- |
+| Format failures       | `verifyAttempts`         | `maxVerifyAttempts` (default 3) | `verify_attempt_overflow` | Decision menu |
+| Behavioral violations | `meta.violations.length` | `DEFAULT_MAX_VIOLATIONS` (3)    | `violation_overflow`      | Decision menu |
 
 The two counters are independent — format failures do not increment violations, and behavioral violations do not increment verifyAttempts.
 
@@ -1689,10 +1740,10 @@ reserveTokens = contextWindow × (1 − 触发占比)
 `reserveTokens` 是**绝对 token 预留量**，不是百分比。用默认值 `reserveTokens=16384` 反推：
 
 | contextWindow | 实际触发占比 |
-|---|---|
-| 128k | ≈ 87.2% |
-| 200k | ≈ 91.8% |
-| 256k | ≈ 93.6% |
+| ------------- | ------------ |
+| 128k          | ≈ 87.2%      |
+| 200k          | ≈ 91.8%      |
+| 256k          | ≈ 93.6%      |
 
 因此「85% 触发」并非默认行为；要达到某个触发占比，请按公式设置 `reserveTokens`。
 
@@ -1700,11 +1751,11 @@ reserveTokens = contextWindow × (1 − 触发占比)
 
 由公式机械展开（数值由公式生成；缺省参考 16384）：
 
-| contextWindow | 80% | 85% | 90% |
-|---|---|---|---|
-| 128k | 25,600 | 19,200 | 12,800 |
-| 200k | 40,000 | 30,000 | 20,000 |
-| 256k | 51,200 | 38,400 | 25,600 |
+| contextWindow | 80%    | 85%    | 90%    |
+| ------------- | ------ | ------ | ------ |
+| 128k          | 25,600 | 19,200 | 12,800 |
+| 200k          | 40,000 | 30,000 | 20,000 |
+| 256k          | 51,200 | 38,400 | 25,600 |
 
 ### 17.4 最佳实践（对 verify 规则的影响）
 
@@ -1730,11 +1781,11 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 ### 18.4 恢复与 terminal 身份规则
 
-| 场景 | 行为 | 审计 action |
-|---|---|---|
-| terminal 前 owner 查询 | `awaiting-terminal`，pending 提示，零副作用 | — |
-| failed terminal | run 停泊 `awaiting-owner`，恢复是 owner 显式决策，工具调用本身零变更 | `awaiting-owner-recovery` |
-| 重复 terminal | 不重计数、不重写、不二次唤醒 | `duplicate_ignored` |
-| 旧 run 的迟到 terminal | 与当前 identity 不匹配 → 当前记录零触碰 | `late_event_ignored` |
-| 子会话绑定旧 run | `child-stale` 拒绝，零写入（身份一经更早 run 冻结） | `identity_frozen_by_earlier_run` |
-| 同 visit 失败预算 | 执行器连续失败预算由 `DEFAULT_EXECUTOR_FAILURE_BUDGET`（默认 3）管控，与返工预算 `maxLoopCycles`（默认 5）解耦；继承 `consecutiveFailures`，达到执行器预算上限后新 run 拒绝 `budget_exhausted_same_visit`；completed terminal **不**重置预算 | — |
+| 场景                   | 行为                                                                                                                                                                                                                                         | 审计 action                      |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| terminal 前 owner 查询 | `awaiting-terminal`，pending 提示，零副作用                                                                                                                                                                                                  | —                                |
+| failed terminal        | run 停泊 `awaiting-owner`，恢复是 owner 显式决策，工具调用本身零变更                                                                                                                                                                         | `awaiting-owner-recovery`        |
+| 重复 terminal          | 不重计数、不重写、不二次唤醒                                                                                                                                                                                                                 | `duplicate_ignored`              |
+| 旧 run 的迟到 terminal | 与当前 identity 不匹配 → 当前记录零触碰                                                                                                                                                                                                      | `late_event_ignored`             |
+| 子会话绑定旧 run       | `child-stale` 拒绝，零写入（身份一经更早 run 冻结）                                                                                                                                                                                          | `identity_frozen_by_earlier_run` |
+| 同 visit 失败预算      | 执行器连续失败预算由 `DEFAULT_EXECUTOR_FAILURE_BUDGET`（默认 3）管控，与返工预算 `maxLoopCycles`（默认 5）解耦；继承 `consecutiveFailures`，达到执行器预算上限后新 run 拒绝 `budget_exhausted_same_visit`；completed terminal **不**重置预算 | —                                |
