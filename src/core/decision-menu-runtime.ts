@@ -146,6 +146,13 @@ interface PipelineMenuRuntime {
   onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
   /** blockedReason snapshot of the most recent presentation (J6 change audit). */
   lastPresentedReason?: string;
+  /**
+   * Set by {@link clearAllDecisionTimers} (session shutdown). An in-flight
+   * chain keeps its `rt` reference after the table entry is dropped, so this
+   * flag is the only way to stop it from re-arming a timer OUTSIDE the table
+   * (which would escape `clearDecisionTimer`/shutdown and double-fire).
+   */
+  disposed?: boolean;
 }
 
 const menuRuntime = new Map<string, PipelineMenuRuntime>();
@@ -169,8 +176,15 @@ function getOrCreateRuntime(pipelineId: string): PipelineMenuRuntime {
   return rt;
 }
 
-/** Removes the table entry only when nothing is running for the pipeline. */
+/**
+ * Removes the table entry only when it is still THIS runtime object and
+ * nothing is running for the pipeline. The identity check prevents a stale
+ * chain that finishes later from pruning the newer runtime that replaced it
+ * (e.g. a chain created after a shutdown clear); otherwise a live timer would
+ * become unreachable from `clearDecisionTimer`/shutdown cleanup.
+ */
 function pruneRuntime(pipelineId: string, rt: PipelineMenuRuntime): void {
+  if (menuRuntime.get(pipelineId) !== rt) return;
   if (!rt.timer && !rt.inflight) {
     menuRuntime.delete(pipelineId);
   }
@@ -212,6 +226,8 @@ function armRetry(
   retryIndex: number,
   opts: EnsureDecisionMenuOpts,
 ): number {
+  // A cleared chain (shutdown) must never arm an untracked timer again.
+  if (rt.disposed) return 0;
   const delay = computeRetryDelayMs(retryIndex, opts.retryPolicy);
   // Never orphan an already-armed timer (prevents double-fire races).
   if (rt.timer) {
@@ -226,6 +242,11 @@ function armRetry(
   });
   rt.timer = setTimeout(() => {
     rt.timer = undefined;
+    // The chain may have been invalidated while the timer was pending.
+    if (rt.disposed) {
+      pruneRuntime(pipelineId, rt);
+      return;
+    }
     // Re-read on fire: self-destruct on missing meta / unfrozen / pid mismatch
     // (same three guards as the legacy scheduler, C7 self-destruct semantics).
     const fresh = deps.readMeta();
@@ -277,6 +298,13 @@ async function attemptAndMaybeRetry(
     };
   }
   const detail = await deps.present(live, opts, attempt);
+  // 208 Phase 1 fix: a shutdown clear may have invalidated this chain while the
+  // dialog was open. Its retry must NOT be armed — the table entry is gone, so
+  // the timer would be untracked and could double-fire alongside the
+  // replacement chain (violates "at most one ui.select per pipelineId").
+  if (rt.disposed) {
+    return { ...detail, retryArmed: false, joined: false };
+  }
   // J6 (as seen by the scheduler): a presentation against a DIFFERENT
   // freeze reason than the previous one is audited so reason drift is
   // observable even without a freeze call (the freeze site itself audited
@@ -420,9 +448,14 @@ export function clearDecisionTimer(pipelineId: string): void {
 /**
  * Clears all decision retry timers, scheduler table entries and the input
  * capability registry. Called on session shutdown to prevent leaks.
+ * In-flight chains are marked `disposed`: when their dialog finally resolves
+ * they neither re-arm a retry nor prune a replacement runtime entry.
  */
 export function clearAllDecisionTimers(): void {
   for (const rt of menuRuntime.values()) {
+    // Invalidate in-flight chains BEFORE dropping the table: once their dialog
+    // resolves they must not re-arm an untracked retry timer (see `disposed`).
+    rt.disposed = true;
     if (rt.timer) {
       clearTimeout(rt.timer);
       rt.timer = undefined;

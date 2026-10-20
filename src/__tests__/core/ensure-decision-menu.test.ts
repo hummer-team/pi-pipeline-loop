@@ -16,7 +16,8 @@ import {
   __decisionTimerCount,
   __hasDecisionTimer,
 } from "../../core/flow-state";
-import { scheduleMenuRetry } from "../../core/decision-menu-runtime";
+import { scheduleMenuRetry, runDecisionMenu } from "../../core/decision-menu-runtime";
+import type { EnsureDecisionMenuOpts } from "../../core/decision-menu-runtime";
 import type { FlowStateCtx } from "../../core/flow-state";
 import {
   clearInputCapabilityOverrides,
@@ -343,6 +344,55 @@ describe("208 Phase 1: option forwarding and meta freshness", () => {
   });
 
   it("test 13: budgetValue preserved across retry (F3)", async () => {
+    // F3 is a SCHEDULER contract: the retry must receive the first caller's
+    // source/budgetValue/directStageSelect. The flow-state presentation
+    // collects the budget through `ui.input`, so the observable seam here is
+    // the injected `present` implementation (test 13b covers the end-to-end
+    // set_budget effect). Clearing `budgetValue` from the stored retry options
+    // makes `seen[1].budgetValue` undefined and fails this test.
+    begin();
+    jest.useFakeTimers();
+    const seen: Array<{
+      budgetValue: number | undefined;
+      source: string | undefined;
+      attempt: number;
+      directStageSelect: boolean | undefined;
+    }> = [];
+    const deps = {
+      readMeta: () => meta,
+      isFrozen: (m: SessionMeta) => m.flowState === "blocked",
+      present: async (_live: SessionMeta, opts: EnsureDecisionMenuOpts, attempt: number) => {
+        seen.push({
+          budgetValue: opts.budgetValue,
+          source: opts.source,
+          attempt,
+          directStageSelect: opts.directStageSelect,
+        });
+        return { outcome: "interrupted" as const, applied: false };
+      },
+    };
+
+    const r1 = await runDecisionMenu(deps, meta.pipelineId, {
+      budgetValue: 9,
+      source: "freeze",
+      directStageSelect: true,
+    });
+    expect(r1.retryArmed).toBe(true);
+    expect(r1.retryDelayMs).toBe(5000);
+
+    jest.advanceTimersByTime(5000);
+    await drain();
+    expect(seen.length).toBe(2);
+    expect(seen[1]).toEqual({
+      budgetValue: 9,
+      source: "freeze",
+      attempt: 2,
+      directStageSelect: true,
+    });
+    clearDecisionTimer(meta.pipelineId);
+  });
+
+  it("test 13b: set_budget typed in a retry applies the dialog value", async () => {
     begin();
     jest.useFakeTimers();
     meta.blockedReason = "max_loop_cycles";
@@ -350,13 +400,13 @@ describe("208 Phase 1: option forwarding and meta freshness", () => {
     q(undefined, "设置轮次");
     (ctx.ui as NonNullable<FlowStateCtx["ui"]>).input = async () => "9";
 
-    const r1 = await ensureDecisionMenu(ctx, meta, config, { budgetValue: 9, source: "freeze" });
+    const r1 = await ensureDecisionMenu(ctx, meta, config, { source: "freeze" });
     expect(r1.outcome).toBe("interrupted");
 
     jest.advanceTimersByTime(5000);
     await drain();
     expect(selectCalls.length).toBe(2);
-    // The retry consumed the SAME budgetValue → set_budget received 9.
+    // The retry re-opened set_budget and applied the value typed in ui.input.
     expect(meta.maxLoopCycles).toBe(9);
   });
 
@@ -519,6 +569,89 @@ describe("208 Phase 1: no-UI notify ownership", () => {
     const r2 = await ensureDecisionMenu(ctx, meta, config, {});
     expect(r2.unavailableReason).toBe("no_ui");
     expect(notifyCalls.length).toBe(1);
+  });
+});
+
+// ─── table ownership across clearAllDecisionTimers (review round 1 fix) ─────
+
+describe("208 Phase 1: scheduler table ownership after a shutdown clear", () => {
+  it("in-flight chain cleared mid-dialog cannot arm an untracked second timer", async () => {
+    begin();
+    jest.useFakeTimers();
+    let release!: (v: string | undefined) => void;
+    const held = new Promise<string | undefined>((res) => { release = res; });
+    ctx.ui!.select = async (message: string, options: string[]) => {
+      selectCalls.push({ message, options });
+      return held;
+    };
+
+    const p1 = ensureDecisionMenu(ctx, meta, config, { source: "freeze" });
+    await drain();
+    expect(selectCalls.length).toBe(1);
+
+    // Session shutdown fires while the dialog is still open.
+    clearAllDecisionTimers();
+    release(undefined); // streaming dismiss → the stale chain would retry
+    const r1 = await p1;
+    expect(r1.outcome).toBe("interrupted");
+    expect(r1.retryArmed).toBe(false);
+    expect(audits.filter((a) => a.event === "decision_menu_retry_armed").length).toBe(0);
+
+    // A replacement chain (post-shutdown) owns exactly one tracked timer.
+    const p2 = ensureDecisionMenu(ctx, meta, config, { source: "command" });
+    const r2 = await p2;
+    expect(r2.retryArmed).toBe(true);
+    expect(__decisionTimerCount()).toBe(1);
+
+    // Only the replacement chain retries — the stale chain is inert.
+    jest.advanceTimersByTime(5000);
+    await drain();
+    expect(selectCalls.length).toBe(3); // stale #1, replacement #2, its retry #3
+  });
+
+  it("stale chain finishing later cannot prune the replacement runtime entry", async () => {
+    begin();
+    jest.useFakeTimers();
+    meta.blockedReason = "max_loop_cycles";
+    meta.loopCycleCount = 2;
+    let release1!: (v: string | undefined) => void;
+    let release2!: (v: string | undefined) => void;
+    const gates = [
+      new Promise<string | undefined>((res) => { release1 = res; }),
+      new Promise<string | undefined>((res) => { release2 = res; }),
+    ];
+    let gateIdx = 0;
+    ctx.ui!.select = async (message: string, options: string[]) => {
+      selectCalls.push({ message, options });
+      return gates[gateIdx++]!;
+    };
+    // The stale chain picks set_budget and the dialog throws → non-retryable
+    // `decided && !applied`, so it runs its `finally` prune right away.
+    (ctx.ui as NonNullable<FlowStateCtx["ui"]>).input = async () => {
+      throw new Error("input dialog exploded");
+    };
+
+    const p1 = ensureDecisionMenu(ctx, meta, config, { source: "freeze" });
+    await drain();
+    clearAllDecisionTimers();
+    const p2 = ensureDecisionMenu(ctx, meta, config, { source: "command" });
+    await drain();
+    expect(selectCalls.length).toBe(2);
+
+    release1("设置轮次");
+    const r1 = await p1;
+    expect(r1.retryArmed).toBe(false);
+
+    release2(undefined); // replacement chain dismisses fast → arms its retry
+    const r2 = await p2;
+    expect(r2.retryArmed).toBe(true);
+    // The stale chain must NOT have deleted the replacement's table entry.
+    expect(__decisionTimerCount()).toBe(1);
+    expect(__hasDecisionTimer(meta.pipelineId)).toBe(true);
+
+    // The surviving timer is reachable by the normal cleanup surface.
+    clearDecisionTimer(meta.pipelineId);
+    expect(__decisionTimerCount()).toBe(0);
   });
 });
 
