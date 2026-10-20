@@ -10,16 +10,19 @@
  *   maybeHandleConfirmGate, otherwise a read-only status hint
  * - Aborted → restore status bar + points to /pipeline-start (no menu available)
  * - Blocked/awaiting_human (frozen):
- *   - With UI + no --force-resume → present decision menu (Phase 0 / 182)
- *     - decided → return decision result (status bar synced by Phase 0)
- *     - cancelled/interrupted → keep frozen, return frozen hint
- *     - no-menu (child session / no UI) → Phase 6 (195): show frozen reason + hint,
- *       audit resume_skipped_no_menu, DO NOT silently resume
+ *   - Without --force-resume → ensureDecisionMenu (208 Phase 3, source="command"):
+ *     unified scheduler with interrupted auto-retry / timer mutex / accurate
+ *     no-menu attribution.
+ *     - decided && applied → return decision result (status bar synced + dispatch)
+ *     - decided but not applied → "Decision not applied: …" (+ reopen note)
+ *     - cancelled/interrupted → keep frozen, return hint (retry armed → auto reopen)
+ *     - no-menu (child session / no UI / select error) → notify + audit
+ *       resume_skipped_no_menu with the runtime's unavailableReason, DO NOT resume
  *   - With --force-resume → explicit skip, executeDecision("resume") + dispatch (Phase 6 / 195)
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
-import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
+import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText, ensureDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
 import { dispatchAfterResume } from "./pipeline-start";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { detectPendingConfirmGate, maybeHandleConfirmGate, recordConfirmGateOutcome } from "../core/stage-advancer";
@@ -274,74 +277,86 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
 
       // Blocked or awaiting_human: frozen recovery path
       try {
-        // Phase 0 (182): present decision menu on frozen resume (unless --force-resume).
-        // When the UI select is available and force-resume is not requested, show the
-        // 6-item decision menu so the user can choose the appropriate action.
-        // - decided → status bar synced by Phase 0; dispatch if needed (idempotent)
-        // - cancelled/interrupted → keep frozen, return hint
-        // - no-menu (child session / no UI) → fall through to legacy resume
-        if (!forceResume && typeof ctx?.ui?.select === "function") {
+        // 208 Phase 3 (G1/G2/G3): the decision menu is owned by the unified
+        // ensureDecisionMenu scheduler — interrupted auto-retry, timer mutex
+        // and accurate no-menu attribution all live there. The command owns
+        // the single user-facing no-menu message (notifyOnUnavailable: false),
+        // avoiding the contradictory "run in owner session" double-hint.
+        if (!forceResume) {
           const onStageChangedForResume = async (freshMeta: SessionMeta): Promise<void> => {
             const doc = freshMeta.requirementDoc ?? "";
             await dispatchAfterResume(ctx, config, ui, freshMeta, doc, forwardArgs || undefined);
           };
-          const menuOutcome = await promptDecisionMenu(
+          const menu = await ensureDecisionMenu(
             { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
             meta,
             config,
-            { source: "command", onStageChanged: onStageChangedForResume },
+            {
+              source: "command",
+              onStageChanged: onStageChangedForResume,
+              // Commands own the single user-facing no-menu message (no second notify).
+              notifyOnUnavailable: false,
+            },
           );
+          const current = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+          const retrySeconds = Math.max(1, Math.round((menu.retryDelayMs ?? 5000) / 1000));
 
-          if (menuOutcome === "decided") {
-            // Decision executed. Status bar sync is unconditional here because
-            // executeDecision only syncs for choose_stage decisions (flow-state.ts);
-            // for resume/skip/rollback/restart, we must sync explicitly to keep
-            // the bar reflecting the post-decision stage (Phase 0 / 182).
-            syncStageStatusBar(ui, ctx);
-
-            // Idempotent dispatch guard: if the decision did NOT involve choose_stage
-            // (e.g. "resume"), the onStageChanged callback was not invoked, so we
-            // still need the dispatch. Check if the pipeline is still frozen — if
-            // not, the decision resolved it and dispatch is needed.
-            const postDecisionMeta = ctx.session.getMeta() as SessionMeta;
-            if (!isFrozen(postDecisionMeta)) {
-              ui.notify(ctx, `Decision executed. Pipeline at stage "${postDecisionMeta.currentStage}".`);
-              // Shared idempotent dispatch helper (probe-live skip + spawn)
-              await idempotentStageDispatch(ctx, config, ui, postDecisionMeta, forwardArgs);
+          switch (menu.outcome) {
+            case "decided": {
+              if (!menu.applied) {
+                const retryNote = menu.retryArmed
+                  ? ` The menu will reopen automatically in ~${retrySeconds}s.`
+                  : " Run /pipeline-resume to try again.";
+                return { message: `Decision not applied: ${menu.message ?? "unknown reason"}.${retryNote} ${formatDecisionMenuHint()}` };
+              }
+              // Status bar sync is unconditional here because executeDecision
+              // only syncs for choose_stage decisions (flow-state.ts); for
+              // resume/skip/rollback/restart, we must sync explicitly to keep
+              // the bar reflecting the post-decision stage (Phase 0 / 182).
+              syncStageStatusBar(ui, ctx);
+              // Idempotent dispatch guard: if the decision did NOT involve
+              // choose_stage (e.g. "resume"), the onStageChanged callback was
+              // not invoked, so we still need the dispatch. Check if the
+              // pipeline is still frozen — if not, the decision resolved it
+              // and dispatch is needed.
+              if (!isFrozen(current)) {
+                ui.notify(ctx, `Decision executed. Pipeline at stage "${current.currentStage}".`);
+                // Shared idempotent dispatch helper (probe-live skip + spawn)
+                await idempotentStageDispatch(ctx, config, ui, current, forwardArgs);
+              }
+              return { message: "Decision executed." };
             }
-            return { message: "Decision executed." };
+            case "cancelled":
+              // Keep frozen — do not silently unfreeze
+              return {
+                message: `Pipeline remains frozen at "${current.currentStage}". ${formatDecisionMenuHint()}`,
+              };
+            case "interrupted": {
+              // Only promise an automatic reopen when a retry timer was actually armed.
+              const reopen = menu.retryArmed
+                ? `it will reopen automatically in ~${retrySeconds}s.`
+                : "run /pipeline-resume to reopen it.";
+              return {
+                message: `Decision menu interrupted; ${reopen} Pipeline remains frozen at "${current.currentStage}".`,
+              };
+            }
+            case "no-menu": {
+              // Phase 6 (195) / 208 G3: accurate attribution from the runtime —
+              // no more reverse-inference from `typeof ui.select`.
+              const unavailable = menu.unavailableReason ?? "unknown";
+              await safeWriteAuditLog("resume_skipped_no_menu", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                reason: unavailable,
+                blockedReason: meta.blockedReason ?? "unknown",
+              });
+              // Single notify: `notifyOnUnavailable: false` suppresses the runtime's
+              // own no-UI notify, so the user sees exactly one consistent message.
+              const message = `Pipeline frozen at "${current.currentStage}" (${formatFrozenReason(current)}). No decision menu is available (${unavailable}); use /pipeline-resume --force-resume to resume directly.`;
+              ui.notify(ctx, message);
+              return { message };
+            }
           }
-
-          if (menuOutcome === "cancelled" || menuOutcome === "interrupted") {
-            // Keep frozen — do not silently unfreeze
-            const currentMeta = ctx.session.getMeta() as SessionMeta;
-            return {
-              message: `Pipeline remains frozen at "${currentMeta.currentStage}". ${formatDecisionMenuHint()}`,
-            };
-          }
-
-          // "no-menu" (child session) → Phase 6 (195): DO NOT silently resume
-          // Instead, show frozen reason + hint, audit, and return
-        }
-
-        // Phase 6 (195): Eliminate silent thaw — no-menu paths no longer auto-resume
-        if (!forceResume) {
-          // Distinguish child session vs no UI for audit clarity
-          const noMenuReason = (typeof ctx?.ui?.select !== "function") ? "no_ui" : "child_session";
-          
-          await safeWriteAuditLog("resume_skipped_no_menu", {
-            pipelineId: meta.pipelineId,
-            stage: meta.currentStage,
-            reason: noMenuReason,
-            blockedReason: meta.blockedReason ?? "unknown",
-          });
-          
-          const frozenReason = formatFrozenReason(meta);
-          const hint = "在 owner 会话执行 /pipeline-resume，或使用 --force-resume 显式解冻";
-          const message = `Pipeline frozen: ${frozenReason}. ${hint}`;
-          
-          ui.notify(ctx, message);
-          return { message };
         }
 
         // --force-resume path: explicit skip, proceed with resume

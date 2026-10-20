@@ -19,7 +19,7 @@ import {
 } from "../constants";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
-import { getFlowState, formatFrozenReason, promptDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
+import { getFlowState, formatFrozenReason, ensureDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { buildStageSequence } from "../utils/stage-sequence";
 import {
@@ -1387,29 +1387,65 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           // the "running" branch would reject before reaching awaiting_human.
           // Reordering ensures awaiting_human always prompts the decision menu.
           // Note: aborted + awaiting_human is handled above (aborted branch takes precedence).
-          if (meta.currentStage === "awaiting_human") {
-            if (typeof ctx?.ui?.select === "function") {
-              // Phase 0 (182): dispatch stage executor after choose_stage
-              const pipelineUI = createPipelineUI(config);
-              const onStageChanged = async (fresh: SessionMeta): Promise<void> => {
-                const doc = fresh.requirementDoc ?? "";
-                await dispatchAfterResume(ctx, config, pipelineUI, fresh, doc);
-              };
-              const menuOutcome = await promptDecisionMenu(
-                { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
-                meta,
-                config,
-                { source: "command", onStageChanged },
-              );
-              return {
-                success: menuOutcome === "decided",
-                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline awaiting human input. ${formatDecisionMenuHint()}`,
-              };
+
+          // 208 Phase 3 (G1/G2/G3): shared frozen-menu entry for awaiting_human and
+          // blocked. ensureDecisionMenu owns the interrupted backoff retry, the
+          // timer mutex and accurate no-menu attribution (replaces the
+          // `typeof ui.select` precheck + reverse inference). The command owns
+          // the single user-facing message: notifyOnUnavailable: false suppresses
+          // the runtime notify and the returned error is the only channel.
+          const presentFrozenDecisionMenu = async (
+            frozenMeta: SessionMeta,
+            noMenuHeaderFactory: (fresh: SessionMeta) => string,
+          ): Promise<{ success: boolean; message?: string; error?: string }> => {
+            // Phase 0 (182): dispatch stage executor after choose_stage
+            const pipelineUI = createPipelineUI(config);
+            const onStageChanged = async (fresh: SessionMeta): Promise<void> => {
+              const doc = fresh.requirementDoc ?? "";
+              await dispatchAfterResume(ctx, config, pipelineUI, fresh, doc);
+            };
+            const menu = await ensureDecisionMenu(
+              { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
+              frozenMeta,
+              config,
+              {
+                source: "command",
+                onStageChanged,
+                notifyOnUnavailable: false, // command returns the message; no second notify
+              },
+            );
+            const retrySeconds = Math.max(1, Math.round((menu.retryDelayMs ?? 5000) / 1000));
+            if (menu.outcome === "decided" && menu.applied) {
+              return { success: true, message: "Decision executed." };
             }
+            if (menu.outcome === "decided") {
+              const retryNote = menu.retryArmed
+                ? ` The menu will reopen automatically in ~${retrySeconds}s.`
+                : " Run /pipeline-resume to try again.";
+              return { success: false, error: `Decision not applied: ${menu.message ?? "unknown reason"}.${retryNote}` };
+            }
+            if (menu.outcome === "interrupted") {
+              // Only promise an automatic reopen when a retry timer was armed.
+              const reopen = menu.retryArmed
+                ? `it will reopen automatically in ~${retrySeconds}s.`
+                : "run /pipeline-resume to reopen it.";
+              return { success: false, error: `Decision menu interrupted; ${reopen}` };
+            }
+            // no-menu / cancelled: keep stage + freeze reason (do not degrade to
+            // a bare "Pipeline frozen").
+            const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? frozenMeta;
+            const unavailable = menu.unavailableReason ?? "unknown";
+            const header = noMenuHeaderFactory(freshMeta);
             return {
               success: false,
-              error: `Pipeline is at awaiting_human stage. ${formatDecisionMenuHint()}`,
+              error: `${header}. No decision menu is available (${unavailable}); ${formatDecisionMenuHint()}`,
             };
+          };
+
+          if (meta.currentStage === "awaiting_human") {
+            return presentFrozenDecisionMenu(meta, (fresh) =>
+              `Pipeline is at awaiting_human stage${fresh.blockedReason ? ` (${formatFrozenReason(fresh)})` : ""}`,
+            );
           }
 
           // Running → reject with decision menu hint (prevent double-start)
@@ -1422,31 +1458,11 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
             };
           }
 
-          // Phase 3 (173) C10①: blocked → owner就地 promptDecisionMenu (source="command").
-          // No-UI degradation: hint text with configured shortcut key.
+          // Phase 3 (173) C10①: blocked → owner-side decision menu (source="command").
           if (flowState === "blocked") {
-            if (typeof ctx?.ui?.select === "function") {
-              // Phase 0 (182): dispatch stage executor after choose_stage
-              const pipelineUIForBlocked = createPipelineUI(config);
-              const onStageChangedBlocked = async (fresh: SessionMeta): Promise<void> => {
-                const doc = fresh.requirementDoc ?? "";
-                await dispatchAfterResume(ctx, config, pipelineUIForBlocked, fresh, doc);
-              };
-              const menuOutcome = await promptDecisionMenu(
-                { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
-                meta,
-                config,
-                { source: "command", onStageChanged: onStageChangedBlocked },
-              );
-              return {
-                success: menuOutcome === "decided",
-                message: menuOutcome === "decided" ? "Decision executed." : `Pipeline frozen. ${formatDecisionMenuHint()}`,
-              };
-            }
-            return {
-              success: false,
-              error: `Pipeline frozen at "${meta.currentStage}" (${formatFrozenReason(meta)}). ${formatDecisionMenuHint()}`,
-            };
+            return presentFrozenDecisionMenu(meta, (fresh) =>
+              `Pipeline frozen at "${fresh.currentStage}" (${formatFrozenReason(fresh)})`,
+            );
           }
         }
       }
