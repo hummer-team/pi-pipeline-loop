@@ -19,7 +19,10 @@ import {
 } from "../constants";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
-import { getFlowState, formatFrozenReason, ensureDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
+import { getFlowState, isFrozen, formatFrozenReason, requestDecision, resolveDecisionReason, formatDecisionMenuHint } from "../core/flow-state";
+// 210 review issue 2: the first stage visit of a run must own its clocks —
+// arm/clear the opt-in stage watchdog at the start & dispatch entry points.
+import { armStageWatchdog } from "../core/stage-watchdog";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { buildStageSequence } from "../utils/stage-sequence";
 import {
@@ -495,6 +498,12 @@ async function resumePipeline(
   ctx?.session?.updateMeta?.(newMeta);
   syncStageStatusBar(ui, ctx);
 
+  // 210 review issue 2: arm the new stage visit immediately after the resumed
+  // meta is committed. `dispatchAfterResume` also arms (below), but it is
+  // skipped entirely when no requirement doc is recoverable — the clocks must
+  // not depend on that branch.
+  armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
+
   await safeWriteStageAudit(config, "pipeline_start", newMeta, {
     command: file ? `/pipeline-start ${file}` : "/pipeline-start",
     file: file || "(none)",
@@ -562,6 +571,16 @@ export async function dispatchAfterResume(
   forwardArgs?: string,
 ): Promise<void> {
   const stage = meta.currentStage;
+
+  // 210 review issue 2 (plan Phase 2 task 3): this helper is the shared "a new
+  // stage visit starts working now" point for resume, choose_stage aftermath and
+  // replay dispatch. Without arming HERE the first stage of a run (and every
+  // dispatch-only transition) had no wall-clock/idle clock until the first
+  // settle/verify/advance — a subagent that hangs silently in its FIRST turn
+  // produced no `stage_watchdog_timeout` at all. Idempotent per stage visit and
+  // a no-op (clears) when `watchdog` is not enabled, so unconfigured projects
+  // keep the baseline exactly.
+  armStageWatchdog(ctx, config, { progressSource: "spawn" });
 
   if (stage === "clarify") {
     await maybeAutoLaunchClarify(ctx, config, ui, meta, doc, forwardArgs);
@@ -1031,6 +1050,14 @@ async function startNewPipeline(
   ctx?.session?.updateMeta?.(newMeta);
   syncStageStatusBar(ui, ctx);
 
+  // 210 review issue 2 (plan Phase 2 task 3 / acceptance「子代理静默挂起」): the
+  // fresh run's FIRST stage visit (`clarify`, or the spec-jump stage) gets its
+  // clocks immediately after the new meta is committed. Previously the clocks
+  // only appeared at the first settle/verify/advance, so a subagent that hangs
+  // silently in its very first turn never produced `stage_watchdog_timeout`.
+  // No-op + clear when `watchdog` is not enabled (constraint 4).
+  armStageWatchdog(ctx, config, { progressSource: "spawn" });
+
   // Register session → pipeline mapping (fail-open, covers restart with new pipelineId)
   const sessionFile = ctx?._ctx?.sessionManager?.getSessionFile?.() as string | undefined;
   if (sessionFile) {
@@ -1402,11 +1429,14 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
           // Note: aborted + awaiting_human is handled above (aborted branch takes precedence).
 
           // 208 Phase 3 (G1/G2/G3): shared frozen-menu entry for awaiting_human and
-          // blocked. ensureDecisionMenu owns the interrupted backoff retry, the
-          // timer mutex and accurate no-menu attribution (replaces the
-          // `typeof ui.select` precheck + reverse inference). The command owns
-          // the single user-facing message: notifyOnUnavailable: false suppresses
-          // the runtime notify and the returned error is the only channel.
+          // blocked. The scheduler's interrupted backoff retry, the timer mutex and
+          // accurate no-menu attribution all live inside `ensureDecisionMenu`, now
+          // reached through `requestDecision`. The command owns the single
+          // user-facing message: notifyOnUnavailable: false suppresses the runtime
+          // notify and the returned error is the only channel.
+          // 210 review issue 3: routed through `requestDecision` so a freeze left
+          // over by a previous process re-arms the decision-wait deadline (and
+          // converges policy → abort headless) when `decisionPolicy` is enabled.
           const presentFrozenDecisionMenu = async (
             frozenMeta: SessionMeta,
             noMenuHeaderFactory: (fresh: SessionMeta) => string,
@@ -1417,10 +1447,11 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
               const doc = fresh.requirementDoc ?? "";
               await dispatchAfterResume(ctx, config, pipelineUI, fresh, doc);
             };
-            const menu = await ensureDecisionMenu(
+            const menu = await requestDecision(
               { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
               frozenMeta,
               config,
+              resolveDecisionReason(frozenMeta),
               {
                 source: "command",
                 onStageChanged,
@@ -1428,6 +1459,32 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
                 notifyOnCancel: false, // same single-channel rule for Esc / cancelled input
               },
             );
+            // `null` — the provider chain resolved WITHOUT a menu (policy applied,
+            // or converged to abort). Report the resulting state honestly instead
+            // of falling through to the menu-outcome table.
+            if (menu === null) {
+              const fresh = (ctx.session.getMeta() as SessionMeta | undefined) ?? frozenMeta;
+              const flowState = getFlowState(fresh);
+              if (flowState === "aborted") {
+                return {
+                  success: false,
+                  error:
+                    `Decision provider chain aborted the pipeline at "${fresh.currentStage}" ` +
+                    `(${fresh.terminateReason ?? "decision_policy"}).`,
+                };
+              }
+              if (isFrozen(fresh)) {
+                return {
+                  success: false,
+                  error: `Pipeline remains frozen at "${fresh.currentStage}" (${formatFrozenReason(fresh)}). ${formatDecisionMenuHint()}`,
+                };
+              }
+              syncStageStatusBar(ui, ctx);
+              return {
+                success: true,
+                message: `Decision policy resolved the freeze. Pipeline at stage "${fresh.currentStage}".`,
+              };
+            }
             const retrySeconds = Math.max(1, Math.round((menu.retryDelayMs ?? 5000) / 1000));
             if (menu.outcome === "decided" && menu.applied) {
               return { success: true, message: "Decision executed." };

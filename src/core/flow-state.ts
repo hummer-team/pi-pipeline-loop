@@ -31,7 +31,7 @@ import { broadcastEscalation } from "../utils/escalation-bus";
 import type { EscalationPayload } from "../utils/escalation-bus";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "./meta-reset";
 // 210 Phase 7: usage ledger drain (abort aggregate) + restart clear.
-import { flushUsageToMeta, resetUsage } from "./usage-recorder";
+import { flushUsageToMetaSafely, resetUsage } from "./usage-recorder";
 // 210 Phase 4: run aggregate appended to the aborted terminal audit (requirement 5.5)
 import { collectRunAggregate } from "./stage-evidence";
 import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
@@ -342,18 +342,24 @@ export async function executeDecision(
     /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
     budgetValue?: number;
     /**
-     * 210 Phase 1 (I4): who supplied this decision ("human" default — audit
-     * field written only when explicitly provided, i.e. "policy").
+     * 210 Phase 1 (I4): who supplied this decision. Absent ⇒ normalized to
+     * `"human"`, so EVERY `pipeline_decision` row carries the attribution
+     * (210 review issue 6): an unmarked row can no longer be confused with a
+     * legacy / unknown-source call.
      */
     decisionSource?: DecisionSource;
     /**
-     * 210 Phase 1 (I4): trigger channel ("timeout" | "no_ui" | menu source);
-     * written to `pipeline_decision` only when provided.
+     * 210 Phase 1 (I4): trigger channel ("timeout" | "no_ui" | "menu"); written
+     * to `pipeline_decision` when provided. Menu presentations pass "menu".
      */
     trigger?: string;
   },
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
+  // 210 review issue 6 (requirement 5.3 / I4): attribution is NEVER omitted —
+  // every call that does not name a source is a human decision, so the audit
+  // row reads `decisionSource=human` instead of carrying no marker at all.
+  const decisionSource: DecisionSource = opts?.decisionSource ?? "human";
 
   // 193 Phase 3 (task 5): SINGLE executor-level barrier — consulted BEFORE
   // any state touch (invalidate / updateMeta / onStageChanged) and against
@@ -442,7 +448,7 @@ export async function executeDecision(
         toStage,
         reason: meta.blockedReason ?? "",
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
@@ -504,7 +510,7 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
@@ -577,7 +583,7 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
@@ -625,7 +631,7 @@ export async function executeDecision(
         newPipelineId,
         reason: meta.blockedReason ?? "",
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       }, undefined, newPipelineId);
 
@@ -700,7 +706,7 @@ export async function executeDecision(
         nextAction: `run /pipeline-start ${abortDocHint} to resume at "${fromStage}"`,
         // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
@@ -870,7 +876,7 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         basis,
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
@@ -947,7 +953,7 @@ export async function executeDecision(
         budgetValue: String(budgetValue),
         previousMaxLoopCycles: String(meta.maxLoopCycles ?? 0),
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
@@ -976,7 +982,7 @@ export async function executeDecision(
           stage: meta.currentStage,
           reason: "No valid rework loop gate found in stageVisitOrder",
           ...(opts?.source ? { source: opts.source } : {}),
-          ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+          decisionSource,
           ...(opts?.trigger ? { trigger: opts.trigger } : {}),
         });
         return { success: false, message: "Failed to locate the starting point of previous rework" };
@@ -1007,7 +1013,7 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         rewindGate: gate,
         ...(opts?.source ? { source: opts.source } : {}),
-        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        decisionSource,
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
@@ -1253,13 +1259,13 @@ export async function markPipelineAborted(
     // 210 Phase 7: drain the in-process usage BEFORE the terminal aggregate so
     // `costUsdTotal` / `modelsByStage` include the final stage's usage. The
     // flush may have written meta — re-read it as the aggregate base.
-    try {
-      flushUsageToMeta(ctx.session, meta.pipelineId);
-    } catch {
-      // Fail-open: the abort audit must not depend on usage persistence.
-    }
+    // 210 review issue 7: fail-open through the SHARED safe wrapper, which
+    // records an `usage_flush_error` audit instead of swallowing the throw.
+    await flushUsageToMetaSafely(ctx.session, meta.pipelineId, stage);
     const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
-    const aggregate = await collectRunAggregate(freshMeta, stage as PipelineStage, meta.stageStartTime ?? 0);
+    // 210 review issue 9: config enables the canonical plan-doc resolution
+    // (requirement 5.5) inside the aggregate.
+    const aggregate = await collectRunAggregate(freshMeta, stage as PipelineStage, meta.stageStartTime ?? 0, opts?.config);
     Object.assign(auditFields, aggregate);
   }
 
@@ -1591,6 +1597,10 @@ async function promptStageSelectionDetailed(
     basis: inferenceBasis,
     onStageChanged: opts.onStageChanged,
     budgetValue: opts.budgetValue,
+    // 210 review issue 6: the secondary stage picker is a menu presentation,
+    // so its `pipeline_decision` row carries the same attribution as the
+    // primary menu path (`trigger=menu`, default `decisionSource=human`).
+    trigger: "menu",
   });
   if (res.success) {
     return { outcome: "decided", applied: true, decision: "choose_stage", message: res.message };
@@ -1827,9 +1837,13 @@ async function presentDecisionMenuCore(
               failureReason: "input_error",
             };
           }
+          // 210 review issue 6: human menu selections are attributed explicitly —
+          // `decisionSource` normalizes to "human" inside executeDecision, the
+          // trigger names the channel that collected the choice.
           const res = await executeDecision(ctx, freshMeta, decision, config, {
             source,
             budgetValue: input.value,
+            trigger: "menu",
           });
           if (res.success) {
             return { outcome: "decided", applied: true, decision, message: res.message };
@@ -1845,7 +1859,9 @@ async function presentDecisionMenuCore(
 
         // 208 (F2): propagate the actual application result — "user picked" no
         // longer implies "state changed".
-        const res = await executeDecision(ctx, freshMeta, decision, config, { source });
+        // 210 review issue 6: human menu selection — attributed via the
+        // normalized `decisionSource` inside executeDecision + trigger channel.
+        const res = await executeDecision(ctx, freshMeta, decision, config, { source, trigger: "menu" });
         if (res.success) {
           return { outcome: "decided", applied: true, decision, message: res.message };
         }
@@ -2160,6 +2176,34 @@ interface RequestDecisionOpts {
   onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
   /** Phase 5 (195): set_budget value forwarded to the menu. */
   budgetValue?: number;
+  /**
+   * 210 review issue 3: presentation source tag (`freeze` / `replay` /
+   * `command` / `settle`). Defaults to `freeze` (the historical behavior);
+   * replay & command entries pass their own source so audit attribution and
+   * the menu retry semantics stay unchanged.
+   */
+  source?: string;
+  /** 210 review issue 3: forwarded to the runtime no-UI notify gate. */
+  notifyOnUnavailable?: boolean;
+  /** 210 review issue 3: forwarded to the runtime cancel notify gate. */
+  notifyOnCancel?: boolean;
+}
+
+/**
+ * 210 review issue 3: derives the provider-chain reason key for an ALREADY
+ * frozen pipeline (replay / command / settle re-presentation entries), where
+ * the freeze itself happened in an earlier process and only the persisted
+ * `blockedReason` survives.
+ *
+ * `awaiting_human` without a `blockedReason` is the confirm-gate freeze (the
+ * stage transition does not write one), so it maps to the Phase 3 vocabulary
+ * `confirm_awaiting_human` — otherwise a policy rule filed under that reason
+ * would never match after a reload.
+ */
+export function resolveDecisionReason(meta: SessionMeta): string {
+  if (meta.blockedReason) return meta.blockedReason;
+  if (meta.currentStage === "awaiting_human") return "confirm_awaiting_human";
+  return "unknown";
 }
 
 /**
@@ -2177,6 +2221,18 @@ interface RequestDecisionOpts {
  *
  * Child sessions never reach this function — `freezeAndPrompt` routes the
  * child branch to `armChildEscalation` before calling it.
+ *
+ * 210 review issue 3: the function is the ONLY decision presentation entry.
+ * Replay (`session-starter`), command (`/pipeline-resume`, `/pipeline-start`)
+ * and settle re-presentation paths call it as well, so a pipeline that froze
+ * in a previous process can never end up "blocked with nobody armed": with
+ * `decisionPolicy` enabled the decision-wait deadline is (re-)armed here even
+ * when the menu is opened from a command, and a headless host converges to
+ * policy → abort instead of waiting forever.
+ *
+ * @returns The menu presentation result, or `null` when the chain resolved the
+ *   freeze WITHOUT a menu (policy applied, or the pipeline converged to abort).
+ *   Callers that render a user message must handle the `null` case.
  */
 export async function requestDecision(
   ctx: FlowStateCtx,
@@ -2184,15 +2240,24 @@ export async function requestDecision(
   config: PipelineConfig,
   reason: string,
   opts?: RequestDecisionOpts,
-): Promise<void> {
+): Promise<EnsureDecisionMenuResult | null> {
+  const source = opts?.source ?? "freeze";
+
+  // Shared presentation options (policy-disabled passthrough and the human
+  // slot use the same shape, so replay/command semantics stay baseline-exact).
+  const menuOpts: EnsureDecisionMenuOpts = {
+    source,
+    onStageChanged: opts?.onStageChanged,
+    ...(opts?.budgetValue !== undefined ? { budgetValue: opts.budgetValue } : {}),
+    ...(opts?.notifyOnUnavailable !== undefined
+      ? { notifyOnUnavailable: opts.notifyOnUnavailable }
+      : {}),
+    ...(opts?.notifyOnCancel !== undefined ? { notifyOnCancel: opts.notifyOnCancel } : {}),
+  };
+
   // B-1 hard gate: no policy → zero new behavior.
   if (!isDecisionPolicyEnabled(config)) {
-    await ensureDecisionMenu(ctx, meta, config, {
-      source: "freeze",
-      onStageChanged: opts?.onStageChanged,
-      ...(opts?.budgetValue !== undefined ? { budgetValue: opts.budgetValue } : {}),
-    });
-    return;
+    return ensureDecisionMenu(ctx, meta, config, menuOpts);
   }
 
   const menuCtx: FlowStateCtx = opts?.ui ? { ...ctx, ui: opts.ui } : ctx;
@@ -2200,25 +2265,23 @@ export async function requestDecision(
   // No-UI branch (CI/headless): no waiting object exists — never arm timers.
   if (typeof menuCtx.ui?.select !== "function") {
     const policyResult = await tryApplyPolicy(menuCtx, meta, config, reason, "no_ui");
-    if (policyResult.applied) return;
+    if (policyResult.applied) return null;
     if (policyResult.rejected) {
       // B-3: single-shot abort after a guard-rejected policy decision.
       await markPipelineAborted(menuCtx, "policy_decision_rejected", { config });
-      return;
+      return null;
     }
     // No matching rule: the "provider occupied" slot resolved absent.
     await markPipelineAborted(menuCtx, "decision_provider_absent", { config });
-    return;
+    return null;
   }
 
   // Human slot first (Q12=A): present the menu; the deadline arms inside
   // runDecisionMenu and converges via the injected onDecisionDeadline closure.
-  await ensureDecisionMenu(menuCtx, meta, config, {
-    source: "freeze",
-    onStageChanged: opts?.onStageChanged,
+  return ensureDecisionMenu(menuCtx, meta, config, {
+    ...menuOpts,
     decisionDeadlineMs:
       config.decisionPolicy?.decisionWaitTimeoutMs ?? DEFAULT_DECISION_WAIT_TIMEOUT_MS,
-    ...(opts?.budgetValue !== undefined ? { budgetValue: opts.budgetValue } : {}),
   });
 }
 

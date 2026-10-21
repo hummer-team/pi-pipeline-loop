@@ -12,10 +12,10 @@ import { safeWriteAuditLog, writeAuditLog, setAuditPipelineContext } from "../ut
 import { applyVerifyFail, autoAdvanceAfterVerify } from "./verify-advance";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
-import { isFrozen, getFlowState, formatFrozenReason, ensureDecisionMenu, formatAbortedNotifyText, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, requestDecision, resolveDecisionReason, formatAbortedNotifyText, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
 import { isDormant } from "./dormancy";
 // 210 Phase 7: settle-point usage drain (record-only, fail-open).
-import { flushUsageToMeta } from "./usage-recorder";
+import { flushUsageToMetaSafely } from "./usage-recorder";
 // 210 Phase 2: stage watchdog sync on every settle (requirement 5.4 whitelist).
 import { armStageWatchdog, touchStageProgress } from "./stage-watchdog";
 // 210 Phase 3: the confirm-stall convergence is gated on the decision policy
@@ -111,11 +111,9 @@ export function createAgentSettled(
 
       // 210 Phase 7: persist usage accumulated in-process since the last drain
       // (idempotent; an empty delta performs no meta write).
-      try {
-        flushUsageToMeta(ctx.session, meta.pipelineId);
-      } catch {
-        // Fail-open: usage persistence must never interrupt the settle chain.
-      }
+      // 210 review issue 7: the safe wrapper keeps the fail-open contract AND
+      // records an `usage_flush_error` audit instead of swallowing the throw.
+      await flushUsageToMetaSafely(ctx.session, meta.pipelineId, meta.currentStage);
 
       // 192 Phase 3 (K02/F05): the design-review coordinator delegation is NO
       // LONGER executed before the ordinary guards. It now runs AFTER the
@@ -170,12 +168,17 @@ export function createAgentSettled(
           );
         };
         // 208 Phase 2: single scheduler entry — interrupted re-prompting (with
-        // backoff) is owned by ensureDecisionMenu; the settle entry no longer
-        // arms scheduleDecisionRetry itself.
-        await ensureDecisionMenu(
-          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof ensureDecisionMenu>[0],
+        // backoff) is owned by ensureDecisionMenu inside requestDecision; the
+        // settle entry no longer arms scheduleDecisionRetry itself.
+        // 210 review issue 3: routed through the provider chain, so a freeze
+        // whose decision-wait timers were lost with a previous process gets the
+        // deadline re-armed (and a headless host converges policy → abort)
+        // instead of re-presenting a menu nobody is waiting on.
+        await requestDecision(
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof requestDecision>[0],
           meta,
           config,
+          resolveDecisionReason(meta),
           { source: "settle", onStageChanged: onStageChangedForSettled },
         );
         return;

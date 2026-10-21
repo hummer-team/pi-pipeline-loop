@@ -966,7 +966,9 @@ export async function autoAdvanceAfterVerify(
     // order / summaries come from the POST-advance fresh meta; the final
     // stage's entry clock comes from the PRE-advance snapshot so the last
     // stage's durationMs is computed correctly (plan Phase 4, task 2).
-    const aggregate = await collectRunAggregate(freshMeta, fromStage, clearedMeta.stageStartTime ?? 0);
+    // 210 review issue 9: config enables the canonical plan-doc resolution
+    // (requirement 5.5) inside the aggregate.
+    const aggregate = await collectRunAggregate(freshMeta, fromStage, clearedMeta.stageStartTime ?? 0, config);
     await writeStageAudit(config, "pipeline_completed", clearedMeta, {
       fromStage,
       finalStage: fromStage,

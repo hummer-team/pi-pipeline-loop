@@ -922,12 +922,16 @@ function parseWatchdogConfig(raw: unknown): WatchdogConfig | undefined {
  * absolute stage ceiling, otherwise the "no progress" clock can never fire
  * before the wall clock and the pair loses its meaning.
  *
- * - BOTH thresholds explicitly configured and conflicting → warn and drop both
- *   overrides, so the consistent default pair applies.
- * - Only one side configured (the other comes from `constants.ts`) → warn and
- *   keep the explicit ceiling, clamping the derived idle window to it. The
- *   runtime clamp in `stage-watchdog` stays as defence in depth for
- *   hand-constructed configs that never pass through the loader.
+ * - ANY configuration outcome where the effective pair conflicts
+ *   (`idleMs >= wallMs`, i.e. `stageIdleTimeoutMs >= stageTimeoutMs` after the
+ *   defaults are backfilled — one-sided configs included) → warn and drop BOTH
+ *   overrides so the consistent default pair applies (plan Phase 2 task 5 /
+ *   requirement 5.2). Clamping the idle clock to the ceiling instead would arm
+ *   two clocks that fire in the same instant, producing a duplicated
+ *   `stage_watchdog_timeout` audit and a second freeze attempt, and would leave
+ *   the "no progress" clock without its own meaning (210 review issue 5).
+ * - The runtime `Math.min` clamp in `stage-watchdog` stays as defence in depth
+ *   for hand-constructed configs that never pass through the loader.
  *
  * Returns the input unchanged when the watchdog block is absent (an
  * unconfigured project must stay byte-for-byte baseline, constraint 4).
@@ -938,21 +942,14 @@ function normalizeWatchdogThresholds(watchdog: WatchdogConfig | undefined): Watc
   const idleMs = watchdog.stageIdleTimeoutMs ?? DEFAULT_STAGE_IDLE_TIMEOUT_MS;
   if (idleMs < wallMs) return watchdog;
 
-  const bothExplicit = watchdog.stageTimeoutMs !== undefined && watchdog.stageIdleTimeoutMs !== undefined;
-  if (bothExplicit) {
-    console.warn(
-      `[pi-pipeline] watchdog.stageIdleTimeoutMs (${String(idleMs)}) must be < stageTimeoutMs (${String(wallMs)}) — falling back to defaults`,
-    );
-    const normalized: WatchdogConfig = { ...watchdog };
-    delete normalized.stageTimeoutMs;
-    delete normalized.stageIdleTimeoutMs;
-    return normalized;
-  }
-
   console.warn(
-    `[pi-pipeline] watchdog idle window (${String(idleMs)}ms) is not below the stage ceiling (${String(wallMs)}ms) — idle clock clamped to the ceiling`,
+    `[pi-pipeline] watchdog.stageIdleTimeoutMs (${String(idleMs)}) must be < stageTimeoutMs (${String(wallMs)})` +
+      ` — falling back to the default pair (${String(DEFAULT_STAGE_IDLE_TIMEOUT_MS)} / ${String(DEFAULT_STAGE_TIMEOUT_MS)})`,
   );
-  return { ...watchdog, stageTimeoutMs: wallMs, stageIdleTimeoutMs: wallMs };
+  const normalized: WatchdogConfig = { ...watchdog };
+  delete normalized.stageTimeoutMs;
+  delete normalized.stageIdleTimeoutMs;
+  return normalized;
 }
 
 /**

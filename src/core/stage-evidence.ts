@@ -24,9 +24,11 @@
  */
 
 import * as fs from "node:fs/promises";
-import type { PipelineStage, SessionMeta, StageStatSnapshot, StageUsageSnapshot } from "../types";
-import { auditLogDirForPipeline } from "../utils/auditLog";
+import type { PipelineConfig, PipelineStage, SessionMeta, StageStatSnapshot, StageUsageSnapshot } from "../types";
+import * as path from "node:path";
+import { auditLogDirForPipeline, safeWriteAuditLog } from "../utils/auditLog";
 import { planDocRelPathFromRequirementDoc } from "./naming/doc-naming";
+import { resolvePlanDocPath } from "./verify-path-resolver";
 
 // ─── Stage-exit evidence ──────────────────────────────────────────────────────
 
@@ -221,14 +223,20 @@ export function serializeStageStats(
  * correctly (plan Phase 4, task 2). `auditPath` falls back to "unavailable"
  * when the audit subsystem never initialized (unit-test contexts).
  *
- * `planDoc` uses the canonical doc-naming derivation from the requirement
- * doc (glob fallback intentionally omitted: the aggregate is an audit hint,
- * and pulling `resolvePlanDocPath` here would add a config dependency).
+ * `planDoc` (210 review issue 9, requirement 5.5): resolved through the
+ * CANONICAL `resolvePlanDocPath` (derivation + glob fallback) whenever the
+ * caller can supply `config`; the pure doc-naming derivation remains the
+ * fallback for call sites without config (tests / harnesses), so the aggregate
+ * never loses the field because of a naming convention it cannot see.
+ *
+ * @param config - Optional pipeline config — enables the canonical plan-doc
+ *   resolution (including the `docs/*_Plan.md` glob fallback) per requirement 5.5
  */
 export async function collectRunAggregate(
   meta: SessionMeta,
   finalStage: PipelineStage,
   finalStageStartedAt: number,
+  config?: PipelineConfig,
 ): Promise<Record<string, string>> {
   const startedAt = meta.pipelineStartedAt ?? meta.stageStartTime ?? 0;
   const durationMs = finalStageStartedAt > 0 ? Math.max(0, Date.now() - finalStageStartedAt) : 0;
@@ -243,9 +251,21 @@ export async function collectRunAggregate(
       for (const id of parseCommitIds(content)) {
         if (!commitIds.includes(id)) commitIds.push(id);
       }
-    } catch {
-      // Fail-visible at the aggregate level: skip this summary's ids, keep
-      // the remaining evidence (terminal audit must never block the exit).
+    } catch (err) {
+      // Expected absence (the summary was never written / removed) stays quiet —
+      // the aggregate already exposes the missing path in `summaryPaths` and
+      // sets `evidenceUnavailable` at the stage level. ANY other failure is
+      // recorded (210 review issue 7, code_spec §3: a catch must log its inputs
+      // and the error) but still never blocks the terminal exit.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT") {
+        await safeWriteAuditLog("stage_evidence_summary_read_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          summaryPath: summary.path,
+          error: err instanceof Error ? err.message : String(err),
+        }, "error");
+      }
     }
   }
 
@@ -254,6 +274,13 @@ export async function collectRunAggregate(
   // `stage:model` comma-joined (flat-string audit format, no JSON).
   const usageEntries = Object.entries(meta.usageByStage ?? {}) as Array<[string, StageUsageSnapshot | undefined]>;
   const costUsdTotal = usageEntries.reduce((sum, [, snap]) => sum + (snap?.costUsd ?? 0), 0);
+
+  // 210 review issue 9 (requirement 5.5): `planDoc` prefers the CANONICAL
+  // resolver (derivation + `docs/*_Plan.md` glob fallback) when the caller has
+  // a config to hand; the pure naming derivation keeps the field populated for
+  // config-less call sites. Absolute results are relativized to projectRoot so
+  // the audit value stays a single stable `k=v` string shape.
+  const planDoc = await resolvePlanDocField(meta, config);
 
   // Key names are the requirement 5.5 table VERBATIM (the terminal rows add
   // `finalStage`, which belongs to the aggregate because both terminal events
@@ -265,7 +292,7 @@ export async function collectRunAggregate(
     verifyAttempts: String(meta.verifyAttempts ?? 0),
     confirmRejections: String(meta.confirmRejections ?? 0),
     requirementDoc: meta.requirementDoc ?? "",
-    planDoc: meta.requirementDoc ? planDocRelPathFromRequirementDoc(meta.requirementDoc) : "",
+    planDoc,
     summaryPaths: summaryPaths.join(","),
     commitIds: commitIds.join(","),
     auditPath: auditLogDirForPipeline(meta.pipelineId) ?? "unavailable",
@@ -275,4 +302,46 @@ export async function collectRunAggregate(
     modelsByStage: usageEntries.map(([stageName, snap]) => `${stageName}:${snap?.model ?? "unknown"}`).join(","),
     finalStage,
   };
+}
+
+/**
+ * 210 review issue 9: resolves the aggregate `planDoc` field.
+ *
+ * With a config available the value comes from the SINGLE canonical resolver
+ * (`resolvePlanDocPath`: requirementDoc derivation + `docs/design/*_Plan.md`
+ * glob fallback), so BOTH failure modes named in the review are covered — a
+ * missing `requirementDoc` and one whose name does not follow the derivation
+ * rule still yield the real plan document instead of an empty field. Absolute
+ * results are relativized to `projectRoot` so the audit keeps its flat single
+ * `k=v` shape. Without config (harnesses / older call sites) the pure naming
+ * derivation is used, and an unresolvable path degrades to `""` as before.
+ */
+async function resolvePlanDocField(
+  meta: SessionMeta,
+  config?: PipelineConfig,
+): Promise<string> {
+  // NO early return on a missing `requirementDoc`: the canonical resolver
+  // covers that case with the `docs/design/*_Plan.md` glob fallback, which is
+  // exactly what requirement 5.5 asks for (210 review issue 9).
+  if (config) {
+    try {
+      const resolved = await resolvePlanDocPath(config, meta);
+      if (resolved) {
+        return path.isAbsolute(resolved)
+          ? path.relative(config.projectRoot, resolved).replace(/\\/g, "/")
+          : resolved.replace(/\\/g, "/");
+      }
+    } catch (err) {
+      // The resolver is fs-backed (glob fallback): an unexpected fs error is
+      // recorded, and the naming derivation below still provides the field.
+      await safeWriteAuditLog("stage_evidence_plan_doc_error", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        requirementDoc: meta.requirementDoc ?? "",
+        error: err instanceof Error ? err.message : String(err),
+      }, "error");
+    }
+  }
+
+  return meta.requirementDoc ? planDocRelPathFromRequirementDoc(meta.requirementDoc) : "";
 }

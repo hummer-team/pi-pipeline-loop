@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { createPipelineStartCommand, collectStagesFrom, buildResumeVisitOrder, dispatchAfterResume } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
+// 210 review issue 2: assert the stage clocks at the START entry points.
+import { __stageWatchdogState, clearAllDecisionTimers } from "../../core/decision-menu-runtime";
+import type { PipelineConfig } from "../../types";
 import { buildStageSequence } from "../../utils/stage-sequence";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import type { PipelineStage } from "../../types";
@@ -702,5 +705,78 @@ describe("Phase 4 (182): dispatchAfterResume name-probe live skip", () => {
       expect(auditContent).toContain("pipeline_resume_dispatch_skipped");
       expect(auditContent).toContain("manual_live_probe");
     }
+  });
+});
+
+// ─── 210 review issue 2: the FIRST stage visit must own its clocks ─────────
+//
+// Plan Phase 2 task 3 / acceptance「子代理静默挂起 → idle 超时」: before this
+// fix the watchdog was armed only at settle / verify / advance, so a subagent
+// that hung silently in its very first turn produced no `stage_watchdog_timeout`
+// at all. These cases pin the arming at the start & dispatch entry points, and
+// the default-off baseline.
+
+describe("210 review issue 2: watchdog arming at start / dispatch", () => {
+  /** Windows far larger than the test body: only the ARM is asserted. */
+  function withWatchdog(config: PipelineConfig): PipelineConfig {
+    config.watchdog = { enabled: true, stageTimeoutMs: 600_000, stageIdleTimeoutMs: 300_000 };
+    return config;
+  }
+
+  afterEach(() => {
+    // Consume any clock armed by the case below (a stray timer must not fire
+    // inside a later test).
+    clearAllDecisionTimers();
+  });
+
+  it("a fresh run arms wall+idle immediately — before any settle/verify/advance", async () => {
+    await scaffoldMinimalPi();
+    const config = withWatchdog(makeTestConfig({ projectRoot: TMP }));
+    const docsDir = path.join(TMP, "docs", "design");
+    await fs.mkdir(docsDir, { recursive: true });
+    await fs.writeFile(path.join(docsDir, "80_Watchdog.md"), "# Requirement\n", "utf-8");
+
+    const meta = makeTestMeta({ currentStage: undefined as any, pipelineId: undefined as any });
+    const ctx = createMockCtx(meta);
+
+    const result: any = await createPipelineStartCommand(config).execute({ file: "docs/design/80_Watchdog.md" }, ctx as any);
+    expect(result.success).toBe(true);
+
+    const pipelineId = ctx.session.getMeta().pipelineId as string;
+    expect(pipelineId).toBeTruthy();
+    const state = __stageWatchdogState(pipelineId);
+    expect(state.armed).toBe(true);
+    // The fresh dispatch is attributed to the whitelisted "spawn" source.
+    expect(state.lastProgressSource).toBe("spawn");
+  });
+
+  it("dispatchAfterResume arms the clocks of the stage it dispatches", async () => {
+    const config = withWatchdog(makeTestConfig({ projectRoot: TMP }));
+    const meta = makeTestMeta({
+      pipelineId: "pipe-210-wd-dispatch",
+      currentStage: "clarify",
+      stageStartTime: Date.now(),
+    });
+    const ctx = createMockCtx(meta);
+
+    await dispatchAfterResume(ctx as any, config, ctx.ui as any, meta, "docs/design/80_Watchdog.md");
+
+    const state = __stageWatchdogState("pipe-210-wd-dispatch");
+    expect(state.armed).toBe(true);
+    expect(state.lastProgressSource).toBe("spawn");
+  });
+
+  it("stays completely unarmed without a watchdog block (default-off baseline)", async () => {
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      pipelineId: "pipe-210-wd-off",
+      currentStage: "clarify",
+      stageStartTime: Date.now(),
+    });
+    const ctx = createMockCtx(meta);
+
+    await dispatchAfterResume(ctx as any, config, ctx.ui as any, meta, "docs/design/80_Watchdog.md");
+
+    expect(__stageWatchdogState("pipe-210-wd-off").armed).toBe(false);
   });
 });

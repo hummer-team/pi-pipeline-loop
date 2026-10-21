@@ -30,6 +30,7 @@
 import type { Hook, PipelineStage, SessionMeta, StageUsageSnapshot } from "../types";
 import type { SessionState } from "./session-state";
 import { isDormant } from "./dormancy";
+import { safeWriteAuditLog } from "../utils/auditLog";
 
 /** Sessions may be flush-capable subsets of the full adapter (plan: `Pick`). */
 type FlushSession = Pick<SessionState, "getMeta" | "updateMeta">;
@@ -211,8 +212,12 @@ export function createUsageRecorder(): Hook<"message_end"> {
   return {
     event: "message_end",
     handler: async (ctx): Promise<void> => {
+      // Hoisted so the error path can attribute the failure without touching
+      // the session again (a throwing `getMeta` must not throw twice).
+      let attribution: { pipelineId?: string; stage?: string } = {};
       try {
         const meta = ctx.session.getMeta() as SessionMeta | undefined;
+        attribution = { pipelineId: meta?.pipelineId, stage: meta?.currentStage };
         if (!meta?.pipelineId) return;
         // Dormant (aborted / completed / no pipeline): nothing may be recorded.
         if (isDormant(meta)) return;
@@ -222,8 +227,17 @@ export function createUsageRecorder(): Hook<"message_end"> {
         if (!sample) return;
 
         recordSample(meta, sample);
-      } catch {
-        // Fail-open: usage accounting must never disturb the message flow.
+      } catch (err) {
+        // Fail-open (usage accounting must never disturb the message flow), but
+        // NEVER invisible: an unexpected throw here used to vanish without a
+        // trace, which violates the project's catch-must-log rule
+        // (plan 通用实现约束 #1 / code_spec §3, 210 review issue 7).
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await safeWriteAuditLog("usage_record_error", {
+          pipelineId: attribution.pipelineId ?? "unknown",
+          stage: attribution.stage ?? "unknown",
+          error: errMsg,
+        }, "error");
       }
     },
   };
@@ -265,6 +279,34 @@ export function flushUsageToMeta(session: FlushSession, pipelineId: string): voi
   session.updateMeta({ usageByStage });
   // Drain AFTER the write so a throwing adapter leaves the delta retryable.
   stages.clear();
+}
+
+/**
+ * 210 review issue 7: the shared "best-effort flush" wrapper used by every
+ * persistence point (settle / terminal / shutdown).
+ *
+ * The bare `flushUsageToMeta` stays throw-free by contract, but a host adapter
+ * CAN throw from `getMeta` / `updateMeta`. Previously each call site wrapped it
+ * in an EMPTY `catch {}`, so a silently lost usage ledger was impossible to
+ * diagnose (plan 通用实现约束 #1 / code_spec §3 requires a catch to record its
+ * inputs and the error). Fail-open is kept — usage accounting must never break
+ * the settle / abort / shutdown chain — but the loss is now an `error` audit.
+ */
+export async function flushUsageToMetaSafely(
+  session: FlushSession,
+  pipelineId: string,
+  stage?: string,
+): Promise<void> {
+  try {
+    flushUsageToMeta(session, pipelineId);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog("usage_flush_error", {
+      pipelineId,
+      stage: stage ?? "unknown",
+      error: errMsg,
+    }, "error");
+  }
 }
 
 /**

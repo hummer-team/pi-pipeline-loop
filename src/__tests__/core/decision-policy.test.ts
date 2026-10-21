@@ -8,6 +8,12 @@
  * - timeout path: deadline fires while blocked → policy applies / aborts
  * - B-2 stale-state guard: pipelineId changed or state left frozen → zero writes
  *
+ * 210 review issue 3 adds: the reload / command presentation entries
+ * (`session-starter` replay, `/pipeline-resume`, `/pipeline-start`, settle
+ * re-presentation) go through `requestDecision` as well, so a freeze restored
+ * from disk re-arms the decision deadline (UI) or converges to
+ * `decision_provider_absent` (headless) instead of stalling forever.
+ *
  * Timing notes: every case that depends on a timer uses its OWN pipelineId
  * (the runtime table is process-global and shared with other test files) and
  * asserts outcomes by polling instead of sleeping a fixed budget, so heavy
@@ -19,6 +25,8 @@ import {
   ensureDecisionMenu,
   clearAllDecisionTimers,
   getFlowState,
+  requestDecision,
+  resolveDecisionReason,
 } from "../../core/flow-state";
 import { __hasDecisionDeadline } from "../../core/decision-menu-runtime";
 import {
@@ -353,7 +361,13 @@ describe("decision deadline convergence", () => {
     await freezeAndPrompt(ctx, meta, "violation_overflow", policyConfig({
       decisionWaitTimeoutMs: 20,
     }));
-    expect(await waitUntil(() => getFlowState(meta) === "aborted")).toBe(true);
+    // The terminal audit is written AFTER the meta flip (the run aggregate is
+    // collected in between), so poll for the record instead of reading it the
+    // instant `flowState === "aborted"` lands — same timing-robust rule the
+    // rest of this file follows.
+    expect(
+      await waitUntil(() => auditEvents("pipeline_session_aborted").length > 0),
+    ).toBe(true);
     expect(meta.terminateReason).toBe("decision_unresolved_timeout");
     expect(auditEvents("pipeline_session_aborted")[0]?.message?.reason).toBe(
       "decision_unresolved_timeout",
@@ -492,5 +506,83 @@ describe("deadline convergence guards", () => {
     expect(ctx.updates.length).toBe(0);
     expect(meta.terminateReason).toBe("session_quit");
     expect(meta.currentStage).toBe("awaiting_human");
+  });
+});
+
+// ─── 210 review issue 3: reload / command entries route through the chain ───
+//
+// A pipeline that froze in a PREVIOUS process lost its decision timer with the
+// process. The replay (`session-starter`) and command (`/pipeline-resume`,
+// `/pipeline-start`) entries used to call `ensureDecisionMenu` directly, so with
+// `decisionPolicy` enabled they re-opened the menu WITHOUT arming the decision
+// deadline — R1-1 "no permanent stall without a provider" did not hold there.
+// All frozen-presentation entries now go through `requestDecision`.
+
+describe("requestDecision at the reload / command entries (210 review issue 3)", () => {
+  it("already-frozen meta + policy enabled + headless → converges to decision_provider_absent", async () => {
+    // This is the reload shape: `flowState=blocked` restored from disk, no
+    // provider available and nobody at the keyboard.
+    const meta = frozenMeta();
+    const ctx = makeFlowCtx(meta, { noUI: true });
+
+    const result = await requestDecision(ctx, meta, policyConfig({
+      byReason: { max_loop_cycles: { decision: "abort" } }, // no rule for violation_overflow
+    }), "violation_overflow", { source: "replay" });
+
+    // Chain resolved WITHOUT a menu → null (callers must not render a menu result).
+    expect(result).toBeNull();
+    expect(getFlowState(meta)).toBe("aborted");
+    expect(meta.terminateReason).toBe("decision_provider_absent");
+    expect(auditEvents("pipeline_session_aborted").length).toBe(1);
+  });
+
+  it("already-frozen meta + policy enabled + UI → the decision deadline IS re-armed", async () => {
+    const meta = frozenMeta();
+    const originalId = meta.pipelineId!;
+    const dialog = deferredSelect();
+    const ctx = makeFlowCtx(meta, { select: async () => dialog.promise });
+
+    const menu = requestDecision(ctx, meta, policyConfig({
+      decisionWaitTimeoutMs: 5_000,
+      byReason: { "*": { decision: "restart" } },
+    }), "violation_overflow", { source: "command" });
+
+    // The menu opened AND the wait timer exists — the exact gap the review found
+    // (these entries used to call `ensureDecisionMenu` without a deadline at all).
+    expect(await waitUntil(() => auditEvents("decision_deadline_armed").length > 0)).toBe(true);
+    expect(__hasDecisionDeadline(originalId)).toBe(true);
+    // The armed window comes from `decisionWaitTimeoutMs`, i.e. the caller really
+    // passed `decisionDeadlineMs` down the chain.
+    expect(auditEvents("decision_deadline_armed")[0]?.message?.["delayMs"]).toBe("5000");
+
+    dialog.release(undefined);
+    const result = await menu;
+    // Cancelled dialog is a MENU result (not the chain-resolved-without-menu null).
+    expect(result).not.toBeNull();
+    expect(["cancelled", "interrupted", "no-menu"]).toContain(result!.outcome);
+  });
+
+  it("policy disabled → verbatim passthrough: menu opens, NO deadline is armed", async () => {
+    const meta = frozenMeta();
+    const originalId = meta.pipelineId!;
+    const dialog = deferredSelect();
+    const ctx = makeFlowCtx(meta, { select: async () => dialog.promise });
+
+    const menu = requestDecision(ctx, meta, makeTestConfig(), "violation_overflow", { source: "replay" });
+    expect(await waitUntil(() => auditEvents("decision_menu_presented").length > 0)).toBe(true);
+    // Requirement 5.3 / B-1 gate: the chain and its timer exist only when enabled.
+    expect(__hasDecisionDeadline(originalId)).toBe(false);
+    expect(auditEvents("decision_deadline_armed").length).toBe(0);
+
+    dialog.release(undefined);
+    const result = await menu;
+    expect(result).not.toBeNull();
+  });
+
+  it("resolveDecisionReason: persisted blockedReason wins, awaiting_human maps to confirm_awaiting_human", () => {
+    expect(resolveDecisionReason(makeTestMeta({ blockedReason: "loop_overflow" }))).toBe("loop_overflow");
+    expect(resolveDecisionReason(makeTestMeta({ currentStage: "awaiting_human", blockedReason: undefined })))
+      .toBe("confirm_awaiting_human");
+    expect(resolveDecisionReason(makeTestMeta({ currentStage: "review", blockedReason: undefined }))).toBe("unknown");
   });
 });

@@ -689,19 +689,21 @@ describe("watchdog config — loader threshold normalization (T2.5)", () => {
     expect(warnings.some((w) => w.includes("must be < stageTimeoutMs"))).toBe(true);
   });
 
-  it("clamps a half-specified contradiction to the ceiling instead of inventing a window", () => {
-    // Only the idle side is given and it exceeds the DEFAULT ceiling: back-filling
-    // the default wall would silently enable a ceiling the user never asked for,
-    // so the idle clock is clamped onto the ceiling it cannot outrun.
+  // 210 review issue 5 (plan Phase 2 task 5 / requirement 5.2): a contradiction
+  // on EITHER side — including a half-specified one whose missing side defaults
+  // to a value that makes `idle >= wall` — falls back to the DEFAULT PAIR.
+  // Clamping idle onto the wall used to produce `idle === wall`, i.e. two
+  // timers firing in the same tick (double `stage_watchdog_timeout` + double
+  // freeze), so the ceiling is never used as a clamp target.
+  it("falls back to the default pair when a half-specified contradiction arises", () => {
     const { config, warnings } = resolveWithWarnings(
       baseJson({ enabled: true, stageIdleTimeoutMs: DEFAULT_STAGE_TIMEOUT_MS + 1 }),
     );
-    expect(config.watchdog).toEqual({
-      enabled: true,
-      stageTimeoutMs: DEFAULT_STAGE_TIMEOUT_MS,
-      stageIdleTimeoutMs: DEFAULT_STAGE_TIMEOUT_MS,
-    });
-    expect(warnings.some((w) => w.includes("clamped to the ceiling"))).toBe(true);
+    // The oversized idle override is dropped; the never-configured wall is not
+    // invented either, so both thresholds come from the defaults.
+    expect(config.watchdog).toEqual({ enabled: true });
+    expect(warnings.some((w) => w.includes("must be < stageTimeoutMs"))).toBe(true);
+    expect(warnings.some((w) => w.includes("falling back to the default pair"))).toBe(true);
   });
 
   it("ignores non-positive / non-integer thresholds with a warning", () => {

@@ -10,12 +10,17 @@
  * - `attributionSuspect` boundary at exactly / within / beyond the 60s margin,
  *   consumed once per `stage_usage` render;
  * - restart / resume (pipeline-start builders) clear the in-process ledger.
+ *
+ * 210 review issue 7 adds: the shared `flushUsageToMetaSafely` wrapper keeps the
+ * persistence points fail-open, but a throwing host adapter now produces an
+ * `usage_flush_error` ERROR audit instead of vanishing into an empty catch.
  */
 
 import { describe, it, expect } from "bun:test";
 import {
   createUsageRecorder,
   flushUsageToMeta,
+  flushUsageToMetaSafely,
   resetUsage,
   takeStageUsageAuditFields,
   __usageSnapshot,
@@ -23,6 +28,8 @@ import {
   USAGE_ATTRIBUTION_MARGIN_MS,
 } from "../../core/usage-recorder";
 import { buildStartMeta, buildResumeMeta } from "../../commands/pipeline-start";
+// 210 review issue 7: the safe-flush wrapper records an error audit.
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import type { PipelineStage, SessionMeta } from "../../types";
 
@@ -472,5 +479,60 @@ describe("210 Phase 7: pipeline-start builders clear the ledger", () => {
     const before = h.updates.length;
     flushUsageToMeta(h.session as any, pid);
     expect(h.updates.length).toBe(before);
+  });
+});
+
+// ─── 210 review issue 7: a throwing host adapter is LOUD, not silent ────────
+
+describe("210 review issue 7: flushUsageToMetaSafely", () => {
+  it("contains an adapter throw and records usage_flush_error with the inputs", async () => {
+    const pid = nextPid();
+    await feed(makeSession(makeTestMeta({ pipelineId: pid, currentStage: "plan" })), usageMsg());
+
+    const boom = {
+      getMeta: () => {
+        throw new Error("meta store offline");
+      },
+      updateMeta: () => undefined,
+    };
+
+    const captured: Array<{ event: string; message?: Record<string, string | boolean>; level?: string }> = [];
+    __setSafeWriteAuditLogOverride(async (event, message, level) => {
+      captured.push({ event, message: message as Record<string, string | boolean> | undefined, level });
+    });
+    try {
+      // Fail-open: the settle / abort / shutdown chain must never break here.
+      await expect(flushUsageToMetaSafely(boom as never, pid, "plan")).resolves.toBeUndefined();
+    } finally {
+      __setSafeWriteAuditLogOverride(null);
+      resetUsage(pid);
+    }
+
+    const err = captured.filter((e) => e.event === "usage_flush_error");
+    expect(err).toHaveLength(1);
+    expect(err[0]!.level).toBe("error");
+    expect(err[0]!.message?.["pipelineId"]).toBe(pid);
+    expect(err[0]!.message?.["stage"]).toBe("plan");
+    expect(String(err[0]!.message?.["error"])).toContain("meta store offline");
+  });
+
+  it("writes no error audit when the flush succeeds", async () => {
+    const pid = nextPid();
+    const h = makeSession(makeTestMeta({ pipelineId: pid, currentStage: "plan" }));
+    await feed(h, usageMsg());
+
+    const captured: Array<{ event: string }> = [];
+    __setSafeWriteAuditLogOverride(async (event) => {
+      captured.push({ event });
+    });
+    try {
+      await flushUsageToMetaSafely(h.session as never, pid, "plan");
+    } finally {
+      __setSafeWriteAuditLogOverride(null);
+    }
+
+    expect(h.meta.usageByStage!.plan!.messages).toBe(1);
+    expect(captured.filter((e) => e.event === "usage_flush_error")).toHaveLength(0);
+    resetUsage(pid);
   });
 });

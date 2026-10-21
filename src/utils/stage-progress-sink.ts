@@ -21,6 +21,10 @@
  */
 
 import type { StageProgressSource } from "../types";
+// 210 review issue 11: errors leave through the unified audit writer (a
+// `utils/` → `utils/` import, so the "no runtime ../core/ import" guard in
+// `subagent-rpc.test.ts` is unaffected).
+import { safeWriteAuditLog } from "./auditLog";
 
 /**
  * Reporter signature — identical to `core/stage-watchdog.touchStageProgress`,
@@ -59,8 +63,15 @@ export function reportStageProgress(
     reporter(pipelineId, source);
   } catch (err) {
     // Advisory channel: a renewal failure must never break the caller's flow.
+    // 210 review issue 11 (code_spec §4): routed through the shared audit
+    // writer instead of `console.error`; `safeWriteAuditLog` swallows its own
+    // failures, so this stay-infallible by construction.
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[pi-pipeline] stage progress reporter failed (${source}): ${errMsg}`);
+    void safeWriteAuditLog("stage_progress_sink_error", {
+      stage: "stage_progress_sink",
+      source,
+      error: errMsg,
+    }, "error", pipelineId);
   }
 }
 

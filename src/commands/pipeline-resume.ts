@@ -10,7 +10,9 @@
  *   maybeHandleConfirmGate, otherwise a read-only status hint
  * - Aborted → restore status bar + points to /pipeline-start (no menu available)
  * - Blocked/awaiting_human (frozen):
- *   - Without --force-resume → ensureDecisionMenu (208 Phase 3, source="command"):
+ *   - Without --force-resume → requestDecision (208 Phase 3, source="command";
+ *     210 review issue 3: the chain wrapper, so a reload-leftover freeze gets
+ *     its decision-wait deadline re-armed when decisionPolicy is enabled):
  *     unified scheduler with interrupted auto-retry / timer mutex / accurate
  *     no-menu attribution.
  *     - decided && applied → return decision result (status bar synced + dispatch)
@@ -22,7 +24,7 @@
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
-import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText, ensureDecisionMenu, formatDecisionMenuHint } from "../core/flow-state";
+import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText, requestDecision, resolveDecisionReason, formatDecisionMenuHint } from "../core/flow-state";
 import { dispatchAfterResume } from "./pipeline-start";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { detectPendingConfirmGate, maybeHandleConfirmGate, recordConfirmGateOutcome } from "../core/stage-advancer";
@@ -282,15 +284,22 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         // and accurate no-menu attribution all live there. The command owns
         // the single user-facing no-menu message (notifyOnUnavailable: false),
         // avoiding the contradictory "run in owner session" double-hint.
+        // 210 review issue 3: the entry goes through `requestDecision` (the one
+        // provider-chain wrapper) instead of `ensureDecisionMenu` directly, so a
+        // freeze left over by a PREVIOUS process gets its decision-wait deadline
+        // re-armed (and, headless, converges policy → abort) whenever
+        // `decisionPolicy` is enabled. Policy-disabled projects keep the exact
+        // baseline passthrough.
         if (!forceResume) {
           const onStageChangedForResume = async (freshMeta: SessionMeta): Promise<void> => {
             const doc = freshMeta.requirementDoc ?? "";
             await dispatchAfterResume(ctx, config, ui, freshMeta, doc, forwardArgs || undefined);
           };
-          const menu = await ensureDecisionMenu(
+          const menu = await requestDecision(
             { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
             meta,
             config,
+            resolveDecisionReason(meta),
             {
               source: "command",
               onStageChanged: onStageChangedForResume,
@@ -302,6 +311,30 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             },
           );
           const current = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+
+          // `null` = the chain resolved WITHOUT presenting a menu (policy
+          // applied, or the pipeline converged to abort). Same post-actions as
+          // an applied human decision, so the command stays honest about where
+          // the pipeline ended up.
+          if (menu === null) {
+            syncStageStatusBar(ui, ctx);
+            if (getFlowState(current) === "aborted") {
+              const message =
+                `Decision provider chain aborted the pipeline at "${current.currentStage}" ` +
+                `(${current.terminateReason ?? "decision_policy"}).`;
+              ui.notify(ctx, message);
+              return { message };
+            }
+            if (isFrozen(current)) {
+              const message = `Pipeline remains frozen at "${current.currentStage}". ${formatDecisionMenuHint()}`;
+              ui.notify(ctx, message);
+              return { message };
+            }
+            const message = `Decision policy resolved the freeze. Pipeline at stage "${current.currentStage}".`;
+            ui.notify(ctx, message);
+            await idempotentStageDispatch(ctx, config, ui, current, forwardArgs);
+            return { message };
+          }
           const retrySeconds = Math.max(1, Math.round((menu.retryDelayMs ?? 5000) / 1000));
 
           switch (menu.outcome) {

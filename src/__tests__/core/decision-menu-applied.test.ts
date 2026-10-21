@@ -20,6 +20,11 @@
  * 9.  validateBudgetValue boundaries
  * 12. decision_menu_presented on the secondary path (menuKind="secondary"),
  *     incl. directStageSelect first-call presentation
+ *
+ * 210 review issue 6 adds: EVERY `pipeline_decision` row carries attribution —
+ * the primary menu, the secondary stage picker and a plain `executeDecision`
+ * call all resolve the missing source to `human`, and menu paths mark
+ * `trigger=menu`.
  */
 import { describe, it, expect, afterEach, beforeEach } from "bun:test";
 import {
@@ -28,6 +33,7 @@ import {
   promptDecisionMenuDetailed,
   validateBudgetValue,
   clearAllDecisionTimers,
+  executeDecision,
 } from "../../core/flow-state";
 import type { FlowStateCtx } from "../../core/flow-state";
 import {
@@ -432,5 +438,67 @@ describe("208 Phase 0: no-UI branch", () => {
     const detail = await promptDecisionMenuDetailed(ctx, meta, config, { notifyOnUnavailable: false });
     expect(detail.outcome).toBe("no-menu");
     expect(notifyCalls.length).toBe(0);
+  });
+});
+
+// ─── 210 review issue 6: human menu decisions carry attribution ─────────────
+
+describe("210 review issue 6: pipeline_decision attribution on the menu paths", () => {
+  it("primary menu resume → decisionSource=human + trigger=menu", async () => {
+    const meta = maxLoopMeta();
+    const ctx = makeCtx(meta, {
+      select: async () => "Resume",
+      notify: (msg: string) => notifyCalls.push(msg),
+    });
+    const config = makeTestConfig();
+
+    const detail = await promptDecisionMenuDetailed(ctx, meta, config, { source: "freeze" });
+    expect(detail.applied).toBe(true);
+
+    const audit = audits.find((a) => a.event === "pipeline_decision");
+    expect(audit).toBeDefined();
+    expect(audit?.message?.["decision"]).toBe("resume");
+    // Requirement 5.3 / I4: an unmarked row is no longer possible — a menu
+    // answer is explicitly a HUMAN decision delivered through the MENU channel.
+    expect(audit?.message?.["decisionSource"]).toBe("human");
+    expect(audit?.message?.["trigger"]).toBe("menu");
+  });
+
+  it("secondary choose_stage menu → decisionSource=human + trigger=menu", async () => {
+    const meta = maxLoopMeta({ blockedReason: "loop_overflow" });
+    let calls = 0;
+    const ctx = makeCtx(meta, {
+      select: async () => {
+        calls++;
+        return calls === 1 ? "Choose stage…" : "review";
+      },
+      notify: (msg: string) => notifyCalls.push(msg),
+    });
+    const config = makeTestConfig();
+
+    const detail = await promptDecisionMenuDetailed(ctx, meta, config);
+    expect(detail.outcome).toBe("decided");
+
+    const audit = audits.find((a) => a.event === "pipeline_decision");
+    expect(audit).toBeDefined();
+    expect(audit?.message?.["decision"]).toBe("choose_stage");
+    expect(audit?.message?.["decisionSource"]).toBe("human");
+    // 210 review issue 6: the SECONDARY picker is a menu presentation too — it
+    // used to be the one menu call without the trigger marker.
+    expect(audit?.message?.["trigger"]).toBe("menu");
+  });
+
+  it("a direct executeDecision call without attribution still audits decisionSource=human", async () => {
+    const meta = maxLoopMeta();
+    const ctx = makeCtx(meta, { notify: (msg: string) => notifyCalls.push(msg) });
+    const config = makeTestConfig();
+
+    const res = await executeDecision(ctx, meta, "resume", config, { source: "test" });
+    expect(res.success).toBe(true);
+
+    const audit = audits.find((a) => a.event === "pipeline_decision");
+    expect(audit?.message?.["decisionSource"]).toBe("human");
+    // No trigger: the caller did not come through a menu channel.
+    expect(audit?.message?.["trigger"]).toBeUndefined();
   });
 });

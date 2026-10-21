@@ -4,10 +4,12 @@
  * Covers the plan acceptance list for `checkCommitProof` (pure git checks with
  * a FAKE execFn — real git is never touched): the three violation classes
  * (C1 existence / C2 freshness with the 300s tolerance boundaries / C3 plan-doc
- * binding), exec-absence and exec-throw fail-open, empty commit ids, and the
+ * binding), exec-absence and exec-throw fail-open, empty commit ids, the
  * `reconcileCommitProof` orchestration (switch precedence + the
- * commit_proof_skipped / commit_proof_error / commit_proof_violation audit
- * trail).
+ * commit_proof_skipped / commit_proof_checked / commit_proof_error /
+ * commit_proof_violation audit trail), and the 210 review issue 1 C2 clock
+ * baseline (`resolveCommitProofClockBaseline`: develop first visit vs run
+ * start for every later stage / re-visit).
  */
 
 import { describe, it, expect, afterEach } from "bun:test";
@@ -17,6 +19,7 @@ import { join } from "node:path";
 import {
   checkCommitProof,
   reconcileCommitProof,
+  resolveCommitProofClockBaseline,
   parseDevCommitIds,
   parsePlanDocClaim,
   COMMIT_TIME_TOLERANCE_MS,
@@ -261,6 +264,61 @@ async function proofEnv(docContent: string | null): Promise<{ config: PipelineCo
 
 const BAD_ID_DOC = "# plan & commit id's\n**plan doc**: `docs/design/210_Feat_Plan.md`\n**dev commit id**: dead0001\n";
 
+// ─── 210 review issue 1 (High): C2 clock baseline per stage / per visit ──────
+
+describe("resolveCommitProofClockBaseline", () => {
+  const RUN_START = 1_700_000_000_000;
+  const STAGE_START = RUN_START + 600_000;
+
+  it("develop FIRST visit keeps the strict develop-entry clock", () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      stageStartTime: STAGE_START,
+      pipelineStartedAt: RUN_START,
+      stageVisitOrder: ["clarify", "plan", "develop"],
+    });
+    expect(resolveCommitProofClockBaseline(meta)).toEqual({
+      baselineMs: STAGE_START,
+      label: "develop stage entry (first visit)",
+    });
+  });
+
+  it("review / fix / awaiting_human compare against the RUN start, not the verifying stage entry", () => {
+    for (const stage of ["review", "fix", "awaiting_human", "completed"] as const) {
+      const meta = makeTestMeta({
+        currentStage: stage,
+        stageStartTime: STAGE_START,
+        pipelineStartedAt: RUN_START,
+        stageVisitOrder: ["clarify", "plan", "develop", "review", stage],
+      });
+      const b = resolveCommitProofClockBaseline(meta);
+      expect(b.baselineMs).toBe(RUN_START);
+      expect(b.label).toBe("pipeline run start");
+    }
+  });
+
+  it("develop RE-VISIT (rework loop) uses the run start — its own entry clock is too late", () => {
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      stageStartTime: STAGE_START,
+      pipelineStartedAt: RUN_START,
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "develop"],
+    });
+    expect(resolveCommitProofClockBaseline(meta).baselineMs).toBe(RUN_START);
+  });
+
+  it("no clock at all → 0, so C2 is skipped instead of guessing (fail-open)", () => {
+    const meta = makeTestMeta({
+      currentStage: "review",
+      stageStartTime: undefined,
+      pipelineStartedAt: undefined,
+    });
+    const b = resolveCommitProofClockBaseline(meta);
+    expect(b.baselineMs).toBe(0);
+    expect(b.label).toContain("C2 skipped");
+  });
+});
+
 describe("reconcileCommitProof", () => {
   it("no requirement doc → completely silent (baseline untouched)", async () => {
     const sink: CapturedAudit[] = [];
@@ -403,7 +461,7 @@ describe("reconcileCommitProof", () => {
     }
   });
 
-  it("clean run (fresh commits, matching plan doc) → no events, no violations", async () => {
+  it("clean run (fresh commits, matching plan doc) → only commit_proof_checked, no violations", async () => {
     const sink: CapturedAudit[] = [];
     captureAudits(sink);
     const { config, meta, root } = await proofEnv(BAD_ID_DOC);
@@ -412,7 +470,65 @@ describe("reconcileCommitProof", () => {
       const { execFn } = makeGit(healthyRules());
       const out = await reconcileCommitProof(config, meta, { require: true, requireCommitProof: true }, execFn);
       expect(out).toEqual([]);
-      expect(sink.filter((e) => e.event.startsWith("commit_proof"))).toEqual([]);
+      // 210 review issue 10 (requirement 5.7): a reconciled-clean run must be
+      // distinguishable from "never reconciled" — exactly one info-level
+      // `commit_proof_checked` row, and no violation/skip/error rows.
+      const proofEvents = sink.filter((e) => e.event.startsWith("commit_proof"));
+      expect(proofEvents.map((e) => e.event)).toEqual(["commit_proof_checked"]);
+      expect(proofEvents[0]!.level).toBe("info");
+      expect(proofEvents[0]!.fields["checked"]).toBe("1");
+      expect(proofEvents[0]!.fields["violations"]).toBe("0");
+      expect(proofEvents[0]!.fields["enforced"]).toBe("true");
+      // Develop FIRST visit keeps the strict stage-entry baseline (issue 1).
+      expect(proofEvents[0]!.fields["c2Baseline"]).toBe("develop stage entry (first visit)");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // 210 review issue 1 (High) — the exact false-positive scenario: a develop
+  // commit is legitimately older than the REVIEW stage's entry clock, because
+  // review starts after develop finished. Comparing to `meta.stageStartTime`
+  // flagged every valid commit as `commit_after_stage_start`.
+  it("review stage: a develop commit predating the review entry still PASSES", async () => {
+    const sink: CapturedAudit[] = [];
+    captureAudits(sink);
+    const { config, meta, root } = await proofEnv(BAD_ID_DOC);
+    try {
+      const now = Date.now();
+      meta.currentStage = "review";
+      meta.previousStage = "develop";
+      meta.pipelineStartedAt = now - 2 * 3_600_000;
+      meta.stageStartTime = now;
+      meta.stageVisitOrder = ["clarify", "plan", "develop", "review"];
+      // dead0001 was created an hour ago: inside the run, long before review.
+      const { execFn } = makeGit(healthyRules(Math.floor((now - 3_600_000) / 1000)));
+      const out = await reconcileCommitProof(config, meta, { require: true, requireCommitProof: true }, execFn);
+      expect(out).toEqual([]);
+      const checked = sink.find((e) => e.event === "commit_proof_checked");
+      expect(checked?.fields["c2Baseline"]).toBe("pipeline run start");
+      expect(checked?.fields["violations"]).toBe("0");
+      expect(sink.filter((e) => e.event === "commit_proof_violation")).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("review stage: a commit predating the RUN is still flagged (no over-relaxation)", async () => {
+    const sink: CapturedAudit[] = [];
+    captureAudits(sink);
+    const { config, meta, root } = await proofEnv(BAD_ID_DOC);
+    try {
+      const now = Date.now();
+      meta.currentStage = "review";
+      meta.pipelineStartedAt = now - 2 * 3_600_000;
+      meta.stageStartTime = now;
+      meta.stageVisitOrder = ["clarify", "plan", "develop", "review"];
+      // Ten hours old — from a previous run/branch → must still fail C2.
+      const { execFn } = makeGit(healthyRules(Math.floor((now - 10 * 3_600_000) / 1000)));
+      const out = await reconcileCommitProof(config, meta, { require: true, requireCommitProof: true }, execFn);
+      expect(out.map((f) => f.ruleType)).toEqual(["commit_after_stage_start"]);
+      expect(out[0]!.detail).toContain("pipeline run start");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

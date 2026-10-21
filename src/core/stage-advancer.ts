@@ -2124,6 +2124,8 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           freshMetaForAudit,
           currentStage,
           preAdvanceSnap.stageStartTime ?? 0,
+          // 210 review issue 9: canonical plan-doc resolution (requirement 5.5)
+          config,
         );
         await safeWriteStageAudit(config, "pipeline_completed", freshMetaForAudit, {
           finalStage: currentStage,

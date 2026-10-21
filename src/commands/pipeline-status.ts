@@ -29,6 +29,9 @@ import {
   DESIGN_REVIEW_PENDING_READONLY_NOTICE,
   DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
 } from "../core/design-review/decision-display";
+// 210 review issue 12: single source for the /pipeline-resume guidance text
+// (same hint used by the frozen notify / prompt-injector / blocked audit).
+import { formatDecisionMenuHint } from "../core/flow-state";
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
 
@@ -62,23 +65,29 @@ function auditAnchor(meta: SessionMeta): string {
  * Merged summary of everything currently waiting on a human decision
  * (requirement 5.2 `Pending decision`): frozen block, confirm-gate reask,
  * confirm-gate deferral stamp and the design-review pending decision.
+ *
+ * 210 review issue 12 (requirement 5.6): whenever anything is pending, the view
+ * also states WHO is waiting (a human — the pipeline never auto-decides) and the
+ * `/pipeline-resume` action that unblocks it, so the frozen state is actionable
+ * from this read-only view alone. Still no writes and no new configuration.
  */
 function summarizePendingDecision(meta: SessionMeta): string {
   const bits: string[] = [];
   if (meta.flowState === "blocked") {
-    bits.push(`blocked${meta.blockedReason ? ` (${meta.blockedReason})` : ""}`);
+    bits.push(`blocked${meta.blockedReason ? ` (${meta.blockedReason})` : ""} [human decision]`);
   }
   if (meta.confirmGateReask) {
-    bits.push(`confirm reask @${meta.confirmGateReask.stage} (count ${meta.confirmGateReask.count})`);
+    bits.push(`confirm reask @${meta.confirmGateReask.stage} (count ${meta.confirmGateReask.count}) [human confirm]`);
   }
   if (meta.confirmGateDeferredAt) {
     bits.push(`confirm deferred @${meta.confirmGateDeferredAt.stage}`);
   }
   const pending = buildDesignReviewPendingDecisionView(meta);
   if (pending !== null) {
-    bits.push(`design-review: ${formatDesignReviewPendingDecision(pending)}`);
+    bits.push(`design-review: ${formatDesignReviewPendingDecision(pending)} [human decision]`);
   }
-  return bits.length > 0 ? bits.join("; ") : "none";
+  if (bits.length === 0) return "none";
+  return `${bits.join("; ")}; waiting on: human - ${formatDecisionMenuHint()}`;
 }
 // ─── Running view ─────────────────────────────────────────────────────────────
 

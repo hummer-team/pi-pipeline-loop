@@ -3,14 +3,15 @@
  *
  * Covers the plan acceptance list for `buildReviewChangeEvidence` with a FAKE
  * execFn (real git is never touched): review-stage gating, host-without-exec
- * degrade (null → baseline prompt unchanged), the committed-base path (`.md`
- * filtering, base selection develop vs fix), the working-tree fallback, the
- * per-visit memoization, and the explicit "Evidence unavailable" section on
- * git failure — plus the createPromptInjector integration (default prompt
- * Part 13 on review, absent elsewhere).
+ * degrade (explicit "unavailable" section — 210 review issue 4), the
+ * committed-base path (`.md` filtering, base selection develop vs fix), the
+ * working-tree fallback, the per-visit memoization, and the explicit
+ * "Evidence unavailable" section on git failure — plus the
+ * createPromptInjector integration (default prompt Part 13 on review, absent
+ * elsewhere).
  */
 
-import { describe, it, expect, beforeEach, afterAll } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import {
   REVIEW_EVIDENCE_HEADER,
 } from "../../core/review-change-evidence";
 import { createPromptInjector } from "../../core/prompt-injector";
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import type { ExecFn, SessionMeta } from "../../types";
 
@@ -100,9 +102,17 @@ describe("buildReviewChangeEvidence gating", () => {
     expect(reviewEvidenceCacheSize()).toBe(0);
   });
 
-  it("returns null when the host provides no execFn (baseline prompt stays identical)", async () => {
+  // 210 review issue 4 (plan Phase 6 task 5 / acceptance #9): a host without
+  // `pi.exec` must show an explicit "unavailable" section on the review stage
+  // instead of silently deleting the paragraph, and must not shell out or memo.
+  it("returns an explicit unavailable section when the host provides no execFn", async () => {
     const meta = reviewMeta("/unused");
-    expect(await buildReviewChangeEvidence(makeTestConfig(), meta, undefined)).toBeNull();
+    const section = await buildReviewChangeEvidence(makeTestConfig(), meta, undefined);
+    expect(section).not.toBeNull();
+    expect(section).toContain(REVIEW_EVIDENCE_HEADER);
+    expect(section).toContain("Evidence unavailable:");
+    expect(section).toContain("pi.exec absent");
+    // Not memoized: there was no git read to reuse.
     expect(reviewEvidenceCacheSize()).toBe(0);
   });
 });
@@ -331,11 +341,91 @@ describe("createPromptInjector integration (Part 13)", () => {
     }
   });
 
-  it("without deps.execFn the review prompt keeps its baseline shape", async () => {
+  // 210 review issue 4: on review the paragraph is NEVER dropped — a host
+  // without exec capability gets the explicit "unavailable" notice instead.
+  it("without deps.execFn the review prompt shows the explicit unavailable section", async () => {
     const config = makeTestConfig();
     const hook = createPromptInjector(config);
     const review = makeTestMeta({ currentStage: "review", pipelineId: uniq("injnoexec") });
     const result = (await hook.handler({ session: { getMeta: () => review } } as never))!;
+    expect(result.systemPrompt!).toContain("REVIEW CHANGE EVIDENCE");
+    expect(result.systemPrompt!).toContain("Evidence unavailable:");
+  });
+
+  // Non-review stages stay byte-for-byte baseline even without exec (the
+  // section is stage-gated, so the default-off shape is untouched).
+  it("without deps.execFn a non-review prompt stays baseline", async () => {
+    const config = makeTestConfig();
+    const hook = createPromptInjector(config);
+    const dev = makeTestMeta({ currentStage: "develop", pipelineId: uniq("injnodev") });
+    const result = (await hook.handler({ session: { getMeta: () => dev } } as never))!;
     expect(result.systemPrompt!).not.toContain("REVIEW CHANGE EVIDENCE");
+  });
+});
+
+// ─── 210 review issue 8: base commit rev-spec validation ────────────────────
+
+describe("buildReviewChangeEvidence base validation (210 review issue 8)", () => {
+  let captured: Array<{ event: string; fields: Record<string, string | boolean>; level?: string }>;
+
+  beforeEach(() => {
+    captured = [];
+    __setSafeWriteAuditLogOverride(async (event, message, level) => {
+      captured.push({ event, fields: (message ?? {}) as Record<string, string | boolean>, level });
+    });
+  });
+  afterEach(() => {
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  it("skips an option-injection candidate and uses the first VALID id", async () => {
+    const root = await freshRoot("inject1");
+    try {
+      const config = makeTestConfig({ projectRoot: root });
+      const devPath = await summaryFile(join(root, "summaries"), "develop-1.md", ["--output=/tmp/evil", "a1b2c3d"]);
+      const meta = reviewMeta(root, {
+        summaries: { develop: { path: devPath, hash: "h1", status: "valid" as const } },
+      });
+      const { execFn, calls } = makeGit({
+        "diff --name-status a1b2c3d^..HEAD": ok("M\tsrc/app.ts\n"),
+        "rev-list a1b2c3d^..HEAD": ok("a1b2c3d\n"),
+        "show --stat --oneline": ok("a1b2c3d work\n"),
+      });
+
+      const section = await buildReviewChangeEvidence(config, meta, execFn);
+      expect(section).toContain("**Base**: `a1b2c3d`");
+      // The hostile token never reaches git argv in any position.
+      expect(calls.some((c) => c.includes("--output"))).toBe(false);
+      const rejected = captured.filter((e) => e.event === "review_change_evidence_base_rejected");
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]!.level).toBe("warn");
+      expect(rejected[0]!.fields["rejected"]).toBe("--output=/tmp/evil");
+      expect(rejected[0]!.fields["accepted"]).toBe("a1b2c3d");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the working tree when EVERY candidate is ill-formed (and audits it)", async () => {
+    const root = await freshRoot("inject2");
+    try {
+      const config = makeTestConfig({ projectRoot: root });
+      const devPath = await summaryFile(join(root, "summaries"), "develop-1.md", ["--output=/tmp/evil", "--extcmd=sh"]);
+      const meta = reviewMeta(root, {
+        summaries: { develop: { path: devPath, hash: "h1", status: "valid" as const } },
+      });
+      const { execFn, calls } = makeGit({
+        "diff --name-status HEAD": ok("M\tsrc/app.ts\n"),
+        "status --porcelain": ok("?? src/new.ts\n"),
+      });
+
+      const section = await buildReviewChangeEvidence(config, meta, execFn);
+      expect(section).toContain("**Base**: none");
+      expect(calls).toContain("diff --name-status HEAD");
+      expect(calls.some((c) => c.includes("--output") || c.includes("--extcmd"))).toBe(false);
+      expect(captured.some((e) => e.event === "review_change_evidence_base_rejected")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

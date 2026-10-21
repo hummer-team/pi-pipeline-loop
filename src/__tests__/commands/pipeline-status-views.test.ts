@@ -6,7 +6,10 @@
  * - `completed` and `aborted` return the Last Run terminal view with the REAL
  *   audit directory (fs.existsSync proof);
  * - cleared meta (post `/pipeline-quit`) still returns the DORMANT message
- *   BYTE-IDENTICAL to the baseline.
+ *   BYTE-IDENTICAL to the baseline;
+ * - 210 review issue 12 (requirement 5.6): a pending decision additionally
+ *   states WHO is waiting (human) and the `/pipeline-resume` action, while an
+ *   idle pipeline keeps the bare `none`.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -205,5 +208,51 @@ describe("210 Phase 5: dormant contracts preserved", () => {
     expect(content.startsWith("# Pipeline Status\n- ID: pipe-210-status-base-")).toBe(true);
     expect(content).toContain("- Model: deepseek-v4");
     expect(content).toContain("- Domain: general@latest");
+  });
+});
+
+// ─── 210 review issue 12 (requirement 5.6): actionable pending-decision view ─
+
+describe("210 review issue 12: pending decision states who waits + resume action", () => {
+  it("a frozen pipeline names the waiting party and points at /pipeline-resume", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: `pipe-210-status-hint-${Date.now()}`,
+      flowState: "blocked" as SessionMeta["flowState"],
+      blockedReason: "decision_timeout",
+    });
+
+    const pd = lineValue(await statusContent(config, meta), "Pending decision");
+    // WHO is waiting: a human, never an automatic next step (requirement 5.6).
+    expect(pd).toContain("waiting on: human");
+    expect(pd).toContain("[human decision]");
+    // HOW to unblock: the shared decision-menu hint (single source of truth).
+    expect(pd).toContain("/pipeline-resume");
+    expect(pd).toContain("--force-resume");
+  });
+
+  it("a confirm-gate reask names the human confirm as the waiting party", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      pipelineId: `pipe-210-status-confirm-${Date.now()}`,
+      confirmGateReask: { stage: "plan", count: 1 },
+    });
+
+    const pd = lineValue(await statusContent(config, meta), "Pending decision");
+    expect(pd).toContain("confirm reask @plan (count 1) [human confirm]");
+    expect(pd).toContain("/pipeline-resume");
+  });
+
+  it("nothing pending stays a bare 'none' (no misleading resume guidance)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: `pipe-210-status-none-${Date.now()}`,
+    });
+
+    const pd = lineValue(await statusContent(config, meta), "Pending decision");
+    expect(pd).toBe("none");
   });
 });

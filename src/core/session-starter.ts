@@ -11,7 +11,7 @@ import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
-import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, ensureDecisionMenu } from "./flow-state";
+import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, requestDecision, resolveDecisionReason } from "./flow-state";
 // 210 Phase 2: re-arm the stage clocks when a running pipeline survives a reload.
 import { armStageWatchdog } from "./stage-watchdog";
 import { loadPromptConfig } from "./prompt-config";
@@ -709,12 +709,19 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
                 doc,
               );
             };
-            // 208 Phase 2: single scheduler entry — same semantics as settle;
-            // interrupted re-prompting is owned by ensureDecisionMenu.
-            await ensureDecisionMenu(
+            // 208 Phase 2 / 210 review issue 3: single scheduler entry AND chain
+            // — interrupted re-prompting is owned by ensureDecisionMenu inside
+            // requestDecision, while a decisionPolicy enabled on this project
+            // also (re-)arms the decision-wait deadline. Without the chain a
+            // pipeline frozen by the PREVIOUS process would stay blocked forever
+            // here: the timers died with that process and nothing re-armed them.
+            await requestDecision(
               { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
               meta,
               config,
+              // Policy rule lookup key: the persisted freeze reason (the replay
+              // entry has no fresh `reason` argument of its own).
+              resolveDecisionReason(meta),
               // Phase 3 (173) C8: plan §3.1 dictates source="replay" for all replay reasons
               // (including startup); "startup" is not in the plan §3.3-④ source vocabulary.
               {

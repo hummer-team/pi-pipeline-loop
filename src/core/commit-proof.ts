@@ -15,6 +15,9 @@
  * - FAIL-OPEN on evidence gaps: absent requirement doc, unreadable/missing
  *   commit document, or no parsable commit ids → `commit_proof_skipped` audit,
  *   NEVER a violation (a project that never opted in must not be blocked).
+ * - C2 compares against the clock of the period/stage that PRODUCED the commits
+ *   ({@link resolveCommitProofClockBaseline}), never blindly against the
+ *   verifying stage's own entry clock (210 review issue 1).
  * - No new dependencies: git facts come through the DI `ExecFn` (wrapped
  *   `pi.exec`); absent execFn → `error` field + `commit_proof_error` audit and
  *   an empty violation list.
@@ -45,8 +48,71 @@ export const COMMIT_PROOF_GROUP = "commit_proof";
  */
 export const COMMIT_TIME_TOLERANCE_MS = 300_000;
 
-/** Characters a git rev spec may legitimately consist of (defense against arg injection). */
-const REV_SPEC_RE = /^[0-9a-zA-Z_.@{}/^-]{2,64}$/;
+/**
+ * Characters a git rev spec may legitimately consist of (defense against arg
+ * injection). The FIRST character is additionally barred from being `-`, so an
+ * option-looking token (`--output`, `--extcmd=…`) can never reach git argv even
+ * when the remainder is made of otherwise-legal revision characters.
+ */
+const REV_SPEC_RE = /^[0-9a-zA-Z_.@{}/~][0-9a-zA-Z_.@{}/^-]{1,63}$/;
+
+/**
+ * Public form of the rev-spec guard (210 review issue 8).
+ *
+ * Model-writable documents (`**dev commit id**` lines, summary frontmatter)
+ * feed git argv builders elsewhere in the plugin; every such value must pass
+ * this check BEFORE it is concatenated into a rev range such as `<base>^..HEAD`.
+ * Without it a value like `--output=/path` would be parsed by git as an OPTION
+ * (no shell is involved, but option injection can still write files).
+ */
+export function isValidGitRevSpec(value: string): boolean {
+  return typeof value === "string" && REV_SPEC_RE.test(value);
+}
+
+/** Stages whose OWN commit doc entries can be attributed to their own clock. */
+const COMMIT_PRODUCING_STAGE: PipelineStage = "develop";
+
+/**
+ * C2 clock baseline for the CURRENT verify (210 review issue 1).
+ *
+ * `meta.stageStartTime` is the entry clock of the stage that is VERIFYING NOW,
+ * while the commit document is written by the DEVELOP stage (and amended by
+ * fix). Comparing a develop commit against a LATER stage's clock labels every
+ * legitimate commit as `commit_after_stage_start` — once `verify.requireCommitProof`
+ * is on, review/fix verify would then fail and ride the retry / circuit-breaker
+ * flow, which directly contradicts the Phase 6 acceptance「正确 commit 通过」.
+ *
+ * Honest baseline per stage:
+ * - `develop` on its FIRST visit → its own `stageStartTime` (strictest form of
+ *   requirement 5.7 C2: the stage that produces the commits is verifying).
+ * - every later stage (review / fix / awaiting_human / completed) and every
+ *   re-entered develop → the current period's `pipelineStartedAt`, which is
+ *   guaranteed to precede every commit produced during THIS run while still
+ *   rejecting commits from a previous run / another branch's history.
+ * - no trustworthy clock at all (legacy meta without `pipelineStartedAt`, or a
+ *   develop visit whose start was never recorded) → `0`, which skips C2 entirely
+ *   (fail-open: never invent a violation that cannot be observed).
+ */
+export function resolveCommitProofClockBaseline(meta: SessionMeta): {
+  baselineMs: number;
+  label: string;
+} {
+  const stageStart = meta.stageStartTime ?? 0;
+  const developVisits = (meta.stageVisitOrder ?? []).filter((s) => s === "develop").length;
+
+  if (meta.currentStage === COMMIT_PRODUCING_STAGE && developVisits <= 1 && stageStart > 0) {
+    return { baselineMs: stageStart, label: "develop stage entry (first visit)" };
+  }
+
+  const runStart = meta.pipelineStartedAt ?? 0;
+  if (runStart > 0) {
+    // `pipelineStartedAt` is rebased by restart / re-init, so it is the run
+    // clock of the period that legitimately produced these commits.
+    return { baselineMs: runStart, label: "pipeline run start" };
+  }
+
+  return { baselineMs: 0, label: "unavailable (C2 skipped)" };
+}
 
 // ─── Commit-document parsing ──────────────────────────────────────────────────
 
@@ -108,8 +174,16 @@ export interface CommitProofInput {
   execFn?: ExecFn;
   /** Stage the check is attributed to (audit + detail text). */
   stage: PipelineStage;
-  /** Entry clock of the stage that produced the commits (0 = unknown → C2 skips). */
+  /**
+   * C2 clock baseline: commits must not predate it (minus tolerance).
+   * MUST be the clock of the stage/period that PRODUCED the commits, not
+   * blindly the verifying stage's entry clock — callers use
+   * {@link resolveCommitProofClockBaseline} (210 review issue 1).
+   * 0 = unknown → C2 skips.
+   */
   stageStartTime: number;
+  /** Human-readable origin of the baseline, used in the C2 failure detail. */
+  stageStartLabel?: string;
   /** Commit ids declared by the commit document. */
   commitIds: string[];
   /** Commit document path (relative to projectRoot or absolute) for C3. */
@@ -122,8 +196,10 @@ export interface CommitProofInput {
  * Checks the declared commit ids against git facts.
  *
  * - C1 (existence): `git cat-file -e <id>^{commit}` — non-zero → `commit_exists`.
- * - C2 (freshness): `git show -s --format=%ct <id>` compared against
- *   `stageStartTime` with a 300s tolerance — only strictly-older commits fail.
+ * - C2 (freshness): `git show -s --format=%ct <id>` compared against the
+ *   caller-provided `stageStartTime` BASELINE with a 300s tolerance — only
+ *   strictly-older commits fail. The baseline must describe the commits' own
+ *   origin (develop entry clock, or the run start for later stages).
  * - C3 (plan-doc binding): the commit document's `**plan doc**` claim must
  *   normalize to `expectedPlanDoc` — mismatch → `plan_doc_mismatch`.
  *
@@ -176,9 +252,13 @@ export async function checkCommitProof(input: CommitProofInput): Promise<CommitP
         const ct = shown.code === 0 ? Number.parseInt(shown.stdout.trim(), 10) : Number.NaN;
         if (Number.isFinite(ct)) {
           if (ct * 1000 + COMMIT_TIME_TOLERANCE_MS < stageStartTime) {
+            // The label names the baseline the commit is compared against, so a
+            // review-stage failure reads as "predates the RUN", not "predates
+            // the review stage" (210 review issue 1).
+            const label = input.stageStartLabel ?? `${stage} stage start`;
             push(
               "commit_after_stage_start",
-              `commit ${id} was created ${new Date(ct * 1000).toISOString()} — more than 300s BEFORE the "${stage}" stage start ${new Date(stageStartTime).toISOString()}`,
+              `commit ${id} was created ${new Date(ct * 1000).toISOString()} — more than 300s BEFORE the ${label} at ${new Date(stageStartTime).toISOString()}`,
             );
           }
         }
@@ -237,8 +317,9 @@ export function resolveRequireCommitProof(
  *
  * - returns the violations to fold into the structured failure set when
  *   `requireCommitProof` is ON, and an empty array otherwise (warn-audit only);
- * - writes the `commit_proof_skipped` / `commit_proof_error` /
- *   `commit_proof_violation` audit trail (single-line `k=v`, append-only);
+ * - writes the `commit_proof_skipped` / `commit_proof_checked` /
+ *   `commit_proof_error` / `commit_proof_violation` audit trail (single-line
+ *   `k=v`, append-only);
  * - never throws and never blocks when evidence simply is not there.
  */
 export async function reconcileCommitProof(
@@ -298,11 +379,18 @@ export async function reconcileCommitProof(
     // (verify-path-resolver / doc-naming) — never re-implemented here.
     const expectedPlanDoc = (await resolvePlanDocPath(config, meta)) ?? undefined;
 
+    // C2 baseline: NEVER the raw "current stage entry clock" — the commit doc is
+    // produced by develop, so a review/fix stage (whose `stageStartTime` is
+    // strictly later) would label every legitimate commit as too old
+    // (210 review issue 1). See `resolveCommitProofClockBaseline`.
+    const baseline = resolveCommitProofClockBaseline(meta);
+
     const result = await checkCommitProof({
       projectRoot: config.projectRoot,
       execFn,
       stage: meta.currentStage,
-      stageStartTime: meta.stageStartTime ?? 0,
+      stageStartTime: baseline.baselineMs,
+      stageStartLabel: baseline.label,
       commitIds,
       commitDocPath: commitDocRel,
       expectedPlanDoc,
@@ -329,9 +417,34 @@ export async function reconcileCommitProof(
       }, "warn");
     }
 
+    // Requirement 5.7 names `commit_proof_checked` explicitly: without it an
+    // audit reader cannot tell "reconciled, everything matches" from "never
+    // reconciled at all" (210 review issue 10). Emitted only when at least one
+    // id actually reached git, so a fully skipped run stays silent.
+    if (result.checked > 0) {
+      await safeWriteAuditLog("commit_proof_checked", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        checked: String(result.checked),
+        declared: String(commitIds.length),
+        violations: String(result.violations.length),
+        enforced: String(requireProof),
+        commitIds: commitIds.join(","),
+        c2Baseline: baseline.label,
+        c2BaselineMs: String(baseline.baselineMs),
+      }, "info");
+    }
+
     return requireProof ? result.violations : [];
-  } catch {
-    // Last-resort fail-open: reconciliation bugs must never break verification.
+  } catch (err) {
+    // Last-resort fail-open: reconciliation bugs must never break verification —
+    // but they must not be invisible either (210 review issue 7, code_spec §3).
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await safeWriteAuditLog("commit_proof_error", {
+      pipelineId: meta?.pipelineId ?? "unknown",
+      stage: meta?.currentStage ?? "unknown",
+      error: `reconciliation threw: ${errMsg}`,
+    }, "error");
     return [];
   }
 }

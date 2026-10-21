@@ -19,13 +19,21 @@
  *   injections never re-shell git;
  * - git FAILURE (execFn provided but the command fails/throws) returns an
  *   explicit "Evidence unavailable" section — never `null`, never silent;
- * - execFn ABSENCE (unit-test ctx / pi without exec) returns `null`: the
- *   section is omitted and nothing blocks — matching the Phase 0 contract that
- *   hosts without `pi.exec` degrade gracefully.
+ * - execFn ABSENCE also returns the explicit "Evidence unavailable" section
+ *   (210 review issue 4, plan Phase 6 task 5 / acceptance #9): "no git evidence"
+ *   must be VISIBLE to the reviewer instead of silently deleting the paragraph,
+ *   while still never blocking the stage.
+ * - base ids come from MODEL-WRITABLE summary frontmatter, so a candidate is
+ *   only used after {@link isValidGitRevSpec} accepts it (210 review issue 8):
+ *   an value such as `--output=…` would otherwise be parsed by git as an OPTION
+ *   inside `<base>^..HEAD` (arg injection — no shell, but still able to write
+ *   files or change the command's behaviour).
  */
 
 import type { ExecFn, PipelineConfig, SessionMeta, SummaryMeta } from "../types";
 import { readSummaryCommitIds } from "./stage-evidence";
+import { isValidGitRevSpec } from "./commit-proof";
+import { safeWriteAuditLog } from "../utils/auditLog";
 
 /** Section header — also the acceptance marker (`REVIEW CHANGE EVIDENCE (DETERMINISTIC)`). */
 export const REVIEW_EVIDENCE_HEADER = "## REVIEW CHANGE EVIDENCE (DETERMINISTIC)";
@@ -54,8 +62,9 @@ export function reviewEvidenceCacheSize(): number {
  *
  * @param config - Pipeline configuration (projectRoot = git cwd)
  * @param meta - Current session metadata
- * @param execFn - DI shell execution (wrapped pi.exec); absent → `null`
- * @returns The markdown section, or `null` when the stage/host does not apply.
+ * @param execFn - DI shell execution (wrapped pi.exec); absent → an explicit
+ *   "Evidence unavailable" section (never `null`, 210 review issue 4)
+ * @returns The markdown section, or `null` only for NON-review stages.
  */
 export async function buildReviewChangeEvidence(
   config: PipelineConfig,
@@ -63,7 +72,10 @@ export async function buildReviewChangeEvidence(
   execFn?: ExecFn,
 ): Promise<string | null> {
   if (meta.currentStage !== "review") return null;
-  if (!execFn) return null;
+  // 210 review issue 4: a host without `pi.exec` must NOT silently drop the
+  // paragraph — the reviewer is told the evidence is unavailable (fail-visible,
+  // still non-blocking).
+  if (!execFn) return unavailable("host provides no shell execution (pi.exec absent) — git facts cannot be read");
 
   const key = `${meta.pipelineId}:${meta.stageStartTime}`;
   const hit = evidenceCache.get(key);
@@ -169,6 +181,12 @@ async function composeEvidence(
  * summary. `fix` wins on version ties (it is produced later in the loop).
  * Returns null when no summary exists / is unreadable / carries no ids — the
  * caller then falls back to the working tree.
+ *
+ * 210 review issue 8: summary frontmatter is MODEL-WRITABLE, so every candidate
+ * must pass the shared {@link isValidGitRevSpec} guard before it is concatenated
+ * into a git range (`<base>^..HEAD`). An ill-formed token (e.g. `--output=x`) is
+ * skipped — the remaining candidates still apply, and none leaves the working
+ * tree fallback.
  */
 async function resolveBaseCommit(meta: SessionMeta): Promise<string | null> {
   const candidates: Array<{ summary?: SummaryMeta }> = [
@@ -182,7 +200,20 @@ async function resolveBaseCommit(meta: SessionMeta): Promise<string | null> {
 
   for (const { summary } of ordered) {
     const ids = await readSummaryCommitIds(summary?.path);
-    if (ids && ids.length > 0) return ids[0];
+    if (!ids || ids.length === 0) continue;
+    const safe = ids.filter((id) => isValidGitRevSpec(id));
+    if (safe.length !== ids.length) {
+      // At least one declared id was rejected: keep the audit trail instead of
+      // silently pretending the injection attempt never happened.
+      await safeWriteAuditLog("review_change_evidence_base_rejected", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        summary: summary?.path ?? "",
+        rejected: ids.filter((id) => !isValidGitRevSpec(id)).join(","),
+        accepted: safe.join(","),
+      }, "warn");
+    }
+    if (safe.length > 0) return safe[0];
   }
   return null;
 }

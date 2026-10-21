@@ -1235,7 +1235,9 @@ async function buildDefaultPrompt(
   // Part 12: Design-Review Dynamic Context (Phase 4: 191)
   const part12 = buildDesignReviewContext(meta, config);
   // Part 13: Deterministic Review Change Evidence (Phase 6: 210 — review stage
-  // only; null elsewhere, and when the host provides no exec capability)
+  // only; null elsewhere). On review it is NEVER null: a host without exec
+  // gets an explicit "Evidence unavailable" section (210 review issue 4), so
+  // the reviewer always sees why the deterministic list is missing.
   const part13 = await buildReviewChangeEvidence(config, meta, execFn);
 
   const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11, part12, part13].filter(
@@ -1296,7 +1298,8 @@ async function buildDynamicValues(
     design_review_smart_guidance: designReviewSmartGuidance,
     // Phase 6 (210): Deterministic review change evidence — custom templates may
     // reference {{review_change_evidence}} explicitly (guide.md stays unchanged;
-    // null outside review / without exec → paragraph removed)
+    // null outside review → paragraph removed; on review never null, 210 review
+    // issue 4)
     review_change_evidence: await buildReviewChangeEvidence(config, meta, execFn),
   };
 }

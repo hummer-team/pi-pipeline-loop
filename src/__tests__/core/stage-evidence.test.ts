@@ -9,11 +9,14 @@
  * - `recordStageStats` single-snapshot merge semantics;
  * - `serializeStageStats` single-line vocabulary;
  * - `collectRunAggregate` key-set completeness against the requirement 5.5 table
- *   and fail-visible handling of unreadable summaries.
+ *   and fail-visible handling of unreadable summaries;
+ * - 210 review issue 9: `planDoc` comes from the canonical resolver when a
+ *   config is available (derivation + `docs/design/*_Plan.md` glob fallback,
+ *   relativized to `projectRoot`), keeping the pure naming derivation otherwise.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -321,5 +324,57 @@ describe("210 Phase 4: collectRunAggregate", () => {
     expect(agg.durationMs).toBe("0");
     // startedAt falls back to the stage clock — both missing → 0 (flagged by value).
     expect(agg.startedAt).toBe("0");
+  });
+});
+
+// ─── 210 review issue 9: planDoc uses the canonical resolver (requirement 5.5) ─
+
+describe("210 review issue 9: collectRunAggregate planDoc resolution", () => {
+  /** Fresh project root with `docs/design/` scaffolding. */
+  async function planRoot(label: string, planFiles: string[]): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), `pi-210-plandoc-${label}-`));
+    for (const rel of planFiles) {
+      const abs = join(root, rel);
+      await mkdir(join(abs, ".."), { recursive: true });
+      await writeFile(abs, `# ${rel}\n`, "utf-8");
+    }
+    return root;
+  }
+
+  it("with config: an absolute resolver result is relativized to projectRoot", async () => {
+    const root = await planRoot("deriv", ["docs/design/77_Config_Plan.md"]);
+    try {
+      const config = makeTestConfig({ projectRoot: root });
+      const meta = makeTestMeta({ currentStage: "review", requirementDoc: "docs/design/77_Config.md" });
+      const agg = await collectRunAggregate(meta, "review", Date.now(), config);
+      expect(agg.planDoc).toBe("docs/design/77_Config_Plan.md");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("with config: a MISSING requirementDoc still resolves via the glob fallback", async () => {
+    // The exact gap the review found: the pure naming derivation returns "" when
+    // there is no requirementDoc to derive from, while requirement 5.5 asks for
+    // `resolvePlanDocPath` — whose `docs/design/*_Plan.md` glob fallback covers it.
+    const root = await planRoot("glob", ["docs/design/999_Legacy_Plan.md"]);
+    try {
+      const config = makeTestConfig({ projectRoot: root });
+      const meta = makeTestMeta({ currentStage: "completed", requirementDoc: undefined });
+      const agg = await collectRunAggregate(meta, "completed", Date.now(), config);
+      expect(agg.requirementDoc).toBe("");
+      expect(agg.planDoc).toBe("docs/design/999_Legacy_Plan.md");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("without config: the naming derivation keeps the previous behaviour", async () => {
+    const meta = makeTestMeta({ currentStage: "review", requirementDoc: "docs/design/77_Config.md" });
+    const agg = await collectRunAggregate(meta, "review", Date.now());
+    expect(agg.planDoc).toBe("docs/design/77_Config_Plan.md");
+    // No requirementDoc and no config → still "" (no fs access at all).
+    const agg2 = await collectRunAggregate(makeTestMeta({ requirementDoc: undefined }), "review", Date.now());
+    expect(agg2.planDoc).toBe("");
   });
 });

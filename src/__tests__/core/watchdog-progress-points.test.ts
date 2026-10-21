@@ -435,22 +435,30 @@ describe("stage-progress sink contract", () => {
     expect(__stageWatchdogState(id).lastProgressAt).toBe(before);
   });
 
-  it("contains a throwing consumer instead of breaking the reporting flow", () => {
-    const errors: string[] = [];
-    const original = console.error;
-    console.error = (...args: unknown[]) => {
-      errors.push(args.map(String).join(" "));
-    };
+  // 210 review issue 11 (code_spec §4): the sink reports through the unified
+  // audit writer, not `console`. The channel changed; the containment contract
+  // (never propagate a consumer failure) does not.
+  it("contains a throwing consumer by writing an error audit instead of breaking the flow", async () => {
+    const captured: Array<{ event: string; fields: Record<string, string | boolean>; level?: string }> = [];
+    __setSafeWriteAuditLogOverride(async (event, message, level) => {
+      captured.push({ event, fields: (message ?? {}) as Record<string, string | boolean>, level });
+    });
     setStageProgressReporter(() => {
       throw new Error("consumer blew up");
     });
     try {
       // The sink logs, never propagates: a renewal is advisory (requirement 5.4).
       expect(() => reportStageProgress("pipe-wdpp-throwing", "settle")).not.toThrow();
+      await Promise.resolve();
     } finally {
-      console.error = original;
+      __setSafeWriteAuditLogOverride(null);
+      setStageProgressReporter(null);
     }
-    expect(errors.some((e) => e.includes("consumer blew up"))).toBe(true);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.event).toBe("stage_progress_sink_error");
+    expect(captured[0]!.level).toBe("error");
+    expect(captured[0]!.fields["source"]).toBe("settle");
+    expect(String(captured[0]!.fields["error"])).toContain("consumer blew up");
   });
 
   it("reaches a core-side clock through the consumer `createPipeline` installs", async () => {

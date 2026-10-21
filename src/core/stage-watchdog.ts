@@ -176,7 +176,11 @@ export function armStageWatchdog(
   config: PipelineConfig,
   opts?: { progressSource?: StageProgressSource },
 ): void {
-  const meta = ctx.session.getMeta() as SessionMeta | undefined;
+  // Defensive read: command entries (`/pipeline-start`, `/pipeline-resume`) hand
+  // over the raw pi extension ctx, whose `session` can legitimately be absent
+  // in harnesses and degraded hosts. Arming nothing is always safe; throwing
+  // inside a stage transition is not.
+  const meta = (ctx?.session?.getMeta?.() ?? undefined) as SessionMeta | undefined;
   const pipelineId = meta?.pipelineId;
   if (!pipelineId) return;
 
