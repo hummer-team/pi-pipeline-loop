@@ -38,6 +38,8 @@ import { detectLastRunHealth, extractLastUserMessageText } from "./session-state
 import { parseClarifyTurnArgs } from "../utils/clarify-args";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { getStagePrompt, renderStageTemplate, loadPromptConfig } from "./prompt-config";
+// 210 Phase 6: deterministic review change evidence (review stage only).
+import { buildReviewChangeEvidence } from "./review-change-evidence";
 // 193 Phase 1 (task 4): the smart decision guidance builder is the SAME one
 // the review-dispatch exact prompt uses — one protocol source of truth.
 import { buildDesignReviewSmartGuidanceSection } from "./design-review/smart-prompt";
@@ -810,8 +812,10 @@ export function createPromptInjector(
   config: PipelineConfig,
   deps?: PromptInjectorDeps,
 ): Hook<"before_agent_start"> {
-  // 210 Phase 0: deps accepted without consumption yet; Phase 6 reads deps.execFn.
-  void deps;
+  // 210 Phase 6: consume the injected execFn for the deterministic review
+  // change-evidence section. Absent (harness ctx / pi without exec) → the
+  // section is omitted entirely (baseline prompts unchanged).
+  const execFn = deps?.execFn;
   return {
     event: "before_agent_start",
     handler: async (ctx: RuntimeCtx): Promise<BeforeAgentStartEventResult | void> => {
@@ -926,14 +930,14 @@ export function createPromptInjector(
       // Try yml template path
       const template = await getStagePrompt(config.projectRoot, meta.currentStage);
       if (template !== null) {
-        const values = await buildDynamicValues(config, meta, stageConfig, base, smartGuidance);
+        const values = await buildDynamicValues(config, meta, stageConfig, base, smartGuidance, execFn);
         const rendered = renderStageTemplate(template, meta.currentStage, values);
         if (rendered.status === "missing_critical") {
           await safeWriteAuditLog("prompt_injector_missing_placeholder", {
             stage: meta.currentStage,
             missing: rendered.missing.join(","),
           }, "warn");
-          pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig, base);
+          pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig, base, execFn);
           snapshotSource = "fallback";
         } else {
           pluginPrompt = rendered.prompt;
@@ -941,7 +945,7 @@ export function createPromptInjector(
         }
       } else {
         // Default path: no yml template → use 10-part assembly
-        pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig, base);
+        pluginPrompt = await buildDefaultPrompt(config, meta, stageConfig, base, execFn);
         snapshotSource = "default";
       }
 
@@ -1207,6 +1211,8 @@ async function buildDefaultPrompt(
   meta: SessionMeta,
   stageConfig: StageConfig,
   base: string,
+  /** 210 Phase 6: DI shell execution for the deterministic review evidence */
+  execFn?: ExecFn,
 ): Promise<string> {
   const part1 = buildContextReference(config, meta);
   const part2 = await buildDomainSkill(config, stageConfig, meta);
@@ -1228,8 +1234,11 @@ async function buildDefaultPrompt(
   const part11 = buildSmartConfirmGuidance(stageConfig, meta);
   // Part 12: Design-Review Dynamic Context (Phase 4: 191)
   const part12 = buildDesignReviewContext(meta, config);
+  // Part 13: Deterministic Review Change Evidence (Phase 6: 210 — review stage
+  // only; null elsewhere, and when the host provides no exec capability)
+  const part13 = await buildReviewChangeEvidence(config, meta, execFn);
 
-  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11, part12].filter(
+  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11, part12, part13].filter(
     (p): p is string => p !== null,
   );
 
@@ -1256,6 +1265,8 @@ async function buildDynamicValues(
   base: string,
   /** 193 Phase 1: pre-computed smart review guidance (shared with append-once) */
   designReviewSmartGuidance: string | null = null,
+  /** 210 Phase 6: DI shell execution for the deterministic review evidence */
+  execFn?: ExecFn,
 ): Promise<Record<string, string | null>> {
   const isLoopStage = meta.currentStage === "develop" || meta.currentStage === "fix";
 
@@ -1283,6 +1294,10 @@ async function buildDynamicValues(
     // Phase 1 (193): Design-review smart plan-revision decision protocol
     // (null outside smart review mode → paragraph removed)
     design_review_smart_guidance: designReviewSmartGuidance,
+    // Phase 6 (210): Deterministic review change evidence — custom templates may
+    // reference {{review_change_evidence}} explicitly (guide.md stays unchanged;
+    // null outside review / without exec → paragraph removed)
+    review_change_evidence: await buildReviewChangeEvidence(config, meta, execFn),
   };
 }
 

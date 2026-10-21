@@ -75,6 +75,7 @@ const KNOWN_PLACEHOLDER_KEYS = [
   "smart_confirm_guidance", // Phase 5 (162): smart confirm protocol (plan/review smart mode only)
   "design_review_context", // Phase 4 (191): design-review dynamic context
   "design_review_smart_guidance", // Phase 1 (193): smart plan-revision decision protocol
+  "review_change_evidence", // Phase 6 (210): deterministic review change evidence (optional, not critical)
 ];
 
 // ─── Exported Functions ───────────────────────────────────────────────────────

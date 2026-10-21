@@ -1454,6 +1454,14 @@ export interface PipelineConfig {
   maxVerifyAttempts?: number;
 
   /**
+   * 210 Phase 6: global (cross-stage) verification defaults from the JSON
+   * `verify` block. Attached ONLY when configured, so existing config-shape
+   * assertions stay untouched. Currently only `requireCommitProof` is consumed
+   * at this level; stage-level `stages[x].verify.requireCommitProof` wins.
+   */
+  verify?: VerifyJsonConfig;
+
+  /**
    * Maximum time (ms) to wait for a live same-named subagent to settle before
    * the pipeline escalates to manual handling (single shared timeout source).
    *
@@ -1819,6 +1827,12 @@ export interface PipelineJsonConfig {
    * Circuit-breaker for repeated verify failures within a single stage.
    */
   maxVerifyAttempts?: number;
+
+  /**
+   * 210 Phase 6: global verify defaults. Currently only `requireCommitProof`
+   * is consumed at this level; stage-level `stages[x].verify` wins.
+   */
+  verify?: VerifyJsonConfig;
 
   /**
    * Maximum time (ms) to wait for a live same-named subagent to settle before

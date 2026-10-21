@@ -1289,6 +1289,12 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     // (diagnostic only). Attached ONLY when non-empty so existing deep-equality
     // assertions on the config shape stay untouched.
     ...(Object.keys(drOriginalTargets).length > 0 ? { designReviewOriginalTargets: drOriginalTargets } : {}),
+    // 210 Phase 6: global commit-proof switch; attached ONLY when configured
+    // (same optional-field convention as the blocks above — deep-equality
+    // config-shape assertions must not see an empty object).
+    ...(json.verify?.requireCommitProof !== undefined
+      ? { verify: { requireCommitProof: json.verify.requireCommitProof } }
+      : {}),
     // 210 Phase 0: auto-configuration blocks; attached ONLY when configured.
     ...(decisionPolicyConfig ? { decisionPolicy: decisionPolicyConfig } : {}),
     ...(watchdogConfig && Object.keys(watchdogConfig).length > 0 ? { watchdog: watchdogConfig } : {}),

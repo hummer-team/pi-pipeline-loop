@@ -29,6 +29,9 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { touchStageProgress } from "./stage-watchdog";
 import { parseFrontmatter, type VerifyRules, type VerifyGroupRuleNode } from "./verify-frontmatter";
 import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
+// 210 Phase 6: commit-proof reconciliation. `commit-proof` imports auto-verifier
+// only via `import type` (erased at compile), so this runtime edge stays acyclic.
+import { reconcileCommitProof } from "./commit-proof";
 import {
   deriveDomainVerificationContext,
   resolveDesignReviewConfirmMode,
@@ -887,6 +890,21 @@ async function runVerificationBase(
         failures: [{ ruleType: "keywords", detail: `Missing keywords: ${ruleResult.missing.join(", ")}` }],
       };
     }
+  }
+
+  // 210 Phase 6: reconcile the DECLARED commit evidence (the develop-commit doc)
+  // against git facts AFTER the structured rules, BEFORE the verdict combine.
+  // Switch OFF (default): violations are warn-audited only — the verdict stays
+  // on the baseline. Switch ON: violations fold into the failure set and ride
+  // the existing retry / circuit-breaker machinery. Absent evidence never
+  // false-blocks (see commit-proof.ts fail-open rules).
+  const proofFailures = await reconcileCommitProof(config, meta, verifyConfig, options?.execFn);
+  if (proofFailures.length > 0) {
+    structuredResult = {
+      ...structuredResult,
+      passed: false,
+      failures: [...structuredResult.failures, ...proofFailures],
+    };
   }
 
   // Combine results: structured-only path (Q6-B: LLM layer removed)

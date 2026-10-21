@@ -154,6 +154,24 @@ export async function collectStageExitEvidence(meta: SessionMeta): Promise<Stage
 }
 
 /**
+ * 210 Phase 6: read the `commit_ids` frontmatter of ONE summary artifact.
+ *
+ * Distinguishes the two degrade modes (unreadable vs. no ids) that the
+ * review-change-evidence builder needs:
+ * `null` = the file is unreadable (or no path), `[]` = readable but the
+ * frontmatter carries no commit ids. Never throws.
+ */
+export async function readSummaryCommitIds(summaryPath: string | undefined): Promise<string[] | null> {
+  if (!summaryPath) return null;
+  try {
+    const content = await fs.readFile(summaryPath, "utf-8");
+    return parseCommitIds(content);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Persists the three exit counters as ONE snapshot under
  * `meta.stageStats[stage]` (single write point — duration and counters can
  * never drift apart across two maps).
