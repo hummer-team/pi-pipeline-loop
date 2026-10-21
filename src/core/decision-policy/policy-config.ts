@@ -8,7 +8,13 @@
  * Phase 1 extends this module with `resolveRule` / `isDecisionPolicyEnabled`.
  */
 
-import type { DecisionPolicyConfig, DecisionPolicyRule, PipelineDecision } from "../../types";
+import type {
+  DecisionPolicyConfig,
+  DecisionPolicyRule,
+  PipelineConfig,
+  PipelineDecision,
+  SessionMeta,
+} from "../../types";
 
 // ─── Allowed decision sets (static legality, Q6=A) ───────────────────────────
 
@@ -126,4 +132,72 @@ export function validateDecisionPolicy(
       validateRule(rule, reason, `stages.${stage}`);
     }
   }
+}
+
+// ─── 210 Phase 1: runtime resolution ─────────────────────────────────────────
+
+/**
+ * The ONLY "policy enabled" predicate (Q9/B-1). The loader normalizes a
+ * config-time block presence to `enabled: true`, so a block without an
+ * explicit `enabled` value still reads as enabled here.
+ */
+export function isDecisionPolicyEnabled(config: PipelineConfig): boolean {
+  return config.decisionPolicy?.enabled === true;
+}
+
+/**
+ * Reason key that matches ANY freeze reason (requirement 5.2: `*` is a legal
+ * `byReason` key with the base navigation allowed set).
+ */
+const POLICY_WILDCARD_REASON = "*";
+
+/**
+ * Resolves the automatic rule for a freeze reason (Q6=A: stage overrides win).
+ *
+ * Resolution order (first legal match wins):
+ * 1. `stages.<currentStage>.byReason[reason]` — stage override, exact reason
+ * 2. `stages.<currentStage>.byReason["*"]`    — stage override, wildcard
+ * 3. `byReason[reason]`                       — global, exact reason
+ * 4. `byReason["*"]`                          — global, wildcard
+ *
+ * The winning rule is additionally checked against {@link allowedDecisions}
+ * for the ACTUAL reason: static validation can only check a rule against the
+ * key it is filed under, so a wildcard rule (`*`) would otherwise be able to
+ * apply e.g. `resume` to `confirm_awaiting_human`, whose allowed set is
+ * `restart|abort` (B-1). An illegal pair is treated as a miss — the caller
+ * escalates to the abort step of the provider chain.
+ *
+ * @param meta - Current SessionMeta (its `currentStage` selects the stage override)
+ * @param config - PipelineConfig carrying the decisionPolicy block
+ * @param reason - Current blockedReason (freeze cause)
+ * @returns The winning rule + its origin, or null when the policy is off or no
+ *          legal entry exists — "no entry" means the caller escalates to the
+ *          abort step of the provider chain (requirement 5.3 step 4).
+ */
+export function resolveRule(
+  meta: SessionMeta,
+  config: PipelineConfig,
+  reason: string,
+): { rule: DecisionPolicyRule; origin: "stage" | "global" } | null {
+  if (!isDecisionPolicyEnabled(config)) return null;
+  const policy = config.decisionPolicy;
+  if (!policy) return null;
+
+  const stageByReason = policy.stages?.[meta.currentStage]?.byReason;
+  const candidates: Array<
+    { rule: DecisionPolicyRule | undefined; origin: "stage" | "global" }
+  > = [
+    { rule: stageByReason?.[reason], origin: "stage" },
+    { rule: stageByReason?.[POLICY_WILDCARD_REASON], origin: "stage" },
+    { rule: policy.byReason?.[reason], origin: "global" },
+    { rule: policy.byReason?.[POLICY_WILDCARD_REASON], origin: "global" },
+  ];
+
+  const allowed = allowedDecisions(reason);
+  for (const candidate of candidates) {
+    if (candidate.rule && allowed.has(candidate.rule.decision)) {
+      return { rule: candidate.rule, origin: candidate.origin };
+    }
+  }
+  return null;
 }

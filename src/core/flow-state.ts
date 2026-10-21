@@ -18,7 +18,7 @@ import { safeWriteAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { effectiveMax, deriveReworkLoopGate, remainingRoundsOf } from "../utils/stage-visit";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
-import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER } from "../constants";
+import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER, DEFAULT_DECISION_WAIT_TIMEOUT_MS } from "../constants";
 import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
@@ -38,6 +38,7 @@ import {
   markInputUnavailable,
   isInputUnavailable,
   markReasonChangeAudited,
+  clearDecisionDeadline,
 } from "./decision-menu-runtime";
 import type {
   EnsureDecisionMenuOpts,
@@ -46,6 +47,11 @@ import type {
   DecisionMenuCapabilities,
   DecisionMenuRuntimeDeps,
 } from "./decision-menu-runtime";
+// 210 Phase 1: decision-provider chain (I3) — policy resolution lives in the
+// decision-policy module; arithmetic-free type-only import for ctx shapes.
+import { isDecisionPolicyEnabled } from "./decision-policy/policy-config";
+import { tryApplyPolicy } from "./decision-policy/policy-provider";
+import type { DecisionSource } from "../types";
 import type { PromptDecisionOutcome as RuntimePromptDecisionOutcome } from "./decision-menu-runtime";
 
 // 208: PromptDecisionOutcome moved down into decision-menu-runtime (Design J4);
@@ -174,6 +180,22 @@ export function getFlowState(meta: SessionMeta): FlowState {
 export function isFrozen(meta: SessionMeta): boolean {
   const fs = getFlowState(meta);
   return fs === "blocked" || fs === "aborted" || meta.currentStage === "awaiting_human";
+}
+
+/**
+ * 210 Phase 1: whether this meta is still a FROZEN DECISION POINT with an
+ * unpaid decision debt — `blocked`, or the legacy `awaiting_human` freeze
+ * point — and has NOT already been aborted.
+ *
+ * Shared by the B-2 stale-selection guard (`presentDecisionMenuCore`) and the
+ * decision-wait deadline convergence (`buildDeps.onDecisionDeadline`) so the
+ * two never diverge. Note `terminated === true` maps to `blocked` through
+ * {@link getFlowState}, so legacy frozen metas stay compatible.
+ */
+function isDecisionPending(meta: SessionMeta): boolean {
+  const flowState = getFlowState(meta);
+  if (flowState === "aborted") return false;
+  return flowState === "blocked" || meta.currentStage === "awaiting_human";
 }
 
 // ─── buildDecisionMenu ──────────────────────────────────────────────────────
@@ -307,6 +329,16 @@ export async function executeDecision(
     onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
     /** Phase 5 (195): Budget value for set_budget decision (new maxLoopCycles absolute value) */
     budgetValue?: number;
+    /**
+     * 210 Phase 1 (I4): who supplied this decision ("human" default — audit
+     * field written only when explicitly provided, i.e. "policy").
+     */
+    decisionSource?: DecisionSource;
+    /**
+     * 210 Phase 1 (I4): trigger channel ("timeout" | "no_ui" | menu source);
+     * written to `pipeline_decision` only when provided.
+     */
+    trigger?: string;
   },
 ): Promise<{ success: boolean; message: string }> {
   const fromStage = meta.currentStage;
@@ -398,7 +430,13 @@ export async function executeDecision(
         toStage,
         reason: meta.blockedReason ?? "",
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
+
+      // 210 Phase 1 (B-3): resume resolved the frozen state — the pending
+      // decision-wait deadline must never fire the policy/abort convergence.
+      clearDecisionDeadline(meta.pipelineId);
 
       return { success: true, message: `Pipeline resumed at stage "${toStage}".` };
     }
@@ -451,6 +489,8 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
       // Phase 4 (169) W3: When skip targets completed, trigger terminal compaction.
@@ -517,6 +557,8 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
       return { success: true, message: `Rolled back from "${prevStage}" to "${toStage}".` };
@@ -555,6 +597,8 @@ export async function executeDecision(
         newPipelineId,
         reason: meta.blockedReason ?? "",
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       }, undefined, newPipelineId);
 
       // ─── Phase 0 (173) C1: restart rebind + stale timer cleanup ──────────
@@ -571,6 +615,9 @@ export async function executeDecision(
       // every tool call is blocked. Failure to clear the timer caused orphaned
       // retries to keep firing against the old pipelineId (V7).
       clearDecisionTimer(oldPipelineId);
+      // 210 Phase 1: also drop the superseded pipeline's decision deadline —
+      // the old chain must never fire the policy/abort convergence again.
+      clearDecisionDeadline(oldPipelineId);
       // FlowStateCtx._ctx is a minimal TerminalCompactCtx subset (no sessionManager
       // typed); at runtime, when invoked from the plugin hooks, it IS the full
       // RuntimeCtx ExtensionContext which carries sessionManager. Mirror the
@@ -619,7 +666,12 @@ export async function executeDecision(
         nextAction: `run /pipeline-start ${abortDocHint} to resume at "${fromStage}"`,
         // Phase 3 (173) §3.3-④: unified source field across all executeDecision branches
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
+
+      // 210 Phase 1: abort resolved the chain — drop the decision deadline.
+      clearDecisionDeadline(meta.pipelineId);
 
       return { success: true, message: "Pipeline aborted. Use /pipeline-start to begin a new run." };
     }
@@ -782,6 +834,8 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         basis,
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
       // If target is completed, trigger terminal compaction
@@ -854,6 +908,8 @@ export async function executeDecision(
         budgetValue: String(budgetValue),
         previousMaxLoopCycles: String(meta.maxLoopCycles ?? 0),
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
       return { success: true, message: `Budget extended to ${budgetValue} cycles.` };
@@ -877,6 +933,8 @@ export async function executeDecision(
           stage: meta.currentStage,
           reason: "No valid rework loop gate found in stageVisitOrder",
           ...(opts?.source ? { source: opts.source } : {}),
+          ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+          ...(opts?.trigger ? { trigger: opts.trigger } : {}),
         });
         return { success: false, message: "Failed to locate the starting point of previous rework" };
       }
@@ -906,6 +964,8 @@ export async function executeDecision(
         reason: meta.blockedReason ?? "",
         rewindGate: gate,
         ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
 
       return { success: true, message: `Rewound from "${prevStage}" to rework loop gate "${gate}".` };
@@ -1145,6 +1205,10 @@ export async function markPipelineAborted(
   }
 
   await safeWriteAuditLog("pipeline_session_aborted", auditFields);
+
+  // 210 Phase 1: the chain converged to abort — a pending decision-wait
+  // deadline (policy enabled) must never fire against an aborted pipeline.
+  if (meta?.pipelineId) clearDecisionDeadline(meta.pipelineId);
 
   // Phase 1 (171) C16: notify user on real abort transition (not skip/guard)
   const notifyText = formatAbortedNotifyText(stage, reason, meta?.requirementDoc);
@@ -1607,8 +1671,26 @@ async function presentDecisionMenuCore(
 
       const decision = labelToDecision(selection);
       if (decision) {
+        // 210 Phase 1 (B-2 stale-state guard): re-read the authoritative meta
+        // BEFORE applying any human option. If the pipelineId changed
+        // (restart race) or the pipeline is no longer a frozen decision point
+        // (policy applied / aborted while the dialog was open), bail out with
+        // ZERO side effects — no updateMeta, no spawn, no marker.
+        const guardMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+        const guardStale =
+          guardMeta.pipelineId !== meta.pipelineId || !isDecisionPending(guardMeta);
+        if (guardStale) {
+          await safeWriteAuditLog("decision_menu_stale_selection", {
+            pipelineId: meta.pipelineId,
+            stage: meta.currentStage,
+            decision,
+            failureReason: "stale_state",
+          }, "warn");
+          return { outcome: "no-menu", applied: false, unavailableReason: "stale_pipeline", failureReason: "stale_state" };
+        }
+
         // Re-read meta after potential UI delay
-        const freshMeta = ctx.session.getMeta() ?? meta;
+        const freshMeta = guardMeta;
 
         // Phase 3 (173) C9: choose_stage → secondary menu (via shared helper)
         if (decision === "choose_stage") {
@@ -1826,6 +1908,35 @@ function buildDeps(
     isFrozen,
     present: (live, presentOpts, attempt) =>
       promptDecisionMenuDetailed(ctx, live, config, presentOpts, attempt),
+    // 210 Phase 1: decision-wait deadline convergence (B-3).
+    // Triple guards: meta presence, pipelineId consistency, still a frozen
+    // decision point (aborted counts as resolved — see isDecisionPending).
+    onDecisionDeadline: async (pipelineId) => {
+      const fresh = ctx.session.getMeta() as SessionMeta | undefined;
+      if (!fresh || fresh.pipelineId !== pipelineId) return;
+      if (!isDecisionPending(fresh)) return; // already resolved/aborted
+      const reason = fresh.blockedReason ?? "unknown";
+      try {
+        const result = await tryApplyPolicy(ctx, fresh, config, reason, "timeout");
+        if (result.applied) return;
+        // Miss (no rule) or B-3 rejection: single-shot convergence to abort.
+        await markPipelineAborted(
+          ctx,
+          result.rejected ? "policy_decision_rejected" : "decision_unresolved_timeout",
+          { config },
+        );
+      } catch (err) {
+        // Fail-open with error audit: a broken provider closure must never
+        // leave the pipeline frozen-but-unobserved.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await safeWriteAuditLog("decision_deadline_error", {
+          pipelineId,
+          stage: fresh.currentStage,
+          reason,
+          error: errMsg,
+        }, "error");
+      }
+    },
   };
 }
 
@@ -1940,7 +2051,97 @@ function writePipelineBlockedAudit(
     loopCycleCount: String(meta.loopCycleCount ?? 0),
     maxLoopCycles: String(effectiveMax(meta, config)),
     remainingRounds: String(remainingRoundsOf(meta, config)),
+    ...buildDecisionPolicyAuditFields(config),
   }, "warn");
+}
+
+/**
+ * 210 Phase 1 (requirement 5.3 audit): visibility fields for the
+ * decision-provider chain. Written ONLY when the policy is enabled —
+ * unconfigured projects keep the baseline audit shape verbatim (约束 4).
+ */
+function buildDecisionPolicyAuditFields(config: PipelineConfig): Record<string, string> {
+  if (!isDecisionPolicyEnabled(config)) return {};
+  return {
+    decisionWaitMs: String(
+      config.decisionPolicy?.decisionWaitTimeoutMs ?? DEFAULT_DECISION_WAIT_TIMEOUT_MS,
+    ),
+    policyEnabled: String(isDecisionPolicyEnabled(config)),
+  };
+}
+
+// ─── 210 Phase 1: decision-provider chain entry (requestDecision) ───────────
+
+/**
+ * Options for {@link requestDecision}; mirrors the freezeAndPrompt extras.
+ */
+interface RequestDecisionOpts {
+  /** UI override for external callers (same as freezeAndPrompt). */
+  ui?: FlowStateCtx["ui"];
+  /** Phase 0 (182): forwarded for the choose_stage aftermath. */
+  onStageChanged?: (freshMeta: SessionMeta) => Promise<void>;
+  /** Phase 5 (195): set_budget value forwarded to the menu. */
+  budgetValue?: number;
+}
+
+/**
+ * 210 Phase 1:单一 decision-provider chain entry — human first, then policy,
+ * then abort (requirement 5.3, I2).
+ *
+ * - Policy disabled (`B-1` gate): verbatim passthrough to `ensureDecisionMenu`
+ *   — the chain and the decision-wait timer exist ONLY when decisionPolicy
+ *   is enabled; watchdog-only projects keep baseline freeze semantics.
+ * - Policy enabled + no `ui.select` (CI/headless): skip the human slot, apply
+ *   the policy IMMEDIATELY (no timers); no rule → abort `decision_provider_absent`.
+ * - Policy enabled + UI: present the menu to the human and arm the
+ *   decision-wait deadline; on deadline expiry the injected
+ *   `onDecisionDeadline` closure runs the policy → abort convergence.
+ *
+ * Child sessions never reach this function — `freezeAndPrompt` routes the
+ * child branch to `armChildEscalation` before calling it.
+ */
+export async function requestDecision(
+  ctx: FlowStateCtx,
+  meta: SessionMeta,
+  config: PipelineConfig,
+  reason: string,
+  opts?: RequestDecisionOpts,
+): Promise<void> {
+  // B-1 hard gate: no policy → zero new behavior.
+  if (!isDecisionPolicyEnabled(config)) {
+    await ensureDecisionMenu(ctx, meta, config, {
+      source: "freeze",
+      onStageChanged: opts?.onStageChanged,
+      ...(opts?.budgetValue !== undefined ? { budgetValue: opts.budgetValue } : {}),
+    });
+    return;
+  }
+
+  const menuCtx: FlowStateCtx = opts?.ui ? { ...ctx, ui: opts.ui } : ctx;
+
+  // No-UI branch (CI/headless): no waiting object exists — never arm timers.
+  if (typeof menuCtx.ui?.select !== "function") {
+    const policyResult = await tryApplyPolicy(menuCtx, meta, config, reason, "no_ui");
+    if (policyResult.applied) return;
+    if (policyResult.rejected) {
+      // B-3: single-shot abort after a guard-rejected policy decision.
+      await markPipelineAborted(menuCtx, "policy_decision_rejected", { config });
+      return;
+    }
+    // No matching rule: the "provider occupied" slot resolved absent.
+    await markPipelineAborted(menuCtx, "decision_provider_absent", { config });
+    return;
+  }
+
+  // Human slot first (Q12=A): present the menu; the deadline arms inside
+  // runDecisionMenu and converges via the injected onDecisionDeadline closure.
+  await ensureDecisionMenu(menuCtx, meta, config, {
+    source: "freeze",
+    onStageChanged: opts?.onStageChanged,
+    decisionDeadlineMs:
+      config.decisionPolicy?.decisionWaitTimeoutMs ?? DEFAULT_DECISION_WAIT_TIMEOUT_MS,
+    ...(opts?.budgetValue !== undefined ? { budgetValue: opts.budgetValue } : {}),
+  });
 }
 
 /**
@@ -2016,6 +2217,9 @@ export async function freezeAndPrompt(
       stage: liveMeta.currentStage,
       previousReason,
       reason,
+      // 210 Phase 1 (requirement 5.3): decision-provider visibility on BOTH
+      // freeze audits; empty when the policy is not configured.
+      ...buildDecisionPolicyAuditFields(config),
     }, "warn");
     // Single write point (J6): tell the scheduler that this transition is
     // already recorded, so the next presentation does not duplicate it.
@@ -2027,8 +2231,9 @@ export async function freezeAndPrompt(
     }
     // In-flight menu: runDecisionMenu joins it (no second select) and the new
     // reason takes effect on the next attempt/backoff re-read of the meta.
-    await ensureDecisionMenu(menuCtx, { ...liveMeta, blockedReason: reason }, config, {
-      source: "freeze",
+    // 210 Phase 1: the owner entry goes through the decision-provider chain.
+    await requestDecision(menuCtx, { ...liveMeta, blockedReason: reason }, config, reason, {
+      ui: opts?.ui,
       onStageChanged: opts?.onStageChanged,
       budgetValue: opts?.budgetValue,
     });
@@ -2060,12 +2265,14 @@ export async function freezeAndPrompt(
     return;
   }
 
-  // 208 Phase 2: delegate to ensureDecisionMenu for the UI interaction.
-  // Do NOT pre-schedule a local timer — the single-flight scheduler owns the
-  // timer mutex and backoff retries; an "interrupted" first prompt (streaming
-  // dismiss < 1500ms) is re-armed there instead of via scheduleDecisionRetry.
-  await ensureDecisionMenu(menuCtx, frozenMeta, config, {
-    source: "freeze",
+  // 208 Phase 2: delegate to the owner decision entry for the UI interaction.
+  // 210 Phase 1: this now routes through requestDecision — the decision-provider
+  // chain (human → policy → abort). Do NOT pre-schedule a local timer — the
+  // single-flight scheduler owns the timer mutex and backoff retries; an
+  // "interrupted" first prompt (streaming dismiss < 1500ms) is re-armed there
+  // instead of via scheduleDecisionRetry.
+  await requestDecision(menuCtx, frozenMeta, config, reason, {
+    ui: opts?.ui,
     onStageChanged: opts?.onStageChanged,
     budgetValue: opts?.budgetValue,
   });

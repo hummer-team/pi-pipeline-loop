@@ -86,6 +86,12 @@ export interface EnsureDecisionMenuOpts {
    * return the message themselves, keeping exactly one user-facing channel.
    */
   notifyOnCancel?: boolean;
+  /**
+   * 210 Phase 1: human decision-wait deadline in ms (armed only when the
+   * decision policy is enabled; computed by flow-state.requestDecision from
+   * `config.decisionPolicy.decisionWaitTimeoutMs`). Undefined → no deadline.
+   */
+  decisionDeadlineMs?: number;
 }
 
 /** Result of an ensureDecisionMenu call (added by the Phase 1 scheduler). */
@@ -103,6 +109,13 @@ export interface DecisionMenuRuntimeDeps {
   readMeta: () => SessionMeta | undefined;
   isFrozen: (meta: SessionMeta) => boolean;
   present: (meta: SessionMeta, opts: EnsureDecisionMenuOpts, attempt: number) => Promise<MenuAttemptDetail>;
+  /**
+   * 210 Phase 1: fired when the human decision-wait deadline expires while the
+   * pipeline is still blocked. The consumer owns ALL guards (fresh meta
+   * re-read, pipelineId consistency, flow-state check) and the
+   * policy → abort convergence.
+   */
+  onDecisionDeadline?: (pipelineId: string) => Promise<void>;
 }
 
 // ─── Input capability registry (Phase 0 task 1) ─────────────────────────────
@@ -148,6 +161,16 @@ interface PipelineMenuRuntime {
   inflight?: { promise: Promise<EnsureDecisionMenuResult>; source: string };
   /** Pending backoff timer (never coexists with a second timer). */
   timer?: ReturnType<typeof setTimeout>;
+  /** 210 Phase 1: human decision-wait deadline timer (independent of `timer`). */
+  decisionDeadline?: ReturnType<typeof setTimeout>;
+  /** 210 Phase 2: stage watchdog wall-clock timer (independent field). */
+  stageWall?: ReturnType<typeof setTimeout>;
+  /** 210 Phase 2: stage no-progress idle timer (independent field). */
+  stageIdle?: ReturnType<typeof setTimeout>;
+  /** 210 Phase 2: last progress timestamp (ms) for the idle watchdog. */
+  lastProgressAt?: number;
+  /** 210 Phase 2: `${pipelineId}:${stageStartTime}` idempotent arm key. */
+  stageKey?: string;
   /** Options used by the retry loop (source/budgetValue/directStageSelect). */
   storedOpts?: EnsureDecisionMenuOpts;
   /** First non-empty aftermath callback among all joined callers (J2). */
@@ -219,9 +242,69 @@ export function markReasonChangeAudited(
  */
 function pruneRuntime(pipelineId: string, rt: PipelineMenuRuntime): void {
   if (menuRuntime.get(pipelineId) !== rt) return;
-  if (!rt.timer && !rt.inflight) {
+  // 210 Phase 1/2: deadline + watchdog timers are part of the same table —
+  // keep the entry reachable while any timer is still armed.
+  if (!rt.timer && !rt.inflight && !rt.decisionDeadline && !rt.stageWall && !rt.stageIdle) {
     menuRuntime.delete(pipelineId);
   }
+}
+
+// ─── 210 Phase 1: decision-wait deadline timers ──────────────────────────────
+
+/**
+ * Arms the human decision-wait deadline for a pipeline (state audit event
+ * `decision_deadline_armed`). The fire callback invokes
+ * `deps.onDecisionDeadline` — the consumer owns all staleness guards and the
+ * policy → abort convergence. Independent from the retry `timer` field: the
+ * two never clear each other.
+ */
+export function armDecisionDeadline(
+  deps: DecisionMenuRuntimeDeps,
+  pipelineId: string,
+  delayMs: number,
+): void {
+  const rt = getOrCreateRuntime(pipelineId);
+  if (rt.disposed) return;
+  // Idempotent: the first armed deadline for a chain wins; later callers of
+  // the same chain never reset the human wait window.
+  if (rt.decisionDeadline) return;
+  void safeWriteAuditLog("decision_deadline_armed", {
+    pipelineId,
+    delayMs: String(delayMs),
+  });
+  rt.decisionDeadline = setTimeout(() => {
+    rt.decisionDeadline = undefined;
+    void safeWriteAuditLog("decision_deadline_expired", {
+      pipelineId,
+      delayMs: String(delayMs),
+    });
+    // Disposal guard: shutdown cleared the table — never call out.
+    if (rt.disposed) {
+      pruneRuntime(pipelineId, rt);
+      return;
+    }
+    // Guard + action live in the injected closure (flow-state buildDeps).
+    void deps.onDecisionDeadline?.(pipelineId);
+    pruneRuntime(pipelineId, rt);
+  }, delayMs);
+}
+
+/**
+ * Clears the decision-wait deadline for a pipeline without touching the
+ * retry timer (independent fields, mutual non-interference).
+ */
+export function clearDecisionDeadline(pipelineId: string): void {
+  const rt = menuRuntime.get(pipelineId);
+  if (rt?.decisionDeadline) {
+    clearTimeout(rt.decisionDeadline);
+    rt.decisionDeadline = undefined;
+    pruneRuntime(pipelineId, rt);
+  }
+}
+
+/** Test-only helper: whether a decision deadline is armed for the pipeline. @internal */
+export function __hasDecisionDeadline(pipelineId: string): boolean {
+  return menuRuntime.get(pipelineId)?.decisionDeadline !== undefined;
 }
 
 /**
@@ -362,6 +445,12 @@ async function attemptAndMaybeRetry(
     }
   }
   rt.lastPresentedReason = live.blockedReason;
+  // 210 Phase 1 (B-3): a HUMAN decision that actually changed the state
+  // resolves the provider chain — the pending deadline must never fire the
+  // policy/abort convergence for an already-running pipeline.
+  if (detail.applied) {
+    clearDecisionDeadline(pipelineId);
+  }
   const retryable = detail.retryable
     ?? (detail.outcome === "interrupted"
       || (detail.outcome === "decided" && !detail.applied)); // F2; input_error sets retryable:false explicitly (J3)
@@ -435,6 +524,12 @@ export async function runDecisionMenu(
   }
 
   adoptCallback(pipelineId, rt, opts.onStageChanged, source, false);
+  // 210 Phase 1: arm the decision-wait deadline before the first presentation
+  // (only when the caller computed one — i.e. the policy is enabled). A later
+  // joined/superseding call must NOT reset the human wait window.
+  if (opts.decisionDeadlineMs !== undefined && !rt.decisionDeadline) {
+    armDecisionDeadline(deps, pipelineId, opts.decisionDeadlineMs);
+  }
   // NOTE: `onStageChanged` is a live getter — a joiner adopting the FIRST
   // non-empty callback (J2) must be visible to the already-running attempt.
   rt.storedOpts = { ...opts, get onStageChanged() { return rt.onStageChanged; } };
@@ -498,6 +593,19 @@ export function clearAllDecisionTimers(): void {
     if (rt.timer) {
       clearTimeout(rt.timer);
       rt.timer = undefined;
+    }
+    // 210 Phase 1: deadline (and Phase 2 watchdog) timers share the registry.
+    if (rt.decisionDeadline) {
+      clearTimeout(rt.decisionDeadline);
+      rt.decisionDeadline = undefined;
+    }
+    if (rt.stageWall) {
+      clearTimeout(rt.stageWall);
+      rt.stageWall = undefined;
+    }
+    if (rt.stageIdle) {
+      clearTimeout(rt.stageIdle);
+      rt.stageIdle = undefined;
     }
   }
   menuRuntime.clear();
