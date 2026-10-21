@@ -24,6 +24,9 @@ import { verifyRequiredGit } from "./verifiers/git-verifier";
 import { verifyRequiredKeywords } from "./verifiers/keyword-verifier";
 import { evaluateGroups } from "./verifiers/group-verifier";
 import { safeWriteAuditLog } from "../utils/auditLog";
+// 210 Phase 2: idle-clock renewal at verification start (requirement 5.4 whitelist).
+// `stage-watchdog` does not import this module, so the edge stays one-directional.
+import { touchStageProgress } from "./stage-watchdog";
 import { parseFrontmatter, type VerifyRules, type VerifyGroupRuleNode } from "./verify-frontmatter";
 import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
 import {
@@ -452,6 +455,9 @@ export async function runVerification(
   assistantMessages: string[],
   options?: RunVerificationOptions,
 ): Promise<VerificationRunResult> {
+  // 210 Phase 2 (requirement 5.4 whitelist): starting a verification run is a
+  // stage progress event — renews the idle clock, never the wall clock.
+  touchStageProgress(meta.pipelineId, "verify");
   // 194 Phase 1: the context is derived ONCE and the snapshot set captures
   // every consumed deliverable exactly once (review: report; update: plan +
   // consumed report + standalone receipt). The same bytes are shared with the

@@ -32,6 +32,11 @@ import type { EscalationPayload } from "../utils/escalation-bus";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "./meta-reset";
 import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
 import { probeAgentState } from "../utils/subagents-introspect";
+import { isFrozenMeta } from "./dormancy";
+// 210 Phase 2: opt-in dual stage watchdog (requirement 5.4). This module is the
+// ONLY static consumer of `stage-watchdog`; the reverse direction (freeze
+// hand-off) is a dynamic import inside that module, so no value cycle exists.
+import { armStageWatchdog, clearStageWatchdog, touchStageProgress } from "./stage-watchdog";
 // 208: explicit imports create LOCAL bindings — `export { … } from "…"` alone
 // would not make these names visible inside this module (TS2304).
 import {
@@ -176,10 +181,13 @@ export function getFlowState(meta: SessionMeta): FlowState {
  * - flowState === "blocked"
  * - flowState === "aborted"
  * - currentStage === "awaiting_human" (legacy freeze point)
+ *
+ * 210 Phase 2: the predicate moved to `dormancy.isFrozenMeta` (single source of
+ * truth) so `stage-watchdog` can test frozen-ness without importing this module
+ * backwards. Behaviour is identical, including the legacy `terminated` mapping.
  */
 export function isFrozen(meta: SessionMeta): boolean {
-  const fs = getFlowState(meta);
-  return fs === "blocked" || fs === "aborted" || meta.currentStage === "awaiting_human";
+  return isFrozenMeta(meta);
 }
 
 /**
@@ -437,6 +445,9 @@ export async function executeDecision(
       // 210 Phase 1 (B-3): resume resolved the frozen state — the pending
       // decision-wait deadline must never fire the policy/abort convergence.
       clearDecisionDeadline(meta.pipelineId);
+      // 210 Phase 2: the stage is working again — re-arm the clocks (idempotent
+      // per stage visit; `watchdog` not enabled → clears and returns).
+      armStageWatchdog(ctx, config);
 
       return { success: true, message: `Pipeline resumed at stage "${toStage}".` };
     }
@@ -504,6 +515,11 @@ export async function executeDecision(
         );
       }
 
+      // 210 Phase 2: forward exit — the new stage visit is re-armed (the clock
+      // key changes with `stageStartTime`, so the old pair is replaced).
+      // Targeting `completed` leaves the pipeline dormant → clears instead.
+      armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
+
       return { success: true, message: `Skipped "${prevStage}", advanced to "${toStage}".` };
     }
 
@@ -560,6 +576,9 @@ export async function executeDecision(
         ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
+
+      // 210 Phase 2: upstream exit — re-arm for the target stage visit.
+      armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
 
       return { success: true, message: `Rolled back from "${prevStage}" to "${toStage}".` };
     }
@@ -618,6 +637,8 @@ export async function executeDecision(
       // 210 Phase 1: also drop the superseded pipeline's decision deadline —
       // the old chain must never fire the policy/abort convergence again.
       clearDecisionDeadline(oldPipelineId);
+      // 210 Phase 2: same for the superseded pipeline's stage clocks.
+      clearStageWatchdog(oldPipelineId);
       // FlowStateCtx._ctx is a minimal TerminalCompactCtx subset (no sessionManager
       // typed); at runtime, when invoked from the plugin hooks, it IS the full
       // RuntimeCtx ExtensionContext which carries sessionManager. Mirror the
@@ -629,6 +650,10 @@ export async function executeDecision(
         await registerSession(config, sessionFile, newPipelineId);
       }
       // ─── end Phase 0 (173) C1 ────────────────────────────────────────────
+
+      // 210 Phase 2: the NEW period starts at `clarify` — arm its clocks with
+      // the fresh pipelineId/stageStartTime identity (no-op when disabled).
+      armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
 
       // Phase 3 (173) §3.3-④: restart result message includes old pipeline id
       // and hint that previous progress is not inherited (use Choose stage for resume).
@@ -672,6 +697,8 @@ export async function executeDecision(
 
       // 210 Phase 1: abort resolved the chain — drop the decision deadline.
       clearDecisionDeadline(meta.pipelineId);
+      // 210 Phase 2: a terminal abort must not leave a stage clock running.
+      clearStageWatchdog(meta.pipelineId);
 
       return { success: true, message: "Pipeline aborted. Use /pipeline-start to begin a new run." };
     }
@@ -870,6 +897,9 @@ export async function executeDecision(
         }
       }
 
+      // 210 Phase 2: manual stage selection is a new visit — re-arm the clocks.
+      armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
+
       return { success: true, message: `Pipeline resumed at stage "${target}" (chosen from "${frozenStage}").` };
     }
 
@@ -911,6 +941,10 @@ export async function executeDecision(
         ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
+
+      // 210 Phase 2: the budget extension unfroze the stage — re-arm the clocks
+      // (a spent ceiling gets a fresh window, see `armStageWatchdog`).
+      armStageWatchdog(ctx, config);
 
       return { success: true, message: `Budget extended to ${budgetValue} cycles.` };
     }
@@ -967,6 +1001,11 @@ export async function executeDecision(
         ...(opts?.decisionSource ? { decisionSource: opts.decisionSource } : {}),
         ...(opts?.trigger ? { trigger: opts.trigger } : {}),
       });
+
+      // 210 Phase 2: rewind unfreezes into the rework gate — re-arm the clocks.
+      // `rewind_last_round` keeps `stageStartTime`, so an already-spent ceiling
+      // is given a fresh window by the grace rule of `armStageWatchdog`.
+      armStageWatchdog(ctx, config);
 
       return { success: true, message: `Rewound from "${prevStage}" to rework loop gate "${gate}".` };
     }
@@ -1209,6 +1248,9 @@ export async function markPipelineAborted(
   // 210 Phase 1: the chain converged to abort — a pending decision-wait
   // deadline (policy enabled) must never fire against an aborted pipeline.
   if (meta?.pipelineId) clearDecisionDeadline(meta.pipelineId);
+  // 210 Phase 2: terminal state — a stage clock must never fire after abort
+  // (the guard in the timeout handler would drop it anyway; clear for hygiene).
+  clearStageWatchdog(meta?.pipelineId);
 
   // Phase 1 (171) C16: notify user on real abort transition (not skip/guard)
   const notifyText = formatAbortedNotifyText(stage, reason, meta?.requirementDoc);
@@ -1632,6 +1674,11 @@ async function presentDecisionMenuCore(
         menuSize: String(menu.length),
         menuKind: "primary",
       });
+      // 210 Phase 2 (requirement 5.4 whitelist): presenting the menu is itself a
+      // stage event. No-op while the clocks are not armed (they are cleared by
+      // the fired handler / a frozen re-arm), so a disabled watchdog pays
+      // nothing beyond one map lookup.
+      touchStageProgress(meta.pipelineId, "menu");
       const attemptAt = Date.now();
       const selection = await ui.select(
         `Pipeline blocked: ${reason}. Choose an action:`,
@@ -1668,6 +1715,10 @@ async function presentDecisionMenuCore(
         }
         return { outcome: "cancelled", applied: false };
       }
+
+      // 210 Phase 2: a human answer is progress too — the arm hooks of the
+      // resulting decision branch own the clocks afterwards.
+      touchStageProgress(meta.pipelineId, "menu");
 
       const decision = labelToDecision(selection);
       if (decision) {

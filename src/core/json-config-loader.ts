@@ -31,6 +31,8 @@ import {
   DEFAULT_CONFIRM_OVERFLOW,
   DEFAULT_SPAWN_WAIT_TIMEOUT_MS,
   DEFAULT_MAX_LOOP_CYCLES,
+  DEFAULT_STAGE_IDLE_TIMEOUT_MS,
+  DEFAULT_STAGE_TIMEOUT_MS,
   DEFAULT_DOCS_FALLBACK_DIRS,
   DEFAULT_ARCHIVE_DEST,
   STAGE_TYPE_TOOL_DEFAULTS,
@@ -61,6 +63,8 @@ const KNOWN_POLICY_REASONS = new Set<string>([
   "dismiss_overflow",
   "loop_halt_overflow",
   "loop_overflow",
+  // 210 Phase 2: the reason written by the stage watchdog's freeze (5.4).
+  "stage_timeout",
   "transient_retry_overflow",
   "verify_attempt_overflow",
   "verify_config_error",
@@ -799,7 +803,8 @@ function parseRequireCommitProofEntry(
  * - Returns undefined when the block itself is absent/invalid, so
  *   unconfigured projects stay baseline-equivalent.
  */
-function parseDecisionPolicyConfig(raw: unknown): DecisionPolicyConfig | undefined {  if (raw === undefined || raw === null) return undefined;
+function parseDecisionPolicyConfig(raw: unknown): DecisionPolicyConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "object" || Array.isArray(raw)) {
     console.warn(
       `[pi-pipeline] Invalid decisionPolicy config — expected object, got ${typeof raw}, ignoring`,
@@ -909,6 +914,45 @@ function parseWatchdogConfig(raw: unknown): WatchdogConfig | undefined {
   }
 
   return result;
+}
+
+/**
+ * 210 Phase 2: normalizes the watchdog threshold pair against the documented
+ * defaults (plan Phase 2 task 5). The idle window must stay strictly below the
+ * absolute stage ceiling, otherwise the "no progress" clock can never fire
+ * before the wall clock and the pair loses its meaning.
+ *
+ * - BOTH thresholds explicitly configured and conflicting → warn and drop both
+ *   overrides, so the consistent default pair applies.
+ * - Only one side configured (the other comes from `constants.ts`) → warn and
+ *   keep the explicit ceiling, clamping the derived idle window to it. The
+ *   runtime clamp in `stage-watchdog` stays as defence in depth for
+ *   hand-constructed configs that never pass through the loader.
+ *
+ * Returns the input unchanged when the watchdog block is absent (an
+ * unconfigured project must stay byte-for-byte baseline, constraint 4).
+ */
+function normalizeWatchdogThresholds(watchdog: WatchdogConfig | undefined): WatchdogConfig | undefined {
+  if (!watchdog) return undefined;
+  const wallMs = watchdog.stageTimeoutMs ?? DEFAULT_STAGE_TIMEOUT_MS;
+  const idleMs = watchdog.stageIdleTimeoutMs ?? DEFAULT_STAGE_IDLE_TIMEOUT_MS;
+  if (idleMs < wallMs) return watchdog;
+
+  const bothExplicit = watchdog.stageTimeoutMs !== undefined && watchdog.stageIdleTimeoutMs !== undefined;
+  if (bothExplicit) {
+    console.warn(
+      `[pi-pipeline] watchdog.stageIdleTimeoutMs (${String(idleMs)}) must be < stageTimeoutMs (${String(wallMs)}) — falling back to defaults`,
+    );
+    const normalized: WatchdogConfig = { ...watchdog };
+    delete normalized.stageTimeoutMs;
+    delete normalized.stageIdleTimeoutMs;
+    return normalized;
+  }
+
+  console.warn(
+    `[pi-pipeline] watchdog idle window (${String(idleMs)}ms) is not below the stage ceiling (${String(wallMs)}ms) — idle clock clamped to the ceiling`,
+  );
+  return { ...watchdog, stageTimeoutMs: wallMs, stageIdleTimeoutMs: wallMs };
 }
 
 /**
@@ -1131,7 +1175,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
   if (decisionPolicyConfig) {
     validateDecisionPolicy(decisionPolicyConfig);
   }
-  const watchdogConfig = parseWatchdogConfig(json.watchdog);
+  const watchdogConfig = normalizeWatchdogThresholds(parseWatchdogConfig(json.watchdog));
 
   // Post-process: reconnect nextStage chains around disabled stages
   if (disabledStages.size > 0) {

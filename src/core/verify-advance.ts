@@ -13,6 +13,8 @@ import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } fr
 import { writeAuditLog, writeStageAudit, safeWriteAuditLog } from "../utils/auditLog";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
+// 210 Phase 2: re-arm the stage clocks once a transition is committed (5.4).
+import { armStageWatchdog } from "./stage-watchdog";
 // 193 Phase 0: report-domain failures carry the complete corrective template
 import { buildDesignReviewReportFeedback } from "./design-review/report-feedback";
 import { buildPlanDocFeedback } from "./plan-doc-feedback";
@@ -362,6 +364,12 @@ export async function applyVerifyPass(
     if (boundExit.status === "not-bound") {
       ctx.session.updateMeta(transitionPatch);
     }
+
+    // 210 Phase 2: the transition is COMMITTED (both the bound-strict and the
+    // not-bound path above), with `stageStartTime` rewritten — so the previous
+    // visit's pair is replaced by a fresh arm for the target stage. A
+    // `completed` / `awaiting_human` target is dormant/frozen → clears instead.
+    armStageWatchdog(ctx, ctx.config, { progressSource: "stage_advance" });
 
     // Phase 0 (186): clear all pendingSpawns when advancing to terminal completed stage.
     // Prevents stale pendingSpawns from blocking wakeOwnerOnChainTerminal.

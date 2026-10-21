@@ -42,6 +42,8 @@ import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
 import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
 import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "./dormancy";
+// 210 Phase 2: re-arm the stage clocks on a successful advance (requirement 5.4).
+import { armStageWatchdog, clearStageWatchdog } from "./stage-watchdog";
 import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
@@ -459,6 +461,11 @@ async function routeConfirmReject(
   if (boundExit.status === "not-bound") {
     ctx.session.updateMeta(rejectPatch);
   }
+
+  // 210 Phase 2: reject routing committed a NEW stage visit — re-arm the clocks
+  // so the target stage gets its own ceiling instead of inheriting the old pair
+  // (a stale pair would be dropped by the handler's `stageKey` guard anyway).
+  armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
 
   // Use custom audit event if provided (e.g. "review_auto_route_fix" to avoid double-writing)
   const auditEvent = opts?.auditEvent ?? "confirm_rejected";
@@ -1251,6 +1258,9 @@ export async function maybeHandleConfirmGate(
       }
       
       ui.notify(ctx, `Auto Review Plan authorised. Entering design-review stage.`);
+      // 210 Phase 2: the authorization commit switched to `design-review` (a new
+      // visit with a fresh `stageStartTime`) — re-arm the stage clocks.
+      armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
       return { result: "handled", action: "advanced", toStage: "design-review" };
     } catch (err) {
       ui.notify(ctx, `Auto Review Plan failed: ${(err as Error).message}`);
@@ -2023,6 +2033,8 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           loopCycleCount: String(freshMetaForAudit.loopCycleCount ?? 0),
           stageVisitOrder: (freshMetaForAudit.stageVisitOrder ?? []).join(","),
         });
+        // 210 Phase 2: `completed` is dormant — no stage clock may survive it.
+        clearStageWatchdog(freshMetaForAudit.pipelineId);
         return {
           success: true,
           message: resolvedTarget === null
@@ -2055,6 +2067,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         toStage: resolvedTarget,
         override: argNextStage ? "yes" : "no",
       });
+
+      // 210 Phase 2: the advance committed a NEW stage visit (`stageStartTime`
+      // was rewritten above) — the old pair is replaced by a fresh arm, and the
+      // spawned child's own events renew the idle clock from now on.
+      armStageWatchdog(ctx, config, { progressSource: "stage_advance" });
 
       ui.transition(ctx, currentStage, resolvedTarget);
 

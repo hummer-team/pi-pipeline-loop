@@ -97,6 +97,32 @@ export function isDormant(
 }
 
 /**
+ * 210 Phase 2: single source of truth for the FROZEN predicate.
+ *
+ * Inlined equivalent of `flow-state.isFrozen` (kept here so `stage-watchdog`
+ * can test frozen-ness WITHOUT a static import of `flow-state`, which would
+ * form a module cycle):
+ * - `flowState === "blocked"` / `flowState === "aborted"` → frozen
+ * - legacy meta (`flowState === undefined`) with `terminated === true` →
+ *   frozen, mirroring `flow-state.getFlowState`'s legacy mapping
+ * - `currentStage === "awaiting_human"` → the legacy freeze point
+ *
+ * An explicit `flowState` ALWAYS wins over the legacy `terminated` flag,
+ * exactly like `getFlowState`.
+ *
+ * @param meta - Current session metadata
+ * @returns true if the pipeline is frozen (tools blocked, decision pending)
+ */
+export function isFrozenMeta(meta: SessionMeta): boolean {
+  return (
+    meta.flowState === "blocked" ||
+    meta.flowState === "aborted" ||
+    (meta.flowState === undefined && meta.terminated === true) ||
+    meta.currentStage === "awaiting_human"
+  );
+}
+
+/**
  * Returns the host role string for audit purposes.
  * Convenience wrapper around detectSessionRole for consistent audit field naming.
  *

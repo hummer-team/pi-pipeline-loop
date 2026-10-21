@@ -14,6 +14,8 @@ import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
 import { isFrozen, getFlowState, formatFrozenReason, ensureDecisionMenu, formatAbortedNotifyText, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
 import { isDormant } from "./dormancy";
+// 210 Phase 2: stage watchdog sync on every settle (requirement 5.4 whitelist).
+import { armStageWatchdog, touchStageProgress } from "./stage-watchdog";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -93,6 +95,14 @@ export function createAgentSettled(
       // No agent_settled audit, no notify, no frozen block, no verify
       if (!rawMeta || isDormant(rawMeta)) return;
       const meta: SessionMeta = rawMeta;
+
+      // 210 Phase 2 (requirement 5.4 whitelist): a settle is stage progress, and
+      // it is the natural place to correct clock ownership. `armStageWatchdog`
+      // is idempotent per stage visit, and CLEARS instead of arming while the
+      // pipeline is dormant/frozen or `watchdog` is not enabled (constraint 4:
+      // zero timers for unconfigured projects).
+      touchStageProgress(meta.pipelineId, "settle");
+      armStageWatchdog(ctx, config);
 
       // 192 Phase 3 (K02/F05): the design-review coordinator delegation is NO
       // LONGER executed before the ordinary guards. It now runs AFTER the

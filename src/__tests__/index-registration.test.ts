@@ -6,6 +6,10 @@ import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { __peekFixExecutorCompletedHandler, setFixExecutorCompletedHandler } from "../utils/subagent-rpc";
+import {
+  setStageProgressReporter,
+  __hasStageProgressReporter,
+} from "../utils/stage-progress-sink";
 
 
 /**
@@ -409,6 +413,24 @@ describe("composition root wiring", () => {
     
     // Clean up
     setFixExecutorCompletedHandler(null);
+  });
+
+  it("factory initialization wires the stage-progress sink (210 Phase 2)", async () => {
+    // The `utils/` side reports `spawn` / child-terminal `settle` through the
+    // sink because a runtime `utils → core` import is forbidden; the plugin
+    // factory is the only place that installs the core consumer.
+    setStageProgressReporter(null);
+    expect(__hasStageProgressReporter()).toBe(false);
+
+    const { pi } = makeMockPi();
+    const factory = createPipeline(makeTestConfig());
+    await factory(pi);
+
+    expect(__hasStageProgressReporter()).toBe(true);
+
+    // Clean up (same discipline as the DI handler above): an installed consumer
+    // is a no-op without armed clocks, but the process-global stays explicit.
+    setStageProgressReporter(null);
   });
 });
 

@@ -35,6 +35,10 @@
 
 import type { SessionMeta } from "../types";
 import { safeWriteAuditLog } from "./auditLog";
+// 210 Phase 2: idle-clock renewal on child terminal events (requirement 5.4
+// whitelist), reported through the leaf sink so `utils/` keeps zero runtime
+// imports from `core/`.
+import { reportStageProgress } from "./stage-progress-sink";
 
 /**
  * 203_Bug Phase 0: Builds a leak-safe key summary of a raw SDK event payload.
@@ -238,6 +242,11 @@ export function registerTerminal(
       ? { rawPayload: summarizeKeys(rawPayload) }
       : {}),
   });
+
+  // 210 Phase 2 (requirement 5.4 whitelist): a child reaching terminal state is
+  // stage progress — renew the idle clock of the owning pipeline. `pipelineId`
+  // may be absent on a late event, so fall back to the registered entry.
+  reportStageProgress(pipelineId ?? existing?.pipelineId, "settle");
 
   // Notify terminal observers (Phase 1 G1-1/G1-2 wake logic)
   notifyTerminalObservers(existing ?? registry.get(agentId)!);

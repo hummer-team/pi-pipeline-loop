@@ -923,6 +923,10 @@ describe("168 Phase 4: routeReviewFailAuto triggers fix spawn", () => {
     const transitions: string[] = [];
     const ctx = {
       session: {
+        // 210 Phase 2: `routeConfirmReject` re-arms the stage watchdog, which
+        // reads live meta through the declared `getMeta` (production ctxs always
+        // provide it — the mock had to catch up with the contract).
+        getMeta: () => meta,
         updateMeta: (patch: Partial<SessionMeta>) => Object.assign(meta, patch),
       },
       ui: {

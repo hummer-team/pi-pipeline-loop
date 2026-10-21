@@ -20,6 +20,8 @@ import { writeAuditLog, encodeAuditValue, setAuditPipelineContext } from "../uti
 import { resolveAuditDir } from "../utils/work-dir";
 import { createPipelineUI } from "./pipeline-ui";
 import { isDormant } from "./dormancy";
+// 210 Phase 2: idle-clock renewal on successful tool results (5.4 whitelist).
+import { touchStageProgress } from "./stage-watchdog";
 import { freezeAndPrompt } from "./flow-state";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
@@ -265,6 +267,12 @@ export function createLoopBreaker(config: PipelineConfig): Hook<"tool_result"> {
       // Phase 2b (173) C3: dormant guard — zero counting
       if (!rawMeta || isDormant(rawMeta)) return;
       const meta: SessionMeta = rawMeta;
+      // 210 Phase 2 (requirement 5.4 whitelist): a SUCCESSFUL tool result is
+      // stage progress — it renews the idle clock only. A failing tool is not
+      // progress (a silent error loop must still be able to time out).
+      if (ctx.result?.success === true) {
+        touchStageProgress(meta.pipelineId, "tool");
+      }
       const projectRoot = config.projectRoot;
       const auditDir = resolveAuditDir(config);
       // tool_result events always populate toolCall (buildRuntimeCtx guarantees it)

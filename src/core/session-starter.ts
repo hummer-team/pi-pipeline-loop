@@ -12,6 +12,8 @@ import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { isFrozen, getFlowState, markPipelineAborted, formatFrozenReason, isTerminalCompleted, formatDecisionMenuHint, inferResumeStage, ensureDecisionMenu } from "./flow-state";
+// 210 Phase 2: re-arm the stage clocks when a running pipeline survives a reload.
+import { armStageWatchdog } from "./stage-watchdog";
 import { loadPromptConfig } from "./prompt-config";
 import { registerSession, lookupParentPipeline } from "../utils/session-registry";
 import { parseRequirementDocPath } from "../utils/doc-path";
@@ -742,6 +744,11 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           // Explicitly excludes reason === "startup" (stale_startup abort path)
           // and the frozen-replay / aborted branches above (regression boundary).
           syncStageStatusBar(ui, ctx);
+          // 210 Phase 2: the clocks died with the previous process, and a silent
+          // child hang produces NO settle to re-arm them — so this recovery path
+          // re-arms against the PERSISTED `stageStartTime` (wall clock keeps the
+          // remaining ceiling, idle starts from now). No-op when disabled.
+          armStageWatchdog(ctx, config);
         }
       }
     },

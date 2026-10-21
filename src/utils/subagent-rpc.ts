@@ -24,6 +24,10 @@ import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { checkDispatchConflicts } from "./guard-conflict-report";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
+// 210 Phase 2: idle-clock renewal on dispatch success (requirement 5.4 whitelist).
+// Routed through the leaf sink because this module must not import `core/` at
+// runtime (static guard: subagent-rpc.test.ts, Phase 0 / 189).
+import { reportStageProgress } from "./stage-progress-sink";
 import type { PipelineConfig, PipelineStage, SessionMeta, SpawnOperationContext } from "../types";
 import type { FixExecutorCompletedCtx, FixExecutorCompletedHandler } from "../core/fix-executor-completion";
 import type { DesignReviewWritePolicy } from "../core/design-review/write-policy";
@@ -990,6 +994,9 @@ export async function spawnStageSubagent(
         cleanup();
       }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
       await writeGuard(spawnResult.id);
+      // 210 Phase 2 (requirement 5.4 whitelist): a successful dispatch is stage
+      // progress — renews the idle clock (no-op when no watchdog is armed).
+      reportStageProgress(meta.pipelineId, "spawn");
       return {
         spawned: true,
         fallback: false,
@@ -1047,6 +1054,8 @@ export async function spawnStageSubagent(
       // 192 Phase 1 (task 5): the followUp channel HAS no agentId — record
       // "fallback_no_id". Callers must treat this as an unknown outcome for
       // operation-bound dispatches and NEVER fabricate a trusted id.
+      // 210 Phase 2: the followUp channel dispatched work as well → idle renewal.
+      reportStageProgress(meta.pipelineId, "spawn");
       return {
         spawned: true,
         fallback: true,
@@ -1707,6 +1716,8 @@ export async function spawnClarifyStageSubagent(
         if (opts?.session) clearActiveSpawnRecord(opts.session, "clarify");
         cleanup();
       }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
+      // 210 Phase 2: clarify dispatch success is stage progress too.
+      reportStageProgress(meta.pipelineId, "spawn");
       return { spawned: true, fallback: false };
     }
     await safeWriteAuditLog("stage_spawn_rpc_failed", {
@@ -1729,6 +1740,8 @@ export async function spawnClarifyStageSubagent(
         agentName,
         ...(sessionFile ? { sessionFile } : {}),
       });
+      // 210 Phase 2: clarify followUp dispatch renews the idle clock.
+      reportStageProgress(meta.pipelineId, "spawn");
       return { spawned: true, fallback: true };
     } catch {
       // sendUserMessage failure is non-fatal; fall through to notify

@@ -1292,6 +1292,28 @@ export interface WatchdogConfig {
 }
 
 /**
+ * 210 Phase 2: which of the two stage clocks fired (requirement 5.4, Q13=A).
+ * - "wall": absolute stage ceiling (`stageStartTime + stageTimeoutMs`)
+ * - "idle": no progress event within `stageIdleTimeoutMs`
+ */
+export type StageWatchdogKind = "wall" | "idle";
+
+/**
+ * 210 Phase 2: progress-event whitelist (requirement 5.4 / Q13=A).
+ * Only these sources may renew the idle clock — anything else keeps the
+ * watchdog strict so a silent hang cannot be masked by unrelated activity.
+ * Named with the `Stage` prefix to stay unambiguous inside the shared
+ * contract module (the design sketch called it `ProgressSource`).
+ */
+export type StageProgressSource =
+  | "verify"
+  | "spawn"
+  | "settle"
+  | "stage_advance"
+  | "tool"
+  | "menu";
+
+/**
  * 210 Phase 0: per-stage exit facts of the current pipeline period.
  * Written once per stage exit (`recordStageStats`) — never partially amended.
  */

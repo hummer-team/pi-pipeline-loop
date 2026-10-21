@@ -8,7 +8,7 @@
  * keeping the dependency arrow pointing from flow-state into this module.
  */
 
-import type { SessionMeta } from "../types";
+import type { SessionMeta, StageProgressSource, StageWatchdogKind } from "../types";
 
 // ─── Outcome types ──────────────────────────────────────────────────────────
 
@@ -169,6 +169,11 @@ interface PipelineMenuRuntime {
   stageIdle?: ReturnType<typeof setTimeout>;
   /** 210 Phase 2: last progress timestamp (ms) for the idle watchdog. */
   lastProgressAt?: number;
+  /**
+   * 210 Phase 2: whitelist source of the last progress event — required by the
+   * `stage_watchdog_timeout` audit contract (requirement 5.4 `lastProgressSource`).
+   */
+  lastProgressSource?: StageProgressSource;
   /** 210 Phase 2: `${pipelineId}:${stageStartTime}` idempotent arm key. */
   stageKey?: string;
   /** Options used by the retry loop (source/budgetValue/directStageSelect). */
@@ -305,6 +310,185 @@ export function clearDecisionDeadline(pipelineId: string): void {
 /** Test-only helper: whether a decision deadline is armed for the pipeline. @internal */
 export function __hasDecisionDeadline(pipelineId: string): boolean {
   return menuRuntime.get(pipelineId)?.decisionDeadline !== undefined;
+}
+
+// ─── 210 Phase 2: generic stage watchdog timers ──────────────────────────────
+
+/**
+ * Context handed to the watchdog timeout callback (requirement 5.4). The
+ * registry owns the progress bookkeeping only — every business guard
+ * (staleness, still-running, freeze action) lives in the caller's closure,
+ * which keeps this module free of pipeline semantics.
+ */
+export interface StageWatchdogTimeoutInfo {
+  /**
+   * The `${pipelineId}:${stageStartTime}` identity the clock was armed under.
+   * The caller compares it against LIVE meta: a rewritten `stageStartTime`
+   * means the visit ended, so the clock is stale and must not act.
+   */
+  stageKey: string;
+  /** ms elapsed since the last recorded progress event (the idle clock basis). */
+  progressAgeMs: number;
+  /** Whitelist source of the last progress event; absent when never touched. */
+  lastProgressSource?: StageProgressSource;
+}
+
+/**
+ * Arms the two stage clocks of one pipeline visit on the SHARED runtime table.
+ *
+ * - `wallDelayMs`: absolute ceiling remaining for the stage (caller derives it
+ *   from the persisted `stageStartTime`, so it survives a process restart).
+ * - `idleDelayMs`: no-progress window; renewed lazily by
+ *   {@link touchWatchdogProgress} (no timer churn per event).
+ * - Idempotent per `stageKey`: re-arming the SAME visit while a clock is live
+ *   never resets either timer, so a burst of settles cannot extend the ceiling.
+ * - A different key replaces the previous pair (stage change / restart).
+ * - `disposed` (shutdown) suppresses arming and firing, exactly like the
+ *   decision deadline above.
+ */
+export function armWatchdogTimers(
+  pipelineId: string,
+  opts: {
+    stageKey: string;
+    wallDelayMs: number;
+    idleDelayMs: number;
+    /** Whitelisted source to attribute the fresh pair to (see 5.4 whitelist). */
+    progressSource?: StageProgressSource;
+    onTimeout: (kind: StageWatchdogKind, info: StageWatchdogTimeoutInfo) => void;
+  },
+): void {
+  const rt = getOrCreateRuntime(pipelineId);
+  if (rt.disposed) return;
+  // Same visit already armed → nothing to do (never extend either clock).
+  if (rt.stageKey === opts.stageKey && (rt.stageWall || rt.stageIdle)) return;
+
+  if (rt.stageWall) {
+    clearTimeout(rt.stageWall);
+    rt.stageWall = undefined;
+  }
+  if (rt.stageIdle) {
+    clearTimeout(rt.stageIdle);
+    rt.stageIdle = undefined;
+  }
+  rt.stageKey = opts.stageKey;
+  rt.lastProgressAt = Date.now();
+  rt.lastProgressSource = opts.progressSource;
+
+  // Idle clock — lazy renewal: the deadline is always `lastProgressAt +
+  // idleDelayMs`, so `touch` stays a two-field write and the timer re-arms
+  // for the remaining window when progress moved the due time.
+  const armIdleClock = (): void => {
+    const basis = rt.lastProgressAt ?? Date.now();
+    const delayMs = Math.max(0, basis + opts.idleDelayMs - Date.now());
+    rt.stageIdle = setTimeout(() => {
+      rt.stageIdle = undefined;
+      if (rt.disposed) {
+        pruneRuntime(pipelineId, rt);
+        return;
+      }
+      const now = Date.now();
+      const dueAt = (rt.lastProgressAt ?? now) + opts.idleDelayMs;
+      if (dueAt > now) {
+        // Progress arrived inside this window → renew instead of firing.
+        armIdleClock();
+        return;
+      }
+      opts.onTimeout("idle", {
+        stageKey: opts.stageKey,
+        progressAgeMs: now - (rt.lastProgressAt ?? now),
+        ...(rt.lastProgressSource !== undefined ? { lastProgressSource: rt.lastProgressSource } : {}),
+      });
+      pruneRuntime(pipelineId, rt);
+    }, delayMs);
+  };
+  armIdleClock();
+
+  // Wall clock — absolute stage ceiling, never renewed by progress.
+  const wallStart = Date.now();
+  rt.stageWall = setTimeout(() => {
+    rt.stageWall = undefined;
+    if (rt.disposed) {
+      pruneRuntime(pipelineId, rt);
+      return;
+    }
+    opts.onTimeout("wall", {
+      stageKey: opts.stageKey,
+      progressAgeMs: Date.now() - (rt.lastProgressAt ?? wallStart),
+      ...(rt.lastProgressSource !== undefined ? { lastProgressSource: rt.lastProgressSource } : {}),
+    });
+    pruneRuntime(pipelineId, rt);
+  }, Math.max(0, opts.wallDelayMs));
+}
+
+/**
+ * Records stage progress (requirement 5.4 whitelist). Renews the IDLE clock
+ * only — the wall clock is an absolute ceiling by design (Q13=A). No-op when no
+ * watchdog is armed for the pipeline, so disabled configurations never pay for
+ * a table lookup beyond this call.
+ */
+export function touchWatchdogProgress(pipelineId: string, source: StageProgressSource): void {
+  const rt = menuRuntime.get(pipelineId);
+  if (!rt) return;
+  if (!rt.stageWall && !rt.stageIdle) return;
+  rt.lastProgressAt = Date.now();
+  rt.lastProgressSource = source;
+}
+
+/**
+ * Clears both stage clocks and the progress bookkeeping for a pipeline
+ * (stage change / terminal state / shutdown helper). Independent from the
+ * decision deadline and the retry timer (mutually non-interfering fields).
+ */
+export function clearWatchdogTimers(pipelineId: string): void {
+  const rt = menuRuntime.get(pipelineId);
+  if (!rt) return;
+  if (rt.stageWall) {
+    clearTimeout(rt.stageWall);
+    rt.stageWall = undefined;
+  }
+  if (rt.stageIdle) {
+    clearTimeout(rt.stageIdle);
+    rt.stageIdle = undefined;
+  }
+  rt.lastProgressAt = undefined;
+  rt.lastProgressSource = undefined;
+  rt.stageKey = undefined;
+  pruneRuntime(pipelineId, rt);
+}
+
+/** Test-only helper: whether any stage watchdog clock is armed. @internal */
+export function __hasStageWatchdog(pipelineId: string): boolean {
+  const rt = menuRuntime.get(pipelineId);
+  return rt !== undefined && (rt.stageWall !== undefined || rt.stageIdle !== undefined);
+}
+
+/**
+ * Test-only snapshot of one pipeline's watchdog bookkeeping — the only way to
+ * assert the idempotency rule (a re-arm of the SAME visit must not move the
+ * idle basis) without racing a timer. @internal
+ */
+export function __stageWatchdogState(pipelineId: string): {
+  armed: boolean;
+  stageKey?: string;
+  lastProgressAt?: number;
+  lastProgressSource?: StageProgressSource;
+} {
+  const rt = menuRuntime.get(pipelineId);
+  return {
+    armed: rt !== undefined && (rt.stageWall !== undefined || rt.stageIdle !== undefined),
+    ...(rt?.stageKey !== undefined ? { stageKey: rt.stageKey } : {}),
+    ...(rt?.lastProgressAt !== undefined ? { lastProgressAt: rt.lastProgressAt } : {}),
+    ...(rt?.lastProgressSource !== undefined ? { lastProgressSource: rt.lastProgressSource } : {}),
+  };
+}
+
+/** Test-only helper: number of pipelines holding a stage watchdog. @internal */
+export function __stageWatchdogCount(): number {
+  let count = 0;
+  for (const rt of menuRuntime.values()) {
+    if (rt.stageWall || rt.stageIdle) count++;
+  }
+  return count;
 }
 
 /**

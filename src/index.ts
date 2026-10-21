@@ -56,6 +56,9 @@ import { createPipelineArchiveCommand } from "./commands/pipeline-archive";
 // Agent settled and session shutdown lifecycle hooks
 import { createAgentSettled } from "./core/agent-settled";
 import { createSessionShutdown } from "./core/session-shutdown";
+// 210 Phase 2: stage watchdog progress consumer wired into the leaf sink.
+import { touchStageProgress } from "./core/stage-watchdog";
+import { setStageProgressReporter } from "./utils/stage-progress-sink";
 
 // JSON config loader
 import { loadJsonConfig, resolvePipelineConfig } from "./core/json-config-loader";
@@ -95,6 +98,14 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
   return async (pi: ExtensionAPI): Promise<void> => {
     // Initialize audit log directory (resolves path + creates if needed)
     await initAuditLog(config);
+
+    // 210 Phase 2: wire the stage-progress sink (requirement 5.4 whitelist).
+    // `utils/` modules report `spawn` and child-terminal `settle` events through
+    // that leaf module because a runtime `utils → core` import is forbidden by
+    // the static guard in subagent-rpc.test.ts (Phase 0 / 189). Registering the
+    // consumer here (composition root) keeps `stage-watchdog` side-effect free;
+    // the call is idempotent (same function pointer) and never fails.
+    setStageProgressReporter(touchStageProgress);
 
     // Wrap pi.exec() as ExecFn for DI into verifiers (avoids child_process.execSync)
     const execFn: ExecFn | undefined = pi.exec
