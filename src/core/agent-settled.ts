@@ -16,6 +16,9 @@ import { isFrozen, getFlowState, formatFrozenReason, ensureDecisionMenu, formatA
 import { isDormant } from "./dormancy";
 // 210 Phase 2: stage watchdog sync on every settle (requirement 5.4 whitelist).
 import { armStageWatchdog, touchStageProgress } from "./stage-watchdog";
+// 210 Phase 3: the confirm-stall convergence is gated on the decision policy
+// (`isDecisionPolicyEnabled`), so an unconfigured project keeps baseline behaviour.
+import { isDecisionPolicyEnabled } from "./decision-policy/policy-config";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
   PLAN_CONFIRM_MARKER_RULE,
@@ -836,6 +839,21 @@ export function createAgentSettled(
           // only notify (no popup) to avoid a dialog storm (173-C11 semantics).
           if (!isChild && reaskExhausted) {
             ui.notify(ctx, formatConfirmGatePendingCopy(config, meta.currentStage));
+            // 210 Phase 3 (requirement 2.2 #4/#5): the re-ask budget is spent, so
+            // this settle can no longer re-pop the gate and nothing else revisits
+            // the stall. With the decision-provider chain configured, converge it
+            // into `confirm_awaiting_human` so the policy can settle it instead of
+            // idling forever on a passing verification. The notify above is kept
+            // for stage-context parity with the baseline message; a disabled
+            // policy stays notify-only, verbatim (constraint 4).
+            if (isDecisionPolicyEnabled(config)) {
+              await freezeAndPrompt(
+                { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx } as Parameters<typeof freezeAndPrompt>[0],
+                meta,
+                "confirm_awaiting_human",
+                config,
+              );
+            }
             return;
           }
           const gate = await maybeHandleConfirmGate(config, ctxWithPi, meta, ui, {

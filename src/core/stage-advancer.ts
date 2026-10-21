@@ -42,6 +42,9 @@ import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
 import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
 import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "./dormancy";
+// 210 Phase 3: the confirm-stall convergence is gated on the decision policy
+// (`isDecisionPolicyEnabled`), so an unconfigured project keeps baseline behaviour.
+import { isDecisionPolicyEnabled } from "./decision-policy/policy-config";
 // 210 Phase 2: re-arm the stage clocks on a successful advance (requirement 5.4).
 import { armStageWatchdog, clearStageWatchdog } from "./stage-watchdog";
 import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
@@ -314,6 +317,46 @@ async function handleConfirmOverflow(
     action: "user_terminate",
   });
   return "terminate";
+}
+
+/**
+ * 210 Phase 3 (requirement 2.2 #4/#5): converges a CONFIRM STALL into the unified
+ * freeze path, so the silent "awaiting human confirmation" state becomes a real
+ * decision point that the 5.3 provider chain (human → policy → abort) can settle.
+ *
+ * This is the ONLY pipeline state that was neither a freeze nor a menu entry: the
+ * confirm gate returns `pending` when no human is reachable, and nothing else ever
+ * revisits it — a stage could then idle forever with a passing verification.
+ *
+ * Gate: the caller invokes this ONLY when `isDecisionPolicyEnabled(config)` holds,
+ * which is what keeps an unconfigured project byte-for-byte on the baseline
+ * behaviour (notify + stay pending, constraint 4). The reason is
+ * `confirm_awaiting_human`, whose POLICY-side allowed set is `restart | abort`
+ * only (Q15=A: resuming a confirm stall cannot produce the missing human
+ * approval, so `resume` is rejected at load time); the human menu stays generic.
+ *
+ * `freezeAndPrompt` is itself idempotent (it only transitions running → blocked),
+ * so a repeated stall cannot stack freezes, and `confirmGateReask` /
+ * `confirmGateDeferredAt` are left untouched: `detectPendingConfirmGate` stays
+ * re-enterable for the next human interaction.
+ *
+ * Cycle escape (established pattern, see `handleConfirmOverflow`'s caller above):
+ * `flow-state` is imported dynamically because it statically imports this module.
+ */
+async function convergeConfirmStall(
+  ctx: Parameters<typeof maybeHandleConfirmGate>[1],
+  meta: SessionMeta,
+  config: PipelineConfig,
+): Promise<void> {
+  const { freezeAndPrompt } = await import("./flow-state");
+  await freezeAndPrompt(
+    // SAFETY: this ctx carries `session` + `ui` (the gate's own contract), which
+    // is exactly the surface `freezeAndPrompt` uses.
+    ctx as unknown as Parameters<typeof freezeAndPrompt>[0],
+    meta,
+    "confirm_awaiting_human",
+    config,
+  );
 }
 
 /**
@@ -1031,6 +1074,13 @@ export async function maybeHandleConfirmGate(
       reason: "no ui.select available",
     });
     ui.notify(ctx, `${currentStage} stage requires human confirmation. Awaiting UI interaction.`);
+    // 210 Phase 3 (requirement 2.2 #4): a headless session can NEVER answer this
+    // gate, so the stall is converged into the decision-provider chain instead of
+    // waiting for a UI that does not exist. Disabled policy → baseline notify-only
+    // behaviour, verbatim (constraint 4).
+    if (isDecisionPolicyEnabled(config)) {
+      await convergeConfirmStall(ctx, meta, config);
+    }
     return { result: "handled", action: "pending" };
   }
 
@@ -1289,8 +1339,16 @@ export async function maybeHandleConfirmGate(
         return { result: "handled", action: "aborted" };
       }
       if (overflowResult === "pending") {
-        // No UI — pending (no advance, no count change)
+        // No UI / Esc — pending (no advance, no count change). The rejection cap
+        // is already exhausted here, so nothing can move this stage forward on
+        // its own: unlike a plain gate dismiss (re-ask budget / deferral still
+        // apply), this IS the terminal silent stall of requirement 2.2 #5.
         ui.notify(ctx, `${currentStage} confirm overflow. Awaiting UI interaction.`);
+        // 210 Phase 3: converge it when the decision-provider chain is configured;
+        // an unconfigured project keeps the baseline pending behaviour verbatim.
+        if (isDecisionPolicyEnabled(config)) {
+          await convergeConfirmStall(ctx, meta, config);
+        }
         return { result: "handled", action: "pending" };
       }
       // overflowResult === "continue": reset counter to 0 and route
