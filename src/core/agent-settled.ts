@@ -14,6 +14,8 @@ import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { extractAssistantMessages, extractToolCallRecords, detectLastRunHealth } from "./session-state";
 import { isFrozen, getFlowState, formatFrozenReason, ensureDecisionMenu, formatAbortedNotifyText, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
 import { isDormant } from "./dormancy";
+// 210 Phase 7: settle-point usage drain (record-only, fail-open).
+import { flushUsageToMeta } from "./usage-recorder";
 // 210 Phase 2: stage watchdog sync on every settle (requirement 5.4 whitelist).
 import { armStageWatchdog, touchStageProgress } from "./stage-watchdog";
 // 210 Phase 3: the confirm-stall convergence is gated on the decision policy
@@ -106,6 +108,14 @@ export function createAgentSettled(
       // zero timers for unconfigured projects).
       touchStageProgress(meta.pipelineId, "settle");
       armStageWatchdog(ctx, config);
+
+      // 210 Phase 7: persist usage accumulated in-process since the last drain
+      // (idempotent; an empty delta performs no meta write).
+      try {
+        flushUsageToMeta(ctx.session, meta.pipelineId);
+      } catch {
+        // Fail-open: usage persistence must never interrupt the settle chain.
+      }
 
       // 192 Phase 3 (K02/F05): the design-review coordinator delegation is NO
       // LONGER executed before the ordinary guards. It now runs AFTER the

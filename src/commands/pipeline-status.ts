@@ -187,6 +187,22 @@ export function renderTerminalStatus(
     statParts.push(`${stage} ${fmtDuration(snap.durationMs)} (verify ${snap.verifyAttempts}, confirm ${snap.confirmRejections})`);
   }
 
+  // 210 Phase 7: usage roll-up lines (requirement 5.9 display). Same 6-decimal
+  // rounding convention as `collectRunAggregate` (1e-6 float tolerance rule);
+  // an empty ledger degrades to "N/A", never "undefined".
+  const usageEntries = Object.entries(meta.usageByStage ?? {});
+  let costUsdTotal = 0;
+  let totalTokens = 0;
+  for (const [, snap] of usageEntries) {
+    costUsdTotal += snap?.costUsd ?? 0;
+    totalTokens += snap?.totalTokens ?? 0;
+  }
+  const costLine = usageEntries.length > 0
+    ? `${String(Number(costUsdTotal.toFixed(6)))} usd (totalTokens ${totalTokens})`
+    : "N/A";
+  const modelParts = usageEntries.map(([stageName, snap]) => `${stageName}:${snap?.model ?? "unknown"}`);
+  const modelsLine = modelParts.length > 0 ? modelParts.join(", ") : "N/A";
+
   const summaryParts: string[] = [];
   for (const [stage, s] of Object.entries(meta.summaries ?? {})) {
     if (s?.path) summaryParts.push(`${stage}: ${s.path}`);
@@ -200,6 +216,8 @@ export function renderTerminalStatus(
     `- Stage visits: ${visits}\n` +
     `- Loop cycles: ${meta.loopCycleCount ?? 0}\n` +
     `- Stage stats: ${statParts.length > 0 ? statParts.join("; ") : "N/A"}\n` +
+    `- Cost: ${costLine}\n` +
+    `- Models: ${modelsLine}\n` +
     `- Verify attempts: ${meta.verifyAttempts ?? 0} / ${verifyMax}\n` +
     `- Confirm rejections: ${meta.confirmRejections ?? 0} / ${confirmMax}\n` +
     `- Requirement: ${meta.requirementDoc || "N/A"}\n` +

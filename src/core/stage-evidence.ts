@@ -24,7 +24,7 @@
  */
 
 import * as fs from "node:fs/promises";
-import type { PipelineStage, SessionMeta, StageStatSnapshot } from "../types";
+import type { PipelineStage, SessionMeta, StageStatSnapshot, StageUsageSnapshot } from "../types";
 import { auditLogDirForPipeline } from "../utils/auditLog";
 import { planDocRelPathFromRequirementDoc } from "./naming/doc-naming";
 
@@ -249,6 +249,12 @@ export async function collectRunAggregate(
     }
   }
 
+  // 210 Phase 7: usage roll-up (requirement 5.9). Sum with 6-decimal rounding —
+  // inside the plan's 1e-6 float tolerance; `modelsByStage` serializes as
+  // `stage:model` comma-joined (flat-string audit format, no JSON).
+  const usageEntries = Object.entries(meta.usageByStage ?? {}) as Array<[string, StageUsageSnapshot | undefined]>;
+  const costUsdTotal = usageEntries.reduce((sum, [, snap]) => sum + (snap?.costUsd ?? 0), 0);
+
   // Key names are the requirement 5.5 table VERBATIM (the terminal rows add
   // `finalStage`, which belongs to the aggregate because both terminal events
   // report it: completed writes it directly, aborted keeps `stage`).
@@ -265,6 +271,8 @@ export async function collectRunAggregate(
     auditPath: auditLogDirForPipeline(meta.pipelineId) ?? "unavailable",
     loopCycleCount: String(meta.loopCycleCount ?? 0),
     stageVisitOrder: (meta.stageVisitOrder ?? []).join(","),
+    costUsdTotal: String(Number(costUsdTotal.toFixed(6))),
+    modelsByStage: usageEntries.map(([stageName, snap]) => `${stageName}:${snap?.model ?? "unknown"}`).join(","),
     finalStage,
   };
 }

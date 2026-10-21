@@ -297,9 +297,10 @@ describe("hook bridge", () => {
     const factory = createPipeline(makeTestConfig());
     await factory(pi);
 
-    // Expect 7 hook registrations (session_start, before_agent_start, tool_call,
-    // tool_result, agent_settled, session_shutdown, model_select)
-    expect(registeredEvents.length).toBe(7);
+    // Expect 8 hook registrations (session_start, before_agent_start, tool_call,
+    // tool_result, agent_settled, session_shutdown, model_select, message_end).
+    // 210 Phase 7: message_end is the always-on usage recorder.
+    expect(registeredEvents.length).toBe(8);
 
     const eventNames = registeredEvents.map((e) => e.event);
     expect(eventNames).toContain("session_start");
@@ -309,6 +310,7 @@ describe("hook bridge", () => {
     expect(eventNames).toContain("agent_settled");
     expect(eventNames).toContain("session_shutdown");
     expect(eventNames).toContain("model_select");
+    expect(eventNames).toContain("message_end");
 
     // Each handler should be a function
     for (const reg of registeredEvents) {

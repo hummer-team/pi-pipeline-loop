@@ -30,6 +30,8 @@ import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { clearActiveSpawnRecord, clearStageSpawnRecords } from "../utils/spawn-cleanup";
 import { markSubagentsUnavailable } from "../utils/subagent-availability";
+// 210 Phase 7: shutdown-time usage drain (record-only, fail-open).
+import { flushUsageToMeta } from "./usage-recorder";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -52,6 +54,16 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 1 (197): refresh audit routing context on every hook entry
       setAuditPipelineContext(rawMeta?.pipelineId);
+      // 210 Phase 7: last-chance usage persistence BEFORE any dormant return —
+      // completed/dormant sessions never pass a stage exit, so this is their
+      // final drain (idempotent; empty delta performs no meta write).
+      if (rawMeta?.pipelineId) {
+        try {
+          flushUsageToMeta(ctx.session, rawMeta.pipelineId);
+        } catch {
+          // Fail-open: shutdown persistence must not block teardown.
+        }
+      }
       // Phase 6 (172) G5: clear all decision retry timers on shutdown (prevent leaks)
       clearAllDecisionTimers();
 

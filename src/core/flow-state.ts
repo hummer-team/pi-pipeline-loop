@@ -30,6 +30,8 @@ import { isAuthorizationValid } from "./design-review/state";
 import { broadcastEscalation } from "../utils/escalation-bus";
 import type { EscalationPayload } from "../utils/escalation-bus";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "./meta-reset";
+// 210 Phase 7: usage ledger drain (abort aggregate) + restart clear.
+import { flushUsageToMeta, resetUsage } from "./usage-recorder";
 // 210 Phase 4: run aggregate appended to the aborted terminal audit (requirement 5.5)
 import { collectRunAggregate } from "./stage-evidence";
 import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
@@ -605,6 +607,11 @@ export async function executeDecision(
         pipelineId: newPipelineId,
         currentStage: "clarify",
       });
+
+      // 210 Phase 7: the superseded pipeline's pending usage must not leak into
+      // the new period (`usageByStage` meta was cleared by the reset checklist;
+      // this clears the in-process ledger of the OLD pipelineId).
+      resetUsage(oldPipelineId);
 
       // Phase 1 (197): bind audit routing to new pipeline identity (3rd birth point)
       await prepareAuditPipelineLog(newPipelineId);
@@ -1243,7 +1250,16 @@ export async function markPipelineAborted(
   // aborted stage's own entry clock; the completed guard / idempotent branches
   // above stay untouched.
   if (meta) {
-    const aggregate = await collectRunAggregate(meta, stage as PipelineStage, meta.stageStartTime ?? 0);
+    // 210 Phase 7: drain the in-process usage BEFORE the terminal aggregate so
+    // `costUsdTotal` / `modelsByStage` include the final stage's usage. The
+    // flush may have written meta — re-read it as the aggregate base.
+    try {
+      flushUsageToMeta(ctx.session, meta.pipelineId);
+    } catch {
+      // Fail-open: the abort audit must not depend on usage persistence.
+    }
+    const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+    const aggregate = await collectRunAggregate(freshMeta, stage as PipelineStage, meta.stageStartTime ?? 0);
     Object.assign(auditFields, aggregate);
   }
 

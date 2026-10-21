@@ -11,6 +11,8 @@
 
 import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } from "../types";
 import { writeAuditLog, writeStageAudit, safeWriteAuditLog } from "../utils/auditLog";
+// 210 Phase 7: per-stage usage drain + `stage_usage` audit fields at exit.
+import { takeStageUsageAuditFields } from "./usage-recorder";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 // 210 Phase 2: re-arm the stage clocks once a transition is committed (5.4).
@@ -872,6 +874,11 @@ export async function autoAdvanceAfterVerify(
   // spawn so durationMs reflects the actual exit instant; the "spawn first, write
   // audit after" ordering (G6) is unchanged.
   const evidence = await collectStageExitEvidence(clearedMeta);
+  // 210 Phase 7: drain in-process usage into meta AT the stage exit (the flush
+  // inside also feeds the terminal aggregate read below) and render the
+  // exiting stage's cumulative snapshot for the `stage_usage` audit. Null when
+  // no usage was ever recorded (synthetic contexts stay silent).
+  const usageFields = takeStageUsageAuditFields(ctx.session, clearedMeta.pipelineId, fromStage);
   if (toStage && toStage !== "completed") {
     recordStageStats(ctx.session, ctx.session.getMeta() ?? clearedMeta, fromStage, evidence);
   }
@@ -888,6 +895,13 @@ export async function autoAdvanceAfterVerify(
     evidenceUnavailable: evidence.evidenceUnavailable ? "true" : "false",
     stageStats: serializeStageStats((ctx.session.getMeta() ?? clearedMeta).stageStats),
   };
+
+  // 210 Phase 7: exactly one `stage_usage` per hook-path stage exit — the
+  // exiting stage's cumulative snapshot (null when no usage was ever recorded,
+  // keeping synthetic contexts silent per the "no usage → no writes" rule).
+  if (usageFields) {
+    await writeStageAudit(config, "stage_usage", clearedMeta, usageFields);
+  }
 
   // G6 (188): Spawn subagent BEFORE audit writes to close the race window where
   // owner settle fires between currentStage update and pendingSpawns write.

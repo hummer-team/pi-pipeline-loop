@@ -38,7 +38,9 @@ describe("createPipeline", () => {
     expect(registeredEvents).toContain("agent_settled");
     expect(registeredEvents).toContain("session_shutdown");
     expect(registeredEvents).toContain("model_select");
-    expect(registeredEvents.length).toBe(7);
+    // 210 Phase 7: the always-on `message_end` usage recorder is the 8th hook.
+    expect(registeredEvents).toContain("message_end");
+    expect(registeredEvents.length).toBe(8);
 
     expect(registeredTools).toContain("stage_advance");
     expect(registeredTools).toContain("loop_check");
@@ -141,10 +143,12 @@ describe("default export", () => {
     const { pi, registeredEvents, registeredTools, registeredCommands } = createMockPi();
     await defaultExport(pi as any);
 
-    expect(registeredEvents.length).toBe(7);
+    // 210 Phase 7: +1 always-on `message_end` usage recorder hook.
+    expect(registeredEvents.length).toBe(8);
     expect(registeredEvents).toContain("session_start");
     expect(registeredEvents).toContain("before_agent_start");
     expect(registeredEvents).toContain("model_select");
+    expect(registeredEvents).toContain("message_end");
 
     expect(registeredTools.length).toBe(6);
     expect(registeredTools).toContain("stage_advance");

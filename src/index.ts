@@ -29,6 +29,8 @@ import { handleDesignReviewOperationTerminal } from "./core/design-review/coordi
 // Session lifecycle and prompt injection
 import { createSessionStarter } from "./core/session-starter";
 import { createPromptInjector } from "./core/prompt-injector";
+// 210 Phase 7: message_end usage recorder.
+import { createUsageRecorder } from "./core/usage-recorder";
 
 // Tool safety and loop circuit breaker
 import { createToolGuard } from "./core/tool-guard";
@@ -169,6 +171,9 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createLoopBreaker(config),
       createAgentSettled(config, { execFn }),
       createSessionShutdown(config),
+      // 210 Phase 7: per-stage model/token/cost aggregation from message_end
+      // (R2 record-only; always-on, no config switch, no meta writes per message).
+      createUsageRecorder(),
     ];
     for (const h of hooks) {
       // TSDoc: event type cast — internal Hook uses string event names,

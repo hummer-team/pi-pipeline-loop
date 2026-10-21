@@ -32,6 +32,8 @@ import {
   serializeStageStats,
   collectRunAggregate,
 } from "./stage-evidence";
+// 210 Phase 7: stage-exit usage drain + `stage_usage` audit fields.
+import { takeStageUsageAuditFields } from "./usage-recorder";
 import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, setAuditPipelineContext } from "../utils/auditLog";
@@ -2102,6 +2104,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // PRE-advance snapshot (its `stageStartTime` is the exiting stage's entry
       // clock; the committed patch already rewrote the session-side clock).
       const exitEvidence = await collectStageExitEvidence(preAdvanceSnap);
+      // 210 Phase 7: drain the in-process usage store into meta AT the exit
+      // (the flush inside also guarantees the terminal aggregate read below
+      // sees the final `usageByStage`) and render the exiting stage's
+      // cumulative snapshot for the `stage_usage` audit.
+      const usageFields = takeStageUsageAuditFields(ctx.session, meta.pipelineId, currentStage);
 
       if (resolvedTarget === null || resolvedTarget === "completed") {
         ui.clearStage(ctx);
@@ -2124,6 +2131,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           stageVisitOrder: (freshMetaForAudit.stageVisitOrder ?? []).join(","),
           ...terminalAggregate,
         });
+        // 210 Phase 7: the completed exit is also a stage exit — one
+        // `stage_usage` for the final stage (null when nothing was recorded).
+        if (usageFields) {
+          await safeWriteStageAudit(config, "stage_usage", freshMetaForAudit, usageFields);
+        }
         // 210 Phase 2: `completed` is dormant — no stage clock may survive it.
         clearStageWatchdog(freshMetaForAudit.pipelineId);
         return {
@@ -2173,6 +2185,13 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         evidenceUnavailable: exitEvidence.evidenceUnavailable ? "true" : "false",
         stageStats: serializeStageStats(metaAfterRecord.stageStats),
       });
+
+      // 210 Phase 7: exactly one `stage_usage` per tool-path stage exit — the
+      // exiting stage's cumulative snapshot, written after the advance audit to
+      // keep the "spawn first, audit after" ordering (G6) intact.
+      if (usageFields) {
+        await safeWriteStageAudit(config, "stage_usage", metaAfterRecord, usageFields);
+      }
 
       // 210 Phase 2: the advance committed a NEW stage visit (`stageStartTime`
       // was rewritten above) — the old pair is replaced by a fresh arm, and the

@@ -228,16 +228,18 @@ describe("210 Phase 4: serializeStageStats single-line vocabulary", () => {
 // ─── collectRunAggregate ──────────────────────────────────────────────────────
 
 describe("210 Phase 4: collectRunAggregate", () => {
-  it("emits the requirement 5.5 key set VERBATIM (plus finalStage)", async () => {
+  it("emits the requirement 5.5 key set VERBATIM (plus finalStage and the Phase 7 usage keys)", async () => {
     const meta = makeTestMeta({ currentStage: "review", requirementDoc: "docs/design/77_Config.md" });
     const agg = await collectRunAggregate(meta, "review", Date.now());
     expect(Object.keys(agg).sort()).toEqual([
       "auditPath",
       "commitIds",
       "confirmRejections",
+      "costUsdTotal",
       "durationMs",
       "finalStage",
       "loopCycleCount",
+      "modelsByStage",
       "planDoc",
       "requirementDoc",
       "stageStats",
@@ -248,6 +250,9 @@ describe("210 Phase 4: collectRunAggregate", () => {
     ]);
     // Every value is a plain string (audit `extra` contract).
     for (const v of Object.values(agg)) expect(typeof v).toBe("string");
+    // No usage recorded → neutral defaults (never "undefined" in the audit).
+    expect(agg.costUsdTotal).toBe("0");
+    expect(agg.modelsByStage).toBe("");
   });
 
   it("aggregates durations, counters, docs and commit ids across all stage summaries", async () => {

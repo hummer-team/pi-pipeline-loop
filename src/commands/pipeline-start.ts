@@ -31,6 +31,8 @@ import {
 import { registerSession } from "../utils/session-registry";
 import { spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
 import { buildNewPeriodResetFields } from "../core/meta-reset";
+// 210 Phase 7: restart/resume clears the in-process usage ledger.
+import { resetUsage } from "../core/usage-recorder";
 // Phase 0 (182): name-probe for out-of-band agent detection before dispatch
 import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { isSubagentsReady } from "../utils/subagent-availability";
@@ -275,6 +277,10 @@ function buildRestartMeta(
   requirementDoc: string | undefined,
 ): { pipelineId: string; newMeta: SessionMeta } {
   const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // 210 Phase 7: restart starts a clean usage ledger — drop the superseded
+  // pipeline's in-process accumulator (its `usageByStage` meta is cleared by
+  // the reset checklist below).
+  resetUsage(meta.pipelineId);
   const newMeta: SessionMeta = {
     // 203_Bug Phase 1: single-source new-period reset checklist (unified口径
     // with executeDecision("restart")) — stage chain, spawn residue, design
@@ -318,6 +324,9 @@ export function buildStartMeta(
   startStage: PipelineStage = "clarify",
 ): { pipelineId: string; newMeta: SessionMeta } {
   const pipelineId = `pipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // 210 Phase 7: a new period (fresh or spec jump) starts with a clean usage
+  // ledger — drop any pending accumulator of the superseded pipeline.
+  if (meta?.pipelineId) resetUsage(meta.pipelineId);
 
   // For spec-stage jump, rebuild stage chain from clarify to startStage
   const previousStage = startStage === "clarify"
@@ -420,6 +429,10 @@ export function buildResumeMeta(
   meta: SessionMeta,
   config: PipelineConfig,
 ): SessionMeta {
+  // 210 Phase 7: resume rebases the SAME pipelineId onto a cleared
+  // `usageByStage` (new-period checklist below) — the in-process pending
+  // accumulator must not leak old-period usage into the resumed run.
+  resetUsage(meta.pipelineId);
   return {
     // 203_Bug Phase 1: new-period clear list inlined here for unified口径 —
     // the same cyclic counters / residue clears as a fresh start.
