@@ -120,5 +120,12 @@ export function buildNewPeriodResetFields(
     // Per-turn idempotency flags
     advancedThisTurn: undefined,
     reviewConclusionDeclared: undefined,
+
+    // 210 Phase 0: per-period evidence snapshots. The three fields are set
+    // ONLY here (single construction point) — buildStartMeta / buildRestartMeta /
+    // buildResumeMeta all spread this function, so no separate writes exist.
+    stageStats: undefined,
+    usageByStage: undefined,
+    pipelineStartedAt: Date.now(),
   };
 }

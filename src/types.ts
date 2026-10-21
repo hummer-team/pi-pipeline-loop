@@ -174,6 +174,14 @@ export interface VerifyConfig {
    * the stage is NOT advanced, and verifyAttempts is NOT incremented (prevents freeze).
    */
   completionMarker?: string;
+
+  /**
+   * 210 Phase 0: require git commit evidence reconciliation before verify passes.
+   * Default: undefined (= false, fail-open warn only); `true` folds commit-proof
+   * violations into the verify failure set. Resolution: stage-level value
+   * wins over the global `config.verify.requireCommitProof`.
+   */
+  requireCommitProof?: boolean;
 }
 
 /**
@@ -756,6 +764,24 @@ export interface SessionMeta {
    *   legitimate pause (a PASS awaiting tool/confirmation stays unconsumed)
    */
   stageExecutorRun?: StageExecutorRun;
+
+  /**
+   * 210 Phase 0: Unix ms when the CURRENT pipeline period started
+   * (restart / re-init rebases it). Reset with `buildNewPeriodResetFields`.
+   */
+  pipelineStartedAt?: number;
+
+  /**
+   * 210 Phase 0: per-stage exit facts of the current period
+   * (duration + verify/confirm counters). Reset with the new-period clears.
+   */
+  stageStats?: Partial<Record<PipelineStage, StageStatSnapshot>>;
+
+  /**
+   * 210 Phase 0: per-stage model + usage/cost snapshot of the current
+   * period (R2). Reset with the new-period clears.
+   */
+  usageByStage?: Partial<Record<PipelineStage, StageUsageSnapshot>>;
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
@@ -1196,6 +1222,115 @@ export interface SpawnOperationContext {
   runId?: string;
 }
 
+// ─── Decision Policy Contracts (210 Phase 0) ─────────────────────────────────
+
+/**
+ * 210 Phase 0: who supplied the decision that was actually executed.
+ * - "human": menu selection / command (existing default, all legacy callers).
+ * - "policy": automatic decision applied by the decision-provider chain
+ *   (`tryApplyPolicy`) when the frozen pipeline has no human responder.
+ */
+export type DecisionSource = "human" | "policy";
+
+/**
+ * 210 Phase 0: canonical decision vocabulary consumed by the decision menu
+ * and the decision-policy allowed sets. Single source of truth; flow-state
+ * re-exports it for backward compatibility with existing importers.
+ */
+export type PipelineDecision =
+  | "resume"
+  | "skip"
+  | "rollback"
+  | "restart"
+  | "abort"
+  | "choose_stage"
+  | "set_budget"
+  | "rewind_last_round";
+
+/**
+ * 210 Phase 0: one automatic decision rule for a given blocked reason
+ * (requirement 5.2). `choose_stage` requires `targetStage`; `set_budget`
+ * requires `budgetValue` as a positive integer.
+ */
+export interface DecisionPolicyRule {
+  /** The automatic decision to apply when no human answers in time. */
+  decision: PipelineDecision;
+  /** Target stage (required when decision is "choose_stage"). */
+  targetStage?: PipelineStage;
+  /** New loop budget (required when decision is "set_budget"; must be a positive integer). */
+  budgetValue?: number;
+}
+
+/**
+ * 210 Phase 0: decision-provider policy configuration (requirement 5.2).
+ * Configured-and-present implies effective: the loader normalizes a missing
+ * `enabled` to `true` so "configured" never reads as "off".
+ */
+export interface DecisionPolicyConfig {
+  /** Normalized by the loader: block present without explicit `false` → true. */
+  enabled?: boolean;
+  /** Decision-wait timer for the human slot in the provider chain (ms). Default 600_000. */
+  decisionWaitTimeoutMs?: number;
+  /** Global reason → rule mapping (stage overrides win). */
+  byReason?: Record<string, DecisionPolicyRule>;
+  /** Per-stage reason → rule overrides. */
+  stages?: Partial<Record<PipelineStage, { byReason?: Record<string, DecisionPolicyRule> }>>;
+}
+
+/**
+ * 210 Phase 0: dual stage watchdog configuration (requirement 5.2, opt-in).
+ * `enabled` must be explicitly `true` — unlike `decisionPolicy`, a mere
+ * block presence does NOT activate the watchdog.
+ */
+export interface WatchdogConfig {
+  /** Opt-in switch; default false when the value is omitted. */
+  enabled?: boolean;
+  /** Stage wall-clock ceiling (ms). Default 5_400_000. */
+  stageTimeoutMs?: number;
+  /** No-progress idle ceiling (ms). Default 900_000. */
+  stageIdleTimeoutMs?: number;
+}
+
+/**
+ * 210 Phase 0: per-stage exit facts of the current pipeline period.
+ * Written once per stage exit (`recordStageStats`) — never partially amended.
+ */
+export interface StageStatSnapshot {
+  /** Wall-clock duration of the stage visit in ms. */
+  durationMs: number;
+  /** Verification attempts consumed during the stage visit. */
+  verifyAttempts: number;
+  /** Confirm-gate rejections recorded during the stage visit. */
+  confirmRejections: number;
+}
+
+/**
+ * 210 Phase 0: per-stage model + usage/cost snapshot (requirement 5.9, R2).
+ * Accumulated in-process from `message_end` events and flushed to meta.
+ */
+export interface StageUsageSnapshot {
+  /** LLM provider id at message time. */
+  provider: string;
+  /** Model id at message time. */
+  model: string;
+  /** Number of assistant messages aggregated into this snapshot. */
+  messages: number;
+  /** Input tokens accumulated. */
+  input: number;
+  /** Output tokens accumulated. */
+  output: number;
+  /** Cache-read tokens accumulated. */
+  cacheRead: number;
+  /** Cache-write tokens accumulated. */
+  cacheWrite: number;
+  /** Total tokens accumulated (input + output + cache). */
+  totalTokens: number;
+  /** USD cost accumulated (float; tolerance 1e-6 when compared). */
+  costUsd: number;
+  /** Unix ms of the last contributing message. */
+  updatedAt: number;
+}
+
 // ─── Protect Configuration ───────────────────────────────────────────────────
 
 /**
@@ -1476,6 +1611,19 @@ export interface PipelineConfig {
    * (`{timestamp}_pipeline.zip`).
    */
   archiveNameSuffix?: string;
+
+  /**
+   * 210 Phase 0: decision-provider policy block (requirement 5.2).
+   * Attached ONLY when explicitly configured — unconfigured projects keep
+   * baseline output equivalence (all new fields undefined / absent).
+   */
+  decisionPolicy?: DecisionPolicyConfig;
+
+  /**
+   * 210 Phase 0: opt-in dual stage watchdog block (requirement 5.2).
+   * Attached ONLY when explicitly configured.
+   */
+  watchdog?: WatchdogConfig;
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -1542,6 +1690,13 @@ export interface VerifyJsonConfig {
    * If not found, verification is skipped (no advance, no verifyAttempts increment).
    */
   completionMarker?: string;
+
+  /**
+   * 210 Phase 0: global commit-proof reconciliation switch (verify level).
+   * Stage-level `stages[stage].verify.requireCommitProof` overrides this value.
+   * Default: undefined (= false).
+   */
+  requireCommitProof?: boolean;
 }
 
 /**
@@ -1725,6 +1880,19 @@ export interface PipelineJsonConfig {
    * The scanner ALWAYS adds the constant `.pi/audit` directory on top.
    */
   archive?: ArchiveJsonConfig;
+
+  /**
+   * 210 Phase 0: decision-provider policy block (requirement 5.2).
+   * Block presence without explicit `enabled: false` is normalized to `true`
+   * by the loader ("configured = effective").
+   */
+  decisionPolicy?: DecisionPolicyConfig;
+
+  /**
+   * 210 Phase 0: opt-in dual stage watchdog block (requirement 5.2).
+   * `enabled` must be explicitly `true` to activate.
+   */
+  watchdog?: WatchdogConfig;
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────
@@ -1739,6 +1907,7 @@ export type HookEvent =
   | "tool_call"
   | "tool_result"
   | "agent_settled"
+  | "message_end"
   | "session_shutdown";
 
 /**
@@ -1752,6 +1921,8 @@ export type HookResultMap = {
   tool_call: ToolCallEventResult;
   tool_result: ToolResultEventResult;
   agent_settled: void;
+  /** 210 Phase 0 (R2): per-message usage aggregation hook (no result value). */
+  message_end: void;
   session_shutdown: void;
 };
 

@@ -9,6 +9,8 @@ import type {
   ArchiveJsonConfig,
   ConfirmConfig,
   ConfirmMode,
+  DecisionPolicyConfig,
+  DecisionPolicyRule,
   DocsJsonConfig,
   PipelineConfig,
   PipelineJsonConfig,
@@ -17,7 +19,9 @@ import type {
   StageConfig,
   StageJsonConfig,
   StartStageMode,
+  WatchdogConfig,
 } from "../types";
+import { validateDecisionPolicy } from "./decision-policy/policy-config";
 import {
   CONFIG_DIR_NAME,
   PI_PREFIX,
@@ -42,6 +46,26 @@ const VALID_STAGES = new Set<PipelineStage>([
   "fix",
   "awaiting_human",
   "completed",
+]);
+
+/**
+ * 210 Phase 0: documented blockedReason keys eligible for policy rules.
+ * Keys NOT listed here still warn (requirement 5.2: forward compatibility for
+ * future reasons) but are KEPT — an unknown reason with no configured rule
+ * simply behaves as "no entry" at resolve time.
+ */
+const KNOWN_POLICY_REASONS = new Set<string>([
+  "*",
+  "max_loop_cycles",
+  "confirm_awaiting_human",
+  "dismiss_overflow",
+  "loop_halt_overflow",
+  "loop_overflow",
+  "transient_retry_overflow",
+  "verify_attempt_overflow",
+  "verify_config_error",
+  "verify_failure_loop_overflow",
+  "violation_overflow",
 ]);
 
 export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
@@ -113,6 +137,10 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     // 206 Phase 0: docs.stageDirs and archive scan/dest configuration
     docs: parseDocsConfig(json.docs),
     archive: parseArchiveConfig(json.archive),
+    // 210 Phase 0: pass BLOCKS through verbatim; structural parsing +
+    // fail-fast validation happen in resolvePipelineConfig (single source).
+    decisionPolicy: json.decisionPolicy as PipelineJsonConfig["decisionPolicy"],
+    watchdog: json.watchdog as PipelineJsonConfig["watchdog"],
   };
 }
 
@@ -718,6 +746,172 @@ export function parseArchiveConfig(raw: unknown): ArchiveJsonConfig | undefined 
 }
 
 /**
+ * 210 Phase 0: Parses and validates one decision-policy rule from JSON config.
+ * Keeps structurally object-shaped rules; deeper legality (allowed decision
+ * per reason, choose_stage/set_budget parameter requirements) is enforced by
+ * `validateDecisionPolicy` throwing at load time.
+ * Returns undefined when the rule itself is not an object.
+ */
+function parseDecisionPolicyRule(raw: unknown): DecisionPolicyRule | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid decisionPolicy rule — expected object, got ${typeof raw}, ignoring rule`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const rule: DecisionPolicyRule = {
+    // Cast is safe here: validateDecisionPolicy rejects values outside the
+    // allowed decision set at load time (fail-fast, Q6=A).
+    decision: obj.decision as DecisionPolicyRule["decision"],
+  };
+  if (obj.targetStage !== undefined) rule.targetStage = obj.targetStage as DecisionPolicyRule["targetStage"];
+  if (obj.budgetValue !== undefined) rule.budgetValue = obj.budgetValue as DecisionPolicyRule["budgetValue"];
+  return rule;
+}
+
+/**
+ * 210 Phase 0: Parses the stage-level `verify.requireCommitProof` entry.
+ * Valid boolean → `{ requireCommitProof: v }`; missing/undefined → `{}`;
+ * non-boolean → warn + `{}` (option key omitted).
+ */
+function parseRequireCommitProofEntry(
+  raw: unknown,
+): { requireCommitProof?: boolean } {
+  if (raw === undefined) return {};
+  if (typeof raw !== "boolean") {
+    console.warn(
+      `[pi-pipeline] Invalid verify.requireCommitProof "${String(raw)}" — expected boolean, ignoring`,
+    );
+    return {};
+  }
+  return { requireCommitProof: raw };
+}
+
+/**
+ * 210 Phase 0: Parses the decisionPolicy block from pipeline_loop.json.
+ *
+ * - `enabled` normalized: block present WITHOUT explicit `false` → `true`
+ *   ("configured = effective"').
+ * - `decisionWaitTimeoutMs` must be a positive integer (invalid → warn + undefined).
+ * - Unknown byReason keys warn (forward compatible) but are kept.
+ * - Returns undefined when the block itself is absent/invalid, so
+ *   unconfigured projects stay baseline-equivalent.
+ */
+function parseDecisionPolicyConfig(raw: unknown): DecisionPolicyConfig | undefined {  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid decisionPolicy config — expected object, got ${typeof raw}, ignoring`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const result: DecisionPolicyConfig = {
+    enabled: obj.enabled !== false,
+  };
+
+  if (obj.decisionWaitTimeoutMs !== undefined) {
+    if (typeof obj.decisionWaitTimeoutMs === "number" && Number.isInteger(obj.decisionWaitTimeoutMs) && obj.decisionWaitTimeoutMs > 0) {
+      result.decisionWaitTimeoutMs = obj.decisionWaitTimeoutMs;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid decisionPolicy.decisionWaitTimeoutMs "${String(obj.decisionWaitTimeoutMs)}" — expected positive integer, ignoring`,
+      );
+    }
+  }
+
+  if (obj.byReason !== undefined && obj.byReason !== null && typeof obj.byReason === "object" && !Array.isArray(obj.byReason)) {
+    const byReason: Record<string, DecisionPolicyRule> = {};
+    for (const [reason, ruleRaw] of Object.entries(obj.byReason as Record<string, unknown>)) {
+      if (!KNOWN_POLICY_REASONS.has(reason)) {
+        console.warn(
+          `[pi-pipeline] Unknown decisionPolicy.byReason reason "${reason}" — kept forward-compatible (behaves as no rule)`,
+        );
+      }
+      const rule = parseDecisionPolicyRule(ruleRaw);
+      if (rule) byReason[reason] = rule;
+    }
+    if (Object.keys(byReason).length > 0) result.byReason = byReason;
+  }
+
+  if (obj.stages !== undefined && obj.stages !== null && typeof obj.stages === "object" && !Array.isArray(obj.stages)) {
+    const stages: NonNullable<DecisionPolicyConfig["stages"]> = {};
+    for (const [stage, blockRaw] of Object.entries(obj.stages as Record<string, unknown>)) {
+      if (!VALID_STAGES.has(stage as PipelineStage)) {
+        console.warn(
+          `[pi-pipeline] Unknown decisionPolicy.stages stage "${stage}" — ignoring`,
+        );
+        continue;
+      }
+      const block = blockRaw as Record<string, unknown> | undefined;
+      let stageByReason: Record<string, DecisionPolicyRule> | undefined;
+      if (block?.byReason !== undefined && block.byReason !== null && typeof block.byReason === "object" && !Array.isArray(block.byReason)) {
+        stageByReason = {};
+        for (const [reason, ruleRaw] of Object.entries(block.byReason as Record<string, unknown>)) {
+          if (!KNOWN_POLICY_REASONS.has(reason)) {
+            console.warn(
+              `[pi-pipeline] Unknown decisionPolicy.stages.${stage}.byReason reason "${reason}" — kept forward-compatible (behaves as no rule)`,
+            );
+          }
+          const rule = parseDecisionPolicyRule(ruleRaw);
+          if (rule) stageByReason[reason] = rule;
+        }
+        if (Object.keys(stageByReason).length === 0) stageByReason = undefined;
+      }
+      if (stageByReason) stages[stage as PipelineStage] = { byReason: stageByReason };
+    }
+    if (Object.keys(stages).length > 0) result.stages = stages;
+  }
+
+  return result;
+}
+
+/**
+ * 210 Phase 0: Parses the watchdog block from pipeline_loop.json (opt-in).
+ *
+ * - `enabled` must be explicitly `true` to activate (a mere block presence
+ *   does NOT enable the watchdog — unlike decisionPolicy).
+ * - Thresholds must be positive integers (invalid → warn + undefined).
+ * - Returns undefined when the block is absent/invalid.
+ */
+function parseWatchdogConfig(raw: unknown): WatchdogConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid watchdog config — expected object, got ${typeof raw}, ignoring`,
+    );
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const result: WatchdogConfig = {};
+
+  if (obj.enabled !== undefined) {
+    if (typeof obj.enabled === "boolean") {
+      result.enabled = obj.enabled;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid watchdog.enabled "${String(obj.enabled)}" — expected boolean, ignoring`,
+      );
+    }
+  }
+
+  for (const key of ["stageTimeoutMs", "stageIdleTimeoutMs"] as const) {
+    if (obj[key] !== undefined) {
+      if (typeof obj[key] === "number" && Number.isInteger(obj[key]) && obj[key] > 0) {
+        result[key] = obj[key];
+      } else {
+        console.warn(
+          `[pi-pipeline] Invalid watchdog.${key} "${String(obj[key])}" — expected positive integer, ignoring`,
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * 206 Phase 0: Derives the resolved archive scan directories.
  *
  * Priority:
@@ -904,6 +1098,9 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
             mode: parseVerifyMode(jsonStage.verify.mode),
             selfVerifySkip: jsonStage.verify.selfVerifySkip ?? false,
             completionMarker: jsonStage.verify.completionMarker,
+            // 210 Phase 0: commit-proof switch; attached ONLY when configured
+            // so unconfigured deep-equality assertions stay untouched.
+            ...parseRequireCommitProofEntry(jsonStage.verify.requireCommitProof),
           }
         : undefined,
       confirm: parseConfirmConfig(jsonStage.confirm),
@@ -925,6 +1122,16 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
   // 207: parse the archive config ONCE and reuse it for archiveDirs /
   // archiveDest / archiveNameSuffix below (previously parsed twice).
   const archiveConfig = parseArchiveConfig(json.archive);
+
+  // 210 Phase 0: decision-provider policy + watchdog. Parsed ONCE here
+  // (handles both loadJsonConfig output and directly constructed json).
+  // Fail-fast validation runs ONLY when decisionPolicy is explicitly
+  // configured — unconfigured projects never trigger it (zero breakage).
+  const decisionPolicyConfig = parseDecisionPolicyConfig(json.decisionPolicy);
+  if (decisionPolicyConfig) {
+    validateDecisionPolicy(decisionPolicyConfig);
+  }
+  const watchdogConfig = parseWatchdogConfig(json.watchdog);
 
   // Post-process: reconnect nextStage chains around disabled stages
   if (disabledStages.size > 0) {
@@ -1038,5 +1245,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     // (diagnostic only). Attached ONLY when non-empty so existing deep-equality
     // assertions on the config shape stay untouched.
     ...(Object.keys(drOriginalTargets).length > 0 ? { designReviewOriginalTargets: drOriginalTargets } : {}),
+    // 210 Phase 0: auto-configuration blocks; attached ONLY when configured.
+    ...(decisionPolicyConfig ? { decisionPolicy: decisionPolicyConfig } : {}),
+    ...(watchdogConfig && Object.keys(watchdogConfig).length > 0 ? { watchdog: watchdogConfig } : {}),
   };
 }

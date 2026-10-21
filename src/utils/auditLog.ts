@@ -153,6 +153,30 @@ function withPipelineId<T extends Record<string, unknown>>(
  * @returns The resolved absolute audit log directory path
  */
 function auditLogDirFor(pipelineId: string): string {
+  // Legacy exact behavior when auditDirPath is uninitialized (writers guard
+  // on it and never write); use the shared constructor otherwise.
+  if (!auditDirPath) {
+    const segment = pipelineId && pipelineId.length > 0 ? pipelineId : "system";
+    return path.join(auditDirPath, segment, "log");
+  }
+  return auditLogDirForPipeline(pipelineId) as string;
+}
+
+/**
+ * 210 Phase 0: PUBLIC accessor for the audit log directory of a pipeline.
+ * Consumed by status/terminal views (Phase 4/5) to surface the absolute
+ * audit directory without duplicating path construction logic.
+ *
+ * - Uninitialized audit dir (initAuditLog not called / fallback template)
+ *   → null (caller writes "unavailable" / "N/A").
+ * - pipelineId non-empty → auditDirPath / pipelineId / log
+ * - pipelineId empty → auditDirPath / system / log
+ *
+ * @param pipelineId - The pipelineId to route to (falls back to "system")
+ * @returns Absolute directory path, or null when audit logging is uninitialized
+ */
+export function auditLogDirForPipeline(pipelineId: string): string | null {
+  if (!auditDirPath) return null;
   const segment = pipelineId && pipelineId.length > 0 ? pipelineId : "system";
   return path.join(auditDirPath, segment, "log");
 }

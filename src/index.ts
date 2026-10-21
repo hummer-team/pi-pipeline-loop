@@ -151,7 +151,9 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     let ownerEscalationObserverAttached = false;
     const hooks = [
       createSessionStarter(config),
-      createPromptInjector(config),
+      // 210 Phase 0: execFn injected here (consumed by Phase 6 review change
+      // evidence) — same wrapped pi.exec() the verifiers use.
+      createPromptInjector(config, { execFn }),
       createToolGuard(config, { execFn }),
       createLoopBreaker(config),
       createAgentSettled(config, { execFn }),

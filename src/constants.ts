@@ -72,6 +72,25 @@ export const ALLOWED_WRITE_ALL = "**";
 export const DEFAULT_SPAWN_WAIT_TIMEOUT_MS = 120_000;
 
 /**
+ * 210 Phase 0: default human-slot decision-wait timer for the decision
+ * provider chain (requirement 5.2). Overridable via
+ * `decisionPolicy.decisionWaitTimeoutMs`.
+ */
+export const DEFAULT_DECISION_WAIT_TIMEOUT_MS = 600_000;
+
+/**
+ * 210 Phase 0: default stage no-progress idle ceiling for the dual watchdog
+ * (requirement 5.2). Overridable via `watchdog.stageIdleTimeoutMs`.
+ */
+export const DEFAULT_STAGE_IDLE_TIMEOUT_MS = 900_000;
+
+/**
+ * 210 Phase 0: default stage wall-clock ceiling for the dual watchdog
+ * (requirement 5.2). Overridable via `watchdog.stageTimeoutMs`.
+ */
+export const DEFAULT_STAGE_TIMEOUT_MS = 5_400_000;
+
+/**
  * Poll interval (ms) for the deferred-spawn fallback loop.
  *
  * When a new stage spawn is deferred because a same-agent subagent in another

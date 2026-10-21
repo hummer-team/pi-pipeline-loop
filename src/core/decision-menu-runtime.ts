@@ -34,6 +34,7 @@ export type DecisionMenuFailureReason =
   | "input_invalid"      // ui.input value rejected by validateBudgetValue (retryable, not audited)
   | "unknown_option"     // select returned a label that is not in the menu
   | "stage_not_found"    // choose_stage target label did not match a stage
+  | "stale_state"        // 210 Phase 0 (B-2): pipelineId changed or flow state left "blocked" while the menu was presented — zero-side-effect bail-out
   | "guard_rejected";    // executeDecision returned success:false
 
 /** Result detail of a single menu presentation attempt (208 F1/F2). */

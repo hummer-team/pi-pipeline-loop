@@ -23,7 +23,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
+import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
 import { planDocRelPathFromRequirementDoc } from "./naming/doc-naming";
@@ -796,7 +796,22 @@ export async function buildLowBudgetWarning(config: PipelineConfig, meta: Sessio
   return `## ⚠️ LOW BUDGET WARNING\n\nRemaining rework rounds: **${remainingRounds}/${maxCycles}**. Next budget exceed will freeze the pipeline.\n`;
 }
 
-export function createPromptInjector(config: PipelineConfig): Hook<"before_agent_start"> {
+/**
+ * 210 Phase 0: dependency-injectable deps for the prompt injector factory.
+ * `execFn` is consumed from Phase 6 onward (deterministic review change
+ * evidence); Phase 0 accepts it without behavioral change.
+ */
+export interface PromptInjectorDeps {
+  /** DI shell-execution function (wrapped pi.exec); absent → evidence degraded */
+  execFn?: ExecFn;
+}
+
+export function createPromptInjector(
+  config: PipelineConfig,
+  deps?: PromptInjectorDeps,
+): Hook<"before_agent_start"> {
+  // 210 Phase 0: deps accepted without consumption yet; Phase 6 reads deps.execFn.
+  void deps;
   return {
     event: "before_agent_start",
     handler: async (ctx: RuntimeCtx): Promise<BeforeAgentStartEventResult | void> => {

@@ -13,7 +13,7 @@
  * converge on freezeAndPrompt, ensuring consistent state transitions and audit.
  */
 
-import type { PipelineConfig, SessionMeta, FlowState, PipelineStage } from "../types";
+import type { PipelineConfig, SessionMeta, FlowState, PipelineStage, PipelineDecision } from "../types";
 import { safeWriteAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { effectiveMax, deriveReworkLoopGate, remainingRoundsOf } from "../utils/stage-visit";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
@@ -128,7 +128,9 @@ export interface FlowStateCtx {
 // ─── Decision Types ─────────────────────────────────────────────────────────
 
 /** User decision identifiers for the pipeline decision menu. */
-export type PipelineDecision = "resume" | "skip" | "rollback" | "restart" | "abort" | "choose_stage" | "set_budget" | "rewind_last_round";
+// 210 Phase 0: single source of truth moved to types.ts (required by the
+// decision-policy contract); this re-export keeps existing importers intact.
+export type { PipelineDecision } from "../types";
 
 /** Decision menu labels (English, matching TUI display). */
 const DECISION_LABELS: Record<PipelineDecision, string> = {
