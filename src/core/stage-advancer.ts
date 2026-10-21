@@ -25,6 +25,13 @@ import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn, ConfirmM
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
 import { autoAdvanceAfterVerify } from "./verify-advance";
+// 210 Phase 4: single-point stage-exit / run-aggregate evidence for audit enrichment
+import {
+  collectStageExitEvidence,
+  recordStageStats,
+  serializeStageStats,
+  collectRunAggregate,
+} from "./stage-evidence";
 import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { applyVerifyFail } from "./verify-advance";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, setAuditPipelineContext } from "../utils/auditLog";
@@ -482,6 +489,10 @@ async function routeConfirmReject(
     // so a leftover stamp must not leak into the target stage's deferral window.
     confirmGateDeferredAt: undefined,
   };
+  // 210 Phase 4: capture the rejected stage's entry clock BEFORE the commit —
+  // the patch below rewrites `stageStartTime` (and under shared-store mocks the
+  // caller's `meta` object itself), so reading it after would report ~0 duration.
+  const rejectStageEnteredAt = meta.stageStartTime ?? 0;
   const freshForAnchor = sessionForSpawn.getMeta?.() ?? meta;
   const boundExit = commitBoundStageExit({
     session: ctx.session as Parameters<typeof commitBoundStageExit>[0]["session"],
@@ -512,11 +523,14 @@ async function routeConfirmReject(
 
   // Use custom audit event if provided (e.g. "review_auto_route_fix" to avoid double-writing)
   const auditEvent = opts?.auditEvent ?? "confirm_rejected";
+  // 210 Phase 4: stage timing on the reject audit (entry clock frozen pre-commit above).
   await writeAuditLog(auditEvent, {
     pipelineId: meta.pipelineId,
     stage: fromStage,
     toStage,
     confirmRejections: String(nextCount),
+    stageEnteredAt: String(rejectStageEnteredAt),
+    durationMs: String(rejectStageEnteredAt > 0 ? Math.max(0, Date.now() - rejectStageEnteredAt) : 0),
     ...(opts?.reason ? { reason: opts.reason } : {}),
   });
 
@@ -2052,6 +2066,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
         transientRetryCount: undefined, // 189 Bug 1: clear retry counter on stage transition
       };
+      // 210 Phase 4: freeze the PRE-advance values BEFORE the commit below.
+      // Production `getMeta` returns a snapshot, but mock/shared-store sessions
+      // mutate the same object in place — the copy makes the exit evidence and
+      // the terminal duration correct under BOTH semantics.
+      const preAdvanceSnap: SessionMeta = { ...meta };
       const freshForAnchor = ctx.session.getMeta() ?? meta;
       const boundExit = commitBoundStageExit({
         session: ctx.session,
@@ -2079,6 +2098,11 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         ctx.session.updateMeta(transitionPatch);
       }
 
+      // 210 Phase 4: single-point exit evidence, captured from the frozen
+      // PRE-advance snapshot (its `stageStartTime` is the exiting stage's entry
+      // clock; the committed patch already rewrote the session-side clock).
+      const exitEvidence = await collectStageExitEvidence(preAdvanceSnap);
+
       if (resolvedTarget === null || resolvedTarget === "completed") {
         ui.clearStage(ctx);
         // Phase 4 (169) P2-4 fix: re-read fresh meta for terminal audit event.
@@ -2086,10 +2110,19 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // to stageVisitOrder), so using it would produce audit fields that disagree with
         // the meta.json that was just written. Fresh meta keeps audit/data consistent.
         const freshMetaForAudit = ctx.session.getMeta() as SessionMeta;
+        // 210 Phase 4: full run aggregate — counters / visit order / summaries come
+        // from fresh meta, the last stage's entry clock from the pre-advance snapshot
+        // (third arg), so the final stage's durationMs is computed correctly.
+        const terminalAggregate = await collectRunAggregate(
+          freshMetaForAudit,
+          currentStage,
+          preAdvanceSnap.stageStartTime ?? 0,
+        );
         await safeWriteStageAudit(config, "pipeline_completed", freshMetaForAudit, {
           finalStage: currentStage,
           loopCycleCount: String(freshMetaForAudit.loopCycleCount ?? 0),
           stageVisitOrder: (freshMetaForAudit.stageVisitOrder ?? []).join(","),
+          ...terminalAggregate,
         });
         // 210 Phase 2: `completed` is dormant — no stage clock may survive it.
         clearStageWatchdog(freshMetaForAudit.pipelineId);
@@ -2120,10 +2153,25 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       );
 
       // Success audit for non-terminal advance (after spawn to maintain ordering)
+      // 210 Phase 4: persist the exited stage's stats first (post-advance meta as
+      // base so stageStats accumulates across the run), then enrich the advance
+      // audit with the exit evidence (195 §5.1). Terminal `completed` exits keep
+      // their stats in the aggregate instead (plan Phase 4, task 2).
+      recordStageStats(ctx.session, freshMetaForSpawn, currentStage, exitEvidence);
+      const metaAfterRecord = (ctx.session.getMeta() ?? freshMetaForSpawn) as SessionMeta;
       await safeWriteStageAudit(config, "stage_advance", meta, {
         fromStage: currentStage,
         toStage: resolvedTarget,
         override: argNextStage ? "yes" : "no",
+        stageEnteredAt: String(exitEvidence.stageEnteredAt),
+        durationMs: String(exitEvidence.durationMs),
+        verifyAttempts: String(exitEvidence.verifyAttempts),
+        confirmRejections: String(exitEvidence.confirmRejections),
+        loopCycleCount: String(exitEvidence.loopCycleCount),
+        summaryPath: exitEvidence.summaryPath,
+        commitIds: exitEvidence.commitIds.join(","),
+        evidenceUnavailable: exitEvidence.evidenceUnavailable ? "true" : "false",
+        stageStats: serializeStageStats(metaAfterRecord.stageStats),
       });
 
       // 210 Phase 2: the advance committed a NEW stage visit (`stageStartTime`

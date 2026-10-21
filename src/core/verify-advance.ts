@@ -28,6 +28,12 @@ import {
   commitBoundFailureRecord,
 } from "./stage-executor/transition-commit";
 import { computeResultKey } from "./stage-executor/run-state";
+import {
+  collectStageExitEvidence,
+  recordStageStats,
+  serializeStageStats,
+  collectRunAggregate,
+} from "./stage-evidence";
 import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
@@ -860,6 +866,29 @@ export async function autoAdvanceAfterVerify(
     skipPassAudit: options?.skipPassAudit,
   });
 
+  // 210 Phase 4: collect the exited stage's evidence from the PRE-advance snapshot
+  // (clearedMeta.stageStartTime is the exit stage's entry clock) and persist its
+  // stats before the enriched audit writes below. Collection stays ahead of the
+  // spawn so durationMs reflects the actual exit instant; the "spawn first, write
+  // audit after" ordering (G6) is unchanged.
+  const evidence = await collectStageExitEvidence(clearedMeta);
+  if (toStage && toStage !== "completed") {
+    recordStageStats(ctx.session, ctx.session.getMeta() ?? clearedMeta, fromStage, evidence);
+  }
+  // 210 Phase 4: shared extras for every stage_advance site in this function (195 §5.1).
+  // Values are flat strings — stageStats serialized as stage:durationMs:verify:confirm.
+  const exitExtras: Record<string, string> = {
+    stageEnteredAt: String(evidence.stageEnteredAt),
+    durationMs: String(evidence.durationMs),
+    verifyAttempts: String(evidence.verifyAttempts),
+    confirmRejections: String(evidence.confirmRejections),
+    loopCycleCount: String(evidence.loopCycleCount),
+    summaryPath: evidence.summaryPath,
+    commitIds: evidence.commitIds.join(","),
+    evidenceUnavailable: evidence.evidenceUnavailable ? "true" : "false",
+    stageStats: serializeStageStats((ctx.session.getMeta() ?? clearedMeta).stageStats),
+  };
+
   // G6 (188): Spawn subagent BEFORE audit writes to close the race window where
   // owner settle fires between currentStage update and pendingSpawns write.
   // When spawn succeeds (RPC or fallback), skip the generic wake to avoid dual execution.
@@ -877,6 +906,7 @@ export async function autoAdvanceAfterVerify(
         fromStage,
         toStage,
         method: "hook_auto_advance",
+        ...exitExtras,
       });
       const { emitDispatchConflictBlocked } = await import("../utils/dispatch-conflict-audit");
       await emitDispatchConflictBlocked("auto_advance", {
@@ -894,6 +924,7 @@ export async function autoAdvanceAfterVerify(
         fromStage,
         toStage,
         method: "hook_auto_advance",
+        ...exitExtras,
       });
       // Subagent spawned or deferred — skip generic wake to prevent dual execution.
       // deferred means the spawn is queued and will execute once the old twin settles;
@@ -914,12 +945,19 @@ export async function autoAdvanceAfterVerify(
       fromStage,
       toStage,
       method: "hook_auto_advance",
+      ...exitExtras,
     });
   } else {
+    // 210 Phase 4: terminal run aggregate (requirement 5.5). Counters / visit
+    // order / summaries come from the POST-advance fresh meta; the final
+    // stage's entry clock comes from the PRE-advance snapshot so the last
+    // stage's durationMs is computed correctly (plan Phase 4, task 2).
+    const aggregate = await collectRunAggregate(freshMeta, fromStage, clearedMeta.stageStartTime ?? 0);
     await writeStageAudit(config, "pipeline_completed", clearedMeta, {
       fromStage,
       finalStage: fromStage,
       method: "hook_auto_advance",
+      ...aggregate,
     });
   }
 

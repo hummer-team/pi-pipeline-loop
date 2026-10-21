@@ -30,6 +30,8 @@ import { isAuthorizationValid } from "./design-review/state";
 import { broadcastEscalation } from "../utils/escalation-bus";
 import type { EscalationPayload } from "../utils/escalation-bus";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "./meta-reset";
+// 210 Phase 4: run aggregate appended to the aborted terminal audit (requirement 5.5)
+import { collectRunAggregate } from "./stage-evidence";
 import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isFrozenMeta } from "./dormancy";
@@ -1235,6 +1237,15 @@ export async function markPipelineAborted(
     nextAction,
     reason,
   };
+
+  // 210 Phase 4: same run aggregate as pipeline_completed (requirement 5.5).
+  // `meta` is the snapshot at abort time, so `finalStageStartedAt` is the
+  // aborted stage's own entry clock; the completed guard / idempotent branches
+  // above stay untouched.
+  if (meta) {
+    const aggregate = await collectRunAggregate(meta, stage as PipelineStage, meta.stageStartTime ?? 0);
+    Object.assign(auditFields, aggregate);
+  }
 
   // Trigger identity (only include when present — fail-open)
   if (opts?.trigger) {
