@@ -119,6 +119,17 @@ interface ApplyVerifyPassOpts {
    * writing auto_verify_pass would misrepresent a skip as a real pass.
    */
   skipPassAudit?: boolean;
+  /**
+   * 210 review issue 3 (Medium): when true, `applyVerifyPass` itself emits the
+   * stage-exit evidence chain (`stage_usage` + the enriched `stage_advance`,
+   * or the terminal `pipeline_completed` aggregate) after the transition
+   * commits. The tool path (`pipeline_verify`) sets it; the hook path must NOT
+   * — `autoAdvanceAfterVerify` writes the same events itself because it
+   * interleaves the next-stage spawn with the audit writes (G6). The two paths
+   * share ONE evidence producer ({@link collectStageExitBundle}), so neither
+   * can drift from the other (requirement 5.11 #10 holds for verify.mode="tool").
+   */
+  emitExitEvidence?: boolean;
 }
 
 /**
@@ -214,6 +225,96 @@ function shouldEmitEnvBlockedFeedback(key: string, now: number): boolean {
   }
   lastEnvBlockedFeedback = { key, at: now };
   return true;
+}
+
+/**
+ * 210 review issue 3 (Medium): the SINGLE stage-exit evidence producer shared
+ * by BOTH verify exit paths (hook `autoAdvanceAfterVerify` and tool
+ * `applyVerifyPass`). It collects the exit evidence from the PRE-advance
+ * snapshot (`stageStartTime` is the exiting stage's entry clock), drains the
+ * in-process usage into meta (`takeStageUsageAuditFields`), persists the
+ * exited stage's stats on a forward exit (`recordStageStats`, post-advance
+ * meta as base so stageStats accumulates across the run) and renders the flat
+ * audit extras (writeStageAudit accepts `Record<string, string>` only — the
+ * stageStats list is serialized, never an object).
+ *
+ * The CALLERS own the audit writes so each path keeps its ordering contract:
+ * the hook path interleaves the next-stage spawn with the writes (G6), the
+ * tool path has no spawn and writes immediately ({@link
+ * emitVerifyStageExitEvidence}).
+ */
+async function collectStageExitBundle(
+  ctx: VerifyAdvanceCtx,
+  preAdvanceMeta: SessionMeta,
+  fromStage: PipelineStage,
+  toStage: PipelineStage | null,
+): Promise<{
+  usageFields: Record<string, string> | null;
+  exitExtras: Record<string, string>;
+}> {
+  const evidence = await collectStageExitEvidence(preAdvanceMeta);
+  // 210 Phase 7: null when no usage was ever recorded (synthetic contexts stay
+  // silent per the "no usage → no writes" rule).
+  const usageFields = takeStageUsageAuditFields(ctx.session, preAdvanceMeta.pipelineId, fromStage);
+  // Terminal exits (no next stage / `completed` target) keep their stats in the
+  // run aggregate instead (plan Phase 4, task 2).
+  if (toStage && toStage !== "completed") {
+    recordStageStats(ctx.session, ctx.session.getMeta() ?? preAdvanceMeta, fromStage, evidence);
+  }
+  // 210 Phase 4: shared extras for every stage_advance site (195 §5.1).
+  // Values are flat strings — stageStats serialized as stage:durationMs:verify:confirm.
+  const exitExtras: Record<string, string> = {
+    stageEnteredAt: String(evidence.stageEnteredAt),
+    durationMs: String(evidence.durationMs),
+    verifyAttempts: String(evidence.verifyAttempts),
+    confirmRejections: String(evidence.confirmRejections),
+    loopCycleCount: String(evidence.loopCycleCount),
+    summaryPath: evidence.summaryPath,
+    commitIds: evidence.commitIds.join(","),
+    evidenceUnavailable: evidence.evidenceUnavailable ? "true" : "false",
+    stageStats: serializeStageStats((ctx.session.getMeta() ?? preAdvanceMeta).stageStats),
+  };
+  return { usageFields, exitExtras };
+}
+
+/**
+ * 210 review issue 3 (Medium): tool-path stage-exit emitter — writes the same
+ * event pair the hook path writes (`stage_usage` + enriched `stage_advance`,
+ * or `stage_usage` + terminal `pipeline_completed` aggregate) using the shared
+ * {@link collectStageExitBundle}. Called from `applyVerifyPass` when
+ * `opts.emitExitEvidence` is set, right after the transition committed.
+ */
+async function emitVerifyStageExitEvidence(
+  ctx: VerifyAdvanceCtx,
+  preAdvanceMeta: SessionMeta,
+  fromStage: PipelineStage,
+  toStage: PipelineStage | null,
+  method: "tool" | "rule",
+): Promise<void> {
+  const { usageFields, exitExtras } = await collectStageExitBundle(ctx, preAdvanceMeta, fromStage, toStage);
+  if (usageFields) {
+    await writeStageAudit(ctx.config, "stage_usage", preAdvanceMeta, usageFields);
+  }
+  if (toStage && toStage !== "completed") {
+    await writeStageAudit(ctx.config, "stage_advance", preAdvanceMeta, {
+      fromStage,
+      toStage,
+      method: `verify_${method}`,
+      ...exitExtras,
+    });
+    return;
+  }
+  // Terminal exit: counters / visit order / summaries come from the POST-exit
+  // fresh meta; the final stage's entry clock comes from the pre-advance
+  // snapshot so its durationMs is computed correctly (plan Phase 4, task 2).
+  const freshMeta = ctx.session.getMeta() ?? preAdvanceMeta;
+  const aggregate = await collectRunAggregate(freshMeta, fromStage, preAdvanceMeta.stageStartTime ?? 0, ctx.config);
+  await writeStageAudit(ctx.config, "pipeline_completed", preAdvanceMeta, {
+    fromStage,
+    finalStage: fromStage,
+    method: `verify_${method}`,
+    ...aggregate,
+  });
 }
 
 /**
@@ -399,6 +500,14 @@ export async function applyVerifyPass(
       });
     }
 
+    // 210 review issue 3 (Medium): the transition COMMITTED — tool-mode exits
+    // must produce the same evidence chain (stage_usage + enriched
+    // stage_advance / terminal aggregate) as the hook path. No spawn is
+    // interleaved here, so the writes run straight after the commit.
+    if (opts.emitExitEvidence) {
+      await emitVerifyStageExitEvidence(ctx, meta, stageName, nextStage, opts.method);
+    }
+
     // TUI stage transition output (gated by output.pipelineStage)
     opts.ui?.transition(ctx, stageName, nextStage);
 
@@ -429,6 +538,14 @@ export async function applyVerifyPass(
       rulesParsed: verifyResult?.rulesParsed ?? false,
       selfVerifySkip: verifyResult?.selfVerifySkip ?? false,
     });
+  }
+
+  // 210 review issue 3 (Medium): tool-mode terminal exits produce the same
+  // evidence chain (stage_usage + `pipeline_completed` aggregate) as the hook
+  // path — requirement 5.11 #10 holds at every stage exit, not only on
+  // forward advances.
+  if (opts.emitExitEvidence) {
+    await emitVerifyStageExitEvidence(ctx, meta, stageName, null, opts.method);
   }
 
   if (opts.handleTerminal && opts.returnResult) {
@@ -868,33 +985,14 @@ export async function autoAdvanceAfterVerify(
     skipPassAudit: options?.skipPassAudit,
   });
 
-  // 210 Phase 4: collect the exited stage's evidence from the PRE-advance snapshot
-  // (clearedMeta.stageStartTime is the exit stage's entry clock) and persist its
-  // stats before the enriched audit writes below. Collection stays ahead of the
-  // spawn so durationMs reflects the actual exit instant; the "spawn first, write
-  // audit after" ordering (G6) is unchanged.
-  const evidence = await collectStageExitEvidence(clearedMeta);
-  // 210 Phase 7: drain in-process usage into meta AT the stage exit (the flush
-  // inside also feeds the terminal aggregate read below) and render the
-  // exiting stage's cumulative snapshot for the `stage_usage` audit. Null when
-  // no usage was ever recorded (synthetic contexts stay silent).
-  const usageFields = takeStageUsageAuditFields(ctx.session, clearedMeta.pipelineId, fromStage);
-  if (toStage && toStage !== "completed") {
-    recordStageStats(ctx.session, ctx.session.getMeta() ?? clearedMeta, fromStage, evidence);
-  }
-  // 210 Phase 4: shared extras for every stage_advance site in this function (195 §5.1).
-  // Values are flat strings — stageStats serialized as stage:durationMs:verify:confirm.
-  const exitExtras: Record<string, string> = {
-    stageEnteredAt: String(evidence.stageEnteredAt),
-    durationMs: String(evidence.durationMs),
-    verifyAttempts: String(evidence.verifyAttempts),
-    confirmRejections: String(evidence.confirmRejections),
-    loopCycleCount: String(evidence.loopCycleCount),
-    summaryPath: evidence.summaryPath,
-    commitIds: evidence.commitIds.join(","),
-    evidenceUnavailable: evidence.evidenceUnavailable ? "true" : "false",
-    stageStats: serializeStageStats((ctx.session.getMeta() ?? clearedMeta).stageStats),
-  };
+  // 210 Phase 4 / review issue 3 (Medium): collect the exited stage's evidence
+  // through the SAME producer the tool path uses (one stage-exit semantics,
+  // no drift). Evidence is taken from the PRE-advance snapshot (clearedMeta
+  // .stageStartTime is the exit stage's entry clock) and the stats persist
+  // ahead of the spawn so durationMs reflects the actual exit instant; the
+  // "spawn first, write audit after" ordering (G6) is unchanged — only the
+  // stage_advance / pipeline_completed writes stay below the spawn.
+  const { usageFields, exitExtras } = await collectStageExitBundle(ctx, clearedMeta, fromStage, toStage);
 
   // 210 Phase 7: exactly one `stage_usage` per hook-path stage exit — the
   // exiting stage's cumulative snapshot (null when no usage was ever recorded,

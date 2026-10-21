@@ -586,3 +586,125 @@ describe("requestDecision at the reload / command entries (210 review issue 3)",
     expect(resolveDecisionReason(makeTestMeta({ currentStage: "review", blockedReason: undefined }))).toBe("unknown");
   });
 });
+
+// ─── 210 review issue 4 (Medium): no-UI stale-snapshot guard ─────────────────
+//
+// Replay / settle / command entries snapshot meta BEFORE several awaits and
+// then enter the no-UI policy branch. Without the triple guard a stale
+// snapshot could resolve its reason into a policy decision for a SUPERSEDED
+// pipeline (restart race) or abort a NEW pipeline with
+// `decision_provider_absent` — headless, nobody notices. The guard must bail
+// with ONE warn audit and ZERO state side effects.
+
+describe("no-UI policy stale-state guard (210 review issue 4)", () => {
+  /** Headless ctx whose LIVE meta is `live` — deliberately distinct from the snapshot. */
+  function makeLiveCtx(live: SessionMeta | undefined) {
+    const updates: Partial<SessionMeta>[] = [];
+    return {
+      session: {
+        getMeta: () => live,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          updates.push(patch);
+          if (live) Object.assign(live, patch);
+          return live;
+        },
+      },
+      ui: { notify: () => {} }, // no select → no-UI branch
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+      updates,
+    } as unknown as FlowStateCtx & { updates: Partial<SessionMeta>[] };
+  }
+
+  it("restart race (pipelineId changed) → stale_state audit, ZERO side effects", async () => {
+    const snapshot = frozenMeta();
+    const live = makeTestMeta({ pipelineId: uniquePipelineId(), flowState: "running" });
+    const ctx = makeLiveCtx(live);
+
+    const res = await requestDecision(ctx, snapshot, policyConfig({
+      byReason: { violation_overflow: { decision: "restart" } },
+    }), "violation_overflow", { source: "replay" });
+
+    expect(res).toBeNull();
+    const stale = auditEvents("decision_policy_stale_state");
+    expect(stale.length).toBe(1);
+    expect(stale[0]?.message?.failureReason).toBe("stale_state");
+    expect(stale[0]?.message?.pipelineId).toBe(snapshot.pipelineId);
+    expect(stale[0]?.level).toBe("warn");
+    // Zero side effects: no policy decision, no abort, no meta writes.
+    expect(auditEvents("pipeline_decision").length).toBe(0);
+    expect(auditEvents("pipeline_session_aborted").length).toBe(0);
+    expect(getFlowState(live)).toBe("running");
+    expect(live.terminateReason).toBeUndefined();
+    expect(ctx.updates.length).toBe(0);
+  });
+
+  it("same pipeline already resolved (live no longer a frozen decision point) → stale bail", async () => {
+    const live = frozenMeta();
+    const snapshot = { ...live }; // captured BEFORE a concurrent resume flipped live to running
+    live.flowState = "running";
+    live.blockedReason = undefined;
+    const ctx = makeLiveCtx(live);
+
+    const res = await requestDecision(ctx, snapshot, policyConfig({
+      byReason: { violation_overflow: { decision: "restart" } },
+    }), "violation_overflow", { source: "settle" });
+
+    expect(res).toBeNull();
+    expect(auditEvents("decision_policy_stale_state").length).toBe(1);
+    expect(auditEvents("pipeline_decision").length).toBe(0);
+    expect(getFlowState(live)).toBe("running");
+    expect(ctx.updates.length).toBe(0);
+  });
+
+  it("live meta absent (session re-initialized) → stale bail, never aborts a foreign pipeline", async () => {
+    const snapshot = frozenMeta();
+    const ctx = makeLiveCtx(undefined);
+
+    const res = await requestDecision(ctx, snapshot, policyConfig({}), "violation_overflow", { source: "command" });
+
+    expect(res).toBeNull();
+    expect(auditEvents("decision_policy_stale_state").length).toBe(1);
+    expect(auditEvents("pipeline_session_aborted").length).toBe(0);
+    expect(ctx.updates.length).toBe(0);
+  });
+
+  it("live blockedReason re-anchored: rule resolves from the FRESH freeze reason", async () => {
+    const live = frozenMeta({ blockedReason: "max_loop_cycles", loopCycleCount: 3 });
+    // Stale snapshot still carries the OLD freeze reason (J6 re-freeze race).
+    const snapshot = { ...live, blockedReason: "violation_overflow" };
+    const ctx = makeLiveCtx(live);
+
+    const res = await requestDecision(ctx, snapshot, policyConfig({
+      byReason: {
+        violation_overflow: { decision: "restart" },
+        max_loop_cycles: { decision: "abort" },
+      },
+    }), "violation_overflow", { source: "replay" });
+
+    expect(res).toBeNull();
+    expect(auditEvents("decision_policy_stale_state").length).toBe(0);
+    const decision = auditEvents("pipeline_decision")[0];
+    expect(decision?.message?.decision).toBe("abort"); // live reason wins
+    expect(decision?.message?.decisionSource).toBe("policy");
+    expect(decision?.message?.trigger).toBe("no_ui");
+    expect(getFlowState(live)).toBe("aborted");
+  });
+
+  it("confirm-gate freeze WITHOUT persisted blockedReason keeps the caller-supplied reason", async () => {
+    // awaiting_human freezes carry no blockedReason (resolveDecisionReason
+    // maps them); the guard must fall back to the passed reason, not to
+    // "undefined".
+    const live = frozenMeta({ blockedReason: undefined, currentStage: "awaiting_human" });
+    const ctx = makeLiveCtx(live);
+
+    const res = await requestDecision(ctx, live, policyConfig({
+      byReason: { confirm_awaiting_human: { decision: "abort" } },
+    }), "confirm_awaiting_human", { source: "replay" });
+
+    expect(res).toBeNull();
+    expect(auditEvents("decision_policy_stale_state").length).toBe(0);
+    const decision = auditEvents("pipeline_decision")[0];
+    expect(decision?.message?.decision).toBe("abort");
+    expect(decision?.message?.trigger).toBe("no_ui");
+  });
+});

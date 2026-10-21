@@ -18,8 +18,11 @@ import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStageAdvancer, maybeHandleConfirmGate } from "../../core/stage-advancer";
-import { autoAdvanceAfterVerify } from "../../core/verify-advance";
+// 210 review issue 3: applyVerifyPass gains the tool-mode exit evidence chain.
+import { applyVerifyPass, autoAdvanceAfterVerify } from "../../core/verify-advance";
 import { markPipelineAborted } from "../../core/flow-state";
+// 210 review issue 3: touch the usage ledger so `stage_usage` has a snapshot.
+import { createUsageRecorder } from "../../core/usage-recorder";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import { initAuditLog, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, auditLogFileFor } from "../helpers";
@@ -417,5 +420,209 @@ describe("210 Phase 4 audit enrichment: pipeline_session_aborted", () => {
 
     expect(events.some((e) => e.event === "pipeline_abort_skipped_completed")).toBe(true);
     expect(events.some((e) => e.event === "pipeline_session_aborted")).toBe(false);
+  });
+});
+
+// ─── Exit path 4: tool-mode verify exit (210 review issue 3) ─────────────────
+//
+// `stages[x].verify.mode = "tool"` exits went through `applyVerifyPass`
+// directly and produced NO exit evidence (no stage_usage / stageStats /
+// enriched stage_advance), violating requirement 5.11 #10. The fix gates
+// `applyVerifyPass` with `emitExitEvidence` and routes BOTH paths through the
+// one shared bundle producer.
+
+describe("210 review issue 3: tool-mode verify exit evidence", () => {
+  /** Feed one assistant usage message so the pipeline is touched and `stage_usage` renders. */
+  async function feedUsage(meta: SessionMeta): Promise<void> {
+    const hook = createUsageRecorder();
+    await (hook.handler as (c: unknown) => Promise<void>)({
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          Object.assign(meta, patch);
+          return meta;
+        },
+      },
+      event: {
+        message: {
+          role: "assistant",
+          model: "qwen3.8-flash",
+          provider: "bailian",
+          timestamp: Date.now(),
+          usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 150, costUsd: 0.25 },
+        },
+      },
+    });
+  }
+
+  /** Count audit lines for an exact event name. */
+  function countEvents(content: string, event: string): number {
+    return content.split("\n").filter((l) => new RegExp(`\\] ${event} \\|`).test(l)).length;
+  }
+
+  it("applyVerifyPass (tool opts) writes stage_usage + enriched stage_advance and records stageStats", async () => {
+    const root = await setupRoot("tool-verify-stage");
+    const config = makeTestConfig({ projectRoot: root });
+    const enteredAt = Date.now() - 1200;
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: nextPid(),
+      stageStartTime: enteredAt,
+      verifyAttempts: 2,
+      confirmRejections: 1,
+      loopCycleCount: 2,
+      summaries: {},
+    });
+    const ctx = makeCtx(meta, config);
+    await feedUsage(meta);
+
+    // Production semantics: the caller's snapshot is NOT the live store object
+    // (the real session-state returns fresh merged reads), so the exit evidence
+    // sees the PRE-advance clocks even though the harness store mutates in place.
+    const snapshot = { ...meta };
+    const res = await applyVerifyPass(
+      ctx as any,
+      snapshot,
+      "develop",
+      "review",
+      PASS_RESULT,
+      { method: "tool", handleTerminal: true, returnResult: true, ui: createPipelineUI(config), emitExitEvidence: true },
+    );
+    expect(res.success).toBe(true);
+
+    const content = await readAudit(root, meta.pipelineId);
+    assertSingleLineFormat(content);
+
+    const f = auditFields(content, "stage_advance");
+    expect(f.method).toBe("verify_tool");
+    expect(f.fromStage).toBe("develop");
+    expect(f.toStage).toBe("review");
+    expect(f.stageEnteredAt).toBe(String(enteredAt));
+    expect(Number(f.durationMs)).toBeGreaterThanOrEqual(1200);
+    expect(f.verifyAttempts).toBe("2");
+    expect(f.confirmRejections).toBe("1");
+    expect(f.loopCycleCount).toBe("2");
+    expect(f.evidenceUnavailable).toBe("true");
+    expect(f.commitIds).toBe("");
+    expect(f.stageStats.startsWith("develop:")).toBe(true);
+
+    // Requirement 5.11 #10: exactly ONE stage_usage per tool-mode exit.
+    expect(countEvents(content, "stage_usage")).toBe(1);
+    const u = auditFields(content, "stage_usage");
+    expect(u.stage).toBe("develop");
+    expect(u.model).toBe("qwen3.8-flash");
+    expect(u.totalTokens).toBe("150");
+
+    // The exited stage's stats are persisted into meta (same as the hook path).
+    expect(meta.stageStats?.develop?.durationMs).toBeGreaterThanOrEqual(1200);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("applyVerifyPass (tool opts, terminal) writes pipeline_completed aggregate + stage_usage, no stage_advance", async () => {
+    const root = await setupRoot("tool-verify-terminal");
+    const config = makeTestConfig({ projectRoot: root });
+    const summaryPath = join(root, "review-summary.md");
+    await writeFile(summaryPath, "---\n{\n  \"commit_ids\": [\"9aa11bb\"]\n}\n---\n", "utf-8");
+
+    const enteredAt = Date.now() - 1100;
+    const startedAt = Date.now() - 80_000;
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: nextPid(),
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: enteredAt,
+      pipelineStartedAt: startedAt,
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      stageStats: { plan: { durationMs: 20, verifyAttempts: 1, confirmRejections: 0 } },
+      summaries: { review: { path: summaryPath, hash: "h", status: "valid" } },
+    });
+    const ctx = makeCtx(meta, config);
+    await feedUsage(meta);
+
+    const res = await applyVerifyPass(
+      ctx as any,
+      meta,
+      "review",
+      null,
+      PASS_RESULT,
+      { method: "tool", handleTerminal: true, returnResult: true, ui: createPipelineUI(config), emitExitEvidence: true },
+    );
+    expect(res.success).toBe(true);
+
+    const content = await readAudit(root, meta.pipelineId);
+    assertSingleLineFormat(content);
+    // Terminal exit: the run aggregate replaces stage_advance (hook semantics).
+    expect(countEvents(content, "stage_advance")).toBe(0);
+    expect(countEvents(content, "stage_usage")).toBe(1);
+
+    const f = auditFields(content, "pipeline_completed");
+    expect(f.method).toBe("verify_tool");
+    expect(f.finalStage).toBe("review");
+    expect(f.startedAt).toBe(String(startedAt));
+    expect(Number(f.durationMs)).toBeGreaterThanOrEqual(1100);
+    expect(f.stageStats).toBe("plan:20:1:0");
+    expect(f.commitIds).toBe("9aa11bb");
+    expect(f.auditPath).toContain(meta.pipelineId);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("applyVerifyPass WITHOUT the flag emits nothing (hook path stays caller-owned, no double writes)", async () => {
+    const root = await setupRoot("tool-verify-quiet");
+    const config = makeTestConfig({ projectRoot: root });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: nextPid(),
+      stageStartTime: Date.now() - 900,
+      summaries: {},
+    });
+    const ctx = makeCtx(meta, config);
+
+    const res = await applyVerifyPass(
+      ctx as any,
+      meta,
+      "develop",
+      "review",
+      PASS_RESULT,
+      { method: "rule", handleTerminal: false, returnResult: true, ui: createPipelineUI(config) },
+    );
+    expect(res.success).toBe(true);
+
+    const content = await readAudit(root, meta.pipelineId);
+    // auto_verify_pass is written by applyVerifyPass itself…
+    expect(countEvents(content, "auto_verify_pass")).toBe(1);
+    // …but the exit evidence stays with the hook caller (no drift / doubles).
+    expect(countEvents(content, "stage_advance")).toBe(0);
+    expect(countEvents(content, "stage_usage")).toBe(0);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("hook path emits exactly one stage_usage + stage_advance pair (regression pin)", async () => {
+    const root = await setupRoot("hook-single");
+    const config = makeTestConfig({ projectRoot: root });
+    const enteredAt = Date.now() - 1300;
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: nextPid(),
+      stageStartTime: enteredAt,
+      verifyAttempts: 1,
+      summaries: {},
+    });
+    const ctx = makeCtx(meta, config);
+    await feedUsage(meta);
+
+    await autoAdvanceAfterVerify(
+      config, ctx as any, meta, "develop", "review" as PipelineStage, PASS_RESULT, createPipelineUI(config),
+    );
+
+    const content = await readAudit(root, meta.pipelineId);
+    // applyVerifyPass (no flag) + autoAdvanceAfterVerify = exactly one pair.
+    expect(countEvents(content, "stage_advance")).toBe(1);
+    expect(countEvents(content, "stage_usage")).toBe(1);
+    expect(auditFields(content, "stage_advance").method).toBe("hook_auto_advance");
+
+    await rm(root, { recursive: true, force: true });
   });
 });

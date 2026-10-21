@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { createPipelineVerify } from "../../tools/pipeline-verify";
 import { makeTestConfig, makeTestMeta } from "../helpers";
-import { mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog } from "../../utils/auditLog";
@@ -102,6 +102,47 @@ describe("createPipelineVerify", () => {
     // Should have advanced to next stage (review)
     const lastUpdate = ctx.updates[ctx.updates.length - 1];
     expect(lastUpdate.currentStage).toBe("review");
+  });
+
+  // 210 review issue 3 (Medium): the tool-mode exit must produce the SAME
+  // evidence chain as the hook path (requirement 5.11 #10) — an enriched
+  // `stage_advance` with the exit vocabulary, not just `auto_verify_pass`.
+  it("tool-mode advance emits the enriched stage_advance exit evidence", async () => {
+    const config = makeConfigWithVerify("tool");
+
+    const verifyDir = join(TMP, "references", "develop_spec");
+    await mkdir(verifyDir, { recursive: true });
+    await writeFile(
+      join(verifyDir, "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"output.md\"\n---\nBody\n",
+    );
+    await writeFile(join(TMP, "output.md"), "content");
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: `pipe-verify-evidence-${Date.now()}`,
+      stageStartTime: Date.now() - 1000,
+      summaries: {},
+    });
+    const ctx = createCtx(meta);
+
+    const tool = createPipelineVerify(config);
+    const result = await tool.execute({}, ctx as any) as Record<string, unknown>;
+    expect(result.success).toBe(true);
+    expect(meta.currentStage).toBe("review");
+
+    const content = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
+    expect(content).toMatch(/\] stage_advance \|/);
+    // Shared bundle producer → tool-tagged method + full exit vocabulary.
+    expect(content).toMatch(/method=verify_tool/);
+    expect(content).toMatch(/fromStage=develop/);
+    expect(content).toMatch(/toStage=review/);
+    expect(content).toMatch(/stageEnteredAt=\d+/);
+    expect(content).toMatch(/durationMs=\d+/);
+    expect(content).toMatch(/evidenceUnavailable=true/);
+    // The exited stage's stats are persisted (stageStats serialized in the line).
+    expect(content).toMatch(/stageStats=develop:/);
+    expect(meta.stageStats?.develop).toBeDefined();
   });
 
   // Scenario B: rules fail → verifyFailures written to SessionMeta

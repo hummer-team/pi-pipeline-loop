@@ -24,6 +24,9 @@ import {
   parsePlanDocClaim,
   COMMIT_TIME_TOLERANCE_MS,
 } from "../../core/commit-proof";
+// 210 review issue 2: the resume path is the C2 regression trigger — the
+// builder lives in pipeline-start and must keep the period clock.
+import { buildResumeMeta } from "../../commands/pipeline-start";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import type { ExecFn, PipelineConfig, SessionMeta, VerifyConfig } from "../../types";
@@ -532,5 +535,99 @@ describe("reconcileCommitProof", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── 210 review issue 2 (High): resume keeps the C2 period clock ─────────────
+//
+// `/pipeline-start` RESUMES an aborted run (same pipelineId, summaries/commit
+// docs preserved). When buildResumeMeta rebased `pipelineStartedAt` to the
+// resume instant, the review/fix verify of the resumed run saw every
+// legitimate pre-abort develop commit as older than the run clock and flagged
+// `commit_after_stage_start` — rejecting the exact commits Phase 6 acceptance
+//「正确 commit 通过」requires to pass (and spamming warn audits in the
+// default alert mode).
+
+describe("buildResumeMeta keeps the period clock (210 review issue 2)", () => {
+  it("resume preserves pipelineStartedAt; the legit pre-abort commit passes C2", async () => {
+    const now = Date.now();
+    const runStart = now - 3 * 3_600_000; // original period clock (pre-abort)
+    const commitTs = Math.floor((now - 2 * 3_600_000) / 1000); // develop commit, pre-abort
+
+    const aborted = makeTestMeta({
+      pipelineId: uniq("resume-clock"),
+      currentStage: "review",
+      flowState: "aborted",
+      terminateReason: "decision_provider_absent",
+      requirementDoc: "docs/design/210_Feat.md",
+      pipelineStartedAt: runStart,
+      stageStartTime: now - 30 * 60_000,
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+    });
+    const resumed = buildResumeMeta(aborted, makeTestConfig());
+
+    // The resume CONTINUES the same run — the period clock must not be rebased.
+    expect(resumed.pipelineStartedAt).toBe(runStart);
+    expect(resumed.flowState).toBe("running");
+    expect(resumed.pipelineId).toBe(aborted.pipelineId);
+
+    // C2 end-to-end through the resumed meta: the develop commit produced
+    // BEFORE the abort is still inside the run window and must pass.
+    const baseline = resolveCommitProofClockBaseline(resumed);
+    expect(baseline.baselineMs).toBe(runStart);
+    expect(baseline.label).toBe("pipeline run start");
+
+    const { execFn } = makeGit(healthyRules(commitTs));
+    const r = await checkCommitProof({
+      projectRoot: "/unused",
+      execFn,
+      stage: "review",
+      stageStartTime: baseline.baselineMs,
+      stageStartLabel: baseline.label,
+      commitIds: ["dead0001"],
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.checked).toBe(1);
+    expect(r.violations).toEqual([]);
+  });
+
+  it("legacy meta without pipelineStartedAt still gets a fresh clock on resume", () => {
+    const aborted = makeTestMeta({
+      pipelineId: uniq("resume-legacy"),
+      currentStage: "review",
+      flowState: "aborted",
+      pipelineStartedAt: undefined,
+    });
+    const before = Date.now();
+    const resumed = buildResumeMeta(aborted, makeTestConfig());
+    expect(typeof resumed.pipelineStartedAt).toBe("number");
+    expect(resumed.pipelineStartedAt as number).toBeGreaterThanOrEqual(before);
+    // Fail-open C2 baseline semantics unchanged for a stage re-verify.
+    expect(resolveCommitProofClockBaseline(resumed).label).toBe("pipeline run start");
+  });
+
+  it("an external commit predating the RESUMED run window is still flagged (no over-relaxation)", async () => {
+    const now = Date.now();
+    const runStart = now - 12 * 3_600_000;
+    const aborted = makeTestMeta({
+      pipelineId: uniq("resume-stale"),
+      currentStage: "review",
+      flowState: "aborted",
+      pipelineStartedAt: runStart,
+    });
+    const resumed = buildResumeMeta(aborted, makeTestConfig());
+    expect(resumed.pipelineStartedAt).toBe(runStart);
+    // A commit from before the original run start must STILL fail C2 after
+    // resume — the preserved clock keeps the anti-fabrication property.
+    const { execFn } = makeGit(healthyRules(Math.floor((now - 20 * 3_600_000) / 1000)));
+    const r = await checkCommitProof({
+      projectRoot: "/unused",
+      execFn,
+      stage: "review",
+      stageStartTime: resolveCommitProofClockBaseline(resumed).baselineMs,
+      stageStartLabel: resolveCommitProofClockBaseline(resumed).label,
+      commitIds: ["dead0001"],
+    });
+    expect(r.violations.map((f) => f.ruleType)).toEqual(["commit_after_stage_start"]);
   });
 });

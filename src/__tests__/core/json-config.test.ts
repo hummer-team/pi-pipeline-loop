@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-loader";
+import { resolveRequireCommitProof } from "../../core/commit-proof";
 import { resolveGitModifyPolicy, describeGitModifySource } from "../../utils/protect";
 import type { PipelineJsonConfig } from "../../types";
 
@@ -1423,5 +1424,71 @@ describe("206 Phase 0: docs & archive config", () => {
     expect(resolved.docsStageDirs?.fix).toBe("docs/review");
     expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
     expect(resolved.archiveDest).toBe("pi-pipeline-archive");
+  });
+});
+
+// ─── 210 review issue 1 (High): top-level verify passthrough ─────────────────
+//
+// The production chain is fixed: loadJsonConfig → resolvePipelineConfig
+// (src/index.ts). loadJsonConfig returns an EXPLICIT field list, and the
+// top-level `verify` block was never passed through — so
+// `resolvePipelineConfig`'s `json.verify?.requireCommitProof` read was always
+// undefined and the GLOBAL commit-proof switch (requirement 5.7:
+// "JSON top-level + stage level, stage wins") could never take effect.
+
+describe("210 review issue 1: top-level verify passthrough", () => {
+  it("global verify.requireCommitProof survives loadJsonConfig → resolvePipelineConfig", async () => {
+    await writeJson({
+      stages: { clarify: { nextStage: "plan" } },
+      verify: { requireCommitProof: true },
+    });
+    const loaded = loadJsonConfig(jsonPath);
+    expect(loaded.verify).toEqual({ requireCommitProof: true });
+    const config = resolvePipelineConfig(loaded);
+    expect(config.verify?.requireCommitProof).toBe(true);
+  });
+
+  it('string "false" warns and drops — it can NEVER act as a truthy switch', async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      verify: { requireCommitProof: "false" },
+    });
+    const loaded = loadJsonConfig(jsonPath);
+    expect(loaded.verify).toBeUndefined();
+    expect(resolvePipelineConfig(loaded).verify).toBeUndefined();
+  });
+
+  it("explicit false passes through as false (typed boolean, not dropped)", async () => {
+    await writeJson({
+      stages: { clarify: {} },
+      verify: { requireCommitProof: false },
+    });
+    const loaded = loadJsonConfig(jsonPath);
+    expect(loaded.verify).toEqual({ requireCommitProof: false });
+    expect(resolvePipelineConfig(loaded).verify?.requireCommitProof).toBe(false);
+  });
+
+  it("non-object verify warns and drops; absent verify keeps the baseline shape", async () => {
+    await writeJson({ stages: { clarify: {} }, verify: "yes" });
+    expect(loadJsonConfig(jsonPath).verify).toBeUndefined();
+
+    await writeJson({ stages: { clarify: {} } });
+    const loaded = loadJsonConfig(jsonPath);
+    expect(loaded.verify).toBeUndefined();
+    expect(resolvePipelineConfig(loaded).verify).toBeUndefined();
+  });
+
+  it("stage entry still wins over the global fallback end-to-end (requirement 5.7 precedence)", async () => {
+    await writeJson({
+      stages: { develop: { verify: { require: true, requireCommitProof: false } } },
+      verify: { requireCommitProof: true },
+    });
+    const config = resolvePipelineConfig(loadJsonConfig(jsonPath));
+    expect(config.verify?.requireCommitProof).toBe(true);
+    expect(config.stages.develop.verify?.requireCommitProof).toBe(false);
+    // The precedence chain the verifier resolves: stage first, global fallback
+    // — now actually fed by a NON-undefined global config.
+    expect(resolveRequireCommitProof(config.stages.develop.verify, config)).toBe(false);
+    expect(resolveRequireCommitProof(undefined, config)).toBe(true);
   });
 });

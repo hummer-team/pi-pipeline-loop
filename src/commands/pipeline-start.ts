@@ -416,6 +416,9 @@ export function buildResumeVisitOrder(
  *
  * Field rebuild contract:
  * - Preserve: pipelineId, currentStage, requirementDoc, domain, summaries, contextFiles, maxLoops/maxLoopCycles
+ * - Preserve (210 review issue 2, High): pipelineStartedAt — a resume CONTINUES the
+ *   same run (same pipelineId, summaries/commit docs stay on disk), so the period
+ *   clock must not be rebased or commit-proof C2 would reject every pre-abort commit
  * - Rebuild: previousStage (from config chain), stageVisitOrder (from clarify to currentStage)
  * - Clear: loopCount, currentStepIndex, verifyAttempts, verifyFailures, violations,
  *          advancedThisTurn, loopCycleCount, verifyConfigError, blockedReason,
@@ -463,6 +466,16 @@ export function buildResumeMeta(
     // Lifecycle
     flowState: "running",
     stageStartTime: Date.now(),
+
+    // 210 review issue 2 (High): keep the ORIGINAL period clock on resume.
+    // The spread of buildNewPeriodResetFields rebases `pipelineStartedAt` to
+    // "now", which would make every legitimate commit produced by the
+    // pre-abort develop visit look older than the run and get rejected by
+    // commit-proof C2 (`commit_after_stage_start`). A resume is not a new
+    // period — only restart / re-init truly rebase (they discard the old
+    // run's deliverables). A legacy meta without the field (or a genuinely
+    // fresh clock) still gets Date.now().
+    pipelineStartedAt: meta.pipelineStartedAt ?? Date.now(),
 
     // Required-numeric baseline (removed from the legacy explicit block; now
     // anchored explicitly because the builder is a Partial)

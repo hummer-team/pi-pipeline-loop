@@ -814,7 +814,9 @@ export function createPromptInjector(
 ): Hook<"before_agent_start"> {
   // 210 Phase 6: consume the injected execFn for the deterministic review
   // change-evidence section. Absent (harness ctx / pi without exec) → the
-  // section is omitted entirely (baseline prompts unchanged).
+  // review stage still receives the explicit "Evidence unavailable" section
+  // (210 review fix 4: fail-visible, never silently omitted); prompts for all
+  // other stages are unchanged.
   const execFn = deps?.execFn;
   return {
     event: "before_agent_start",

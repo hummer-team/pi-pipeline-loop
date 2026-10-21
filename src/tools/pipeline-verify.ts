@@ -281,11 +281,16 @@ export function createPipelineVerify(
         }
 
         // SAFETY: applyVerifyPass returns a tool result object with string keys and unknown values,
+        // 210 review issue 3 (Medium): tool-mode stage exits must produce the
+        // same evidence chain (stage_usage / enriched stage_advance / terminal
+        // aggregate) as the hook path — requirement 5.11 #10 holds for every
+        // exit, so `emitExitEvidence` opts this path into the shared producer.
         return (await applyVerifyPass(sessionCtx, meta, stageName, stageConfig.nextStage, sharedResult, {
           method: "tool",
           handleTerminal: true,
           returnResult: true,
           ui,
+          emitExitEvidence: true,
         })) as unknown as Record<string, unknown>;
       }
 

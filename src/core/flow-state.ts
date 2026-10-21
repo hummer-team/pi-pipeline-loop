@@ -2228,10 +2228,14 @@ export function resolveDecisionReason(meta: SessionMeta): string {
  * in a previous process can never end up "blocked with nobody armed": with
  * `decisionPolicy` enabled the decision-wait deadline is (re-)armed here even
  * when the menu is opened from a command, and a headless host converges to
- * policy → abort instead of waiting forever.
+ * policy → abort instead of waiting forever. 210 review issue 4: the no-UI
+ * policy convergence re-reads the LIVE meta behind the same triple guard the
+ * human slot and the deadline closure use — a stale snapshot produces ONE
+ * `decision_policy_stale_state` warn audit and ZERO state side effects.
  *
  * @returns The menu presentation result, or `null` when the chain resolved the
- *   freeze WITHOUT a menu (policy applied, or the pipeline converged to abort).
+ *   freeze WITHOUT a menu (policy applied, the pipeline converged to abort,
+ *   or a stale snapshot bailed out at the no-UI guard).
  *   Callers that render a user message must handle the `null` case.
  */
 export async function requestDecision(
@@ -2264,7 +2268,35 @@ export async function requestDecision(
 
   // No-UI branch (CI/headless): no waiting object exists — never arm timers.
   if (typeof menuCtx.ui?.select !== "function") {
-    const policyResult = await tryApplyPolicy(menuCtx, meta, config, reason, "no_ui");
+    // 210 review issue 4 (Medium): stale-snapshot guard for the policy path —
+    // the SAME triple guard the human slot (B-2, `decision_menu_stale_selection`)
+    // and the deadline closure apply: re-read the LIVE meta and require
+    // presence, pipelineId consistency and a still-frozen decision point
+    // BEFORE any side effect. Replay (`session-starter`), settle
+    // (`agent-settled`) and command (`/pipeline-start`, `/pipeline-resume`)
+    // entries snapshot meta first and await several times before reaching
+    // here, so a restart or another decision may have superseded the snapshot:
+    // applying the policy off the stale `meta.currentStage` (whose
+    // `isFrozen(meta)` guards would then also run on stale data) or aborting
+    // "decision_provider_absent" against a NEW pipeline is a cross-pipeline
+    // misfire that headless nobody sees. Bail out with ONE stale-state audit
+    // and ZERO state side effects instead.
+    const fresh = (menuCtx.session.getMeta() as SessionMeta | undefined);
+    if (!fresh || fresh.pipelineId !== meta.pipelineId || !isDecisionPending(fresh)) {
+      await safeWriteAuditLog("decision_policy_stale_state", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        reason,
+        failureReason: "stale_state",
+      }, "warn");
+      return null;
+    }
+    // Re-anchor the policy lookup to the LIVE freeze reason: a J6 re-freeze
+    // updates `blockedReason` after the snapshot was taken; the caller-supplied
+    // reason stays as fallback for freezes that persist none (confirm-gate
+    // `awaiting_human`, mirroring `resolveDecisionReason`).
+    const policyReason = fresh.blockedReason ?? reason;
+    const policyResult = await tryApplyPolicy(menuCtx, fresh, config, policyReason, "no_ui");
     if (policyResult.applied) return null;
     if (policyResult.rejected) {
       // B-3: single-shot abort after a guard-rejected policy decision.

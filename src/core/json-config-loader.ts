@@ -19,6 +19,7 @@ import type {
   StageConfig,
   StageJsonConfig,
   StartStageMode,
+  VerifyJsonConfig,
   WatchdogConfig,
 } from "../types";
 import { validateDecisionPolicy } from "./decision-policy/policy-config";
@@ -145,6 +146,12 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     // fail-fast validation happen in resolvePipelineConfig (single source).
     decisionPolicy: json.decisionPolicy as PipelineJsonConfig["decisionPolicy"],
     watchdog: json.watchdog as PipelineJsonConfig["watchdog"],
+    // 210 review issue 1 (High): the top-level `verify` block must survive
+    // this return too — resolvePipelineConfig reads
+    // `json.verify?.requireCommitProof` for the GLOBAL commit-proof fallback,
+    // and dropping it here made `config.verify` permanently undefined. Typed
+    // through parseRequireCommitProofEntry (no truthy-string leakage).
+    verify: parseTopLevelVerifyConfig(json.verify),
   };
 }
 
@@ -791,6 +798,32 @@ function parseRequireCommitProofEntry(
     return {};
   }
   return { requireCommitProof: raw };
+}
+
+/**
+ * 210 review issue 1 (High): parses the TOP-LEVEL `verify` block for the
+ * `loadJsonConfig` passthrough. Without this the block never reaches
+ * `resolvePipelineConfig` (which reads `json.verify?.requireCommitProof` to
+ * build the global `config.verify` fallback, requirement 5.7), so the global
+ * `verify.requireCommitProof` switch was silently dropped in the production
+ * `loadJsonConfig → resolvePipelineConfig` chain.
+ *
+ * Only `requireCommitProof` is consumed at this level (the remaining verify
+ * fields are per-stage concerns parsed by the stage loader). The entry goes
+ * through `parseRequireCommitProofEntry`, so a `"false"`-style string warns
+ * and drops instead of leaking a truthy value into the resolver.
+ * Missing / non-object / no valid entry → `undefined` (block absent).
+ */
+function parseTopLevelVerifyConfig(raw: unknown): VerifyJsonConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    console.warn(
+      `[pi-pipeline] Invalid top-level verify config — expected object, got ${Array.isArray(raw) ? "array" : typeof raw}`,
+    );
+    return undefined;
+  }
+  const entry = parseRequireCommitProofEntry((raw as Record<string, unknown>).requireCommitProof);
+  return entry.requireCommitProof !== undefined ? { ...entry } : undefined;
 }
 
 /**

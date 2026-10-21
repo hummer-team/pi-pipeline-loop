@@ -106,8 +106,10 @@ export function resolveCommitProofClockBaseline(meta: SessionMeta): {
 
   const runStart = meta.pipelineStartedAt ?? 0;
   if (runStart > 0) {
-    // `pipelineStartedAt` is rebased by restart / re-init, so it is the run
-    // clock of the period that legitimately produced these commits.
+    // `pipelineStartedAt` is rebased by restart / re-init but PRESERVED across
+    // a resume (210 review issue 2: `buildResumeMeta` keeps the original
+    // period clock), so it is always the run clock of the period that
+    // legitimately produced these commits.
     return { baselineMs: runStart, label: "pipeline run start" };
   }
 
