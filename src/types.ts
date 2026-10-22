@@ -767,9 +767,23 @@ export interface SessionMeta {
 
   /**
    * 210 Phase 0: Unix ms when the CURRENT pipeline period started
-   * (restart / re-init rebases it). Reset with `buildNewPeriodResetFields`.
+   * (restart / re-init rebases it; a resume PRESERVES it — 210 review round 2
+   * issue 2). Reset with `buildNewPeriodResetFields`.
    */
   pipelineStartedAt?: number;
+
+  /**
+   * 210 review round 3 issue 1 (High): Unix ms of the LATEST `/pipeline-start`
+   * resume INTO the current period (undefined until a resume happens; every
+   * new period resets it via `buildNewPeriodResetFields`). A resume continues
+   * the same run, but `buildResumeVisitOrder` flattens the earlier visits, so
+   * commit-proof C2 cannot tell a re-entered develop visit (whose
+   * `stageStartTime` the resume rebases to "now") from a genuine first visit —
+   * this marker makes `resolveCommitProofClockBaseline` fall back to the
+   * preserved period clock instead of rejecting the period's own pre-abort
+   * commits.
+   */
+  periodResumedAt?: number;
 
   /**
    * 210 Phase 0: per-stage exit facts of the current period

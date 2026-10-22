@@ -630,4 +630,118 @@ describe("buildResumeMeta keeps the period clock (210 review issue 2)", () => {
     });
     expect(r.violations.map((f) => f.ruleType)).toEqual(["commit_after_stage_start"]);
   });
+
+  // 210 review round 3 issue 1 (High): a resume INTO develop must not fall
+  // into the strict first-develop-visit branch. buildResumeMeta re-bases
+  // `stageStartTime` to the resume instant and flattens `stageVisitOrder` to
+  // [clarify, plan, develop] (develop exactly once), so without the
+  // `periodResumedAt` marker the period's own pre-abort commits would be
+  // rejected as `commit_after_stage_start` after every develop-stage resume.
+  it("resume into DEVELOP uses the preserved period clock, not the resume-rebased stage entry", async () => {
+    const now = Date.now();
+    const runStart = now - 4 * 3_600_000; // original period clock (pre-abort)
+    const commitTs = Math.floor((now - 3 * 3_600_000) / 1000); // develop commit, pre-abort
+
+    const aborted = makeTestMeta({
+      pipelineId: uniq("resume-develop"),
+      currentStage: "develop",
+      flowState: "aborted",
+      terminateReason: "decision_provider_absent",
+      requirementDoc: "docs/design/210_Feat.md",
+      pipelineStartedAt: runStart,
+      stageStartTime: now - 3 * 3_600_000,
+      stageVisitOrder: ["clarify", "plan", "develop"],
+    });
+    const resumed = buildResumeMeta(aborted, makeTestConfig());
+
+    // The builder stamps the period as resumed and flattens the visit chain
+    // (develop exactly once) — the marker is what keeps C2 honest here.
+    expect(typeof resumed.periodResumedAt).toBe("number");
+    expect(resumed.stageVisitOrder).toEqual(["clarify", "plan", "design-review", "develop"]);
+
+    const baseline = resolveCommitProofClockBaseline(resumed);
+    expect(baseline.baselineMs).toBe(runStart);
+    expect(baseline.label).toBe("pipeline run start");
+
+    // End-to-end: the legitimate pre-abort develop commit passes C2.
+    const { execFn } = makeGit(healthyRules(commitTs));
+    const r = await checkCommitProof({
+      projectRoot: "/unused",
+      execFn,
+      stage: "develop",
+      stageStartTime: baseline.baselineMs,
+      stageStartLabel: baseline.label,
+      commitIds: ["dead0001"],
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.violations).toEqual([]);
+  });
+
+  it("a resume into develop still rejects a commit predating the period (anti-fabrication kept)", async () => {
+    const now = Date.now();
+    const runStart = now - 12 * 3_600_000;
+    const aborted = makeTestMeta({
+      pipelineId: uniq("resume-develop-stale"),
+      currentStage: "develop",
+      flowState: "aborted",
+      requirementDoc: "docs/design/210_Feat.md",
+      pipelineStartedAt: runStart,
+      stageVisitOrder: ["clarify", "plan", "develop"],
+    });
+    const resumed = buildResumeMeta(aborted, makeTestConfig());
+    const baseline = resolveCommitProofClockBaseline(resumed);
+    expect(baseline.baselineMs).toBe(runStart);
+    // A commit from BEFORE the original period start must still fail C2 after
+    // the resume — relaxing the stage floor must not relax the period floor.
+    const { execFn } = makeGit(healthyRules(Math.floor((now - 20 * 3_600_000) / 1000)));
+    const r = await checkCommitProof({
+      projectRoot: "/unused",
+      execFn,
+      stage: "develop",
+      stageStartTime: baseline.baselineMs,
+      stageStartLabel: baseline.label,
+      commitIds: ["dead0001"],
+    });
+    expect(r.violations.map((f) => f.ruleType)).toEqual(["commit_after_stage_start"]);
+  });
+
+  // 210 review round 3 issue 2 (Medium): the two sibling period-evidence
+  // fields follow the same "resume continues the run" ruling as the clock —
+  // otherwise the terminal aggregate mixes period scopes (startedAt spans the
+  // abort while stageStats / costUsdTotal restart from zero).
+  it("resume preserves the period evidence fields symmetrically with the clock", () => {
+    const aborted = makeTestMeta({
+      pipelineId: uniq("resume-evidence"),
+      currentStage: "review",
+      flowState: "aborted",
+      pipelineStartedAt: Date.now() - 3_600_000,
+      stageStats: { develop: { durationMs: 5000, verifyAttempts: 2, confirmRejections: 1 } },
+      usageByStage: {
+        develop: {
+          provider: "p-test",
+          model: "m-test",
+          messages: 3,
+          input: 10,
+          output: 5,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 15,
+          costUsd: 0.2,
+          updatedAt: Date.now() - 60_000,
+        },
+      },
+    });
+    const resumed = buildResumeMeta(aborted, makeTestConfig());
+    expect(resumed.stageStats).toEqual(aborted.stageStats);
+    expect(resumed.usageByStage).toEqual(aborted.usageByStage);
+
+    // A legacy meta without the snapshots stays undefined — no fabricated
+    // empty objects on resumes of pre-210 runs.
+    const legacy = buildResumeMeta(
+      makeTestMeta({ pipelineId: uniq("resume-evidence-legacy"), currentStage: "review", flowState: "aborted" }),
+      makeTestConfig(),
+    );
+    expect(legacy.stageStats).toBeUndefined();
+    expect(legacy.usageByStage).toBeUndefined();
+  });
 });

@@ -419,6 +419,12 @@ export function buildResumeVisitOrder(
  * - Preserve (210 review issue 2, High): pipelineStartedAt — a resume CONTINUES the
  *   same run (same pipelineId, summaries/commit docs stay on disk), so the period
  *   clock must not be rebased or commit-proof C2 would reject every pre-abort commit
+ * - Preserve (210 review round 3 issue 2, Medium): stageStats / usageByStage — the
+ *   sibling period-evidence fields keep the same whole-run scope as the clock
+ *   (terminal aggregate must not mix periods)
+ * - Stamp (210 review round 3 issue 1, High): periodResumedAt — marks the period as
+ *   resumed so commit-proof C2 treats the re-entered develop visit as a re-entry
+ *   instead of a genuine first visit with a fresh stage clock
  * - Rebuild: previousStage (from config chain), stageVisitOrder (from clarify to currentStage)
  * - Clear: loopCount, currentStepIndex, verifyAttempts, verifyFailures, violations,
  *          advancedThisTurn, loopCycleCount, verifyConfigError, blockedReason,
@@ -435,9 +441,11 @@ export function buildResumeMeta(
   meta: SessionMeta,
   config: PipelineConfig,
 ): SessionMeta {
-  // 210 Phase 7: resume rebases the SAME pipelineId onto a cleared
-  // `usageByStage` (new-period checklist below) — the in-process pending
-  // accumulator must not leak old-period usage into the resumed run.
+  // 210 Phase 7 + review round 3 issue 2: the IN-PROCESS pending accumulator
+  // is cleared (its un-flushed delta belonged to the aborted segment and the
+  // abort terminal already flushed the rest), while the persisted
+  // `usageByStage` / `stageStats` snapshots stay with the period below — a
+  // resume CONTINUES the same run.
   resetUsage(meta.pipelineId);
   return {
     // 203_Bug Phase 1: new-period clear list inlined here for unified口径 —
@@ -476,6 +484,22 @@ export function buildResumeMeta(
     // run's deliverables). A legacy meta without the field (or a genuinely
     // fresh clock) still gets Date.now().
     pipelineStartedAt: meta.pipelineStartedAt ?? Date.now(),
+
+    // 210 review round 3 issue 2 (Medium): symmetric preservation — the two
+    // sibling period-evidence fields continue the same run as the clock.
+    // `flushUsageToMeta` merges into the existing `usageByStage` base and
+    // `recordStageStats` overwrites per stage, so a stage re-run after the
+    // resume adds / replaces entries without double counting.
+    stageStats: meta.stageStats,
+    usageByStage: meta.usageByStage,
+
+    // 210 review round 3 issue 1 (High): stamp the period as resumed. The
+    // rebuilt `stageVisitOrder` flattens the pre-abort develop visit away
+    // (develop appears exactly once), so commit-proof C2 cannot tell this
+    // re-entry from a genuine first visit and would take the resume-rebased
+    // `stageStartTime` as the strict first-visit baseline — the marker makes
+    // `resolveCommitProofClockBaseline` fall back to the period clock instead.
+    periodResumedAt: Date.now(),
 
     // Required-numeric baseline (removed from the legacy explicit block; now
     // anchored explicitly because the builder is a Partial)

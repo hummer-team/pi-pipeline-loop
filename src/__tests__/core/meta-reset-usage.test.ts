@@ -1,9 +1,11 @@
 /**
  * 210 Phase 0: new-period meta reset coverage for the R1/R2 evidence fields
- * (`stageStats`, `usageByStage`, `pipelineStartedAt`).
+ * (`stageStats`, `usageByStage`, `pipelineStartedAt`, `periodResumedAt`).
  *
- * The three fields are set ONLY in `buildNewPeriodResetFields`; start /
- * restart / resume metas all spread it (single construction point).
+ * They are set ONLY in `buildNewPeriodResetFields`; start / restart / resume
+ * metas all spread it (single construction point). Resume re-overrides the
+ * evidence trio back to the preserved period snapshots and stamps
+ * `periodResumedAt` (210 review round 2 issue 2 + round 3 issues 1/2).
  */
 import { describe, expect, it } from "bun:test";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "../../core/meta-reset";
@@ -31,6 +33,18 @@ describe("buildNewPeriodResetFields (210 Phase 0)", () => {
     expect(typeof fields.pipelineStartedAt).toBe("number");
     expect(fields.pipelineStartedAt as number).toBeGreaterThanOrEqual(before);
     expect(fields.pipelineStartedAt as number).toBeLessThanOrEqual(after);
+  });
+
+  it("clears the periodResumedAt marker on a new period (210 review r3 issue 1)", () => {
+    // The marker survives only WITHIN a resumed period; start / restart
+    // rebase the period and must erase it so the strict first-develop-visit
+    // C2 baseline becomes available again.
+    const meta = {
+      pipelineId: "p-old",
+      periodResumedAt: Date.now() - 1000,
+    } as unknown as SessionMeta;
+    const fields = buildNewPeriodResetFields(meta, config);
+    expect(fields.periodResumedAt).toBeUndefined();
   });
 
   it("continue-period reset does NOT touch the new-period evidence fields", () => {

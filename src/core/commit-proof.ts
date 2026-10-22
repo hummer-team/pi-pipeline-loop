@@ -85,6 +85,11 @@ const COMMIT_PRODUCING_STAGE: PipelineStage = "develop";
  * Honest baseline per stage:
  * - `develop` on its FIRST visit → its own `stageStartTime` (strictest form of
  *   requirement 5.7 C2: the stage that produces the commits is verifying).
+ *   A RESUMED period never qualifies (210 review round 3 issue 1): the resume
+ *   rebases `stageStartTime` to the resume instant while `buildResumeVisitOrder`
+ *   flattens the earlier develop visit away, so the `periodResumedAt` marker
+ *   sends the resumed develop visit to the run-clock floor instead — its
+ *   pre-abort commits are legitimately older than the resume.
  * - every later stage (review / fix / awaiting_human / completed) and every
  *   re-entered develop → the current period's `pipelineStartedAt`, which is
  *   guaranteed to precede every commit produced during THIS run while still
@@ -100,7 +105,17 @@ export function resolveCommitProofClockBaseline(meta: SessionMeta): {
   const stageStart = meta.stageStartTime ?? 0;
   const developVisits = (meta.stageVisitOrder ?? []).filter((s) => s === "develop").length;
 
-  if (meta.currentStage === COMMIT_PRODUCING_STAGE && developVisits <= 1 && stageStart > 0) {
+  if (
+    meta.currentStage === COMMIT_PRODUCING_STAGE &&
+    developVisits <= 1 &&
+    stageStart > 0 &&
+    // 210 review round 3 issue 1 (High): a resume re-based `stageStartTime` to
+    // the resume instant and flattened the earlier develop visit out of
+    // `stageVisitOrder`, so a resumed develop visit LOOKS like a first visit.
+    // It is not — the period's own pre-abort commits are legitimately older
+    // than the resume clock. Fall through to the preserved period clock.
+    meta.periodResumedAt === undefined
+  ) {
     return { baselineMs: stageStart, label: "develop stage entry (first visit)" };
   }
 

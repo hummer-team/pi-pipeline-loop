@@ -121,15 +121,20 @@ export function buildNewPeriodResetFields(
     advancedThisTurn: undefined,
     reviewConclusionDeclared: undefined,
 
-    // 210 Phase 0: per-period evidence snapshots. The three fields are set
+    // 210 Phase 0: per-period evidence snapshots. These fields are set
     // ONLY here (single construction point) — buildStartMeta / buildRestartMeta /
     // buildResumeMeta all spread this function, so no separate writes exist.
-    // ONE documented exception (210 review issue 2, High): buildResumeMeta
-    // re-overrides `pipelineStartedAt` back to the preserved period clock —
-    // a resume continues the same run and must not rebase the commit-proof
-    // C2 baseline over its legitimate pre-abort commits.
+    // DOCUMENTED EXCEPTIONS (210 review round 2 issue 2 + round 3 issues 1/2):
+    // buildResumeMeta re-overrides `pipelineStartedAt` / `stageStats` /
+    // `usageByStage` back to the preserved period snapshots — a resume
+    // CONTINUES the same run, so rebasing the clock would let commit-proof C2
+    // reject its own pre-abort commits and splitting the evidence scope would
+    // make the terminal aggregate mix periods. It also stamps
+    // `periodResumedAt`, the marker commit-proof C2 uses to recognise a
+    // resume-rebased develop visit as a re-entry of the same period.
     stageStats: undefined,
     usageByStage: undefined,
     pipelineStartedAt: Date.now(),
+    periodResumedAt: undefined,
   };
 }
