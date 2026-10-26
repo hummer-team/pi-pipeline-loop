@@ -90,7 +90,7 @@ describe('meta-reset (203_Bug Phase 1)', () => {
       expect(check.activeSpawns).toBeUndefined();
       expect(check.designReview).toBeUndefined();
       expect(check.designReviewRecheck).toBeUndefined();
-      // 212 Phase 1: the automatic-representation budget stamp clears with a
+      // 212 Phase 1: the automatic-presentation budget stamp clears with a
       // new period (fresh decision chain); continue-resume keeps it on purpose.
       expect(check.designReviewDecisionReprompt).toBeUndefined();
       expect(check.stageVisitOrder).toEqual(["clarify"]);

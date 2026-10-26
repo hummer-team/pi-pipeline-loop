@@ -52,6 +52,7 @@ import {
 } from "../../core/design-review/decision-reprompt";
 import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-loader";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import type { DesignReviewActorInput, HumanDecision } from "../../core/design-review/decision-types";
 import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
 
@@ -124,18 +125,27 @@ describe("212 Phase 1: wasDecisionRePresented / markDecisionRePresented", () => 
     expect(wasDecisionRePresented(makeTestMeta(), "any")).toBe(false);
   });
 
-  it("marks via session.updateMeta with decisionId + timestamp", () => {
+  it("marks via session.updateMeta with decisionId + timestamp; an ACCEPTED write reports true", () => {
     let patch: Partial<SessionMeta> | undefined;
     const session = {
       updateMeta: (p: Partial<SessionMeta>) => {
         patch = p;
-        return undefined;
+        return { ...(p as SessionMeta) };
       },
-      getMeta: () => undefined,
     };
-    markDecisionRePresented(session, "dec-42");
+    expect(markDecisionRePresented(session, "dec-42")).toBe(true);
     expect(patch?.designReviewDecisionReprompt?.decisionId).toBe("dec-42");
     expect(patch?.designReviewDecisionReprompt!.at).toBeGreaterThan(0);
+  });
+
+  it("reports FALSE when updateMeta answers a ZERO-WRITE (lock busy / barrier) — 212 round-3 review fix #4", () => {
+    // session-state.ts:482-560 returns undefined on lock_busy and on a
+    // patch-barrier rejection: nothing was persisted, the charge did NOT
+    // stick. The caller turns this into an error-level audit.
+    const session = {
+      updateMeta: (_p: Partial<SessionMeta>) => undefined,
+    };
+    expect(markDecisionRePresented(session, "dec-43")).toBe(false);
   });
 });
 
@@ -248,40 +258,65 @@ describe("212 Phase 1: decideAutoReprompt first-match chain (all reasons)", () =
 });
 
 describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
+  // 212 round-3 review fix #3: BOTH facts are REQUIRED fields (no optimistic
+  // default) and `presented` is not assignable — the type layer is the guard.
   it("already_presented states the once-promise and resume", () => {
-    const copy = formatDecisionWaitNotice("r.md", "already_presented");
+    const copy = formatDecisionWaitNotice("r.md", "already_presented", { ownerEvidenceMissing: false, hasSelect: true });
     expect(copy).toContain("at most once");
     expect(copy).toContain("/pipeline-resume");
   });
   it("disabled states auto presentation is off and resume", () => {
-    const copy = formatDecisionWaitNotice("r.md", "disabled");
+    const copy = formatDecisionWaitNotice("r.md", "disabled", { ownerEvidenceMissing: false, hasSelect: true });
     expect(copy).toContain("disabled");
     expect(copy).toContain("/pipeline-resume");
   });
-  it("not_settle / not_owner WITH recorded evidence keep the neutral resume hint", () => {
-    for (const reason of ["not_settle", "not_owner"] as const) {
-      const copy = formatDecisionWaitNotice("r.md", reason, false);
-      expect(copy).toContain("Use /pipeline-resume to present");
+  it("not_settle WITH recorded evidence in an interactive session keeps the neutral resume hint", () => {
+    const copy = formatDecisionWaitNotice("r.md", "not_settle", { ownerEvidenceMissing: false, hasSelect: true });
+    expect(copy).toContain("Use /pipeline-resume to present");
+    expect(copy).not.toContain("at most once");
+    expect(copy).not.toContain("Owner evidence is missing");
+  });
+  it("not_owner with recorded evidence gives BOTH Plan exits — resume qualified to the recorded owner session (212 round-3 review fix #1)", () => {
+    // The persisted incident shape: ownerSessionFile points at a child file.
+    // Whatever this session's UI looks like, the notice must NOT promise a
+    // bare resume and must give re-authorize / /pipeline-quit alongside.
+    for (const hasSelect of [true, false]) {
+      const copy = formatDecisionWaitNotice("r.md", "not_owner", { ownerEvidenceMissing: false, hasSelect });
+      expect(copy).toContain("cannot prove it");
+      expect(copy).toContain("recorded owner session");
+      expect(copy).toContain("re-authorize this design-review round");
+      expect(copy).toContain("/pipeline-quit");
+      expect(copy).not.toContain("Use /pipeline-resume to present");
       expect(copy).not.toContain("at most once");
-      expect(copy).not.toContain("Owner evidence is missing");
+    }
+  });
+  it("the headless FACT conditions every resume promise — not_settle / disabled / already_presented (212 round-3 review fix #2)", () => {
+    // Headless owner session: the presenter rejects resume HERE too, so the
+    // decider's first-match reason must not smuggle an unconditional promise.
+    for (const reason of ["not_settle", "disabled", "already_presented"] as const) {
+      const copy = formatDecisionWaitNotice("r.md", reason, { ownerEvidenceMissing: false, hasSelect: false });
+      expect(copy).toContain("no interactive UI");
+      expect(copy).toContain("interactive owner session");
+      expect(copy).not.toContain("Use /pipeline-resume to present");
+      expect(copy).not.toContain("at most once");
     }
   });
   it("in_flight states the open menu instead of promising a new one (212 round-2 review fix #1)", () => {
-    const copy = formatDecisionWaitNotice("r.md", "in_flight", false);
+    const copy = formatDecisionWaitNotice("r.md", "in_flight", { ownerEvidenceMissing: false, hasSelect: true });
     expect(copy).toContain("already open");
     expect(copy).toContain("answer it there");
     expect(copy).not.toContain("Use /pipeline-resume to present");
     expect(copy).not.toContain("at most once");
   });
   it("no_select states the missing-UI fact, resume is conditioned on an interactive owner session (212 round-2 review fix #1)", () => {
-    const copy = formatDecisionWaitNotice("r.md", "no_select", false);
+    const copy = formatDecisionWaitNotice("r.md", "no_select", { ownerEvidenceMissing: false, hasSelect: false });
     expect(copy).toContain("no interactive UI");
     expect(copy).toContain("interactive owner session");
     expect(copy).not.toContain("Use /pipeline-resume to present");
     expect(copy).not.toContain("at most once");
   });
   it("no_owner_evidence mirrors the STATE face — never advertises /pipeline-resume (212 review fix #1)", () => {
-    const copy = formatDecisionWaitNotice("r.md", "no_owner_evidence");
+    const copy = formatDecisionWaitNotice("r.md", "no_owner_evidence", { ownerEvidenceMissing: false, hasSelect: true });
     // same facts as decision-display.ts's `ownerEvidence: missing` line:
     expect(copy).toContain("Owner evidence is missing");
     expect(copy).toContain("Re-authorize");
@@ -292,11 +327,13 @@ describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
     expect(copy).not.toContain("re-opens it");
     expect(copy).not.toContain("at most once");
   });
-  it("the owner-evidence FACT outranks EVERY refusal reason — same honest copy, zero resume promises (212 round-2 review fix #1)", () => {
+  it("the owner-evidence FACT outranks EVERY refusal reason — same honest copy, zero resume promises (212 round-2 + round-3 review fix #1)", () => {
     // not_settle / in_flight / no_select / not_owner / disabled /
     // already_presented all fall back to the no_owner_evidence wording when
     // evidence is missing: resume shares the single authority and cannot
     // answer there either, so promising it would repeat the 212 symptom.
+    // The missing FACT also outranks the capability fact and the not_owner
+    // two-exit copy (round-3): the absent shape keeps its own exits.
     for (const reason of [
       "not_settle",
       "disabled",
@@ -306,13 +343,15 @@ describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
       "not_owner",
       "no_owner_evidence",
     ] as const) {
-      const copy = formatDecisionWaitNotice("r.md", reason, true);
-      expect(copy).toContain("Owner evidence is missing");
-      expect(copy).toContain("Re-authorize");
-      expect(copy).toContain("/pipeline-quit");
-      expect(copy).not.toContain("Use /pipeline-resume");
-      expect(copy).not.toContain("re-opens it");
-      expect(copy).not.toContain("at most once");
+      for (const hasSelect of [true, false]) {
+        const copy = formatDecisionWaitNotice("r.md", reason, { ownerEvidenceMissing: true, hasSelect });
+        expect(copy).toContain("Owner evidence is missing");
+        expect(copy).toContain("Re-authorize");
+        expect(copy).toContain("/pipeline-quit");
+        expect(copy).not.toContain("Use /pipeline-resume");
+        expect(copy).not.toContain("re-opens it");
+        expect(copy).not.toContain("at most once");
+      }
     }
   });
 });
@@ -714,6 +753,54 @@ describe("212 Phase 1: coordinator-level one-shot auto re-presentation", () => {
     expect(reasonOf(r)).toBe("decision_pending");
     expect(h.menuCalls.length).toBe(0);
     expect(h.session.getMeta()!.designReviewDecisionReprompt).toBeUndefined();
+  });
+
+  it("stamp ZERO-WRITE is auditable (decision_auto_reprompt_stamp_failed, error level) — menu still opens, single charge point intact (212 round-3 review fix #4)", async () => {
+    const captured: Array<{ action: string; level?: string; decisionId?: string; charged?: unknown }> = [];
+    __setSafeWriteAuditLogOverride(async (_event, message, level) => {
+      captured.push({
+        action: String(message?.action ?? ""),
+        ...(level !== undefined ? { level } : {}),
+        decisionId: message?.decisionId as string | undefined,
+        charged: message?.charged,
+      });
+    });
+    try {
+      const h = makeHarness();
+      const decisionId = await h.createPendingViaChild();
+      // Simulate the production zero-write (session-state.ts:482-560: meta
+      // lock busy / patch barrier rejected): the stamp patch persists NOTHING
+      // and updateMeta answers `undefined`. Every other meta write stays real
+      // so the flow around the charge point is untouched.
+      const realUpdateMeta = h.session.updateMeta;
+      h.session.updateMeta = ((patch: Partial<SessionMeta>) =>
+        patch.designReviewDecisionReprompt !== undefined
+          ? undefined
+          : realUpdateMeta(patch)) as typeof h.session.updateMeta;
+      const ownerCtx = h.mkCtx({
+        actor: { isChild: false, sessionFile: OWNER },
+        select: async (title, options) => {
+          h.menuCalls.push({ title, options });
+          return undefined; // Esc
+        },
+      });
+      const r = await coordinateDesignReview(ownerCtx, h.session.getMeta()!, "settle");
+      expect(reasonOf(r)).toBe("decision_pending");
+      // the menu really opened (the ONE charge point stayed single) …
+      expect(h.menuCalls.length).toBe(1);
+      // … while the stamp persisted nothing (documented fail-open of the
+      // channel: the next owner settle may re-present; now auditable).
+      expect(h.session.getMeta()!.designReviewDecisionReprompt).toBeUndefined();
+      const failed = captured.filter((c) => c.action === "decision_auto_reprompt_stamp_failed");
+      expect(failed.length).toBe(1);
+      expect(failed[0]!.level).toBe("error");
+      expect(failed[0]!.decisionId).toBe(decisionId);
+      // exactly one re-presentation attempt logged — the charge point was
+      // reached once, never twice (no compensating re-stamp anywhere).
+      expect(captured.filter((c) => c.action === "decision_auto_reprompt").length).toBe(1);
+    } finally {
+      __setSafeWriteAuditLogOverride(null);
+    }
   });
 });
 

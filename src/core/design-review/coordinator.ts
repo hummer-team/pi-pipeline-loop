@@ -95,6 +95,7 @@ import type {
 // `??`/`||` fallbacks.
 import {
   auditMissingOwnerEvidenceOnSettle,
+  auditUnprovableOwnerEvidenceOnSettle,
   isBlockedChildWithoutOwnerEvidence,
   normalizeSessionFile,
   resolveDecisionOwnerFile,
@@ -1406,9 +1407,21 @@ async function presentHumanDecisionForPendingState(
     // before-revalidation all passed, the menu WILL open now. A crashed menu
     // must never re-arm itself, so the stamp is written BEFORE `ui.select`.
     if (opts?.consumeBudget === true) {
-      markDecisionRePresented(ctx.session, decision.decisionId);
+      // 212 round-3 review fix #4: `updateMeta` answers a zero-write honestly
+      // with `undefined` (meta lock busy / patch barrier rejected) — the lost
+      // charge gets ONE error-level audit right here, never a silent swallow
+      // (the channel's inherent fail-open: the next owner settle may re-arm).
+      const stamped = markDecisionRePresented(ctx.session, decision.decisionId);
+      if (!stamped) {
+        await safeWriteAuditLog("design_review_coordinator", {
+          action: "decision_auto_reprompt_stamp_failed",
+          decisionId: decision.decisionId,
+          round: String(drState.round),
+        }, "error");
+      }
       // 212 review fix #4: the settle entry learns the truthful charge
-      // outcome at exactly this point (the menu opened ⇒ stamp written).
+      // outcome at exactly this point (the menu opened ⇒ stamp ATTEMPTED;
+      // durability failures are observable via decision_auto_reprompt_stamp_failed).
       opts.onCharged?.();
     }
     // ONE menu presentation.
@@ -1817,6 +1830,21 @@ async function attemptAutoRepromptOnSettle(
     menuInFlight: isHumanDecisionMenuInFlight(decision.decisionId),
   });
   if (!auto.reprompt) {
+    // 212 round-3 review fix #1 (Plan Phase 0 task 11): a `not_owner`
+    // refusal with RECORDED owner evidence is the persisted incident shape
+    // — make it self-checkable on the settle channel with the 212
+    // vocabulary. PURE AUDIT re-stating the existing decider verdict
+    // (`not_owner` only occurs on the owner-settle auto channel): no new
+    // verdict, no field rewrite, no charge anywhere.
+    if (auto.reason === "not_owner") {
+      await auditUnprovableOwnerEvidenceOnSettle({
+        pipelineId: meta.pipelineId,
+        decisionId: decision.decisionId,
+        round: drState.round,
+        actor: ctx.actor,
+        ownerFile,
+      });
+    }
     return { kind: "refused", reason: auto.reason };
   }
   let charged = false;
@@ -1908,8 +1936,8 @@ async function handleDecisionPending(
         autoReprompt: attempt.reason,
       });
       if (ctx.ui?.notify) {
-        // 212 round-2 review fix #1: the read-side owner-evidence fact rides along.
-        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, attempt.reason, ownerFile === undefined));
+        // 212 round-3 review fixes #1/#2: BOTH read-side facts (owner evidence + UI capability) ride along.
+        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, attempt.reason, { ownerEvidenceMissing: ownerFile === undefined, hasSelect: typeof ctx.ui?.select === "function" }));
       }
     }
     return { status: "handled", action: "pending", reason: "decision_pending" };

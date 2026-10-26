@@ -21,7 +21,11 @@
  *   and zero visits / RPC / choices happen;
  * - legacy data: a persisted decision whose `ownerSessionFile` points at a
  *   foreign session file is never rewritten by the read-side normalization
- *   — the owner still resolves to "unknown" (never a guessed authority).
+ *   — the owner still resolves to "unknown" (never a guessed authority);
+ *   the SETTLE channel of that shape gives the BOTH-exits notice (re-authorize
+ *   / /pipeline-quit, resume qualified to the recorded session) and writes the
+ *   read-only `decision_owner_evidence_insufficient{stage:"settle",
+ *   ownerEvidence:"recorded_unprovable"}` self-check (212 round-3 review fix #1).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
@@ -530,6 +534,56 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
     expect(session.getMeta()!.designReview!.decision?.state).toBe("pending");
     expect(audit.findBy("decision_owner_evidence_insufficient").length).toBe(0);
     expect(audit.findBy("decision_auto_reprompt").length).toBe(0);
+  });
+
+  it("legacy recorded owner (child file): settle copy gives BOTH Plan exits and the 212 settle audit is written (212 round-3 review fix #1)", async () => {
+    audit.use();
+    // The persisted incident record: ownerSessionFile points at a FOREIGN
+    // (child) file; the real owner settles. Read side = "recorded", so the
+    // decider's first-match reason is not_owner — the settle notice must
+    // condition resume on the RECORDED owner session and give re-authorize
+    // / /pipeline-quit as well (Plan Phase 0 task 11: never pretend a path
+    // that cannot answer works), and the
+    // settle channel must leave the 212 vocabulary in the log.
+    const { ctx, session, selectCalls, notifications } = makeActorCtx(makePendingMeta(FOREIGN), {
+      actor: { isChild: false, sessionFile: PARENT },
+    });
+    const r = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
+    expect((r as { status: string }).status).toBe("handled");
+    expect((r as { action: string }).action).toBe("pending");
+    // resume in THIS session would also silently fail; settle never presents:
+    // zero menu attempts, zero charges.
+    expect(selectCalls).toBe(0);
+    expect(session.getMeta()!.designReviewDecisionReprompt).toBeUndefined();
+    expect(audit.findBy("decision_auto_reprompt").length).toBe(0);
+    // the refusal reason is UNCHANGED (first-match order locked by the plan)
+    const awaiting = audit.findBy("decision_awaiting_human");
+    expect(awaiting.length).toBe(1);
+    expect(awaiting[0]!.message.autoReprompt).toBe("not_owner");
+    // the notice carries BOTH exits and the recorded-session qualification
+    expect(
+      notifications.some(
+        (n) =>
+          n.includes("recorded owner session") &&
+          n.includes("re-authorize this design-review round") &&
+          n.includes("/pipeline-quit"),
+      ),
+    ).toBe(true);
+    expect(notifications.some((n) => n.includes("Use /pipeline-resume to present"))).toBe(false);
+    // self-check audit with the 212 vocabulary — READ-ONLY (the sibling
+    // decision_menu_skipped pair belongs to the ABSENT-evidence shape).
+    const insufficient = audit.findBy("decision_owner_evidence_insufficient");
+    expect(insufficient.length).toBe(1);
+    expect(insufficient[0]!.message.stage).toBe("settle");
+    expect(insufficient[0]!.message.ownerEvidence).toBe("recorded_unprovable");
+    expect(insufficient[0]!.message.role).toBe("unknown");
+    expect(insufficient[0]!.message.reason).toBe(
+      "actor session file does not match the authorized owner",
+    );
+    expect(audit.findBy("decision_menu_skipped").length).toBe(0);
+    // stays pending, and the persisted field is NEVER rewritten
+    expect(session.getMeta()!.designReview!.decision?.state).toBe("pending");
+    expect(session.getMeta()!.designReview!.decision?.ownerSessionFile).toBe(FOREIGN);
   });
 
   it("resume without owner evidence: 0 selections, stage=resume audit, state stays pending", async () => {

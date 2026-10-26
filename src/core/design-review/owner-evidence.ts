@@ -17,15 +17,19 @@
  * - Every consumer treats `undefined` as "no provable owner" and fails
  *   closed (193 single authority untouched: eligibility stays
  *   non-child + matching session file).
- * - In addition to this resolution single point the module hosts ONE pure
- *   audit thin wrapper for the settle channel
- *   ({@link auditMissingOwnerEvidenceOnSettle}): read-only facts, no state
- *   change, no eligibility granted or removed.
- * - The settle-channel self-check ({@link auditMissingOwnerEvidenceOnSettle},
- *   Phase 0 task 11, moved here by review fix #5) is PURE AUDIT: throttled,
- *   read-only facts, no state change, no menu, no authority granted or
- *   removed — it keeps `handleDecisionPending` inside the plan's
- *   single-function line budget.
+ * - In addition to this resolution single point the module hosts the settle
+ *   channel's pure AUDIT thin wrappers
+ *   ({@link auditMissingOwnerEvidenceOnSettle} and
+ *   {@link auditUnprovableOwnerEvidenceOnSettle}): read-only facts, no state
+ *   change, no eligibility granted or removed. Both RE-STATE an existing
+ *   decider/presenter refusal with the 212 vocabulary — neither derives a
+ *   new verdict.
+ * - The settle-channel self-checks ({@link auditMissingOwnerEvidenceOnSettle}
+ *   / {@link auditUnprovableOwnerEvidenceOnSettle}, Phase 0 task 11, moved
+ *   here by review fix #5 / extended by round-3 review fix #1) are PURE
+ *   AUDIT: throttled (shared 5s window per pipeline), read-only, no state
+ *   change, no menu, no authority granted or removed — they keep
+ *   `handleDecisionPending` inside the plan's single-function line budget.
  */
 
 import { safeWriteAuditLog } from "../../utils/auditLog";
@@ -127,5 +131,54 @@ export async function auditMissingOwnerEvidenceOnSettle(input: {
     stage: "settle",
     decisionId: input.decisionId,
     round: String(input.round),
+  }, "warn");
+}
+
+/**
+ * 212 round-3 review fix #1 (Plan Phase 0 task 11): the OTHER unanswerable
+ * settle shape — owner evidence is RECORDED, but this session cannot prove
+ * it holds the owner (the persisted incident record: `ownerSessionFile`
+ * pointing at a child file). The plugin has no cross-session header API, so
+ * "the record points at a session that can never answer" and "the record
+ * points at another live owner session" are INDISTINGUISHABLE from here —
+ * this wrapper states only the honest settle-side fact and makes the legacy
+ * state self-checkable with the 212 vocabulary (the resume channel keeps
+ * its own pre-212 `decision_menu_skipped` refusal log).
+ *
+ * PURE AUDIT, same throttle key/window as {@link auditMissingOwnerEvidenceOnSettle}:
+ * it RE-STATES the existing decider refusal (`not_owner` only occurs on the
+ * owner-settle auto channel AFTER the shared eligibility resolution) — no
+ * new verdict is derived, no field is rewritten, no eligibility granted or
+ * removed. The ABSENT-evidence shape belongs to the sibling wrapper and is
+ * defensively skipped here (never double-log one settle).
+ */
+export async function auditUnprovableOwnerEvidenceOnSettle(input: {
+  /** Raw meta pipelineId — the throttle key normalizes a missing one to "unknown". */
+  pipelineId: string | undefined;
+  decisionId: string;
+  round: number;
+  actor: DesignReviewActorInput | undefined;
+  /** Read-side normalized owner file; `undefined` belongs to the sibling. */
+  ownerFile: string | undefined;
+}): Promise<void> {
+  if (input.ownerFile === undefined) return;
+  const settleEvidence = resolveDesignReviewActorEvidence(input.actor, input.ownerFile);
+  // A provable owner settles — nothing insufficient on this channel.
+  if (settleEvidence.role === "owner") return;
+  const evidenceKey = `${input.pipelineId ?? "unknown"}:decision_owner_evidence`;
+  if (!shouldEmitWithinWindow(evidenceKey, SETTLE_OWNER_EVIDENCE_WINDOW_MS)) {
+    return;
+  }
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "decision_owner_evidence_insufficient",
+    stage: "settle",
+    // 212 vocabulary distinguishes the two shapes for forensics (string
+    // field per the audit contract) WITHOUT inventing a new verdict.
+    ownerEvidence: "recorded_unprovable",
+    decisionId: input.decisionId,
+    round: String(input.round),
+    role: settleEvidence.role,
+    source: settleEvidence.source,
+    reason: settleEvidence.reason ?? "role not verified",
   }, "warn");
 }
