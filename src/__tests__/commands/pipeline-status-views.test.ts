@@ -108,7 +108,8 @@ describe("210 Phase 5: running view fields", () => {
     const content = await statusContent(config, meta);
     const pd = lineValue(content, "Pending decision");
     expect(pd).toContain("blocked (verify_attempt_overflow)");
-    expect(pd).toContain("confirm reask @plan (count 2)");
+    expect(pd).toContain("confirm pending @plan (reprompt 2/3)");
+    expect(pd).toContain("[human confirm]");
   });
 
   it("audit anchor points at the per-pipeline audit directory", async () => {
@@ -241,7 +242,8 @@ describe("210 review issue 12: pending decision states who waits + resume action
     });
 
     const pd = lineValue(await statusContent(config, meta), "Pending decision");
-    expect(pd).toContain("confirm reask @plan (count 1) [human confirm]");
+    expect(pd).toContain("confirm pending @plan (reprompt 1/3)");
+    expect(pd).toContain("[human confirm]");
     expect(pd).toContain("/pipeline-resume");
   });
 
@@ -250,6 +252,62 @@ describe("210 review issue 12: pending decision states who waits + resume action
     const meta = makeTestMeta({
       currentStage: "develop",
       pipelineId: `pipe-210-status-none-${Date.now()}`,
+    });
+
+    const pd = lineValue(await statusContent(config, meta), "Pending decision");
+    expect(pd).toBe("none");
+  });
+});
+
+// ─── 211 Phase 2: one actionable line for both confirm-gate traces ──────────
+
+describe("211 Phase 2: merged confirm-pending pending-decision line", () => {
+  it("defer stamp only still renders the [human confirm] tag with reprompt 0/3 (review observation 4)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      pipelineId: `pipe-211-status-defer-${Date.now()}`,
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() - 5_000 },
+    });
+
+    const pd = lineValue(await statusContent(config, meta), "Pending decision");
+    expect(pd).toContain("confirm pending @plan (reprompt 0/3)");
+    expect(pd).toContain("[human confirm]");
+    expect(pd).toContain("/pipeline-resume");
+  });
+
+  it("reask only renders the merged line with the live reask count", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      pipelineId: `pipe-211-status-reask-${Date.now()}`,
+      confirmGateReask: { stage: "plan", count: 2 },
+    });
+
+    const pd = lineValue(await statusContent(config, meta), "Pending decision");
+    expect(pd).toContain("confirm pending @plan (reprompt 2/3)");
+    expect(pd).toContain("[human confirm]");
+  });
+
+  it("defer + reask coexisting renders exactly one confirm line (no double bits)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      pipelineId: `pipe-211-status-both-${Date.now()}`,
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() - 5_000 },
+      confirmGateReask: { stage: "plan", count: 1 },
+    });
+
+    const pd = lineValue(await statusContent(config, meta), "Pending decision");
+    expect((pd.match(/confirm pending/g) ?? []).length).toBe(1);
+    expect(pd).toContain("confirm pending @plan (reprompt 1/3)");
+  });
+
+  it("no pending traces keeps the bare 'none' (no misleading hint)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: `pipe-211-status-clean-${Date.now()}`,
     });
 
     const pd = lineValue(await statusContent(config, meta), "Pending decision");

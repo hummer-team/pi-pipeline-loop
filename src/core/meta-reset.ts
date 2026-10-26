@@ -101,6 +101,11 @@ export function buildNewPeriodResetFields(
 
     // Confirm-gate deferral window
     confirmGateDeferredAt: undefined,
+    // 211 Phase 2: per-visit gate bookkeeping must not leak into the next period
+    // (`stageVisitOrder` resets too, so a stale arm could otherwise re-wake on a
+    // numeric visitOrder collision). Continue-resume keeps both by design.
+    confirmGateReask: undefined,
+    confirmGateEscalation: undefined,
 
     // Spawn residue (RC2: cross-period residue breaks re-dispatch)
     pendingSpawns: {},

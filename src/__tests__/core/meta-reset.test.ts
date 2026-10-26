@@ -94,10 +94,36 @@ describe('meta-reset (203_Bug Phase 1)', () => {
       expect(check.contextFiles).toBeUndefined();
       expect(check.advancedThisTurn).toBeUndefined();
       expect(check.reviewConclusionDeclared).toBeUndefined();
+      // 211 Phase 2: per-visit gate bookkeeping clears with the new period
+      // (stageVisitOrder resets too, so a stale arm could re-wake on a
+      // numeric visitOrder collision).
+      expect(check.confirmGateDeferredAt).toBeUndefined();
+      expect(check.confirmGateReask).toBeUndefined();
+      expect(check.confirmGateEscalation).toBeUndefined();
     });
 
     it('does NOT include pipelineId (assigned by the caller)', () => {
       expect(check).not.toHaveProperty("pipelineId");
+    });
+  });
+
+  describe('211 Phase 2: confirm-gate bookkeeping reset scope', () => {
+    it('buildContinueResetFields does NOT clear confirm-gate traces (continue-resume keeps the pending-gate accounting)', () => {
+      const check = buildContinueResetFields(staleMeta, makeTestConfig());
+      expect(check).not.toHaveProperty("confirmGateReask");
+      expect(check).not.toHaveProperty("confirmGateEscalation");
+    });
+
+    it('stale gate traces are present in the meta before the new-period clear', () => {
+      const stale = makeTestMeta({
+        confirmGateDeferredAt: { stage: "plan", at: Date.now() - 5_000 },
+        confirmGateReask: { stage: "plan", count: 2 },
+        confirmGateEscalation: { stage: "plan", visitOrder: 3, at: Date.now() - 5_000 },
+      } as Partial<SessionMeta>);
+      const check = buildNewPeriodResetFields(stale, makeTestConfig());
+      expect(check.confirmGateDeferredAt).toBeUndefined();
+      expect(check.confirmGateReask).toBeUndefined();
+      expect(check.confirmGateEscalation).toBeUndefined();
     });
   });
 });

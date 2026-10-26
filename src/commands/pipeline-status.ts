@@ -21,7 +21,9 @@ import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 import { resolveConfirmMaxRejections } from "../core/stage-advancer";
 import { effectiveMax, remainingRoundsOf } from "../utils/stage-visit";
 import { auditLogDirForPipeline } from "../utils/auditLog";
-import { DEFAULT_CONFIRM_MAX_REJECTIONS } from "../constants";
+import { DEFAULT_CONFIRM_MAX_REJECTIONS, CONFIRM_GATE_REASK_MAX } from "../constants";
+// 211 Phase 2: reask cap rendered as `reprompt N/CONFIRM_GATE_REASK_MAX` in the
+// merged confirm-pending line below.
 // 193 Phase 3 (task 8): read-only pending-decision display (shared view).
 import {
   buildDesignReviewPendingDecisionView,
@@ -76,11 +78,16 @@ function summarizePendingDecision(meta: SessionMeta): string {
   if (meta.flowState === "blocked") {
     bits.push(`blocked${meta.blockedReason ? ` (${meta.blockedReason})` : ""} [human decision]`);
   }
-  if (meta.confirmGateReask) {
-    bits.push(`confirm reask @${meta.confirmGateReask.stage} (count ${meta.confirmGateReask.count}) [human confirm]`);
-  }
-  if (meta.confirmGateDeferredAt) {
-    bits.push(`confirm deferred @${meta.confirmGateDeferredAt.stage}`);
+  // 211 Phase 2: one actionable line for both confirm-gate traces (reask and/or
+  // deferral stamp). Keeps the 210 "[human confirm]" ownership tag and always
+  // names the deterministic exit (/pipeline-resume, not bounded by the budget).
+  const gateStage = meta.confirmGateDeferredAt?.stage ?? meta.confirmGateReask?.stage;
+  if (gateStage) {
+    const count = meta.confirmGateReask?.stage === gateStage ? meta.confirmGateReask.count : 0;
+    bits.push(
+      `confirm pending @${gateStage} (reprompt ${count}/${CONFIRM_GATE_REASK_MAX})` +
+        ` - run /pipeline-resume [human confirm]`,
+    );
   }
   const pending = buildDesignReviewPendingDecisionView(meta);
   if (pending !== null) {
