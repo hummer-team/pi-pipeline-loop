@@ -674,6 +674,14 @@ export interface SessionMeta {
   confirmGateDeferredAt?: { stage: PipelineStage; at: number };
 
   /**
+   * 211 Phase 1: one-shot arm credential for the child-suppressed confirm gate.
+   * Written by the child bypass (once per stage visit), consumed by the owner
+   * (presentation / gate resolution) or cleared on a new period. `visitOrder`
+   * mirrors `meta.stageVisitOrder.length` (same key as owner-wake dedup).
+   */
+  confirmGateEscalation?: { stage: PipelineStage; visitOrder: number; at: number };
+
+  /**
    * Phase 8 (195 Bug): Consecutive probe deferral counter for advance liveness guard.
    * Tracks how many consecutive times the agent was detected as live and deferred.
    * After 2 consecutive deferrals, gives up and proceeds with dispatch/report.

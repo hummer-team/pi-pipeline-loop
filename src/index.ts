@@ -4,7 +4,7 @@
  * Exports the `createPipeline` factory function and all public types.
  */
 
-import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn } from "./types";
+import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn, AuditLogLevel } from "./types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, TEMPLATE_DIR } from "./constants";
 import { initAuditLog } from "./utils/auditLog";
@@ -215,10 +215,28 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         // so the observer can read session meta and send followUp messages.
         // 203_Bug Phase 0: the same wake/audit/status-bar channels are shared
         // with owner-escalation deps (same-source data, one set of callbacks).
-        const wakeFollowUp = (summary: string) => {
+        // 211 Phase 1: `wakeFollowUp` now REPORTS delivery (`true`/`false`) so
+        // the escalation channel can fall back to a visible hint on failure;
+        // OwnerWakeDeps keeps a `void` return type (still assignable).
+        const wakeFollowUp = (summary: string): boolean => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const send = (pi as any).sendUserMessage as
+            | ((msg: string, opts?: Record<string, unknown>) => unknown)
+            | undefined;
+          if (!send) {
+            // 211 Phase 1: a missing delivery channel is also a FAILED wake —
+            // observable, and callers learn they must fall back.
+            const meta = rctx.session.getMeta();
+            wakeAudit("owner_wake_escalation_failed", {
+              pipelineId: meta?.pipelineId ?? "unknown",
+              stage: meta?.currentStage ?? "unknown",
+              error: "sendUserMessage unavailable",
+            }, "warn");
+            return false;
+          }
           try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (pi as any).sendUserMessage?.(summary, { deliverAs: "followUp" });
+            send(summary, { deliverAs: "followUp" });
+            return true;
           } catch (err) {
             // Fail-safe: sendUserMessage errors must not crash the pipeline.
             // 208 (J5): wake failures stay observable via audit.
@@ -227,14 +245,18 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
               pipelineId: meta?.pipelineId ?? "unknown",
               stage: meta?.currentStage ?? "unknown",
               error: err instanceof Error ? err.message : String(err),
-            });
+            }, "warn");
+            return false;
           }
         };
-        const wakeAudit = (event: string, payload: Record<string, unknown>) => {
+        // Review observation 1: optional audit level (default "info") keeps all
+        // pre-211 event levels unchanged; `owner_wake_escalation_failed` is
+        // written at "warn" so the guide event table stops drifting.
+        const wakeAudit = (event: string, payload: Record<string, unknown>, level?: AuditLogLevel): void => {
           try {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const auditLog = require("./utils/auditLog");
-            auditLog.safeWriteAuditLog(event, payload);
+            auditLog.safeWriteAuditLog(event, payload, level);
           } catch {
             // Fail-safe: audit errors must not crash the pipeline
           }
@@ -267,6 +289,14 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             sendFollowUp: wakeFollowUp,
             syncStatusBar: wakeSyncStatusBar,
             audit: wakeAudit,
+            // 211 Phase 1: actionable hint when the wake could not be delivered.
+            notifyHint: (stage) => {
+              try {
+                rctx.ui.notify(`${stage} confirmation is still pending. If no dialog appears, run /pipeline-resume.`);
+              } catch {
+                // fail-open: hint errors must not crash the pipeline
+              }
+            },
             isOwner: true,
           });
 

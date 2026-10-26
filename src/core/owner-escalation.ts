@@ -22,9 +22,15 @@
  * session context).
  */
 
-import type { SessionMeta } from "../types";
-import { getFlowState } from "./flow-state";
+import type { SessionMeta, PipelineStage } from "../types";
+import { getFlowState, isFrozen } from "./flow-state";
 import { registerEscalationObserver, type EscalationPayload } from "../utils/escalation-bus";
+// 211 Phase 1: distinct reason for the child-supplied confirm-gate wake channel
+import {
+  CONFIRM_GATE_ESCALATION_REASON,
+  buildConfirmGatePendingWakeSummary,
+  currentStageVisitOrder,
+} from "./confirm-gate-escalation";
 
 /**
  * Owner escalation observer dependencies.
@@ -32,12 +38,20 @@ import { registerEscalationObserver, type EscalationPayload } from "../utils/esc
 export interface OwnerEscalationDeps {
   /** Read current SessionMeta (owner session) */
   getMeta: () => SessionMeta | undefined;
-  /** Send followUp message to owner (wake channel, deliverAs: "followUp") */
-  sendFollowUp: (summary: string) => void;
+  /**
+   * Send followUp message to owner (wake channel, deliverAs: "followUp").
+   * 211 Phase 1: returns `true` = delivered, `false` = delivery failed
+   * (requires a visible fallback hint); `void`-returning callers from 203
+   * remain assignable (their `true` is simply ignored downstream via truthy
+   * default handling in the bridge).
+   */
+  sendFollowUp: (summary: string) => boolean;
   /** Immediate status-bar refresh at escalation event */
   syncStatusBar: () => void;
   /** Audit log writer */
   audit: (event: string, payload: Record<string, unknown>) => void;
+  /** 211 Phase 1: actionable fallback when the wake could not be delivered. */
+  notifyHint?: (stage: PipelineStage) => void;
   /**
    * Role gate: `false` when these deps belong to a child session.
    * Owner/child share this module in-process, so the evaluation itself must
@@ -117,12 +131,13 @@ export function evaluateEscalationWake(
     return;
   }
 
-  const flow = getFlowState(meta);
-  const matched =
-    meta.pipelineId === payload.pipelineId &&
-    flow === "blocked" &&
-    meta.menuEscalationPending === true &&
-    payload.stage === meta.currentStage;
+  // 211 Phase 1: reason dispatch. The 203 frozen predicate stays VERBATIM (a
+  // relaxation would break the `menuEscalationPending` dedup semantics); the
+  // confirm-gate pending channel matches on its own arm credential instead.
+  const confirmPending = payload.reason === CONFIRM_GATE_ESCALATION_REASON;
+  const matched = confirmPending
+    ? matchesConfirmPendingEscalation(payload, meta)
+    : matchesFrozenEscalation(payload, meta);
 
   if (!matched) {
     deps.audit("owner_wake_escalation_skipped", {
@@ -131,7 +146,7 @@ export function evaluateEscalationWake(
       stage: payload.stage,
       localPipelineId: meta.pipelineId ?? "",
       localStage: meta.currentStage,
-      flowState: flow,
+      flowState: getFlowState(meta),
       menuEscalationPending: meta.menuEscalationPending === true,
     });
     return;
@@ -144,9 +159,28 @@ export function evaluateEscalationWake(
     // fail-open: UI errors must not block the wake logic
   }
 
-  // Wake only — promptDecisionMenu (the sole popup entry) runs when the
-  // owner's turn ends and consumes menuEscalationPending itself.
-  deps.sendFollowUp(buildEscalationWakeSummary(payload));
+  // Wake only — the sole popup entries run when the owner's turn ends: the
+  // frozen decision menu (203 consumption) or the Phase 0 re-presentation
+  // entry (211 consumption) consumes its own state itself.
+  if (!deps.sendFollowUp(
+    confirmPending
+      ? buildConfirmGatePendingWakeSummary(payload.stage)
+      : buildEscalationWakeSummary(payload),
+  )) {
+    // 211 Phase 1: undelivered wake — register the skip AND give the user a
+    // visible, actionable fallback (no retry, no timers, no popups).
+    deps.audit("owner_wake_escalation_skipped", {
+      reason: "delivery_failed",
+      pipelineId: payload.pipelineId,
+      stage: payload.stage,
+    });
+    try {
+      deps.notifyHint?.(payload.stage);
+    } catch {
+      // fail-open: hint errors must not block the wake logic
+    }
+    return; // NOT delivered ⇒ no owner_wake_escalation audit
+  }
 
   deps.audit("owner_wake_escalation", {
     pipelineId: payload.pipelineId,
@@ -154,6 +188,42 @@ export function evaluateEscalationWake(
     reason: payload.reason,
     at: payload.at,
   });
+}
+
+/**
+ * 211 Phase 1: predicate for the `confirm_gate_pending` wake channel.
+ * Requires the owner to run the SAME pipeline at the SAME stage with a
+ * FRESH arm credential (stage + visitOrder match the current visit) while
+ * the flow is `running` and not frozen — a `blocked` state belongs to the
+ * frozen 203 channel, never to the confirm-gate channel.
+ */
+function matchesConfirmPendingEscalation(
+  payload: EscalationPayload,
+  meta: SessionMeta,
+): boolean {
+  if (meta.pipelineId !== payload.pipelineId) return false;
+  if (payload.stage !== meta.currentStage) return false;
+  const arm = meta.confirmGateEscalation;
+  if (!arm || arm.stage !== payload.stage) return false;
+  if (arm.visitOrder !== currentStageVisitOrder(meta)) return false;
+  return getFlowState(meta) === "running" && !isFrozen(meta);
+}
+
+/**
+ * 203 verbatim frozen-wake predicate, extracted without behavioural change.
+ * Wake requires ALL of:
+ * 1. Same pipelineId (session must own this pipeline)
+ * 2. Pipeline currently blocked (freeze is a fact)
+ * 3. `menuEscalationPending === true` (menu not yet shown — natural dedup)
+ * 4. Same stage as the escalation payload
+ */
+function matchesFrozenEscalation(payload: EscalationPayload, meta: SessionMeta): boolean {
+  return (
+    meta.pipelineId === payload.pipelineId &&
+    getFlowState(meta) === "blocked" &&
+    meta.menuEscalationPending === true &&
+    payload.stage === meta.currentStage
+  );
 }
 
 /**

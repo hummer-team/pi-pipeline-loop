@@ -15,7 +15,7 @@ import {
 } from '../../core/owner-escalation';
 import { PIPELINE_ESCALATION_EVENT, type EscalationPayload } from '../../utils/escalation-bus';
 import { makeTestConfig, makeTestMeta } from '../helpers';
-import type { SessionMeta } from '../../types';
+import type { SessionMeta, PipelineStage } from '../../types';
 
 /** Creates a mock pi object with a capture event bus. */
 function makeMockPi() {
@@ -40,6 +40,32 @@ function makeMockPi() {
       for (const handler of listeners.get(event) ?? []) handler(payload);
     },
   };
+}
+
+/** Creates owner-escalation deps with captured calls (module scope, 211 shared). */
+function makeDeps(meta: SessionMeta | undefined, opts?: { failDelivery?: boolean; notifyHint?: (stage: PipelineStage) => void }) {
+  const calls = {
+    followUps: [] as string[],
+    statusBars: 0,
+    audits: [] as Array<{ event: string; payload: Record<string, unknown> }>,
+  };
+  const deps: OwnerEscalationDeps = {
+    getMeta: () => meta,
+    // 211 review #4: the shared deps must report delivery (`()>true`) or
+    // every wake would be judged delivery_failed and the pre-existing
+    // 203 assertions (`followUps.length === 1`) break. Frozen escalation
+    // assertions below are kept VERBATIM — only the mock return value
+    // changed. `escalation-failure-audit.test.ts` (OwnerWakeDeps) is NOT
+    // touched by this type change.
+    sendFollowUp: (summary) => {
+      calls.followUps.push(summary);
+      return opts?.failDelivery !== true;
+    },
+    syncStatusBar: () => { calls.statusBars++; },
+    audit: (event, payload) => { calls.audits.push({ event, payload }); },
+    ...(opts?.notifyHint ? { notifyHint: opts.notifyHint } : {}),
+  };
+  return { calls, deps };
 }
 
 describe('owner-escalation (203_Bug Phase 0 / RC1)', () => {
@@ -137,21 +163,6 @@ describe('owner-escalation (203_Bug Phase 0 / RC1)', () => {
       });
     }
 
-    function makeDeps(meta: SessionMeta | undefined) {
-      const calls = {
-        followUps: [] as string[],
-        statusBars: 0,
-        audits: [] as Array<{ event: string; payload: Record<string, unknown> }>,
-      };
-      const deps: OwnerEscalationDeps = {
-        getMeta: () => meta,
-        sendFollowUp: (summary) => { calls.followUps.push(summary); },
-        syncStatusBar: () => { calls.statusBars++; },
-        audit: (event, payload) => { calls.audits.push({ event, payload }); },
-      };
-      return { calls, deps };
-    }
-
     it('listener wiring: broadcast → followUp once; consumed flag ⇒ repeat no-wake', () => {
       const mock = makeMockPi();
       const meta = blockedMeta();
@@ -246,6 +257,129 @@ describe('owner-escalation (203_Bug Phase 0 / RC1)', () => {
       expect(calls.followUps).toHaveLength(0);
       const skip = calls.audits.find((a) => a.event === 'owner_wake_escalation_skipped');
       expect(skip?.payload.reason).toBe('no_meta');
+    });
+  });
+
+  // ── 211 Phase 1: confirm-gate pending wake channel ─────────────────────────
+
+  describe('confirm_gate_pending wake channel (211 Phase 1)', () => {
+    const confirmPayload = (over: Partial<EscalationPayload> = {}): EscalationPayload => ({
+      pipelineId: 'pipe-1',
+      stage: 'develop',
+      reason: 'confirm_gate_pending',
+      at: Date.now(),
+      ...over,
+    });
+
+    /** running meta with a FRESH arm credential (visitOrder matches). */
+    function armedMeta(over: Partial<SessionMeta> = {}): SessionMeta {
+      return makeTestMeta({
+        currentStage: 'develop',
+        pipelineId: 'pipe-1',
+        confirmGateEscalation: { stage: 'develop', visitOrder: 0, at: Date.now() },
+        ...over,
+      });
+    }
+
+    it('reason=confirm_gate_pending + fresh arm ⇒ one followUp with the pending-gate summary + owner_wake_escalation', () => {
+      const meta = armedMeta();
+      let hintedStage: string | undefined;
+      const { calls, deps } = makeDeps(meta, {
+        notifyHint: (stage) => { hintedStage = stage; },
+      });
+      setOwnerEscalationDeps(deps);
+      const mock = makeMockPi();
+      cleanup = registerOwnerEscalationObserver(mock.pi);
+
+      mock.fire(PIPELINE_ESCALATION_EVENT, confirmPayload());
+
+      expect(calls.followUps).toHaveLength(1);
+      // Wake text MUST NOT look like a pipeline turn: falls into the non-
+      // pipeline branch where the Phase 0 entry presents the gate.
+      expect(calls.followUps[0].startsWith('Pipeline notice: ')).toBe(true);
+      expect(calls.followUps[0]).not.toContain('@');
+      const wakeAudit = calls.audits.find((a) => a.event === 'owner_wake_escalation');
+      expect(wakeAudit).toBeDefined();
+      expect(wakeAudit?.payload.stage).toBe('develop');
+      expect(calls.statusBars).toBe(1);
+      // Delivered ⇒ the fallback hint must NOT fire.
+      expect(hintedStage).toBeUndefined();
+    });
+
+    it('pipelineId mismatch ⇒ skipped predicate_mismatch, zero followUp', () => {
+      const meta = armedMeta({ pipelineId: 'pipe-other' });
+      const { calls, deps } = makeDeps(meta);
+      setOwnerEscalationDeps(deps);
+      const mock = makeMockPi();
+      cleanup = registerOwnerEscalationObserver(mock.pi);
+
+      mock.fire(PIPELINE_ESCALATION_EVENT, confirmPayload());
+
+      expect(calls.followUps).toHaveLength(0);
+      const skip = calls.audits.find((a) => a.event === 'owner_wake_escalation_skipped');
+      expect(skip?.payload.reason).toBe('predicate_mismatch');
+    });
+
+    it('stage mismatch ⇒ skipped predicate_mismatch, zero followUp', () => {
+      const meta = armedMeta({ currentStage: 'plan' as const });
+      const { calls, deps } = makeDeps(meta);
+      setOwnerEscalationDeps(deps);
+      const mock = makeMockPi();
+      cleanup = registerOwnerEscalationObserver(mock.pi);
+
+      mock.fire(PIPELINE_ESCALATION_EVENT, confirmPayload());
+
+      expect(calls.followUps).toHaveLength(0);
+      expect(calls.audits.some((a) => a.event === 'owner_wake_escalation_skipped')).toBe(true);
+    });
+
+    it('stale arm (arm.visitOrder ≠ stageVisitOrder.length) ⇒ skipped, zero followUp', () => {
+      const meta = armedMeta({
+        // Rework re-entered the stage: the visit grew, the credential expired.
+        stageVisitOrder: ['clarify', 'plan', 'develop'] as SessionMeta['stageVisitOrder'],
+      });
+      const { calls, deps } = makeDeps(meta);
+      setOwnerEscalationDeps(deps);
+      const mock = makeMockPi();
+      cleanup = registerOwnerEscalationObserver(mock.pi);
+
+      mock.fire(PIPELINE_ESCALATION_EVENT, confirmPayload());
+
+      expect(calls.followUps).toHaveLength(0);
+      expect(calls.audits.some((a) => a.event === 'owner_wake_escalation_skipped')).toBe(true);
+    });
+
+    it('flowState blocked ⇒ skipped (running-only channel), zero followUp', () => {
+      const meta = armedMeta({ flowState: 'blocked' as SessionMeta['flowState'] });
+      const { calls, deps } = makeDeps(meta);
+      setOwnerEscalationDeps(deps);
+      const mock = makeMockPi();
+      cleanup = registerOwnerEscalationObserver(mock.pi);
+
+      mock.fire(PIPELINE_ESCALATION_EVENT, confirmPayload());
+
+      expect(calls.followUps).toHaveLength(0);
+      expect(calls.audits.some((a) => a.event === 'owner_wake_escalation_skipped')).toBe(true);
+    });
+
+    it('delivery failed ⇒ notifyHint once + delivery_failed skip + zero owner_wake_escalation', () => {
+      const meta = armedMeta();
+      const hintedStages: string[] = [];
+      const { calls, deps } = makeDeps(meta, {
+        failDelivery: true,
+        notifyHint: (stage) => { hintedStages.push(stage); },
+      });
+      setOwnerEscalationDeps(deps);
+      const mock = makeMockPi();
+      cleanup = registerOwnerEscalationObserver(mock.pi);
+
+      mock.fire(PIPELINE_ESCALATION_EVENT, confirmPayload());
+
+      expect(calls.followUps).toHaveLength(1); // attempted once — no retry
+      expect(hintedStages).toEqual(['develop']);
+      const skip = calls.audits.find((a) => a.event === 'owner_wake_escalation_skipped');
+      expect(skip?.payload.reason).toBe('delivery_failed');
+      expect(calls.audits.some((a) => a.event === 'owner_wake_escalation')).toBe(false);
     });
   });
 });

@@ -67,6 +67,8 @@ import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard"
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "./design-review/entry-result";
 import { createInitialState, computeHash } from "./design-review/state";
+// 211 Phase 1: one-shot arm credential for the child-suppressed confirm gate
+import { armConfirmGateEscalation, clearConfirmGateEscalation } from "./confirm-gate-escalation";
 import { describeInvalidNextStage } from "../utils/guard-conflict-report";
 import { buildStageSequence } from "../utils/stage-sequence";
 
@@ -961,14 +963,20 @@ export async function maybeHandleConfirmGate(
   // deferral stamp, the present-time stamp refresh, ui.select and ui.notify.
   if (isChild) {
     // Phase 2 (190) Fix-E: write deferred stamp to shared meta.json so owner's detectPendingConfirmGate can see it
-    ctx.session.updateMeta({ confirmGateDeferredAt: { stage: currentStage, at: Date.now() } });
+    const deferredAt = Date.now();
+    ctx.session.updateMeta({ confirmGateDeferredAt: { stage: currentStage, at: deferredAt } });
     await writeAuditLog("confirm_gate_suppressed_child", {
       pipelineId: meta.pipelineId,
       stage: currentStage,
       source,
       sessionFile: sessionFile ?? "",
-      deferredAt: String(Date.now()),
+      deferredAt: String(deferredAt),
     });
+    // 211 Phase 1: arm a one-shot owner wake — a suppressed gate must not be
+    // silent. Review #3: arm AFTER the suppression audit so the incident chain
+    // reads suppressed_child → escalation_armed (audit lines append in write
+    // order; the Phase 3 sequence assertion depends on it).
+    await armConfirmGateEscalation({ pi: ctx.pi, session: ctx.session, meta, stage: currentStage });
     return { result: "handled", action: "pending", deferred: true };
   }
 
@@ -1079,6 +1087,15 @@ export async function maybeHandleConfirmGate(
       },
     });
   }
+
+  // 211 Phase 1: "presentation consumes the wake" — the credential must be
+  // cleared BEFORE the dialog is shown so the same stage visit cannot wake the
+  // owner again (defer branch above does NOT consume: stamp semantics keep the
+  // 179 deferral window intact). Re-read meta after updateMeta: production
+  // updateMeta() returns a NEW object without mutating the caller's reference
+  // (session-state.ts:174, same re-read precedent as the stale-stamp block
+  // above), so a stale snapshot here would miss the credential.
+  clearConfirmGateEscalation(ctx.session, ctx.session.getMeta() ?? meta);
 
   // Present TUI dialog
   const rawSelect = ctx.ui?.select;
@@ -1516,7 +1533,10 @@ export function recordConfirmGateOutcome(
       },
     });
   } else if (!isChild && (gate.action === "advanced" || gate.action === "routed")) {
-    write({ confirmGateReask: undefined });
+    // 211 Phase 1: the gate RESOLVED — clear the escalation credential together
+    // with the re-ask bookkeeping. This single point serves agent-settled,
+    // /pipeline-resume and the chat-turn re-presentation (no second cleaner).
+    write({ confirmGateReask: undefined, confirmGateEscalation: undefined });
   }
 }
 
