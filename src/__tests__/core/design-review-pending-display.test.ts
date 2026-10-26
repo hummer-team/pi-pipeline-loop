@@ -20,7 +20,9 @@ import { createPipelineStatusCommand } from "../../commands/pipeline-status";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import {
   buildDesignReviewPendingDecisionView,
+  DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
   DESIGN_REVIEW_PENDING_TARGET,
+  formatDesignReviewPendingDecision,
 } from "../../core/design-review/decision-display";
 import type { HumanDecision } from "../../core/design-review/decision-types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
@@ -252,6 +254,9 @@ describe("193 Phase 3 (task 8): pipeline_state shows decision + resume, suppress
       mode: "manual",
       reportDoc: "/tmp/docs/review-design-1-plan.md",
       issueCount: 2,
+      // 212 Phase 3: the JSON surface carries the read-only evidence fact
+      // explicitly (this surface renders no formatter suffix).
+      ownerEvidence: "recorded",
     });
     expect(result.designReview.resume).toContain("/pipeline-resume");
     expect(result.designReview.resume).toContain("Design Review Decision");
@@ -361,5 +366,58 @@ describe("193 Phase 3 (task 8): status bar shows the awaiting-decision token", (
 
     expect(notifications[0]).toContain("-> paused");
     expect(notifications[0]).not.toContain(DESIGN_REVIEW_PENDING_TARGET);
+  });
+});
+
+// ─── 212 Phase 3: truthful wait copy + owner-evidence fact ───────────────────
+
+describe("212 Phase 3: the pending copy states the truth once, on every surface", () => {
+  it("the shared constant promises 'at most once' + resume — never 'will open'/'next turn'", () => {
+    // Review #8: the automatic menu may already be spent, so no surface may
+    // promise a future automatic popup.
+    expect(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION).toContain("at most once");
+    expect(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION).toContain("/pipeline-resume always re-opens");
+    expect(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION).not.toContain("will open");
+    expect(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION).not.toContain("on its next turn");
+  });
+
+  it("all three consumer surfaces render the SAME constant (single source of truth)", async () => {
+    const meta = pendingMeta();
+    // pipeline_state tool — exact identity, not a paraphrase.
+    const stateTool = createPipelineState(makeTestConfig());
+    const stateResult = (await stateTool.execute({}, { session: { getMeta: () => meta } } as any)) as Record<string, any>;
+    expect(stateResult.designReview.resume).toBe(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION);
+    // /pipeline-status command.
+    const command = createPipelineStatusCommand(makeTestConfig());
+    const status = (await command.execute({}, { session: { getMeta: () => meta } } as any)) as { content: string };
+    expect(status.content).toContain(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION);
+    // prompt dynamic context.
+    const hook = createPromptInjector(makeTestConfig());
+    const injected = (await hook.handler({ session: { getMeta: () => meta } } as any))!;
+    expect(injected.systemPrompt ?? "").toContain(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION);
+  });
+
+  it("view.ownerEvidence: recorded with an owner file; missing with absent or blank evidence", () => {
+    expect(buildDesignReviewPendingDecisionView(pendingMeta())!.ownerEvidence).toBe("recorded");
+    const noOwner = pendingMeta({
+      decision: { ...makePendingDecision("manual"), ownerSessionFile: undefined },
+    });
+    expect(buildDesignReviewPendingDecisionView(noOwner)!.ownerEvidence).toBe("missing");
+    // persisted blank ("") normalizes to ABSENT — never counted as evidence.
+    const blankOwner = pendingMeta({
+      decision: { ...makePendingDecision("manual"), ownerSessionFile: "   " },
+    });
+    expect(buildDesignReviewPendingDecisionView(blankOwner)!.ownerEvidence).toBe("missing");
+  });
+
+  it("formatter appends the owner-evidence fact ONLY when missing (display only)", () => {
+    const recorded = buildDesignReviewPendingDecisionView(pendingMeta())!;
+    const line = formatDesignReviewPendingDecision(recorded);
+    expect(line).toContain("pending — mode: manual");
+    expect(line).not.toContain("owner evidence");
+    const missing = buildDesignReviewPendingDecisionView(
+      pendingMeta({ decision: { ...makePendingDecision("manual"), ownerSessionFile: undefined } }),
+    )!;
+    expect(formatDesignReviewPendingDecision(missing)).toContain("owner evidence: missing");
   });
 });

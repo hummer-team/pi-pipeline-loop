@@ -24,6 +24,7 @@
 import type { SessionMeta } from "../../types";
 import { isDesignReviewDecisionPending } from "./decision-guard";
 import { HUMAN_DECISION_OPTIONS, HUMAN_DECISION_TITLE } from "./human-decision";
+import { resolveDecisionOwnerFile } from "./owner-evidence";
 
 /**
  * Status-bar token shown while the human decision awaits a choice. It replaces
@@ -36,11 +37,16 @@ export const DESIGN_REVIEW_PENDING_TARGET = "awaiting-decision";
 export const DESIGN_REVIEW_PENDING_READONLY_NOTICE =
   "PAUSED — awaiting a HUMAN plan-revision decision (session is READ-ONLY).";
 
-/** Recovery instruction shared by every status surface (English). */
+/** Recovery instruction shared by every status surface (English).
+ * 212 Phase 3: STATE- and CONFIG-neutral single fact — true in all three
+ * real states ("once": at most once; "off": 0 ≤ once; `chosen`: no further
+ * auto pop). NEVER promises "will open" / "on its next turn" (review #8):
+ * the automatic menu may already be spent, and an unanswerable owner-evidence
+ * gap is surfaced separately via the `ownerEvidence` view field. */
 export const DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION =
-  `A human must run /pipeline-resume in the owner session to present the ` +
-  `"${HUMAN_DECISION_TITLE}" menu (${HUMAN_DECISION_OPTIONS.join(" / ")}). ` +
-  `The pipeline continues only after that choice is recorded.`;
+  `A human decision is pending. The "${HUMAN_DECISION_TITLE}" menu ` +
+  `(${HUMAN_DECISION_OPTIONS.join(" / ")}) opens at most once automatically in the owner ` +
+  `session; /pipeline-resume always re-opens it. The pipeline continues only after a recorded choice.`;
 
 /** Bounded read-only view of the pending human decision for display surfaces. */
 export interface DesignReviewPendingDecisionView {
@@ -54,6 +60,13 @@ export interface DesignReviewPendingDecisionView {
   reportDoc: string;
   /** Bound issue count carried by the decision record (0 when absent) */
   issueCount: number;
+  /**
+   * 212 Phase 3 (review #2): read-only fact — is there ANY recorded owner
+   * evidence? `"missing"` means settle AND resume are both unanswerable for
+   * this decision (193 single authority); the only exits are re-authorization
+   * or /pipeline-quit. Display only — never an authority itself.
+   */
+  ownerEvidence: "recorded" | "missing";
 }
 
 /**
@@ -74,6 +87,12 @@ export function buildDesignReviewPendingDecisionView(
     mode: decision?.mode ?? dr.operation?.reviewConfirmMode ?? "unknown",
     reportDoc: decision?.reportDoc ?? dr.reportDoc ?? "the design review report",
     issueCount: decision?.issues.length ?? 0,
+    // 212 Phase 3: the SAME read-side normalization the coordinator uses —
+    // a missing/blank owner on BOTH fields is the honest "missing" fact.
+    ownerEvidence:
+      resolveDecisionOwnerFile(dr.ownerSessionFile, decision?.ownerSessionFile) === undefined
+        ? "missing"
+        : "recorded",
   };
 }
 
@@ -85,8 +104,15 @@ export function formatDesignReviewPendingDecision(
   view: DesignReviewPendingDecisionView,
 ): string {
   const choicePart = view.choice !== null ? ` (choice: ${view.choice})` : "";
+  // 212 Phase 3: one appended read-only fact when owner evidence is missing —
+  // the "even /pipeline-resume cannot answer" state becomes self-explanatory
+  // on status bar / command / prompt (this line) and pipeline_state (JSON).
+  const ownerPart =
+    view.ownerEvidence === "missing"
+      ? "; owner evidence: missing — re-authorize this design-review round or /pipeline-quit"
+      : "";
   return (
     `${view.state}${choicePart} — mode: ${view.mode}; ` +
-    `report: ${view.reportDoc}; issues: ${view.issueCount}`
+    `report: ${view.reportDoc}; issues: ${view.issueCount}${ownerPart}`
   );
 }

@@ -126,6 +126,9 @@ export function createPipelineState(config: PipelineConfig): Tool {
               mode: pendingDecision.mode,
               reportDoc: pendingDecision.reportDoc,
               issueCount: pendingDecision.issueCount,
+              // 212 Phase 3: this surface renders NO formatter — the read-only
+              // owner-evidence fact must be carried explicitly here too.
+              ownerEvidence: pendingDecision.ownerEvidence,
             },
             resume: DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
           } : {}),
