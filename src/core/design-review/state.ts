@@ -148,12 +148,19 @@ export function createInitialState(
   const now = Date.now();
   const round = attribution?.round ?? 1;
   const reportDoc = deriveReportPath(planDoc, round);
+  // 212 Phase 0: an absent/blank owner session file is ABSENT evidence —
+  // never persisted as "" (the read-side `??` fallback used to be masked by
+  // empty strings). Callers may pass undefined or ""; both stay unwritten.
+  const recordedOwner =
+    typeof ownerSessionFile === "string" && ownerSessionFile.trim().length > 0
+      ? ownerSessionFile.trim()
+      : undefined;
   return {
     schemaVersion: 1,
     planDoc: path.resolve(planDoc),
     authorizationId: generateUUID(),
     authorizationSource,
-    ownerSessionFile,
+    ...(recordedOwner !== undefined ? { ownerSessionFile: recordedOwner } : {}),
     round,
     reportDoc,
     planHash,

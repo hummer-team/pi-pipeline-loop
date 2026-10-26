@@ -152,7 +152,13 @@ export function createDesignReviewRuntimeContext(
   if (input.roleCtx !== undefined && input.roleCtx !== null) {
     try {
       const role = detectSessionRole(input.roleCtx as Parameters<typeof detectSessionRole>[0]);
-      actor = { isChild: role.isChild, sessionFile: role.sessionFile || undefined };
+      // 212 Phase 0: the parent reference joins the actor evidence so a child
+      // can SPEAK FOR its owner later — it is never the child's own identity.
+      actor = {
+        isChild: role.isChild,
+        sessionFile: role.sessionFile || undefined,
+        ...(role.parentSession ? { parentSessionFile: role.parentSession } : {}),
+      };
     } catch {
       // Detection failure: leave evidence ABSENT (fail closed).
       actor = undefined;

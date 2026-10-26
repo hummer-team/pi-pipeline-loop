@@ -14,8 +14,10 @@
  *   pipeline-meta-transaction.
  * - Cancel / Esc / undefined / unknown values / exceptions / missing select
  *   keep the decision `pending` with ZERO stage-action visits, ZERO retry
- *   counting and ZERO RPCs. Re-presentation only ever happens through an
- *   explicit resume (Phase 3), never from an ordinary settle.
+ *   counting and ZERO RPCs. Re-presentation happens through an explicit
+ *   resume (193 Phase 3) and — since 212 Phase 1 — at most ONE automatic
+ *   owner-settle re-presentation per decisionId (see decision-reprompt.ts);
+ *   `resume` never consumes that automatic budget.
  */
 
 import crypto from "node:crypto";
@@ -61,6 +63,8 @@ export function buildPendingHumanDecision(input: {
   issues: readonly HumanDecisionIssue[];
   mode: "manual" | "smart";
   ownerSessionFile?: string;
+  /** 212 Phase 0: creator's own session file (audit/copy only, no authority). */
+  armedBySessionFile?: string;
 }): HumanDecision {
   const issues = input.issues
     .filter((i) => typeof i.issueId === "string" && typeof i.text === "string")
@@ -76,6 +80,9 @@ export function buildPendingHumanDecision(input: {
     issues,
     mode: input.mode,
     ...(input.ownerSessionFile !== undefined ? { ownerSessionFile: input.ownerSessionFile } : {}),
+    ...(input.armedBySessionFile !== undefined
+      ? { armedBySessionFile: input.armedBySessionFile }
+      : {}),
     createdAt: Date.now(),
   };
 }

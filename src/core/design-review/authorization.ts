@@ -19,6 +19,8 @@ import type { RuntimeCtx } from "../runtime-ctx";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { detectSessionRole } from "../session-role";
 import { createInitialState, computeHash } from "./state";
+// 212 Phase 0: provable owner-session resolution (no "" bindings).
+import { resolveOwnerSessionFile } from "./owner-evidence";
 import { validateDesignReviewStageAssets, resolveDesignReviewEntryDocs, pickSafeNextRound } from "./entry";
 import fs from "node:fs/promises";
 
@@ -186,13 +188,23 @@ export async function designReviewAuthorisationGate(
   const planHash = computeHash(planContent);
   const safeRound = pickSafeNextRound(planDoc);
 
+  // 212 Phase 0: authorizations bind the PROVABLE owner session file —
+  // empty/absent evidence stays unwritten (createInitialState omits the
+  // field, never a literal ""). The gate rejects children at step 1, so
+  // this resolves to THIS session's file when it is readable.
+  const ownerSessionFile = resolveOwnerSessionFile({
+    isChild: role.isChild,
+    sessionFile: role.sessionFile,
+    parentSessionFile: role.parentSession,
+  });
+
   const newState = createInitialState(
     planDoc,
     "direct-entry",
     planHash,
-    role.sessionFile,
+    ownerSessionFile,
     {
-      pipelineId: meta.pipelineId,
+      pipelineId,
       requirementDoc: validation.requirementDoc,
       round: safeRound,
     },
@@ -205,7 +217,7 @@ export async function designReviewAuthorisationGate(
     planDoc,
     planHash: planHash.substring(0, 12),
     round: String(newState.round),
-    sessionFile: role.sessionFile ?? "unknown",
+    sessionFile: ownerSessionFile ?? "unknown",
   });
 
   return { ok: true, state: newState };

@@ -59,6 +59,8 @@ import { armStageWatchdog, clearStageWatchdog } from "./stage-watchdog";
 import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
 import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
+// 212 Phase 0: provable owner-session resolution (no "" bindings).
+import { resolveOwnerSessionFile } from "./design-review/owner-evidence";
 import { coordinateDesignReview } from "./design-review/coordinator";
 // 193 Phase 3 (task 1): shared safe coordinator-context builder
 import { createDesignReviewRuntimeContext } from "./design-review/runtime-context";
@@ -1234,8 +1236,14 @@ export async function maybeHandleConfirmGate(
       const planContent = await fs.readFile(planDocPath, "utf-8");
       const planHash = computeHash(planContent);
       
-      // Use sessionFile from opts (already available in this context)
-      const ownerSessionFile = sessionFile ?? "";
+      // 212 Phase 0: bind the authorization to the PROVABLE owner session
+      // file — never a literal "" (absent evidence stays absent so the
+      // read-side fallback can no longer be masked). A child never reaches
+      // this branch (confirm-gate child early-return above), so isChild is
+      // false here and this resolves to THIS session's file.
+      const ownerSessionFile = resolveOwnerSessionFile({ isChild, sessionFile });
+      // May be undefined: createInitialState omits the field (never ""); the
+      // audit below keeps `|| "unknown"` purely for display.
       
       // Create initial authorization state with source="menu" (NOT "direct-entry")
       // 192 Phase 0/4: attribution recorded; round allocation scans the STRICT

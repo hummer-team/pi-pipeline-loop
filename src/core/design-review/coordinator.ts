@@ -88,6 +88,14 @@ import type {
   HumanDecision,
   HumanDecisionReviewIdentity,
 } from "./decision-types";
+// 212 Phase 0: the ONE evidence-resolution point (owner binding, read-side
+// normalization, blocked-child predicate). No scattered `??`/`||` fallbacks.
+import {
+  isBlockedChildWithoutOwnerEvidence,
+  normalizeSessionFile,
+  resolveDecisionOwnerFile,
+  resolveOwnerSessionFile,
+} from "./owner-evidence";
 import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
 import { spawnStageSubagent, type DesignReviewTerminalEvent, type StageDispatchOutcome } from "../../utils/subagent-rpc";
 // 194 Phase 3 (tasks 2/3): closed-loop executor run lifecycle + trusted wake.
@@ -1210,6 +1218,12 @@ async function handleHumanDecisionRequest(
     operationId: op.operationId,
     stageVisitId: op.stageVisitId,
   };
+  // 212 Phase 0: bind the pending decision to the PROVABLE owner — a child
+  // creator records its nearest known ancestor (never its own file), missing
+  // evidence stays absent (never ""). `armedBySessionFile` records WHO created
+  // the record for audit/copy only and grants no authority.
+  const ownerSessionFile = resolveOwnerSessionFile(ctx.actor);
+  const armedBySessionFile = normalizeSessionFile(ctx.actor?.sessionFile);
   const pending = buildPendingHumanDecision({
     reviewIdentity,
     reportDoc: reportPath,
@@ -1217,7 +1231,8 @@ async function handleHumanDecisionRequest(
     planHash: drState.planHash ?? outcome.planHash,
     issues: outcome.issues,
     mode,
-    ...(ctx.actor?.sessionFile !== undefined ? { ownerSessionFile: ctx.actor.sessionFile } : {}),
+    ...(ownerSessionFile !== undefined ? { ownerSessionFile } : {}),
+    ...(armedBySessionFile !== undefined ? { armedBySessionFile } : {}),
   });
 
   // Real FAIL outcome + paused(decision-pending) + pending record in ONE
@@ -1264,6 +1279,10 @@ async function handleHumanDecisionRequest(
     round: String(drState.round),
     operationId: op.operationId,
     reportHash: outcome.reportHash,
+    // 212 Phase 0: honest audit of who owns and who armed this decision
+    // (missing values are "unknown", never an empty string).
+    ownerSessionFile: ownerSessionFile ?? "unknown",
+    armedBySessionFile: armedBySessionFile ?? "unknown",
   });
 
   return await presentHumanDecisionForPendingState(ctx, createCommit.meta, pendingDr, pending);
@@ -1285,8 +1304,21 @@ async function presentHumanDecisionForPendingState(
   decision: HumanDecision,
 ): Promise<CoordinatorResult> {
   // ── interaction eligibility (task 8): verified non-child owner only ──────
-  const ownerFile = drState.ownerSessionFile ?? decision.ownerSessionFile;
+  // 212 Phase 0: empty/blank recorded owner strings normalize to ABSENT —
+  // the old `??` fallback was masked by persisted "" values.
+  const ownerFile = resolveDecisionOwnerFile(drState.ownerSessionFile, decision.ownerSessionFile);
   const evidence = resolveDesignReviewActorEvidence(ctx.actor, ownerFile);
+  if (ownerFile === undefined) {
+    // 212 Phase 0 (task 11): read-only self-check audit for legacy/absent
+    // owner evidence — "still unanswerable after the upgrade" must be visible
+    // in the log. No state mutation, no extra authority granted or removed.
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "decision_owner_evidence_insufficient",
+      stage: ctx.interactionSource === "resume" ? "resume" : "settle",
+      decisionId: decision.decisionId,
+      round: String(drState.round),
+    }, "warn");
+  }
   const select = ctx.ui?.select;
   if (evidence.role !== "owner") {
     await safeWriteAuditLog("design_review_coordinator", {
@@ -1696,6 +1728,32 @@ async function handleDecisionPending(
     // re-verification, no budget.
     if (ctx.interactionSource === "resume") {
       return await presentHumanDecisionForPendingState(ctx, meta, drState, decision);
+    }
+    // 212 Phase 0 (task 11): on the settle channel the pending decision is
+    // still wait-only, but a MISSING recorded owner evidence must be visible
+    // — the same eligibility refusal the resume path logs, so "unanswerable
+    // even by the owner" is auditable. Pure audit: no state change, no menu.
+    if (trigger === "settle") {
+      const ownerFile = resolveDecisionOwnerFile(drState.ownerSessionFile, decision.ownerSessionFile);
+      if (ownerFile === undefined) {
+        const evidenceKey = `${meta.pipelineId ?? "unknown"}:decision_owner_evidence`;
+        if (shouldEmitWithinWindow(evidenceKey, 5000)) {
+          const settleEvidence = resolveDesignReviewActorEvidence(ctx.actor, ownerFile);
+          await safeWriteAuditLog("design_review_coordinator", {
+            action: "decision_menu_skipped",
+            decisionId: decision.decisionId,
+            role: settleEvidence.role,
+            source: settleEvidence.source,
+            reason: settleEvidence.reason ?? "role not verified",
+          }, "warn");
+          await safeWriteAuditLog("design_review_coordinator", {
+            action: "decision_owner_evidence_insufficient",
+            stage: "settle",
+            decisionId: decision.decisionId,
+            round: String(drState.round),
+          }, "warn");
+        }
+      }
     }
     // Waiting notice only (task 9): no re-verification, no popup, no budget.
     const throttleKey = `${meta.pipelineId ?? "unknown"}:decision_wait`;

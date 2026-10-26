@@ -81,6 +81,18 @@ export interface HumanDecisionRecordBase {
   mode: "manual" | "smart";
   /** Session file of the owner that created the pending decision */
   ownerSessionFile?: string;
+  /**
+   * 212 Phase 0: session file of the actor that CREATED this pending record
+   * (audit + copy only). It grants NO present/persist authority — 193 keeps
+   * `ownerSessionFile` as the single authority source.
+   *
+   * Lifecycle: this field lives ONLY inside the `HumanDecision` record — it
+   * is cleared with `designReview` itself (`meta-reset` clears the whole
+   * state) and traveling through `canonicalJson` round-trips needs no extra
+   * normalization (optional field reads back identically). Do NOT add a
+   * `DesignReviewState` top-level mirror or a dedicated reset entry.
+   */
+  armedBySessionFile?: string;
   /** Creation timestamp of the pending record */
   createdAt: number;
 }
@@ -136,6 +148,10 @@ export interface DesignReviewActorEvidence {
 export interface DesignReviewActorInput {
   isChild: boolean;
   sessionFile?: string;
+  /** 212 Phase 0: direct parent session (child role only) — the nearest
+   *  non-child ancestor the plugin can prove. Never used as a child's own
+   *  identity. */
+  parentSessionFile?: string;
 }
 
 /**
