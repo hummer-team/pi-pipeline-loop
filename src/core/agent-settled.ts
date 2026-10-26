@@ -31,6 +31,8 @@ import {
   routeReviewFailAuto,
   formatConfirmGatePendingCopy,
 } from "./stage-advancer";
+// 211 Phase 0: owner-side re-presentation entry for a child-suppressed confirm gate
+import { maybeRepromptOwnerConfirmGate } from "./confirm-gate-owner-reprompt";
 import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp, shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -259,6 +261,24 @@ export function createAgentSettled(
             // requirementDoc is bound and the message starts with that exact path —
             // precise prefix matching keeps pure chat from false-hitting.
             if (!isBarePipelineTurn(lastUserMsg, meta.requirementDoc)) {
+              // 211 Phase 0: owner-side re-presentation of a gate suppressed in
+              // a child session. Runs BEFORE the non-pipeline audit so a
+              // presented gate is never mislabelled as ordinary chat (mutually
+              // exclusive audit attribution). Fail-open: any error here must
+              // not block the settle flow — audited (warn) + fallback below.
+              try {
+                const reprompt = await maybeRepromptOwnerConfirmGate(ctx, config, meta, ui);
+                if (reprompt.consumed) {
+                  if (reprompt.action === "advanced") await compactIfTerminal(ctx, config);
+                  return;
+                }
+              } catch (err) {
+                await writeAuditLog("confirm_gate_owner_reprompt_error", {
+                  pipelineId: meta.pipelineId,
+                  stage: meta.currentStage,
+                  error: err instanceof Error ? err.message : String(err),
+                }, "warn");
+              }
               await writeAuditLog("agent_settled_non_pipeline_turn", {
                 pipelineId: meta.pipelineId,
                 stage: meta.currentStage,

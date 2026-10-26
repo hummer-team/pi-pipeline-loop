@@ -609,3 +609,105 @@ describe("Phase 1 / 179 (G2 layer ②): await-answer hint interpolation", () => 
     expect(hint).not.toContain("{file}");
   });
 });
+
+// ── 211 Bug Phase 0: owner re-presentation of a child-suppressed confirm gate ─
+
+describe("211 Phase 0: chat turn with a pending confirm gate", () => {
+  /**
+   * Review #2: `makeTestConfig()` defaults plan.nextStage to "design-review".
+   * Override it to "develop" to mirror the incident's stage chain. The
+   * helpers.ts defaults are global to 2000+ tests and must NOT be changed.
+   */
+  function makePlanGateConfig(root: string) {
+    const base = makeTestConfig({ projectRoot: root });
+    const config: typeof base = {
+      ...base,
+      stages: {
+        ...base.stages,
+        plan: {
+          ...base.stages.plan,
+          nextStage: "develop" as PipelineStage,
+          allowedWritePaths: ["docs/"],
+          confirm: { mode: "manual" as const },
+        },
+      },
+    } as typeof base;
+    return config;
+  }
+
+  async function createPlanDoc(root: string, content: string): Promise<void> {
+    const docsDir = join(root, "docs", "design");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "77_Config_Plan.md"), content, "utf-8");
+  }
+
+  it("chat turn + pending gate → confirm_gate_owner_reprompt, no non_pipeline_turn (mutual exclusion)", async () => {
+    const stageTmp = join(tmpdir(), "pi-211-chat-gate-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanGateConfig(stageTmp);
+    await createPlanDoc(stageTmp, "# Plan\nplan content here\n");
+
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() },
+    });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return undefined; }; // Esc → pending
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "阅读理解项目SOP规范" } },
+    ];
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
+    // The gate was handed over — the settle turns MUST NOT be mislabelled chat.
+    expect(logContent).toContain("confirm_gate_owner_reprompt");
+    expect(logContent).toContain("action=pending");
+    expect(logContent).not.toContain("agent_settled_non_pipeline_turn");
+    // Esc consumes one unit of the shared bounded re-ask budget (177/179).
+    expect(meta.confirmGateReask?.stage).toBe("plan");
+    expect(meta.confirmGateReask?.count).toBe(1);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("chat turn + reask budget exhausted → notify-only (reask_exhausted), zero ui.select", async () => {
+    const stageTmp = join(tmpdir(), "pi-211-chat-exhausted-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = makePlanGateConfig(stageTmp);
+    await createPlanDoc(stageTmp, "# Plan\nplan content here\n");
+
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      stageStartTime: Date.now() - 1000,
+      confirmGateDeferredAt: { stage: "plan", at: Date.now() - 500 },
+      confirmGateReask: { stage: "plan", count: 3 },
+    });
+    let selectCalls = 0;
+    const ctx = createMockCtx(meta);
+    ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+    (ctx._ctx.sessionManager as any).getBranch = () => [
+      { type: "message", message: { role: "user", content: "阅读理解项目SOP规范" } },
+    ];
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    // Notify with the standing pending-gate copy; no popup (dialog-storm guard).
+    expect(ctx.notifications.some((n) => n.includes("awaits human confirmation"))).toBe(true);
+    expect(selectCalls).toBe(0);
+    expect(meta.currentStage).toBe("plan");
+
+    const logContent = await readFile(auditLogFileFor(join(stageTmp, ".pi", "audit")), "utf-8");
+    expect(logContent).toContain("reason=reask_exhausted");
+    expect(logContent).not.toContain("agent_settled_non_pipeline_turn");
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});

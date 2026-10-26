@@ -884,8 +884,10 @@ export async function maybeHandleConfirmGate(
      * Defaults to "owner_settled" so existing callers (agent-settled, tool path,
      * pipeline-handoff) keep their current semantics without changes. The
      * vocabulary intentionally excludes "menu" (no menu carrier exists in 180).
+     * 211 Phase 0: "owner_reprompt" = the settle-side re-presentation entry for
+     * a gate a child session suppressed (owner only ever passes isChild:false).
      */
-    source?: "owner_settled" | "resume";
+    source?: "owner_settled" | "resume" | "owner_reprompt";
     /**
      * Phase 1 / 181: true when the caller is a child/subagent session.
      *
