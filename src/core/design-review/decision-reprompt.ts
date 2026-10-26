@@ -45,11 +45,15 @@ export type DecisionAutoRepromptReason =
                          // the notice must not advertise /pipeline-resume
   | "not_owner";         // actor evidence exists but is not the recorded owner
 
-/** Read-only auto-reprompt verdict. Never carries side effects. */
-export interface DecisionAutoRepromptDecision {
-  reprompt: boolean;
-  reason: DecisionAutoRepromptReason;
-}
+/**
+ * Read-only auto-reprompt verdict. Never carries side effects.
+ * 212 round-2 review fix #4: TYPE-level discrimination only (the decision
+ * chain and first-match order are untouched) — a refusal can never carry
+ * `presented`, so callers narrow `reason` without re-checking `reprompt`.
+ */
+export type DecisionAutoRepromptDecision =
+  | { reprompt: true; reason: "presented" }
+  | { reprompt: false; reason: Exclude<DecisionAutoRepromptReason, "presented"> };
 
 /** Inputs for {@link decideAutoReprompt} (everything already resolved). */
 export interface DecideAutoRepromptInput {
@@ -142,23 +146,45 @@ export function decideAutoReprompt(input: DecideAutoRepromptInput): DecisionAuto
 }
 
 /**
- * 212 Phase 1/3 + review fix #1: waiting-notice copy keyed by the refusal
- * reason. The user-visible promise is exactly "the menu opens at most once
- * automatically; /pipeline-resume re-opens it" — never "will open on the
- * next turn". Base copy stays neutral for the non-promise refusals
- * (not_settle / in_flight / no_select / not_owner). `no_owner_evidence`
- * mirrors the STATE face (`ownerEvidence: missing` in decision-display.ts):
- * the notice states the honest exit — re-authorize or /pipeline-quit — and
- * must never advertise /pipeline-resume as a way to present the menu,
- * because the single authority rejects resume in this state too.
+ * 212 Phase 1/3 + review fix #1 + round-2 review fix #1: waiting-notice copy
+ * keyed by the refusal reason AND the owner-evidence FACT. The user-visible
+ * promise must never exceed what the SINGLE AUTHORITY can actually deliver in
+ * the current state — "the menu opens at most once automatically;
+ * /pipeline-resume re-opens it" — never "will open on the next turn".
+ * Copy-layer only: the decider chain (first-match order) and the charge
+ * contract stay exactly as they are.
+ * - `ownerEvidenceMissing` (or reason `no_owner_evidence`): the FACT outranks
+ *   the reason. Resume shares the same single authority, so WITHOUT recorded
+ *   owner evidence NO channel can answer (the original 212 symptom) — the
+ *   notice mirrors the STATE face (`ownerEvidence: missing` in
+ *   decision-display.ts) and gives the honest exit (re-authorize or
+ *   /pipeline-quit), NEVER advertising /pipeline-resume, whatever refusal
+ *   fired first (`not_settle` / `in_flight` / `no_select` / `not_owner` /
+ *   `disabled` / `already_presented` all land here when evidence is absent);
+ * - `in_flight` with evidence recorded: a menu for this decision is open
+ *   RIGHT NOW — resume opens no second menu while one is in flight, so the
+ *   copy says "answer it there" instead of promising a new menu;
+ * - `no_select` with evidence recorded: this session has no interactive UI —
+ *   the presenter rejects resume here too, so the copy conditions the resume
+ *   hint on an interactive owner session instead of promising availability;
+ * - `not_settle` / `not_owner` with evidence recorded: the neutral base hint
+ *   is HONEST there — /pipeline-resume in the owner session re-opens the
+ *   menu through the shared present-and-act flow (193 single authority);
+ * - `already_presented` / `disabled` with evidence recorded: the once-promise
+ *   copy (reachable via resume, which never consumes the budget).
  */
 export function formatDecisionWaitNotice(
   reportDoc: string,
   reason: DecisionAutoRepromptReason,
+  /** Read-side fact from the caller (`ownerFile === undefined`) — not a new
+   *  decider verdict: the reason itself stays the first-match product. */
+  ownerEvidenceMissing: boolean = false,
 ): string {
   const base =
     `Design review FAILED and awaits a human plan-revision decision (report: ${reportDoc}).`;
-  if (reason === "no_owner_evidence") {
+  // 212 round-2 review fix #1: fact over reason — the same honest copy for
+  // EVERY refusal while owner evidence is missing (settle or not).
+  if (reason === "no_owner_evidence" || ownerEvidenceMissing) {
     return (
       `${base} Owner evidence is missing — neither the automatic menu nor ` +
       `/pipeline-resume can answer this decision. ` +
@@ -177,5 +203,19 @@ export function formatDecisionWaitNotice(
       `(designReview.decisionAutoReprompt: "off") — use /pipeline-resume to open the decision menu.`
     );
   }
+  if (reason === "in_flight") {
+    return (
+      `${base} A decision menu for this decision is already open — answer it ` +
+      `there; /pipeline-resume opens no second menu while one is in flight.`
+    );
+  }
+  if (reason === "no_select") {
+    return (
+      `${base} This session has no interactive UI to present the decision menu ` +
+      `— /pipeline-resume opens it only in an interactive owner session.`
+    );
+  }
+  // not_settle / not_owner (owner evidence recorded): resume shares the
+  // single authority and CAN present — the neutral hint is honest here.
   return `${base} Use /pipeline-resume to present the decision menu.`;
 }

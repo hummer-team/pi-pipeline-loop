@@ -104,9 +104,11 @@ export function formatDesignReviewPendingDecision(
   view: DesignReviewPendingDecisionView,
 ): string {
   const choicePart = view.choice !== null ? ` (choice: ${view.choice})` : "";
-  // 212 Phase 3: one appended read-only fact when owner evidence is missing —
-  // the "even /pipeline-resume cannot answer" state becomes self-explanatory
-  // on status bar / command / prompt (this line) and pipeline_state (JSON).
+  // 212 Phase 3 (comment synced by round-2 review fix #3): one appended
+  // read-only fact when owner evidence is missing — the "even /pipeline-resume
+  // cannot answer" state becomes self-explanatory on the command / prompt
+  // surfaces (this line) and pipeline_state (JSON); the status bar renders
+  // only the pending token and never goes through this formatter.
   const ownerPart =
     view.ownerEvidence === "missing"
       ? "; owner evidence: missing — re-authorize this design-review round or /pipeline-quit"

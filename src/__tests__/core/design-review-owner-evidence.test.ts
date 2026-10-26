@@ -43,6 +43,7 @@ import {
 import { buildPendingHumanDecision, clearAllHumanDecisionMenus } from "../../core/design-review/human-decision";
 import { createInitialState, computeHash, deriveReportPath } from "../../core/design-review/state";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
 
 const CHILD = "/x/child-session.json";
@@ -258,7 +259,8 @@ describe("212 Phase 0: coordinator creation binding (child never owns a decision
     return reportDoc;
   }
 
-  it("a child creator binds the PARENT as owner and itself (child file) as armedBySessionFile — zero menus", async () => {    audit.use();
+  it("a child creator binds the PARENT as owner and itself (child file) as armedBySessionFile — zero menus", async () => {
+    audit.use();
     const spawnLog: SpawnRec[] = [];
     let menuShown = 0;
     const { ctx, session } = makeCtx(makeMeta(), spawnLog, {
@@ -371,6 +373,11 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
   const audit = makeAuditCapture();
 
   beforeEach(() => {
+    // The in-memory throttle is process-global: `decision_wait` /
+    // `decision_owner_evidence` keys are per-pipelineId and these tests share
+    // one pipelineId — clear between tests so every notice/assertion is
+    // deterministic regardless of test order.
+    __resetMemoryThrottle();
     projectRoot = fs.mkdtempSync(path.join(tmpdir(), "dr-owner-absent-"));
     fs.mkdirSync(path.join(projectRoot, "docs"), { recursive: true });
     planDoc = path.join(projectRoot, "docs", "212_Bug_plan2.md");
@@ -489,6 +496,40 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
     expect(notifications.some((n) => n.includes("Use /pipeline-resume"))).toBe(false);
     // zero dispatch/RPC side effects (no spawnOverride ⇒ spawnLog stays empty)
     expect(session.getMeta()!.loopCycleCount).toBe(makeTestMeta().loopCycleCount);
+  });
+
+  it("non-settle trigger WITHOUT owner evidence: reason stays not_settle (chain untouched) but the notice carries the owner-evidence fact — no resume promise (212 round-2 review fix #1)", async () => {
+    audit.use();
+    const { ctx, session, selectCalls, notifications } = makeActorCtx(makePendingMeta(), {
+      actor: { isChild: false, sessionFile: PARENT },
+    });
+    // "advance" is a NON-settle channel: the decider's FIRST match is the
+    // channel step, so the refusal reason cannot carry evidence information —
+    // the copy layer instead receives the read-side fact from the caller.
+    const r = await coordinateDesignReview(ctx, session.getMeta()!, "advance");
+    expect((r as { status: string }).status).toBe("handled");
+    expect((r as { action: string }).action).toBe("pending");
+    expect(selectCalls).toBe(0);
+    // the refusal reason is UNCHANGED (first-match order locked by the plan)
+    const awaiting = audit.findBy("decision_awaiting_human");
+    expect(awaiting.length).toBe(1);
+    expect(awaiting[0]!.message.autoReprompt).toBe("not_settle");
+    // the notify mirrors the STATE face: the honest exits are re-authorization
+    // or /pipeline-quit — NOT the resume path this state can never answer
+    // (resume shares the single authority and lands on the same rejection).
+    expect(
+      notifications.some(
+        (n) =>
+          n.includes("Owner evidence is missing") &&
+          n.includes("Re-authorize") &&
+          n.includes("/pipeline-quit"),
+      ),
+    ).toBe(true);
+    expect(notifications.some((n) => n.includes("Use /pipeline-resume"))).toBe(false);
+    // stays pending, never charged, no settle-channel self-check on advance
+    expect(session.getMeta()!.designReview!.decision?.state).toBe("pending");
+    expect(audit.findBy("decision_owner_evidence_insufficient").length).toBe(0);
+    expect(audit.findBy("decision_auto_reprompt").length).toBe(0);
   });
 
   it("resume without owner evidence: 0 selections, stage=resume audit, state stays pending", async () => {

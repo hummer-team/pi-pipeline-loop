@@ -1780,9 +1780,12 @@ async function actOnHumanDecision(
 
 /**
  * 212 Phase 1 + review fix #4/#5: the automatic re-presentation ATTEMPT of
- * the owner-settle entry. A refusal returns its reason (the waiting notice
- * branches on it, review fix #1); an attempted presentation returns the
- * presenter result directly.
+ * the owner-settle entry. 212 round-2 review fix #4: an EXPLICIT discriminated
+ * outcome — a refusal returns `{ kind: "refused" }` with its reason (the
+ * waiting notice branches on it, review fix #1 + round-2 review fix #1); an
+ * attempted presentation returns `{ kind: "attempted" }` with the presenter
+ * result. The caller never relies on "CoordinatorResult happens to be an
+ * object".
  *
  * Review fix #4: the `decision_auto_reprompt` audit is written AFTER the
  * presenter with the truthful `charged` outcome — a refusal inside the
@@ -1790,6 +1793,10 @@ async function actOnHumanDecision(
  * re-presentation whose menu never opened. The charge is observed at the
  * ONE stamp site inside the presenter (`onCharged`), never re-derived.
  */
+type SettleAutoRepromptAttempt =
+  | { kind: "attempted"; result: CoordinatorResult }
+  | { kind: "refused"; reason: Exclude<DecisionAutoRepromptReason, "presented"> };
+
 async function attemptAutoRepromptOnSettle(
   ctx: CoordinatorContext,
   meta: SessionMeta,
@@ -1797,7 +1804,7 @@ async function attemptAutoRepromptOnSettle(
   decision: HumanDecision,
   trigger: string,
   ownerFile: string | undefined,
-): Promise<CoordinatorResult | DecisionAutoRepromptReason> {
+): Promise<SettleAutoRepromptAttempt> {
   const auto = decideAutoReprompt({
     config: ctx.config,
     meta,
@@ -1810,7 +1817,7 @@ async function attemptAutoRepromptOnSettle(
     menuInFlight: isHumanDecisionMenuInFlight(decision.decisionId),
   });
   if (!auto.reprompt) {
-    return auto.reason;
+    return { kind: "refused", reason: auto.reason };
   }
   let charged = false;
   const result = await presentHumanDecisionForPendingState(ctx, meta, drState, decision, {
@@ -1826,7 +1833,7 @@ async function attemptAutoRepromptOnSettle(
     round: String(drState.round),
     charged,
   });
-  return result;
+  return { kind: "attempted", result };
 }
 
 /**
@@ -1886,8 +1893,8 @@ async function handleDecisionPending(
     // once per decisionId) — refusals return their reason, which drives the
     // waiting notice below (review fix #1 branches the copy on it).
     const attempt = await attemptAutoRepromptOnSettle(ctx, meta, drState, decision, trigger, ownerFile);
-    if (typeof attempt !== "string") {
-      return attempt;
+    if (attempt.kind === "attempted") {
+      return attempt.result;
     }
     // Waiting notice only (task 9): no re-verification, no popup, no budget.
     const throttleKey = `${meta.pipelineId ?? "unknown"}:decision_wait`;
@@ -1898,10 +1905,11 @@ async function handleDecisionPending(
         mode: decision.mode,
         trigger,
         round: String(drState.round),
-        autoReprompt: attempt,
+        autoReprompt: attempt.reason,
       });
       if (ctx.ui?.notify) {
-        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, attempt));
+        // 212 round-2 review fix #1: the read-side owner-evidence fact rides along.
+        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, attempt.reason, ownerFile === undefined));
       }
     }
     return { status: "handled", action: "pending", reason: "decision_pending" };

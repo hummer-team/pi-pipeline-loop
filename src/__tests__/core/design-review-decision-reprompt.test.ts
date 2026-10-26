@@ -258,12 +258,27 @@ describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
     expect(copy).toContain("disabled");
     expect(copy).toContain("/pipeline-resume");
   });
-  it("base refusals keep the neutral resume hint without the once-promise", () => {
-    for (const reason of ["not_settle", "in_flight", "no_select", "not_owner"] as const) {
-      const copy = formatDecisionWaitNotice("r.md", reason);
-      expect(copy).toContain("/pipeline-resume");
+  it("not_settle / not_owner WITH recorded evidence keep the neutral resume hint", () => {
+    for (const reason of ["not_settle", "not_owner"] as const) {
+      const copy = formatDecisionWaitNotice("r.md", reason, false);
+      expect(copy).toContain("Use /pipeline-resume to present");
       expect(copy).not.toContain("at most once");
+      expect(copy).not.toContain("Owner evidence is missing");
     }
+  });
+  it("in_flight states the open menu instead of promising a new one (212 round-2 review fix #1)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "in_flight", false);
+    expect(copy).toContain("already open");
+    expect(copy).toContain("answer it there");
+    expect(copy).not.toContain("Use /pipeline-resume to present");
+    expect(copy).not.toContain("at most once");
+  });
+  it("no_select states the missing-UI fact, resume is conditioned on an interactive owner session (212 round-2 review fix #1)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "no_select", false);
+    expect(copy).toContain("no interactive UI");
+    expect(copy).toContain("interactive owner session");
+    expect(copy).not.toContain("Use /pipeline-resume to present");
+    expect(copy).not.toContain("at most once");
   });
   it("no_owner_evidence mirrors the STATE face — never advertises /pipeline-resume (212 review fix #1)", () => {
     const copy = formatDecisionWaitNotice("r.md", "no_owner_evidence");
@@ -276,6 +291,29 @@ describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
     expect(copy).not.toContain("Use /pipeline-resume to present");
     expect(copy).not.toContain("re-opens it");
     expect(copy).not.toContain("at most once");
+  });
+  it("the owner-evidence FACT outranks EVERY refusal reason — same honest copy, zero resume promises (212 round-2 review fix #1)", () => {
+    // not_settle / in_flight / no_select / not_owner / disabled /
+    // already_presented all fall back to the no_owner_evidence wording when
+    // evidence is missing: resume shares the single authority and cannot
+    // answer there either, so promising it would repeat the 212 symptom.
+    for (const reason of [
+      "not_settle",
+      "disabled",
+      "already_presented",
+      "in_flight",
+      "no_select",
+      "not_owner",
+      "no_owner_evidence",
+    ] as const) {
+      const copy = formatDecisionWaitNotice("r.md", reason, true);
+      expect(copy).toContain("Owner evidence is missing");
+      expect(copy).toContain("Re-authorize");
+      expect(copy).toContain("/pipeline-quit");
+      expect(copy).not.toContain("Use /pipeline-resume");
+      expect(copy).not.toContain("re-opens it");
+      expect(copy).not.toContain("at most once");
+    }
   });
 });
 

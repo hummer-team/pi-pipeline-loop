@@ -17,6 +17,10 @@
  * - Every consumer treats `undefined` as "no provable owner" and fails
  *   closed (193 single authority untouched: eligibility stays
  *   non-child + matching session file).
+ * - In addition to this resolution single point the module hosts ONE pure
+ *   audit thin wrapper for the settle channel
+ *   ({@link auditMissingOwnerEvidenceOnSettle}): read-only facts, no state
+ *   change, no eligibility granted or removed.
  * - The settle-channel self-check ({@link auditMissingOwnerEvidenceOnSettle},
  *   Phase 0 task 11, moved here by review fix #5) is PURE AUDIT: throttled,
  *   read-only facts, no state change, no menu, no authority granted or
@@ -90,6 +94,12 @@ const SETTLE_OWNER_EVIDENCE_WINDOW_MS = 5000;
  * why `ui.select` never fires. PURE AUDIT: throttled (the same 5s window
  * and the same `decision_owner_evidence` key the inline block used),
  * read-only, no state change, no menu.
+ *
+ * 212 round-2 review fix #5: the caller guard is ENFORCED by the type — the
+ * `ownerFile` slot only accepts `undefined` (the coordinator passes it inside
+ * `trigger === "settle" && ownerFile === undefined`, where TS narrows the
+ * value), so an accidental non-undefined call site is a compile error, not a
+ * comment-only invariant.
  */
 export async function auditMissingOwnerEvidenceOnSettle(input: {
   /** Raw meta pipelineId — the throttle key normalizes a missing one to "unknown". */
@@ -97,8 +107,8 @@ export async function auditMissingOwnerEvidenceOnSettle(input: {
   decisionId: string;
   round: number;
   actor: DesignReviewActorInput | undefined;
-  /** MUST be undefined here (caller guard); kept explicit for audit honesty. */
-  ownerFile: string | undefined;
+  /** Compile-time enforced ABSENT evidence (caller guard, review fix #5). */
+  ownerFile?: undefined;
 }): Promise<void> {
   const evidenceKey = `${input.pipelineId ?? "unknown"}:decision_owner_evidence`;
   if (!shouldEmitWithinWindow(evidenceKey, SETTLE_OWNER_EVIDENCE_WINDOW_MS)) {
