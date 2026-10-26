@@ -204,7 +204,11 @@ export async function designReviewAuthorisationGate(
     planHash,
     ownerSessionFile,
     {
-      pipelineId,
+      // 212 review fix #3: the attribution stays OPTIONAL — a missing
+      // meta.pipelineId means "field absent" (identity comparison in
+      // state.ts), never a fabricated "unknown". The local `pipelineId`
+      // fallback above is for AUDIT log readability only.
+      pipelineId: meta.pipelineId,
       requirementDoc: validation.requirementDoc,
       round: safeRound,
     },

@@ -4,11 +4,12 @@
  *
  * Locked semantics:
  * - `decideAutoReprompt` is a pure first-match chain: not_settle → disabled
- *   → already_presented → in_flight → no_select → not_owner → presented;
+ *   → already_presented → in_flight → no_select → no_owner_evidence (absent
+ *   recorded owner, 212 review fix #1) / not_owner → presented;
  * - the budget is charged ONLY at the single presenter call site, immediately
  *   before `ui.select` (creation path and settle path share it);
  * - refusals that never opened a menu (in_flight / no_select / not_owner /
- *   drift) NEVER write the stamp;
+ *   no_owner_evidence / drift) NEVER write the stamp;
  * - `/pipeline-resume` never reads and never writes the budget;
  * - config `designReview.decisionAutoReprompt: "off"` disables automatic
  *   re-presentation (notify + resume only); default (absent) = "once";
@@ -217,9 +218,22 @@ describe("212 Phase 1: decideAutoReprompt first-match chain (all reasons)", () =
       expect(decideAutoReprompt(input)).toEqual({ reprompt: false, reason: "not_owner" });
       expect(input.meta.designReviewDecisionReprompt).toBeUndefined();
     }
-    // missing recorded owner evidence ⇒ not_owner too (unanswerable state)
+  });
+
+  it("reports 'no_owner_evidence' (NOT 'not_owner') when owner evidence is missing — 212 review fix #1", () => {
+    // Absent recorded owner ⇒ unanswerable on EVERY channel (settle AND
+    // resume share the 193 single authority). The distinct reason lets the
+    // waiting notice state that fact instead of advertising /pipeline-resume.
     const noOwner = baseInput({ ownerFile: undefined });
-    expect(decideAutoReprompt(noOwner)).toEqual({ reprompt: false, reason: "not_owner" });
+    expect(decideAutoReprompt(noOwner)).toEqual({ reprompt: false, reason: "no_owner_evidence" });
+    expect(noOwner.meta.designReviewDecisionReprompt).toBeUndefined();
+    // a child actor in the SAME missing-evidence state reports the stronger
+    // fact too (evidence absence outranks actor mismatch for the copy).
+    const childNoOwner = baseInput({
+      ownerFile: undefined,
+      actor: { isChild: true, sessionFile: CHILD },
+    });
+    expect(decideAutoReprompt(childNoOwner)).toEqual({ reprompt: false, reason: "no_owner_evidence" });
   });
 
   it("channel check precedes config check (advance+off ⇒ not_settle, first match)", () => {
@@ -250,6 +264,18 @@ describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
       expect(copy).toContain("/pipeline-resume");
       expect(copy).not.toContain("at most once");
     }
+  });
+  it("no_owner_evidence mirrors the STATE face — never advertises /pipeline-resume (212 review fix #1)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "no_owner_evidence");
+    // same facts as decision-display.ts's `ownerEvidence: missing` line:
+    expect(copy).toContain("Owner evidence is missing");
+    expect(copy).toContain("Re-authorize");
+    expect(copy).toContain("/pipeline-quit");
+    // the honest refusal: resume CANNOT present the menu in this state —
+    // no promise of the path that the original 212 incident lacked.
+    expect(copy).not.toContain("Use /pipeline-resume to present");
+    expect(copy).not.toContain("re-opens it");
+    expect(copy).not.toContain("at most once");
   });
 });
 

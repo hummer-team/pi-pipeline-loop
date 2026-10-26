@@ -258,8 +258,7 @@ describe("212 Phase 0: coordinator creation binding (child never owns a decision
     return reportDoc;
   }
 
-  it("a child creator binds the PARENT as owner and itself (child file) as armedBySessionFile — zero menus", async () => {
-    audit.use();
+  it("a child creator binds the PARENT as owner and itself (child file) as armedBySessionFile — zero menus", async () => {    audit.use();
     const spawnLog: SpawnRec[] = [];
     let menuShown = 0;
     const { ctx, session } = makeCtx(makeMeta(), spawnLog, {
@@ -290,6 +289,9 @@ describe("212 Phase 0: coordinator creation binding (child never owns a decision
     expect(created.length).toBe(1);
     expect(created[0]!.message.ownerSessionFile).toBe(PARENT);
     expect(created[0]!.message.armedBySessionFile).toBe(CHILD);
+    // 212 review fix #2: the read-side normalization result the presenter
+    // actually applies travels alongside the record-level fields.
+    expect(created[0]!.message.effectiveOwnerSessionFile).toBe(PARENT);
     // child presentation is skipped honestly (no UI, child role)
     const skipped = audit.findBy("decision_menu_skipped");
     expect(skipped.some((s) => s.message.role === "child")).toBe(true);
@@ -318,6 +320,47 @@ describe("212 Phase 0: coordinator creation binding (child never owns a decision
     expect(after.decision?.armedBySessionFile).not.toBe("");
     const skipped = audit.findBy("decision_menu_skipped");
     expect(skipped.some((s) => s.message.reason === "no select control available")).toBe(true);
+  });
+
+  it("212 review fix #2: record-level owner missing but state-level owner present ⇒ audit 'unknown' + effective owner ANSWERABLE", async () => {
+    audit.use();
+    const spawnLog: SpawnRec[] = [];
+    // The authorization-time owner is bound on the STATE (createInitialState).
+    const { ctx, session } = makeCtx(makeMeta(PARENT), spawnLog, {
+      // child creator WITHOUT an observable ancestor: the record-level owner
+      // cannot be proven, so `decision_pending_created` logs ownerSessionFile
+      // = "unknown" — yet the read side falls back to the state owner and the
+      // decision stays fully answerable.
+      actor: { isChild: true, sessionFile: CHILD },
+      select: async () => undefined,
+    });
+    const { reviewOpId, planHash } = await dispatchReview(ctx, session);
+    writeReport(reviewOpId, planHash);
+
+    const r = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
+    expect(r.status === "handled" && r.action === "pending" && r.reason === "decision_pending").toBe(true);
+
+    const created = audit.findBy("decision_pending_created");
+    expect(created.length).toBe(1);
+    expect(created[0]!.message.ownerSessionFile).toBe("unknown"); // record-level fact
+    expect(created[0]!.message.effectiveOwnerSessionFile).toBe(PARENT); // read-side fact
+    // the decision record itself carries NO owner field (never guessed)
+    expect(session.getMeta()!.designReview!.decision?.ownerSessionFile).toBeUndefined();
+
+    // ANSWERABILITY proof: the state owner settles with a real select and the
+    // one automatic menu opens (resolveDecisionOwnerFile falls back to the
+    // state level — the audit's record-level "unknown" was never a verdict).
+    let menuShown = 0;
+    const ownerSettle = makeCtx(session.getMeta()!, spawnLog, {
+      actor: { isChild: false, sessionFile: PARENT },
+      select: async () => {
+        menuShown++;
+        return undefined; // Esc keeps pending
+      },
+    });
+    const r2 = await coordinateDesignReview(ownerSettle.ctx, ownerSettle.session.getMeta()!, "settle");
+    expect(r2.status === "handled" && r2.action === "pending").toBe(true);
+    expect(menuShown).toBe(1);
   });
 });
 
@@ -408,7 +451,7 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
 
   it("settle without owner evidence: 0 selections, skip audits, state stays pending, zero visits/RPC", async () => {
     audit.use();
-    const { ctx, session, selectCalls } = makeActorCtx(makePendingMeta(), {
+    const { ctx, session, selectCalls, notifications } = makeActorCtx(makePendingMeta(), {
       actor: { isChild: false, sessionFile: PARENT },
     });
     const r = await coordinateDesignReview(ctx, session.getMeta()!, "settle");
@@ -428,6 +471,22 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
     const insufficient = audit.findBy("decision_owner_evidence_insufficient");
     expect(insufficient.length).toBe(1);
     expect(insufficient[0]!.message.stage).toBe("settle");
+    // 212 review fix #1 + #5: the wait notice carries the DISTINCT refusal
+    // reason and copy that mirrors the state face — the honest exits are
+    // re-authorization or /pipeline-quit, NOT the /pipeline-resume path
+    // that this state can never answer (the original 212 symptom).
+    const awaiting = audit.findBy("decision_awaiting_human");
+    expect(awaiting.length).toBe(1);
+    expect(awaiting[0]!.message.autoReprompt).toBe("no_owner_evidence");
+    expect(
+      notifications.some(
+        (n) =>
+          n.includes("Owner evidence is missing") &&
+          n.includes("Re-authorize") &&
+          n.includes("/pipeline-quit"),
+      ),
+    ).toBe(true);
+    expect(notifications.some((n) => n.includes("Use /pipeline-resume"))).toBe(false);
     // zero dispatch/RPC side effects (no spawnOverride ⇒ spawnLog stays empty)
     expect(session.getMeta()!.loopCycleCount).toBe(makeTestMeta().loopCycleCount);
   });

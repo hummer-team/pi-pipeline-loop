@@ -14,7 +14,8 @@
  * - the single charge point is inside `presentHumanDecisionForPendingState`,
  *   immediately BEFORE `ui.select` — a crashed menu must never re-arm itself;
  * - `not_settle` / `disabled` / `already_presented` / `in_flight` /
- *   `no_select` / `not_owner` refusals NEVER write the stamp;
+ *   `no_select` / `not_owner` / `no_owner_evidence` refusals NEVER write
+ *   the stamp;
  * - `resume` passes `consumeBudget: false` — never reads, never writes;
  * - the stamp lives on `SessionMeta.designReviewDecisionReprompt` WITH the
  *   decisionId: a bare timestamp would let "old stamp + new decision" be
@@ -39,7 +40,10 @@ export type DecisionAutoRepromptReason =
   | "already_presented"  // this decisionId already consumed the one shot
   | "in_flight"          // a menu for this decisionId is already open
   | "no_select"          // no UI control
-  | "not_owner";         // actor evidence is not the recorded owner
+  | "no_owner_evidence"  // 212 review fix #1: NO recorded owner evidence at
+                         // all — settle AND resume are both unanswerable, so
+                         // the notice must not advertise /pipeline-resume
+  | "not_owner";         // actor evidence exists but is not the recorded owner
 
 /** Read-only auto-reprompt verdict. Never carries side effects. */
 export interface DecisionAutoRepromptDecision {
@@ -120,9 +124,16 @@ export function decideAutoReprompt(input: DecideAutoRepromptInput): DecisionAuto
   }
   // 6. presentation eligibility stays the 193 single authority: a verified
   //    non-child actor whose file EQUALS the recorded owner. Refusals do
-  //    not consume the budget.
+  //    not consume the budget. 212 review fix #1: ABSENT owner evidence is
+  //    its own refusal reason — the decision is unanswerable on EVERY
+  //    channel (settle and resume share the single authority), so the
+  //    waiting notice must state that fact instead of advertising a path
+  //    that does not exist (the original 212 symptom).
   if (resolveDesignReviewActorEvidence(input.actor, input.ownerFile).role !== "owner") {
-    return { reprompt: false, reason: "not_owner" };
+    return {
+      reprompt: false,
+      reason: input.ownerFile === undefined ? "no_owner_evidence" : "not_owner",
+    };
   }
   // 7. the settle entry may open the present-and-act flow. The budget is
   //    charged inside the presenter ONLY after before-menu revalidation
@@ -131,11 +142,15 @@ export function decideAutoReprompt(input: DecideAutoRepromptInput): DecisionAuto
 }
 
 /**
- * 212 Phase 1/3: waiting-notice copy keyed by the refusal reason. The
- * user-visible promise is exactly "the menu opens at most once
+ * 212 Phase 1/3 + review fix #1: waiting-notice copy keyed by the refusal
+ * reason. The user-visible promise is exactly "the menu opens at most once
  * automatically; /pipeline-resume re-opens it" — never "will open on the
  * next turn". Base copy stays neutral for the non-promise refusals
- * (not_settle / in_flight / no_select / not_owner).
+ * (not_settle / in_flight / no_select / not_owner). `no_owner_evidence`
+ * mirrors the STATE face (`ownerEvidence: missing` in decision-display.ts):
+ * the notice states the honest exit — re-authorize or /pipeline-quit — and
+ * must never advertise /pipeline-resume as a way to present the menu,
+ * because the single authority rejects resume in this state too.
  */
 export function formatDecisionWaitNotice(
   reportDoc: string,
@@ -143,6 +158,13 @@ export function formatDecisionWaitNotice(
 ): string {
   const base =
     `Design review FAILED and awaits a human plan-revision decision (report: ${reportDoc}).`;
+  if (reason === "no_owner_evidence") {
+    return (
+      `${base} Owner evidence is missing — neither the automatic menu nor ` +
+      `/pipeline-resume can answer this decision. ` +
+      `Re-authorize this design-review round or use /pipeline-quit.`
+    );
+  }
   if (reason === "already_presented") {
     return (
       `${base} The decision menu opens at most once automatically and has already ` +

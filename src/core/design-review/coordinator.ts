@@ -90,8 +90,11 @@ import type {
   HumanDecisionReviewIdentity,
 } from "./decision-types";
 // 212 Phase 0: the ONE evidence-resolution point (owner binding, read-side
-// normalization, blocked-child predicate). No scattered `??`/`||` fallbacks.
+// normalization, blocked-child predicate) + review fix #5 (settle-channel
+// owner-evidence self-check, pure throttled audit). No scattered
+// `??`/`||` fallbacks.
 import {
+  auditMissingOwnerEvidenceOnSettle,
   isBlockedChildWithoutOwnerEvidence,
   normalizeSessionFile,
   resolveDecisionOwnerFile,
@@ -103,6 +106,7 @@ import {
   decideAutoReprompt,
   formatDecisionWaitNotice,
   markDecisionRePresented,
+  type DecisionAutoRepromptReason,
 } from "./decision-reprompt";
 import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
 import { spawnStageSubagent, type DesignReviewTerminalEvent, type StageDispatchOutcome } from "../../utils/subagent-rpc";
@@ -1299,6 +1303,13 @@ async function handleHumanDecisionRequest(
     // (missing values are "unknown", never an empty string).
     ownerSessionFile: ownerSessionFile ?? "unknown",
     armedBySessionFile: armedBySessionFile ?? "unknown",
+    // 212 review fix #2: the read-side normalization result the presenter
+    // ACTUALLY applies (state-level authorization owner wins over the
+    // record-level field). A record-level "unknown" here can still be an
+    // ANSWERABLE decision when `drState.ownerSessionFile` exists — the
+    // forensic face states that fact instead of implying "unanswerable".
+    effectiveOwnerSessionFile:
+      resolveDecisionOwnerFile(pendingDr.ownerSessionFile, ownerSessionFile) ?? "unknown",
   });
 
   // 212 Phase 1: the creation path CHARGES the one-shot automatic budget —
@@ -1324,13 +1335,23 @@ async function handleHumanDecisionRequest(
  * shared by the creation path and the owner-settle re-presentation. A
  * refusal that never opened a menu (ineligible role, no select, in flight,
  * drift) never charges; `resume` passes `false` and is never blocked.
+ *
+ * 212 review fix #4: `opts.onCharged` fires AT that single charge point only.
+ * The settle entry uses it to audit `decision_auto_reprompt` AFTER the
+ * presenter with the truthful `charged` outcome — the log can no longer
+ * claim a re-presentation whose menu never actually opened.
  */
 async function presentHumanDecisionForPendingState(
   ctx: CoordinatorContext,
   baseMeta: SessionMeta,
   drState: DesignReviewState,
   decision: HumanDecision,
-  opts?: { consumeBudget?: boolean },
+  opts?: {
+    /** Charge the ONE automatic presentation budget right before `ui.select`. */
+    consumeBudget?: boolean;
+    /** 212 review fix #4: notification emitted only when the stamp is written. */
+    onCharged?: () => void;
+  },
 ): Promise<CoordinatorResult> {
   // ── interaction eligibility (task 8): verified non-child owner only ──────
   // 212 Phase 0: empty/blank recorded owner strings normalize to ABSENT —
@@ -1386,6 +1407,9 @@ async function presentHumanDecisionForPendingState(
     // must never re-arm itself, so the stamp is written BEFORE `ui.select`.
     if (opts?.consumeBudget === true) {
       markDecisionRePresented(ctx.session, decision.decisionId);
+      // 212 review fix #4: the settle entry learns the truthful charge
+      // outcome at exactly this point (the menu opened ⇒ stamp written).
+      opts.onCharged?.();
     }
     // ONE menu presentation.
     const choice = await presentHumanDecisionMenu(select, ctx.ui?.notify, decision);
@@ -1755,6 +1779,57 @@ async function actOnHumanDecision(
 }
 
 /**
+ * 212 Phase 1 + review fix #4/#5: the automatic re-presentation ATTEMPT of
+ * the owner-settle entry. A refusal returns its reason (the waiting notice
+ * branches on it, review fix #1); an attempted presentation returns the
+ * presenter result directly.
+ *
+ * Review fix #4: the `decision_auto_reprompt` audit is written AFTER the
+ * presenter with the truthful `charged` outcome — a refusal inside the
+ * presenter (single-flight race, before-menu drift) can no longer log a
+ * re-presentation whose menu never opened. The charge is observed at the
+ * ONE stamp site inside the presenter (`onCharged`), never re-derived.
+ */
+async function attemptAutoRepromptOnSettle(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  decision: HumanDecision,
+  trigger: string,
+  ownerFile: string | undefined,
+): Promise<CoordinatorResult | DecisionAutoRepromptReason> {
+  const auto = decideAutoReprompt({
+    config: ctx.config,
+    meta,
+    decision,
+    trigger,
+    interactionSource: ctx.interactionSource,
+    actor: ctx.actor,
+    ownerFile,
+    hasSelect: typeof ctx.ui?.select === "function",
+    menuInFlight: isHumanDecisionMenuInFlight(decision.decisionId),
+  });
+  if (!auto.reprompt) {
+    return auto.reason;
+  }
+  let charged = false;
+  const result = await presentHumanDecisionForPendingState(ctx, meta, drState, decision, {
+    consumeBudget: true,
+    onCharged: () => {
+      charged = true;
+    },
+  });
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "decision_auto_reprompt",
+    decisionId: decision.decisionId,
+    trigger,
+    round: String(drState.round),
+    charged,
+  });
+  return result;
+}
+
+/**
  * 193 Phase 2 (tasks 8/9): consume the paused/decision-pending state.
  * - pending: throttled "awaiting human decision" notice ONLY — no
  *   re-verification, no menu re-popup, no budget counting;
@@ -1791,57 +1866,28 @@ async function handleDecisionPending(
     // flow and NEVER consumes the automatic budget (never blocked by it).
     // Eligibility, single-flight, pre/post revalidation and the strict choice
     // commit are identical — a non-owner still can NOT answer (193).
+    // 212 Phase 0: empty/blank recorded owner strings normalize to ABSENT.
     const ownerFile = resolveDecisionOwnerFile(drState.ownerSessionFile, decision.ownerSessionFile);
     if (ctx.interactionSource === "resume") {
       return await presentHumanDecisionForPendingState(ctx, meta, drState, decision, { consumeBudget: false });
     }
-    // 212 Phase 0 (task 11): on the settle channel the pending decision is
-    // still wait-only, but a MISSING recorded owner evidence must be visible
-    // — the same eligibility refusal the resume path logs, so "unanswerable
-    // even by the owner" is auditable. Pure audit: no state change, no menu.
+    // 212 Phase 0 (task 11) + review fix #5: pure-AUDIT thin wrapper living
+    // in owner-evidence.ts (throttled, read-only, no menu, no state change).
     if (trigger === "settle" && ownerFile === undefined) {
-      const evidenceKey = `${meta.pipelineId ?? "unknown"}:decision_owner_evidence`;
-      if (shouldEmitWithinWindow(evidenceKey, 5000)) {
-        const settleEvidence = resolveDesignReviewActorEvidence(ctx.actor, ownerFile);
-        await safeWriteAuditLog("design_review_coordinator", {
-          action: "decision_menu_skipped",
-          decisionId: decision.decisionId,
-          role: settleEvidence.role,
-          source: settleEvidence.source,
-          reason: settleEvidence.reason ?? "role not verified",
-        }, "warn");
-        await safeWriteAuditLog("design_review_coordinator", {
-          action: "decision_owner_evidence_insufficient",
-          stage: "settle",
-          decisionId: decision.decisionId,
-          round: String(drState.round),
-        }, "warn");
-      }
+      await auditMissingOwnerEvidenceOnSettle({
+        pipelineId: meta.pipelineId,
+        decisionId: decision.decisionId,
+        round: drState.round,
+        actor: ctx.actor,
+        ownerFile,
+      });
     }
     // 212 Phase 1: the ONLY automatic re-presentation entry (owner settle,
-    // once per decisionId). Esc/undefined keeps the decision pending as a
-    // STATE, but the automatic presentation itself is spent — the budget is
-    // charged INSIDE the presenter (one call site, right before ui.select),
-    // so refusals that never showed a menu never consume it — no rollback.
-    const auto = decideAutoReprompt({
-      config: ctx.config,
-      meta,
-      decision,
-      trigger,
-      interactionSource: ctx.interactionSource,
-      actor: ctx.actor,
-      ownerFile,
-      hasSelect: typeof ctx.ui?.select === "function",
-      menuInFlight: isHumanDecisionMenuInFlight(decision.decisionId),
-    });
-    if (auto.reprompt) {
-      await safeWriteAuditLog("design_review_coordinator", {
-        action: "decision_auto_reprompt",
-        decisionId: decision.decisionId,
-        trigger,
-        round: String(drState.round),
-      });
-      return await presentHumanDecisionForPendingState(ctx, meta, drState, decision, { consumeBudget: true });
+    // once per decisionId) — refusals return their reason, which drives the
+    // waiting notice below (review fix #1 branches the copy on it).
+    const attempt = await attemptAutoRepromptOnSettle(ctx, meta, drState, decision, trigger, ownerFile);
+    if (typeof attempt !== "string") {
+      return attempt;
     }
     // Waiting notice only (task 9): no re-verification, no popup, no budget.
     const throttleKey = `${meta.pipelineId ?? "unknown"}:decision_wait`;
@@ -1852,10 +1898,10 @@ async function handleDecisionPending(
         mode: decision.mode,
         trigger,
         round: String(drState.round),
-        autoReprompt: auto.reason,
+        autoReprompt: attempt,
       });
       if (ctx.ui?.notify) {
-        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, auto.reason));
+        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, attempt));
       }
     }
     return { status: "handled", action: "pending", reason: "decision_pending" };

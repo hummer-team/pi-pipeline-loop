@@ -254,6 +254,9 @@ describe("212 Phase 3 integration: the incident recovery chain end to end (publi
       const reprompt = auditFindBy("decision_auto_reprompt");
       expect(reprompt.length).toBe(1);
       expect(reprompt[0]!.message.decisionId).toBe(decisionId);
+      // 212 review fix #4: the audit is written AFTER the presenter and
+      // carries the truthful charge outcome — here the menu really opened.
+      expect(reprompt[0]!.message.charged).toBe(true);
       const cancelled = auditFindBy("decision_menu_cancelled");
       expect(cancelled.length).toBe(1);
       expect(cancelled[0]!.message.decisionId).toBe(decisionId);
@@ -273,6 +276,10 @@ describe("212 Phase 3 integration: the incident recovery chain end to end (publi
       );
       expect(reasonOf(r)).toBe("decision_pending");
       expect(menuShown).toBe(1); // still ONE overall — the core promise
+      // 212 review fix #4: a settle the decider REFUSED never logs a
+      // reprompt attempt at all — the audit only exists when the presenter
+      // was actually entered.
+      expect(auditFindBy("decision_auto_reprompt").length).toBe(1); // unchanged from step 2
       const newly = auditFindBy("decision_awaiting_human").slice(awaitingBefore);
       expect(newly.length).toBe(1);
       expect(newly[0]!.message.autoReprompt).toBe("already_presented");
@@ -314,5 +321,93 @@ describe("212 Phase 3 integration: the incident recovery chain end to end (publi
       expect(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION).toContain("at most once");
       expect(DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION).toContain("/pipeline-resume always re-opens");
     }
+  });
+
+  // 212 review fix #4: the `decision_auto_reprompt` audit is written AFTER
+  // the presenter and carries the TRUE charge outcome. A re-presentation
+  // attempt that the presenter refused (before-menu drift here) opens ZERO
+  // menus, must NOT charge the one-shot budget, and logs `charged:false` —
+  // "audit as fact" can no longer claim a presentation that never happened.
+  it("settle re-presentation refused by before-menu drift ⇒ decision_auto_reprompt{charged:false}, zero menus, budget untouched", async () => {
+    const initial: SessionMeta = makeTestMeta({
+      pipelineId: PIPE,
+      currentStage: "design-review",
+      designReview: createInitialState(
+        planDoc,
+        "menu",
+        computeHash(fs.readFileSync(planDoc, "utf-8")),
+        OWNER,
+        { pipelineId: PIPE },
+      ),
+    });
+    const session = makeStrictSession(initial);
+    let menuShown = 0;
+    const mkDriftCtx = (actor: DesignReviewActorInput): CoordinatorContext => ({
+      config,
+      session,
+      ui: {
+        notify: () => {},
+        select: async () => {
+          menuShown++;
+          return undefined;
+        },
+      },
+      pi: { sendUserMessage: () => {} },
+      actor,
+      spawnOverride: async (_cfg, stage) => ({
+        spawned: true,
+        fallback: false,
+        deferred: false,
+        agentId: `agent-${stage}`,
+        dispatchOutcome: "spawned_id" as const,
+      }),
+    });
+
+    // child creates the pending (menu refused, budget unspent — incident step 1).
+    const childCtx = mkDriftCtx({ isChild: true, sessionFile: CHILD, parentSessionFile: OWNER });
+    const routed = await coordinateDesignReview(childCtx, session.getMeta()!, "advance");
+    expect(routed.status === "handled" && routed.action === "routed").toBe(true);
+    const reviewOp = session.getMeta()!.designReview!.operation!;
+    const planHashAtDispatch = computeHash(fs.readFileSync(planDoc, "utf-8"));
+    const reportDoc = deriveReportPath(planDoc, 1);
+    fs.writeFileSync(
+      reportDoc,
+      report({
+        planDoc,
+        operationId: reviewOp.operationId,
+        inputHash: planHashAtDispatch,
+        verdict: "FAIL",
+      }),
+      "utf-8",
+    );
+    const createdSettle = await coordinateDesignReview(childCtx, session.getMeta()!, "settle");
+    expect(reasonOf(createdSettle)).toBe("decision_pending");
+    const createdDecision = session.getMeta()!.designReview!.decision!;
+    expect(createdDecision.state).toBe("pending");
+    expect(menuShown).toBe(0); // the child never sees the menu
+
+    // REAL mutation after the decision: the plan the report reviewed is gone.
+    fs.writeFileSync(planDoc, "# Plan\n\nMUTATED after the pending decision.\n", "utf-8");
+
+    // owner settle: the READ-ONLY decider still says "presented" (eligibility
+    // is intact); the presenter's before-menu revalidation drifts ⇒ zero
+    // menus, no charge, and the truthful audit.
+    const ownerCtx = mkDriftCtx({ isChild: false, sessionFile: OWNER });
+    const r = await coordinateDesignReview(ownerCtx, session.getMeta()!, "settle");
+    expect(r.status === "handled" && r.action === "pending").toBe(true);
+    expect(reasonOf(r)).toContain("decision_drift");
+    expect(menuShown).toBe(0); // ui.select NEVER ran
+    const reprompt = auditFindBy("decision_auto_reprompt");
+    expect(reprompt.length).toBe(1);
+    expect(reprompt[0]!.message.charged).toBe(false);
+    expect(reprompt[0]!.message.decisionId).toBe(createdDecision.decisionId);
+    const failed = auditFindBy("decision_revalidation_failed");
+    expect(failed.length).toBe(1);
+    expect(failed[0]!.message.stage).toBe("before_menu");
+    // the unspent budget stays unspent (a refused attempt never charges),
+    // and the drifted pause clears the stale decision honestly.
+    expect(session.getMeta()!.designReviewDecisionReprompt).toBeUndefined();
+    expect(session.getMeta()!.designReview!.pauseReason).toBe("drift");
+    expect(session.getMeta()!.designReview!.decision).toBeUndefined();
   });
 });
