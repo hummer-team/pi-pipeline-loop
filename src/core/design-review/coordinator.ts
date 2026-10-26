@@ -807,10 +807,18 @@ async function dispatchHandoffOnce(
       // 194 Phase 3 (task 2): the trusted reply pair (full agentId + persisted
       // dispatched receipt) establishes the develop executor's run BEFORE the
       // finished commit — the run outlives the closed domain loop (C3).
-      await issueBoundExecutorRun(ctx, {
-        agentId: spawnResult.agentId,
-        operationContext: spawnResult.operationContext,
-      });
+      // 212 Phase 2: the develop handoff resolves owner evidence through the
+      // single point (a child speaks for its nearest provable ancestor; an
+      // unresolvable child must never reach here — actOnHumanDecision blocks
+      // it BEFORE prepare, so the run always gets a provable owner).
+      await issueBoundExecutorRun(
+        ctx,
+        {
+          agentId: spawnResult.agentId,
+          operationContext: spawnResult.operationContext,
+        },
+        resolveOwnerSessionFile(ctx.actor),
+      );
       // Milestone 4: only now may finished be committed.
       const finish = await finishCurrentHandoffReliably(ctx);
       if (finish) {
@@ -1701,6 +1709,35 @@ async function actOnHumanDecision(
       decision.reportDoc,
       decision.issues,
     );
+  }
+  // 212 Phase 2: a provable child that cannot name an owner ancestor must NOT
+  // reach dispatch — the 194 run would silently degrade to
+  // run_skip_no_owner_evidence (owner wake / dedup chains lose their anchor).
+  // Blocking happens BEFORE prepare (no visit, no approval, no send-intent,
+  // 0 RPC, spawnLog untouched). BOUNDARY (locked, pre-212 behaviour kept):
+  // ctx.actor === undefined (no evidence source at all) and a NON-child with
+  // no session file (e.g. headless without sessionManager) still run the
+  // handoff — those environments have no substitute owner source, and
+  // blocking there would wedge an otherwise runnable pipeline forever.
+  if (isBlockedChildWithoutOwnerEvidence(ctx.actor)) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "handoff_blocked_no_owner_evidence",
+      decisionId: decision.decisionId,
+      round: String(drState.round),
+    }, "error");
+    const key = `${meta.pipelineId ?? "unknown"}:handoff_no_owner_evidence`;
+    if (shouldEmitWithinWindow(key, 5000) && ctx.ui?.notify) {
+      ctx.ui.notify(
+        "Your choice was recorded, but no provable owner session exists for the develop " +
+          "handoff. Run /pipeline-resume in the owner session to finish it.",
+      );
+    }
+    // NO rollback of the recorded choice: phase stays paused(decision-pending)
+    // with decision.state === "chosen". The owner's next settle / an explicit
+    // /pipeline-resume re-enters this branch through the chosen-recovery path
+    // and dispatches normally (recovery is proven by a dedicated test — not a
+    // deadlock). No menu may appear in this state (state !== "pending").
+    return { status: "handled", action: "pending", reason: "handoff_blocked_no_owner_evidence" };
   }
   const prep = await prepareDevelopTransition({
     ctx: { config: ctx.config, session: ctx.session },
@@ -2639,10 +2676,17 @@ async function recordDispatchOutcome(
 async function issueBoundExecutorRun(
   ctx: CoordinatorContext,
   dispatch: { agentId?: string; operationContext?: SpawnOperationContext },
+  resolvedOwnerFile?: string, // 212 Phase 2: caller-resolved evidence (develop handoff only)
 ): Promise<void> {
   const oc = dispatch.operationContext;
   if (!oc || !dispatch.agentId) return;
-  const ownerSessionFile = ctx.actor && !ctx.actor.isChild ? ctx.actor.sessionFile : undefined;
+  // 212 Phase 2: this function only BUILDS A RUN from the evidence the caller
+  // supplies — it does not decide who may dispatch. The develop handoff passes
+  // `resolveOwnerSessionFile(ctx.actor)` (a child speaks for its nearest
+  // provable ancestor); review/update dispatch passes NOTHING and keeps the
+  // legacy honest expression verbatim (194 run semantics: zero drift).
+  const ownerSessionFile =
+    resolvedOwnerFile ?? (ctx.actor && !ctx.actor.isChild ? ctx.actor.sessionFile : undefined);
   if (ownerSessionFile === undefined || ownerSessionFile.length === 0) {
     void safeWriteAuditLog("executor_run_issue", {
       action: "run_skip_no_owner_evidence",
