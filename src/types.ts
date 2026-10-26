@@ -759,6 +759,12 @@ export interface SessionMeta {
    */
   designReviewRecheck?: DesignReviewRecheckMarker;
   /**
+   * 212 Phase 1: the decisionId whose menu was already OPENED once in the
+   * owner session (creation path or auto re-presentation). UX budget only —
+   * never an authority. `resume` never reads or writes it.
+   */
+  designReviewDecisionReprompt?: { decisionId: string; at: number };
+  /**
    * 194 Phase 0 (C3): the SINGLE latest closed-loop executor run
    * (design-review / plan / develop dispatches). Bounded by design — no
    * history array lives in meta; the JSON Lines audit is the history.
@@ -1676,6 +1682,16 @@ export interface PipelineConfig {
    * Attached ONLY when explicitly configured.
    */
   watchdog?: WatchdogConfig;
+
+  /**
+   * 212 Phase 1: design-review interaction policy.
+   * - decisionAutoReprompt "once" (default): the owner's first settle after a
+   *   pending human decision re-presents the menu exactly once per decisionId;
+   * - "off": never auto re-present (notify + /pipeline-resume only).
+   * Child sessions NEVER present a menu (they have no UI) — this switch
+   * controls the OWNER side only.
+   */
+  designReview?: { decisionAutoReprompt?: "once" | "off" };
 }
 
 // ─── JSON Configuration Interfaces ────────────────────────────────────────────
@@ -1951,6 +1967,13 @@ export interface PipelineJsonConfig {
    * `enabled` must be explicitly `true` to activate.
    */
   watchdog?: WatchdogConfig;
+
+  /**
+   * 212 Phase 1: raw design-review interaction-policy block. The parser
+   * (`parseDesignReviewConfig`) validates `decisionAutoReprompt`; invalid
+   * values warn and are ignored (block stays absent).
+   */
+  designReview?: { decisionAutoReprompt?: "once" | "off" };
 }
 
 // ─── Plugin Interfaces (Stubs) ───────────────────────────────────────────────

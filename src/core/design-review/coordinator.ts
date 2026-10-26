@@ -74,6 +74,7 @@ import {
   beginHumanDecisionMenu,
   buildPendingHumanDecision,
   endHumanDecisionMenu,
+  isHumanDecisionMenuInFlight,
   presentHumanDecisionMenu,
   resolveDesignReviewActorEvidence,
   type HumanDecisionSelectFn,
@@ -96,6 +97,13 @@ import {
   resolveDecisionOwnerFile,
   resolveOwnerSessionFile,
 } from "./owner-evidence";
+// 212 Phase 1: one-shot AUTO presentation budget for the owner-settle entry
+// (decision + copy only; the charge point stays inside the presenter).
+import {
+  decideAutoReprompt,
+  formatDecisionWaitNotice,
+  markDecisionRePresented,
+} from "./decision-reprompt";
 import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
 import { spawnStageSubagent, type DesignReviewTerminalEvent, type StageDispatchOutcome } from "../../utils/subagent-rpc";
 // 194 Phase 3 (tasks 2/3): closed-loop executor run lifecycle + trusted wake.
@@ -1285,7 +1293,13 @@ async function handleHumanDecisionRequest(
     armedBySessionFile: armedBySessionFile ?? "unknown",
   });
 
-  return await presentHumanDecisionForPendingState(ctx, createCommit.meta, pendingDr, pending);
+  // 212 Phase 1: the creation path CHARGES the one-shot automatic budget —
+  // this very menu presentation is the decision's single automatic opening
+  // (an owner who hits Esc here must NOT get an immediate re-popup on the
+  // next settle; only /pipeline-resume re-opens it).
+  return await presentHumanDecisionForPendingState(ctx, createCommit.meta, pendingDr, pending, {
+    consumeBudget: true,
+  });
 }
 
 /**
@@ -1296,12 +1310,19 @@ async function handleHumanDecisionRequest(
  * the menu) and the decision-pinned strict choice commit are identical in
  * both cases — a stale/drifted snapshot can never be acted on, and any
  * non-affirmative outcome keeps the decision pending with ZERO side effects.
+ *
+ * 212 Phase 1: `opts.consumeBudget === true` charges the ONE automatic
+ * presentation budget immediately BEFORE `ui.select` — the sole charge point
+ * shared by the creation path and the owner-settle re-presentation. A
+ * refusal that never opened a menu (ineligible role, no select, in flight,
+ * drift) never charges; `resume` passes `false` and is never blocked.
  */
 async function presentHumanDecisionForPendingState(
   ctx: CoordinatorContext,
   baseMeta: SessionMeta,
   drState: DesignReviewState,
   decision: HumanDecision,
+  opts?: { consumeBudget?: boolean },
 ): Promise<CoordinatorResult> {
   // ── interaction eligibility (task 8): verified non-child owner only ──────
   // 212 Phase 0: empty/blank recorded owner strings normalize to ABSENT —
@@ -1352,11 +1373,19 @@ async function presentHumanDecisionForPendingState(
         ctx, baseMeta, drState, decision, "pending", before.reason, "before_menu",
       );
     }
+    // 212 Phase 1: THE single charge point — eligibility + single-flight +
+    // before-revalidation all passed, the menu WILL open now. A crashed menu
+    // must never re-arm itself, so the stamp is written BEFORE `ui.select`.
+    if (opts?.consumeBudget === true) {
+      markDecisionRePresented(ctx.session, decision.decisionId);
+    }
     // ONE menu presentation.
     const choice = await presentHumanDecisionMenu(select, ctx.ui?.notify, decision);
     if (!choice) {
       // Cancel / unknown / exception: stay pending. Zero visit/retry/RPC and
-      // NO automatic re-popup — an explicit resume re-opens it (Phase 3).
+      // no choice budget consumed. The AUTOMATIC presentation budget, however,
+      // was charged above (the menu really opened) — only an explicit resume
+      // re-opens it now (212 Phase 1).
       await safeWriteAuditLog("design_review_coordinator", {
         action: "decision_menu_cancelled",
         decisionId: decision.decisionId,
@@ -1719,41 +1748,63 @@ async function handleDecisionPending(
     return { status: "handled", action: "pending", reason: "decision_record_missing" };
   }
   if (decision.state === "pending") {
-    // 193 Phase 3 (task 4): an EXPLICIT resume (/pipeline-resume, source
-    // assigned by the entry via runtime-context — never a model parameter)
-    // re-presents the menu through the SAME shared present-and-act flow:
-    // eligibility, single-flight, pre/post-menu revalidation and the
-    // decision-pinned strict choice commit. Every other source (ordinary
-    // settle, tools, startup) stays a read-only wait — no popup, no
-    // re-verification, no budget.
+    // 193 Phase 3 (task 4) + 212 Phase 1: an EXPLICIT resume (/pipeline-resume,
+    // source assigned by the entry via runtime-context — never a model
+    // parameter) re-presents the menu through the SAME shared present-and-act
+    // flow and NEVER consumes the automatic budget (never blocked by it).
+    // Eligibility, single-flight, pre/post revalidation and the strict choice
+    // commit are identical — a non-owner still can NOT answer (193).
+    const ownerFile = resolveDecisionOwnerFile(drState.ownerSessionFile, decision.ownerSessionFile);
     if (ctx.interactionSource === "resume") {
-      return await presentHumanDecisionForPendingState(ctx, meta, drState, decision);
+      return await presentHumanDecisionForPendingState(ctx, meta, drState, decision, { consumeBudget: false });
     }
     // 212 Phase 0 (task 11): on the settle channel the pending decision is
     // still wait-only, but a MISSING recorded owner evidence must be visible
     // — the same eligibility refusal the resume path logs, so "unanswerable
     // even by the owner" is auditable. Pure audit: no state change, no menu.
-    if (trigger === "settle") {
-      const ownerFile = resolveDecisionOwnerFile(drState.ownerSessionFile, decision.ownerSessionFile);
-      if (ownerFile === undefined) {
-        const evidenceKey = `${meta.pipelineId ?? "unknown"}:decision_owner_evidence`;
-        if (shouldEmitWithinWindow(evidenceKey, 5000)) {
-          const settleEvidence = resolveDesignReviewActorEvidence(ctx.actor, ownerFile);
-          await safeWriteAuditLog("design_review_coordinator", {
-            action: "decision_menu_skipped",
-            decisionId: decision.decisionId,
-            role: settleEvidence.role,
-            source: settleEvidence.source,
-            reason: settleEvidence.reason ?? "role not verified",
-          }, "warn");
-          await safeWriteAuditLog("design_review_coordinator", {
-            action: "decision_owner_evidence_insufficient",
-            stage: "settle",
-            decisionId: decision.decisionId,
-            round: String(drState.round),
-          }, "warn");
-        }
+    if (trigger === "settle" && ownerFile === undefined) {
+      const evidenceKey = `${meta.pipelineId ?? "unknown"}:decision_owner_evidence`;
+      if (shouldEmitWithinWindow(evidenceKey, 5000)) {
+        const settleEvidence = resolveDesignReviewActorEvidence(ctx.actor, ownerFile);
+        await safeWriteAuditLog("design_review_coordinator", {
+          action: "decision_menu_skipped",
+          decisionId: decision.decisionId,
+          role: settleEvidence.role,
+          source: settleEvidence.source,
+          reason: settleEvidence.reason ?? "role not verified",
+        }, "warn");
+        await safeWriteAuditLog("design_review_coordinator", {
+          action: "decision_owner_evidence_insufficient",
+          stage: "settle",
+          decisionId: decision.decisionId,
+          round: String(drState.round),
+        }, "warn");
       }
+    }
+    // 212 Phase 1: the ONLY automatic re-presentation entry (owner settle,
+    // once per decisionId). Esc/undefined keeps the decision pending as a
+    // STATE, but the automatic presentation itself is spent — the budget is
+    // charged INSIDE the presenter (one call site, right before ui.select),
+    // so refusals that never showed a menu never consume it — no rollback.
+    const auto = decideAutoReprompt({
+      config: ctx.config,
+      meta,
+      decision,
+      trigger,
+      interactionSource: ctx.interactionSource,
+      actor: ctx.actor,
+      ownerFile,
+      hasSelect: typeof ctx.ui?.select === "function",
+      menuInFlight: isHumanDecisionMenuInFlight(decision.decisionId),
+    });
+    if (auto.reprompt) {
+      await safeWriteAuditLog("design_review_coordinator", {
+        action: "decision_auto_reprompt",
+        decisionId: decision.decisionId,
+        trigger,
+        round: String(drState.round),
+      });
+      return await presentHumanDecisionForPendingState(ctx, meta, drState, decision, { consumeBudget: true });
     }
     // Waiting notice only (task 9): no re-verification, no popup, no budget.
     const throttleKey = `${meta.pipelineId ?? "unknown"}:decision_wait`;
@@ -1764,11 +1815,10 @@ async function handleDecisionPending(
         mode: decision.mode,
         trigger,
         round: String(drState.round),
+        autoReprompt: auto.reason,
       });
       if (ctx.ui?.notify) {
-        ctx.ui.notify(
-          `Design review FAILED and awaits a human plan-revision decision (report: ${decision.reportDoc}). Use /pipeline-resume to present the decision menu.`,
-        );
+        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, auto.reason));
       }
     }
     return { status: "handled", action: "pending", reason: "decision_pending" };

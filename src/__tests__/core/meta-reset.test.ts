@@ -90,6 +90,9 @@ describe('meta-reset (203_Bug Phase 1)', () => {
       expect(check.activeSpawns).toBeUndefined();
       expect(check.designReview).toBeUndefined();
       expect(check.designReviewRecheck).toBeUndefined();
+      // 212 Phase 1: the automatic-representation budget stamp clears with a
+      // new period (fresh decision chain); continue-resume keeps it on purpose.
+      expect(check.designReviewDecisionReprompt).toBeUndefined();
       expect(check.stageVisitOrder).toEqual(["clarify"]);
       expect(check.contextFiles).toBeUndefined();
       expect(check.advancedThisTurn).toBeUndefined();
@@ -124,6 +127,21 @@ describe('meta-reset (203_Bug Phase 1)', () => {
       expect(check.confirmGateDeferredAt).toBeUndefined();
       expect(check.confirmGateReask).toBeUndefined();
       expect(check.confirmGateEscalation).toBeUndefined();
+    });
+  });
+
+  describe('212 Phase 1: decision reprompt budget reset scope', () => {
+    it('buildContinueResetFields does NOT clear the stamp (continue-resume keeps pending + budget)', () => {
+      const check = buildContinueResetFields(staleMeta, makeTestConfig());
+      expect(check).not.toHaveProperty("designReviewDecisionReprompt");
+    });
+
+    it('buildNewPeriodResetFields clears the stamp with the fresh decision chain', () => {
+      const stale = makeTestMeta({
+        designReviewDecisionReprompt: { decisionId: "d-1", at: Date.now() - 5_000 },
+      } as Partial<SessionMeta>);
+      const check = buildNewPeriodResetFields(stale, makeTestConfig());
+      expect(check.designReviewDecisionReprompt).toBeUndefined();
     });
   });
 });

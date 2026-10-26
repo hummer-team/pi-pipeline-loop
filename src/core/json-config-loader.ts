@@ -110,6 +110,10 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     }
   }
 
+  // 212 Phase 1: parse the design-review interaction-policy block ONCE
+  // (invalid values warn here and resolve to undefined = field omitted).
+  const drInteractionPolicy = parseDesignReviewConfig(json.designReview);
+
   return {
     stages: (json.stages as Partial<
       Record<PipelineStage, StageJsonConfig>
@@ -146,6 +150,11 @@ export function loadJsonConfig(jsonPath: string): PipelineJsonConfig {
     // fail-fast validation happen in resolvePipelineConfig (single source).
     decisionPolicy: json.decisionPolicy as PipelineJsonConfig["decisionPolicy"],
     watchdog: json.watchdog as PipelineJsonConfig["watchdog"],
+    // 212 Phase 1 (review note F13): assembly point 1/2 — parse EARLY so an
+    // invalid `decisionAutoReprompt` warns once here; the normalized block is
+    // attached ONLY when configured, so it survives into resolvePipelineConfig
+    // (assembly point 2) without breaking config-shape deep-equality checks.
+    ...(drInteractionPolicy ? { designReview: drInteractionPolicy } : {}),
     // 210 review issue 1 (High): the top-level `verify` block must survive
     // this return too — resolvePipelineConfig reads
     // `json.verify?.requireCommitProof` for the GLOBAL commit-proof fallback,
@@ -461,6 +470,29 @@ function parseStartStageMode(raw: unknown): StartStageMode | undefined {
   }
   console.warn(
     `[pi-pipeline] Invalid startStageMode "${String(raw)}" — expected "auto"|"confirm"|"ask", falling back to "auto"`,
+  );
+  return undefined;
+}
+
+/**
+ * 212 Phase 1: parses the designReview interaction-policy block.
+ * `decisionAutoReprompt` must be "once" or "off"; anything else (including
+ * an absent/invalid block) resolves to undefined so BOTH assembly points
+ * omit the field entirely (config-shape deep-equality assertions stay
+ * untouched). Invalid values log a warning and are ignored — same convention
+ * as parseStartStageMode.
+ */
+function parseDesignReviewConfig(
+  raw: unknown,
+): PipelineConfig["designReview"] {
+  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
+  const value = (raw as { decisionAutoReprompt?: unknown }).decisionAutoReprompt;
+  if (value === undefined || value === null) return undefined;
+  if (value === "once" || value === "off") {
+    return { decisionAutoReprompt: value };
+  }
+  console.warn(
+    `[pi-pipeline] Invalid designReview.decisionAutoReprompt "${String(value)}" — expected "once"|"off", ignoring`,
   );
   return undefined;
 }
@@ -1206,6 +1238,11 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     validateDecisionPolicy(decisionPolicyConfig);
   }
   const watchdogConfig = normalizeWatchdogThresholds(parseWatchdogConfig(json.watchdog));
+  // 212 Phase 1: design-review interaction policy. Parsed ONCE here (single
+  // source) — idempotent for the already-normalized block coming from
+  // loadJsonConfig (assembly point 1). Attached to the final config ONLY
+  // when configured.
+  const designReviewConfig = parseDesignReviewConfig(json.designReview);
 
   // Post-process: reconnect nextStage chains around disabled stages
   if (disabledStages.size > 0) {
@@ -1328,5 +1365,9 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     // 210 Phase 0: auto-configuration blocks; attached ONLY when configured.
     ...(decisionPolicyConfig ? { decisionPolicy: decisionPolicyConfig } : {}),
     ...(watchdogConfig && Object.keys(watchdogConfig).length > 0 ? { watchdog: watchdogConfig } : {}),
+    // 212 Phase 1: design-review interaction policy; attached ONLY when
+    // configured (same optional-field convention — deep-equality config-shape
+    // assertions must not see an empty object).
+    ...(designReviewConfig ? { designReview: designReviewConfig } : {}),
   };
 }

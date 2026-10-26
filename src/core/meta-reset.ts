@@ -115,6 +115,12 @@ export function buildNewPeriodResetFields(
     // Design-review session state
     designReview: undefined,
     designReviewRecheck: undefined,
+    // 212 Phase 1: the automatic-representation budget is scoped to ONE
+    // decisionId; a new period starts a fresh chain, so the UX stamp must
+    // not leak (a numeric decisionId collision is impossible, but leaking
+    // would let the FIRST settle of a new period silently skip the menu).
+    // Continue-resume keeps it on purpose (same pending decision).
+    designReviewDecisionReprompt: undefined,
 
     // Stage visit chain
     stageVisitOrder: ["clarify"] as PipelineStage[],
