@@ -19,6 +19,7 @@ import { effectiveMax, deriveReworkLoopGate, remainingRoundsOf } from "../utils/
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
 import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER, DEFAULT_DECISION_WAIT_TIMEOUT_MS, HUMAN_ONLY_DECISION_REASONS } from "../constants";
+import { stageMigrationResetCounters } from "./stage-exit/migration-reset";
 import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
@@ -491,7 +492,7 @@ export async function executeDecision(
         blockedReason: undefined,
         loopCount: 0,
         currentStepIndex: 0,
-        verifyAttempts: 0,
+        ...stageMigrationResetCounters(),
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
@@ -564,7 +565,7 @@ export async function executeDecision(
         blockedReason: undefined,
         loopCount: 0,
         currentStepIndex: 0,
-        verifyAttempts: 0,
+        ...stageMigrationResetCounters(),
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],
@@ -821,7 +822,7 @@ export async function executeDecision(
         blockedReason: undefined,
         loopCount: 0,
         currentStepIndex: 0,
-        verifyAttempts: 0,
+        ...stageMigrationResetCounters(),
         verifyFailures: [],
         verifyConfigError: undefined,
         violations: [],

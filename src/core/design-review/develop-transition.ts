@@ -34,6 +34,7 @@ import {
 } from "../session-state";
 import { computeHash, createOperation, computeHandoffInputHash, transitionPhase } from "./state";
 import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
+import { stageMigrationResetCounters } from "../stage-exit/migration-reset";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 
 /** Minimal context the transition preparation needs (structurally satisfied by CoordinatorContext). */
@@ -200,7 +201,7 @@ export async function prepareDevelopTransition(args: {
     loopCount: 0,
     currentStepIndex: 0,
     verifyFailures: [],
-    verifyAttempts: 0,
+    ...stageMigrationResetCounters(),
     violations: [],
     advancedThisTurn: undefined,
     designReview: passReadyState,

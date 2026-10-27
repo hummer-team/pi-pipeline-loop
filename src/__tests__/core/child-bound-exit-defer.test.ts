@@ -32,9 +32,10 @@ import { join } from "node:path";
 import { createAgentSettled } from "../../core/agent-settled";
 import { createStageAdvancer, maybeHandleConfirmGate } from "../../core/stage-advancer";
 import { recordStageExitRefusal } from "../../core/stage-exit/stage-exit-refusal";
+import { stageMigrationResetCounters } from "../../core/stage-exit/migration-reset";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "../../core/meta-reset";
 import { createPipelineQuitCommand } from "../../commands/pipeline-quit";
-import { clearAllDecisionTimers, getFlowState } from "../../core/flow-state";
+import { clearAllDecisionTimers, executeDecision, getFlowState } from "../../core/flow-state";
 import {
   STAGE_EXIT_REFUSED_ESCALATION_REASON,
   STAGE_EXIT_REFUSED_OVERFLOW_REASON,
@@ -517,6 +518,58 @@ describe("216 P3: refusal-counter reset scopes", () => {
     const persisted = ctx.session.getMeta() as SessionMeta;
     expect(persisted.currentStage).toBe("design-review");
     expect(persisted.stageExitRefusal).toBeUndefined();
+  });
+
+  it("⑮g decision-menu exits (skip / rollback / choose_stage) clear the counter", async () => {
+    const burn = (): StageExitRefusal => ({
+      stage: "develop", fromStage: "develop", toStage: "review",
+      reason: "bound_run_owner_mismatch", count: 2, frozenCount: 1,
+      lastAt: 1_700_000_000_000,
+    });
+    const run = async (
+      decision: "skip" | "rollback" | "choose_stage",
+      opts?: { targetStage: "review" },
+    ) => {
+      const config = makeTestConfig();
+      const meta = makeTestMeta({
+        currentStage: "develop",
+        previousStage: "plan",
+        pipelineId: nextPid(),
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        stageExitRefusal: burn(),
+      });
+      const ctx = createMockCtx(meta);
+      const res = await executeDecision(ctx as never, meta, decision, config, opts as never);
+      return { res, persisted: ctx.session.getMeta() as SessionMeta };
+    };
+
+    // These are the menu exits the `stage_exit_refused_overflow` freeze offers:
+    // a surviving counter would make the NEXT same-stage refusal skip both the
+    // owner escalation and the menu (code-review round 2, issue 1).
+    const skip = await run("skip");
+    expect(skip.res.success).toBe(true);
+    expect(skip.persisted.currentStage).toBe("review");
+    expect(skip.persisted.stageExitRefusal).toBeUndefined();
+
+    const rollback = await run("rollback");
+    expect(rollback.res.success).toBe(true);
+    expect(rollback.persisted.currentStage).toBe("plan");
+    expect(rollback.persisted.stageExitRefusal).toBeUndefined();
+
+    const choose = await run("choose_stage", { targetStage: "review" });
+    expect(choose.res.success).toBe(true);
+    expect(choose.persisted.currentStage).toBe("review");
+    expect(choose.persisted.stageExitRefusal).toBeUndefined();
+  });
+
+  it("⑮h the shared migration reset always carries BOTH counter fields", () => {
+    // Structural guard for the sites that spread the helper: resetting
+    // `verifyAttempts` without `stageExitRefusal` is the round-2 defect.
+    expect(stageMigrationResetCounters()).toEqual({
+      verifyAttempts: 0,
+      stageExitRefusal: undefined,
+    });
   });
 });
 

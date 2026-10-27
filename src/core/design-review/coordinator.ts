@@ -26,6 +26,7 @@ import type {
 } from "../../types";
 import { extractReportIssues } from "./report";
 import { runVerification, type VerificationRunResult } from "../auto-verifier";
+import { stageMigrationResetCounters } from "../stage-exit/migration-reset";
 import type { RunVerificationOptions } from "../auto-verifier";
 import type { DesignReviewPauseReason } from "../../types";
 import {
@@ -1161,7 +1162,7 @@ async function handleFail(
     loopCount: 0,
     currentStepIndex: 0,
     verifyFailures: [],
-    verifyAttempts: 0,
+    ...stageMigrationResetCounters(),
     violations: [],
     advancedThisTurn: undefined,
     designReview: failState,
@@ -2481,7 +2482,7 @@ async function handleUpdateRunning(
     loopCount: 0,
     currentStepIndex: 0,
     verifyFailures: [],
-    verifyAttempts: 0,
+    ...stageMigrationResetCounters(),
     violations: [],
     advancedThisTurn: undefined,
     designReview: stateWithOperation,
