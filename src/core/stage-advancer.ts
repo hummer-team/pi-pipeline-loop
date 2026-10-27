@@ -715,7 +715,7 @@ async function advanceConfirmApproved(
 
   // Use the imported autoAdvanceAfterVerify for consistent advance behavior
   // Cast ctx to match VerifyAdvanceCtx shape (compatible at runtime)
-  await autoAdvanceAfterVerify(
+  const outcome = await autoAdvanceAfterVerify(
     config,
     ctx as Parameters<typeof autoAdvanceAfterVerify>[1],
     meta,
@@ -724,8 +724,13 @@ async function advanceConfirmApproved(
     syntheticResult,
     // SAFETY: pipelineUI has required notify/transition methods at runtime, matching autoAdvanceAfterVerify expected shape
     pipelineUI as unknown as Parameters<typeof autoAdvanceAfterVerify>[6],
-    { skipPassAudit: true },
+    { skipPassAudit: true, caller: "confirm_approve" },
   );
+
+  // 216 P1 (F3 / review R6-10): a refused bound exit did NOT advance — report
+  // it as pending and do NOT clear the status bar (the old unconditional
+  // `return true` + clearStage was the confirm-gate twin of the hook's lie).
+  if (!outcome.advanced) return false;
 
   // Phase 3 (162): when advancing to completed, clear the stage display
   // (mirrors stage-advancer.ts terminal branch at line 867).

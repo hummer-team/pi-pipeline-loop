@@ -121,7 +121,10 @@ export async function handleFixExecutorCompleted(
     };
 
     // Advance fix→review with skipPassAudit=true
-    await autoAdvanceAfterVerify(
+    // 216 P1 (F3): consume the outcome — a refused/blocked commit must NOT be
+    // reported as "fix completed & advanced"; the unfreeze stays, the advance
+    // honestly reports `fix_advance_refused` (warn) for the audit trail.
+    const outcome = await autoAdvanceAfterVerify(
       config,
       verifyCtx as AutoAdvanceCtxParam,
       freshMeta,
@@ -129,8 +132,16 @@ export async function handleFixExecutorCompleted(
       "review",
       emptySharedResult as AutoAdvanceResultParam,
       pipelineUI,
-      { skipPassAudit: true },
+      { skipPassAudit: true, caller: "fix_executor" },
     );
+    if (!outcome.advanced) {
+      await safeWriteAuditLog("fix_advance_refused", {
+        pipelineId: freshMeta.pipelineId,
+        fromStage: "fix",
+        toStage: "review",
+        reason: outcome.blockReason ?? "advance_blocked",
+      }, "warn");
+    }
   } catch (err) {
     // Fail-open: audit error, preserve frozen state
     const errMsg = err instanceof Error ? err.message : String(err);

@@ -849,7 +849,13 @@ export function createAgentSettled(
         // M1 fix: skipPassAudit=true — skipped must NOT write auto_verify_pass audit
         const fromStage = meta.currentStage;
         const toStage = stageConfig.nextStage;
-        await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui, { skipPassAudit: true });
+        // 216 P1 (F3): a refused/blocked commit must not fall through to the
+        // terminal-compact check — the advance did NOT happen (truthfulness).
+        const outcome = await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui, {
+          skipPassAudit: true,
+          caller: "auto_advance",
+        });
+        if (!outcome.advanced) return;
         // Phase 4 (169) P2-6 fix: after autoAdvance, if we landed on completed, invoke
         // terminal compact helper. Covers the verify_config_skip→completed path where
         // neither W1 (pre-advance) nor W2 (gate-handled) fires. Without this, compaction
@@ -922,7 +928,13 @@ export function createAgentSettled(
         const toStage = stageConfig.nextStage;
 
         // Reuse ctxWithPi (declared above for gate) for autoAdvanceAfterVerify wake message
-        await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui);
+        // 216 P1 (F3): consume the outcome — an uncommitted transition (bound
+        // exit refused / recheck / budget) must not fall through, keeping the
+        // false "advanced" claim and the self-exciting wake out of the hook.
+        const outcome = await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui, {
+          caller: "auto_advance",
+        });
+        if (!outcome.advanced) return;
         // Phase 4 (169) P2-6 fix: after autoAdvance, if we landed on completed, invoke
         // terminal compact helper. Covers the no-gate→completed path where neither
         // W1 (pre-advance) nor W2 (gate-handled) fires.

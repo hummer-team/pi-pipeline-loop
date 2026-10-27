@@ -95,6 +95,24 @@ function formatFailure(failure: { ruleType: string; detail: string; group?: stri
     : `[${failure.ruleType}] ${failure.detail}`;
 }
 
+/**
+ * 216 P1: which entry requested the transition (evidence attribution).
+ * Written to the `transition_commit | bound_exit_refused` audit `caller`
+ * field so refusals stay diagnosable per source (R2-Q2-A: the refusal
+ * itself remains the single truth — this only annotates it).
+ */
+export type StageExitCaller = "auto_advance" | "fix_executor" | "confirm_approve" | "tool";
+
+/**
+ * 216 P1: machine-readable cause when the transition did NOT commit.
+ * The hook path branches on this code, NEVER on the human-readable message
+ * (the refusal reason string cannot be parsed out of `message` reliably).
+ */
+export type StageExitBlockReason =
+  | "recheck_blocked"
+  | "budget_exceeded"
+  | `bound_exit_refused:${string}`;
+
 /** Options controlling applyVerifyPass behavior for different callers */
 interface ApplyVerifyPassOpts {
   /** Whether this was triggered by a "tool" (pipeline_verify) or "rule" (agent_settled hook) */
@@ -130,16 +148,46 @@ interface ApplyVerifyPassOpts {
    * can drift from the other (requirement 5.11 #10 holds for verify.mode="tool").
    */
   emitExitEvidence?: boolean;
+  /**
+   * 216 P1: entry attribution recorded on the bound-exit refusal audit.
+   * Optional: callers resolve it through {@link resolveStageExitCaller}
+   * (a direct tool caller without an explicit entry resolves to "tool").
+   */
+  caller?: StageExitCaller;
 }
 
 /**
  * Structured result returned by applyVerifyPass when returnResult=true.
+ * 216 P1 (review R6-1): `returnResult:true` callers ALWAYS receive this
+ * shape now — including the terminal branch, which previously fell through
+ * returning `undefined` (a type lie against the overload promise and a
+ * runtime TypeError risk for hook-path consumers of the verdict).
  */
-interface VerifyPassReturn {
+export interface VerifyPassReturn {
   success: boolean;
   passed: boolean;
   message: string;
   verifyResult: { structured: { passed: boolean }; overallPassed: boolean } | null;
+  /** 216 P1: present iff a PASSED verification failed to commit. */
+  blockReason?: StageExitBlockReason;
+}
+
+/**
+ * 216 P1: outcome of the auto-advance chain (replaces the former `void`).
+ * `advanced:true` means the transition COMMITTED (or the terminal pass was
+ * recorded) — only then are exit evidence, dispatch and wake emitted.
+ */
+export interface StageAdvanceOutcome {
+  advanced: boolean;
+  blockReason?: string;
+}
+
+/**
+ * 216 P1 (review R6-6): explicit caller wins; direct (tool) callers default
+ * to "tool". NEVER `?? opts.method` — "rule" is not a member of the union.
+ */
+function resolveStageExitCaller(opts: { method: "tool" | "rule"; caller?: StageExitCaller }): StageExitCaller {
+  return opts.caller ?? (opts.method === "tool" ? "tool" : "auto_advance");
 }
 
 /**
@@ -375,6 +423,10 @@ export async function applyVerifyPass(
           passed: true,
           message: recheck.reason,
           verifyResult: verifyResult?.verifyResult ?? null,
+          // 216 P1 (F1): machine-readable stall cause — the recheck barrier is
+          // NOT a bound-exit refusal; it keeps its own convergence (193) and is
+          // never counted as a stage-exit refusal (review R6-4).
+          blockReason: "recheck_blocked",
         };
       }
       return;
@@ -409,6 +461,10 @@ export async function applyVerifyPass(
           passed: true,
           message: `Verification passed for "${stageName}" but advance blocked by budget: budget_exceeded`,
           verifyResult: verifyResult?.verifyResult ?? null,
+          // 216 P1 (F1): the budget stall keeps its OWN convergence path
+          // (loop-breaker `loop_overflow` freeze) — it is NOT a stage-exit
+          // refusal and is never counted as one (review R6-4).
+          blockReason: "budget_exceeded",
         };
       }
       return;
@@ -458,6 +514,9 @@ export async function applyVerifyPass(
         stage: stageName,
         nextStage,
         method: opts.method,
+        // 216 P1 (R2-Q2-A): the refusal stays the SINGLE truth — only the
+        // entry attribution and the machine-readable code are added.
+        caller: resolveStageExitCaller(opts),
         reason: boundExit.reason,
       }, "warn");
       if (opts.returnResult) {
@@ -466,6 +525,7 @@ export async function applyVerifyPass(
           passed: true,
           message: `Bound stage exit refused (${boundExit.reason}). Nothing was consumed or advanced — the run stays pending for a reliable retry.`,
           verifyResult: verifyResult?.verifyResult ?? null,
+          blockReason: `bound_exit_refused:${boundExit.reason}` as StageExitBlockReason,
         };
       }
       return;
@@ -548,9 +608,13 @@ export async function applyVerifyPass(
     await emitVerifyStageExitEvidence(ctx, meta, stageName, null, opts.method);
   }
 
-  if (opts.handleTerminal && opts.returnResult) {
-    // Pipeline reaching completed — clear status bar
-    opts.ui?.clearStage(ctx);
+  // 216 P1 (review R6-1): the terminal branch must give a `returnResult:true`
+  // caller a REAL verdict. The old code fell through returning `undefined`
+  // when handleTerminal=false — a type lie against the overload promise and a
+  // runtime TypeError for the hook path, which now consumes the verdict.
+  // `handleTerminal` ONLY controls the status-bar clearStage from here on.
+  if (opts.returnResult) {
+    if (opts.handleTerminal) opts.ui?.clearStage(ctx);
     return {
       success: true,
       passed: true,
@@ -558,7 +622,8 @@ export async function applyVerifyPass(
       verifyResult: verifyResult?.verifyResult ?? null,
     };
   }
-  // handleTerminal=false (hook path): silently skip — no notification, no return
+  // returnResult=false (legacy non-consuming callers): silently skip — no
+  // notification, no return value (the committed fact is in the audit trail).
 }
 
 /**
@@ -973,17 +1038,29 @@ export async function autoAdvanceAfterVerify(
   verifyResult: VerifyAdvanceResult,
   pipelineUI: PipelineUI,
   /** M1 fix: optional flags for callers (e.g., skipped path suppresses auto_verify_pass audit) */
-  options?: { skipPassAudit?: boolean },
-): Promise<void> {
+  options?: { skipPassAudit?: boolean; caller?: StageExitCaller },
+): Promise<StageAdvanceOutcome> {
   const clearedMeta = { ...meta, advancedThisTurn: undefined, reviewConclusionDeclared: undefined };
 
-  await applyVerifyPass(ctx, clearedMeta, fromStage, toStage, verifyResult, {
+  // 216 P1 (F1 / review R6-1): `returnResult:true` now ALWAYS yields a real
+  // verdict (terminal included) — the chain branches on `verdict.success`,
+  // never on the assumption that the commit happened.
+  const verdict: VerifyPassReturn = await applyVerifyPass(ctx, clearedMeta, fromStage, toStage, verifyResult, {
     method: "rule",
     handleTerminal: false,
-    returnResult: false,
+    returnResult: true,
     ui: pipelineUI,
     skipPassAudit: options?.skipPassAudit,
+    caller: resolveStageExitCaller({ method: "rule", caller: options?.caller }),
   });
+
+  if (!verdict.success) {
+    // 216 P1 truthfulness contract: the transition did NOT commit (bound exit
+    // refused / recheck barrier / budget exceeded), so this path must not
+    // emit exit evidence, must not dispatch, must not wake — the run stays
+    // exactly as persisted for a reliable retry.
+    return { advanced: false, blockReason: verdict.blockReason ?? "advance_blocked" };
+  }
 
   // 210 Phase 4 / review issue 3 (Medium): collect the exited stage's evidence
   // through the SAME producer the tool path uses (one stage-exit semantics,
@@ -1027,7 +1104,9 @@ export async function autoAdvanceAfterVerify(
         toStage,
         reason: "configuration_conflict",
       });
-      return;
+      // 216 P1: the transition COMMITTED (dispatch conflict is a post-commit
+      // dispatch problem, not a refused exit) — report truthfully.
+      return { advanced: true };
     }
 
     if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
@@ -1047,7 +1126,7 @@ export async function autoAdvanceAfterVerify(
         toStage,
         reason: spawnResult.deferred ? "subagent_deferred" : "subagent_spawned",
       });
-      return;
+      return { advanced: true };
     }
   }
 
@@ -1119,6 +1198,11 @@ export async function autoAdvanceAfterVerify(
       reason: "pi not forwarded via RuntimeCtx",
     });
   }
+
+  // 216 P1: every path below the verdict check COMMITTED the transition —
+  // report it truthfully (wake delivery failure is a dispatch problem, not
+  // a refused exit).
+  return { advanced: true };
 }
 
 /**
