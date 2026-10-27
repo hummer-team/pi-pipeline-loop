@@ -16,6 +16,7 @@ import {
   resolveStagePath,
   RESUMABLE_STAGES,
   DEFAULT_MAX_LOOP_CYCLES,
+  MAX_DOC_CANDIDATES,
 } from "../constants";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -49,7 +50,12 @@ import { appendPipelineIdMarker } from "../utils/pipeline-id-marker";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
 import { classifyDesignReviewFlow, isDevelopHandoffOperation } from "../core/design-review/state";
 // 206 Phase 2: doc-candidate menu for empty-file starts
-import { listDocCandidates, findLatestDocForStage, type DocCandidate } from "../core/doc-discovery";
+import {
+  listDocCandidates,
+  findLatestDocForStage,
+  resolveCurrentDocOption,
+  type DocCandidate,
+} from "../core/doc-discovery";
 // 193 Phase 3 (tasks 1/2): shared safe coordinator builder + single consumer
 import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
 import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/design-review/entry-result";
@@ -522,7 +528,7 @@ export function buildResumeMeta(
  * @param file - User-supplied file argument (may be empty)
  * @param reason - Audit reason tag (pipeline_start_resume / _confirm_resume / _ask_resume)
  */
-async function resumePipeline(
+export async function resumePipeline(
   ctx: any,
   meta: SessionMeta,
   config: PipelineConfig,
@@ -881,8 +887,11 @@ export async function dispatchAfterResume(
  * doc-candidate menu. Declared instead of `any` (code-spec rule) because the
  * pi SDK exposes the TUI dialogs on `ctx.ui` only in some hosts; the plugin
  * relies on these optional methods only when present.
+ *
+ * 213 Phase 2 (D14): exported — `/pipeline-resume`'s new-branch flow drives
+ * the SAME menu shell through `promptDocSelection`.
  */
-type DocMenuCtx = {
+export type DocMenuCtx = {
   ui?: {
     select?: (message: string, options: string[]) => Promise<string | undefined>;
     input?: (message: string) => Promise<string | undefined>;
@@ -931,60 +940,88 @@ async function promptManualDocPath(
  * - No candidates → cross-`archiveDirs` fallback auto-picks the newest match
  *   (with an English notify); nothing at all → manual input / cancel.
  *
+ * 213 Phase 2 (D14/D15) `currentDoc` additions:
+ * - `currentDoc` (typically `meta.requirementDoc`) is pinned as the FIRST row
+ *   with a ` (default)` suffix; selection resolves by OPTION INDEX (labels are
+ *   no longer string-reversible once suffixed).
+ * - A supplied-but-unresolvable `currentDoc` never blocks the menu; the title
+ *   gains `(current requirement doc missing: <raw>)` (rule ①).
+ * - The "auto-select the latest doc" fallback fires ONLY when no `currentDoc`
+ *   was supplied — a resume caller that passed one always gets the explicit
+ *   manual/cancel menu instead.
+ *
  * @param stage - The starting stage; drives the stage-specific candidate filter
- * @param reason - Audit reason tag ("start")
+ * @param reason - Audit reason tag ("start", or "resume_new" for the 213 branch)
  * @returns Selected file path, or `null` when the user cancelled / no UI
  */
-async function promptDocSelection(
+export async function promptDocSelection(
   ctx: DocMenuCtx | undefined,
   config: PipelineConfig,
   ui: ReturnType<typeof createPipelineUI>,
   stage: PipelineStage,
   reason: string,
+  currentDoc?: string,
 ): Promise<string | null> {
   const uiCtx = ctx?.ui;
   if (typeof uiCtx?.select !== "function") {
     return null; // caller degrades to original error message
   }
 
-  const candidates = await listDocCandidates(config, stage);
+  // Rule ① display hint: a supplied current doc that cannot be resolved is
+  // announced in the title instead of appearing as a row.
+  const currentMissingSuffix = currentDoc !== undefined
+    && (await resolveCurrentDocOption(config, currentDoc)) === null
+    ? ` (current requirement doc missing: ${currentDoc})`
+    : "";
+  const selectTitle = `Select document for the "${stage}" stage:${currentMissingSuffix}`;
+
+  const candidates = await listDocCandidates(config, stage, MAX_DOC_CANDIDATES, currentDoc);
   if (candidates.length > 0) {
+    const labels = candidates.map((c: DocCandidate) =>
+      c.isCurrent ? `${c.relPath} (default)` : c.relPath);
     const options = [
-      ...candidates.map((c: DocCandidate) => c.relPath),
+      ...labels,
       "Manual input path",
       "Cancel",
     ];
-    const choice = await uiCtx.select(
-      `Select document for the "${stage}" stage:`,
-      options,
-    );
+    const choice = await uiCtx.select(selectTitle, options);
     if (!choice || choice === "Cancel") return null;
     if (choice === "Manual input path") {
       return promptManualDocPath(ctx, config, ui);
     }
-    const matched = candidates.find((c) => c.relPath === choice);
-    if (matched) return matched.relPath;
+    // 213 Phase 2: index mapping — ` (default)`-suffixed labels can no longer
+    // be matched by string equality against `relPath`.
+    const idx = options.indexOf(choice);
+    if (idx >= 0 && idx < candidates.length) {
+      const picked = candidates[idx];
+      if (picked) return picked.relPath;
+    }
     return promptManualDocPath(ctx, config, ui);
   }
 
-  // No candidates → cross-archiveDirs fallback: auto-select newest match (Q2-A)
-  const latest = await findLatestDocForStage(config, stage);
-  if (latest) {
-    ui.notify(ctx, `Auto-selected latest document: ${latest.relPath}`);
-    await safeWriteAuditLog("pipeline_start_doc_menu_autoselect", {
-      stage,
-      reason,
-      requirementDoc: latest.relPath,
-    });
-    return latest.relPath;
+  // No candidates → cross-archiveDirs fallback: auto-select newest match (Q2-A).
+  // 213 Phase 2 (D14): ONLY when the caller did not supply a currentDoc — an
+  // explicitly passed one that failed to resolve must NOT silently auto-pick
+  // another document.
+  if (currentDoc === undefined) {
+    const latest = await findLatestDocForStage(config, stage);
+    if (latest) {
+      ui.notify(ctx, `Auto-selected latest document: ${latest.relPath}`);
+      await safeWriteAuditLog("pipeline_start_doc_menu_autoselect", {
+        stage,
+        reason,
+        requirementDoc: latest.relPath,
+      });
+      return latest.relPath;
+    }
   }
 
   // Nothing anywhere → manual input / cancel
-  const choice = await uiCtx.select(
-    `No candidate document found for ${stage}.`,
+  const emptyChoice = await uiCtx.select(
+    `No candidate document found for ${stage}.${currentMissingSuffix}`,
     ["Manual input path", "Cancel"],
   );
-  if (choice !== "Manual input path") return null;
+  if (emptyChoice !== "Manual input path") return null;
   return promptManualDocPath(ctx, config, ui);
 }
 
@@ -1004,7 +1041,7 @@ async function promptDocSelection(
  * @param startStage - Starting stage (default "clarify")
  * @param existingMeta - Existing meta (may be undefined for fresh start)
  */
-async function startNewPipeline(
+export async function startNewPipeline(
   ctx: any,
   config: PipelineConfig,
   ui: ReturnType<typeof createPipelineUI>,
@@ -1721,7 +1758,7 @@ async function handleAbortedWithMode(
  * Excludes awaiting_human and completed (not startable).
  * Only includes enabled stages (not disabled).
  */
-function getSpecEligibleStages(config: PipelineConfig): PipelineStage[] {
+export function getSpecEligibleStages(config: PipelineConfig): PipelineStage[] {
   const eligible: PipelineStage[] = [];
   const order: PipelineStage[] = ["clarify", "plan", "design-review", "develop", "review", "fix"];
   for (const stage of order) {

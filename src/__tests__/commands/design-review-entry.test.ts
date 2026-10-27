@@ -8,9 +8,14 @@
  * - Invalid/missing authorization bypasses coordinator (falls through to normal logic)
  */
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import * as fsp from "node:fs/promises";
+import fsSync from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { PipelineConfig, SessionMeta, DesignReviewState } from "../../types";
 import { isAuthorizationValid } from "../../core/design-review/state";
+import { resolveDesignReviewEntryDocs } from "../../core/design-review/entry";
 
 function makeTestConfig(): PipelineConfig {
   return {
@@ -211,5 +216,92 @@ describe("Phase 4 (191): Entry point authorization checks", () => {
       expect(meta.designReview?.phase).toBe("paused");
       // Coordinator would return pending (wait for intervention)
     });
+  });
+});
+
+/**
+ * 213 Phase 2 (D16): `resolveDesignReviewEntryDocs` must derive the plan doc
+ * through the naming single-source (`planDocRelPathFromRequirementDoc`) —
+ * idempotent for `_Plan.md` inputs, tolerant of `.MD`, and fail-CLOSED (never
+ * a `"_Plan.md"` phantom) when no requirement base can be derived.
+ */
+describe("213 Phase 2 (D16): resolveDesignReviewEntryDocs plan-doc derivation", () => {
+  let ROOT: string;
+
+  beforeEach(() => {
+    ROOT = fsSync.mkdtempSync(path.join(os.tmpdir(), "pi-dr-entry-"));
+  });
+
+  afterEach(async () => {
+    await fsp.rm(ROOT, { recursive: true, force: true });
+  });
+
+  async function touch(rel: string): Promise<string> {
+    const abs = path.join(ROOT, rel);
+    await fsp.mkdir(path.dirname(abs), { recursive: true });
+    await fsp.writeFile(abs, "# doc\n", "utf-8");
+    return abs;
+  }
+
+  function entryConfig(): PipelineConfig {
+    return { ...makeTestConfig(), projectRoot: ROOT } as PipelineConfig;
+  }
+
+  test("plain requirement doc derives {reqBase}_Plan.md and finds it", async () => {
+    await touch("docs/design/9_Test.md");
+    const planAbs = await touch("docs/design/9_Test_Plan.md");
+    const out = resolveDesignReviewEntryDocs(entryConfig(), makeTestMeta({ requirementDoc: "docs/design/9_Test.md" }));
+    expect(out.requirementDoc).toBe(path.join(ROOT, "docs/design/9_Test.md"));
+    expect(out.planDoc).toBe(planAbs);
+    expect(out.requirementExists).toBe(true);
+    expect(out.planExists).toBe(true);
+  });
+
+  test("requirement doc already ending in `_Plan.md` is IDEMPOTENT (no `_Plan_Plan` phantom)", async () => {
+    const abs = await touch("docs/design/204_Bug_Plan.md");
+    const out = resolveDesignReviewEntryDocs(
+      entryConfig(),
+      makeTestMeta({ requirementDoc: "docs/design/204_Bug_Plan.md" }),
+    );
+    expect(out.planDoc).toBe(abs); // THE SAME file, not `204_Bug_Plan_Plan.md`
+    expect(out.planDoc).not.toContain("_Plan_Plan");
+    expect(out.planExists).toBe(true);
+  });
+
+  test("`.MD` casing resolves through the naming module (old inline replace missed it)", async () => {
+    await touch("docs/design/7_Q.MD");
+    const planAbs = await touch("docs/design/7_Q_Plan.md");
+    const out = resolveDesignReviewEntryDocs(entryConfig(), makeTestMeta({ requirementDoc: "docs/design/7_Q.MD" }));
+    expect(out.planDoc).toBe(planAbs);
+    expect(out.planExists).toBe(true);
+  });
+
+  test("plan file absent → planDoc still derived, planExists=false (caller reports plan_doc_missing)", () => {
+    const out = resolveDesignReviewEntryDocs(entryConfig(), makeTestMeta({ requirementDoc: "docs/design/8_X.md" }));
+    expect(out.planDoc).toBe(path.join(ROOT, "docs/design/8_X_Plan.md"));
+    expect(out.planExists).toBe(false);
+  });
+
+  test("extension-less requirement doc FAILS CLOSED: planDoc undefined, no phantom path", async () => {
+    await touch("docs/design/noext"); // requirement itself exists, base derivation does not
+    const out = resolveDesignReviewEntryDocs(entryConfig(), makeTestMeta({ requirementDoc: "docs/design/noext" }));
+    expect(out.requirementExists).toBe(true);
+    expect(out.planDoc).toBeUndefined();
+    expect(out.planExists).toBe(false);
+
+    const txt = resolveDesignReviewEntryDocs(entryConfig(), makeTestMeta({ requirementDoc: "docs/design/notes.txt" }));
+    expect(txt.planDoc).toBeUndefined();
+    expect(txt.planExists).toBe(false);
+  });
+
+  test("empty / absent requirementDoc → both docs undefined, both exists false", () => {
+    const out = resolveDesignReviewEntryDocs(entryConfig(), makeTestMeta({ requirementDoc: undefined }));
+    expect(out.requirementDoc).toBeUndefined();
+    expect(out.planDoc).toBeUndefined();
+    expect(out.requirementExists).toBe(false);
+    expect(out.planExists).toBe(false);
+
+    const blank = resolveDesignReviewEntryDocs(entryConfig(), makeTestMeta({ requirementDoc: "" }));
+    expect(blank.planDoc).toBeUndefined();
   });
 });

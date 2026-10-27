@@ -14,7 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { reqBaseFromPlanStem, LEGACY_DESIGN_REVIEW_RE } from "../naming/doc-naming";
+import { reqBaseFromPlanStem, reqBaseFromRequirementDoc, planDocRelPathFromRequirementDoc, LEGACY_DESIGN_REVIEW_RE } from "../naming/doc-naming";
 import type { PipelineConfig, SessionMeta, StageConfig } from "../../types";
 import { allocateNextRoundSafe } from "./state";
 
@@ -45,8 +45,17 @@ export function validateDesignReviewStageAssets(
 /**
  * Resolve the requirement/plan document context for a design-review entry.
  * Convention (same as the plan stage, 201 Phase 1: `_Plan.md`): the plan doc
- * is the requirement doc with the `.md` suffix replaced by `_Plan.md`. Paths
- * become absolute against projectRoot and are checked for existence.
+ * is derived from the requirement doc through the SINGLE-SOURCE naming helper
+ * `planDocRelPathFromRequirementDoc` (213 Phase 2 / D16 — the old inline
+ * `replace(/\.md$/, "_Plan.md")` diverged from the naming module: it was not
+ * idempotent for `*_Plan.md` inputs (`_Plan_Plan.md` phantom) and ignored the
+ * `.MD` casing the naming module tolerates). Paths become absolute against
+ * projectRoot and are checked for existence.
+ *
+ * Fail-closed boundary: when the requirement doc has no derivable base
+ * (extension-less or blank — `reqBaseFromRequirementDoc` returns `""`),
+ * `planDoc` stays `undefined` so callers report `plan_doc_missing` instead of
+ * probing a `"_Plan.md"` phantom path.
  *
  * @returns resolved absolute paths plus existence flags; callers decide how
  *   to report each missing document.
@@ -64,9 +73,13 @@ export function resolveDesignReviewEntryDocs(
     path.isAbsolute(p) ? path.resolve(p) : path.resolve(config.projectRoot, p);
 
   const requirementDoc = meta.requirementDoc ? toAbsolute(meta.requirementDoc) : undefined;
-  const planDoc = meta.requirementDoc
-    ? toAbsolute(meta.requirementDoc.replace(/\.md$/, "_Plan.md"))
-    : undefined;
+  let planDoc: string | undefined;
+  if (meta.requirementDoc) {
+    const reqBase = reqBaseFromRequirementDoc(meta.requirementDoc);
+    if (reqBase.length > 0) {
+      planDoc = toAbsolute(planDocRelPathFromRequirementDoc(meta.requirementDoc));
+    }
+  }
 
   const exists = (p: string | undefined): boolean => {
     if (!p) return false;

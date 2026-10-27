@@ -9,13 +9,28 @@
  * - No ui.select (hasSelect=false) keeps the ORIGINAL error string.
  * - Stage dir missing + archiveDirs fallback hit → auto-select + notify.
  * - Explicit file → select is never called (behavior unchanged, Round 2 Q1-A).
+ *
+ * 213 Phase 2 (D14/D15) additions — direct `promptDocSelection` calls:
+ * - `currentDoc` pinned first with a ` (default)` label; selection resolves by
+ *   OPTION INDEX and returns the bare project-relative path.
+ * - Absolute/relative spellings of one file dedupe into a single row.
+ * - Invalid `currentDoc` → title carries `(current requirement doc missing: …)`,
+ *   remaining candidates behave as usual.
+ * - `currentDoc` supplied + zero candidates → NO auto-select, NO autoselect
+ *   audit (boundary rule); no `currentDoc` + zero candidates → auto-select
+ *   regression.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fsp from "node:fs/promises";
 import fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createPipelineStartCommand } from "../../commands/pipeline-start";
+import {
+  createPipelineStartCommand,
+  promptDocSelection,
+} from "../../commands/pipeline-start";
+import { createPipelineUI } from "../../core/pipeline-ui";
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { createMockCtx, makeTestConfig, makeTestMeta } from "../helpers";
 import type { SessionMeta } from "../../types";
 
@@ -243,5 +258,218 @@ describe("pipeline-start doc-candidate menu (206 Phase 2)", () => {
     } finally {
       await fsp.rm(outsideRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── 213 Phase 2 (D14/D15): shared promptDocSelection with a current-doc row ──
+
+interface DirectCtx {
+  ui: {
+    notify: (msg: string) => void;
+    select: (message: string, options: string[]) => Promise<string | undefined>;
+    input?: (message: string) => Promise<string | undefined>;
+  };
+}
+
+/**
+ * Direct-call harness: records every (title, options) pair handed to the host
+ * select dialog and answers with a canned choice. Structurally compatible with
+ * the production `DocMenuCtx` (which only requires optional `ui.select`/
+ * `ui.input`); the extra `notify` feeds `ui.notify` in the shared shell.
+ */
+function makeDirectCtx(
+  choice: string | undefined,
+  seen: Array<{ title: string; options: string[] }>,
+  notifications: string[],
+): DirectCtx {
+  return {
+    ui: {
+      notify: (msg: string) => {
+        notifications.push(msg);
+      },
+      select: async (title: string, options: string[]) => {
+        seen.push({ title, options });
+        return choice;
+      },
+    },
+  };
+}
+
+describe("promptDocSelection with currentDoc (213 Phase 2 / D14/D15)", () => {
+  const NOW213 = Date.now();
+
+  afterEach(() => {
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  it("current doc is pinned FIRST with a ' (default)' label; selection returns the bare rel path", async () => {
+    await touch("docs/design/14_Feat.md", NOW213 - 500);
+    await touch("docs/design/13_A_Plan.md", NOW213);
+    await touch("docs/design/12_B_Plan.md", NOW213 - 1000);
+
+    const seen: Array<{ title: string; options: string[] }> = [];
+    const notifications: string[] = [];
+    // Pick the suffixed first row — exactly what a host menu hands back.
+    const ctx = makeDirectCtx("docs/design/14_Feat.md (default)", seen, notifications);
+    const selected = await promptDocSelection(
+      ctx,
+      makeTestConfig({ projectRoot: ROOT }),
+      createPipelineUI(makeTestConfig({ projectRoot: ROOT })),
+      "design-review",
+      "resume_new",
+      "docs/design/14_Feat.md",
+    );
+
+    // Head row: the requirement doc survives the *_Plan.md stage filter ONLY
+    // because it is pinned; plans fill in behind by mtime.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.options).toEqual([
+      "docs/design/14_Feat.md (default)",
+      "docs/design/13_A_Plan.md",
+      "docs/design/12_B_Plan.md",
+      "Manual input path",
+      "Cancel",
+    ]);
+    // Index mapping: the returned path carries NO label suffix.
+    expect(selected).toBe("docs/design/14_Feat.md");
+    expect(notifications.join("")).not.toContain("Auto-selected");
+  });
+
+  it("meta-acceptance shape: default row + plans by mtime, total rows ≤ MAX_DOC_CANDIDATES (5)", async () => {
+    await touch("docs/design/14_Feat.md", NOW213 - 500);
+    for (let i = 1; i <= 6; i++) {
+      await touch(`docs/design/${200 + i}_X_Plan.md`, NOW213 - i * 1000);
+    }
+    const seen: Array<{ title: string; options: string[] }> = [];
+    const ctx = makeDirectCtx(undefined, seen, []);
+    await promptDocSelection(
+      ctx,
+      makeTestConfig({ projectRoot: ROOT }),
+      createPipelineUI(makeTestConfig({ projectRoot: ROOT })),
+      "design-review",
+      "resume_new",
+      "docs/design/14_Feat.md",
+    );
+    // 5 doc rows (1 pinned + 4 newest plans) + manual + cancel = 7 options.
+    expect(seen[0]!.options).toHaveLength(7);
+    expect(seen[0]!.options[0]).toBe("docs/design/14_Feat.md (default)");
+    expect(seen[0]!.options.slice(1, 5)).toEqual([
+      "docs/design/201_X_Plan.md",
+      "docs/design/202_X_Plan.md",
+      "docs/design/203_X_Plan.md",
+      "docs/design/204_X_Plan.md",
+    ]);
+  });
+
+  it("absolute and relative spellings of the current doc dedupe into ONE row, returned posix-rel", async () => {
+    await touch("docs/design/204_Bug_Plan.md", NOW213);
+    await touch("docs/design/203_Old_Plan.md", NOW213 - 1000);
+
+    const seen: Array<{ title: string; options: string[] }> = [];
+    const ctx = makeDirectCtx("docs/design/204_Bug_Plan.md (default)", seen, []);
+    const selected = await promptDocSelection(
+      ctx,
+      makeTestConfig({ projectRoot: ROOT }),
+      createPipelineUI(makeTestConfig({ projectRoot: ROOT })),
+      "design-review",
+      "resume_new",
+      path.join(ROOT, "docs/design/204_Bug_Plan.md"), // absolute spelling in meta
+    );
+
+    const planRows = seen[0]!.options.filter((o) => o.includes("204_Bug_Plan"));
+    expect(planRows).toEqual(["docs/design/204_Bug_Plan.md (default)"]);
+    // Write-back form is project-relative posix even though meta held absolute.
+    expect(selected).toBe("docs/design/204_Bug_Plan.md");
+  });
+
+  it("invalid currentDoc → title notes the missing doc, remaining candidates as usual", async () => {
+    await touch("docs/design/13_A_Plan.md", NOW213);
+
+    const seen: Array<{ title: string; options: string[] }> = [];
+    const ctx = makeDirectCtx("docs/design/13_A_Plan.md", seen, []);
+    const selected = await promptDocSelection(
+      ctx,
+      makeTestConfig({ projectRoot: ROOT }),
+      createPipelineUI(makeTestConfig({ projectRoot: ROOT })),
+      "design-review",
+      "resume_new",
+      "docs/design/gone_Plan.md",
+    );
+
+    expect(seen[0]!.title).toContain("(current requirement doc missing: docs/design/gone_Plan.md)");
+    expect(seen[0]!.options).toEqual(["docs/design/13_A_Plan.md", "Manual input path", "Cancel"]);
+    expect(selected).toBe("docs/design/13_A_Plan.md");
+  });
+
+  it("invalid currentDoc + ZERO candidates → NO auto-select, NO autoselect audit, manual/cancel menu", async () => {
+    await fsp.mkdir(path.join(ROOT, "docs/design"), { recursive: true });
+    const auditEvents: string[] = [];
+    __setSafeWriteAuditLogOverride(async (stage: string) => {
+      auditEvents.push(stage);
+    });
+
+    const seen: Array<{ title: string; options: string[] }> = [];
+    const notifications: string[] = [];
+    const ctx = makeDirectCtx("Cancel", seen, notifications);
+    const selected = await promptDocSelection(
+      ctx,
+      makeTestConfig({ projectRoot: ROOT }),
+      createPipelineUI(makeTestConfig({ projectRoot: ROOT })),
+      "design-review",
+      "resume_new",
+      "docs/design/gone_Plan.md",
+    );
+
+    expect(selected).toBeNull(); // Cancel from the manual/cancel menu
+    // The fallback menu is reached directly — no auto-pick happened.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.title).toBe(
+      "No candidate document found for design-review. (current requirement doc missing: docs/design/gone_Plan.md)",
+    );
+    expect(notifications.join("")).not.toContain("Auto-selected");
+    expect(auditEvents.filter((e) => e === "pipeline_start_doc_menu_autoselect")).toHaveLength(0);
+  });
+
+  it("NO currentDoc + zero candidates → auto-select latest stays (regression), audit reason forwarded", async () => {
+    await touch("docs/elsewhere/205_Solo.md", NOW213);
+    const auditEvents: string[] = [];
+    __setSafeWriteAuditLogOverride(async (stage: string) => {
+      auditEvents.push(stage);
+    });
+
+    const seen: Array<{ title: string; options: string[] }> = [];
+    const notifications: string[] = [];
+    const ctx = makeDirectCtx(undefined, seen, notifications);
+    const cfg = makeTestConfig({ projectRoot: ROOT, archiveDirs: ["docs/elsewhere"] });
+    const selected = await promptDocSelection(
+      ctx,
+      cfg,
+      createPipelineUI(cfg),
+      "clarify",
+      "resume_new",
+    );
+
+    expect(selected).toBe("docs/elsewhere/205_Solo.md");
+    expect(notifications.some((n) => n.includes("Auto-selected latest document: docs/elsewhere/205_Solo.md"))).toBe(true);
+    expect(auditEvents.filter((e) => e === "pipeline_start_doc_menu_autoselect")).toHaveLength(1);
+    expect(seen).toHaveLength(0); // auto-select short-circuits before any menu
+  });
+
+  it("unknown return value from the host dialog degrades to manual input (index mapping guard)", async () => {
+    await touch("docs/design/13_A_Plan.md", NOW213);
+    const seen: Array<{ title: string; options: string[] }> = [];
+    const ctx = makeDirectCtx("__not_an_option__", seen, []);
+    ctx.ui.input = async () => undefined; // user aborts the input dialog too
+    const selected = await promptDocSelection(
+      ctx,
+      makeTestConfig({ projectRoot: ROOT }),
+      createPipelineUI(makeTestConfig({ projectRoot: ROOT })),
+      "design-review",
+      "resume_new",
+      "docs/design/13_A_Plan.md",
+    );
+    // Index lookup failed → manual path attempted → no input → null.
+    expect(selected).toBeNull();
+    expect(seen).toHaveLength(1);
   });
 });

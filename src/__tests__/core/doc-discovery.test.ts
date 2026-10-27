@@ -9,6 +9,12 @@
  * - Missing directory → []; `history/` subdirectory files never selected.
  * - Edge cases: empty dir, only subdirs, non-.md files, `.MD` tolerance,
  *   docsStageDirs override vs auto-match fallback, archiveDirs fallback hit/miss.
+ *
+ * 213 Phase 2 (D15) additions:
+ * - `resolveCurrentDocOption` truth table (rel/abs normalization, rule ① nulls).
+ * - `listDocCandidates(..., currentDoc)`: pinned first row, stage-filter exemption,
+ *   absolute-path dedupe, limit accounting, invalid-doc fallback, and the
+ *   byte-identical behavior when `currentDoc` is absent.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fsp from "node:fs/promises";
@@ -18,6 +24,7 @@ import * as path from "node:path";
 import {
   listDocCandidates,
   findLatestDocForStage,
+  resolveCurrentDocOption,
   resolveStageDocDir,
   stageDocCandidateFilter,
 } from "../../core/doc-discovery";
@@ -193,5 +200,93 @@ describe("findLatestDocForStage", () => {
     const cfg = makeTestConfig({ projectRoot: ROOT, archiveDirs: ["docs/design", "docs/other"] });
     const latest = await findLatestDocForStage(cfg, "fix");
     expect(latest?.relPath).toBe("docs/design/Code_Review_204_Bug_Develop_Commit_2.md");
+  });
+});
+
+// ─── 213 Phase 2 (D15): the current requirement doc as a first-class candidate ─
+
+describe("resolveCurrentDocOption (213 Phase 2 / D15)", () => {
+  it("relative path inside the project → posix relPath + absolute absPath", async () => {
+    const rel = await touch("docs/design/204_Bug_Plan.md", NOW);
+    expect(await resolveCurrentDocOption(config, rel)).toEqual({
+      relPath: "docs/design/204_Bug_Plan.md",
+      absPath: path.join(ROOT, "docs/design/204_Bug_Plan.md"),
+    });
+  });
+
+  it("absolute path inside the project → stored back as project-relative posix", async () => {
+    await touch("docs/design/204_Bug_Plan.md", NOW);
+    const got = await resolveCurrentDocOption(config, path.join(ROOT, "docs/design/204_Bug_Plan.md"));
+    expect(got?.relPath).toBe("docs/design/204_Bug_Plan.md");
+  });
+
+  it("missing file / directory / blank / undefined → null (rule ①: invalid never lists)", async () => {
+    expect(await resolveCurrentDocOption(config, "docs/design/ghost.md")).toBeNull();
+    await fsp.mkdir(path.join(ROOT, "docs/design"), { recursive: true });
+    expect(await resolveCurrentDocOption(config, "docs/design")).toBeNull();
+    expect(await resolveCurrentDocOption(config, "   ")).toBeNull();
+    expect(await resolveCurrentDocOption(config, undefined)).toBeNull();
+  });
+});
+
+describe("listDocCandidates with currentDoc (213 Phase 2 / D15)", () => {
+  it("pins the current doc FIRST and EXEMPT from the stage filter", async () => {
+    // design-review candidates are *_Plan.md; a requirement doc does not match
+    await touch("docs/design/14_Feat.md", NOW - 500);
+    await touch("docs/design/13_Other_Plan.md", NOW);
+    const result = await listDocCandidates(config, "design-review", 5, "docs/design/14_Feat.md");
+    expect(result[0]!.relPath).toBe("docs/design/14_Feat.md");
+    expect(result[0]!.isCurrent).toBe(true);
+    expect(result[1]!.relPath).toBe("docs/design/13_Other_Plan.md");
+    expect(result[1]!.isCurrent).toBeUndefined();
+    expect(result).toHaveLength(2);
+  });
+
+  it("deduplicates by ABSOLUTE path — absolute + relative spellings yield one row", async () => {
+    const rel = await touch("docs/design/204_Bug_Plan.md", NOW);
+    await touch("docs/design/203_Old_Plan.md", NOW - 1000);
+    const result = await listDocCandidates(config, "design-review", 5, path.join(ROOT, rel));
+    // The pinned row displays project-relative posix; the discovered twin is gone.
+    expect(result.map((c) => c.relPath)).toEqual([
+      "docs/design/204_Bug_Plan.md",
+      "docs/design/203_Old_Plan.md",
+    ]);
+    expect(result[0]!.isCurrent).toBe(true);
+  });
+
+  it("counts toward the limit: 1 pinned + at most limit-1 discovered", async () => {
+    await touch("docs/design/14_Feat.md", NOW);
+    for (let i = 1; i <= 6; i++) {
+      await touch(`docs/design/${200 + i}_Plan.md`, NOW - i * 1000);
+    }
+    const result = await listDocCandidates(config, "design-review", 5, "docs/design/14_Feat.md");
+    expect(result).toHaveLength(5);
+    expect(result.map((c) => c.relPath)).toEqual([
+      "docs/design/14_Feat.md",
+      "docs/design/201_Plan.md",
+      "docs/design/202_Plan.md",
+      "docs/design/203_Plan.md",
+      "docs/design/204_Plan.md",
+    ]);
+  });
+
+  it("invalid currentDoc → no pinned row, discovered list unchanged (rule ①)", async () => {
+    await touch("docs/design/204_Bug_Plan.md", NOW);
+    const without = await listDocCandidates(config, "design-review");
+    const withGhost = await listDocCandidates(config, "design-review", 5, "docs/design/ghost_Plan.md");
+    expect(withGhost).toEqual(without);
+    expect(withGhost.some((c) => c.isCurrent === true)).toBe(false);
+  });
+
+  it("explicit `undefined` currentDoc → the legacy path unchanged (incl. findLatestDocForStage)", async () => {
+    await touch("docs/design/201_Old.md", NOW - 3000);
+    await touch("docs/design/204_New.md", NOW);
+    const legacy = await listDocCandidates(config, "clarify");
+    const explicit = await listDocCandidates(config, "clarify", 5, undefined);
+    expect(explicit).toEqual(legacy);
+    // findLatestDocForStage never passes currentDoc → channel-1 rows carry no isCurrent.
+    const latest = await findLatestDocForStage(config, "clarify");
+    expect(latest?.relPath).toBe("docs/design/204_New.md");
+    expect(latest?.isCurrent).toBeUndefined();
   });
 });

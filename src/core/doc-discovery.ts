@@ -44,6 +44,10 @@ export interface DocCandidate {
   absPath: string;
   /** Modification time (ms) — candidates are sorted by this, descending. */
   mtimeMs: number;
+  /** 213 Phase 2 (D15): this candidate is the caller-supplied `currentDoc`
+   *  pinned as the first item — NOT a stage-discovery result. The doc menu
+   *  renders such a row as `<relPath> (default)`. */
+  isCurrent?: boolean;
 }
 
 /**
@@ -123,6 +127,46 @@ export function stageDocCandidateFilter(stage: PipelineStage): (fileName: string
 }
 
 /**
+ * 213 Phase 2 (D15): normalizes a document path recorded in metadata
+ * (`meta.requirementDoc`) into a display-ready candidate location.
+ *
+ * Rule ① (invalid ⇒ not listed): an empty/blank value, a missing file or a
+ * directory returns `null` — the caller then shows the
+ * `(current requirement doc missing: <raw>)` title suffix instead of a row.
+ *
+ * Normalization matches the established sites (`pipeline-start.ts` docPath
+ * handling, `design-review/entry.ts` toAbsolute): absolute paths are
+ * `path.resolve`-d verbatim, relative paths are resolved against
+ * `config.projectRoot`. The returned `relPath` is always project-relative
+ * with posix separators when the file sits inside the project (what the
+ * pipeline meta stores back), and the absolute path otherwise — mirroring
+ * `listDocCandidates`' own rel-path convention.
+ */
+export async function resolveCurrentDocOption(
+  config: PipelineConfig,
+  rawDoc: string | undefined,
+): Promise<{ relPath: string; absPath: string } | null> {
+  if (typeof rawDoc !== "string") return null;
+  const cleaned = rawDoc.trim();
+  if (cleaned.length === 0) return null;
+  const absPath = path.isAbsolute(cleaned)
+    ? path.resolve(cleaned)
+    : path.resolve(config.projectRoot, cleaned);
+  try {
+    const stat = await fsp.stat(absPath);
+    if (!stat.isFile()) return null;
+  } catch {
+    return null; // missing / unreadable → fail rule ①
+  }
+  const rel = path.relative(config.projectRoot, absPath);
+  const inside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return {
+    relPath: inside ? rel.split(path.sep).join("/") : absPath,
+    absPath,
+  };
+}
+
+/**
  * Lists candidate documents for a stage from the stage's resolved directory.
  *
  * Scan contract (206_Feat Round 3 Q3-A / Round 5):
@@ -131,11 +175,23 @@ export function stageDocCandidateFilter(stage: PipelineStage): (fileName: string
  * - Files only (`entry.isFile()`), `.md`/`.MD` extension, stage filter match.
  * - Looks only at file NAMES (mtime desc, capped at `limit`, default 5).
  * - Missing/unreadable directory → `[]` (fail-open, caller decides fallback).
+ *
+ * 213 Phase 2 (D15) `currentDoc` contract — behaviour WITHOUT the argument is
+ * byte-for-byte the old path (`findLatestDocForStage`, `/pipeline-start`):
+ * - The caller-supplied current document is pinned as the FIRST candidate
+ *   (`isCurrent: true`), EXEMPT from the stage filter (it is existing
+ *   context, not a discovery result).
+ * - It counts into `limit`: 1 pinned row + at most `limit - 1` discovered.
+ * - Deduplication is by ABSOLUTE path — an absolute and a relative spelling
+ *   of the same file yield exactly one row (the pinned one).
+ * - An unresolvable `currentDoc` (rule ①) yields NO pinned row; the discovered
+ *   list is untouched.
  */
 export async function listDocCandidates(
   config: PipelineConfig,
   stage: PipelineStage,
   limit: number = MAX_DOC_CANDIDATES,
+  currentDoc?: string,
 ): Promise<DocCandidate[]> {
   const { dir } = resolveStageDocDir(config, stage);
   const absDir = path.isAbsolute(dir) ? dir : path.join(config.projectRoot, dir);
@@ -171,7 +227,28 @@ export async function listDocCandidates(
 
   // Newest first, capped
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return candidates.slice(0, limit);
+
+  if (currentDoc === undefined) {
+    // No current-doc argument → the original path, unchanged (D15).
+    return candidates.slice(0, limit);
+  }
+
+  const current = await resolveCurrentDocOption(config, currentDoc);
+  if (current === null) {
+    // Rule ①: unresolvable current doc never enters the list.
+    return candidates.slice(0, limit);
+  }
+  let headMtimeMs = 0;
+  try {
+    headMtimeMs = (await fsp.stat(current.absPath)).mtimeMs;
+  } catch {
+    // Race after resolution: the pinned row still displays (mtime unused).
+  }
+  const deduped = candidates.filter((c) => path.resolve(c.absPath) !== current.absPath);
+  return [
+    { relPath: current.relPath, absPath: current.absPath, mtimeMs: headMtimeMs, isCurrent: true },
+    ...deduped,
+  ].slice(0, Math.max(0, limit));
 }
 
 /** True when `absDir` sits inside (or equals) the project root. */
