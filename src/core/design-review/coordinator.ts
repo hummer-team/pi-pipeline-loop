@@ -84,6 +84,7 @@ import {
   prepareDevelopTransition,
 } from "./develop-transition";
 import type {
+  DesignReviewActorEvidence,
   DesignReviewActorInput,
   DesignReviewInteractionSource,
   HumanDecision,
@@ -104,6 +105,14 @@ import {
 // 213 Phase 0 (D18): the ONE shared interactive-UI predicate for the presenter
 // capability gate (host-declared `hasUI` wins, legacy select-presence fallback).
 import { hasInteractiveUI } from "../ui-capability";
+// 213 Phase 1 (D8/D10/D11): the explicit, audited owner-takeover path on the
+// resume channel — pure offer evaluation, SAME-control confirmation, and the
+// ONE strict dual-field commit with its `decision_owner_takeover` audit.
+import {
+  commitOwnerTakeover,
+  confirmOwnerTakeover,
+  evaluateTakeoverOffer,
+} from "./owner-takeover";
 // 212 Phase 1: one-shot AUTO presentation budget for the owner-settle entry
 // (decision + copy only; the charge point stays inside the presenter).
 import {
@@ -1333,6 +1342,30 @@ async function handleHumanDecisionRequest(
 }
 
 /**
+ * 213 Phase 1: the ONE private audit body for `decision_menu_skipped` —
+ * fields byte-identical to the 212 inline shape (`decisionId / role /
+ * source / reason`, plus the D18 gate's honest `capability` attribution when
+ * present). Consolidates the previously inlined writes so the takeover flow
+ * and the legacy refusals can never drift apart mid-phase.
+ */
+async function auditDecisionMenuSkipped(entry: {
+  decisionId: string;
+  role: DesignReviewActorEvidence["role"];
+  source: DesignReviewActorEvidence["source"];
+  reason: string;
+  capability?: string;
+}): Promise<void> {
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "decision_menu_skipped",
+    decisionId: entry.decisionId,
+    role: entry.role,
+    source: entry.source,
+    reason: entry.reason,
+    ...(entry.capability !== undefined ? { capability: entry.capability } : {}),
+  }, "warn");
+}
+
+/**
  * 193 Phase 3 (task 4): ONE shared present-menu-and-act flow over an ALREADY
  * PERSISTED pending decision. Used by the creation path (right after the
  * pending commit) and by an EXPLICIT resume entry re-presenting a pending
@@ -1364,6 +1397,18 @@ async function presentHumanDecisionForPendingState(
     onCharged?: () => void;
   },
 ): Promise<CoordinatorResult> {
+  // ── 213 Phase 1: the rebound snapshot triple ──────────────────────────────
+  // An explicit owner takeover (resume channel only) persists NEW owner
+  // evidence BEFORE the menu opens; every downstream read — single-flight,
+  // before/after revalidation and the strict choice commit — must then bind
+  // to the POST-takeover snapshot, never to the entry parameters (a drift
+  // park over stale state could otherwise roll the takeover back).
+  // The 212 charge-point lines stay on the entry `decision`/`drState`
+  // references VERBATIM (D11 budget zero-change) — safe because a takeover
+  // never changes `decisionId` or `round`, only the owner fields.
+  let effectiveMeta = baseMeta;
+  let effectiveDr = drState;
+  let effectiveDecision = decision;
   // ── interaction eligibility (task 8): verified non-child owner only ──────
   // 212 Phase 0: empty/blank recorded owner strings normalize to ABSENT —
   // the old `??` fallback was masked by persisted "" values.
@@ -1373,6 +1418,8 @@ async function presentHumanDecisionForPendingState(
     // 212 Phase 0 (task 11): read-only self-check audit for legacy/absent
     // owner evidence — "still unanswerable after the upgrade" must be visible
     // in the log. No state mutation, no extra authority granted or removed.
+    // 213 P1 keeps it: it states the PRE-takeover fact and is NOT mutually
+    // exclusive with a later `decision_owner_takeover`.
     await safeWriteAuditLog("design_review_coordinator", {
       action: "decision_owner_evidence_insufficient",
       stage: ctx.interactionSource === "resume" ? "resume" : "settle",
@@ -1382,14 +1429,87 @@ async function presentHumanDecisionForPendingState(
   }
   const select = ctx.ui?.select;
   if (evidence.role !== "owner") {
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "decision_menu_skipped",
-      decisionId: decision.decisionId,
-      role: evidence.role,
-      source: evidence.source,
-      reason: evidence.reason ?? "role not verified",
-    }, "warn");
-    return { status: "handled", action: "pending", reason: "decision_pending" };
+    // ── 213 Phase 1 (D8/D10): the five-step, audit-honest takeover flow ────
+    // The order is LOCKED by the plan: decide the offer FIRST, then let the
+    // offer outcome pick which single audit line gets written — a successful
+    // takeover can never leave a contradictory "menu skipped because not the
+    // owner" record next to its `decision_owner_takeover`.
+    const actorFile = normalizeSessionFile(ctx.actor?.sessionFile);
+    // Step 1 — pure verdict, zero writes, zero UI.
+    const verdict = evaluateTakeoverOffer({
+      interactionSource: ctx.interactionSource,
+      actor: ctx.actor,
+      ownerFile,
+      hasUI: hasInteractiveUI({ hasUI: ctx.hasUI, ui: { select } }),
+    });
+    // Step 2 — not offered (or no bindable identity, already covered by the
+    // verdict's `no_actor_identity`): the 212 refusal, byte-identical.
+    if (!verdict.offer || actorFile === undefined) {
+      await auditDecisionMenuSkipped({
+        decisionId: effectiveDecision.decisionId,
+        role: evidence.role,
+        source: evidence.source,
+        reason: evidence.reason ?? "role not verified",
+      });
+      return { status: "handled", action: "pending", reason: "decision_pending" };
+    }
+    // Step 3 — explicit confirmation through the SAME select control; a
+    // refusal is a refusal (zero state writes) but MUST return its own
+    // truthful reason so the resume channel can act on it (grep-aligned
+    // audit/result vocabulary).
+    const accepted = await confirmOwnerTakeover(select, {
+      ownerLabel: ownerFile ?? "not recorded",
+      decisionId: effectiveDecision.decisionId,
+      round: effectiveDr.round,
+    });
+    if (!accepted) {
+      await auditDecisionMenuSkipped({
+        decisionId: effectiveDecision.decisionId,
+        role: evidence.role,
+        source: evidence.source,
+        reason: "decision_takeover_declined",
+      });
+      return { status: "handled", action: "pending", reason: "decision_takeover_declined" };
+    }
+    // Step 5 (failure arm) — ONE strict commit attempted and lost: state is
+    // untouched (strict semantics), the skip audit carries the commit's own
+    // honest reason.
+    const taken = await commitOwnerTakeover(ctx, {
+      meta: baseMeta,
+      drState,
+      decision,
+      actorSessionFile: actorFile,
+    });
+    if (taken.status !== "persisted") {
+      await auditDecisionMenuSkipped({
+        decisionId: effectiveDecision.decisionId,
+        role: evidence.role,
+        source: evidence.source,
+        reason: `decision_takeover_commit_failed:${taken.reason}`,
+      });
+      return { status: "handled", action: "pending", reason: "decision_pending" };
+    }
+    // Defensive re-proof (plan P1 task 2): the fresh owner file must satisfy
+    // the SAME single authority resolver used everywhere else. It is
+    // computed to pass (the commit just wrote `actorFile` and the actor IS
+    // this session), so failing here means an inconsistent actor snapshot —
+    // fail closed instead of presenting on an unprovable binding.
+    const recheck = resolveDesignReviewActorEvidence(ctx.actor, actorFile);
+    if (recheck.role !== "owner") {
+      await auditDecisionMenuSkipped({
+        decisionId: effectiveDecision.decisionId,
+        role: recheck.role,
+        source: recheck.source,
+        reason: "decision_takeover_recheck_failed",
+      });
+      return { status: "handled", action: "pending", reason: "decision_pending" };
+    }
+    // Step 4 (success arm) — ONLY `decision_owner_takeover` was audited
+    // (inside the commit); no skip record exists to contradict it. Continue
+    // the normal presentation on the REBOUND snapshot.
+    effectiveMeta = taken.meta;
+    effectiveDr = taken.drState;
+    effectiveDecision = taken.decision;
   }
   // 213 Phase 0 (D18, the ONE existing capability predicate migrated): judge
   // the menu capability through the shared helper — a host-declared `false`
@@ -1398,27 +1518,27 @@ async function presentHumanDecisionForPendingState(
   // so the 212 audit vocabulary keeps working; a DECLARED false gets its own
   // honest attribution (declared "no UI" is not the same fact as "no select").
   if (!hasInteractiveUI({ hasUI: ctx.hasUI, ui: { select } })) {
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "decision_menu_skipped",
-      decisionId: decision.decisionId,
+    await auditDecisionMenuSkipped({
+      decisionId: effectiveDecision.decisionId,
       role: evidence.role,
       source: evidence.source,
-      // Honest attribution: a declared false ≠ the legacy "no select control".
       reason: ctx.hasUI === false ? "no interactive ui declared by host" : "no select control available",
       capability: ctx.hasUI === false ? "hasUI" : "select",
-    }, "warn");
+    });
     return { status: "handled", action: "pending", reason: "decision_pending" };
   }
   // In-process single-flight: never two overlapping menus for one decision.
-  if (!beginHumanDecisionMenu(decision.decisionId)) {
+  // 213 P1: keyed on the REBOUND decisionId (takeover never changes it — the
+  // binding just says which snapshot governs the rest of the flow).
+  if (!beginHumanDecisionMenu(effectiveDecision.decisionId)) {
     return { status: "handled", action: "pending", reason: "decision_menu_in_flight" };
   }
   try {
     // Re-check the snapshot THROUGH the shared engine before presenting.
-    const before = await revalidateHumanDecisionSnapshot(ctx, baseMeta, decision);
+    const before = await revalidateHumanDecisionSnapshot(ctx, effectiveMeta, effectiveDecision);
     if (!before.ok) {
       return await parkHumanDecisionDrift(
-        ctx, baseMeta, drState, decision, "pending", before.reason, "before_menu",
+        ctx, effectiveMeta, effectiveDr, effectiveDecision, "pending", before.reason, "before_menu",
       );
     }
     // 212 Phase 1: THE single charge point — eligibility + single-flight +
@@ -1443,7 +1563,7 @@ async function presentHumanDecisionForPendingState(
       opts.onCharged?.();
     }
     // ONE menu presentation.
-    const choice = await presentHumanDecisionMenu(select, ctx.ui?.notify, decision);
+    const choice = await presentHumanDecisionMenu(select, ctx.ui?.notify, effectiveDecision);
     if (!choice) {
       // Cancel / unknown / exception: stay pending. Zero visit/retry/RPC and
       // no choice budget consumed. The AUTOMATIC presentation budget, however,
@@ -1451,8 +1571,8 @@ async function presentHumanDecisionForPendingState(
       // re-opens it now (212 Phase 1).
       await safeWriteAuditLog("design_review_coordinator", {
         action: "decision_menu_cancelled",
-        decisionId: decision.decisionId,
-        round: String(drState.round),
+        decisionId: effectiveDecision.decisionId,
+        round: String(effectiveDr.round),
       });
       return { status: "handled", action: "pending", reason: "decision_pending" };
     }
@@ -1465,12 +1585,12 @@ async function presentHumanDecisionForPendingState(
       || !afterDr
       || afterDr.phase !== "paused"
       || afterDr.pauseReason !== "decision-pending"
-      || afterDr.decision?.decisionId !== decision.decisionId
+      || afterDr.decision?.decisionId !== effectiveDecision.decisionId
       || afterDr.decision.state !== "pending"
     ) {
       await safeWriteAuditLog("design_review_coordinator", {
         action: "decision_state_changed_after_menu",
-        decisionId: decision.decisionId,
+        decisionId: effectiveDecision.decisionId,
         currentDecisionId: afterDr?.decision?.decisionId ?? "none",
         currentDecisionState: afterDr?.decision?.state ?? "none",
       }, "warn");
@@ -1495,13 +1615,13 @@ async function presentHumanDecisionForPendingState(
       operationId: afterDr.operation?.operationId ?? null,
       phase: "paused",
       stateUpdatedAt: afterDr.updatedAt,
-      decisionId: decision.decisionId,
+      decisionId: effectiveDecision.decisionId,
       decisionState: "pending",
     });
     if (chosenCommit.status !== "persisted") {
       await safeWriteAuditLog("design_review_coordinator", {
         action: "decision_choice_commit_failed",
-        decisionId: decision.decisionId,
+        decisionId: effectiveDecision.decisionId,
         choice,
         status: chosenCommit.status,
         reason: chosenCommit.reason,
@@ -1514,7 +1634,7 @@ async function presentHumanDecisionForPendingState(
     }
     await safeWriteAuditLog("design_review_coordinator", {
       action: "decision_choice_persisted",
-      decisionId: decision.decisionId,
+      decisionId: effectiveDecision.decisionId,
       choice,
       round: String(afterDr.round),
       operationId: afterDr.operation?.operationId ?? "none",
@@ -1530,7 +1650,7 @@ async function presentHumanDecisionForPendingState(
       ctx, chosenCommit.meta, chosenCommit.meta.designReview!, persistedDecision,
     );
   } finally {
-    endHumanDecisionMenu(decision.decisionId);
+    endHumanDecisionMenu(effectiveDecision.decisionId);
   }
 }
 
