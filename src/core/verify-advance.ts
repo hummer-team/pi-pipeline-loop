@@ -1109,7 +1109,14 @@ export async function autoAdvanceAfterVerify(
       return { advanced: true };
     }
 
-    if (spawnResult.spawned || spawnResult.fallback || spawnResult.deferred) {
+    if (
+      spawnResult.spawned
+      || spawnResult.fallback
+      || spawnResult.deferred
+      // 216 P2 (F2 / T1.3): the spawn was ROUTED TO THE OWNER queue — the
+      // child must not be woken either (the owner's consume delivers it).
+      || spawnResult.queuedForOwner === true
+    ) {
       // Subagent spawned or deferred — write audit after spawn to maintain ordering.
       await writeStageAudit(config, "stage_advance", clearedMeta, {
         fromStage,
@@ -1120,11 +1127,15 @@ export async function autoAdvanceAfterVerify(
       // Subagent spawned or deferred — skip generic wake to prevent dual execution.
       // deferred means the spawn is queued and will execute once the old twin settles;
       // waking the owner now would cause dual execution with the pending dequeue.
+      // queued_owner_route means the child handed the spawn to the owner queue —
+      // same skip contract, the OWNER consumes it on its own settle (216 P2).
       await writeAuditLog("auto_advance_wake_skipped", {
         pipelineId: meta.pipelineId,
         fromStage,
         toStage,
-        reason: spawnResult.deferred ? "subagent_deferred" : "subagent_spawned",
+        reason: spawnResult.queuedForOwner
+          ? "queued_owner_route"
+          : spawnResult.deferred ? "subagent_deferred" : "subagent_spawned",
       });
       return { advanced: true };
     }

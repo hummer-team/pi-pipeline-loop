@@ -595,6 +595,13 @@ export async function spawnStageSubagent(
   agentId?: string;
   /** 192 Phase 1: explicit outcome taxonomy (only for operation-aware spawns) */
   dispatchOutcome?: StageDispatchOutcome;
+  /**
+   * 216 P2 (F2): the child context routed this spawn to the OWNER queue
+   * (`pendingSpawns`) instead of spawning in place. UNCONDITIONAL signal —
+   * set even without an `operationContext`, so the auto-advance chain can
+   * skip the child wake without touching the 192 dispatchOutcome semantics.
+   */
+  queuedForOwner?: boolean;
 }> {
   // 1. Non-spawnable stage → skip silently
   if (!isSpawnableStage(config, stage)) {
@@ -729,6 +736,8 @@ export async function spawnStageSubagent(
     return {
       spawned: false,
       fallback: false,
+      // 216 P2 (F2): unconditional — the chain must know NO child wake may fire.
+      queuedForOwner: true,
       ...(opts?.operationContext ? { dispatchOutcome: "queued_owner" as StageDispatchOutcome } : {}),
     };
   }
@@ -1121,7 +1130,9 @@ export function isChildRuntimeCtx(runtimeCtx: unknown): boolean {
  * Child/clone sessions have no owner `pi` handle or UI, so they must not spawn
  * in place. The owner consumes `pendingSpawns[stage]` on `agent_settled`.
  *
- * Idempotent: re-enqueuing the SAME operation preserves `requestedAt`/`attempts`.
+ * Idempotent: re-enqueuing the SAME target (same agent + same operation
+ * identity, both absent counts as same) preserves `requestedAt`/`attempts`
+ * (216 R6-2).
  * 192 Phase 1 (task 7): when an `operationContext` is provided the entry
  * carries the same identity as the dispatch request; a re-enqueue with a
  * DIFFERENT operation replaces the stale request (exact prompt/source travel
@@ -1143,18 +1154,30 @@ export function enqueuePendingSpawn(
   const meta = session.getMeta();
   if (!meta) return;
   const existing = meta.pendingSpawns?.[stage];
-  const sameOperation =
-    !!existing?.operationContext &&
-    !!operationContext &&
-    existing.operationContext.operationId === operationContext.operationId;
+  /**
+   * 216 P2 (review R6-2, R2-Q4-A + R3-Q2-A): Same queue target: same agent
+   * AND same operation identity (both absent counts as same). A re-enqueue of
+   * the SAME target keeps BOTH the queue age and the delivery budget.
+   * `attempts` stays the "failed deliveries" counter bounded by
+   * PENDING_SPAWN_MAX_ATTEMPTS = 1 (subagent-rpc.ts:1091, consume bound at
+   * :1321) — incrementing it here would make the owner's first consume hit
+   * the bound and silently DROP the entry (`clearPendingSpawn`, no spawn, no
+   * audit). R3-Q2-A wins over the §3② wording in 216_Bug.md.
+   * 192 semantics unchanged: a DIFFERENT operationId still resets both
+   * (replacing the stale request).
+   */
+  const sameTarget =
+    existing !== undefined &&
+    existing.agentName === agentName &&
+    (existing.operationContext?.operationId ?? null) === (operationContext?.operationId ?? null);
   session.updateMeta({
     pendingSpawns: {
       ...(meta.pendingSpawns ?? {}),
       [stage]: {
         pipelineId: meta.pipelineId,
         agentName,
-        requestedAt: sameOperation ? existing!.requestedAt : Date.now(),
-        attempts: sameOperation ? existing!.attempts : 0,
+        requestedAt: sameTarget ? existing!.requestedAt : Date.now(),
+        attempts: sameTarget ? existing!.attempts : 0,
         extraArgs: extraArgs ?? existing?.extraArgs,
         ...(operationContext ? { operationContext } : {}),
       },
