@@ -17,7 +17,7 @@ import * as fs from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPipelineStatusCommand } from "../../commands/pipeline-status";
+import { createPipelineStatusCommand, renderRunningStatus } from "../../commands/pipeline-status";
 import { initAuditLog, auditLogDirForPipeline, safeWriteAuditLog } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { DORMANT_NO_PIPELINE_MESSAGE } from "../../core/dormancy";
@@ -312,5 +312,90 @@ describe("211 Phase 2: merged confirm-pending pending-decision line", () => {
 
     const pd = lineValue(await statusContent(config, meta), "Pending decision");
     expect(pd).toBe("none");
+  });
+});
+
+// ─── 213 Phase 0 (D17-③): the optional caller identity on the running view ──
+
+describe("213 P0: renderRunningStatus owner-evidence rows via the optional actor", () => {
+  /** A decision-pending meta with recorded owner evidence at OWNER_FILE. */
+  const OWNER_FILE = "/tmp/213-owner-session.jsonl";
+  function pendingReviewMeta(): SessionMeta {
+    const now = Date.now();
+    return makeTestMeta({
+      currentStage: "design-review" as PipelineStage,
+      designReview: {
+        schemaVersion: 1,
+        planDoc: "/tmp/plan.md",
+        planHash: "hash-plan",
+        round: 1,
+        authorizationId: "auth-213",
+        authorizationSource: "menu",
+        reportDoc: "/tmp/report.md",
+        phase: "paused",
+        pauseReason: "decision-pending",
+        authorizedAt: now,
+        updatedAt: now,
+        decision: {
+          state: "pending",
+          decisionId: "dec-213",
+          reviewIdentity: {
+            pipelineId: "pipe-213",
+            planDoc: "/tmp/plan.md",
+            authorizationId: "auth-213",
+            round: 1,
+            operationId: "op-213",
+            stageVisitId: 1000,
+          },
+          reportDoc: "/tmp/report.md",
+          reportHash: "h",
+          planHash: "hash-plan",
+          issues: [],
+          mode: "manual",
+          ownerSessionFile: OWNER_FILE,
+          createdAt: now,
+        },
+      },
+    });
+  }
+
+  function running(meta: SessionMeta, actor?: Parameters<typeof renderRunningStatus>[4]): string {
+    return renderRunningStatus(meta, makeTestConfig(), "", "N/A", actor);
+  }
+
+  it("WITHOUT the actor (the 212 shape) the rows keep the unknown-identity sentence — backward compatible", () => {
+    const content = running(pendingReviewMeta());
+    expect(content).toContain(
+      `owner evidence recorded at ${OWNER_FILE} — answerable only in that session, or by an explicit takeover in an interactive session`,
+    );
+    // No child sentence leaks into an unknown-identity render.
+    expect(content).not.toContain("a subagent session cannot");
+  });
+
+  it("non-child caller of ANOTHER session ⇒ recorded_unprovable row on BOTH lines (merged Pending decision + 193 Decision block)", () => {
+    const content = running(pendingReviewMeta(), { isChild: false, sessionFile: "/tmp/other.jsonl" });
+    const hits = content.split("\n").filter((l) => l.includes("not this session — run /pipeline-resume here to take over"));
+    expect(hits.length).toBe(2);
+  });
+
+  it("child caller ⇒ recorded row with the dedicated child sentence, never the takeover promise", () => {
+    const content = running(pendingReviewMeta(), { isChild: true, sessionFile: "/tmp/child.jsonl", parentSessionFile: OWNER_FILE });
+    expect(content).toContain("a subagent session cannot answer or take over; ask the parent session");
+    expect(content).not.toContain("run /pipeline-resume here to take over");
+  });
+
+  it("the command surface resolves the identity itself: a sessionManager ctx of ANOTHER file renders the unprovable row", async () => {
+    const config = makeTestConfig();
+    const meta = pendingReviewMeta();
+    const cmd = createPipelineStatusCommand(config);
+    const ctx = {
+      session: { getMeta: () => meta },
+      _ctx: { sessionManager: { getSessionFile: () => "/tmp/foreign.jsonl", getSessionName: () => "main", getHeader: () => undefined } },
+    };
+    const result = (await cmd.execute({}, ctx as any)) as { success: boolean; content: string };
+    expect(result.success).toBe(true);
+    expect(result.content).toContain(
+      `owner evidence recorded at ${OWNER_FILE}, not this session — run /pipeline-resume here to take over`,
+    );
   });
 });

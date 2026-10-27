@@ -408,16 +408,130 @@ describe("212 Phase 3: the pending copy states the truth once, on every surface"
       decision: { ...makePendingDecision("manual"), ownerSessionFile: "   " },
     });
     expect(buildDesignReviewPendingDecisionView(blankOwner)!.ownerEvidence).toBe("missing");
+    // 213 P0 echo keys (read-only display facts): the recorded file echoes
+    // verbatim and ONLY when evidence exists; the child echo key stays ABSENT
+    // when no identity was passed (absent ≠ false: it means "unknown").
+    const recordedView = buildDesignReviewPendingDecisionView(pendingMeta())!;
+    expect(recordedView.ownerSessionFile).toBe("/tmp/owner-session.jsonl");
+    expect("actorIsChild" in recordedView).toBe(false);
+    const missingView = buildDesignReviewPendingDecisionView(noOwner)!;
+    expect("ownerSessionFile" in missingView).toBe(false);
   });
 
-  it("formatter appends the owner-evidence fact ONLY when missing (display only)", () => {
+  it("formatter appends the owner-evidence sentence in EVERY state (213 P0: the recorded state echoes the file, round-8 review issue 9)", () => {
     const recorded = buildDesignReviewPendingDecisionView(pendingMeta())!;
     const line = formatDesignReviewPendingDecision(recorded);
     expect(line).toContain("pending — mode: manual");
-    expect(line).not.toContain("owner evidence");
+    // 212 said nothing for `recorded`; 213 always tells the reader WHERE the
+    // evidence lives and which exits are real — no bare "owner evidence"-less line.
+    expect(line).toContain("owner evidence recorded at /tmp/owner-session.jsonl");
     const missing = buildDesignReviewPendingDecisionView(
       pendingMeta({ decision: { ...makePendingDecision("manual"), ownerSessionFile: undefined } }),
     )!;
     expect(formatDesignReviewPendingDecision(missing)).toContain("owner evidence: missing");
+  });
+});
+
+// ─── 213 Phase 0 (D17-③): three-state owner evidence × caller identity ──────
+
+describe("213 P0 D17-③/D8: three-state owner-evidence view × caller identity", () => {
+  const OWNER = "/tmp/owner-session.jsonl";
+  const OTHER = "/tmp/other-session.jsonl";
+
+  it("decision order (locked): no actor ⇒ two-state; non-child same-file ⇒ recorded; non-child other-file ⇒ recorded_unprovable; CHILD other-file ⇒ recorded (never third state); blank actor file ⇒ recorded", () => {
+    expect(buildDesignReviewPendingDecisionView(pendingMeta())!.ownerEvidence).toBe("recorded");
+    expect(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: false, sessionFile: OWNER })!.ownerEvidence,
+    ).toBe("recorded");
+    expect(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: false, sessionFile: OTHER })!.ownerEvidence,
+    ).toBe("recorded_unprovable");
+    // D8: a child can neither answer nor take over ⇒ the unprovable record
+    // must NOT become a takeover advertisement for it.
+    expect(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: true, sessionFile: OTHER, parentSessionFile: OWNER })!.ownerEvidence,
+    ).toBe("recorded");
+    expect(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: true, sessionFile: OTHER })!.ownerEvidence,
+    ).toBe("recorded");
+    // Boundary (plan): `actor.sessionFile` blank ⇒ same as absent identity.
+    expect(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: false, sessionFile: "  " })!.ownerEvidence,
+    ).toBe("recorded");
+    expect(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: false })!.ownerEvidence,
+    ).toBe("recorded");
+  });
+
+  it("recorded_unprovable is UNREACHABLE when evidence is missing (order rule 1 wins)", () => {
+    const noOwner = pendingMeta({
+      decision: { ...makePendingDecision("manual"), ownerSessionFile: undefined },
+    });
+    const view = buildDesignReviewPendingDecisionView(noOwner, { isChild: false, sessionFile: OTHER })!;
+    expect(view.ownerEvidence).toBe("missing");
+    expect(view.actorIsChild).toBe(false);
+  });
+
+  it("actorIsChild echo covers the three identities (true / false / key absent) and never defaults", () => {
+    const child = buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: true, sessionFile: OTHER })!;
+    expect(child.actorIsChild).toBe(true);
+    const nonChild = buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: false, sessionFile: OTHER })!;
+    expect(nonChild.actorIsChild).toBe(false);
+    const unknown = buildDesignReviewPendingDecisionView(pendingMeta())!;
+    expect("actorIsChild" in unknown).toBe(false);
+  });
+
+  it("copy matrix — recorded × identity: child gets the dedicated sentence, non-child/unknown share the takeover-in-an-interactive-session wording", () => {
+    const nonChild = formatDesignReviewPendingDecision(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: false, sessionFile: OWNER })!,
+    );
+    expect(nonChild).toContain(
+      `owner evidence recorded at ${OWNER} — answerable only in that session, or by an explicit takeover in an interactive session`,
+    );
+    const unknown = formatDesignReviewPendingDecision(buildDesignReviewPendingDecisionView(pendingMeta())!);
+    expect(unknown).toContain(
+      `owner evidence recorded at ${OWNER} — answerable only in that session, or by an explicit takeover in an interactive session`,
+    );
+    const child = formatDesignReviewPendingDecision(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: true, sessionFile: OTHER })!,
+    );
+    expect(child).toContain(
+      `owner evidence recorded at ${OWNER} — a subagent session cannot answer or take over; ask the parent session`,
+    );
+    // Acceptance grep (plan P0): child sentences must advertise NO local takeover.
+    expect(child).not.toContain("/pipeline-resume to take over");
+  });
+
+  it("copy matrix — recorded_unprovable (non-child only): names the recorded file, denies this session, offers the three real exits", () => {
+    const line = formatDesignReviewPendingDecision(
+      buildDesignReviewPendingDecisionView(pendingMeta(), { isChild: false, sessionFile: OTHER })!,
+    );
+    expect(line).toContain(
+      `owner evidence recorded at ${OWNER}, not this session — run /pipeline-resume here to take over, re-authorize this design-review round, or use /pipeline-quit`,
+    );
+  });
+
+  it("copy matrix — missing × identity: non-child gets the takeover exit, child is told it cannot take over, unknown stays reader-agnostic", () => {
+    const missingMeta = pendingMeta({
+      decision: { ...makePendingDecision("manual"), ownerSessionFile: undefined },
+    });
+    const nonChild = formatDesignReviewPendingDecision(
+      buildDesignReviewPendingDecisionView(missingMeta, { isChild: false, sessionFile: OTHER })!,
+    );
+    expect(nonChild).toContain(
+      "owner evidence: missing — re-authorize this design-review round, run /pipeline-resume to take over, or use /pipeline-quit",
+    );
+    const child = formatDesignReviewPendingDecision(
+      buildDesignReviewPendingDecisionView(missingMeta, { isChild: true, sessionFile: OTHER })!,
+    );
+    expect(child).toContain(
+      "owner evidence: missing — a subagent session cannot take over; re-authorize this design-review round from the parent session or use /pipeline-quit",
+    );
+    // Plan acceptance: child sentences never point at an exit they lack.
+    expect(child).not.toContain("/pipeline-resume to take over");
+    const unknown = formatDesignReviewPendingDecision(buildDesignReviewPendingDecisionView(missingMeta)!);
+    expect(unknown).toContain(
+      "owner evidence: missing — re-authorize this design-review round, take over from an interactive session, or use /pipeline-quit",
+    );
   });
 });

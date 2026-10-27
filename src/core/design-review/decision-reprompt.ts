@@ -213,6 +213,13 @@ export interface DecisionWaitNoticeFacts {
   ownerEvidenceMissing: boolean;
   /** This session exposes an interactive `select` control. */
   hasSelect: boolean;
+  /**
+   * 213 Phase 0 (D8/D11/D17): the caller is a CHILD (subagent) session.
+   * REQUIRED and default-less — a new call site can never silently degrade to
+   * the optimistic copy: a child has NO takeover exit (D8), so every sentence
+   * that promises "take over in this session" must be withheld from it.
+   */
+  isChild: boolean;
 }
 
 export function formatDecisionWaitNotice(
@@ -224,12 +231,24 @@ export function formatDecisionWaitNotice(
   const base =
     `Design review FAILED and awaits a human plan-revision decision (report: ${reportDoc}).`;
   // Fact 1 (round-2 fix #1) outranks EVERY reason: without recorded owner
-  // evidence settle AND resume are both unanswerable (193 single authority).
+  // evidence settle AND resume were both unanswerable (193 single authority).
+  // 213 Phase 0 (D8/D11): a NON-child session now has ONE more honest exit —
+  // the explicit, audited resume-channel takeover — so the missing-evidence
+  // copy gains it. A CHILD keeps the 212 copy VERBATIM (it can neither answer
+  // nor take over; advertising those paths to it would be a lie, per the
+  // 213 plan "child 保持 212 原文逐字不变").
   if (reason === "no_owner_evidence" || facts.ownerEvidenceMissing) {
+    if (facts.isChild) {
+      return (
+        `${base} Owner evidence is missing — neither the automatic menu nor ` +
+        `/pipeline-resume can answer this decision. ` +
+        `Re-authorize this design-review round or use /pipeline-quit.`
+      );
+    }
     return (
-      `${base} Owner evidence is missing — neither the automatic menu nor ` +
-      `/pipeline-resume can answer this decision. ` +
-      `Re-authorize this design-review round or use /pipeline-quit.`
+      `${base} Owner evidence is missing — re-authorize this design-review ` +
+      `round, run /pipeline-resume to take over the decision (explicit ` +
+      `confirmation, audited), or use /pipeline-quit.`
     );
   }
   // An in-flight menu owns the answer RIGHT NOW — stated before any
@@ -244,11 +263,19 @@ export function formatDecisionWaitNotice(
   // session cannot prove it holds the owner — the persisted incident shape.
   // Indistinguishable from a legit foreign-owner record (no cross-session
   // header API), so BOTH exits are always given, never a bare resume promise.
+  // 213 Phase 0 (D8/D11): a NON-child session additionally owns the explicit
+  // takeover exit (resume channel, one confirmation + one strict commit + one
+  // audit — P1). The CHILD copy stays the 212 text VERBATIM (no takeover
+  // exists for a subagent, so promising one would be a false exit).
   if (reason === "not_owner") {
-    return (
+    const legacy =
       `${base} Owner evidence is recorded but this session cannot prove it — ` +
       `run /pipeline-resume in the recorded owner session; if that session no ` +
-      `longer exists, re-authorize this design-review round or use /pipeline-quit.`
+      `longer exists, re-authorize this design-review round or use /pipeline-quit.`;
+    if (facts.isChild) return legacy;
+    return (
+      `${legacy} Or run /pipeline-resume here to take over this decision ` +
+      `(explicit confirmation, audited).`
     );
   }
   // Fact 3 (round-3 fix #2): no interactive UI here — resume is rejected by
@@ -274,5 +301,15 @@ export function formatDecisionWaitNotice(
   }
   // not_settle (owner evidence recorded, interactive session): resume shares
   // the single authority and CAN present — the neutral hint is honest here.
-  return `${base} Use /pipeline-resume to present the decision menu.`;
+  // 213 Phase 0 (D8/D11): for a NON-child session the resume menu may first
+  // demand an explicit takeover when the recorded owner is not this session —
+  // the hint says so honestly. A CHILD keeps the 212 text verbatim (it has no
+  // takeover path, so the qualified wording would promise an exit it lacks).
+  if (facts.isChild) {
+    return `${base} Use /pipeline-resume to present the decision menu.`;
+  }
+  return (
+    `${base} Use /pipeline-resume to present the decision menu ` +
+    `(you may be asked to take over this decision first).`
+  );
 }

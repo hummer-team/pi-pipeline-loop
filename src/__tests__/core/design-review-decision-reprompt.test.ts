@@ -257,44 +257,70 @@ describe("212 Phase 1: decideAutoReprompt first-match chain (all reasons)", () =
   });
 });
 
-describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
+describe("212 Phase 1 + 213 Phase 0: formatDecisionWaitNotice copy", () => {
   // 212 round-3 review fix #3: BOTH facts are REQUIRED fields (no optimistic
   // default) and `presented` is not assignable — the type layer is the guard.
+  // 213 Phase 0 (D8/D11/D17): `isChild` joins as a REQUIRED fact — a child has
+  // NO takeover exit, so the three split reasons (not_settle / not_owner /
+  // no_owner_evidence) carry a non-child sentence that must NEVER appear for
+  // a child, and the child sentences stay 212-verbatim.
   it("already_presented states the once-promise and resume", () => {
-    const copy = formatDecisionWaitNotice("r.md", "already_presented", { ownerEvidenceMissing: false, hasSelect: true });
+    const copy = formatDecisionWaitNotice("r.md", "already_presented", { ownerEvidenceMissing: false, hasSelect: true, isChild: false });
     expect(copy).toContain("at most once");
     expect(copy).toContain("/pipeline-resume");
   });
   it("disabled states auto presentation is off and resume", () => {
-    const copy = formatDecisionWaitNotice("r.md", "disabled", { ownerEvidenceMissing: false, hasSelect: true });
+    const copy = formatDecisionWaitNotice("r.md", "disabled", { ownerEvidenceMissing: false, hasSelect: true, isChild: false });
     expect(copy).toContain("disabled");
     expect(copy).toContain("/pipeline-resume");
   });
-  it("not_settle WITH recorded evidence in an interactive session keeps the neutral resume hint", () => {
-    const copy = formatDecisionWaitNotice("r.md", "not_settle", { ownerEvidenceMissing: false, hasSelect: true });
+  it("not_settle WITH recorded evidence in an interactive NON-child session keeps the resume hint with the honest takeover caveat (213 P0)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "not_settle", { ownerEvidenceMissing: false, hasSelect: true, isChild: false });
     expect(copy).toContain("Use /pipeline-resume to present");
+    expect(copy).toContain("take over this decision first");
     expect(copy).not.toContain("at most once");
     expect(copy).not.toContain("Owner evidence is missing");
   });
-  it("not_owner with recorded evidence gives BOTH Plan exits — resume qualified to the recorded owner session (212 round-3 review fix #1)", () => {
+  it("not_settle CHILD keeps the 212 neutral resume hint VERBATIM — no takeover promise for a subagent (213 P0 D8)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "not_settle", { ownerEvidenceMissing: false, hasSelect: true, isChild: true });
+    expect(copy).toBe(
+      "Design review FAILED and awaits a human plan-revision decision (report: r.md). " +
+      "Use /pipeline-resume to present the decision menu.",
+    );
+    expect(copy).not.toContain("take over");
+  });
+  it("not_owner with recorded evidence gives BOTH Plan exits — resume qualified to the recorded owner session (212 round-3 review fix #1) + the NON-child takeover exit (213 P0 D8/D11)", () => {
     // The persisted incident shape: ownerSessionFile points at a child file.
     // Whatever this session's UI looks like, the notice must NOT promise a
     // bare resume and must give re-authorize / /pipeline-quit alongside.
     for (const hasSelect of [true, false]) {
-      const copy = formatDecisionWaitNotice("r.md", "not_owner", { ownerEvidenceMissing: false, hasSelect });
+      const copy = formatDecisionWaitNotice("r.md", "not_owner", { ownerEvidenceMissing: false, hasSelect, isChild: false });
       expect(copy).toContain("cannot prove it");
       expect(copy).toContain("recorded owner session");
       expect(copy).toContain("re-authorize this design-review round");
       expect(copy).toContain("/pipeline-quit");
       expect(copy).not.toContain("Use /pipeline-resume to present");
       expect(copy).not.toContain("at most once");
+      // 213: a non-child session owns the explicit takeover exit too.
+      expect(copy).toContain("Or run /pipeline-resume here to take over this decision");
+      expect(copy).toContain("explicit confirmation, audited");
     }
+  });
+  it("not_owner CHILD copy stays the 212 text VERBATIM — no takeover sentence for a subagent (213 P0 D8)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "not_owner", { ownerEvidenceMissing: false, hasSelect: true, isChild: true });
+    expect(copy).toBe(
+      "Design review FAILED and awaits a human plan-revision decision (report: r.md). " +
+      "Owner evidence is recorded but this session cannot prove it — " +
+      "run /pipeline-resume in the recorded owner session; if that session no " +
+      "longer exists, re-authorize this design-review round or use /pipeline-quit.",
+    );
+    expect(copy).not.toContain("here to take over");
   });
   it("the headless FACT conditions every resume promise — not_settle / disabled / already_presented (212 round-3 review fix #2)", () => {
     // Headless owner session: the presenter rejects resume HERE too, so the
     // decider's first-match reason must not smuggle an unconditional promise.
     for (const reason of ["not_settle", "disabled", "already_presented"] as const) {
-      const copy = formatDecisionWaitNotice("r.md", reason, { ownerEvidenceMissing: false, hasSelect: false });
+      const copy = formatDecisionWaitNotice("r.md", reason, { ownerEvidenceMissing: false, hasSelect: false, isChild: false });
       expect(copy).toContain("no interactive UI");
       expect(copy).toContain("interactive owner session");
       expect(copy).not.toContain("Use /pipeline-resume to present");
@@ -302,38 +328,48 @@ describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
     }
   });
   it("in_flight states the open menu instead of promising a new one (212 round-2 review fix #1)", () => {
-    const copy = formatDecisionWaitNotice("r.md", "in_flight", { ownerEvidenceMissing: false, hasSelect: true });
+    const copy = formatDecisionWaitNotice("r.md", "in_flight", { ownerEvidenceMissing: false, hasSelect: true, isChild: false });
     expect(copy).toContain("already open");
     expect(copy).toContain("answer it there");
     expect(copy).not.toContain("Use /pipeline-resume to present");
     expect(copy).not.toContain("at most once");
   });
   it("no_select states the missing-UI fact, resume is conditioned on an interactive owner session (212 round-2 review fix #1)", () => {
-    const copy = formatDecisionWaitNotice("r.md", "no_select", { ownerEvidenceMissing: false, hasSelect: false });
+    const copy = formatDecisionWaitNotice("r.md", "no_select", { ownerEvidenceMissing: false, hasSelect: false, isChild: false });
     expect(copy).toContain("no interactive UI");
     expect(copy).toContain("interactive owner session");
     expect(copy).not.toContain("Use /pipeline-resume to present");
     expect(copy).not.toContain("at most once");
   });
-  it("no_owner_evidence mirrors the STATE face — never advertises /pipeline-resume (212 review fix #1)", () => {
-    const copy = formatDecisionWaitNotice("r.md", "no_owner_evidence", { ownerEvidenceMissing: false, hasSelect: true });
-    // same facts as decision-display.ts's `ownerEvidence: missing` line:
+  it("no_owner_evidence NON-child gains the honest takeover exit (213 P0 D11 — registered revision of the 212 'never advertises resume' ruling)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "no_owner_evidence", { ownerEvidenceMissing: false, hasSelect: true, isChild: false });
     expect(copy).toContain("Owner evidence is missing");
-    expect(copy).toContain("Re-authorize");
+    expect(copy).toContain("re-authorize this design-review round");
     expect(copy).toContain("/pipeline-quit");
-    // the honest refusal: resume CANNOT present the menu in this state —
-    // no promise of the path that the original 212 incident lacked.
+    // 213: the takeover channel makes resume a REAL exit even without owner
+    // evidence (P1 commits it), so the copy says so — with its honest caveats.
+    expect(copy).toContain("run /pipeline-resume to take over the decision");
+    expect(copy).toContain("explicit confirmation, audited");
     expect(copy).not.toContain("Use /pipeline-resume to present");
+    expect(copy).not.toContain("neither the automatic menu");
     expect(copy).not.toContain("re-opens it");
     expect(copy).not.toContain("at most once");
   });
-  it("the owner-evidence FACT outranks EVERY refusal reason — same honest copy, zero resume promises (212 round-2 + round-3 review fix #1)", () => {
+  it("no_owner_evidence CHILD keeps the 212 'neither menu nor resume' copy VERBATIM (213 P0 D8: no takeover exists)", () => {
+    const copy = formatDecisionWaitNotice("r.md", "no_owner_evidence", { ownerEvidenceMissing: false, hasSelect: true, isChild: true });
+    expect(copy).toBe(
+      "Design review FAILED and awaits a human plan-revision decision (report: r.md). " +
+      "Owner evidence is missing — neither the automatic menu nor /pipeline-resume can answer this decision. " +
+      "Re-authorize this design-review round or use /pipeline-quit.",
+    );
+    expect(copy).not.toContain("take over");
+  });
+  it("the owner-evidence FACT still outranks EVERY refusal reason — child / non-child copy groups, no automatic-menu promise (212 round-2 + round-3 review fix #1, 213 P0 re-split)", () => {
     // not_settle / in_flight / no_select / not_owner / disabled /
     // already_presented all fall back to the no_owner_evidence wording when
-    // evidence is missing: resume shares the single authority and cannot
-    // answer there either, so promising it would repeat the 212 symptom.
-    // The missing FACT also outranks the capability fact and the not_owner
-    // two-exit copy (round-3): the absent shape keeps its own exits.
+    // evidence is missing. 213 P0 (D11) revises that copy ONLY for non-child
+    // callers (the takeover exit is real there); a CHILD keeps the 212 text
+    // verbatim because it can answer nothing (D8).
     for (const reason of [
       "not_settle",
       "disabled",
@@ -344,13 +380,22 @@ describe("212 Phase 1: formatDecisionWaitNotice copy", () => {
       "no_owner_evidence",
     ] as const) {
       for (const hasSelect of [true, false]) {
-        const copy = formatDecisionWaitNotice("r.md", reason, { ownerEvidenceMissing: true, hasSelect });
-        expect(copy).toContain("Owner evidence is missing");
-        expect(copy).toContain("Re-authorize");
-        expect(copy).toContain("/pipeline-quit");
-        expect(copy).not.toContain("Use /pipeline-resume");
-        expect(copy).not.toContain("re-opens it");
-        expect(copy).not.toContain("at most once");
+        for (const isChild of [true, false]) {
+          const copy = formatDecisionWaitNotice("r.md", reason, { ownerEvidenceMissing: true, hasSelect, isChild });
+          expect(copy).toContain("Owner evidence is missing");
+          expect(copy).toContain("/pipeline-quit");
+          expect(copy).not.toContain("Use /pipeline-resume");
+          expect(copy).not.toContain("re-opens it");
+          expect(copy).not.toContain("at most once");
+          if (isChild) {
+            expect(copy).toContain("Re-authorize");
+            expect(copy).toContain("nor /pipeline-resume can answer");
+            expect(copy).not.toContain("take over");
+          } else {
+            expect(copy).toContain("re-authorize this design-review round");
+            expect(copy).toContain("run /pipeline-resume to take over");
+          }
+        }
       }
     }
   });

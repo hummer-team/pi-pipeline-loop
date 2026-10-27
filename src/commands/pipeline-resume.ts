@@ -187,8 +187,18 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             return { message: failMsg };
           }
           if (coordResult.action === "pending") {
-            ui.notify(ctx, `Design-review recovery pending: ${coordResult.reason}`);
-            return { message: `Design-review recovery pending: ${coordResult.reason}` };
+            // 213 Phase 0 (D17-②): a bare "recovery pending" left the user with
+            // no written exit. The pending reason now trails the THREE real
+            // channels this session can act on (takeover via this command,
+            // re-authorization, or /pipeline-quit) — every sentence is true for
+            // a non-child interactive reader; decision-scoped narrowing of the
+            // exit sentence happens at the Phase 3 result matrix.
+            const pendingMsg =
+              `Design-review recovery pending: ${coordResult.reason}. ` +
+              `Run /pipeline-resume again to take over this decision, ` +
+              `re-authorize this design-review round, or /pipeline-quit.`;
+            ui.notify(ctx, pendingMsg);
+            return { message: pendingMsg };
           }
           if (coordResult.action === "frozen") {
             ui.notify(ctx, `Design-review frozen: ${coordResult.reason}`);

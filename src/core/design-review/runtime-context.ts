@@ -31,7 +31,8 @@
 import type { PipelineConfig } from "../../types";
 import type { CoordinatorContext } from "./coordinator";
 import { detectSessionRole } from "../session-role";
-import type { DesignReviewInteractionSource } from "./decision-types";
+import { resolveDeclaredHasUI } from "../ui-capability";
+import type { DesignReviewActorInput, DesignReviewInteractionSource } from "./decision-types";
 import type { HumanDecisionSelectFn } from "./human-decision";
 
 /**
@@ -86,6 +87,34 @@ export interface DesignReviewRuntimeInput {
 /** True when the value is a callable function. */
 function isFn(value: unknown): value is (...args: unknown[]) => unknown {
   return typeof value === "function";
+}
+
+/**
+ * 213 Phase 0 (D17-③, round-8 review issue 5): the ONE shared read of the
+ * caller's actor identity from a raw entry ctx. Display-only — the result
+ * NEVER grants or removes any authority (eligibility stays in
+ * `resolveDesignReviewActorEvidence` / 193 single authority). Detection
+ * absence degrades to `undefined` ("no identity evidence"), which keeps the
+ * display surfaces in the honest two-state shape.
+ *
+ * A CHILD's provable owner is its parent session file (212 `resolveOwnerSessionFile`
+ * semantics); the child's own file stays its identity, never an owner claim.
+ */
+export function resolveDisplayActor(roleCtx: unknown): DesignReviewActorInput | undefined {
+  if (roleCtx === undefined || roleCtx === null) return undefined;
+  try {
+    const role = detectSessionRole(roleCtx as Parameters<typeof detectSessionRole>[0]);
+    // 212 Phase 0: the parent reference joins the actor evidence so a child
+    // can SPEAK FOR its owner later — it is never the child's own identity.
+    return {
+      isChild: role.isChild,
+      sessionFile: role.sessionFile || undefined,
+      ...(role.parentSession ? { parentSessionFile: role.parentSession } : {}),
+    };
+  } catch {
+    // Detection failure: leave evidence ABSENT (fail closed).
+    return undefined;
+  }
 }
 
 /**
@@ -144,30 +173,24 @@ export function createDesignReviewRuntimeContext(
 
   const hasUi = notify !== undefined || select !== undefined || transition !== undefined;
 
-  // ── actor evidence: resolved from the raw entry ctx. Absent/unreadable
-  //    role data is recorded as NO evidence — the coordinator resolves that
-  //    to "unknown" and fails closed (pending stays pending; a child NEVER
-  //    gets menu/choice/advance privileges either way). ───────────────────
-  let actor: CoordinatorContext["actor"];
-  if (input.roleCtx !== undefined && input.roleCtx !== null) {
-    try {
-      const role = detectSessionRole(input.roleCtx as Parameters<typeof detectSessionRole>[0]);
-      // 212 Phase 0: the parent reference joins the actor evidence so a child
-      // can SPEAK FOR its owner later — it is never the child's own identity.
-      actor = {
-        isChild: role.isChild,
-        sessionFile: role.sessionFile || undefined,
-        ...(role.parentSession ? { parentSessionFile: role.parentSession } : {}),
-      };
-    } catch {
-      // Detection failure: leave evidence ABSENT (fail closed).
-      actor = undefined;
-    }
-  }
+  // ── actor evidence: resolved from the raw entry ctx through the ONE shared
+  //    display-actor reader (213 P0). Absent/unreadable role data is recorded
+  //    as NO evidence — the coordinator resolves that to "unknown" and fails
+  //    closed (pending stays pending; a child NEVER gets menu/choice/advance
+  //    privileges either way). ──────────────────────────────────────────────
+  const actor = resolveDisplayActor(input.roleCtx);
+
+  // 213 Phase 0 (D18): resolve the host-declared interactive capability ONCE
+  // (a function-form declaration must answer identically everywhere).
+  const declaredHasUI = resolveDeclaredHasUI(input.roleCtx);
 
   const ctx: CoordinatorContext = {
     config: input.config,
     session: input.session,
+    // Forward the HOST-DECLARED interactive capability — `undefined` stays
+    // absent so undeclared hosts (and test contexts) keep the legacy
+    // `typeof select` behavior verbatim. Never an authority.
+    ...(declaredHasUI !== undefined ? { hasUI: declaredHasUI } : {}),
     ...(hasUi ? { ui: { notify: notify ?? (() => {}), ...(select !== undefined ? { select } : {}), ...(transition !== undefined ? { transition } : {}) } } : {}),
     ...(actor !== undefined ? { actor } : {}),
     ...(input.pi !== undefined ? { pi: input.pi } : {}),

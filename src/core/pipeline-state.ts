@@ -14,6 +14,10 @@ import {
   buildDesignReviewPendingDecisionView,
   DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
 } from "./design-review/decision-display";
+// 213 Phase 0 (D17-③): the ONE shared display-actor reader (read-only identity
+// evidence, never an authority) so the JSON surface gets the honest three-state
+// owner-evidence view whenever the caller's identity is resolvable.
+import { resolveDisplayActor } from "./design-review/runtime-context";
 
 /**
  * Creates the `pipeline_state` tool.
@@ -57,7 +61,9 @@ export function createPipelineState(config: PipelineConfig): Tool {
       // this tool shows ONLY the pending/mode/report/resume guidance below —
       // the automatic next step is deliberately suppressed (READ-ONLY window;
       // advertising "develop" here would encourage self-execution).
-      const pendingDecision = buildDesignReviewPendingDecisionView(meta);
+      // 213 Phase 0 (D17-③): the read-only caller identity enables the honest
+      // three-state owner-evidence copy; absent evidence keeps two states.
+      const pendingDecision = buildDesignReviewPendingDecisionView(meta, resolveDisplayActor(ctx));
 
       // 194 Phase 3 (C5): read-only executor-run view. The plan requires the
       // display to show the requesting TOOL, the bound stage and the stored

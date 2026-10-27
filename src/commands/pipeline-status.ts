@@ -31,6 +31,9 @@ import {
   DESIGN_REVIEW_PENDING_READONLY_NOTICE,
   DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
 } from "../core/design-review/decision-display";
+// 213 Phase 0 (D17-③): ONE shared display-actor reader + its input type.
+import { resolveDisplayActor } from "../core/design-review/runtime-context";
+import type { DesignReviewActorInput } from "../core/design-review/decision-types";
 // 210 review issue 12: single source for the /pipeline-resume guidance text
 // (same hint used by the frozen notify / prompt-injector / blocked audit).
 import { formatDecisionMenuHint } from "../core/flow-state";
@@ -73,7 +76,7 @@ function auditAnchor(meta: SessionMeta): string {
  * `/pipeline-resume` action that unblocks it, so the frozen state is actionable
  * from this read-only view alone. Still no writes and no new configuration.
  */
-function summarizePendingDecision(meta: SessionMeta): string {
+function summarizePendingDecision(meta: SessionMeta, actor?: DesignReviewActorInput): string {
   const bits: string[] = [];
   if (meta.flowState === "blocked") {
     bits.push(`blocked${meta.blockedReason ? ` (${meta.blockedReason})` : ""} [human decision]`);
@@ -89,7 +92,7 @@ function summarizePendingDecision(meta: SessionMeta): string {
         ` - run /pipeline-resume [human confirm]`,
     );
   }
-  const pending = buildDesignReviewPendingDecisionView(meta);
+  const pending = buildDesignReviewPendingDecisionView(meta, actor);
   if (pending !== null) {
     bits.push(`design-review: ${formatDesignReviewPendingDecision(pending)} [human decision]`);
   }
@@ -107,11 +110,15 @@ export function renderRunningStatus(
   config: PipelineConfig,
   driftLine: string,
   auditDirAbs: string,
+  /** 213 Phase 0 (D17-③): optional read-only caller identity; enables the
+   *  honest three-state owner-evidence copy when present, byte-identical
+   *  two-state rendering (unknown identity) when absent. */
+  actor?: DesignReviewActorInput,
 ): string {
   const stageConfig: StageConfig | undefined = config.stages[meta.currentStage as PipelineStage];
   const currentSummary = meta.summaries[meta.currentStage as PipelineStage];
   // Shared with the merged `Pending decision` line (single view computation).
-  const pendingDecision = buildDesignReviewPendingDecisionView(meta);
+  const pendingDecision = buildDesignReviewPendingDecisionView(meta, actor);
 
   // Caps follow the EXISTING resolution conventions (plan Phase 5, task 2) —
   // no new config reading logic. The verify cap has no stage-level override in
@@ -146,7 +153,7 @@ export function renderRunningStatus(
     `- Verify attempts: ${meta.verifyAttempts ?? 0} / ${verifyMax}\n` +
     `- Confirm rejections: ${meta.confirmRejections ?? 0} / ${confirmMax}\n` +
     `- Loop budget: ${meta.loopCycleCount ?? 0}/${effectiveMax(meta, config)} (remaining rounds: ${remainingRoundsOf(meta, config)})\n` +
-    `- Pending decision: ${summarizePendingDecision(meta)}\n` +
+    `- Pending decision: ${summarizePendingDecision(meta, actor)}\n` +
     `- Audit: ${auditDirAbs}` +
     // Phase 4-4 (191): Display design-review state if active (kept in the running branch).
     (meta.designReview
@@ -307,7 +314,13 @@ export function createPipelineStatusCommand(config: PipelineConfig): Command {
       const meta: SessionMeta = rawMeta;
 
       const driftLine = await computeDriftLine(config);
-      return { success: true, content: renderRunningStatus(meta, config, driftLine, auditAnchor(meta)) };
+      // 213 Phase 0 (D17-③): resolve the CALLER identity once, read-only.
+      // Absent evidence keeps the honest two-state rendering (the view then
+      // behaves exactly like the pre-213 shared view).
+      return {
+        success: true,
+        content: renderRunningStatus(meta, config, driftLine, auditAnchor(meta), resolveDisplayActor(ctx)),
+      };
     },
   };
 }

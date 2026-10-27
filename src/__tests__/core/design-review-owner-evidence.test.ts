@@ -482,10 +482,12 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
     const insufficient = audit.findBy("decision_owner_evidence_insufficient");
     expect(insufficient.length).toBe(1);
     expect(insufficient[0]!.message.stage).toBe("settle");
-    // 212 review fix #1 + #5: the wait notice carries the DISTINCT refusal
-    // reason and copy that mirrors the state face — the honest exits are
-    // re-authorization or /pipeline-quit, NOT the /pipeline-resume path
-    // that this state can never answer (the original 212 symptom).
+    // 212 review fix #1 + #5 (copy re-split by 213 P0 D11): the wait notice
+    // carries the DISTINCT refusal reason and copy that mirrors the state
+    // face. For this NON-CHILD caller the honest exits are re-authorization,
+    // the explicit audited takeover via /pipeline-resume (213's registered
+    // revision of the 212 "resume can never answer" ruling), or
+    // /pipeline-quit — never the automatic-menu path this state lacks.
     const awaiting = audit.findBy("decision_awaiting_human");
     expect(awaiting.length).toBe(1);
     expect(awaiting[0]!.message.autoReprompt).toBe("no_owner_evidence");
@@ -493,16 +495,20 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
       notifications.some(
         (n) =>
           n.includes("Owner evidence is missing") &&
-          n.includes("Re-authorize") &&
+          n.includes("re-authorize this design-review round") &&
+          n.includes("run /pipeline-resume to take over the decision") &&
           n.includes("/pipeline-quit"),
       ),
     ).toBe(true);
+    // 213 P0: a takeover promise may only exist for a NON-child caller (this
+    // one is), and only as the EXPLICIT audited resume channel — the 212
+    // automatic-menu advertisement stays banned.
     expect(notifications.some((n) => n.includes("Use /pipeline-resume"))).toBe(false);
     // zero dispatch/RPC side effects (no spawnOverride ⇒ spawnLog stays empty)
     expect(session.getMeta()!.loopCycleCount).toBe(makeTestMeta().loopCycleCount);
   });
 
-  it("non-settle trigger WITHOUT owner evidence: reason stays not_settle (chain untouched) but the notice carries the owner-evidence fact — no resume promise (212 round-2 review fix #1)", async () => {
+  it("non-settle trigger WITHOUT owner evidence: reason stays not_settle (chain untouched) and the NON-child notice mirrors the 213 state face (takeover exit, no automatic-menu promise)", async () => {
     audit.use();
     const { ctx, session, selectCalls, notifications } = makeActorCtx(makePendingMeta(), {
       actor: { isChild: false, sessionFile: PARENT },
@@ -518,14 +524,16 @@ describe("212 Phase 0: unanswerable decisions fail closed on settle AND resume",
     const awaiting = audit.findBy("decision_awaiting_human");
     expect(awaiting.length).toBe(1);
     expect(awaiting[0]!.message.autoReprompt).toBe("not_settle");
-    // the notify mirrors the STATE face: the honest exits are re-authorization
-    // or /pipeline-quit — NOT the resume path this state can never answer
-    // (resume shares the single authority and lands on the same rejection).
+    // the notify mirrors the STATE face. 213 P0 (D11, registered revision):
+    // for this NON-CHILD caller the honest exits are re-authorization, the
+    // explicit audited takeover via /pipeline-resume, or /pipeline-quit —
+    // the automatic-menu promise stays banned.
     expect(
       notifications.some(
         (n) =>
           n.includes("Owner evidence is missing") &&
-          n.includes("Re-authorize") &&
+          n.includes("re-authorize this design-review round") &&
+          n.includes("run /pipeline-resume to take over the decision") &&
           n.includes("/pipeline-quit"),
       ),
     ).toBe(true);

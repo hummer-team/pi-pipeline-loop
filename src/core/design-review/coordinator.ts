@@ -101,6 +101,9 @@ import {
   resolveDecisionOwnerFile,
   resolveOwnerSessionFile,
 } from "./owner-evidence";
+// 213 Phase 0 (D18): the ONE shared interactive-UI predicate for the presenter
+// capability gate (host-declared `hasUI` wins, legacy select-presence fallback).
+import { hasInteractiveUI } from "../ui-capability";
 // 212 Phase 1: one-shot AUTO presentation budget for the owner-settle entry
 // (decision + copy only; the charge point stays inside the presenter).
 import {
@@ -170,6 +173,13 @@ export interface CoordinatorContext {
    * conservatively — anything but a verified non-child owner stays pending.
    */
   actor?: DesignReviewActorInput;
+  /**
+   * 213 Phase 0 (D18): the HOST-DECLARED interactive capability forwarded by
+   * the runtime-context builder. Display capability only — never an authority.
+   * Absent (undefined) = "this host does not declare it", which keeps the
+   * legacy `typeof ui.select` fallback everywhere (`hasInteractiveUI`).
+   */
+  hasUI?: boolean;
   /**
    * 193 Phase 3 (tasks 1/4): interaction provenance assigned by the PLUGIN
    * ENTRY (never a model tool argument). Only "resume" may re-present a
@@ -1381,13 +1391,21 @@ async function presentHumanDecisionForPendingState(
     }, "warn");
     return { status: "handled", action: "pending", reason: "decision_pending" };
   }
-  if (typeof select !== "function") {
+  // 213 Phase 0 (D18, the ONE existing capability predicate migrated): judge
+  // the menu capability through the shared helper — a host-declared `false`
+  // wins over a present select control and a declared `true` no longer demands
+  // one. The legacy literal reason stays verbatim for the undeclared fallback
+  // so the 212 audit vocabulary keeps working; a DECLARED false gets its own
+  // honest attribution (declared "no UI" is not the same fact as "no select").
+  if (!hasInteractiveUI({ hasUI: ctx.hasUI, ui: { select } })) {
     await safeWriteAuditLog("design_review_coordinator", {
       action: "decision_menu_skipped",
       decisionId: decision.decisionId,
-      role: "owner",
-      source: "absent",
-      reason: "no select control available",
+      role: evidence.role,
+      source: evidence.source,
+      // Honest attribution: a declared false ≠ the legacy "no select control".
+      reason: ctx.hasUI === false ? "no interactive ui declared by host" : "no select control available",
+      capability: ctx.hasUI === false ? "hasUI" : "select",
     }, "warn");
     return { status: "handled", action: "pending", reason: "decision_pending" };
   }
@@ -1937,7 +1955,9 @@ async function handleDecisionPending(
       });
       if (ctx.ui?.notify) {
         // 212 round-3 review fixes #1/#2: BOTH read-side facts (owner evidence + UI capability) ride along.
-        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, attempt.reason, { ownerEvidenceMissing: ownerFile === undefined, hasSelect: typeof ctx.ui?.select === "function" }));
+        // 213 Phase 0 (D17/D8): the child fact is REQUIRED — a child must never
+        // be promised an exit it cannot use (takeover is non-child only, D8).
+        ctx.ui.notify(formatDecisionWaitNotice(decision.reportDoc, attempt.reason, { ownerEvidenceMissing: ownerFile === undefined, hasSelect: typeof ctx.ui?.select === "function", isChild: ctx.actor?.isChild === true }));
       }
     }
     return { status: "handled", action: "pending", reason: "decision_pending" };
