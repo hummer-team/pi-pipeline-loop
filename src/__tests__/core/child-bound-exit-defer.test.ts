@@ -30,6 +30,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSettled } from "../../core/agent-settled";
+import { createStageAdvancer, maybeHandleConfirmGate } from "../../core/stage-advancer";
 import { recordStageExitRefusal } from "../../core/stage-exit/stage-exit-refusal";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "../../core/meta-reset";
 import { createPipelineQuitCommand } from "../../commands/pipeline-quit";
@@ -434,6 +435,88 @@ describe("216 P3: refusal-counter reset scopes", () => {
     expect(result.success).toBe(true);
     expect(c.meta.stageExitRefusal).toBeUndefined();
     expect(c.meta.terminateReason).toBe("user_quit");
+  });
+
+  // ─── code-review round 1 (issue 2): NON-auto migrations must clear too ─────
+
+  it("⑮d `stage_advance` (the owner recovery path) clears the counter", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      pipelineId: nextPid(),
+      // Same-stage counter from the PREVIOUS visit: without the reset the next
+      // develop refusal would be read as `count=2` → immediate freeze.
+      stageExitRefusal: {
+        stage: "develop", fromStage: "develop", toStage: "review",
+        reason: "bound_run_owner_mismatch", count: 2, frozenCount: 1,
+        lastAt: 1_700_000_000_000,
+      },
+    });
+    const ctx = createMockCtx(meta);
+
+    const tool = createStageAdvancer(config);
+    const result = (await tool.execute({}, ctx as never)) as { success?: boolean };
+
+    expect(result.success).toBe(true);
+    const persisted = ctx.session.getMeta() as SessionMeta;
+    expect(persisted.currentStage).toBe("review");
+    expect(persisted.stageExitRefusal).toBeUndefined();
+  });
+
+  it("⑮e confirm REJECT route clears the counter (rework visit starts clean)", async () => {
+    const config = makeTestConfig();
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      previousStage: "clarify",
+      pipelineId: nextPid(),
+      stageExitRefusal: {
+        stage: "plan", fromStage: "plan", toStage: "design-review",
+        reason: "bound_run_owner_mismatch", count: 1, frozenCount: 0,
+        lastAt: 1_700_000_000_000,
+      },
+    });
+    const ctx = createMockCtx(meta, { selectReturn: "Reject & Rework (back to clarify)" });
+
+    const gate = await maybeHandleConfirmGate(
+      config,
+      ctx as never,
+      ctx.session.getMeta() as SessionMeta,
+      { notify: () => {} } as never,
+      { mode: "manual" },
+    );
+
+    expect(gate).toMatchObject({ result: "handled", action: "routed" });
+    const persisted = ctx.session.getMeta() as SessionMeta;
+    expect(persisted.currentStage).toBe("clarify");
+    expect(persisted.stageExitRefusal).toBeUndefined();
+  });
+
+  it("⑮f Auto Review Plan authorization commit clears the counter", async () => {
+    const root = join(tmpdir(), `pi-216-autoreview-${Date.now()}-${seq}`);
+    await mkdir(join(root, "docs", "design"), { recursive: true });
+    await writeFile(join(root, "docs", "design", "216_Req_Plan.md"), "# Plan\n", "utf-8");
+    const config = makeTestConfig({ projectRoot: root });
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      previousStage: "clarify",
+      requirementDoc: "docs/design/216_Req.md",
+      pipelineId: nextPid(),
+      stageExitRefusal: { ...burnedVisit, stage: "plan", fromStage: "plan", toStage: "develop" },
+    });
+    const ctx = createMockCtx(meta, { selectReturn: "Auto Review Plan" });
+
+    const gate = await maybeHandleConfirmGate(
+      config,
+      ctx as never,
+      ctx.session.getMeta() as SessionMeta,
+      { notify: () => {} } as never,
+      { mode: "manual" },
+    );
+
+    expect(gate.result).toBe("handled");
+    const persisted = ctx.session.getMeta() as SessionMeta;
+    expect(persisted.currentStage).toBe("design-review");
+    expect(persisted.stageExitRefusal).toBeUndefined();
   });
 });
 

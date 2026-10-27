@@ -17,7 +17,17 @@
  * "auto_advance" — the string "rule" is NEVER produced.
  *
  * Covers the plan matrix for `core/auto-advance-truthfulness.test.ts`
- * (cases ①–⑥ of 216_Bug_Plan Phase 0 / 216_Bug.md acceptance F1).
+ * (216_Bug_Plan Phase 0 / 216_Bug.md acceptance F1):
+ *   ①  child + bound run refused            ②a loop-budget block
+ *   ②b recheck barrier                      ③  owner healthy advance
+ *   ④  confirm approve + refused bound exit ⑤  terminal pass (R6-1)
+ *   ⑥  caller attribution (R6-6)            ⑦  refused exit keeps the status bar (R6-10)
+ *   ⑧  `fix_advance_refused` on the fix-executor path (code-review round 1, issue 3)
+ *
+ * Review round 1 (issue 1 / D5) renumbered ② and added ④/⑦: the previous file
+ * had the recheck case labelled "④" and no coverage of the confirm-gate verdict
+ * guard at all, so `advanceConfirmApproved`'s `if (!outcome.advanced) return
+ * false` could be deleted with the suite still green.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -30,6 +40,8 @@ import {
   autoAdvanceAfterVerify,
   type VerifyPassReturn,
 } from "../../core/verify-advance";
+import { maybeHandleConfirmGate } from "../../core/stage-advancer";
+import { handleFixExecutorCompleted } from "../../core/fix-executor-completion";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import { initAuditLog } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
@@ -54,13 +66,17 @@ const PASS_RESULT = {
   verifyResult: { structured: { passed: true }, llm: null as unknown, overallPassed: true },
 };
 
-/** A live (running) executor run bound to the CURRENT stage develop. */
-function boundRun(pipelineId: string): StageExecutorRun {
+/** A live (running) executor run bound to `stage` (default: the develop visit). */
+function boundRun(pipelineId: string, stage: PipelineStage = "develop"): StageExecutorRun {
   const binding: StageExecutorBinding = {
     runId: "run-216",
     pipelineId,
     ownerSessionFile: OWNER_FILE,
-    stage: "develop",
+    // The closed-loop `StageExecutorStage` union only lists plan/design-review/
+    // develop, but every bound check reads the stage as a plain string
+    // (`boundActiveRun`: `run.binding.stage !== sourceStage`). Cases ⑦/⑧ pin the
+    // guard on review/fix, so the fixture casts deliberately.
+    stage: stage as StageExecutorBinding["stage"],
     stageVisitId: VISIT,
     operationId: "op-216",
     agentId: AGENT,
@@ -100,6 +116,8 @@ async function makeCase(opts: {
   label: string;
   role?: "owner" | "child" | "none";
   meta?: (pid: string) => Partial<SessionMeta>;
+  /** TUI answer for the confirm-gate cases (④ / ⑦). */
+  selectReturn?: string;
 }): Promise<Case> {
   const root = join(tmpdir(), `pi-216-truth-${opts.label}-${Date.now()}-${seq}`);
   await mkdir(join(root, ".pi", "audit"), { recursive: true });
@@ -127,7 +145,7 @@ async function makeCase(opts: {
   const wakes: string[] = [];
   const ctx = {
     session,
-    ui: { notify: () => {}, setStatus: () => {}, select: async () => undefined },
+    ui: { notify: () => {}, setStatus: () => {}, select: async () => opts.selectReturn },
     pi: { sendUserMessage: (msg: string) => { wakes.push(msg); } },
     config,
     _ctx: { sessionManager },
@@ -167,6 +185,29 @@ function fieldsOfLast(content: string, event: string): Record<string, string> {
     if (i > 0) out[part.slice(0, i)] = part.slice(i + 1);
   }
   return out;
+}
+
+/**
+ * Simulate a shared-store CONFLICT on the STAGE-EXIT commit only.
+ *
+ * `commitBoundGateWrite` (confirm-gate bookkeeping) never pins a run, so it
+ * still persists; `commitBoundStageExit` pins `stageExecutorRun`, so it hits
+ * this injected conflict. That produces a REAL
+ * `bound_exit_refused:commit_conflict:*` verdict from `applyVerifyPass` — the
+ * exact shape `advanceConfirmApproved` must not mistake for a committed
+ * transition (R6-10, review round 1 issues 1/2). Returns a failure-count getter.
+ */
+function failStageExitCommit(session: ReturnType<typeof makeStrictSession>): () => number {
+  const original = session.updateMetaVerified;
+  let failures = 0;
+  session.updateMetaVerified = (patch, expected) => {
+    if (patch.stageExecutorRun !== undefined) {
+      failures++;
+      return { status: "conflict", reason: "stage_visit_advanced" };
+    }
+    return original(patch, expected);
+  };
+  return () => failures;
 }
 
 // ─── ① child caller + bound run: the truthfulness path is effective ──────────
@@ -224,9 +265,9 @@ describe("216 P1: refused bound exit breaks the wake loop truthfully", () => {
     expect(f.reason).toBe("owner_unproven:child_caller");
   });
 
-  // ─── ② budget: zero-side-effect early exit, own convergence kept ───────────
+  // ─── ②a budget: zero-side-effect early exit, own convergence kept ──────────
 
-  it("② loop-budget block → {advanced:false, blockReason:'budget_exceeded'} without touching the persisted counters", async () => {
+  it("②a loop-budget block → {advanced:false, blockReason:'budget_exceeded'} without touching the persisted counters", async () => {
     const c = await makeCase({
       label: "budget-blocked",
       meta: () => ({
@@ -272,9 +313,9 @@ describe("216 P1: refused bound exit breaks the wake loop truthfully", () => {
     expect(f.method).toBe("rule");
   });
 
-  // ─── ④ recheck barrier: third convergence, zero side effects ───────────────
+  // ─── ②b recheck barrier: third convergence, zero side effects ──────────────
 
-  it("④ recheck barrier → {advanced:false, blockReason:'recheck_blocked'} with zero evidence and zero meta change", async () => {
+  it("②b recheck barrier → {advanced:false, blockReason:'recheck_blocked'} with zero evidence and zero meta change", async () => {
     const c = await makeCase({
       label: "recheck-blocked",
       meta: (pid) => ({
@@ -376,6 +417,87 @@ describe("216 P1: refused bound exit breaks the wake loop truthfully", () => {
   });
 });
 
+// ─── ④ / ⑦ confirm-gate approval consumes the REAL verdict (R6-10) ───────────
+
+describe("216 P1: a refused exit keeps the confirm gate pending (R6-10)", () => {
+  /**
+   * Drive `maybeHandleConfirmGate` on a manual gate whose bound exit is refused
+   * (`commit_conflict`), with an owner-provable caller so only the STAGE EXIT —
+   * not the gate bookkeeping write — is refused.
+   */
+  async function approveWithRefusedExit(stage: "plan" | "review", selectReturn: string) {
+    const c = await makeCase({
+      label: `confirm-${stage}-refused`,
+      role: "owner",
+      selectReturn,
+      meta: (pid) => ({
+        currentStage: stage,
+        previousStage: stage === "plan" ? "clarify" : "develop",
+        stageExecutorRun: boundRun(pid, stage),
+      }),
+    });
+    const conflicts = failStageExitCommit(c.session);
+    let clearStageCalls = 0;
+    (c.ctx.ui as Record<string, unknown>).clearStage = () => { clearStageCalls++; };
+
+    const result = await maybeHandleConfirmGate(
+      c.config,
+      c.ctx,
+      c.session.getMeta()!,
+      // Structural PipelineUI stub — only notify/transition are consumed.
+      { notify: () => {}, transition: () => {} } as never,
+      { mode: "manual" },
+    );
+    return { c, result, conflicts, clearStageCalls: () => clearStageCalls };
+  }
+
+  it("④ confirm approve + refused bound exit → {result:'handled', action:'pending'}, zero exit evidence", async () => {
+    const { c, result, conflicts, clearStageCalls } = await approveWithRefusedExit("plan", "Approve & Advance");
+
+    // The gate must NOT claim an advance: the bound exit never committed.
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(conflicts()).toBe(1);
+    expect(clearStageCalls()).toBe(0);
+
+    const persisted = c.session.getMeta()!;
+    expect(persisted.currentStage).toBe("plan");
+    expect(persisted.stageExecutorRun!.terminalConsumed).not.toBe(true);
+
+    const content = readAllAudit(c.root);
+    expect(countEvents(content, "stage_usage")).toBe(0);
+    expect(countEvents(content, "stage_advance")).toBe(0);
+    // Exactly ONE refusal truth, attributed to the confirm-gate entry (R6-6).
+    expect(countEvents(content, "transition_commit")).toBe(1);
+    const f = fieldsOfLast(content, "transition_commit");
+    expect(f.action).toBe("bound_exit_refused");
+    expect(f.caller).toBe("confirm_approve");
+    expect(f.reason).toBe("commit_conflict:stage_visit_advanced");
+  });
+
+  it("⑦ approve to completed + refused bound exit → returns pending and never clears the status bar", async () => {
+    const { c, result, conflicts, clearStageCalls } = await approveWithRefusedExit("review", "Approve & Complete");
+
+    // `advanceConfirmApproved` must return false BEFORE its `toStage ===
+    // "completed"` clearStage branch — deleting/moving that guard makes both
+    // assertions below fail (the R6-10 regression this case exists for).
+    expect(result).toEqual({ result: "handled", action: "pending" });
+    expect(conflicts()).toBe(1);
+    expect(clearStageCalls()).toBe(0);
+
+    const persisted = c.session.getMeta()!;
+    expect(persisted.currentStage).toBe("review");
+    expect(persisted.stageExecutorRun!.terminalConsumed).not.toBe(true);
+
+    const content = readAllAudit(c.root);
+    expect(countEvents(content, "stage_advance")).toBe(0);
+    expect(countEvents(content, "pipeline_completed")).toBe(0);
+    const f = fieldsOfLast(content, "transition_commit");
+    expect(f.action).toBe("bound_exit_refused");
+    expect(f.caller).toBe("confirm_approve");
+    expect(f.nextStage).toBe("completed");
+  });
+});
+
 // ─── ⑥ caller attribution matrix (R2-Q2-A / R6-6) ────────────────────────────
 
 describe("216 P1: bound-exit refusal audits carry the entry caller, never 'rule'", () => {
@@ -414,4 +536,44 @@ describe("216 P1: bound-exit refusal audits carry the entry caller, never 'rule'
       expect(f.method).toBe(v.opts.method);
     });
   }
+});
+
+// ─── ⑧ fix-executor: a refused advance is audited, never reported as done ────
+
+describe("216 P1: fix-executor auto-unfreeze reports a refused advance", () => {
+  it("⑧ child bound run → fix_advance_refused (warn), unfreeze kept, zero stage_advance", async () => {
+    const c = await makeCase({
+      label: "fix-advance-refused",
+      role: "child",
+      meta: (pid) => ({
+        currentStage: "fix",
+        previousStage: "review",
+        flowState: "blocked",
+        blockedReason: "max_loop_cycles",
+        stageExecutorRun: boundRun(pid, "fix"),
+      }),
+    });
+
+    await handleFixExecutorCompleted(c.ctx.pi, c.config, {
+      ui: { notify: () => {} },
+      session: c.session,
+      runtimeCtx: c.ctx._ctx,
+    });
+
+    const content = readAllAudit(c.root);
+    // The unfreeze itself stays (the executor really did finish) …
+    expect(countEvents(content, "fix_completed_auto_unfreeze")).toBe(1);
+    expect(c.session.getMeta()!.flowState).toBe("running");
+    // … but the refused advance is reported honestly instead of "advanced".
+    expect(countEvents(content, "fix_advance_refused")).toBe(1);
+    const f = fieldsOfLast(content, "fix_advance_refused");
+    expect(f.reason).toBe("bound_exit_refused:owner_unproven:child_caller");
+    expect(countEvents(content, "stage_advance")).toBe(0);
+    expect(countEvents(content, "auto_advance_wake")).toBe(0);
+    expect(c.wakes).toHaveLength(0);
+
+    const persisted = c.session.getMeta()!;
+    expect(persisted.currentStage).toBe("fix");
+    expect(persisted.stageExecutorRun!.terminalConsumed).not.toBe(true);
+  });
 });

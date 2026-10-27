@@ -84,8 +84,11 @@ export async function recordStageExitRefusal(
   // cause must not buy a second menu inside the same visit (216 R5-Q5-A).
   const sameVisit = prev !== undefined && prev.stage === input.stage;
 
-  const count = sameCause && prev !== undefined ? prev.count + 1 : 1;
-  const frozenCount = sameVisit && prev !== undefined ? prev.frozenCount : 0;
+  // Aliased-condition narrowing (TS 4.4+): `prev !== undefined` is absorbed by
+  // `sameCause` / `sameVisit`, so the ternaries below need no second check
+  // (code-review round 1, issue 4.1).
+  const count = sameCause ? prev.count + 1 : 1;
+  const frozenCount = sameVisit ? prev.frozenCount : 0;
   const base: StageExitRefusal = {
     stage: input.stage, fromStage: input.fromStage, toStage: input.toStage,
     reason: input.reason, count, frozenCount, lastAt: Date.now(),

@@ -488,6 +488,12 @@ async function routeConfirmReject(
     currentStepIndex: 0,
     verifyFailures: [],
     verifyAttempts: 0, // Reset per-stage attempt counter on stage advance (168 Phase 0)
+    // 216 P3 (T2.4): a COMMITTED reject-route IS a real stage boundary — the
+    // refusal counter must not leak into the next visit (same reset site as
+    // `verifyAttempts: 0`; R3-Q2-A single carrier). A same-NAME re-entry would
+    // otherwise be mistaken for the previous visit by stage-exit-refusal's
+    // stage-only `sameVisit` check (review issue 2).
+    stageExitRefusal: undefined,
     violations: [],
     advancedThisTurn: undefined,
     confirmRejections: nextCount,
@@ -1294,6 +1300,10 @@ export async function maybeHandleConfirmGate(
           stageStartTime: Date.now(),
           // Reset verify/loop counters for the new stage
           verifyAttempts: 0,
+          // 216 P3 (T2.4): the design-review authorization is a real stage
+          // migration — clear the refusal counter with the other per-stage
+          // counters (review issue 2).
+          stageExitRefusal: undefined,
           verifyFailures: [],
           verifyConfigError: undefined,
           violations: [],
@@ -2097,6 +2107,12 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         currentStepIndex: 0,
         verifyFailures: [],
         verifyAttempts: 0, // Reset per-stage attempt counter on stage advance (168 Phase 0)
+        // 216 P3 (T2.4): `stage_advance` is THE owner recovery path named by the
+        // stage-exit escalation copy (owner-escalation.ts), so its commit must
+        // reset the refusal counter too — otherwise a same-name re-entry after
+        // recovery would resume the old count and freeze/abort on the first
+        // refusal of the NEW visit (review issue 2).
+        stageExitRefusal: undefined,
         verifyConfigError: undefined,
         violations: [],
         advancedThisTurn: undefined,
