@@ -272,9 +272,18 @@ describe("193 Phase 3: resume/startup entries and the human decision", () => {
     const cmd = createPipelineResumeCommand(config);
     const result = (await cmd.execute({}, ctx as never)) as { message?: string };
 
-    expect(result.message ?? "").toContain("identity incomplete");
-    // a frozen generic pipeline would have opened the decision menu — it must NOT
-    expect(selectSpy.length).toBe(0);
+    // 213 D6: the pre-213 dead-end notice BECAME the actionable exit — the
+    // takeover guidance is now the identity-incomplete REBUILD MENU itself
+    // (the "identity incomplete" wording lives in the menu title, and an
+    // interactive host always gets it; non-interactive hosts get the honest
+    // no-UI exit). The guidance target changed per the 213 coverage table —
+    // it is no longer a "zero menu" state.
+    expect(selectSpy.length).toBe(1);
+    expect(selectSpy[0]).toContain('Design-review identity incomplete at "design-review"');
+    expect(result.message ?? "").toContain("Resume cancelled");
+    // The rebuild skeleton is its own shell — the frozen generic DECISION
+    // menu (choose_stage etc.) must still never open, and cancelling it
+    // performs ZERO generic action.
     expect(ctx.metadataUpdates.length).toBe(0);
     expect(frozenMeta.flowState).toBe("blocked");
     expect(frozenMeta.designReview).toBeDefined();

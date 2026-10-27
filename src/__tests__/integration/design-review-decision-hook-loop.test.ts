@@ -708,11 +708,17 @@ describe("193 Phase 4: decision chains through the real hook chain", () => {
     const reportDoc = deriveReportPath(h.planDoc, 1);
     fs.appendFileSync(reportDoc, "2. Additional late-discovered gap\n");
 
-    // Drift is caught by the BEFORE-menu revalidation: a stale menu is never
-    // even presented (presentation count stays at the single creation popup).
+    // Drift is caught by the BEFORE-menu revalidation: a stale HUMAN DECISION
+    // menu is never even presented (presentation count stays at the single
+    // creation popup). 213 D2 (matrix row 6 — a "pending" with NO decision
+    // record to re-present) then routes the resume itself to the lifecycle
+    // SKELETON: the honest exit for a wait with no menu to open is an
+    // actionable menu, not a dead-end notice (the 213 incident fix). The
+    // drift reason stays in the coordinator's own audit + the parked state.
     const res = await h.resume();
-    expect(humanMenus(h)).toBe(1); // drifted evidence pops NO menu at all
-    expect(res.message ?? "").toContain("report_hash_drift");
+    expect(humanMenus(h)).toBe(1); // drifted evidence pops NO DECISION menu at all
+    expect(h.menuCalls[h.menuCalls.length - 1]).toContain('Pipeline is running at "design-review"');
+    expect(res.message ?? "").toContain("Resume cancelled");
     const st = stateOf(h);
     expect(st.phase).toBe("paused");
     expect(st.pauseReason).toBe("drift");
@@ -720,11 +726,13 @@ describe("193 Phase 4: decision chains through the real hook chain", () => {
     expect(h.rpcCount()).toBe(1); // zero action from the drifted choice
     expect(h.session.getMeta()!.currentStage).toBe("design-review");
 
-    // neither an ordinary settle nor a later resume pops a menu again
+    // neither an ordinary settle nor a later resume pops a DECISION menu again;
+    // the second resume opens the same zero-write skeleton (213 D4: cancel is
+    // a pure read — domain convergence stays on the settle/hook chain).
     await h.settle();
     const res2 = await h.resume();
     expect(humanMenus(h)).toBe(1);
-    expect(res2.message ?? "").toContain("Design-review"); // domain-owned, never generic
+    expect(res2.message ?? "").toContain("Resume cancelled");
     expect(h.rpcCount()).toBe(1);
   });
 

@@ -52,7 +52,11 @@ describe("createPipelineResumeCommand", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 
-  it("aborted pipeline → points to /pipeline-start", async () => {
+  // 213 Phase 3 (D5): the 212 dead-end redirect ("Use /pipeline-start to begin
+  // a new run.") is RETIRED for interactive sessions — aborted now presents its
+  // own skeleton whose default restores the stage in place. The /pipeline-start
+  // hint survives only inside the honest no-UI sentence.
+  it("aborted pipeline → presents the restore skeleton, cancel keeps every fact", async () => {
     const TMP = join(tmpdir(), "pi-resume-aborted-" + Date.now());
     await mkdir(TMP, { recursive: true });
     const config = makeTestConfig({ projectRoot: TMP });
@@ -64,10 +68,52 @@ describe("createPipelineResumeCommand", () => {
       terminateReason: "session_quit",
     });
     const ctx = createMockCtx(meta);
+    let capturedTitle = "";
+    let capturedOptions: string[] = [];
+    ctx.ui.select = async (msg: string, options: string[]) => {
+      capturedTitle = msg;
+      capturedOptions = [...options];
+      return undefined; // Esc → cancel
+    };
     const cmd = createPipelineResumeCommand(config);
     const result = await cmd.execute({}, ctx as any);
 
+    // The skeleton opens with the restore default FIRST; no recorded document
+    // degrades the label instead of inventing one (rule ①).
+    expect(capturedTitle).toContain('Pipeline aborted at "develop"');
+    expect(capturedOptions[0]).toContain('Restore stage "develop"');
+    expect(capturedOptions).toContain("Cancel");
+    expect((result as any).message).toContain("Resume cancelled");
+    // Cancel is ZERO-write: the abort facts stay exactly as recorded.
+    expect(meta.terminateReason).toBe("session_quit");
+    expect(ctx.metadataUpdates.length).toBe(0);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("aborted pipeline without an interactive UI → the honest exit names /pipeline-start", async () => {
+    const TMP = join(tmpdir(), "pi-resume-aborted-noui-" + Date.now());
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      flowState: "aborted",
+      terminateReason: "session_quit",
+    });
+    const baseCtx = createMockCtx(meta);
+    const ctx = { ...baseCtx, ui: { ...baseCtx.ui, select: undefined } } as any;
+    const cmd = createPipelineResumeCommand(config);
+    const result = await cmd.execute({}, ctx);
+
+    expect((result as any).message).toContain("No interactive UI");
     expect((result as any).message).toContain("/pipeline-start");
+    expect(meta.terminateReason).toBe("session_quit"); // zero-write exit
+
+    const auditContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
+    expect(auditContent).toContain("resume_skipped_no_menu");
+    expect(auditContent).toContain("no_ui");
 
     await rm(TMP, { recursive: true, force: true });
   });
@@ -339,7 +385,7 @@ describe("createPipelineResumeCommand", () => {
       await rm(TMP, { recursive: true, force: true });
     });
 
-    it("child session → no dialog, read-only status text (owner-only)", async () => {
+    it("child session → no confirm-gate dialog (owner-only); the running skeleton is the exit", async () => {
       const TMP = join(tmpdir(), "pi-resume-180-child-" + Date.now());
       await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
       const config = makeManualPlanConfig(TMP);
@@ -353,14 +399,22 @@ describe("createPipelineResumeCommand", () => {
         confirmGateReask: { stage: "plan", count: 1 },
       });
       const ctx = createMockCtx(meta, { sessionName: "plan-agent#aabb1122" });
-      let selectCalls = 0;
-      ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
+      let capturedOptions: string[] = [];
+      ctx.ui.select = async (_msg: string, options: string[]) => {
+        capturedOptions = [...options];
+        return undefined; // Esc → cancel the skeleton
+      };
 
       const cmd = createPipelineResumeCommand(config);
       const result = await cmd.execute({}, ctx as any);
 
-      expect(selectCalls).toBe(0);
-      expect((result as any).message).toContain("No resume needed");
+      // Owner-only invariant (Phase 3 / 180): the CONFIRM-GATE dialog is never
+      // presented to a child session.
+      expect(capturedOptions).not.toContain("Approve & Advance");
+      // 213 Phase 3 (D4): the running skeleton is capability-gated, NOT
+      // role-gated — a child with a UI still gets an actionable, honest exit.
+      expect(capturedOptions[0]).toContain('Continue current stage "plan"');
+      expect((result as any).message).toContain("Resume cancelled");
       // No gate resolution → re-ask trace unchanged.
       expect(meta.confirmGateReask).toEqual({ stage: "plan", count: 1 });
 

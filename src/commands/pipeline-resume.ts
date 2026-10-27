@@ -3,12 +3,19 @@
  * Factory for the `/pipeline-resume` command.
  * Provides a deterministic recovery path for frozen pipelines.
  *
- * Behavior matrix:
- * - No meta → error message
- * - Not frozen (running) → restore the persistent status bar; if a manual
- *   confirm gate is pending (owner-only) re-enter the existing dialog via
- *   maybeHandleConfirmGate, otherwise a read-only status hint
- * - Aborted → restore status bar + points to /pipeline-start (no menu available)
+ * Behavior matrix (213 Phase 3: every state has an actionable exit):
+ * - No meta → error message (D7)
+ * - design-review blocked (identity incomplete) → rebuild menu (D6);
+ *   without an interactive UI → honest no-UI exit + resume_skipped_no_menu
+ * - design-review authorized → coordinator result matrix; only a genuinely
+ *   PENDING human decision ends the run with the exit sentence (D8/D10) — a
+ *   "pending" without a menu to open (review_running etc.) continues down to
+ *   the lifecycle skeleton
+ * - Aborted → skeleton: Restore stage (default) / new pipeline / Cancel (D5)
+ * - Not frozen (running): a pending manual confirm gate (owner-only) keeps
+ *   priority and re-enters the existing dialog via maybeHandleConfirmGate;
+ *   otherwise the skeleton: Continue current stage (default, ZERO writes, D4)
+ *   / new pipeline / Cancel
  * - Blocked/awaiting_human (frozen):
  *   - Without --force-resume → requestDecision (208 Phase 3, source="command";
  *     210 review issue 3: the chain wrapper, so a reload-leftover freeze gets
@@ -24,7 +31,7 @@
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
-import { isFrozen, getFlowState, executeDecision, formatFrozenReason, formatAbortedNotifyText, requestDecision, resolveDecisionReason, formatDecisionMenuHint } from "../core/flow-state";
+import { isFrozen, getFlowState, executeDecision, formatFrozenReason, requestDecision, resolveDecisionReason, formatDecisionMenuHint } from "../core/flow-state";
 import { dispatchAfterResume } from "./pipeline-start";
 import { createPipelineUI, syncStageStatusBar } from "../core/pipeline-ui";
 import { detectPendingConfirmGate, maybeHandleConfirmGate, recordConfirmGateOutcome } from "../core/stage-advancer";
@@ -39,6 +46,17 @@ import { coordinateDesignReview, type CoordinatorResult } from "../core/design-r
 import { classifyDesignReviewFlow } from "../core/design-review/state";
 import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-context";
 import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/design-review/entry-result";
+// 213 Phase 3 (D1–D7): every lifecycle state gets an actionable menu exit.
+// The command keeps ONLY dispatch; the menus and the destructive executors
+// live in pipeline-resume-menu.ts (single source with /pipeline-start).
+import { hasInteractiveUI } from "../core/ui-capability";
+import { isDesignReviewDecisionPending } from "../core/design-review/decision-guard";
+import {
+  noUiExit,
+  runResumeSkeleton,
+  runningStatusMessage,
+  type ResumeMenuDeps,
+} from "./pipeline-resume-menu";
 
 /**
  * Idempotent stage dispatch helper (Phase 1 / 182).
@@ -121,6 +139,26 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         return { error: "No active pipeline. Run /pipeline-start <doc_file> to begin." };
       }
 
+      // 213 Phase 3 (D18): the interactive-capability verdict is computed ONCE
+      // here (the second and last 213 call site of `hasInteractiveUI`; the
+      // first is the decision-menu presenter in P0). Declared host capability
+      // wins; the legacy `typeof ui.select` inference is only the undeclared
+      // fallback. The frozen channel deliberately does NOT route through this
+      // gate — 208's `no-menu` attribution stays as-is (plan D1/D13).
+      const menuCapable = hasInteractiveUI(ctx);
+      // 213 Phase 3: the lifecycle dispatch below runs on the FRESHEST meta.
+      // Identical to `meta` on every path except a continued `authorized`
+      // pending WITHOUT a decision menu (the coordinator may have moved the
+      // state — D10 result matrix row 6).
+      let lifecycleMeta = meta;
+      const makeMenuDeps = (m: SessionMeta): ResumeMenuDeps => ({
+        ctx: ctx as ResumeMenuDeps["ctx"],
+        config,
+        ui,
+        meta: m,
+        forwardArgs,
+      });
+
       // Phase 4 (191): design-review recovery on resume.
       // 193 Phase 3 (tasks 1/2/4): explicit resume is the ONLY entry allowed
       // to re-present a pending decision menu (provenance "resume", assigned
@@ -132,18 +170,25 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
       // --force-resume cannot replace a human choice or domain verification.
       const drResume = classifyDesignReviewFlow(meta);
       if (drResume.kind === "blocked") {
+        // D6: keep the existing takeover audit; when a menu genuinely follows,
+        // the record gains `action: "menu_presented"` (audit = fact).
         await safeWriteAuditLog("design_review_blocked_takeover", {
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
           reason: drResume.reason ?? "identity_incomplete",
           trigger: "pipeline_resume",
+          ...(menuCapable ? { action: "menu_presented" } : {}),
         }, "warn");
         syncStageStatusBar(ui, ctx);
-        const blockedMsg =
-          `Design-review loop identity incomplete — awaiting owner takeover. ` +
-          `Generic resume/--force-resume do not replace domain verification or the human decision.`;
-        ui.notify(ctx, blockedMsg);
-        return { message: blockedMsg };
+        // 213 Phase 3: the blocked state gets its OWN actionable rebuild menu
+        // (positive actions all run through the new-pipeline branch —
+        // buildStartMeta clears the corrupted `designReview` in one fresh-
+        // period write; no strict commit on a broken state).
+        const blockedDeps = makeMenuDeps(meta);
+        const outcome = menuCapable
+          ? await runResumeSkeleton(blockedDeps, "identity-incomplete")
+          : await noUiExit(blockedDeps, "identity-incomplete");
+        return { message: outcome.message };
       }
       if (drResume.kind === "authorized") {
         const coordCtx = createDesignReviewRuntimeContext({
@@ -187,57 +232,83 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             return { message: failMsg };
           }
           if (coordResult.action === "pending") {
-            // 213 Phase 0 (D17-②): a bare "recovery pending" left the user with
-            // no written exit. The pending reason now trails the THREE real
-            // channels this session can act on (takeover via this command,
-            // re-authorization, or /pipeline-quit) — every sentence is true for
-            // a non-child interactive reader; decision-scoped narrowing of the
-            // exit sentence happens at the Phase 3 result matrix.
-            const pendingMsg =
-              `Design-review recovery pending: ${coordResult.reason}. ` +
-              `Run /pipeline-resume again to take over this decision, ` +
-              `re-authorize this design-review round, or /pipeline-quit.`;
-            ui.notify(ctx, pendingMsg);
-            return { message: pendingMsg };
-          }
-          if (coordResult.action === "frozen") {
+            // 213 Phase 3 (D10 result matrix, rows 5/6). The coordinator may
+            // have written — re-read before narrowing the pending kind.
+            const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+            // Row 5 in its FULL honest scope: the domain still OWNS this wait —
+            // an awaiting human decision (`paused(decision-pending)`, the 193
+            // predicate) OR a PERSISTED choice whose application is retryable
+            // (194: "never a silent fallthrough to generic resume"). A chosen
+            // decision behind a generic "Continue current stage" skeleton would
+            // claim "No resume needed" while the applied human choice still
+            // dangles un-acted — the recovery-pending sentence stays the only
+            // honest surface for both.
+            const pendingDecision = freshMeta.designReview?.decision;
+            const domainOwnedPending =
+              isDesignReviewDecisionPending(freshMeta) ||
+              (pendingDecision !== undefined && pendingDecision.state !== "pending");
+            if (domainOwnedPending) {
+              // Ends the run with the honest exit sentence (213 Phase 0 /
+              // D17-②): takeover via this command, re-authorization, or
+              // /pipeline-quit. A declined takeover or a cancelled menu stays
+              // zero-write and NEVER opens a second menu (D10) — this return
+              // IS that exit.
+              const pendingMsg =
+                `Design-review recovery pending: ${coordResult.reason}. ` +
+                `Run /pipeline-resume again to take over this decision, ` +
+                `re-authorize this design-review round, or /pipeline-quit.`;
+              ui.notify(ctx, pendingMsg);
+              return { message: pendingMsg };
+            }
+            // Row 6: a "pending" with NO decision record at all (`review_running`,
+            // `update_*`, `verification_outcome_missing`, drifted evidence) is a
+            // wait with no menu to open. Continue the lifecycle dispatch with
+            // the FRESHEST meta — the skeleton below gives this state its own
+            // actionable exit instead of a dead-end notice (213 D2).
+            lifecycleMeta = freshMeta;
+          } else if (coordResult.action === "frozen") {
             ui.notify(ctx, `Design-review frozen: ${coordResult.reason}`);
             return { message: `Design-review frozen: ${coordResult.reason}` };
+          } else {
+            // Fail-closed honesty: any other handled action still never falls
+            // through to generic resume recovery (the union is exhaustive —
+            // defensive branch for future actions).
+            const unknownMsg = "Design-review recovery: unrecognized handled action.";
+            ui.notify(ctx, unknownMsg);
+            return { message: unknownMsg };
           }
-          // Fail-closed honesty: any other handled action still never falls
-          // through to generic resume recovery (the union is exhaustive —
-          // defensive branch for future actions).
-          const unknownMsg = "Design-review recovery: unrecognized handled action.";
-          ui.notify(ctx, unknownMsg);
-          return { message: unknownMsg };
         }
         // not-applicable → continue with normal resume logic
       }
 
-      const flowState = getFlowState(meta);
+      const flowState = getFlowState(lifecycleMeta);
 
-      // Aborted: no decision menu available — redirect to /pipeline-start
+      // 213 Phase 3 (D5, dispatch step 3): an aborted run is NOT a dead end —
+      // it gets the skeleton whose default restores THIS stage in place
+      // (pipelineId/stage kept, `terminateReason` cleared by resumePipeline).
+      // Without an interactive UI the state exits through the honest no-UI
+      // sentence; the "run /pipeline-start" hint lives inside that sentence
+      // (212's bare redirect is retired).
       if (flowState === "aborted") {
-        // Restore the persistent status bar (parity with /pipeline-start).
+        // Restore the persistent status bar BEFORE presenting the menu
+        // (parity with /pipeline-start; unchanged pre-menu side-effect).
         syncStageStatusBar(ui, ctx);
-        const abortMsg = formatAbortedNotifyText(
-          meta.currentStage,
-          meta.terminateReason ?? "session_quit",
-          meta.requirementDoc,
-        );
-        ui.notify(ctx, `${abortMsg} Use /pipeline-start to begin a new run.`);
-        return { message: abortMsg };
+        const outcome = menuCapable
+          ? await runResumeSkeleton(makeMenuDeps(lifecycleMeta), "aborted")
+          : await noUiExit(makeMenuDeps(lifecycleMeta), "aborted");
+        return { message: outcome.message };
       }
 
-      // Not frozen: running (no state change).
+      // Not frozen (dispatch step 5): running.
       // Phase 3 / 180: if a manual confirm gate is pending, re-enter the EXISTING
       // confirm dialog (maybeHandleConfirmGate) — the deterministic recovery path
-      // for a dismissed gate. Otherwise keep the read-only status hint.
-      if (!isFrozen(meta)) {
+      // for a dismissed gate. The gate keeps priority over the 213 skeleton: a
+      // pending owner confirmation is the one dialog that must answer first.
+      if (!isFrozen(lifecycleMeta)) {
         // Restore the persistent status bar (parity with /pipeline-start).
         syncStageStatusBar(ui, ctx);
 
-        const statusMsg = `Pipeline is running (pipelineId: ${meta.pipelineId}, stage: ${meta.currentStage}, flowState: ${flowState}). No resume needed.`;
+        const statusMsg = runningStatusMessage(lifecycleMeta);
 
         // Owner-only: child sessions must not present the dialog. Role-detection
         // failure is fail-open to owner (consistent with session-role.ts).
@@ -248,20 +319,20 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
           // Fail-open: treat as owner
         }
 
-        if (!isChild && await detectPendingConfirmGate(config, meta)) {
+        if (!isChild && await detectPendingConfirmGate(config, lifecycleMeta)) {
           // Reuse the persisted session/ui/pi context shape (same as the
           // pipeline-handoff and stage-advancer tool call sites). No new UI
           // primitive: `ui.select` is the SDK UI passed straight through.
           const gateCtx = { session: ctx.session, ui: ctx.ui, pi: ctx.pi };
           // Review stage: no `defaultReject` — use the default option order.
-          const gate = await maybeHandleConfirmGate(config, gateCtx, meta, ui, {
+          const gate = await maybeHandleConfirmGate(config, gateCtx, lifecycleMeta, ui, {
             mode: "manual",
             source: "resume",
           });
           // Share the re-ask / cleanup accounting with the owner auto re-ask chain.
           // 194 C5: pass the raw entry ctx so a bound count goes through the
           // strict anchored write (resume's ctx IS the ExtensionContext).
-          recordConfirmGateOutcome(ctx.session, meta, gate, false, { _ctx: ctx });
+          recordConfirmGateOutcome(ctx.session, lifecycleMeta, gate, false, { _ctx: ctx });
 
           if (gate.result === "handled") {
             if (gate.action === "advanced") {
@@ -280,11 +351,16 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             return { message: statusMsg };
           }
           // no-gate (marker written between predicate and call): fall through to
-          // the read-only status hint.
+          // the 213 running skeleton.
         }
 
-        ui.notify(ctx, statusMsg);
-        return { message: statusMsg };
+        // 213 Phase 3 (D4): the read-only "No resume needed." notice is
+        // REPLACED by the actionable skeleton. The status bar is already
+        // synced above; a declined/cancelled menu writes nothing.
+        const outcome = menuCapable
+          ? await runResumeSkeleton(makeMenuDeps(lifecycleMeta), "running")
+          : await noUiExit(makeMenuDeps(lifecycleMeta), "running");
+        return { message: outcome.message };
       }
 
       // Blocked or awaiting_human: frozen recovery path
@@ -307,9 +383,9 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
           };
           const menu = await requestDecision(
             { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
-            meta,
+            lifecycleMeta,
             config,
-            resolveDecisionReason(meta),
+            resolveDecisionReason(lifecycleMeta),
             {
               source: "command",
               onStageChanged: onStageChangedForResume,
@@ -391,10 +467,10 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
               // no more reverse-inference from `typeof ui.select`.
               const unavailable = menu.unavailableReason ?? "unknown";
               await safeWriteAuditLog("resume_skipped_no_menu", {
-                pipelineId: meta.pipelineId,
-                stage: meta.currentStage,
+                pipelineId: lifecycleMeta.pipelineId,
+                stage: lifecycleMeta.currentStage,
                 reason: unavailable,
-                blockedReason: meta.blockedReason ?? "unknown",
+                blockedReason: lifecycleMeta.blockedReason ?? "unknown",
               });
               // Single notify: `notifyOnUnavailable: false` suppresses the runtime's
               // own no-UI notify, so the user sees exactly one consistent message.
@@ -406,7 +482,7 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         }
 
         // --force-resume path: explicit skip, proceed with resume
-        const result = await executeDecision(ctx, meta, "resume", config, { source: "force-resume" });
+        const result = await executeDecision(ctx, lifecycleMeta, "resume", config, { source: "force-resume" });
 
         if (!result.success) {
           return { error: `Resume failed: ${result.message}` };
