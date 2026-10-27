@@ -32,7 +32,6 @@ import { join } from "node:path";
 import { createAgentSettled } from "../../core/agent-settled";
 import { createStageAdvancer, maybeHandleConfirmGate } from "../../core/stage-advancer";
 import { recordStageExitRefusal } from "../../core/stage-exit/stage-exit-refusal";
-import { stageMigrationResetCounters } from "../../core/stage-exit/migration-reset";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "../../core/meta-reset";
 import { createPipelineQuitCommand } from "../../commands/pipeline-quit";
 import { clearAllDecisionTimers, executeDecision, getFlowState } from "../../core/flow-state";
@@ -563,13 +562,31 @@ describe("216 P3: refusal-counter reset scopes", () => {
     expect(choose.persisted.stageExitRefusal).toBeUndefined();
   });
 
-  it("⑮h the shared migration reset always carries BOTH counter fields", () => {
-    // Structural guard for the sites that spread the helper: resetting
-    // `verifyAttempts` without `stageExitRefusal` is the round-2 defect.
-    expect(stageMigrationResetCounters()).toEqual({
-      verifyAttempts: 0,
-      stageExitRefusal: undefined,
-    });
+  it("⑮h every stage-migration patch resets the refusal counter (source guard)", () => {
+    // The shared helper is only as good as its CALL SITES: a patch that resets
+    // `verifyAttempts: 0` next to a `currentStage` move must also reset the
+    // refusal accounting (explicitly, via the helper, or through a period-reset
+    // spread). This scan is the assertion for the design-review migrations
+    // (coordinator plan<->design-review, develop transition), which have no
+    // lightweight runtime fixture — removing the helper there turns this red
+    // (code-review round 3, issue 1).
+    const SRC = join(__dirname, "..", "..");
+    const files = (fs.readdirSync(SRC, { recursive: true }) as string[]).filter(
+      (f) => f.endsWith(".ts") && !f.includes("__tests__"),
+    );
+    const offenders: string[] = [];
+    for (const rel of files) {
+      const lines = fs.readFileSync(join(SRC, rel), "utf-8").split("\n");
+      lines.forEach((line, i) => {
+        if (!/verifyAttempts:\s*0/.test(line)) return;
+        const window = lines.slice(Math.max(0, i - 30), i + 31).join("\n");
+        // Only patches that also MOVE the stage are migration patches.
+        if (!/currentStage:/.test(window)) return;
+        if (/stageExitRefusal|stageMigrationResetCounters|buildNewPeriodResetFields/.test(window)) return;
+        offenders.push(`${rel}:${i + 1}`);
+      });
+    }
+    expect(offenders).toEqual([]);
   });
 });
 
