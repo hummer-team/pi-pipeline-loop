@@ -1457,12 +1457,31 @@ async function presentHumanDecisionForPendingState(
     // refusal is a refusal (zero state writes) but MUST return its own
     // truthful reason so the resume channel can act on it (grep-aligned
     // audit/result vocabulary).
-    const accepted = await confirmOwnerTakeover(select, {
-      ownerLabel: ownerFile ?? "not recorded",
+    // 213_Bug review (issue 5): the three-state result separates a HUMAN
+    // refusal from a CONTROL failure (missing select / thrown dialog). Only
+    // the human refusal may be named "declined"; a control failure writes an
+    // error-level audit with the raw cause and is named "unavailable".
+    const ownerLabel = ownerFile ?? "not recorded";
+    const confirmation = await confirmOwnerTakeover(select, {
+      ownerLabel,
       decisionId: effectiveDecision.decisionId,
       round: effectiveDr.round,
+      onControlFailure: ({ cause, error }) => {
+        // Error-level truth: the confirmation control itself failed. Both the
+        // human-facing label and the raw cause are recorded, never swallowed.
+        // Returned (not voided): the confirmation awaits this write before the
+        // unavailable arm proceeds, so the audit is on disk when it lands.
+        return safeWriteAuditLog("design_review_coordinator", {
+          action: "decision_takeover_control_failure",
+          decisionId: effectiveDecision.decisionId,
+          round: String(effectiveDr.round),
+          ownerLabel,
+          cause,
+          error: error instanceof Error ? error.message : String(error ?? cause),
+        }, "error");
+      },
     });
-    if (!accepted) {
+    if (confirmation === "refused") {
       await auditDecisionMenuSkipped({
         decisionId: effectiveDecision.decisionId,
         role: evidence.role,
@@ -1470,6 +1489,17 @@ async function presentHumanDecisionForPendingState(
         reason: "decision_takeover_declined",
       });
       return { status: "handled", action: "pending", reason: "decision_takeover_declined" };
+    }
+    if (confirmation === "unavailable") {
+      // Same event, honest new word (D5 vocabulary precedent): the takeover
+      // was never answerable — stays pending with zero state writes.
+      await auditDecisionMenuSkipped({
+        decisionId: effectiveDecision.decisionId,
+        role: evidence.role,
+        source: evidence.source,
+        reason: "decision_takeover_unavailable",
+      });
+      return { status: "handled", action: "pending", reason: "decision_takeover_unavailable" };
     }
     // Step 5 (failure arm) — ONE strict commit attempted and lost: state is
     // untouched (strict semantics), the skip audit carries the commit's own

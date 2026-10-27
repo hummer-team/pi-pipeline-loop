@@ -151,6 +151,10 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
       // pending WITHOUT a decision menu (the coordinator may have moved the
       // state — D10 result matrix row 6).
       let lifecycleMeta = meta;
+      // 213 review (issue 6): the D2 row-6 continuation keeps the coordinator's
+      // pending reason (e.g. `report_hash_drift`) so the running skeleton title
+      // can display the fact instead of losing it.
+      let recoveryPendingReason: string | undefined;
       const makeMenuDeps = (m: SessionMeta): ResumeMenuDeps => ({
         ctx: ctx as ResumeMenuDeps["ctx"],
         config,
@@ -265,6 +269,9 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             // wait with no menu to open. Continue the lifecycle dispatch with
             // the FRESHEST meta — the skeleton below gives this state its own
             // actionable exit instead of a dead-end notice (213 D2).
+            // 213 review (issue 6): the coordinator's reason is carried into the
+            // skeleton title — the drift fact must stay user-visible.
+            recoveryPendingReason = coordResult.reason;
             lifecycleMeta = freshMeta;
           } else if (coordResult.action === "frozen") {
             ui.notify(ctx, `Design-review frozen: ${coordResult.reason}`);
@@ -357,8 +364,11 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         // 213 Phase 3 (D4): the read-only "No resume needed." notice is
         // REPLACED by the actionable skeleton. The status bar is already
         // synced above; a declined/cancelled menu writes nothing.
+        // 213 review (issues 3/6): a CHILD gets the role-safe skeleton
+        // (continue/cancel only); a row-6 continuation shows its pending
+        // reason in the title.
         const outcome = menuCapable
-          ? await runResumeSkeleton(makeMenuDeps(lifecycleMeta), "running")
+          ? await runResumeSkeleton(makeMenuDeps(lifecycleMeta), "running", { isChild, recoveryPendingReason })
           : await noUiExit(makeMenuDeps(lifecycleMeta), "running");
         return { message: outcome.message };
       }

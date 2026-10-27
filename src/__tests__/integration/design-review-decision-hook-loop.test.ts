@@ -718,6 +718,10 @@ describe("193 Phase 4: decision chains through the real hook chain", () => {
     const res = await h.resume();
     expect(humanMenus(h)).toBe(1); // drifted evidence pops NO DECISION menu at all
     expect(h.menuCalls[h.menuCalls.length - 1]).toContain('Pipeline is running at "design-review"');
+    // 213 review (issue 6): the drift fact must be VISIBLE in the skeleton title
+    // (pre-213 the resume output carried `report_hash_drift`; the skeleton may
+    // replace the sentence but may not lose the fact).
+    expect(h.menuCalls[h.menuCalls.length - 1]).toContain("(recovery pending:");
     expect(res.message ?? "").toContain("Resume cancelled");
     const st = stateOf(h);
     expect(st.phase).toBe("paused");

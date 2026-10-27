@@ -422,6 +422,40 @@ describe("213 P4 coverage row 3: authorized + paused/decision-pending ⇒ the re
     }
   });
 
+  // 213_Bug review (issue 4①): the D18 capability gate INSIDE the coordinator —
+  // a declared `hasUI: false` must override the PRESENT select control. The
+  // owner matches, the control exists, yet no menu may open; the skip audit
+  // attributes the honest capability word (this was the migrated predicate's
+  // zero-wiring-coverage gap).
+  it("issue 4: owner match + declared hasUI:false WITH a present select ⇒ menu never opens, skip audit names the host declaration, zero writes", async () => {
+    const fx = makeDecisionFixture("r3d18", { ownerSessionFile: OWNER, lifecycle: "blocked" });
+    const snapshot = JSON.parse(JSON.stringify(fx.meta));
+    const h = makeCovCtx(fx.meta, { sessionFile: OWNER });
+    (h.ctx as { hasUI?: boolean }).hasUI = false; // declared false — select still present
+    const out = await runResume(makeTestConfig(), h.ctx);
+
+    try {
+      // ZERO dialogs of ANY kind: the capability gate refuses before the menu.
+      expect(h.calls.length).toBe(0);
+      expect((out["message"] as string)).toContain("Design-review recovery pending: decision_pending.");
+
+      const skipped = audits.filter((a) => a.message.action === "decision_menu_skipped");
+      expect(skipped.length).toBe(1);
+      expect(skipped[0]!.message).toMatchObject({
+        reason: "no interactive ui declared by host",
+        capability: "hasUI",
+        decisionId: fx.decisionId,
+      });
+      // A refusal that never opened a menu never charges (D11) and writes nothing.
+      expect((h.ctx.session.getMeta() as SessionMeta).designReviewDecisionReprompt).toBeUndefined();
+      expect(h.ctx.metadataUpdates.length).toBe(0);
+      expect(h.ctx.session.getMeta()).toEqual(snapshot);
+      assertNoTimers(fx.pipelineId);
+    } finally {
+      fs.rmSync(fx.root, { recursive: true, force: true });
+    }
+  });
+
   it("the 212 incident shape: non-owner CONFIRMS the takeover ⇒ rebound snapshot presents ⇒ armedBySessionFile untouched, ONE takeover audit, ZERO decision_menu_skipped (deviations #1/#2/#4)", async () => {
     const GONE = "/x/cov-gone-session.json";
     const PARENT = "/x/cov-parent-session.json";
@@ -591,6 +625,9 @@ describe("213 P4 coverage row 5: aborted ⇒ restore-default skeleton (no more /
 
     expect(h.calls.length).toBe(1);
     expect(h.calls[0]!.title).toContain('Pipeline aborted at "develop"');
+    // 213 review (issue 6): the aborted diagnostic fact stays user-visible in
+    // the skeleton title (pre-213 sentence carried `(<terminateReason>)`).
+    expect(h.calls[0]!.title).toContain("(session_quit)");
     expect(h.calls[0]!.options[0]).toBe('Restore stage "develop" (no default document)');
     expect((out["message"] as string)).toContain("Resume cancelled");
     expect((h.ctx.session.getMeta() as SessionMeta).terminateReason).toBe("session_quit");
@@ -738,7 +775,10 @@ describe("213 P4 cross-state: dispatch precedence (steps 2 > 3 > 5, frozen last)
     }
   });
 
-  it("aborted + awaiting_human (no designReview) ⇒ the aborted skeleton (step 3 beats the frozen step 6), generic blocked menu never opens", async () => {
+  // 213_Bug review (issue 2): a non-RESUMABLE stage's aborted skeleton now
+  // LEADS with the new-build itself — no lying "Restore" row. Upgraded from the
+  // former "Esc ⇒ cancel only" version (which had frozen the mismatch in).
+  it("aborted + awaiting_human (non-RESUMABLE): first row IS the new build (never 'Restore'); choosing it pops the stage menu; cancel ⇒ zero writes", async () => {
     const meta = makeTestMeta({
       currentStage: "awaiting_human",
       previousStage: "develop",
@@ -747,15 +787,27 @@ describe("213 P4 cross-state: dispatch precedence (steps 2 > 3 > 5, frozen last)
       terminateReason: "user_quit",
     });
     const snapshot = JSON.parse(JSON.stringify(meta));
-    const h = makeCovCtx(meta); // Esc ⇒ cancel
+    const h = makeCovCtx(meta, {
+      // skeleton default row (the new-build) → Esc at the stage menu ⇒ cancel.
+      router: (title, options) => (title.includes("Pipeline aborted at") ? options[0] : undefined),
+    });
     const out = await runResume(makeTestConfig(), h.ctx);
 
-    expect(h.calls.length).toBe(1);
+    // The skeleton is honest BY CONSTRUCTION (issue 2): row 0 recreates, no restore row.
+    expect(h.calls.length).toBe(2);
     expect(h.calls[0]!.title).toContain('Pipeline aborted at "awaiting_human"');
-    expect(h.calls.some((c) => c.title.includes("Pipeline blocked:"))).toBe(false);
-    expect((out["message"] as string)).toContain("Resume cancelled");
+    // Issue 6: the aborted facts live in the title (pre-213 diagnostics kept).
+    expect(h.calls[0]!.title).toContain("(user_quit)");
+    expect(h.calls[0]!.title).toContain("cannot be restored in place");
+    expect(h.calls[0]!.options[0]).toBe("Start a new pipeline at a chosen stage… (default)");
+    expect(h.calls[0]!.options.some((o) => o.startsWith("Restore stage"))).toBe(false);
+    // First-row semantics = NEW BUILD: the stage menu opens (second dialog)…
+    expect(h.calls[1]!.title).toBe("Start the new pipeline at which stage:");
+    // …and cancelling there starts nothing, writes nothing.
+    expect((out["message"] as string)).toContain("Nothing was started");
     expect(h.ctx.metadataUpdates.length).toBe(0);
     expect(h.ctx.session.getMeta()).toEqual(snapshot);
+    expect(h.calls.some((c) => c.title.includes("Pipeline blocked:"))).toBe(false);
     assertNoTimers(meta.pipelineId);
   });
 

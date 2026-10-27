@@ -411,8 +411,15 @@ describe("createPipelineResumeCommand", () => {
       // Owner-only invariant (Phase 3 / 180): the CONFIRM-GATE dialog is never
       // presented to a child session.
       expect(capturedOptions).not.toContain("Approve & Advance");
-      // 213 Phase 3 (D4): the running skeleton is capability-gated, NOT
-      // role-gated — a child with a UI still gets an actionable, honest exit.
+      // 213 review (issue 3) — CHOSEN ROLE POLICY: the child running skeleton is
+      // ROLE-safe: continue-current / cancel ONLY. The destructive
+      // "Start a new pipeline at a chosen stage…" row (clears designReview /
+      // counters, swaps pipelineId) never reaches a child session.
+      expect(capturedOptions).toEqual([
+        'Continue current stage "plan" (default)',
+        "Cancel",
+      ]);
+      expect(capturedOptions).not.toContain("Start a new pipeline at a chosen stage…");
       expect(capturedOptions[0]).toContain('Continue current stage "plan"');
       expect((result as any).message).toContain("Resume cancelled");
       // No gate resolution → re-ask trace unchanged.

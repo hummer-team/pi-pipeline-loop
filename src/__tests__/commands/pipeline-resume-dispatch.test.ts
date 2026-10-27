@@ -212,6 +212,58 @@ describe("213 P3: buildResumeMenu rows per lifecycle state", () => {
       "Pipeline is running (pipelineId: pipe-status-1, stage: develop, flowState: running). No resume needed.",
     );
   });
+
+  // ── 213 review round 1: honest-by-construction skeletons (issues 2/3/6) ───
+
+  it("issue 2 — aborted on a NON-RESUMABLE stage: the skeleton IS the new build; no Restore row can lie", () => {
+    const m = makeTestMeta({ currentStage: "awaiting_human", flowState: "aborted", terminateReason: "user_quit" });
+    const menu = buildResumeMenu("aborted", m, "docs/design/213_Req.md");
+    expect(menu.options).toEqual([
+      "Start a new pipeline at a chosen stage… (default)",
+      "Cancel",
+    ]);
+    expect(menu.options.some((o) => o.startsWith("Restore stage"))).toBe(false);
+    expect(menu.intents.map((i) => i.kind)).toEqual(["recreate-with-selection", "cancel"]);
+    expect(menu.title).toContain("cannot be restored in place");
+    // Issue 6: the terminate reason stays visible even on the degraded skeleton.
+    expect(menu.title).toContain("(user_quit)");
+  });
+
+  it("issue 6 — aborted RESUMABLE title carries terminateReason; an unresolvable raw doc is named verbatim", () => {
+    const m = makeTestMeta({
+      currentStage: "develop",
+      flowState: "aborted",
+      terminateReason: "session_quit",
+      requirementDoc: "docs/design/gone_213.md",
+    });
+    const withDoc = buildResumeMenu("aborted", m, "docs/design/213_Req.md");
+    expect(withDoc.title).toContain('Pipeline aborted at "develop" (session_quit) — choose how to resume:');
+    expect(withDoc.title).not.toContain("unresolvable"); // doc resolves → row names it
+    const noDoc = buildResumeMenu("aborted", m, undefined);
+    // Unresolvable recorded doc: the RAW value stays user-visible (pre-213 fact).
+    expect(noDoc.title).toContain("(session_quit; recorded doc unresolvable: docs/design/gone_213.md)");
+  });
+
+  it("issue 3 — child running skeleton: continue-current / cancel ONLY (destructive row never appears)", () => {
+    const menu = buildResumeMenu("running", meta, undefined, { isChild: true });
+    expect(menu.options).toEqual(['Continue current stage "develop" (default)', "Cancel"]);
+    expect(menu.intents.map((i) => i.kind)).toEqual(["continue-current", "cancel"]);
+    // An owner call without the flag keeps the full three-row skeleton.
+    const owner = buildResumeMenu("running", meta);
+    expect(owner.options).toContain("Start a new pipeline at a chosen stage…");
+  });
+
+  it("issue 6 — row-6 continuation: the coordinator reason rides in the running title (both roles)", () => {
+    const owner = buildResumeMenu("running", meta, undefined, { recoveryPendingReason: "report_hash_drift" });
+    expect(owner.title).toContain('(recovery pending: report_hash_drift)');
+    expect(owner.options).toContain("Start a new pipeline at a chosen stage…");
+    const child = buildResumeMenu("running", meta, undefined, {
+      isChild: true,
+      recoveryPendingReason: "report_hash_drift",
+    });
+    expect(child.title).toContain('(recovery pending: report_hash_drift)');
+    expect(child.options).toEqual(['Continue current stage "develop" (default)', "Cancel"]);
+  });
 });
 
 // ─── authorized result matrix (7 rows) ───────────────────────────────────────

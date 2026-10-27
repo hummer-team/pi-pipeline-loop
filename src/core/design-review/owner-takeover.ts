@@ -9,6 +9,12 @@
  * non-child session may take ownership through `/pipeline-resume` — one
  * explicit confirmation, ONE strict commit, ONE audit line per takeover.
  *
+ * 213_Bug code review round 1 (issue 5): the confirmation returns a THREE-STATE
+ * result — accepted / refused / unavailable. A CONTROL FAILURE (a thrown dialog
+ * or a missing control — both classified as real failures by the D5 evidence)
+ * is never recorded as `decision_takeover_declined`: that word would describe a
+ * human refusal that never happened. "refused" is reserved for an explicit decline.
+ *
  * Hard boundaries (locked by the 213 plan):
  * - resume channel ONLY (`interactionSource === "resume"`): settle / tool /
  *   startup / advance keep the 212 behaviour byte-for-byte (D8's single
@@ -100,19 +106,48 @@ export const OWNER_TAKEOVER_CANCEL_OPTION = "Cancel";
  * Explicit confirmation through the SAME select control (D10: no new UI
  * capability). The copy MUST echo the original owner so the user sees what is
  * being replaced: `Original owner: <file>` or `Original owner: not recorded`.
- * Any exception / cancel / unrecognized answer ⇒ false (stay pending).
  *
  * Boundary (round-8 note): a host may DECLARE interactive UI (D18) without
- * exposing the select control — confirmation is then impossible, which is
- * honestly answered as a refusal (fail closed), never as a silent takeover.
+ * exposing the select control — confirmation is then IMPOSSIBLE. This is
+ * honestly reported as `unavailable`, never as a refusal the human never made.
  */
+export type OwnerTakeoverConfirmation =
+  /** The human explicitly chose the takeover option. */
+  | "accepted"
+  /** The human answered but did NOT choose takeover (cancel / unrecognized). */
+  | "refused"
+  /**
+   * Issue 5: the control itself failed — it is MISSING or the dialog THREW.
+   * Both are real control failures (D5 evidence), not human decisions.
+   */
+  | "unavailable";
+
+/** Facts echoed in the confirmation copy plus the control-failure audit hook. */
+export interface OwnerTakeoverConfirmFacts {
+  ownerLabel: string;
+  decisionId: string;
+  round: number;
+  /**
+   * Called exactly once when the result is `unavailable` (missing control or
+   * thrown dialog) so the caller can write the error-level audit line.
+   * Awaited: the audit must be on disk before the confirmation resolves, or
+   * the failure arm could return while its own audit line is still pending.
+   */
+  onControlFailure?: (details: {
+    cause: "no-control" | "control-threw";
+    error?: unknown;
+  }) => void | Promise<void>;
+}
+
 export async function confirmOwnerTakeover(
   select: HumanDecisionSelectFn | undefined,
-  facts: { ownerLabel: string; decisionId: string; round: number },
-): Promise<boolean> {
+  facts: OwnerTakeoverConfirmFacts,
+): Promise<OwnerTakeoverConfirmation> {
   if (!select) {
-    // No control to ask through ⇒ no consent can exist (D10).
-    return false;
+    // No control to ask through ⇒ no consent can exist (D10). This is a
+    // CAPABILITY failure, not a human refusal (issue 5).
+    await facts.onControlFailure?.({ cause: "no-control" });
+    return "unavailable";
   }
   try {
     const title =
@@ -123,10 +158,13 @@ export async function confirmOwnerTakeover(
       OWNER_TAKEOVER_CONFIRM_OPTION,
       OWNER_TAKEOVER_CANCEL_OPTION,
     ]);
-    return answer === OWNER_TAKEOVER_CONFIRM_OPTION;
-  } catch {
-    // Fail closed: an unanswerable confirmation is a refusal, never a takeover.
-    return false;
+    // An explicit answer that is not the takeover option = a human refusal.
+    return answer === OWNER_TAKEOVER_CONFIRM_OPTION ? "accepted" : "refused";
+  } catch (error) {
+    // Fail closed: a thrown dialog can NEVER become a takeover — but it is
+    // recorded as a CONTROL failure, not as a refusal (issue 5).
+    await facts.onControlFailure?.({ cause: "control-threw", error });
+    return "unavailable";
   }
 }
 

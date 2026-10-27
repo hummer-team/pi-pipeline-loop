@@ -8,6 +8,9 @@
 
 import { describe, expect, it } from "bun:test";
 import { hasInteractiveUI, resolveDeclaredHasUI } from "../../core/ui-capability";
+import { createDesignReviewRuntimeContext } from "../../core/design-review/runtime-context";
+import type { CoordinatorContext } from "../../core/design-review/coordinator";
+import { makeTestConfig } from "../helpers";
 
 const selectFn = () => Promise.resolve("x");
 
@@ -82,5 +85,44 @@ describe("213 P0 D18: hasInteractiveUI truth table (declared wins, legacy fallba
     expect(hasInteractiveUI({ ...withoutSelect, hasUI: "false" as unknown as boolean })).toBe(false);
     // A function returning non-boolean is equally undeclared.
     expect(hasInteractiveUI({ ...withoutSelect, hasUI: () => 1 as unknown as boolean })).toBe(false);
+  });
+});
+
+// ─── 213 review issue 4②: the DECLARATION reaches CoordinatorContext.hasUI ───
+// The wiring point P0 task 2 created (`resolveDeclaredHasUI(input.roleCtx)`
+// forwarded by createDesignReviewRuntimeContext) is now locked END TO END:
+// a declared false must survive a PRESENT select control, and an undeclared
+// host must keep the key ABSENT so the legacy predicate stays verbatim.
+
+describe("213 review issue 4: createDesignReviewRuntimeContext forwards the declared hasUI (tri-state wiring)", () => {
+  // A session stub is sufficient — the forwarding logic never touches it.
+  const session = {} as unknown as CoordinatorContext["session"];
+
+  function build(roleCtx: Record<string, unknown>): CoordinatorContext {
+    return createDesignReviewRuntimeContext({
+      config: makeTestConfig(),
+      session,
+      interactionSource: "resume",
+      roleCtx,
+      // The SAME host exposes a real select control — the declaration must win.
+      rawUi: { select: selectFn },
+    });
+  }
+
+  it("declared FALSE ⇒ ctx.hasUI === false although a select control is present (false wins)", () => {
+    const ctx = build({ hasUI: false });
+    expect(ctx.hasUI).toBe(false);
+    // the control is STILL forwarded — only the declaration changes
+    expect(ctx.ui?.select).toBeDefined();
+  });
+
+  it("declared TRUE ⇒ ctx.hasUI === true passes through untouched", () => {
+    expect(build({ hasUI: true }).hasUI).toBe(true);
+  });
+
+  it("UNDECLARED ⇒ the key stays ABSENT (legacy `typeof select` semantics preserved verbatim)", () => {
+    const ctx = build({});
+    expect("hasUI" in ctx).toBe(false);
+    expect(ctx.hasUI).toBeUndefined();
   });
 });

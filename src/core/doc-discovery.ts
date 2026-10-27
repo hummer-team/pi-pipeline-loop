@@ -21,6 +21,7 @@
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import type { PipelineConfig, PipelineStage } from "../types";
+import { safeWriteAuditLog } from "../utils/auditLog";
 import {
   DEFAULT_STAGE_DOC_DIRS,
   MAX_DOC_CANDIDATES,
@@ -127,6 +128,33 @@ export function stageDocCandidateFilter(stage: PipelineStage): (fileName: string
 }
 
 /**
+ * 213_Bug code review round 1 (issue 5): honest classification of an fs stat
+ * failure on a DOCUMENT path. ENOENT is the EXPECTED rule ① arm — the recorded
+ * document simply is not there — and stays silent. Every other code (EACCES,
+ * ELOOP, …) is a real filesystem anomaly: an ERROR-level audit line is written
+ * BEFORE the caller's rule ① / fail-open branch proceeds, so a permission or
+ * loop problem can never masquerade as "document missing" without a trace.
+ */
+async function auditUnexpectedStatFailure(
+  operation: string,
+  absPath: string,
+  error: unknown,
+): Promise<void> {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code: unknown }).code)
+      : "unknown";
+  if (code === "ENOENT") return; // rule ① expected absence — silent by design
+  await safeWriteAuditLog("doc_discovery", {
+    action: "fs_stat_anomaly",
+    operation,
+    code,
+    path: absPath,
+    error: error instanceof Error ? error.message : String(error),
+  }, "error");
+}
+
+/**
  * 213 Phase 2 (D15): normalizes a document path recorded in metadata
  * (`meta.requirementDoc`) into a display-ready candidate location.
  *
@@ -155,7 +183,10 @@ export async function resolveCurrentDocOption(
   try {
     const stat = await fsp.stat(absPath);
     if (!stat.isFile()) return null;
-  } catch {
+  } catch (error) {
+    // Issue 5: ENOENT stays silent (rule ① expected); an anomalous code is
+    // error-audited BEFORE the rule ① arm proceeds.
+    await auditUnexpectedStatFailure("resolveCurrentDocOption", absPath, error);
     return null; // missing / unreadable → fail rule ①
   }
   const rel = path.relative(config.projectRoot, absPath);
@@ -241,8 +272,11 @@ export async function listDocCandidates(
   let headMtimeMs = 0;
   try {
     headMtimeMs = (await fsp.stat(current.absPath)).mtimeMs;
-  } catch {
+  } catch (error) {
     // Race after resolution: the pinned row still displays (mtime unused).
+    // Issue 5: the deletion race (ENOENT) stays silent; an anomalous code is
+    // error-audited before the fail-open display continues.
+    await auditUnexpectedStatFailure("listDocCandidates.currentMtime", current.absPath, error);
   }
   const deduped = candidates.filter((c) => path.resolve(c.absPath) !== current.absPath);
   return [

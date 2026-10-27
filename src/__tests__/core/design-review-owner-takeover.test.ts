@@ -68,6 +68,8 @@ const S2 = "/x/third-session.json";
 interface AuditRec {
   event: string;
   message: Record<string, unknown>;
+  /** Captured severity (issue 5: control-failure audit must be ERROR-level). */
+  level?: string;
 }
 
 interface AuditApi {
@@ -84,8 +86,8 @@ function makeAuditCapture(): AuditApi {
     records,
     use() {
       records.length = 0;
-      __setSafeWriteAuditLogOverride(async (event, message) => {
-        records.push({ event, message: message as Record<string, unknown> });
+      __setSafeWriteAuditLogOverride(async (event, message, level) => {
+        records.push({ event, message: message as Record<string, unknown>, level });
       });
     },
     reset() {
@@ -169,7 +171,7 @@ describe("213 P1: evaluateTakeoverOffer verdicts (order: channel → child → i
 describe("213 P1: confirmOwnerTakeover", () => {
   interface MenuCall { title: string; options: readonly string[] }
 
-  it("only the exact confirm option is acceptance; Cancel / unknown / Esc / throw / absent control ⇒ refusal", async () => {
+  it("only the exact confirm option is acceptance; Cancel / unknown / Esc ⇒ refused; throw / absent control ⇒ unavailable", async () => {
     const calls: MenuCall[] = [];
     const router =
       (answer: string | undefined) =>
@@ -178,18 +180,47 @@ describe("213 P1: confirmOwnerTakeover", () => {
         return answer;
       };
     const facts = { ownerLabel: GONE, decisionId: "dec-213", round: 1 };
-    expect(await confirmOwnerTakeover(router(OWNER_TAKEOVER_CONFIRM_OPTION), facts)).toBe(true);
-    expect(await confirmOwnerTakeover(router(OWNER_TAKEOVER_CANCEL_OPTION), facts)).toBe(false);
-    expect(await confirmOwnerTakeover(router("Revise Plan"), facts)).toBe(false);
-    expect(await confirmOwnerTakeover(router(undefined), facts)).toBe(false);
+    expect(await confirmOwnerTakeover(router(OWNER_TAKEOVER_CONFIRM_OPTION), facts)).toBe("accepted");
+    expect(await confirmOwnerTakeover(router(OWNER_TAKEOVER_CANCEL_OPTION), facts)).toBe("refused");
+    expect(await confirmOwnerTakeover(router("Revise Plan"), facts)).toBe("refused");
+    expect(await confirmOwnerTakeover(router(undefined), facts)).toBe("refused");
     expect(
       await confirmOwnerTakeover(async () => {
         throw new Error("menu crash");
       }, facts),
-    ).toBe(false);
-    expect(await confirmOwnerTakeover(undefined, facts)).toBe(false);
+    ).toBe("unavailable");
+    expect(await confirmOwnerTakeover(undefined, facts)).toBe("unavailable");
     // Exactly the two fixed options, confirm first.
     expect(calls[0]!.options).toEqual([OWNER_TAKEOVER_CONFIRM_OPTION, OWNER_TAKEOVER_CANCEL_OPTION]);
+  });
+
+  // 213_Bug review (issue 5): a control failure must be VISIBLE to the caller —
+  // the hook fires exactly on `unavailable`, with the honest cause, and never
+  // on a human answer (accepted/refused).
+  it("issue 5: onControlFailure fires exactly for unavailable (no-control / control-threw), never for a human answer", async () => {
+    const failures: Array<{ cause: string; error?: unknown }> = [];
+    const facts = {
+      ownerLabel: GONE,
+      decisionId: "dec-1",
+      round: 1,
+      onControlFailure: (d: { cause: string; error?: unknown }) => {
+        failures.push(d);
+      },
+    };
+    const ok = async (): Promise<string | undefined> => OWNER_TAKEOVER_CONFIRM_OPTION;
+    const cancel = async (): Promise<string | undefined> => OWNER_TAKEOVER_CANCEL_OPTION;
+    expect(await confirmOwnerTakeover(ok, facts)).toBe("accepted");
+    expect(await confirmOwnerTakeover(cancel, facts)).toBe("refused");
+    expect(failures.length).toBe(0); // human answers never trip the failure hook
+    expect(await confirmOwnerTakeover(undefined, facts)).toBe("unavailable");
+    expect(failures).toEqual([{ cause: "no-control" }]);
+    const boom = async (): Promise<string> => {
+      throw new Error("menu crash");
+    };
+    expect(await confirmOwnerTakeover(boom, facts)).toBe("unavailable");
+    expect(failures.length).toBe(2);
+    expect(failures[1]!.cause).toBe("control-threw");
+    expect((failures[1]!.error as Error).message).toBe("menu crash");
   });
 
   it("the copy echoes the ORIGINAL owner verbatim (D10) — recorded file and 'not recorded' both named", async () => {
@@ -597,6 +628,55 @@ describe("213 P1: presenter takeover wiring on the resume channel (five-step aud
     });
     expect(audit.findBy("decision_owner_takeover").length).toBe(0);
     // ZERO writes: the design-review state is byte-identical.
+    expect(JSON.stringify(h.session.getMeta()!.designReview)).toBe(beforeJson);
+  });
+
+  // 213_Bug review (issue 5): a thrown confirmation dialog is a CONTROL failure.
+  // It must be recorded as an ERROR-level audit with the raw cause and named
+  // `decision_takeover_unavailable` — never `decision_takeover_declined`, which
+  // would claim a human refusal that never happened.
+  it("takeover CONTROL CRASH: error-level control_failure audit + unavailable skip word; declined NEVER appears; zero writes", async () => {
+    const h = makeHarness();
+    const decisionId = await h.createPendingOwnedByGone();
+    const beforeJson = JSON.stringify(h.session.getMeta()!.designReview);
+    audit.use();
+
+    const resumeCtx = h.mkCtx({
+      actor: { isChild: false, sessionFile: PARENT },
+      interactionSource: "resume",
+      select: async (title: string, options: readonly string[]) => {
+        h.menuCalls.push({ title, options });
+        throw new Error("host dialog crash");
+      },
+    });
+    const r = await coordinateDesignReview(resumeCtx, h.session.getMeta()!, "settle");
+    expect(r.status === "handled" && r.action === "pending").toBe(true);
+    expect((r as { reason: string }).reason).toBe("decision_takeover_unavailable");
+
+    // The confirmation WAS attempted (control existed), then crashed.
+    expect(h.menuCalls.length).toBe(1);
+    expect(h.menuCalls[0]!.title).toContain("Owner takeover required");
+
+    // ONE error-level control-failure line carrying the full truth.
+    const controlFailures = audit.findBy("decision_takeover_control_failure");
+    expect(controlFailures.length).toBe(1);
+    expect(controlFailures[0]!.level).toBe("error");
+    expect(controlFailures[0]!.message).toMatchObject({
+      decisionId,
+      round: "1",
+      ownerLabel: GONE,
+      cause: "control-threw",
+      error: "host dialog crash",
+    });
+
+    // The skip audit uses the NEW honest word; the human-facing "declined"
+    // word is absent from every captured line.
+    const skipped = audit.findBy("decision_menu_skipped");
+    expect(skipped.length).toBe(1);
+    expect(skipped[0]!.message.reason).toBe("decision_takeover_unavailable");
+    expect(audit.actions()).not.toContain("decision_takeover_declined");
+    expect(audit.findBy("decision_owner_takeover").length).toBe(0);
+    // ZERO writes: fail closed, state byte-identical.
     expect(JSON.stringify(h.session.getMeta()!.designReview)).toBe(beforeJson);
   });
 

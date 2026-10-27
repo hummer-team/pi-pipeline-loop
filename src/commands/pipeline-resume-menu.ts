@@ -5,10 +5,15 @@
  * executors live here so `pipeline-resume.ts` keeps only dispatch.
  *
  * Contract (213 plan, Phase 3 task 1-3):
- * - `buildResumeMenu(kind, meta, currentDocRel?)` — the 3-row per-state menus
- *   (default FIRST + "(default)" suffix per the flow-state choose_stage
+ * - `buildResumeMenu(kind, meta, currentDocRel?, extras?)` — the 3-row per-state
+ *   menus (default FIRST + "(default)" suffix per the flow-state choose_stage
  *   convention); intents resolve by OPTION INDEX (labels are user-visible text,
- *   never a lookup key).
+ *   never a lookup key). 213 review round 1: the skeleton is constructed HONEST
+ *   by derivation — a non-`RESUMABLE_STAGES` aborted stage never sees a Restore
+ *   row (issue 2), a child running skeleton never carries the destructive
+ *   "start a new pipeline" row (issue 3), and titles keep the pre-213 visible
+ *   facts — `terminateReason`, the unresolvable raw doc, the row-6 coordinator
+ *   reason (issue 6).
  * - `runResumeSkeleton` — present, resolve, dispatch to one of the executors.
  * - `runRestoreBranch` (D5) — aborted in-place restore; design-review re-entry
  *   runs the SAME authorisation gate as `choose_stage`; a stage outside
@@ -75,6 +80,17 @@ export interface ResumeMenu {
   intents: ResumeMenuIntent[];
 }
 
+/**
+ * Caller-side facts that make the skeleton honest (213 review round 1).
+ * Deliberately OPTIONAL: construction stays truthful for every legacy caller.
+ */
+export interface ResumeMenuExtras {
+  /** Issue 3: child session ⇒ running skeleton offers continue/cancel ONLY. */
+  isChild?: boolean;
+  /** Issue 6: D2 row-6 continuation ⇒ the coordinator's pending reason in the title. */
+  recoveryPendingReason?: string;
+}
+
 /** Result of a menu branch: `changed` is true only when meta actually moved. */
 export interface ResumeBranchResult {
   changed: boolean;
@@ -128,27 +144,79 @@ export const NEW_PIPELINE_CONFIRM_OPTION = "Discard and start a new pipeline";
  * recorded doc is empty/unreadable — rule ①): the default row then degrades to
  * the documented `(no default document)` label and execution enters the doc
  * menu instead (213 Phase 3, plan task 1 last paragraph).
+ *
+ * 213 review round 1 — the skeleton is constructed HONEST by derivation:
+ * - issue 2: `aborted` derives restorability from `RESUMABLE_STAGES` HERE. A
+ *   stage outside it can only be rebuilt, so it gets the new-pipeline skeleton
+ *   (first row = new build, NO Restore row) instead of a Restore label whose
+ *   execution silently degrades to destructive rebuild.
+ * - issue 3: with `extras.isChild` the running skeleton offers
+ *   continue-current / cancel ONLY — a child never sees the destructive
+ *   "start a new pipeline" row (the chosen role policy, plan P3 task 4).
+ * - issue 6: titles carry the pre-213 visible facts — `terminateReason`, the
+ *   raw recorded doc when unresolvable, and the row-6 coordinator reason —
+ *   so an abnormal path never loses "why this happened" from the user's view.
  */
 export function buildResumeMenu(
   kind: ResumeMenuKind,
   meta: SessionMeta,
   currentDocRel?: string,
+  extras?: ResumeMenuExtras,
 ): ResumeMenu {
   const stage = meta.currentStage;
   switch (kind) {
     case "aborted": {
+      // Issue 6: the facts the pre-213 sentence showed (terminateReason; the
+      // recorded doc when it does not resolve to a readable file).
+      const facts: string[] = [];
+      if (typeof meta.terminateReason === "string" && meta.terminateReason.trim().length > 0) {
+        facts.push(meta.terminateReason.trim());
+      }
+      const rawDoc = typeof meta.requirementDoc === "string" ? meta.requirementDoc.trim() : "";
+      if (rawDoc.length > 0 && currentDocRel === undefined) {
+        facts.push(`recorded doc unresolvable: ${rawDoc}`);
+      }
+      const factSuffix = facts.length > 0 ? ` (${facts.join("; ")})` : "";
+      // Issue 2: restorability is decided HERE, mirroring runRestoreBranch's
+      // own RESUMABLE_STAGES guard — label and execution can no longer diverge.
+      if (!RESUMABLE_STAGES.includes(stage)) {
+        return {
+          title:
+            `Pipeline aborted at "${stage}"${factSuffix} — this stage cannot be ` +
+            `restored in place; choose how to proceed:`,
+          options: ["Start a new pipeline at a chosen stage… (default)", "Cancel"],
+          intents: [{ kind: "recreate-with-selection" }, { kind: "cancel" }],
+        };
+      }
       const first = currentDocRel !== undefined
         ? `Restore stage "${stage}" with "${currentDocRel}" (default)`
         : `Restore stage "${stage}" (no default document)`;
       return {
-        title: `Pipeline aborted at "${stage}" — choose how to resume:`,
+        title: `Pipeline aborted at "${stage}"${factSuffix} — choose how to resume:`,
         options: [first, "Start a new pipeline at a chosen stage…", "Cancel"],
         intents: [{ kind: "restore-current-stage" }, { kind: "recreate-with-selection" }, { kind: "cancel" }],
       };
     }
     case "running": {
+      // Issue 6 (D2 row 6): the continued pending carries the coordinator's
+      // reason into the title — the drift fact stays user-visible.
+      const pendingReason = extras?.recoveryPendingReason?.trim();
+      const pendingSuffix = pendingReason !== undefined && pendingReason.length > 0
+        ? ` (recovery pending: ${pendingReason})`
+        : "";
+      // Issue 3: child sessions continue or cancel — never rebuild destructively.
+      if (extras?.isChild) {
+        return {
+          title: `Pipeline is running at "${stage}"${pendingSuffix} — choose an action:`,
+          options: [
+            `Continue current stage "${stage}" (default)`,
+            "Cancel",
+          ],
+          intents: [{ kind: "continue-current" }, { kind: "cancel" }],
+        };
+      }
       return {
-        title: `Pipeline is running at "${stage}" — choose an action:`,
+        title: `Pipeline is running at "${stage}"${pendingSuffix} — choose an action:`,
         options: [
           `Continue current stage "${stage}" (default)`,
           "Start a new pipeline at a chosen stage…",
@@ -514,10 +582,16 @@ async function resolveCurrentDocRelPath(
  * Present one skeleton and dispatch its intent. The command has ALREADY
  * decided `menuCapable` once (D18); this function still fails closed through
  * the truthiness guard when the control is absent anyway.
+ *
+ * 213 review (issues 2/3/6): `extras` is passed through to `buildResumeMenu`
+ * unchanged. The skeleton's own intents are now honest by construction (no
+ * Restore row on a non-restorable stage), so dispatch is PURELY intent-driven
+ * — the previous defensive `aborted && idx === 0` special case is retired.
  */
 export async function runResumeSkeleton(
   deps: ResumeMenuDeps,
   kind: ResumeMenuKind,
+  extras?: ResumeMenuExtras,
 ): Promise<ResumeBranchResult> {
   const { ctx, config, ui, meta } = deps;
   const select = ctx.ui?.select;
@@ -527,7 +601,7 @@ export async function runResumeSkeleton(
 
   // The default row only claims a doc when it genuinely resolves (rule ①).
   const currentDocRel = await resolveCurrentDocRelPath(config, meta.requirementDoc);
-  const menu = buildResumeMenu(kind, meta, currentDocRel);
+  const menu = buildResumeMenu(kind, meta, currentDocRel, extras);
   const selection = await select(menu.title, menu.options);
   const idx = selection === undefined ? -1 : menu.options.indexOf(selection);
   const intent = resolveResumeMenuIntent(menu, selection);
@@ -551,10 +625,6 @@ export async function runResumeSkeleton(
           startStage: meta.currentStage,
           ...(currentDocRel !== undefined ? { requirementDoc: currentDocRel } : {}),
         });
-      }
-      if (kind === "aborted" && idx === 0) {
-        // Unreachable today (aborted index 0 is restore) — defensive symmetry.
-        return runRestoreBranch(deps);
       }
       return runNewPipelineBranch(deps);
     }
