@@ -18,7 +18,7 @@ import { safeWriteAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { effectiveMax, deriveReworkLoopGate, remainingRoundsOf } from "../utils/stage-visit";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import type { TerminalCompactCtx } from "./terminal-compact";
-import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER, DEFAULT_DECISION_WAIT_TIMEOUT_MS } from "../constants";
+import { DECISION_DISMISS_INTERRUPT_MS, CANONICAL_STAGE_ORDER, DEFAULT_DECISION_WAIT_TIMEOUT_MS, HUMAN_ONLY_DECISION_REASONS } from "../constants";
 import { registerSession } from "../utils/session-registry";
 import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
@@ -2074,8 +2074,11 @@ export function scheduleDecisionRetry(
  * present the menu or schedule retries — the owner side is responsible
  * for rendering the decision menu (via settle re-popup, shortcut, replay,
  * or /pipeline-start). Degradation: missing _ctx or detection error → owner.
+ *
+ * 216 P3 (review R6-7): EXPORTED — `stage-exit-refusal` reuses this single
+ * role judgement (same fallback semantics) instead of a second degraded copy.
  */
-function detectHostRole(ctx: FlowStateCtx): "owner" | "child" {
+export function detectHostRole(ctx: FlowStateCtx): "owner" | "child" {
   try {
     const { isChild } = detectSessionRole(buildRoleCtxForGate(ctx));
     return isChild ? "child" : "owner";
@@ -2310,10 +2313,17 @@ export async function requestDecision(
 
   // Human slot first (Q12=A): present the menu; the deadline arms inside
   // runDecisionMenu and converges via the injected onDecisionDeadline closure.
+  // 216 P3 (R5-Q4-A): a human-only reason keeps the menu until a human decides
+  // (no decisionWaitTimeoutMs → no deadline-policy/abort while the menu is up).
+  // The no-UI branch above stays untouched: `decision_provider_absent` remains
+  // the headless convergence for the same reason.
+  const humanOnly = HUMAN_ONLY_DECISION_REASONS.includes(reason);
   return ensureDecisionMenu(menuCtx, meta, config, {
     ...menuOpts,
-    decisionDeadlineMs:
-      config.decisionPolicy?.decisionWaitTimeoutMs ?? DEFAULT_DECISION_WAIT_TIMEOUT_MS,
+    ...(humanOnly ? {} : {
+      decisionDeadlineMs:
+        config.decisionPolicy?.decisionWaitTimeoutMs ?? DEFAULT_DECISION_WAIT_TIMEOUT_MS,
+    }),
   });
 }
 

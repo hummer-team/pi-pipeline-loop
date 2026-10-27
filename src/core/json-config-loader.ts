@@ -66,6 +66,10 @@ const KNOWN_POLICY_REASONS = new Set<string>([
   "loop_overflow",
   // 210 Phase 2: the reason written by the stage watchdog's freeze (5.4).
   "stage_timeout",
+  // 216 P3: repeated stage-exit refusal freeze (auto chain, decision menu).
+  // Registered so a user following the guide's decisionPolicy advice for this
+  // reason does not get an unknown-reason warning on every config load (R6-9).
+  "stage_exit_refused_overflow",
   "transient_retry_overflow",
   "verify_attempt_overflow",
   "verify_config_error",

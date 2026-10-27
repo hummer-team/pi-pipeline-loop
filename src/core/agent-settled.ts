@@ -60,6 +60,10 @@ import { classifyDesignReviewFlow } from "./design-review/state";
 import { verifyOwnerWakeTurn, recordAwaitingOwnerConsumption } from "./stage-executor/turn-source";
 // 194 Phase 3 (task 7): closed-loop executor ownership gate for the 189 bypass
 import { hasLiveExecutorRun } from "./stage-executor/commit-guard";
+// 216 P3 (T2.3): child settle must DEFER an owner-bound run (isChild && bound)
+import { boundActiveRun } from "./stage-executor/transition-commit";
+// 216 P3 (T2.3): single counting/escalation/fuse entry for the deferred refusal
+import { recordStageExitRefusal } from "./stage-exit/stage-exit-refusal";
 
 /**
  * Creates the `agent_settled` hook that logs when the agent stabilizes
@@ -921,6 +925,39 @@ export function createAgentSettled(
             return;
           }
           // no-gate (marker already present) — fall through to autoAdvanceAfterVerify
+        }
+
+        // 216 P3 (review R6-5): a CHILD session must not consume/advance an
+        // OWNER-bound run. Placed AFTER the confirm gate so the gate keeps its
+        // child-suppression / owner-reprompt semantics untouched; this judgement
+        // only replaces the AUTO advance of a verified pass.
+        // JUDGEMENT = `isChild && boundActiveRun(...)`: never simplify to `isChild`
+        // (that would block every legitimate child-driven advance, 216 R2-Q1-B).
+        // NOTE (honest semantics): verification ALREADY ran above (runVerification
+        // writes no meta) — the defer promise is "no usage / no advance / no spawn /
+        // no wake / no verifyAttempts", not "zero verify".
+        const freshForDefer = ctx.session.getMeta() ?? meta;
+        const boundRunForDefer = boundActiveRun(freshForDefer, freshForDefer.currentStage);
+        if (detectSessionRole(ctx).isChild && boundRunForDefer) {
+          await writeAuditLog("stage_settle_child_deferred", {
+            pipelineId: freshForDefer.pipelineId,
+            stage: freshForDefer.currentStage,
+            reason: "bound_run_owner_mismatch",
+            runId: boundRunForDefer.binding.runId,
+          }, "warn");
+          await recordStageExitRefusal(
+            { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx } as Parameters<typeof recordStageExitRefusal>[0],
+            config,
+            {
+              stage: freshForDefer.currentStage,
+              fromStage: freshForDefer.currentStage,
+              toStage: stageConfig.nextStage,
+              reason: "bound_run_owner_mismatch",
+              source: "hook_settle",
+            },
+            { onStageChanged: buildOnStageChangedCallback(ctx, config) },
+          );
+          return;
         }
 
         // Capture stage names BEFORE advance mutates meta.currentStage

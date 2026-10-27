@@ -394,6 +394,29 @@ export interface VerifyResultSnapshot {
  */
 export type FlowState = "running" | "blocked" | "aborted";
 
+// ─── Stage-Exit Refusal Accounting ──────────────────────────────────────────
+
+/**
+ * 216 P3: repeated stage-exit refusal / defer accounting (auto chain only).
+ * Written exclusively by `recordStageExitRefusal` (src/core/stage-exit/
+ * stage-exit-refusal.ts) — the single counting/escalation/fuse entry for the
+ * AUTO advance chain. The tool path never touches this (216 §4 boundary).
+ */
+export interface StageExitRefusal {
+  stage: PipelineStage;
+  fromStage: PipelineStage;
+  toStage: PipelineStage | null;
+  /** Machine-readable refusal cause (e.g. `bound_exit_refused:*` / `bound_run_owner_mismatch`). */
+  reason: string;
+  /** Consecutive count for the CURRENT cause; a different cause restarts at 1. */
+  count: number;
+  lastAt: number;
+  /** Freezes burned in the current stage visit (continue keeps it, new period clears it). */
+  frozenCount: number;
+  /** Escalation credential: equals the broadcast payload `at` (owner-side dedup). */
+  escalatedAt?: number;
+}
+
 // ─── Session Metadata ────────────────────────────────────────────────────────
 
 /**
@@ -479,6 +502,14 @@ export interface SessionMeta {
    * freeze. Consumed by Phase 5/6 escalation gating.
    */
   menuEscalationPending?: boolean;
+
+  /**
+   * 216 P3: repeated stage-exit refusal / defer accounting for the AUTO
+   * advance chain (single writer: recordStageExitRefusal). Cleared on a real
+   * transition, continue-resume restarts `count` but keeps `frozenCount`
+   * (visit-scoped fuse); new period / quit / handoff clear the whole field.
+   */
+  stageExitRefusal?: StageExitRefusal;
 
   /**
    * @deprecated Use flowState instead. Kept for backward-compatible reading only.

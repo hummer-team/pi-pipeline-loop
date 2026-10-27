@@ -158,7 +158,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
             `Cannot handoff. Current stage summary is ` +
             `'${currentSummary?.status || "missing"}'. ` +
             `Please generate and validate summary first.`,
-          help: "Run: generate_stage_summary, then validate_summary",
+          help: "Owner session only — run: generate_stage_summary, then validate_summary",
         };
       }
 
@@ -249,6 +249,9 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         stageStartTime: Date.now(),
         loopCount: 0,
         currentStepIndex: 0,
+        // 216 P3: a real handoff transition clears the refusal counter too
+        // (same migration semantics as verify-advance's transitionPatch).
+        stageExitRefusal: undefined,
         contextFiles: {
           ...(freshForAnchor.contextFiles || {}),
           [nextStage]: [currentSummary.path],
@@ -302,6 +305,8 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
           stageStartTime: Date.now(),
           loopCount: 0,
           currentStepIndex: 0,
+          // 216 P3: not-bound branch — same migration clear as transitionPatch
+          stageExitRefusal: undefined,
           contextFiles: {
             ...contextFiles,
             [nextStage]: [currentSummary.path],

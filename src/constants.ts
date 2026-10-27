@@ -79,6 +79,30 @@ export const DEFAULT_SPAWN_WAIT_TIMEOUT_MS = 120_000;
 export const DEFAULT_DECISION_WAIT_TIMEOUT_MS = 600_000;
 
 /**
+ * 216 P3: owner-wake channel reason for a RUNNING-state stage-exit refusal
+ * (first refusal / defer from a child origin). Deliberately distinct from the
+ * frozen 203 channel and the confirm-gate 211 channel — the owner-side arm
+ * matches on the `stageExitRefusal.escalatedAt` credential, no freeze needed.
+ */
+export const STAGE_EXIT_REFUSED_ESCALATION_REASON = "stage_exit_refused";
+
+/**
+ * 216 P3: freeze/abort reason when the same-cause stage-exit refusal crosses
+ * the freeze threshold (2nd occurrence) or the per-visit fuse budget
+ * (`stage_exit_refusal_overflow` audit family). Registered in
+ * KNOWN_POLICY_REASONS so users may configure decisionPolicy rules for it.
+ */
+export const STAGE_EXIT_REFUSED_OVERFLOW_REASON = "stage_exit_refused_overflow";
+
+/**
+ * 216 P3 (R5-Q4-A): freeze reasons that must keep the decision menu open for
+ * a HUMAN when a UI exists — no decision-wait deadline is armed, so the
+ * deadline policy can never auto-converge (continue/abort) these menus.
+ * Headless (no-UI) convergence via `decision_provider_absent` stays unchanged.
+ */
+export const HUMAN_ONLY_DECISION_REASONS: ReadonlyArray<string> = [STAGE_EXIT_REFUSED_OVERFLOW_REASON];
+
+/**
  * 210 Phase 0: default stage no-progress idle ceiling for the dual watchdog
  * (requirement 5.2). Overridable via `watchdog.stageIdleTimeoutMs`.
  */

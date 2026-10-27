@@ -29,6 +29,9 @@ import {
   commitBoundStageExit,
   commitBoundFailureRecord,
 } from "./stage-executor/transition-commit";
+// 216 P3: single counting/escalation/fuse entry for refused auto advances
+import { recordStageExitRefusal } from "./stage-exit/stage-exit-refusal";
+import type { StageExitRefusalOutcome, StageExitRefusalSource } from "./stage-exit/stage-exit-refusal";
 import { computeResultKey } from "./stage-executor/run-state";
 import {
   collectStageExitEvidence,
@@ -56,6 +59,13 @@ interface VerifyAdvanceCtx {
   pi?: { sendUserMessage?: (msg: string, opts?: Record<string, unknown>) => void; events?: unknown };
   /** Phase 3 (195_Bug): PipelineConfig for edge classification */
   config: PipelineConfig;
+  /**
+   * 216 P3 (review R6-7): opaque runtime-ctx passthrough so the refusal
+   * accounting can resolve the true session role (child freezes must not
+   * pop the menu in the child TUI). All three auto-chain callers already
+   * carry it at runtime; this only makes the type honest.
+   */
+  _ctx?: unknown;
 }
 
 /**
@@ -180,6 +190,8 @@ export interface VerifyPassReturn {
 export interface StageAdvanceOutcome {
   advanced: boolean;
   blockReason?: string;
+  /** 216 P3: refusal accounting result (observability only — never a branch). */
+  refusalOutcome?: StageExitRefusalOutcome;
 }
 
 /**
@@ -188,6 +200,14 @@ export interface StageAdvanceOutcome {
  */
 function resolveStageExitCaller(opts: { method: "tool" | "rule"; caller?: StageExitCaller }): StageExitCaller {
   return opts.caller ?? (opts.method === "tool" ? "tool" : "auto_advance");
+}
+
+/**
+ * 216 P3: the auto chain never runs from the tool path, so `"tool"` can never be a
+ * refusal source — map anything unexpected to `auto_advance` (no non-union value).
+ */
+function toRefusalSource(caller: StageExitCaller | undefined): StageExitRefusalSource {
+  return caller === "fix_executor" || caller === "confirm_approve" ? caller : "auto_advance";
 }
 
 /**
@@ -485,6 +505,10 @@ export async function applyVerifyPass(
       reviewConclusionDeclared: undefined, // Clear 163 declaration flag on stage transition
       precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
       transientRetryCount: undefined, // 189 Phase 2: clear retry counter on stage transition
+      // 216 P3: a COMMITTED transition is the real boundary — the refusal
+      // counter must not leak into the next stage visit (same semantics as
+      // verifyAttempts: 0 two lines above; R3-Q2-A single carrier).
+      stageExitRefusal: undefined,
     };
 
     // 194 Phase 3 (C5): a bound stage exit is ONE strict commit — transition,
@@ -950,7 +974,7 @@ export async function applyVerifyFail(
       if (typeof rawSelect === "function") {
         flowUI.select = rawSelect;
       }
-      await freezeAndPrompt(ctx, meta, "verify_attempt_overflow", config, {
+      await freezeAndPrompt(ctx as Parameters<typeof freezeAndPrompt>[0], meta, "verify_attempt_overflow", config, {
         ui: flowUI,
         onStageChanged: buildOnStageChangedCallback(ctx, config),
       });
@@ -1059,7 +1083,21 @@ export async function autoAdvanceAfterVerify(
     // refused / recheck barrier / budget exceeded), so this path must not
     // emit exit evidence, must not dispatch, must not wake — the run stays
     // exactly as persisted for a reliable retry.
-    return { advanced: false, blockReason: verdict.blockReason ?? "advance_blocked" };
+    const reason = verdict.blockReason;
+    // 216 P3 (review R6-4): ONLY a bound-exit refusal means "an owner-bound run
+    // still owns this stage". recheck_blocked / budget_exceeded are healthy stalls
+    // with their own convergence (193 recheck barrier / loop-breaker `loop_overflow`):
+    // keep the P1 zero-side-effect exit, do NOT count, do NOT escalate, do NOT freeze.
+    if (reason?.startsWith("bound_exit_refused:") === true) {
+      const outcome = await recordStageExitRefusal(
+        { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx },
+        config,
+        { stage: fromStage, fromStage, toStage, reason, source: toRefusalSource(options?.caller) },
+        { onStageChanged: buildOnStageChangedCallback(ctx, config) },
+      );
+      return { advanced: false, blockReason: reason, refusalOutcome: outcome };
+    }
+    return { advanced: false, blockReason: reason ?? "advance_blocked" };
   }
 
   // 210 Phase 4 / review issue 3 (Medium): collect the exited stage's evidence

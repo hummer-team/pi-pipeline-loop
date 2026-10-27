@@ -31,6 +31,9 @@ import {
   buildConfirmGatePendingWakeSummary,
   currentStageVisitOrder,
 } from "./confirm-gate-escalation";
+// 216 P3 (R5-Q2-A): running-state stage-exit refusal channel (no frozen state,
+// credential = `stageExitRefusal.escalatedAt` matched against payload.at)
+import { STAGE_EXIT_REFUSED_ESCALATION_REASON } from "../constants";
 
 /**
  * Owner escalation observer dependencies.
@@ -134,10 +137,15 @@ export function evaluateEscalationWake(
   // 211 Phase 1: reason dispatch. The 203 frozen predicate stays VERBATIM (a
   // relaxation would break the `menuEscalationPending` dedup semantics); the
   // confirm-gate pending channel matches on its own arm credential instead.
+  // 216 P3 (R5-Q2-A): the stage-exit refusal channel is a THIRD such arm —
+  // running state + `escalatedAt === payload.at` credential (no freeze fact).
   const confirmPending = payload.reason === CONFIRM_GATE_ESCALATION_REASON;
+  const stageExitRefused = payload.reason === STAGE_EXIT_REFUSED_ESCALATION_REASON;
   const matched = confirmPending
     ? matchesConfirmPendingEscalation(payload, meta)
-    : matchesFrozenEscalation(payload, meta);
+    : stageExitRefused
+      ? matchesStageExitRefusedEscalation(payload, meta)
+      : matchesFrozenEscalation(payload, meta);
 
   if (!matched) {
     deps.audit("owner_wake_escalation_skipped", {
@@ -165,7 +173,9 @@ export function evaluateEscalationWake(
   if (!deps.sendFollowUp(
     confirmPending
       ? buildConfirmGatePendingWakeSummary(payload.stage)
-      : buildEscalationWakeSummary(payload),
+      : stageExitRefused
+        ? buildStageExitRefusedWakeSummary(payload.stage)
+        : buildEscalationWakeSummary(payload),
   )) {
     // 211 Phase 1: undelivered wake — register the skip AND give the user a
     // visible, actionable fallback (no retry, no timers, no popups).
@@ -207,6 +217,33 @@ function matchesConfirmPendingEscalation(
   if (!arm || arm.stage !== payload.stage) return false;
   if (arm.visitOrder !== currentStageVisitOrder(meta)) return false;
   return getFlowState(meta) === "running" && !isFrozen(meta);
+}
+
+/**
+ * 216 P3: predicate for the RUNNING-state stage-exit refusal wake channel.
+ * There is no frozen fact and no menuEscalationPending to dedup on — the arm
+ * credential itself is the dedup: `meta.stageExitRefusal.escalatedAt` equals
+ * the broadcast payload `at`, and the refusal is still the CURRENT stage's.
+ * A `blocked` state belongs to the frozen 203 channel, never to this arm.
+ */
+function matchesStageExitRefusedEscalation(
+  payload: EscalationPayload,
+  meta: SessionMeta,
+): boolean {
+  if (meta.pipelineId !== payload.pipelineId) return false;
+  if (payload.stage !== meta.currentStage) return false;
+  if (getFlowState(meta) !== "running") return false;
+  return meta.stageExitRefusal?.escalatedAt === payload.at;
+}
+
+/**
+ * 216 P3: owner-readable summary for the running-state refusal wake. Mentions
+ * `stage_advance` explicitly so the owner knows WHICH session runs the retry
+ * (the child could not consume its owner-bound run).
+ */
+function buildStageExitRefusedWakeSummary(stage: PipelineStage): string {
+  return `Stage "${stage}" advance was refused: an unconsumed owner-bound run still owns this stage. `
+    + `Run stage_advance from the main (owner) session. If it is refused again the pipeline freezes into the decision menu.`;
 }
 
 /**

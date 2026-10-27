@@ -10,6 +10,8 @@ import crypto from "node:crypto";
 import type { PipelineConfig, Tool, SessionMeta } from "../types";
 import { writeAuditLog } from "../utils/auditLog";
 import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
+// 216 P3: owner-only guard for the human summary gate
+import { detectSessionRole } from "../core/session-role";
 
 /**
  * Creates the `validate_summary` tool.
@@ -60,6 +62,24 @@ export function createValidateSummary(config: PipelineConfig): Tool {
         return { message: DORMANT_NO_PIPELINE_MESSAGE };
       }
       const meta: SessionMeta = rawMeta;
+
+      // 216 P3 (R1-Q4-A / R4-Q6-A): validate_summary is the HUMAN gate of the
+      // summary chain — the audited subagent itself must never approve it.
+      // Owner-only zero-side-effect guard (placed before any meta/summary read).
+      const role = detectSessionRole(ctx as Parameters<typeof detectSessionRole>[0]);
+      if (role.isChild) {
+        await writeAuditLog("summary_validate_refused", {
+          pipelineId: meta.pipelineId,
+          stage: args.stage as string,
+          reason: "child_caller",
+          ...(role.sessionFile ? { sessionFile: role.sessionFile } : {}),
+        }, "warn");
+        return {
+          success: false,
+          error: "validate_summary is a human gate and must be run from the owner (main) session.",
+        };
+      }
+
       const stage = args.stage as string;
       const isApproved = args.isApproved as boolean;
       const comment = (args.comment as string) ?? "";

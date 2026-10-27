@@ -54,6 +54,9 @@ export function createPipelineQuitCommand(config: PipelineConfig): Command {
         verifyAttempts: 0,
         verifyFailures: [],
         sessionAllowedWritePaths: [],
+        // 216 P3: quitting is a pipeline boundary — the refusal counter must
+        // not leak into whatever pipeline starts next.
+        stageExitRefusal: undefined,
       });
 
       // Phase 1 (197): set audit routing context before writing audit

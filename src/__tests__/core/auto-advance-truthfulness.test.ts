@@ -192,9 +192,14 @@ describe("216 P1: refused bound exit breaks the wake loop truthfully", () => {
 
     // The verdict is machine-readable and exact (R6-4: bound refusals carry
     // the `bound_exit_refused:<reason>` code, never a bare message).
+    // 216 P3: the refusal is now ALSO counted — a child-origin first refusal
+    // escalates the owner once (running-state arm). The truthfulness fields
+    // and the zero-evidence/zero-wake assertions below are unchanged by the
+    // accounting (counting never emits evidence, wake or dispatch).
     expect(outcome).toEqual({
       advanced: false,
       blockReason: "bound_exit_refused:owner_unproven:child_caller",
+      refusalOutcome: "escalated",
     });
 
     // Nothing moved: the run stays pending for a reliable retry.

@@ -174,3 +174,66 @@ describe("validate_summary — versioned file (143)", () => {
     expect(updated).toContain('"version": 2');
   });
 });
+
+// ─── 216 P3: owner-only human gate guard ─────────────────────────────────────
+
+describe("validate_summary — child caller refused (216 P3)", () => {
+  it("refuses a child caller before any summary read or meta write (zero side effects)", async () => {
+    const TMP = join(tmpdir(), "pi-validate-child-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      pipelineId: `pipe-validate-child-${Date.now()}`,
+      // Deliberately NON-EXISTENT path: any read past the guard would throw,
+      // so a clean refusal result also proves the zero-side-effect placement.
+      summaries: { develop: { path: join(TMP, "no-such-summary.md"), hash: "abc", status: "pending" as const } },
+    });
+    const ctx = createCtx(meta) as any;
+    // Role evidence consumed by detectSessionRole: parent header proves child.
+    ctx._ctx = {
+      sessionManager: {
+        getHeader: () => ({ parentSession: "/tmp/owner.jsonl" }),
+        getSessionName: () => "develop-executor#a1b2c3d4",
+        getSessionFile: () => "/tmp/child.jsonl",
+      },
+    };
+
+    const tool = createValidateSummary(config);
+    const result = (await tool.execute({ stage: "develop", isApproved: true }, ctx as any)) as any;
+
+    expect(result).toEqual({
+      success: false,
+      error: "validate_summary is a human gate and must be run from the owner (main) session.",
+    });
+    // No meta delta, frontmatter status untouched (audited refusal only).
+    expect(ctx.updates).toHaveLength(0);
+    expect(meta.summaries.develop.status).toBe("pending");
+
+    const audit = await readFile(auditLogFileFor(join(TMP, ".pi", "audit"), meta.pipelineId), "utf-8");
+    expect(audit).toContain("[WARN] summary_validate_refused");
+    expect(audit).toContain("reason=child_caller");
+  });
+
+  it("owner ctx WITHOUT sessionManager evidence still validates (no regression, isChild=false)", async () => {
+    const TMP = join(tmpdir(), "pi-validate-owner-no-evidence-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const summaryPath = join(TMP, "develop-owner-side.md");
+    await writeFile(summaryPath, `---\n${JSON.stringify({ ...SAMPLE_FM, pipeline_id: "pipe-evidence" })}\n---\n# Body\nContent`);
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      pipelineId: `pipe-evidence-${Date.now()}`,
+      summaries: { develop: { path: summaryPath, hash: "abc", status: "pending" as const } },
+    });
+    const ctx = createCtx(meta);
+
+    const tool = createValidateSummary(config);
+    const result = (await tool.execute({ stage: "develop", isApproved: true }, ctx as any)) as any;
+
+    // createCtx carries no `_ctx` at all → degradation → owner → proceeds.
+    expect(result.success).toBe(true);
+    const updated = await readFile(summaryPath, "utf-8");
+    expect(updated).toContain('"validation_status": "valid"');
+  });
+});

@@ -31,12 +31,15 @@ import { DEFAULT_MAX_LOOP_CYCLES } from "../constants";
  * Covers all per-cycle/per-stage computation counters so the pipeline can hit
  * its thresholds again cleanly after resuming (acceptance: 回归初始值).
  *
- * @param meta - Current SessionMeta snapshot (currently UNUSED for the list —
- *               kept for signature symmetry/future conditional resets)
+ * @param meta - Current SessionMeta snapshot (216 P3: the stage-exit refusal
+ *               counter is conditionally reset — `count` restarts but the
+ *               visit-scoped `frozenCount` budget SURVIVES a continue, so a
+ *               second same-visit overflow aborts instead of re-opening the
+ *               menu forever; a new period clears the whole field)
  * @param config - PipelineConfig for maxLoopCycles derivation
  */
 export function buildContinueResetFields(
-  _meta: SessionMeta | undefined,
+  meta: SessionMeta | undefined,
   config: PipelineConfig,
 ): Partial<SessionMeta> {
   return {
@@ -67,6 +70,13 @@ export function buildContinueResetFields(
 
     // Verification bookkeeping
     lastVerifyResult: undefined,
+
+    // 216 P3: continue grants a fresh attempt window but keeps the visit's
+    // freeze history (frozenCount drives "same visit, second overflow →
+    // abort"). The one-shot escalatedAt credential is consumed on resume.
+    ...(meta?.stageExitRefusal
+      ? { stageExitRefusal: { ...meta.stageExitRefusal, count: 0, escalatedAt: undefined } }
+      : {}),
   };
 }
 
@@ -80,11 +90,11 @@ export function buildContinueResetFields(
  * @param config - PipelineConfig for maxLoopCycles derivation
  */
 export function buildNewPeriodResetFields(
-  _meta: SessionMeta | undefined,
+  meta: SessionMeta | undefined,
   config: PipelineConfig,
 ): Partial<SessionMeta> {
   return {
-    ...buildContinueResetFields(_meta, config),
+    ...buildContinueResetFields(meta, config),
 
     // Fresh stage chain
     currentStage: "clarify" as PipelineStage,
@@ -106,6 +116,11 @@ export function buildNewPeriodResetFields(
     // numeric visitOrder collision). Continue-resume keeps both by design.
     confirmGateReask: undefined,
     confirmGateEscalation: undefined,
+
+    // 216 P3: a NEW period is a fresh visit chain — the refusal counter clears
+    // COMPLETELY (continue above only zeroes `count`; here even the visit-scoped
+    // `frozenCount` budget is no longer relevant to the new stage visits).
+    stageExitRefusal: undefined,
 
     // Spawn residue (RC2: cross-period residue breaks re-dispatch)
     pendingSpawns: {},
