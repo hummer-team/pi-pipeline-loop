@@ -48,11 +48,27 @@ export interface StageExitRefusalCtx {
   _ctx?: unknown;
   pi?: unknown;
   ui?: FlowStateCtx["ui"];
+  /**
+   * 217 review round 4 (issue 1, High): declared capability is part of the
+   * CONTRACT (same "role evidence must enter the contract" precedent as
+   * `_ctx`). The T2.2/T2.3 frozen-menu gates read `ctx.hasUI`; dropping it
+   * at the `toFlowCtx` boundary silently degrades a declared
+   * `hasUI=false` host to "undeclared" and re-opens the menu on the
+   * stage-exit overflow freeze path.
+   */
+  hasUI?: boolean | (() => boolean);
 }
 
 /** The only cast: `_ctx` is opaque pass-through (same idiom as flow-state's buildRoleCtxForGate). */
 function toFlowCtx(ctx: StageExitRefusalCtx): FlowStateCtx {
-  return { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx } as unknown as FlowStateCtx;
+  return {
+    session: ctx.session,
+    ui: ctx.ui,
+    pi: ctx.pi,
+    _ctx: ctx._ctx,
+    // 217 round 4: declared capability survival through the boundary cast.
+    hasUI: ctx.hasUI,
+  } as unknown as FlowStateCtx;
 }
 
 export async function recordStageExitRefusal(

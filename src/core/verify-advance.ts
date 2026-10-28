@@ -66,6 +66,15 @@ interface VerifyAdvanceCtx {
    * carry it at runtime; this only makes the type honest.
    */
   _ctx?: unknown;
+  /**
+   * 217 review round 4 (issue 1, High): declared capability is part of the
+   * CONTRACT. `applyVerifyFail` forwards this ctx straight into
+   * `freezeAndPrompt` (verify_config_error / verify_attempt_overflow), whose
+   * T2.2/T2.3 gates read `ctx.hasUI`; a declared `false` must survive the
+   * call chain even though no literal reconstruction happens on the
+   * freezeAndPrompt entries themselves.
+   */
+  hasUI?: boolean | (() => boolean);
 }
 
 /**
@@ -1090,7 +1099,10 @@ export async function autoAdvanceAfterVerify(
     // keep the P1 zero-side-effect exit, do NOT count, do NOT escalate, do NOT freeze.
     if (reason?.startsWith("bound_exit_refused:") === true) {
       const outcome = await recordStageExitRefusal(
-        { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx },
+        // 217 review issue 1 (High): forward the declared capability — the
+        // refusal overflow freeze (recordStageExitRefusal → toFlowCtx →
+        // freezeAndPrompt) reads `ctx.hasUI` at the T2.2 gate.
+        { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx, hasUI: ctx.hasUI },
         config,
         { stage: fromStage, fromStage, toStage, reason, source: toRefusalSource(options?.caller) },
         { onStageChanged: buildOnStageChangedCallback(ctx, config) },

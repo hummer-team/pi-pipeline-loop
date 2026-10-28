@@ -168,7 +168,10 @@ export function createAgentSettled(
         const onStageChangedForSettled = async (freshMeta: AgentSettledSessionMeta): Promise<void> => {
           const doc = freshMeta.requirementDoc ?? "";
           await dispatchAfterResume(
-            { session: ctx.session, ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof dispatchAfterResume>[0],
+            // 217 review issue 1 (High): declared capability follows the ctx —
+            // dispatchAfterResume can reach freezeAndPrompt through the
+            // design-review coordinator freeze, whose T2.2 gate reads ctx.hasUI.
+            { session: ctx.session, ui, pi: ctx.pi, _ctx: ctx._ctx, hasUI: ctx.hasUI } as Parameters<typeof dispatchAfterResume>[0],
             config,
             ui,
             freshMeta,
@@ -550,7 +553,10 @@ export function createAgentSettled(
               // the pipeline (flowState blocked + decision menu) — a returned
               // "frozen" string alone leaves the loop running.
               await freezeAndPrompt(
-                { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
+                // 217 review issue 1 (High): forward the declared capability —
+                // the T2.2 frozen-menu gate reads `ctx.hasUI` on every
+                // freezeAndPrompt → requestDecision path.
+                { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx, hasUI: ctx.hasUI } as Parameters<typeof freezeAndPrompt>[0],
                 ctx.session.getMeta() ?? freshMeta,
                 coordinatorResult.reason,
                 config,
@@ -572,6 +578,10 @@ export function createAgentSettled(
                   ui: ctx.ui,
                   pi: ctx.pi,
                   _ctx: ctx._ctx,
+                  // 217 review issue 1 (High): the consume ctx is forwarded
+                  // verbatim into applyVerifyFail → freezeAndPrompt; the
+                  // declared capability must survive that chain.
+                  hasUI: ctx.hasUI,
                   config,
                 } as Parameters<typeof applyVerifyFail>[0],
                 config,
@@ -912,7 +922,11 @@ export function createAgentSettled(
             // policy stays notify-only, verbatim (constraint 4).
             if (isDecisionPolicyEnabled(config)) {
               await freezeAndPrompt(
-                { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx } as Parameters<typeof freezeAndPrompt>[0],
+                // 217 review issue 1 (High): forward the declared capability —
+                // this is the owner settle's highest-frequency freeze path
+                // (confirm-gate re-ask budget exhausted → confirm_awaiting_human).
+                // `ctxWithPi` is a spread of the full RuntimeCtx, so hasUI rides on it.
+                { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx, hasUI: ctxWithPi.hasUI } as Parameters<typeof freezeAndPrompt>[0],
                 meta,
                 "confirm_awaiting_human",
                 config,
@@ -967,7 +981,10 @@ export function createAgentSettled(
             runId: boundRunForDefer.binding.runId,
           }, "warn");
           await recordStageExitRefusal(
-            { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx } as Parameters<typeof recordStageExitRefusal>[0],
+            // 217 review issue 1 (High): forward the declared capability — the
+            // refusal overflow freeze (recordStageExitRefusal → toFlowCtx →
+            // freezeAndPrompt) reads `ctx.hasUI` at the T2.2 gate.
+            { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx, hasUI: ctxWithPi.hasUI } as Parameters<typeof recordStageExitRefusal>[0],
             config,
             {
               stage: freshForDefer.currentStage,

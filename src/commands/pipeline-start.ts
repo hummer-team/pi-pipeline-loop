@@ -665,7 +665,7 @@ export async function dispatchAfterResume(
             result: takeoverResult,
             meta: freshAfter,
             entry: "command",
-            ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx, config } as DesignReviewConsumeCtx,
+            ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx, hasUI: ctx.hasUI, config } as DesignReviewConsumeCtx,
             config,
             ui,
             runtimeCtx: ctx,
@@ -743,7 +743,10 @@ export async function dispatchAfterResume(
         // 192 Phase 4 (task 8): real freeze on budget exhaustion at resume
         const { freezeAndPrompt } = await import("../core/flow-state");
         await freezeAndPrompt(
-          { session: ctx.session, ui, pi: ctx.pi, _ctx: ctx._ctx } as Parameters<typeof freezeAndPrompt>[0],
+          // 217 review issue 1 (High): forward the declared capability — the
+          // T2.2 frozen-menu gate reads `ctx.hasUI` on this resume-time
+          // design-review budget freeze path.
+          { session: ctx.session, ui, pi: ctx.pi, _ctx: ctx._ctx, hasUI: ctx.hasUI } as Parameters<typeof freezeAndPrompt>[0],
           ctx.session.getMeta() ?? freshMeta,
           coordinatorResult.reason,
           config,
@@ -766,7 +769,7 @@ export async function dispatchAfterResume(
           result: coordinatorResult,
           meta: freshAfter,
           entry: "command",
-          ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx, config } as DesignReviewConsumeCtx,
+          ctx: { session: ctx.session, ui: ctx.ui, pi: ctx.pi, _ctx: ctx._ctx, hasUI: ctx.hasUI, config } as DesignReviewConsumeCtx,
           config,
           ui,
           runtimeCtx: ctx,

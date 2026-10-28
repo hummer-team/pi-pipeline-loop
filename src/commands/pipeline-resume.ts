@@ -226,6 +226,10 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
                 ui: ctx.ui,
                 pi: ctx.pi,
                 _ctx: ctx._ctx,
+                // 217 review issue 1 (High): the consume ctx is forwarded
+                // verbatim into applyVerifyFail → freezeAndPrompt; the
+                // declared capability must survive that chain.
+                hasUI: ctx.hasUI,
               } as DesignReviewConsumeCtx,
               config,
               ui,

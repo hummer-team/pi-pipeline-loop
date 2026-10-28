@@ -608,6 +608,10 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
                   ui: (ctx as any).ui,
                   pi: (ctx as any).pi,
                   _ctx: (ctx as any)._ctx,
+                  // 217 review issue 1 (High): the consume ctx is forwarded
+                  // verbatim into applyVerifyFail → freezeAndPrompt; the
+                  // declared capability must survive that chain.
+                  hasUI: ctx.hasUI,
                   config,
                 } as DesignReviewConsumeCtx,
                 config,
@@ -702,7 +706,10 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             const onStageChangedForReplay = async (fresh: SessionMeta): Promise<void> => {
               const doc = fresh.requirementDoc ?? "";
               await dispatchAfterResume(
-                { session: ctx.session, ui, pi: (ctx as any).pi, _ctx: ctx._ctx } as Parameters<typeof dispatchAfterResume>[0],
+                // 217 review issue 1 (High): declared capability follows the
+                // ctx — dispatchAfterResume can reach freezeAndPrompt through
+                // the design-review coordinator freeze (pipeline-start ctx.hasUI).
+                { session: ctx.session, ui, pi: (ctx as any).pi, _ctx: ctx._ctx, hasUI: ctx.hasUI } as Parameters<typeof dispatchAfterResume>[0],
                 config,
                 ui,
                 fresh,

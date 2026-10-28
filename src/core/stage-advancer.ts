@@ -1704,7 +1704,10 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // 192 Phase 4 (task 8): budget freeze must be real (idempotent helper)
         const { freezeAndPrompt: freezePrompt } = await import("./flow-state");
         await freezePrompt(
-          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof freezePrompt>[0],
+          // 217 review issue 1 (High): forward the declared capability — the
+          // T2.2 frozen-menu gate reads `ctx.hasUI` on the advance-time
+          // design-review budget freeze path.
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx, hasUI: ctx.hasUI } as Parameters<typeof freezePrompt>[0],
           ctx.session.getMeta() ?? meta,
           coordinatorResult.reason,
           config,
@@ -1734,6 +1737,10 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
                 }
               : undefined,
             pi: ctx.pi,
+            // 217 review issue 1 (High): the consume ctx is forwarded verbatim
+            // into applyVerifyFail → freezeAndPrompt; the declared capability
+            // must survive that chain.
+            hasUI: ctx.hasUI,
             config,
           },
           config,
