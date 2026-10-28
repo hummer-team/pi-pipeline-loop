@@ -38,6 +38,9 @@ import { collectRunAggregate } from "./stage-evidence";
 import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isFrozenMeta } from "./dormancy";
+// 217 Phase 2 (T2.2): declared capability read for BOTH menu gates (the main
+// presenter and requestDecision); flow-state did not need ui-capability before.
+import { resolveDeclaredHasUI } from "./ui-capability";
 // 210 Phase 2: opt-in dual stage watchdog (requirement 5.4). This module is the
 // ONLY static consumer of `stage-watchdog`; the reverse direction (freeze
 // hand-off) is a dynamic import inside that module, so no value cycle exists.
@@ -139,6 +142,11 @@ export interface FlowStateCtx {
    * Used to broadcast child-side freeze escalation (see escalation-bus).
    */
   pi?: unknown;
+  /**
+   * 217 P4 (T2.2): declared capability forwarded from RuntimeCtx (absent →
+   * legacy fallback). Declared `false` WINS over a present `ui.select`.
+   */
+  hasUI?: boolean | (() => boolean);
 }
 
 // ─── Decision Types ─────────────────────────────────────────────────────────
@@ -1682,7 +1690,20 @@ async function presentDecisionMenuCore(
     });
   }
 
-  if (ui?.select) {
+  // 217 P4 (T2.2): the "may this session open a menu" judgment now reads the
+  // HOST-DECLARED capability first (declare-vs-infer unification). A declared
+  // `false` WINS over a present `ui.select`; a declared `true` host still needs
+  // a real select control (213 D18: a host may declare a UI without a select).
+  // `select` locals keep the type narrowing the old truthy check provided
+  // (menuCapable already requires a real select — the conjunction is
+  // unreachable with a missing select).
+  const select = ui?.select;
+  const declared = resolveDeclaredHasUI({ hasUI: ctx.hasUI });
+  const menuCapable = declared !== false && typeof select === "function";
+  // The truthy `ui?.select` check (not a bare `menuCapable`) preserves the
+  // engine's non-null narrowing of `ui`/`select` inside the branch — identical
+  // predicate, pre-217 body untouched.
+  if (menuCapable && ui?.select) {
     try {
       // Phase 3 (173) C9 fix (review round 2): directStageSelect bypasses the
       // first-level 6-item menu and goes straight to the secondary stage list.
@@ -1902,6 +1923,24 @@ async function presentDecisionMenuCore(
       return { outcome: "no-menu", applied: false, unavailableReason: "select_error" };
     }
   } else {
+    // 217 P4 (T2.2): the host DECLARED no interactive UI — the suppression is
+    // made visible instead of silently indistinguishable from "select absent".
+    if (declared === false) {
+      await safeWriteAuditLog("decision_menu_suppressed_declared_no_ui", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        source,
+      });
+      if (tuiEnabled && opts.notifyOnUnavailable !== false) {
+        const frozenMeta = ctx.session.getMeta() ?? meta;
+        ui?.notify?.(
+          `Pipeline frozen: ${formatFrozenReason(frozenMeta)} ${formatDecisionMenuHint()}`,
+        );
+      }
+      // Same `unavailableReason` literal as the legacy branch — the difference
+      // lives in the audit event name only (frozen plan constraint).
+      return { outcome: "no-menu", applied: false, unavailableReason: "no_ui" };
+    }
     // No UI available — notify via available channel (gated by pipelineStage).
     // 208: command entries pass `notifyOnUnavailable: false` and own the single
     // user-facing message.
@@ -2271,7 +2310,12 @@ export async function requestDecision(
   const menuCtx: FlowStateCtx = opts?.ui ? { ...ctx, ui: opts.ui } : ctx;
 
   // No-UI branch (CI/headless): no waiting object exists — never arm timers.
-  if (typeof menuCtx.ui?.select !== "function") {
+  // 217 P4 (T2.3): the judgment now reads the declared capability first — a
+  // declared `false` routes to the policy channel without entering the human
+  // menu slot (R2-Q3=A); undeclared keeps the legacy `typeof ui.select` check.
+  const declared = resolveDeclaredHasUI({ hasUI: menuCtx.hasUI });
+  const menuCapable = declared !== false && typeof menuCtx.ui?.select === "function";
+  if (!menuCapable) {
     // 210 review issue 4 (Medium): stale-snapshot guard for the policy path —
     // the SAME triple guard the human slot (B-2, `decision_menu_stale_selection`)
     // and the deadline closure apply: re-read the LIVE meta and require

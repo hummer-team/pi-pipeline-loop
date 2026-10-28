@@ -63,6 +63,14 @@ export interface RuntimeCtx {
    */
   selfSessionFile?: string;
 
+  /**
+   * 217 P4 (T2.1): host-declared interactive-UI capability (normalized shape:
+   * boolean on most hosts, method on runner-style hosts). Forwarded VERBATIM
+   * from the raw ExtensionContext; absent declaration keeps the legacy
+   * `typeof ui.select` reverse-inference downstream (ui-capability contract).
+   */
+  hasUI?: boolean | (() => boolean);
+
   /** @internal Original ExtensionContext for standalone functions (e.g., extractAssistantMessages) */
   _ctx: ExtensionContext;
 }
@@ -102,6 +110,10 @@ export function buildRuntimeCtx(
     | undefined;
   const selfSessionFile = sm?.getSessionFile?.();
 
+  // 217 P4 (T2.1): forward the host-declared UI capability VERBATIM (boolean
+  // or method form are both valid per ui-capability's normalization contract).
+  const declaredHasUI = (ctx as unknown as Record<string, unknown>).hasUI;
+
   const rctx: RuntimeCtx = {
     session,
     ui,
@@ -109,6 +121,8 @@ export function buildRuntimeCtx(
     pi,
     getSystemPrompt: ctx.getSystemPrompt?.bind(ctx),
     ...(typeof selfSessionFile === "string" && selfSessionFile.length > 0 ? { selfSessionFile } : {}),
+    ...(typeof declaredHasUI === "boolean" || typeof declaredHasUI === "function"
+      ? { hasUI: declaredHasUI as boolean | (() => boolean) } : {}),
   };
 
   if (event && typeof event === "object") {
