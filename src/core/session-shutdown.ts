@@ -24,6 +24,8 @@ import { writeAuditLog, safeWriteAuditLog, setAuditPipelineContext } from "../ut
 import { createPipelineUI } from "./pipeline-ui";
 import { markPipelineAborted } from "./flow-state";
 import { detectSessionRole } from "./session-role";
+// 217 Phase 0 (T0.5): owner-delivery registry teardown on session shutdown.
+import { unregisterOwnerDelivery } from "./owner-delivery-registry";
 import { isDormant } from "./dormancy";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -54,6 +56,11 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
       // Phase 1 (197): refresh audit routing context on every hook entry
       setAuditPipelineContext(rawMeta?.pipelineId);
+      // 217 Phase 0 (T0.5, R4-Q3=B): unregister THIS session's delivery handle
+      // BEFORE any early return — a dead session must never stay the last
+      // non-child fallback target after its own shutdown.
+      const shutdownRole = detectSessionRole(ctx);
+      if (shutdownRole.sessionFile) unregisterOwnerDelivery(shutdownRole.sessionFile);
       // 210 Phase 7: last-chance usage persistence BEFORE any dormant return —
       // completed/dormant sessions never pass a stage exit, so this is their
       // final drain (idempotent; empty delta performs no meta write).

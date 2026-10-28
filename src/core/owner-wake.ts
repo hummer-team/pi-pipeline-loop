@@ -18,8 +18,11 @@
  */
 
 import type { SessionMeta, PipelineStage } from "../types";
+import type { DeliveryOutcome } from "./owner-delivery";
 import { registerTerminalObserver, type SubagentLifecycleEntry } from "../utils/subagent-lifecycle-registry";
 import { probeAgentState } from "../utils/subagents-introspect";
+import { shouldEmitWithinWindow } from "../utils/audit-throttle";
+import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 
 /**
  * 203_Bug Phase 0: Terminal-reason normalization switched from whitelist to
@@ -38,8 +41,12 @@ export interface OwnerWakeDeps {
   getMeta: () => SessionMeta | undefined;
   /** Update SessionMeta (for dedup) */
   updateMeta: (patch: Partial<SessionMeta>) => void;
-  /** Send followUp message to owner */
+  /** LEGACY fallback channel (kept for tests/embedders that predate 217). */
   sendFollowUp: (summary: string) => void;
+  /** 217 F2: target-resolving delivery; preferred when present. */
+  deliver?: (summary: string, meta: SessionMeta) => DeliveryOutcome;
+  /** 217 Q8-A: one visible hint when delivery failed (throttled by caller). */
+  notifyHint?: (stage: PipelineStage) => void;
   /** Audit log writer */
   audit: (event: string, payload: Record<string, unknown>) => void;
   /** Phase 2 / 200_Bug: Fallback path - immediate status bar refresh at terminal event */
@@ -186,28 +193,38 @@ function evaluateWake(
     return;
   }
 
-  // Fire wake
-  deps.updateMeta({
-    terminalWake: {
-      agentId,
-      stage: matchingStage,
-      visitOrder,
-      at: Date.now(),
-    },
-  });
-
-  // Build summary
+  // 217 F2: delivery FIRST, stamp AFTER success. The incident
+  // (`pipe-1792915432897-hxekq4`) stamped `terminalWake` before delivering to
+  // the wrong session, so every later terminal event hit the dedup guard
+  // (`owner_wake_skipped reason=dedup` × 10) and the owner was never woken.
   const summary = buildWakeSummary(agentId, matchingStage, pipelineId, hasPendingSpawns);
-  deps.sendFollowUp(summary);
+  const outcome: DeliveryOutcome = deps.deliver
+    ? deps.deliver(summary, meta)
+    : (() => { deps.sendFollowUp(summary); return { delivered: true, via: "deps_fallback" as const }; })();
 
+  // 217 F2: a FAILED delivery must not consume the dedup stamp — a later terminal
+  // event (or the stall watchdog) may still reach a live owner.
+  if (!outcome.delivered) {
+    const throttleKey = `owner_wake_undeliverable:${pipelineId ?? ""}:${matchingStage}`;
+    if (shouldEmitWithinWindow(throttleKey, AUDIT_THROTTLE_WINDOW_MS)) {
+      deps.audit("owner_wake_undeliverable", {
+        agentId, stage: matchingStage, pipelineId: pipelineId ?? "",
+        targetSessionFile: outcome.targetSessionFile ?? "",
+        reason: outcome.reason ?? "delivery_failed",
+        via: outcome.via,
+      });
+      try { deps.notifyHint?.(matchingStage); } catch { /* fail-open: hint must not break wake */ }
+    }
+    return;
+  }
+
+  deps.updateMeta({ terminalWake: { agentId, stage: matchingStage, visitOrder, at: Date.now() } });
   deps.audit("owner_wake_on_terminal", {
-    agentId,
-    agentType: agentType ?? "",
-    stage: matchingStage,
-    status: reason ?? "",
-    pipelineId: pipelineId ?? "",
-    visitOrder,
-    stageName: entryStage ?? "",
+    agentId, agentType: agentType ?? "", stage: matchingStage, status: reason ?? "",
+    pipelineId: pipelineId ?? "", visitOrder, stageName: entryStage ?? "",
+    delivered: "true", via: outcome.via,
+    targetSessionFile: outcome.targetSessionFile ?? "",
+    actualSessionFile: outcome.actualSessionFile ?? "",
   });
 }
 

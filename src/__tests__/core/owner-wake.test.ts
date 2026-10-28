@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setOwnerWakeDeps, registerOwnerWakeObserver, type OwnerWakeDeps } from '../../core/owner-wake';
 import { registerTerminal, __resetLifecycleRegistry } from '../../utils/subagent-lifecycle-registry';
+import { __resetMemoryThrottle } from '../../utils/audit-throttle';
 import type { SessionMeta } from '../../types';
 
 describe('owner-wake (Phase 1 / 200_Bug G1-1, G1-2)', () => {
@@ -471,6 +472,146 @@ describe('owner-wake (Phase 1 / 200_Bug G1-1, G1-2)', () => {
       registerTerminal('develop-agent', 'agent-123', 'terminal', 'completed', 'develop', 'pipe-1');
 
       expect(summaryContent).toContain('pending spawn requests');
+    });
+  });
+
+  // ── 217 Phase 0 (F2): delivery-first, stamp-after-success ──
+  describe('217: delivery-first stamp semantics', () => {
+    beforeEach(() => {
+      __resetMemoryThrottle();
+    });
+
+    const makeWakeMeta = (terminalWake?: SessionMeta['terminalWake']): SessionMeta => ({
+      pipelineId: 'pipe-217',
+      currentStage: 'review',
+      stageStartTime: Date.now(),
+      summaries: {},
+      loopCount: 0,
+      currentStepIndex: 0,
+      maxLoops: 3,
+      activeSpawns: { review: { agentId: 'agent-217', agentName: 'review-agent', startedAt: Date.now() } },
+      terminalWake,
+      pendingSpawns: { fix: { agentName: 'fix-agent', requestedAt: Date.now(), attempts: 0 } },
+      domain: {} as any,
+      stageVisitOrder: ['review'],
+    });
+
+    it('failed deliver: NO terminalWake stamp, undeliverable audit, one notifyHint', () => {
+      const meta = makeWakeMeta();
+      mockDeps.getMeta = () => meta;
+      const stamps: unknown[] = [];
+      mockDeps.updateMeta = (patch) => { stamps.push(patch); };
+
+      const audits: Array<{ event: string; payload: Record<string, unknown> }> = [];
+      mockDeps.audit = (event, payload) => { audits.push({ event, payload }); };
+
+      const hinted: string[] = [];
+      mockDeps.notifyHint = (stage) => { hinted.push(stage); };
+
+      mockDeps.deliver = () => ({
+        delivered: false,
+        via: 'none',
+        targetSessionFile: '/sessions/owner.jsonl',
+        reason: 'owner_target_not_registered',
+      });
+
+      registerTerminal('review-agent', 'agent-217', 'terminal', 'completed', 'review', 'pipe-217');
+
+      // The dedup stamp must NOT be consumed by a failed delivery.
+      expect(stamps).toHaveLength(0);
+      expect(meta.terminalWake).toBeUndefined();
+
+      const failAudit = audits.find((e) => e.event === 'owner_wake_undeliverable');
+      expect(failAudit).toBeDefined();
+      expect(failAudit?.payload).toMatchObject({
+        agentId: 'agent-217',
+        stage: 'review',
+        pipelineId: 'pipe-217',
+        targetSessionFile: '/sessions/owner.jsonl',
+        reason: 'owner_target_not_registered',
+        via: 'none',
+      });
+      expect(audits.find((e) => e.event === 'owner_wake_on_terminal')).toBeUndefined();
+
+      // 217 Q8-A: exactly ONE visible hint on the failed delivery.
+      expect(hinted).toEqual(['review']);
+    });
+
+    it('successful deliver: stamp written with via/targetSessionFile/actualSessionFile in the audit', () => {
+      const meta = makeWakeMeta();
+      mockDeps.getMeta = () => meta;
+      const stamps: Partial<SessionMeta>[] = [];
+      mockDeps.updateMeta = (patch) => { stamps.push(patch); meta.terminalWake = patch.terminalWake; };
+
+      const audits: Array<{ event: string; payload: Record<string, unknown> }> = [];
+      mockDeps.audit = (event, payload) => { audits.push({ event, payload }); };
+
+      mockDeps.deliver = () => ({
+        delivered: true,
+        via: 'registry_run_binding',
+        targetSessionFile: '/sessions/owner.jsonl',
+        actualSessionFile: '/sessions/owner.jsonl',
+      });
+
+      registerTerminal('review-agent', 'agent-217', 'terminal', 'completed', 'review', 'pipe-217');
+
+      // Stamp AFTER delivery: exactly one terminalWake write.
+      expect(stamps).toHaveLength(1);
+      expect(stamps[0]?.terminalWake).toMatchObject({ agentId: 'agent-217', stage: 'review', visitOrder: 1 });
+
+      const wakeAudit = audits.find((e) => e.event === 'owner_wake_on_terminal');
+      expect(wakeAudit).toBeDefined();
+      expect(wakeAudit?.payload).toMatchObject({
+        agentId: 'agent-217',
+        stage: 'review',
+        delivered: 'true',
+        via: 'registry_run_binding',
+        targetSessionFile: '/sessions/owner.jsonl',
+        actualSessionFile: '/sessions/owner.jsonl',
+      });
+      expect(audits.find((e) => e.event === 'owner_wake_undeliverable')).toBeUndefined();
+    });
+
+    it('no deliver (legacy deps shape): pre-217 behavior via deps_fallback', () => {
+      const meta = makeWakeMeta();
+      mockDeps.getMeta = () => meta;
+      const stamps: Partial<SessionMeta>[] = [];
+      mockDeps.updateMeta = (patch) => { stamps.push(patch); };
+      const audits: Array<{ event: string; payload: Record<string, unknown> }> = [];
+      mockDeps.audit = (event, payload) => { audits.push({ event, payload }); };
+
+      let followUpCalled = 0;
+      mockDeps.sendFollowUp = () => { followUpCalled++; };
+
+      registerTerminal('review-agent', 'agent-217', 'terminal', 'completed', 'review', 'pipe-217');
+
+      // Legacy shape: one followUp + one stamp + the pre-217 audit payload.
+      expect(followUpCalled).toBe(1);
+      expect(stamps).toHaveLength(1);
+      expect(stamps[0]?.terminalWake).toMatchObject({ agentId: 'agent-217', stage: 'review' });
+
+      const wakeAudit = audits.find((e) => e.event === 'owner_wake_on_terminal');
+      expect(wakeAudit).toBeDefined();
+      expect(wakeAudit?.payload.via).toBe('deps_fallback');
+      expect(wakeAudit?.payload.delivered).toBe('true');
+    });
+
+    it('failed deliver is throttled: a second failure within the window emits no new audit/hint', () => {
+      const meta = makeWakeMeta();
+      mockDeps.getMeta = () => meta;
+      const audits: Array<{ event: string; payload: Record<string, unknown> }> = [];
+      mockDeps.audit = (event, payload) => { audits.push({ event, payload }); };
+      const hinted: string[] = [];
+      mockDeps.notifyHint = (stage) => { hinted.push(stage); };
+      mockDeps.deliver = () => ({ delivered: false, via: 'none', reason: 'send_failed' });
+
+      registerTerminal('review-agent', 'agent-217', 'terminal', 'completed', 'review', 'pipe-217');
+      // Second terminal event: dedup stamp was NOT written by the failure, so
+      // evaluation proceeds again — but the throttle suppresses audit + hint.
+      registerTerminal('review-agent', 'agent-217', 'terminal', 'completed', 'review', 'pipe-217');
+
+      expect(audits.filter((e) => e.event === 'owner_wake_undeliverable')).toHaveLength(1);
+      expect(hinted).toHaveLength(1);
     });
   });
 });

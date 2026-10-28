@@ -16,6 +16,10 @@ import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
 import { registerOwnerWakeObserver, setOwnerWakeDeps } from "./core/owner-wake";
 import { registerOwnerEscalationObserver, setOwnerEscalationDeps } from "./core/owner-escalation";
+// 217 Phase 0 (T0.4): per-session delivery-handle registry + target-resolving
+// delivery service (F1/F2 — wake the OWNER, not the last hook runner).
+import { registerOwnerDelivery } from "./core/owner-delivery-registry";
+import { deliverOwnerWake } from "./core/owner-delivery";
 import { detectSessionRole } from "./core/session-role";
 import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
@@ -218,7 +222,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         // 211 Phase 1: `wakeFollowUp` now REPORTS delivery (`true`/`false`) so
         // the escalation channel can fall back to a visible hint on failure;
         // OwnerWakeDeps keeps a `void` return type (still assignable).
-        const wakeFollowUp = (summary: string): boolean => {
+        // 217 Phase 0 (T0.4): `rawFollowUp` is THIS session's raw send channel;
+        // `wakeFollowUp` first tries the registry-resolved owner target and
+        // falls back to this session's raw sender only when nothing resolves.
+        const rawFollowUp = (summary: string): boolean => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const send = (pi as any).sendUserMessage as
             | ((msg: string, opts?: Record<string, unknown>) => unknown)
@@ -249,6 +256,11 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             return false;
           }
         };
+        // 217 Phase 0 (T0.4): registry-first routing — resolve the owner target
+        // from run evidence (194 C3 binding → last non-child registration) and
+        // only fall back to THIS session's raw sender when nothing resolves.
+        const wakeFollowUp = (summary: string): boolean =>
+          deliverOwnerWake(summary, rctx.session.getMeta(), () => rawFollowUp(summary)).delivered;
         // Review observation 1: optional audit level (default "info") keeps all
         // pre-211 event levels unchanged; `owner_wake_escalation_failed` is
         // written at "warn" so the guide event table stops drifting.
@@ -269,14 +281,36 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           }
         };
 
-        setOwnerWakeDeps({
+        // 217 Phase 0 (T0.4, F1): every session registers its OWN delivery
+        // handle. Re-registration on each hook invocation refreshes recency;
+        // child sessions register too (their handle participates in
+        // `run_binding` hits) but NEVER become fallback targets (`isChild`).
+        registerOwnerDelivery({
+          sessionFile: rctx.selfSessionFile ?? "",
+          isChild: isChildSession,
           getMeta: () => rctx.session.getMeta(),
-          updateMeta: (patch) => rctx.session.updateMeta(patch),
-          sendFollowUp: wakeFollowUp,
-          audit: wakeAudit,
-          // Phase 2 / 200_Bug: fallback path - immediate status bar refresh at terminal event
-          syncStatusBar: wakeSyncStatusBar,
+          sendFollowUp: rawFollowUp,
+          notify: (message) => { try { rctx.ui.notify(message); } catch { /* fail-open */ } },
+          audit: (event, payload) => wakeAudit(event, payload),
         });
+        // 217 Phase 0 (F1): the wake WRITER side (module-level deps) is
+        // owner-scoped now — same gate shape as the escalation deps below.
+        // A child-bound deps snapshot would aim terminal delivery at the child
+        // session and leave the owner unwoken (the 217 incident).
+        if (!isChildSession) {
+          setOwnerWakeDeps({
+            getMeta: () => rctx.session.getMeta(),
+            updateMeta: (patch) => rctx.session.updateMeta(patch),
+            sendFollowUp: wakeFollowUp,
+            // 217 F2: target-resolving delivery; preferred over raw sendFollowUp.
+            deliver: (summary, meta) => deliverOwnerWake(summary, meta, () => rawFollowUp(summary)),
+            // 217 Q8-A: one visible hint when delivery failed (throttled above).
+            notifyHint: (stage) => { try { rctx.ui.notify(`${stage} confirmation is still pending. If no dialog appears, run /pipeline-resume.`); } catch { /* fail-open */ } },
+            audit: wakeAudit,
+            // Phase 2 / 200_Bug: fallback path - immediate status bar refresh at terminal event
+            syncStatusBar: wakeSyncStatusBar,
+          });
+        }
 
         // 203_Bug Phase 0 (RC1): owner escalation deps — refreshed per OWNER
         // hook invocation, same source data as owner-wake deps. Child hooks
