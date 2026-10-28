@@ -203,6 +203,47 @@ describe("217 T2.2: presenter gate reads the declared capability first", () => {
     expect(audits.some((a) => a.event === "decision_menu_suppressed_declared_no_ui")).toBe(true);
   });
 
+  it("method form with a `this`-dependent body (host binding survived upstream) → declared false still WINS", async () => {
+    // 217 review issue 3: runner-style hosts declare hasUI as a METHOD that
+    // reads its own context fields. The declaration is normalized against the
+    // host ctx upstream (runtime-ctx), so what reaches flow-state is a bound
+    // function — resolution here must invoke it and honor the false verdict
+    // instead of degrading it to "undeclared" (which would lose the
+    // "declared false WINS" ruling against a present `select`).
+    const host = {
+      interactive: false,
+      hasUI(this: { interactive: boolean }) {
+        return this.interactive;
+      },
+    };
+    const meta = blockedMeta();
+    const select = countingSelect("Resume");
+    const ctx = makeCtx(meta, { select, hasUI: host.hasUI.bind(host) });
+    const config: PipelineConfig = makeTestConfig();
+
+    const detail = await promptDecisionMenuDetailed(ctx, meta, config);
+
+    expect(select.calls).toHaveLength(0); // declared false beats the present select
+    expect(detail.unavailableReason).toBe("no_ui");
+    expect(audits.some((a) => a.event === "decision_menu_suppressed_declared_no_ui")).toBe(true);
+  });
+
+  it("method form bound to a context-declaring-true host × select → menu presented", async () => {
+    const host = {
+      interactive: true,
+      hasUI(this: { interactive: boolean }) {
+        return this.interactive;
+      },
+    };
+    const meta = blockedMeta();
+    const select = countingSelect(undefined);
+    const ctx = makeCtx(meta, { select, hasUI: host.hasUI.bind(host) });
+    const config: PipelineConfig = makeTestConfig();
+
+    await promptDecisionMenuDetailed(ctx, meta, config);
+    expect(select.calls).toHaveLength(1);
+  });
+
   it("notifyOnUnavailable: false → suppression audit but ZERO notify", async () => {
     const meta = blockedMeta();
     const select = countingSelect("Resume");

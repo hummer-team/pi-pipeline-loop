@@ -59,6 +59,8 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
   afterEach(() => {
     __resetPendingSpawnStall();
     __resetOwnerDeliveryRegistry();
+    // Remove any pi-subagents manager stub installed by a live-probe test.
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("pi-subagents:manager")];
   });
 
   const armNow = (stage: "fix" = "fix"): number => {
@@ -99,13 +101,38 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
   });
 
   it("live executor for the stage → progress, not a stall", async () => {
+    // probeAgentState reads the process-wide pi-subagents manager singleton
+    // (src/utils/subagents-introspect.ts:44-53). Install the stub the same way
+    // other suites do (e.g. agent-settled-confirm-review.test.ts) so the
+    // `live` branch of pending-spawn-stall.ts:57 is actually exercised —
+    // an unregistered id would return "unknown", not "live".
+    const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: (id: string) => (id === "agent-live" ? { status: "running" } : undefined),
+    };
     meta.activeSpawns = { fix: { agentId: "agent-live", agentName: "fix-agent", startedAt: Date.now() } };
-    // Real probe: an unregistered id returns "unknown" — the watchdog treats
-    // only "live" as progress, so drive the live case via a REAL running
-    // subagent is impractical here; instead assert the unknown-id path fires
-    // (counterfactual is covered by the no-meta/liveness unit below).
-    await sleep(STALL_WINDOW_MS + 30); // no arm → nothing anyway
+    armNow();
+    await sleep(STALL_WINDOW_MS + 30);
+
     expect(audits).toHaveLength(0);
+    expect(delivered).toHaveLength(0);
+    expect(fallbackNotified).toHaveLength(0);
+  });
+
+  it("live probe answers settled → the watchdog DOES report the stall", async () => {
+    // Reverse case: a resolved-but-settled executor is NOT progress — the
+    // guard at :57 must let the stall fire (proves the guard both ways).
+    const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
+      getRecord: () => ({ status: "completed" }),
+    };
+    meta.activeSpawns = { fix: { agentId: "agent-settled", agentName: "fix-agent", startedAt: Date.now() } };
+    armNow();
+    await sleep(STALL_WINDOW_MS + 30);
+
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.event).toBe("pending_spawn_stalled");
+    expect(delivered).toHaveLength(1);
   });
 
   it("same (pipelineId, stage, requestedAt) re-armed → one deadline, one audit", async () => {

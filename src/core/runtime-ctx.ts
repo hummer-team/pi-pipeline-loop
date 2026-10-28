@@ -64,10 +64,14 @@ export interface RuntimeCtx {
   selfSessionFile?: string;
 
   /**
-   * 217 P4 (T2.1): host-declared interactive-UI capability (normalized shape:
-   * boolean on most hosts, method on runner-style hosts). Forwarded VERBATIM
-   * from the raw ExtensionContext; absent declaration keeps the legacy
-   * `typeof ui.select` reverse-inference downstream (ui-capability contract).
+   * 217 P4 (T2.1): host-declared interactive-UI capability, NORMALIZED at build
+   * time. A method-form declaration (212_Bug.md:154 documents runner-style
+   * hosts) is resolved ONCE against the ORIGINAL host ctx — resolving it later
+   * with a wrapper object as `this` would break `this`-dependent
+   * implementations and silently degrade the declaration to "undeclared"
+   * (217 review issue 3; mirrors the design-review runtime-context
+   * normalization, 213 D18). Absent/malformed declarations stay absent so the
+   * legacy `typeof ui.select` reverse-inference applies downstream.
    */
   hasUI?: boolean | (() => boolean);
 
@@ -110,9 +114,23 @@ export function buildRuntimeCtx(
     | undefined;
   const selfSessionFile = sm?.getSessionFile?.();
 
-  // 217 P4 (T2.1): forward the host-declared UI capability VERBATIM (boolean
-  // or method form are both valid per ui-capability's normalization contract).
-  const declaredHasUI = (ctx as unknown as Record<string, unknown>).hasUI;
+  // 217 P4 (T2.1) + review issue 3: normalize the declared UI capability HERE,
+  // while the ORIGINAL host ctx is in hand. A method-form declaration is
+  // invoked with the host ctx as `this` (runner-style hosts rely on that,
+  // 212_Bug.md:154); throwing/malformed declarations are honestly treated as
+  // undeclared (same contract as ui-capability's resolveDeclaredHasUI), and a
+  // non-boolean resolution is degraded to absent so the legacy
+  // `typeof ui.select` fallback applies downstream.
+  const declaredHasUIRaw = (ctx as unknown as Record<string, unknown>).hasUI;
+  let declaredHasUI: unknown = declaredHasUIRaw;
+  if (typeof declaredHasUIRaw === "function") {
+    try {
+      declaredHasUI = (declaredHasUIRaw as (this: unknown) => unknown).call(ctx);
+    } catch {
+      // Malformed declaration: treated as "not declared" → legacy fallback.
+      declaredHasUI = undefined;
+    }
+  }
 
   const rctx: RuntimeCtx = {
     session,
@@ -121,8 +139,7 @@ export function buildRuntimeCtx(
     pi,
     getSystemPrompt: ctx.getSystemPrompt?.bind(ctx),
     ...(typeof selfSessionFile === "string" && selfSessionFile.length > 0 ? { selfSessionFile } : {}),
-    ...(typeof declaredHasUI === "boolean" || typeof declaredHasUI === "function"
-      ? { hasUI: declaredHasUI as boolean | (() => boolean) } : {}),
+    ...(typeof declaredHasUI === "boolean" ? { hasUI: declaredHasUI } : {}),
   };
 
   if (event && typeof event === "object") {

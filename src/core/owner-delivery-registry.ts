@@ -80,7 +80,15 @@ export function resolveOwnerDelivery(meta: SessionMeta | undefined): OwnerDelive
     const handle = handles.get(target);
     if (handle) return { handle, targetSessionFile: target, via: "run_binding" };
   }
-  for (const [sessionFile, handle] of handles) {
+  // Recency contract (Plan Summary:11 / T0.1 / Phase 0 unit-test goal):
+  // `registerOwnerDelivery` refreshes insertion order (delete-then-set), so the
+  // LAST entry in the map is the MOST RECENTLY registered session. The fallback
+  // must wake the most recent non-child — scan from the END, never the front
+  // (front-first would report the OLDEST orphaned session and re-introduce the
+  // 217 dedup-shadowing incident).
+  const entries = [...handles.entries()];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const [sessionFile, handle] = entries[i]!;
     if (!handle.isChild) return { handle, targetSessionFile: sessionFile, via: "non_child_fallback" };
   }
   return {

@@ -95,19 +95,19 @@ describe("owner-delivery-registry (217 Phase 0 / T0.1)", () => {
     expect(resolution.targetSessionFile).toBe("/sessions/gone.jsonl");
   });
 
-  it("re-registration refreshes recency (map order moves to the end)", () => {
+  it("re-registration refreshes recency (the refreshed entry wins the fallback)", () => {
     const first = makeHandle("/sessions/owner-A.jsonl", false);
     const second = makeHandle("/sessions/owner-B.jsonl", false);
     registerOwnerDelivery(first);
     registerOwnerDelivery(second);
 
-    // Forward iteration prefers the FIRST non-child in map order → A.
-    expect(resolveOwnerDelivery(makeTestMeta()).targetSessionFile).toBe("/sessions/owner-A.jsonl");
-
-    // Re-register A → delete-then-set moves A to the END of the map, so B
-    // (the refreshed recency survivor) becomes the first non-child again.
-    registerOwnerDelivery(first);
+    // B is the most recent non-child registration → B wins the fallback.
     expect(resolveOwnerDelivery(makeTestMeta()).targetSessionFile).toBe("/sessions/owner-B.jsonl");
+
+    // Re-register A → delete-then-set refreshes A's recency to NOW, so A
+    // (not the older B) is the most recent non-child again.
+    registerOwnerDelivery(first);
+    expect(resolveOwnerDelivery(makeTestMeta()).targetSessionFile).toBe("/sessions/owner-A.jsonl");
   });
 
   it("child registrations never become the fallback target", () => {
