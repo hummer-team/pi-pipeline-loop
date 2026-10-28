@@ -30,6 +30,13 @@ import {
 } from "../../core/owner-delivery-registry";
 import { deliverOwnerWake } from "../../core/owner-delivery";
 import {
+  setPendingSpawnStallDeps,
+  armPendingSpawnStall,
+  __resetPendingSpawnStall,
+  type PendingSpawnStallDeps,
+} from "../../core/pending-spawn-stall";
+import { spawnStageSubagent, setPendingSpawnStallHook } from "../../utils/subagent-rpc";
+import {
   setOwnerWakeDeps,
   registerOwnerWakeObserver,
   type OwnerWakeDeps,
@@ -40,6 +47,8 @@ import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { initAuditLog, safeWriteAuditLog, __resetAuditDirPath, __resetAuditRoutingState } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, deployDispatchAssets } from "../helpers";
 import type { PipelineConfig, SessionMeta } from "../../types";
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // ─── Harness ──────────────────────────────────────────────────────────────────
 
@@ -274,6 +283,80 @@ describe("217 regression: owner-wake delivery targets and stamp semantics", () =
       expect(audits.filter((e) => e.event === "owner_wake_undeliverable")).toHaveLength(1);
     } finally {
       h.cleanup();
+    }
+  });
+
+  it("②'s alternate path: real child enqueue (unconsumed) → ONE pending_spawn_stalled within the window", async () => {
+    // Phase 1 supplement: instead of a terminal event, the observable path is
+    // a queued spawn NOBODY consumes — production wiring: the child route of
+    // `spawnStageSubagent` enqueues and the DI hook arms the one-shot watchdog.
+    const STALL_WINDOW_MS = 40;
+    const root = join(tmpdir(), `pi-217-stall-${Date.now()}-${seq}`);
+    await mkdir(join(root, ".pi", "audit"), { recursive: true });
+    const config = { ...makeTestConfig({ projectRoot: root }), spawnWaitTimeoutMs: STALL_WINDOW_MS };
+    deployDispatchAssets(config);
+    await initAuditLog(config);
+    seq++;
+
+    const meta = makeTestMeta({
+      currentStage: "fix",
+      pipelineId: nextPid(),
+    });
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Partial<SessionMeta>) => { Object.assign(meta, patch); return meta; },
+    };
+    const sent: string[] = [];
+    const ownerPi = { sendUserMessage: (msg: string) => { sent.push(msg); } };
+
+    setPendingSpawnStallDeps({
+      getMeta: () => session.getMeta(),
+      getConfig: () => config,
+      deliver: (summary, m) => deliverOwnerWake(summary, m, () => { ownerPi.sendUserMessage(summary); return true; }),
+      fallbackNotify: () => {},
+      audit: (event, payload) => {
+        void safeWriteAuditLog(event, payload as Record<string, string | boolean>);
+      },
+    });
+    // Mirror the index.ts T1.3 hook wiring.
+    setPendingSpawnStallHook(
+      (stage, requestedAt) => armPendingSpawnStall(session.getMeta()?.pipelineId ?? "", stage, requestedAt),
+    );
+
+    try {
+      // Child runtime ctx (parent header + subagent sessionName — mirrors 216 D4③).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const childCtx: any = {
+        _ctx: {
+          sessionManager: {
+            getHeader: () => ({ parentSession: "/sessions/owner.jsonl" }),
+            getSessionName: () => "fix-executor#a1b2c3d4",
+          },
+        },
+      };
+      const result = await spawnStageSubagent(ownerPi, config, "fix", session.getMeta()!, {
+        ui: { notify: () => {} },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        session: session as any,
+        runtimeCtx: childCtx,
+      });
+      expect(result.queuedForOwner).toBe(true);
+      expect(meta.pendingSpawns?.fix).toBeDefined();
+
+      // NO body consumes the entry → exactly ONE stall event after the window.
+      await sleep(STALL_WINDOW_MS + 60);
+
+      const auditText = readAllAudit(root);
+      expect(auditText).toContain("pending_spawn_stalled");
+      expect(auditText).toContain("stage_spawn_routed_to_owner");
+      // The stall delivery attempts to reach the owner through the resolved
+      // path (registry fallback here: no handle → deps_fallback to ownerPi).
+      expect(sent.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      setPendingSpawnStallHook(null);
+      __resetPendingSpawnStall();
+      __resetAuditRoutingState();
+      __resetAuditDirPath();
     }
   });
 });

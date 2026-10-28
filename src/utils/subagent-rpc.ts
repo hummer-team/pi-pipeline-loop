@@ -32,6 +32,15 @@ import type { PipelineConfig, PipelineStage, SessionMeta, SpawnOperationContext 
 import type { FixExecutorCompletedCtx, FixExecutorCompletedHandler } from "../core/fix-executor-completion";
 import type { DesignReviewWritePolicy } from "../core/design-review/write-policy";
 
+// ── 217 Phase 1 (T1.2): pending-spawn stall DI hook ──
+// utils must not import core at runtime (static guard, Phase 0 / 189), so
+// index.ts injects the watchdog arming hook here (same shape as
+// `setFixExecutorCompletedHandler`).
+type PendingSpawnStallHook = (stage: PipelineStage, requestedAt: number) => void;
+let _pendingSpawnStallHook: PendingSpawnStallHook | null = null;
+/** 217 F3: registered by index.ts (core owns delivery; utils must not import core). */
+export function setPendingSpawnStallHook(hook: PendingSpawnStallHook | null): void { _pendingSpawnStallHook = hook; }
+
 // Module-level cache for lazy import of ../core/design-review/write-policy
 // (Cannot use static import due to circular dependency guard test)
 let _writePolicyModule: Promise<typeof import("../core/design-review/write-policy")> | null = null;
@@ -727,6 +736,8 @@ export async function spawnStageSubagent(
   // Enqueue for the owner session, which consumes pendingSpawns on agent_settled.
   if (opts?.session && isChildRuntimeCtx(opts.runtimeCtx)) {
     enqueuePendingSpawn(opts.session, stage, agentName, opts.extraArgs, opts.operationContext);
+    // 217 Phase 1 (F3): arm the one-shot stall watchdog for this enqueue.
+    _pendingSpawnStallHook?.(stage, opts.session.getMeta()?.pendingSpawns?.[stage]?.requestedAt ?? Date.now());
     await safeWriteAuditLog("stage_spawn_routed_to_owner", {
       pipelineId: meta.pipelineId,
       stage,

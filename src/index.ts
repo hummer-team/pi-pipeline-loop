@@ -20,11 +20,13 @@ import { registerOwnerEscalationObserver, setOwnerEscalationDeps } from "./core/
 // delivery service (F1/F2 — wake the OWNER, not the last hook runner).
 import { registerOwnerDelivery } from "./core/owner-delivery-registry";
 import { deliverOwnerWake } from "./core/owner-delivery";
+// 217 Phase 1 (T1.3): pending-spawn stall watchdog deps + enqueue-side hook.
+import { setPendingSpawnStallDeps, armPendingSpawnStall } from "./core/pending-spawn-stall";
 import { detectSessionRole } from "./core/session-role";
 import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
-import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler } from "./utils/subagent-rpc";
+import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler, setPendingSpawnStallHook } from "./utils/subagent-rpc";
 import { handleFixExecutorCompleted } from "./core/fix-executor-completion";
 // 192 Phase 1: DI handler for design-review operation terminal evidence
 import { handleDesignReviewOperationTerminal } from "./core/design-review/coordinator";
@@ -311,6 +313,23 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             syncStatusBar: wakeSyncStatusBar,
           });
         }
+
+        // 217 Phase 1 (T1.3, F3): pending-spawn stall watchdog assembly.
+        // Deps are refreshed per hook invocation (`fire` re-reads them); the
+        // enqueue-side hook is armed by BOTH roles because the child route
+        // (`stage_spawn_routed_to_owner`) is where an unconsumed queue is born.
+        // Delivery resolves through the registry (owner first, never the child).
+        setPendingSpawnStallDeps({
+          getMeta: () => rctx.session.getMeta(),
+          getConfig: () => config,
+          deliver: (summary, meta) => deliverOwnerWake(summary, meta, () => rawFollowUp(summary)),
+          fallbackNotify: (_stage, message) => { try { rctx.ui.notify(message); } catch { /* fail-open */ } },
+          audit: wakeAudit,
+        });
+        setPendingSpawnStallHook(
+          (stage, requestedAt) =>
+            armPendingSpawnStall(rctx.session.getMeta()?.pipelineId ?? "", stage, requestedAt),
+        );
 
         // 203_Bug Phase 0 (RC1): owner escalation deps — refreshed per OWNER
         // hook invocation, same source data as owner-wake deps. Child hooks
