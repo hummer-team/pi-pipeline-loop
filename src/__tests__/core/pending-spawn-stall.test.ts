@@ -9,12 +9,20 @@
  * - no owner handle in the registry → `fallbackNotify` is used, audit still
  *   written.
  *
+ * Review round 2 (issue 1) additions:
+ * - post-fire idempotent re-enqueue (same `requestedAt`, 216 R6-2) → still ONE
+ *   report (one-shot PER ENTRY, not per concurrent arm);
+ * - a replaced request after a reported stall → the NEW key reports again;
+ * - `clearPendingSpawnStall(pipelineId)` removes the pipeline's armed
+ *   watchdogs (production teardown) and re-arming works afterwards.
+ *
  * Uses a tiny `spawnWaitTimeoutMs` window and real timers; entry replacement
  * semantics follow 216 R6-2 (`requestedAt` is the dedup key).
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   armPendingSpawnStall,
+  clearPendingSpawnStall,
   setPendingSpawnStallDeps,
   __resetPendingSpawnStall,
   type PendingSpawnStallDeps,
@@ -162,6 +170,73 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
     expect(fallbackNotified).toHaveLength(1);
     expect(fallbackNotified[0]).toContain("fix stage is queued but no executor was started");
     expect(delivered).toHaveLength(1);
+  });
+
+  it("post-fire idempotent re-enqueue (same requestedAt) never re-reports the same stalled entry", async () => {
+    armNow();
+    await sleep(STALL_WINDOW_MS + 40);
+    expect(audits).toHaveLength(1);
+
+    // 216 R6-2: re-enqueueing the SAME target keeps `requestedAt` — the hook
+    // arms the same key again AFTER the deadline fired. The clamped delayMs
+    // (0) must NOT produce a second report (review round 2 issue 1-③).
+    armNow();
+    await sleep(STALL_WINDOW_MS + 40);
+
+    expect(audits).toHaveLength(1);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("a REPLACED request after a reported stall reports again under the new key", async () => {
+    armNow();
+    await sleep(STALL_WINDOW_MS + 40);
+    expect(audits).toHaveLength(1);
+
+    // Replacement produces a new `requestedAt` → new dedup key → fresh
+    // deadline and a fresh (second) report for the NEW request.
+    const newer = (meta.pendingSpawns!.fix!.requestedAt ?? Date.now()) + 15;
+    meta.pendingSpawns = { fix: { agentName: "fix-agent", requestedAt: newer, attempts: 0 } };
+    armPendingSpawnStall(meta.pipelineId!, "fix", newer);
+    await sleep(STALL_WINDOW_MS + 40);
+
+    expect(audits).toHaveLength(2);
+    expect(delivered).toHaveLength(2);
+    expect(audits[1]?.payload.requestedAt).toBe(String(newer));
+  });
+
+  it("clearPendingSpawnStall removes the pipeline's armed watchdogs, re-arming works afterwards", async () => {
+    armNow();
+    clearPendingSpawnStall(meta.pipelineId!);
+    await sleep(STALL_WINDOW_MS + 40);
+    expect(audits).toHaveLength(0);
+    expect(delivered).toHaveLength(0);
+
+    // After the production teardown a new arm is honored again.
+    armNow();
+    await sleep(STALL_WINDOW_MS + 40);
+    expect(audits).toHaveLength(1);
+  });
+
+  it("clearPendingSpawnStall(unknown pipeline) leaves watchdogs intact", async () => {
+    armNow();
+    clearPendingSpawnStall("pipe-other");
+    await sleep(STALL_WINDOW_MS + 40);
+
+    expect(audits).toHaveLength(1);
+  });
+
+  it("clearPendingSpawnStall drops reported-stall records so a fresh arm can report again", async () => {
+    armNow();
+    await sleep(STALL_WINDOW_MS + 40);
+    expect(audits).toHaveLength(1);
+
+    // Pipeline teardown clears the reported record; a same-key re-arm is
+    // honored again (simulates a new arm after a full lifecycle reset).
+    clearPendingSpawnStall(meta.pipelineId!);
+    armNow();
+    await sleep(STALL_WINDOW_MS + 40);
+
+    expect(audits).toHaveLength(2);
   });
 
   it("registered owner handle receives the visible notify (registry wins)", async () => {

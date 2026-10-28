@@ -27,6 +27,16 @@ export interface PendingSpawnStallDeps {
 /** Module-level deps, refreshed per hook invocation (same pattern as owner-wake). */
 let deps: PendingSpawnStallDeps | null = null;
 const activeWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
+/**
+ * 217 fix (review round 2, issue 1): keys whose deadline already fired AND
+ * reported a stall. 216 R6-2: an idempotent re-enqueue of the same target
+ * KEEPS `requestedAt`, so the same key is re-armed after its timer fired —
+ * without this record the clamped `delayMs` (now 0) would immediately
+ * re-report the same stalled entry. "ONE-shot" therefore holds PER ENTRY,
+ * not merely per concurrent arm; records are dropped by
+ * `clearPendingSpawnStall` when the pipeline lifecycle ends.
+ */
+const reportedStalls = new Set<string>();
 
 /** Installs (or clears, with `null`) the stall watchdog deps. */
 export function setPendingSpawnStallDeps(next: PendingSpawnStallDeps | null): void { deps = next; }
@@ -34,14 +44,21 @@ export function setPendingSpawnStallDeps(next: PendingSpawnStallDeps | null): vo
 /**
  * Arms ONE deadline per (pipelineId, stage, requestedAt). `requestedAt` is the
  * existing dedup key: a re-enqueue of the same target keeps it (216 R6-2), so a
- * repeated arm is a no-op; a replaced request produces a new key.
+ * repeated arm is a no-op; a replaced request produces a new key. A key whose
+ * stall was already REPORTED is a permanent no-op until the entry is gone and
+ * a fresh request is enqueued under a new `requestedAt`.
  */
 export function armPendingSpawnStall(pipelineId: string, stage: PipelineStage, requestedAt: number): void {
   const key = `${pipelineId}:${stage}:${requestedAt}`;
-  if (activeWatchdogs.has(key)) return;
+  if (activeWatchdogs.has(key) || reportedStalls.has(key)) return;
   const windowMs = deps?.getConfig().spawnWaitTimeoutMs ?? DEFAULT_SPAWN_WAIT_TIMEOUT_MS;
   const delayMs = Math.max(0, requestedAt + windowMs - Date.now());
-  activeWatchdogs.set(key, setTimeout(() => { fire(key, stage, requestedAt); }, delayMs));
+  const timer = setTimeout(() => { fire(key, stage, requestedAt); }, delayMs);
+  // 217 fix (review round 2, issue 1): the watchdog must never keep the host
+  // event loop alive — a one-shot/CLI host has to be able to exit while a
+  // stall window is still pending (Phase 1 acceptance: "no residual timers").
+  (timer as unknown as { unref?: () => void }).unref?.();
+  activeWatchdogs.set(key, timer);
 }
 
 /** One-shot fire: audit + deliver + one visible hint, then disarm itself. */
@@ -68,11 +85,37 @@ function fire(key: string, stage: PipelineStage, requestedAt: number): void {
   const owner = resolveOwnerDelivery(meta).handle;
   const message = `${stage} stage is queued but no executor was started. Run /pipeline-resume.`;
   try { owner ? owner.notify(message) : current.fallbackNotify(stage, message); } catch { /* fail-open */ }
+  // 217 fix (review round 2, issue 1): record ONLY after a confirmed report —
+  // early returns above (consumed / replaced / live) leave no record, so a
+  // legitimate re-arm for the same key stays possible.
+  reportedStalls.add(key);
+}
+
+/**
+ * 217 fix (review round 2, issue 1): production cleanup point — drop EVERY
+ * armed deadline and reported-stall record of ONE pipeline. Called from
+ * `session_shutdown` when the pipeline lifecycle ends (dormant/terminal
+ * teardown, owner quit/new abort); a child panel close must NOT clear it,
+ * because a queued entry still needs its stall visibility.
+ */
+export function clearPendingSpawnStall(pipelineId: string): void {
+  if (!pipelineId) return;
+  const prefix = `${pipelineId}:`;
+  for (const [key, timer] of activeWatchdogs) {
+    if (key.startsWith(prefix)) {
+      clearTimeout(timer);
+      activeWatchdogs.delete(key);
+    }
+  }
+  for (const key of reportedStalls) {
+    if (key.startsWith(prefix)) reportedStalls.delete(key);
+  }
 }
 
 /** Test-only: clear all armed deadlines. */
 export function __resetPendingSpawnStall(): void {
   for (const timer of activeWatchdogs.values()) clearTimeout(timer);
   activeWatchdogs.clear();
+  reportedStalls.clear();
   deps = null;
 }

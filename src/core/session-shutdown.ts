@@ -26,6 +26,8 @@ import { markPipelineAborted } from "./flow-state";
 import { detectSessionRole } from "./session-role";
 // 217 Phase 0 (T0.5): owner-delivery registry teardown on session shutdown.
 import { unregisterOwnerDelivery } from "./owner-delivery-registry";
+// 217 fix (review round 2, issue 1): production teardown of stall watchdogs.
+import { clearPendingSpawnStall } from "./pending-spawn-stall";
 import { isDormant } from "./dormancy";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
@@ -83,6 +85,10 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
       // Covers: no meta, aborted, completed
       // No pipeline_session_aborted, no blocked quit→abort channel
       if (!rawMeta || isDormant(rawMeta)) {
+        // 217 fix (review round 2, issue 1-②): a dormant/terminal teardown
+        // means the pipeline is done — its queued entries are stale, so the
+        // stall watchdogs must not outlive it (must be logged before return).
+        if (rawMeta?.pipelineId) clearPendingSpawnStall(rawMeta.pipelineId);
         const { isChild, sessionFile } = detectSessionRole(ctx);
         await writeAuditLog("session_shutdown", {
           pipelineId: rawMeta?.pipelineId ?? "unknown",
@@ -204,6 +210,14 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
           },
           config,
         });
+
+        // 217 fix (review round 2, issue 1-②): the pipeline just terminated —
+        // drop its pending-spawn watchdogs as the production cleanup point.
+        // Deliberately placed HERE (and at the dormant early return), NOT at
+        // the T0.5 unregister point above: a child panel close or an
+        // in-process resume/fork/reload must not kill a watchdog whose queue
+        // entry still needs stall visibility.
+        clearPendingSpawnStall(meta.pipelineId);
 
         // Phase 1 (197): clear audit routing context after terminal state
         setAuditPipelineContext(null);
