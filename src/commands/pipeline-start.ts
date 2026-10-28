@@ -1522,7 +1522,11 @@ export function createPipelineStartCommand(config: PipelineConfig): Command {
               await dispatchAfterResume(ctx, config, pipelineUI, fresh, doc);
             };
             const menu = await requestDecision(
-              { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx },
+              // 217 review issue 1 (High): forward the declared capability —
+              // the T2.2/T2.3 gates read `ctx.hasUI`; a dropped field degrades
+              // a declared hasUI=false host into "undeclared" and pops the
+              // frozen-restart menu it must never see.
+              { session: ctx.session, ui: ctx.ui, _ctx: ctx?._ctx, hasUI: ctx?.hasUI },
               frozenMeta,
               config,
               resolveDecisionReason(frozenMeta),

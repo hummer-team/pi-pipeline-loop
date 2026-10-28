@@ -57,6 +57,10 @@ export function createPipelineQuitCommand(config: PipelineConfig): Command {
         // 216 P3: quitting is a pipeline boundary — the refusal counter must
         // not leak into whatever pipeline starts next.
         stageExitRefusal: undefined,
+        // 217 review issue 3 (Medium): quitting is the same pipeline boundary —
+        // approvals waiting for an OWNER decision belong to THIS run and must
+        // not surface on the first settle of whatever pipeline starts next.
+        pendingOwnerApprovals: undefined,
       });
 
       // Phase 1 (197): set audit routing context before writing audit

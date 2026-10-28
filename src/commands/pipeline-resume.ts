@@ -392,7 +392,10 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             await dispatchAfterResume(ctx, config, ui, freshMeta, doc, forwardArgs || undefined);
           };
           const menu = await requestDecision(
-            { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
+            // 217 review issue 1 (High): forward the declared capability — the
+            // T2.2/T2.3 gates read `ctx.hasUI`; a dropped field degrades a
+            // declared hasUI=false host into "undeclared" and pops the menu.
+            { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx, hasUI: ctx.hasUI },
             lifecycleMeta,
             config,
             resolveDecisionReason(lifecycleMeta),

@@ -183,7 +183,11 @@ export function createAgentSettled(
         // deadline re-armed (and a headless host converges policy → abort)
         // instead of re-presenting a menu nobody is waiting on.
         await requestDecision(
-          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof requestDecision>[0],
+          // 217 review issue 1 (High): forward the declared capability — the
+          // T2.2/T2.3 gates read `ctx.hasUI`; dropping it here silently
+          // degrades "declared hasUI=false" to "undeclared" and re-opens the
+          // frozen settle menu (the highest-frequency presentation path).
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx, hasUI: ctx.hasUI } as Parameters<typeof requestDecision>[0],
           meta,
           config,
           resolveDecisionReason(meta),

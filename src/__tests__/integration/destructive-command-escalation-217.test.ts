@@ -110,6 +110,9 @@ describe("217 T3.4: owner settle consumes the approval (real agent-settled)", ()
           stage: "fix",
           requestedAt: Date.now(),
           attempts: 0,
+          // Origin pipelineId (review issue 3): the consumer only serves
+          // entries belonging to the CURRENT pipeline.
+          pipelineId: meta.pipelineId,
         },
       },
     });
@@ -148,6 +151,9 @@ describe("217 T3.4: owner settle consumes the approval (real agent-settled)", ()
           stage: "fix",
           requestedAt: Date.now(),
           attempts: 0,
+          // Origin pipelineId (review issue 3): the consumer only serves
+          // entries belonging to the CURRENT pipeline.
+          pipelineId: meta.pipelineId,
         },
       },
     });

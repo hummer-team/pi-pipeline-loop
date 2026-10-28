@@ -716,7 +716,10 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             // pipeline frozen by the PREVIOUS process would stay blocked forever
             // here: the timers died with that process and nothing re-armed them.
             await requestDecision(
-              { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
+              // 217 review issue 1 (High): forward the declared capability —
+              // dropping `hasUI` here would re-present the replay menu to a
+              // host that declared hasUI=false (T2.2 gate reads it).
+              { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx, hasUI: ctx.hasUI },
               meta,
               config,
               // Policy rule lookup key: the persisted freeze reason (the replay

@@ -547,6 +547,12 @@ export interface SessionMeta {
     requestedAt: number;
     /** Escalation count (visibility only; never a bound — see 216 R6-2). */
     attempts: number;
+    /**
+     * 217 review issue 3: pipelineId of ORIGIN (stamped by enqueue). The
+     * owner-side consumer only serves entries matching the CURRENT pipeline;
+     * anything else is stale boundary residue and is dropped (audited).
+     */
+    pipelineId?: string;
   }>;
 
   /**

@@ -127,6 +127,11 @@ export function buildNewPeriodResetFields(
     spawnedStages: undefined,
     activeSpawns: undefined,
 
+    // 217 review issue 3 (Medium): a NEW period is a pipeline boundary — the
+    // child approval queue belongs to the previous period and must not pop an
+    // unrelated destructive-command approval on the new period's first settle.
+    pendingOwnerApprovals: undefined,
+
     // Design-review session state
     designReview: undefined,
     designReviewRecheck: undefined,
