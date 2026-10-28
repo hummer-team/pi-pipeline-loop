@@ -68,6 +68,9 @@ import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
 import { detectSessionRole } from "./session-role";
+// 217 Phase 3 (T3.3): child destructive commands fail closed and escalate to
+// the owner's approval queue (the host does not inherit the owner's select).
+import { enqueueOwnerApproval } from "./owner-approval";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // Phase 0 (182): secondary name-probe for manual/out-of-band agent detection
@@ -808,6 +811,20 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         if (isDestructiveCommand(command)) {
           const sessionCommands = meta.sessionAllowedCommands || [];
           if (!sessionCommands.includes(command)) {
+            // 217 P2 (T3.3): a child must NOT depend on the host sharing the
+            // owner's select (protect.ask needs a dialog a child cannot have).
+            // Fail closed immediately AND escalate: the owner consumes the
+            // queued request on its next settle (agent-settled).
+            if (detectSessionRole(ctx).isChild) {
+              const routed = enqueueOwnerApproval(ctx.session, meta.currentStage, command);
+              await safeWriteAuditLog("destructive_command_escalated", {
+                pipelineId: meta.pipelineId, stage: meta.currentStage,
+                fingerprint: routed.fingerprint, queued: routed.queued,
+              });
+              const reason = `${buildBlockedReason(command)} Submitted to the owner session for approval; retry after it is granted.`;
+              ui.notify(ctx, reason);
+              return { block: true, reason };
+            }
             if (config.protect?.ask === true) {
               const outcome = await askCommandDecision(ctx, meta, command, config);
               if (outcome.decision === "block") {

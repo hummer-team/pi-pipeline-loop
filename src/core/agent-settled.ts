@@ -45,6 +45,8 @@ import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // Phase 0 (182) G5: name-probe for advance liveness guard
 import { findLiveAgentByName } from "../utils/subagents-introspect";
 import { detectSessionRole } from "./session-role";
+// 217 Phase 3 (T3.4): owner-side consumption of the child approval queue.
+import { consumeOnePendingOwnerApproval } from "./owner-approval";
 import { escapeRegExp } from "../utils/regex-utils";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen re-popup
 import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
@@ -208,6 +210,21 @@ export function createAgentSettled(
           pipelineId: meta.pipelineId,
           stage: meta.currentStage,
           error: errMsg,
+        }, "warn");
+      }
+
+      // 217 P2 (T3.4): approve queued child destructive commands (owner-only;
+      // ONE per settle — oldest first). No extra wake surface: visibility and
+      // wake-up are owned by Phase 0 delivery and the Phase 1 stall watchdog.
+      try {
+        if (!detectSessionRole(ctx).isChild) {
+          await consumeOnePendingOwnerApproval(ctx, config);
+        }
+      } catch (err) {
+        await writeAuditLog("owner_approval_consume_error", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          error: err instanceof Error ? err.message : String(err),
         }, "warn");
       }
 

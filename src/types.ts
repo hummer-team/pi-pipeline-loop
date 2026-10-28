@@ -536,6 +536,20 @@ export interface SessionMeta {
   sessionAllowedCommands?: string[];
 
   /**
+   * 217 P2: destructive-command approvals waiting for an OWNER decision.
+   * Written by a child (fail-closed), consumed by the owner on settle.
+   * Keyed by a command fingerprint so re-escalating the same command is
+   * idempotent (216 R6-2 boundary: `attempts` is visibility only, never a bound).
+   */
+  pendingOwnerApprovals?: Record<string, {
+    command: string;
+    stage: PipelineStage;
+    requestedAt: number;
+    /** Escalation count (visibility only; never a bound — see 216 R6-2). */
+    attempts: number;
+  }>;
+
+  /**
    * C2 flag: set true when stage_advance successfully advances within the current turn.
    * Consumed by agent_settled to skip redundant verification (idempotent guard).
    * Cleared after agent_settled processes it, or on stage transitions.
