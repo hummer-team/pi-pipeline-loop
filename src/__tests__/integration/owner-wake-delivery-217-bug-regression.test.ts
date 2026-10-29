@@ -317,6 +317,8 @@ describe("217 regression: owner-wake delivery targets and stamp semantics", () =
       audit: (event, payload) => {
         void safeWriteAuditLog(event, payload as Record<string, string | boolean>);
       },
+      // 218 Q23-A: authorization stamping needs a meta writer.
+      updateMeta: (patch: Partial<SessionMeta>) => { Object.assign(meta, patch); },
     });
     // Mirror the index.ts T1.3 hook wiring.
     setPendingSpawnStallHook(

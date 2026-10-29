@@ -22,6 +22,13 @@ export interface PendingSpawnStallDeps {
   deliver: (summary: string, meta: SessionMeta) => DeliveryOutcome;
   fallbackNotify: (stage: PipelineStage, message: string) => void;
   audit: (event: string, payload: Record<string, unknown>) => void;
+  /**
+   * 218 Q23-A: stamp `stalledAt`/`dispatchAuthorizedAt` onto the queue entry
+   * when the wait window expires (the manual-dispatch gate 3f only releases on
+   * this mark). Assembled in `src/index.ts`; the watchdog lives in `core/` so
+   * the write goes through dependency injection, never a direct meta handle.
+   */
+  updateMeta: (patch: Partial<SessionMeta>) => void;
 }
 
 /** Module-level deps, refreshed per hook invocation (same pattern as owner-wake). */
@@ -73,10 +80,22 @@ function fire(key: string, stage: PipelineStage, requestedAt: number): void {
   const liveAgentId = meta.activeSpawns?.[stage]?.agentId;
   if (liveAgentId && probeAgentState(liveAgentId) === "live") return; // progress, not a stall
 
+  // 218 Q23-A: stamp the authorization lifecycle ONTO THE ENTRY before the
+  // audit line, so the 3f manual-dispatch gate can release exactly one spawn
+  // for this queued target. `requestedAt` stays untouched (same dedup key).
+  const stalledAt = Date.now();
+  current.updateMeta({
+    pendingSpawns: {
+      ...(meta.pendingSpawns ?? {}),
+      [stage]: { ...entry, stalledAt, dispatchAuthorizedAt: stalledAt },
+    },
+  });
+
   current.audit("pending_spawn_stalled", {
     pipelineId: meta.pipelineId, stage, agentName: entry.agentName,
     requestedAt: String(entry.requestedAt), ageMs: String(Date.now() - entry.requestedAt),
     attempts: String(entry.attempts),
+    stalledAt: String(stalledAt),
   });
   current.deliver(
     `The ${stage} stage spawn request has been queued for ${Math.round((Date.now() - entry.requestedAt) / 1000)}s without being consumed. Run /pipeline-resume if no dialog appears.`,

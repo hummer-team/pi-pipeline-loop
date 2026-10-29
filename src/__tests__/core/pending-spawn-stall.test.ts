@@ -60,6 +60,8 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
       deliver: (summary, m) => { delivered.push(`${m.pipelineId}:${summary}`); return { delivered: true, via: "deps_fallback" }; },
       fallbackNotify: (_stage, message) => { fallbackNotified.push(message); },
       audit: (event, payload) => { audits.push({ event, payload }); },
+      // 218 Q23-A: the watchdog now stamps authorization fields onto the entry.
+      updateMeta: (patch) => { Object.assign(meta, patch); },
     };
     setPendingSpawnStallDeps(deps);
   });
@@ -106,6 +108,13 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
     expect(audits).toHaveLength(1);
     expect(audits[0]?.event).toBe("pending_spawn_stalled");
     expect(audits[0]?.payload.requestedAt).toBe(String(newer));
+    // 218 Q23-A: the fire also stamps the authorization onto the entry
+    // (stalledAt + dispatchAuthorizedAt) and mirrors it into the audit.
+    const stamped = meta.pendingSpawns!.fix!;
+    expect(stamped.stalledAt).toBeDefined();
+    expect(stamped.dispatchAuthorizedAt).toBe(stamped.stalledAt);
+    expect(stamped.dispatchConsumedAt).toBeUndefined();
+    expect(audits[0]?.payload.stalledAt).toBe(String(stamped.stalledAt));
   });
 
   it("live executor for the stage → progress, not a stall", async () => {

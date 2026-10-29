@@ -28,7 +28,7 @@ import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "
 // Routed through the leaf sink because this module must not import `core/` at
 // runtime (static guard: subagent-rpc.test.ts, Phase 0 / 189).
 import { reportStageProgress } from "./stage-progress-sink";
-import type { PipelineConfig, PipelineStage, SessionMeta, SpawnOperationContext } from "../types";
+import type { PendingSpawnEntry, PipelineConfig, PipelineStage, SessionMeta, SpawnOperationContext } from "../types";
 import type { FixExecutorCompletedCtx, FixExecutorCompletedHandler } from "../core/fix-executor-completion";
 import type { DesignReviewWritePolicy } from "../core/design-review/write-policy";
 
@@ -1184,6 +1184,11 @@ export function enqueuePendingSpawn(
   session.updateMeta({
     pendingSpawns: {
       ...(meta.pendingSpawns ?? {}),
+      // 218 Q23-A: the authorization lifecycle is OWNED BY the
+      // queue entry. A same-target re-enqueue (child settles again) must not wipe
+      // `stalledAt`/`dispatchAuthorizedAt`/`dispatchConsumedAt`, otherwise the stall
+      // watchdog's one-shot key (`requestedAt`) never re-fires and the manual
+      // one-shot authorization is silently lost for the rest of the queue lifetime.
       [stage]: {
         pipelineId: meta.pipelineId,
         agentName,
@@ -1191,6 +1196,13 @@ export function enqueuePendingSpawn(
         attempts: sameTarget ? existing!.attempts : 0,
         extraArgs: extraArgs ?? existing?.extraArgs,
         ...(operationContext ? { operationContext } : {}),
+        ...(sameTarget
+          ? {
+              ...(existing!.stalledAt !== undefined ? { stalledAt: existing!.stalledAt } : {}),
+              ...(existing!.dispatchAuthorizedAt !== undefined ? { dispatchAuthorizedAt: existing!.dispatchAuthorizedAt } : {}),
+              ...(existing!.dispatchConsumedAt !== undefined ? { dispatchConsumedAt: existing!.dispatchConsumedAt } : {}),
+            }
+          : {}),
       },
     },
   });
@@ -1268,7 +1280,7 @@ export async function consumePendingSpawns(
   const consumed: PipelineStage[] = [];
   const entries = Object.entries(pending) as [
     PipelineStage,
-    { agentName: string; requestedAt: number; attempts: number; extraArgs?: string; operationContext?: SpawnOperationContext },
+    PendingSpawnEntry,
   ][];
 
   for (const [stage, entry] of entries) {
@@ -1341,6 +1353,18 @@ export async function consumePendingSpawns(
         agentName: entry.agentName,
         reason: "stale_stage_mismatch",
         requestedAt: String(entry.requestedAt),
+      });
+      continue;
+    }
+
+    // 218 Q23-A: an authorized MANUAL dispatch already happened for this entry.
+    // The plugin must NOT dispatch its own twin; drop the entry and audit.
+    if (freshEntry.dispatchConsumedAt !== undefined) {
+      clearPendingSpawn(opts.session, stage, { operationId: freshEntry.operationContext?.operationId });
+      await safeWriteAuditLog("pending_spawn_authorized_consumed", {
+        stage, agentName: freshEntry.agentName,
+        stalledAt: String(freshEntry.stalledAt ?? ""),
+        consumedAt: String(freshEntry.dispatchConsumedAt),
       });
       continue;
     }

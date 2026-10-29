@@ -367,6 +367,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           deliver: (summary, meta) => deliverOwnerWake(summary, meta, () => rawFollowUp(summary)),
           fallbackNotify: (_stage, message) => { try { rctx.ui.notify(message); } catch { /* fail-open */ } },
           audit: wakeAudit,
+          // 218 Q23-A: the stall watchdog stamps the authorization fields onto
+          // the queue entry (`fire` only runs against the fresh entry it just
+          // re-read, and updateMeta replaces only the top-level key).
+          updateMeta: (patch) => rctx.session.updateMeta(patch),
         });
         setPendingSpawnStallHook(
           (stage, requestedAt) =>

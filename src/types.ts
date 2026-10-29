@@ -420,6 +420,37 @@ export interface StageExitRefusal {
 // ─── Session Metadata ────────────────────────────────────────────────────────
 
 /**
+ * 218 Q23-A: One owner-routed pending-spawn queue entry (217 D4③ lineage).
+ *
+ * The authorization lifecycle (stall → one-shot manual dispatch) is OWNED BY
+ * this entry: a same-target re-enqueue must carry the three fields through,
+ * otherwise the stall watchdog's one-shot key (`requestedAt`) never re-fires
+ * and the manual authorization is silently lost for the queue lifetime.
+ */
+export interface PendingSpawnEntry {
+  /** Phase 8 (195 Bug): ownership binding — pipelineId pins the pending to its
+   *  originating pipeline run. Optional for backwards compatibility: legacy
+   *  entries without it are treated as ownership-compatible (see dequeue guard). */
+  pipelineId?: string;
+  /** Resolved agent mention the queue entry will dispatch. */
+  agentName: string;
+  /** Enqueue instant; the dedup key for redelivery bounds and the stall watchdog. */
+  requestedAt: number;
+  /** Failed-delivery counter bounded by PENDING_SPAWN_MAX_ATTEMPTS. */
+  attempts: number;
+  /** 189 Bug 1: breakpoint prompt carried for transient re-spawn. */
+  extraArgs?: string;
+  /** 192 Phase 0: operation identity carried with the request; dequeue must validate stage/operation/round before consuming. */
+  operationContext?: SpawnOperationContext;
+  /** 218 Q23-A: written by the stall watchdog when the wait window expires. */
+  stalledAt?: number;
+  /** 218 Q23-A: set together with stalledAt (audit-visible authorization instant). */
+  dispatchAuthorizedAt?: number;
+  /** 218 Q23-A: set by the one-shot manual dispatch gate; absent = unused. */
+  dispatchConsumedAt?: number;
+}
+
+/**
  * Runtime metadata stored in the pi session, tracking the pipeline's
  * current state across stage transitions and loop iterations.
  */
@@ -716,12 +747,7 @@ export interface SessionMeta {
    * - Consumed (and cleared) by the owner session in `agent_settled`
    * - `attempts` bounds idempotent re-delivery (max 1 re-delivery per stage)
    */
-  pendingSpawns?: Partial<Record<PipelineStage, {
-    /** Phase 8 (195 Bug): ownership binding — pipelineId pins the pending to its
-     *  originating pipeline run. Optional for backwards compatibility: legacy
-     *  entries without it are treated as ownership-compatible (see dequeue guard). */
-    pipelineId?: string;
-    agentName: string; requestedAt: number; attempts: number; extraArgs?: string; /** 192 Phase 0: operation identity carried with the request; dequeue must validate stage/operation/round before consuming. */ operationContext?: SpawnOperationContext }>>;
+  pendingSpawns?: Partial<Record<PipelineStage, PendingSpawnEntry>>;
 
   /**
    * Phase 3 / 177 (D5b): Bounded auto re-ask bookkeeping for an unresolved
