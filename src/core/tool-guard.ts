@@ -71,7 +71,7 @@ import { askCommandDecision } from "../utils/protect-ask";
 import { resolveWhitelistMissMode } from "./write-scope/mode";
 import { applyCollectedWrites } from "./write-scope/decision";
 import type { ApplyWriteDecisionDeps } from "./write-scope/decision";
-import { createWriteCandidateCollector, inRootPathClass } from "./write-scope/types";
+import { createWriteCandidateCollector, inRootPathClass, OUTSIDE_PATH_CLASS } from "./write-scope/types";
 import type { WriteCandidate, WriteCandidateCollector } from "./write-scope/types";
 import { detectSessionRole } from "./session-role";
 // 217 Phase 3 (T3.3): child destructive commands fail closed and escalate to
@@ -737,9 +737,8 @@ async function checkBashFileTargets(
         ui.notify(ctx, reason);
         return { block: true, reason };
       }
-      // 218 T2.4 bookkeeping: a session-level Allow recorded the ABSOLUTE
-      // target of out-of-root candidates; honour it here. Routing out-of-root
-      // misses through the merged decision lands with T2.6 (commit 4).
+      // 218 T2.4/T2.6 bookkeeping: a session-level Allow recorded the ABSOLUTE
+      // target of out-of-root candidates; honour it here.
       if (sessionPaths.includes(absTarget)) continue;
 
       const isWhitelistMode =
@@ -751,6 +750,19 @@ async function checkBashFileTargets(
 
       // file-arg class: block in whitelist mode
       if (isWhitelistMode) {
+        // 218 Phase 2 (T2.6, Q24-B): an out-of-root file-arg miss is just a
+        // whitelist miss with a coarse "@outside" breaker class — it joins
+        // the ONE merged per-call decision. deny mode keeps the pre-218
+        // askCommandDecision + hard-block flow byte-for-byte (constraint 8).
+        if (whitelistMissMode !== "deny") {
+          collector.miss.push({
+            path: absTarget,
+            category: "whitelist_miss",
+            source: "bash",
+            pathClass: OUTSIDE_PATH_CLASS,
+          });
+          continue;
+        }
         // G5 (188): when protect.ask is enabled, prompt the user before blocking
         if (config.protect?.ask) {
           const outcome = await askCommandDecision(ctx, meta, absTarget, config);
@@ -1479,6 +1491,23 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           return { block: true, reason };
         }
 
+        // 218 Phase 2 (T2.6): the merged-decision inputs are needed by BOTH
+        // branches of the in/out-of-root split. deny mode collects nothing and
+        // keeps the pre-218 flow byte-for-byte (global constraint 8).
+        const whitelistMissMode = resolveWhitelistMissMode(config, meta.currentStage);
+        const writeDecisionDeps: ApplyWriteDecisionDeps = {
+          ctx,
+          config,
+          meta,
+          stage: meta.currentStage,
+          mode: whitelistMissMode,
+          trackViolation,
+          notify: (msg: string) => ui.notify(ctx, msg),
+          formatProtectedReason: (c: { path: string }) =>
+            `FORBIDDEN: Cannot modify protected path '${c.path}'.`,
+        };
+        const sessionPaths = meta.sessionAllowedWritePaths || [];
+
         if (relPath) {
           const state = await getProtectState();
 
@@ -1554,25 +1583,9 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
 
           // Session-level file allowance: bypasses whitelist + global chain entirely.
           // Pre-evaluated once so downstream branches can skip redundant checks.
-          const sessionPaths = meta.sessionAllowedWritePaths || [];
           const sessionAllowed = sessionPaths.includes(relPath);
 
           if (!sessionAllowed) {
-            // 218 Phase 2 (T2.3): per-stage whitelist-miss mode + decision deps
-            // for this single-candidate call (write/edit targets exactly one file).
-            const whitelistMissMode = resolveWhitelistMissMode(config, meta.currentStage);
-            const writeDecisionDeps: ApplyWriteDecisionDeps = {
-              ctx,
-              config,
-              meta,
-              stage: meta.currentStage,
-              mode: whitelistMissMode,
-              trackViolation,
-              notify: (msg: string) => ui.notify(ctx, msg),
-              formatProtectedReason: (c: { path: string }) =>
-                `FORBIDDEN: Cannot modify protected path '${c.path}'.`,
-            };
-
             // 195 Phase 1: Get stage deliverable exemptions for read-only path checks
             const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
             
@@ -1796,9 +1809,29 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const isWhitelistMode =
             stageConfig.allowedWritePaths !== undefined &&
             !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
-          if (isWhitelistMode) {
-            // G5 (188): when protect.ask is enabled, prompt the user before blocking
-            if (config.protect?.ask) {
+          // 218 Phase 2 (T2.6): bash parity — a session-level Allow recorded
+          // the ABSOLUTE path of out-of-root candidates; honour it here.
+          const outOfRootSessionAllowed = sessionPaths.includes(absPath);
+          if (isWhitelistMode && !outOfRootSessionAllowed) {
+            // 218 Phase 2 (T2.6, Q24-B): an out-of-root miss joins the ONE
+            // merged per-call write decision with the coarse "@outside"
+            // breaker class. deny mode keeps the pre-218 askCommandDecision +
+            // hard-block flow byte-for-byte (global constraint 8).
+            if (whitelistMissMode !== "deny") {
+              const candidateSource = toolName === "edit" ? "edit" : "write";
+              const outcome = await applyCollectedWrites(
+                [{
+                  path: absPath,
+                  category: "whitelist_miss",
+                  source: candidateSource,
+                  pathClass: OUTSIDE_PATH_CLASS,
+                }],
+                writeDecisionDeps,
+              );
+              if (outcome.action === "block") return { block: true, reason: outcome.reason };
+              // pass (allow mode / approved ask) → fall through to hash recording.
+            } else if (config.protect?.ask) {
+              // G5 (188): when protect.ask is enabled, prompt the user before blocking
               const outcome = await askCommandDecision(ctx, meta, absPath, config);
               if (outcome.decision === "allow") {
                 // User allowed — skip the block, fall through to hash recording

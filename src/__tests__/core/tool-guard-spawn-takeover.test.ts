@@ -263,7 +263,9 @@ describe("G5 (188): protect.ask dialog for out-of-project path blocks", () => {
       ...config.stages["develop"],
       allowedWritePaths: ["docs/"],
     } as any;
-    config.protect = { ...config.protect, ask: true };
+    // 218 T2.6: this fixture tests the LEGACY G5 askCommandDecision channel
+    // for out-of-root writes — deny mode keeps it byte-for-byte.
+    config.protect = { ...config.protect, ask: true, whitelistMiss: "deny" };
 
     const meta = makeTestMeta({ currentStage: "develop" });
     const ctx = createMockCtx(meta, { selectReturn: COMMAND_ASK_OPTIONS[1] });
@@ -288,7 +290,8 @@ describe("G5 (188): protect.ask dialog for out-of-project path blocks", () => {
       ...config.stages["develop"],
       allowedWritePaths: ["docs/"],
     } as any;
-    config.protect = { ...config.protect, ask: true };
+    // 218 T2.6: legacy G5 askCommandDecision deny path — pinned to deny mode.
+    config.protect = { ...config.protect, ask: true, whitelistMiss: "deny" };
 
     const meta = makeTestMeta({ currentStage: "develop" });
     const ctx = createMockCtx(meta, { selectReturn: COMMAND_ASK_OPTIONS[0] });
@@ -315,6 +318,8 @@ describe("G5 (188): protect.ask dialog for out-of-project path blocks", () => {
       allowedWritePaths: ["docs/"],
     } as any;
     // protect.ask is NOT set
+    // 218 T2.6: legacy G5 direct-block path — pinned to deny mode.
+    config.protect = { ...config.protect, whitelistMiss: "deny" };
 
     const meta = makeTestMeta({ currentStage: "develop" });
     const ctx = createMockCtx(meta);

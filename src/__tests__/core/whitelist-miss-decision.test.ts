@@ -15,7 +15,8 @@
  *      whitelist_miss_denial_overflow + freeze, WITHOUT violation counting
  *  4.  no interactive UI → hard block + count + whitelist_miss_no_ui_fallback
  *  5.  session-allowed paths never ask; gitignored / protect.paths targets
- *      stay protected even under mode "allow"
+ *      stay protected even under mode "allow"; out-of-root absolute file-arg
+ *      targets join the same merged decision under the "@outside" class (T2.6)
  *  6.  read-only stage paths never reach the write-approval menu
  *  7.  child asks enqueue (never menu, never count, dedupe by fingerprint)
  */
@@ -34,6 +35,7 @@ import type { PipelineConfig, SessionMeta, WhitelistMissMode } from "../../types
 /** Exact askWriteDecision option strings (protect-ask.ts). */
 const W_DENY = "Follow plugin default rules (default)";
 const W_ONCE = "Allow these writes only";
+const W_SESSION = "Allow these writes for this session";
 /** Exact askProtectDecision option string (HEAD protected channel). */
 const P_DENY = "Follow plugin default rules (default)";
 
@@ -282,6 +284,50 @@ describe("whitelist-miss decision routing (218 Phase 2)", () => {
     expect(r?.block).toBe(true);
     expect(r?.reason).toContain("not in allowed write paths"); // protected via miss re-class
     expect(h2.menus.length).toBe(0);
+  });
+
+  // ── Case 5b (T2.6, Q24-B): out-of-root absolute file-arg targets ─────────
+  it("out-of-root bash file-arg → ONE @outside ask; Deny counts '@outside'; session Allow stores absolute path", async () => {
+    boot("ask");
+    const OUT = join(tmpdir(), "pi-wlmiss-out-" + Date.now());
+    const outTarget = join(OUT, "o.txt");
+    const meta = makeTestMeta({ pipelineId: "wl5c", currentStage: "develop" });
+
+    // (1) explicit Deny → ONE merged menu for the call, "@outside" breaker class.
+    const h1 = harness(meta, W_DENY);
+    const r1 = await run(h1.ctx, "bash", { command: `touch ${outTarget}` });
+    expect(r1?.block).toBe(true);
+    const menus1 = h1.menus.filter((m) => m.title.includes("Pipeline write approval"));
+    expect(menus1.length).toBe(1);
+    expect(menus1[0]!.title).toContain(outTarget);
+    expect(meta.violations?.length ?? 0).toBe(0); // denied ≠ violation (D1)
+    expect(meta.whitelistMissDenials?.counts["@outside"]).toBe(1);
+
+    // (2) session Allow → the ABSOLUTE path persists, deny pressure cleared.
+    const h2 = harness(meta, W_SESSION);
+    expect(await run(h2.ctx, "bash", { command: `touch ${outTarget}` })).toBeUndefined();
+    expect(meta.sessionAllowedWritePaths).toContain(outTarget);
+    expect(meta.whitelistMissDenials).toBeUndefined(); // any Allow clears
+
+    // (3) follow-up call passes via absolute-path bookkeeping — NO menu.
+    const h3 = harness(meta, undefined);
+    expect(await run(h3.ctx, "bash", { command: `touch ${outTarget}` })).toBeUndefined();
+    expect(h3.menus.filter((m) => m.title.includes("Pipeline write approval")).length).toBe(0);
+  });
+
+  it("out-of-root write tool → ONE @outside ask, Deny counts '@outside' (no violation)", async () => {
+    boot("ask");
+    const OUT = join(tmpdir(), "pi-wlmiss-out-w-" + Date.now());
+    const outTarget = join(OUT, "w.txt");
+    const meta = makeTestMeta({ pipelineId: "wl5d", currentStage: "develop" });
+    const { ctx, menus } = harness(meta, W_DENY);
+    const res = await run(ctx, "write", { file_path: outTarget, content: "x" });
+    expect(res?.block).toBe(true);
+    const writeMenus = menus.filter((m) => m.title.includes("Pipeline write approval"));
+    expect(writeMenus.length).toBe(1);
+    expect(writeMenus[0]!.title).toContain(outTarget);
+    expect(meta.whitelistMissDenials?.counts["@outside"]).toBe(1);
+    expect(meta.violations?.length ?? 0).toBe(0);
   });
 
   // ── Case 6: read-only stage paths never reach the write menu ────────────

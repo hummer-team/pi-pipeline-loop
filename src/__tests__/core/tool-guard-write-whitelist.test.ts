@@ -263,6 +263,8 @@ describe("createToolGuard", () => {
         ...config.stages["develop"],
         allowedWritePaths: ["docs/"],
       } as any;
+      // 218 T2.6: HEAD-parity fixture — deny mode keeps the pre-218 hard block.
+      config.protect = { ...config.protect, whitelistMiss: "deny" };
 
       const meta = makeTestMeta();
       const ctx = createMockCtx(meta);
@@ -287,6 +289,8 @@ describe("createToolGuard", () => {
         ...config.stages["develop"],
         allowedWritePaths: ["docs/"],
       } as any;
+      // 218 T2.6: HEAD-parity fixture — deny mode keeps the pre-218 hard block.
+      config.protect = { ...config.protect, whitelistMiss: "deny" };
 
       const meta = makeTestMeta();
       const ctx = createMockCtx(meta);
