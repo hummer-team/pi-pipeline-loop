@@ -20,6 +20,8 @@ import type {
   StageJsonConfig,
   StartStageMode,
   VerifyJsonConfig,
+  WhitelistMissConfig,
+  WhitelistMissMode,
   WatchdogConfig,
 } from "../types";
 import { validateDecisionPolicy } from "./decision-policy/policy-config";
@@ -429,16 +431,98 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
     }
   }
 
+  // 218 F.2: parse whitelistMiss — string shorthand ("ask"|"deny"|"allow") or
+  // the object form { mode?, stages? }. Invalid values warn and are ignored,
+  // following the established style of this function.
+  if (obj.whitelistMiss !== undefined) {
+    const parsed = parseWhitelistMissConfig(obj.whitelistMiss);
+    if (parsed !== undefined) {
+      result.whitelistMiss = parsed;
+    }
+  }
+
   return result;
 }
 
 /**
+ * 218 F.2: validate ONE `protect.whitelistMiss` value (string shorthand or
+ * object form). Returns undefined (with a warning) for anything malformed;
+ * object entries are kept partially (a valid `mode` survives an invalid
+ * `stages` sub-key and vice versa).
+ */
+function parseWhitelistMissConfig(
+  raw: unknown,
+): WhitelistMissMode | WhitelistMissConfig | undefined {
+  const isMode = (v: unknown): v is WhitelistMissMode =>
+    v === "ask" || v === "deny" || v === "allow";
+
+  if (isMode(raw)) {
+    return raw;
+  }
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    const out: WhitelistMissConfig = {};
+    let touched = false;
+
+    if (obj.mode !== undefined) {
+      if (isMode(obj.mode)) {
+        out.mode = obj.mode;
+        touched = true;
+      } else {
+        console.warn(
+          `[pi-pipeline] Invalid protect.whitelistMiss.mode "${String(obj.mode)}" — expected "ask"|"deny"|"allow", ignoring`,
+        );
+      }
+    }
+
+    if (obj.stages !== undefined) {
+      if (typeof obj.stages === "object" && obj.stages !== null && !Array.isArray(obj.stages)) {
+        const stagesOut: Partial<Record<PipelineStage, WhitelistMissMode>> = {};
+        for (const [key, value] of Object.entries(obj.stages as Record<string, unknown>)) {
+          if (!VALID_STAGES.has(key as PipelineStage)) {
+            console.warn(
+              `[pi-pipeline] Invalid protect.whitelistMiss.stages key "${key}" — not a pipeline stage, ignoring`,
+            );
+            continue;
+          }
+          if (isMode(value)) {
+            stagesOut[key as PipelineStage] = value;
+          } else {
+            console.warn(
+              `[pi-pipeline] Invalid protect.whitelistMiss.stages.${key} "${String(value)}" — expected "ask"|"deny"|"allow", ignoring`,
+            );
+          }
+        }
+        if (Object.keys(stagesOut).length > 0) {
+          out.stages = stagesOut;
+          touched = true;
+        }
+      } else {
+        console.warn(
+          `[pi-pipeline] Invalid protect.whitelistMiss.stages — expected an object, ignoring`,
+        );
+      }
+    }
+
+    return touched ? out : undefined;
+  }
+
+  console.warn(
+    `[pi-pipeline] Invalid protect.whitelistMiss — expected "ask"|"deny"|"allow" or { mode?, stages? }, got ${Array.isArray(raw) ? "array" : typeof raw}, ignoring`,
+  );
+  return undefined;
+}
+
+/**
  * Parses per-stage protect overrides from JSON stage config.
- * Only `gitModify` sub-field is effective at stage level (Phase 0 / 172).
- * Value domain is "allow" | "block" | "ask" (Phase 0 / 177 adds "ask").
+ * `gitModify` (Phase 0 / 172) and `whitelistMiss` (218 F.2) are effective at
+ * stage level; `whitelistMiss` is the single-value highest-priority override.
+ * Value domain: gitModify "allow" | "block" | "ask"; whitelistMiss "ask" | "deny" | "allow".
  * Returns undefined when input is missing or not an object.
  */
-function parseStageProtectConfig(raw: unknown): { gitModify?: "allow" | "block" | "ask" } | undefined {
+function parseStageProtectConfig(
+  raw: unknown,
+): { gitModify?: "allow" | "block" | "ask"; whitelistMiss?: WhitelistMissMode } | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "object" || Array.isArray(raw)) {
     console.warn(
@@ -447,7 +531,7 @@ function parseStageProtectConfig(raw: unknown): { gitModify?: "allow" | "block" 
     return undefined;
   }
   const obj = raw as Record<string, unknown>;
-  const result: { gitModify?: "allow" | "block" | "ask" } = {};
+  const result: { gitModify?: "allow" | "block" | "ask"; whitelistMiss?: WhitelistMissMode } = {};
 
   if (obj.gitModify !== undefined) {
     if (obj.gitModify === "allow" || obj.gitModify === "block" || obj.gitModify === "ask") {
@@ -455,6 +539,18 @@ function parseStageProtectConfig(raw: unknown): { gitModify?: "allow" | "block" 
     } else {
       console.warn(
         `[pi-pipeline] Invalid stage protect.gitModify "${String(obj.gitModify)}" — expected "allow"|"block"|"ask", ignoring`,
+      );
+    }
+  }
+
+  // 218 F.2: stage-level whitelistMiss accepts ONLY the single string value
+  // (the object form belongs to the global protect block).
+  if (obj.whitelistMiss !== undefined) {
+    if (obj.whitelistMiss === "ask" || obj.whitelistMiss === "deny" || obj.whitelistMiss === "allow") {
+      result.whitelistMiss = obj.whitelistMiss;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid stage protect.whitelistMiss — expected "ask"|"deny"|"allow", ignoring`,
       );
     }
   }
@@ -1330,6 +1426,10 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       // Phase 0 / 177 (D1): preserve the global gitModify override. Omitting this
       // field silently degraded every global config to the stage matrix default.
       gitModify: json.protect?.gitModify,
+      // 218 F.2: preserve the whitelistMiss contract (string shorthand or
+      // object form; resolution to a concrete mode happens in
+      // write-scope/mode.resolveWhitelistMissMode, default "ask").
+      whitelistMiss: json.protect?.whitelistMiss,
     },
     startStageMode: json.startStageMode ?? "auto",
     audit: { promptSnapshot: json.audit?.promptSnapshot ?? "full" },

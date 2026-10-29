@@ -21,7 +21,9 @@
     "ask": true,
     "allow": [],
     "gitModify": "allow",
-    "_comment_allow": "Add paths here to exempt from gitignore protection (prefix match). Example: [\"docs/\"] exempts docs/** from gitignore blocking. NOTE: allowedWritePaths per-stage is NOT the exemption channel — use protect.allow for gitignore exemption."
+    "_comment_allow": "Add paths here to exempt from gitignore protection (prefix match). Example: [\"docs/\"] exempts docs/** from gitignore blocking. NOTE: allowedWritePaths per-stage is NOT the exemption channel — use protect.allow for gitignore exemption.",
+    "_comment_whitelistMiss": "218 F.2: behavior when a write misses the stage allowedWritePaths whitelist (or targets outside the project root via bash file-arg). \"ask\" (default) = one interactive decision per tool call; \"deny\" = pre-218 hard block + violation counting; \"allow\" = pass with throttled audit (managed hosts). NEVER relaxes hardcoded/gitignore protection, git policy, destructive commands or read-only deliverables. Not set here = \"ask\".",
+    "_comment_whitelistMiss_forms": "String shorthand: \"deny\". Object form: { \"whitelistMiss\": { \"mode\": \"ask\", \"stages\": { \"review\": \"deny\" } } } — the stages table overrides per stage; highest priority is the single value inside a stage block: stages.fix.protect.whitelistMiss = \"allow\"."
   },
   "audit": {
     "promptSnapshot": "full"

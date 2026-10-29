@@ -273,14 +273,17 @@ export interface StageConfig {
 
   /**
    * Phase 0 (172): Per-stage protection overrides.
-   * Currently only `gitModify` takes effect at stage level (git-native write policy).
+   * `gitModify` controls the git-native write policy; 218 F.2 adds
+   * `whitelistMiss` — the single-value per-stage override that wins over the
+   * global `protect.whitelistMiss` resolution (highest tier, D4).
    * Other ProtectConfig sub-fields (gitignore, paths, allow, ask) are NOT applied
    * at stage level — they remain global-only to avoid misconfiguration surprises.
-   * Resolution (3-tier): stages[stage].protect?.gitModify ?? config.protect?.gitModify ?? matrix default.
+   * Resolution (3-tier):
+   *   stages[stage].protect?.gitModify ?? config.protect?.gitModify ?? matrix default.
    * Value domain is "allow" | "block" | "ask"; when the resolved policy is "block" the
    * global `protect.ask` acts as the block-state fallback gate (see Phase 1 truth table).
    */
-  protect?: Pick<ProtectConfig, "gitModify">;
+  protect?: { gitModify?: "allow" | "block" | "ask"; whitelistMiss?: WhitelistMissMode };
 }
 
 // ─── Summary Metadata ────────────────────────────────────────────────────────
@@ -1486,6 +1489,30 @@ export interface StageUsageSnapshot {
 // ─── Protect Configuration ───────────────────────────────────────────────────
 
 /**
+ * 218 F.2: how the guard reacts when a write MISSES the stage write whitelist
+ * (project-internal) or the out-of-root bash file-arg class.
+ * - "ask" (default): ONE interactive decision per tool call (owner menu;
+ *   child escalates to the owner approval queue; no-UI hosts degrade to a
+ *   hard block with the HEAD violation bucket).
+ * - "deny": the pre-218 behaviour — immediate block + `read_only_path` count.
+ * - "allow": silent pass with a throttled audit (managed hosts only; NEVER
+ *   relaxes readonly/protected/gitignore policy — see write-scope).
+ */
+export type WhitelistMissMode = "ask" | "deny" | "allow";
+
+/**
+ * 218 F.2 / D4: object form of `protect.whitelistMiss` (the string shorthand
+ * is also accepted). `stages` is the global per-stage override table; the
+ * stage-config block (`stages[stage].protect.whitelistMiss`) wins over it.
+ */
+export interface WhitelistMissConfig {
+  /** Global mode (default "ask" when absent). */
+  mode?: WhitelistMissMode;
+  /** Global table of per-stage overrides (lower priority than the stage block). */
+  stages?: Partial<Record<PipelineStage, WhitelistMissMode>>;
+}
+
+/**
  * File protection configuration for the pipeline plugin.
  * Controls which files are protected from modification and which can be exempted.
  *
@@ -1541,6 +1568,15 @@ export interface ProtectConfig {
    * rejected regardless of this setting (see GIT_FORBIDDEN_PATTERNS in tool-guard).
    */
   gitModify?: "allow" | "block" | "ask";
+
+  /**
+   * 218 F.2: writes that miss the stage whitelist (project-internal) or the
+   * out-of-root bash file-arg class. NEVER relaxes hardcoded/gitignore
+   * protection, git policy, destructive commands or read-only deliverables.
+   * Accepts the string shorthand ("ask"|"deny"|"allow") or the object form
+   * with a global per-stage override table.
+   */
+  whitelistMiss?: WhitelistMissMode | WhitelistMissConfig;
 }
 
 // ─── Pipeline Configuration ──────────────────────────────────────────────────
@@ -1922,11 +1958,12 @@ export interface StageJsonConfig {
 
   /**
    * Phase 0 (172): Per-stage protection overrides (JSON config).
-   * Only `gitModify` sub-field is effective at stage level.
+   * `gitModify` + 218 F.2 `whitelistMiss` are the only effective stage-level fields.
    * Other ProtectConfig sub-fields are ignored at stage level.
-   * Value domain is "allow" | "block" | "ask" (Phase 1 / 177 adds "ask").
+   * Value domain is "allow" | "block" | "ask" (Phase 0 / 177 adds "ask");
+   * whitelistMiss is "ask" | "deny" | "allow".
    */
-  protect?: { gitModify?: "allow" | "block" | "ask" };
+  protect?: { gitModify?: "allow" | "block" | "ask"; whitelistMiss?: WhitelistMissMode };
 }
 
 /**
