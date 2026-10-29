@@ -39,11 +39,13 @@ import {
   currentStageVisitOrder,
 } from "../../core/confirm-gate-escalation";
 import type { EscalationPayload } from "../../utils/escalation-bus";
-import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { __setSafeWriteAuditLogOverride, initAuditLog } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { setFixExecutorCompletedHandler } from "../../utils/subagent-rpc";
 import { setStageProgressReporter } from "../../utils/stage-progress-sink";
-import { makeTestConfig, makeTestMeta } from "../helpers";
+import { createAgentSettled } from "../../core/agent-settled";
+import { commandFingerprint, enqueueOwnerApproval } from "../../core/owner-approval";
+import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import type { SessionMeta } from "../../types";
 
 type AuditRow = { event: string; message: Record<string, unknown>; level?: string };
@@ -355,5 +357,78 @@ describe("218 T3.2: owner hook-bridge self-heal", () => {
     await h.flush();
     expect(h.sent).toHaveLength(2);
     expect(selfHeals()).toHaveLength(2);
+  });
+});
+
+describe("218 T3.3: pending approvals take the frozen settle slot", () => {
+  // ── Case 4: ONE interaction per settle — approval first ──────────────────
+  it("approval + freeze in one settle → only the approval is consumed; menuEscalationPending stays armed", async () => {
+    const TMP = join(tmpdir(), "pi-218-settle4-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    tmpDirs.push(TMP);
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({
+      pipelineId: "pipe-218-ap4",
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      menuEscalationPending: true,
+    });
+    const ctx = createMockCtx(meta, { selectReturn: "Allow for this session" });
+    const fingerprint = enqueueOwnerApproval(ctx.session, "develop", "rm -rf node_modules").fingerprint;
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as never);
+
+    // The approval consumed the settle slot...
+    expect(meta.pendingOwnerApprovals?.[fingerprint]).toBeUndefined();
+    expect(meta.sessionAllowedCommands ?? []).toContain("rm -rf node_modules");
+    // ...recorded with the dedicated audit (in-memory capture path).
+    const deferred = audits.find((a) => a.event === "decision_menu_deferred_for_approval");
+    expect(deferred).toBeDefined();
+    expect(deferred?.message.kind).toBe("command");
+    expect(deferred?.message.outcome).toBe("approved");
+    expect(audits.some((a) => a.event === "destructive_command_approved")).toBe(true);
+    // The frozen menu did NOT run: menuEscalationPending is consumed only by
+    // requestDecision, so an armed flag after the settle proves no menu ran.
+    expect(meta.menuEscalationPending).toBe(true);
+  });
+
+  // ── Case 5: "no_ui" is NOT a consumption — the queue keeps the entry ─────
+  it("declared no-UI → approval STAYS QUEUED and the headless convergence still aborts", async () => {
+    const TMP = join(tmpdir(), "pi-218-settle5-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    tmpDirs.push(TMP);
+    await initAuditLog(makeTestConfig({ projectRoot: TMP }));
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    // Policy ON: the headless exit for a frozen pipeline is the provider-chain
+    // convergence (no rule → `decision_provider_absent` abort).
+    config.decisionPolicy = { ...(config.decisionPolicy ?? {}), enabled: true };
+    const meta = makeTestMeta({
+      pipelineId: "pipe-218-ap5",
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      menuEscalationPending: true,
+    });
+    const ctx = createMockCtx(meta);
+    (ctx as Record<string, unknown>).hasUI = false; // declared capability wins over select
+    const fingerprint = enqueueOwnerApproval(ctx.session, "develop", "git push --force").fingerprint;
+
+    const hook = createAgentSettled(config);
+    await hook.handler(ctx as never);
+
+    // "no_ui" did NOT take the slot: the request stays queued...
+    expect(meta.pendingOwnerApprovals?.[fingerprint]).toBeDefined();
+    expect(audits.some((a) => a.event === "owner_approval_no_ui")).toBe(true);
+    expect(audits.some((a) => a.event === "decision_menu_deferred_for_approval")).toBe(false);
+    // ...and the frozen-menu convergence ran: blocked → aborted, so the T3.2
+    // self-heal predicate (flowState === "blocked") stops re-waking.
+    expect(meta.flowState).toBe("aborted");
+    expect(meta.terminateReason).toBe("decision_provider_absent");
+    expect(audits.some((a) => a.event === "pipeline_session_aborted")).toBe(true);
   });
 });

@@ -47,7 +47,7 @@ import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // comes from the event ledger only (`scanActiveSpawnEvidence`).
 import { detectSessionRole } from "./session-role";
 // 217 Phase 3 (T3.4): owner-side consumption of the child approval queue.
-import { consumeOnePendingOwnerApproval } from "./owner-approval";
+import { consumeOnePendingOwnerApproval, consumePendingOwnerApprovalDetailed } from "./owner-approval";
 import { escapeRegExp } from "../utils/regex-utils";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen re-popup
 import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
@@ -140,6 +140,40 @@ export function createAgentSettled(
 
       // 1b. Frozen short-circuit: skip verification when pipeline is frozen
       if (isFrozen(meta)) {
+        // 218 Phase 3 (T3.3, Q17-A): ONE interaction per settle. Pending write/
+        // destructive approvals come FIRST — they are the upstream cause of the
+        // freeze; the frozen decision menu slides to the NEXT settle. The
+        // `menuEscalationPending` flag stays armed (only `requestDecision`
+        // consumes it), so the menu is not lost.
+        if (!detectSessionRole(ctx).isChild && Object.keys(meta.pendingOwnerApprovals ?? {}).length > 0) {
+          try {
+            const consumed = await consumePendingOwnerApprovalDetailed(ctx, config);
+            // ONLY a REAL consumption takes the slot. "no_ui" means the request
+            // STAYS QUEUED for a UI-capable turn and "none" means nothing was
+            // consumable — both fall through to `requestDecision`, whose no-UI
+            // convergence (policy → `decision_provider_absent` abort) is the
+            // ONLY exit for a headless host. Treating "no_ui" as consumed would
+            // leave the pipeline + `menuEscalationPending` stuck forever while
+            // the T3.2 self-heal re-wakes every hook.
+            if (consumed.outcome === "approved" || consumed.outcome === "denied") {
+              await safeWriteAuditLog("decision_menu_deferred_for_approval", {
+                pipelineId: meta.pipelineId ?? "unknown",
+                stage: meta.currentStage,
+                kind: consumed.kind,
+                outcome: consumed.outcome,
+              });
+              return;
+            }
+          } catch (err) {
+            // Fail-open (same discipline as the non-frozen consume site): a
+            // throwing approval must not swallow the frozen menu.
+            await safeWriteAuditLog("owner_approval_consume_error", {
+              pipelineId: meta.pipelineId ?? "unknown",
+              stage: meta.currentStage,
+              error: err instanceof Error ? err.message : String(err),
+            }, "warn");
+          }
+        }
         // Phase 3 (170) ②: enriched frozen audit with flowState + frozenReason
         const flowState = getFlowState(meta);
         await writeAuditLog("agent_settled_skipped_frozen", {
