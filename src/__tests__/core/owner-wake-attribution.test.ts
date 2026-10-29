@@ -7,9 +7,10 @@
  * `subagents:completed` drives `registerTerminal` + the observer chain.
  *
  * Case 4 pins the registration ORDER contract: terminal observers run in
- * insertion order, so `registerOwnerWakeObserver()` MUST precede
- * `registerSpawnLedgerObserver()` (the counter-case shows the wake loss a
- * future swap would cause).
+ * insertion order, so `registerOwnerWakeObserver()` MUST precede the ledger
+ * subscription `registerTerminalObserver(createSpawnLedgerTerminalObserver())`
+ * (the counter-case shows the wake loss a future swap would cause;
+ * 218 round-3 review #7 moved the subscription to the composition root).
  */
 
 import { describe, it, expect, afterEach } from "bun:test";
@@ -27,13 +28,14 @@ import {
 import {
   wireSubagentLifecycleListeners,
   setOwnerMetaAccessor,
+  registerTerminalObserver,
   __resetLifecycleRegistry,
   snapshotAll,
 } from "../../utils/subagent-lifecycle-registry";
 import {
   setSpawnLedgerConfig,
   setSpawnLedgerSession,
-  registerSpawnLedgerObserver,
+  createSpawnLedgerTerminalObserver,
   __resetSpawnLedger,
 } from "../../utils/spawn-ledger";
 
@@ -198,7 +200,7 @@ describe("218 P0 T0.8: wake attribution from ledger / dispatch snapshot", () => 
     });
     const h1 = bootstrap(metaOk, config);
     const offWake = registerOwnerWakeObserver();
-    const offLedger = registerSpawnLedgerObserver();
+    const offLedger = registerTerminalObserver(createSpawnLedgerTerminalObserver());
     h1.bus.trigger("subagents:completed", { id: "w4", reason: "completed" });
     expect(h1.wakeSends).toHaveLength(1); // wake evaluated while the ledger was alive
     expect(metaOk.activeSpawns?.develop).toBeUndefined(); // then cleared
@@ -217,7 +219,7 @@ describe("218 P0 T0.8: wake attribution from ledger / dispatch snapshot", () => 
       },
     });
     const h2 = bootstrap(metaBad, config);
-    const offLedger2 = registerSpawnLedgerObserver();
+    const offLedger2 = registerTerminalObserver(createSpawnLedgerTerminalObserver());
     const offWake2 = registerOwnerWakeObserver();
     h2.bus.trigger("subagents:completed", { id: "w5", reason: "completed" });
     expect(h2.wakeSends).toHaveLength(0); // ledger gone, orphan snapshot not trusted

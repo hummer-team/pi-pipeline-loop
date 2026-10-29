@@ -13,14 +13,15 @@ import { buildRuntimeCtx } from "./core/runtime-ctx";
 import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
-import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
+import { wireSubagentLifecycleListeners, setOwnerMetaAccessor, registerTerminalObserver } from "./utils/subagent-lifecycle-registry";
 // 218 P0 (T0.3–T0.5): the spawn ledger — three-source `activeSpawns` writer,
-// terminal observer (registered AFTER the wake observer, order is a contract)
-// and the TTL/restart reconciliation sweep.
+// terminal observer (subscribed HERE, AFTER the wake observer — order is a
+// contract; 218 round-3 review #7 converges the connection point to this sole
+// assembly site) and the TTL/restart reconciliation sweep.
 import {
   setSpawnLedgerConfig,
   setSpawnLedgerSession,
-  registerSpawnLedgerObserver,
+  createSpawnLedgerTerminalObserver,
   reconcileActiveSpawns,
 } from "./utils/spawn-ledger";
 import { shouldEmitWithinWindow } from "./utils/audit-throttle";
@@ -159,7 +160,10 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // Terminal observers fire synchronously in insertion order — registering
     // this first would empty `activeSpawns` before `evaluateWake` predicates
     // 2/3 read it, making wake behavior depend on registration order.
-    registerSpawnLedgerObserver();
+    // 218 round-3 review #7: the ledger only EXPORTS the callback; the
+    // subscription belongs to this composition root, keeping the utils/
+    // dependency one-way (registry → ledger, never the reverse).
+    registerTerminalObserver(createSpawnLedgerTerminalObserver());
 
     // 203_Bug Phase 0 (RC1): the owner escalation observer is NOT registered
     // here. Owner and child sessions share this module in the same process, and

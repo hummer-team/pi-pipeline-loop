@@ -335,6 +335,25 @@ describe("whitelist-miss decision routing (218 Phase 2)", () => {
     expect(res?.reason).not.toContain("when prompted");
   });
 
+  // ── Case 4c: 218 round-3 review #6 — allow-mode MIXED batch with no menu ──
+  it("allow + protected mix + no select → SAME visible fallback (count + audit + block)", async () => {
+    boot("allow");
+    const meta = makeTestMeta({ pipelineId: "wl4c", currentStage: "develop" });
+    const { ctx, menus } = harness(meta, undefined, { noUi: true });
+    // Pure misses STILL pass silently (allow semantics unchanged)…
+    const pass = await run(ctx, "bash", { command: "echo y > tmp/a.txt" });
+    expect(pass).toBeUndefined();
+    // …but a batch containing a protected target needs the HUMAN channel, and
+    // on a menu-less host it must not degrade silently inside askWriteDecision
+    // (pre-fix: bare block, no notify, no fallback audit, no count).
+    const res = await run(ctx, "bash", { command: "echo x > secure/s.txt; echo y > tmp/b.txt" });
+    expect(res?.block).toBe(true);
+    expect(menus.length).toBe(0); // no menu attempted
+    expect(res?.reason).toContain("no interactive UI");
+    expect((await auditText()).includes("whitelist_miss_no_ui_fallback")).toBe(true);
+    expect(meta.violations?.some((v) => v.guardSource === "read_only_path")).toBe(true);
+  });
+
   // ── Case 4: no interactive UI ────────────────────────────────────────────
   it("no ui.select → hard block + read_only_path count + whitelist_miss_no_ui_fallback + exit hints", async () => {
     boot("ask");

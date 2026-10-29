@@ -75,8 +75,10 @@ function buildBatchReason(candidates: WriteCandidate[], stage: PipelineStage): s
  * 2. protected + child → hard block (defensive; the guard already blocks in-loop).
  * 3. protected + owner + ask!==true → hard block with HEAD wording (defensive).
  * 4. protected-only + owner + ask===true → per-target askProtectDecision (HEAD semantics verbatim).
- * 5. mixed (protected + whitelist_miss) → ONE askWriteDecision for the whole batch.
- * 6. whitelist_miss only → allow / no-UI fallback / owner ask / child queue.
+ * 5. mixed (protected + whitelist_miss) → no operable menu → visible fallback;
+ *    otherwise ONE askWriteDecision for the whole batch.
+ * 6. whitelist_miss only → allow pass / child queue / no operable menu →
+ *    visible fallback / owner ask.
  */
 export async function applyCollectedWrites(
   candidates: WriteCandidate[],
@@ -179,12 +181,19 @@ async function decideWhitelistMiss(
     return { action: "block", reason, candidates: all };
   }
 
-  // Owner, ask mode (mixed batches under allow arrive here too — protected wins).
+  // Owner with a HUMAN-DECISION batch: ask mode, or a mixed (protected +
+  // whitelist_miss) batch under allow — protected wins (F.3-2), so the batch
+  // needs the menu channel regardless of the resolved mode.
   // 218 review #5: gate on MENU OPERABILITY, not the declared-true display
   // predicate — a host declaring hasUI=true without a select control used to
   // pass here and then silently degrade inside askWriteDecision (block with
   // no notify, no fallback audit). Now it takes the same visible path.
-  if (deps.mode === "ask" && !isMenuCapable(ctx)) {
+  // 218 round-3 review #6 (Low): the gate is MODE-INDEPENDENT (plan T2.3
+  // flow 6, "no-UI degradation must be visible") — an allow-mode mixed batch
+  // on a menu-less host used to reach askWriteDecision and degrade silently
+  // (bare block, no notify, no `whitelist_miss_no_ui_fallback`, no count);
+  // it now takes the SAME visible fallback as ask mode.
+  if (!isMenuCapable(ctx)) {
     // No-UI degradation: fail closed EXACTLY like deny mode (same bucket) plus
     // a visible fallback audit + exit hints (docs/, $TMPDIR are hints only).
     const first = all[0]!;

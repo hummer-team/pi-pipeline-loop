@@ -149,8 +149,10 @@ export function createAgentSettled(
           try {
             const consumed = await consumePendingOwnerApprovalDetailed(ctx, config);
             // ONLY a REAL consumption takes the slot. "no_ui" means the request
-            // STAYS QUEUED for a UI-capable turn and "none" means nothing was
-            // consumable — both fall through to `requestDecision`, whose no-UI
+            // STAYS QUEUED for a UI-capable turn, "dismissed" means the menu was
+            // shown but no human choice landed (218 round-3 review #1 — also
+            // STAYS QUEUED, no count, no freeze) and "none" means nothing was
+            // consumable — all three fall through to `requestDecision`, whose no-UI
             // convergence (policy → `decision_provider_absent` abort) is the
             // ONLY exit for a headless host. Treating "no_ui" as consumed would
             // leave the pipeline + `menuEscalationPending` stuck forever while

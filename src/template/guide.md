@@ -353,8 +353,7 @@ bun add @earendil-works/pi-pipeline
 3. `protect.whitelistMiss.mode`（或字符串简写 `protect.whitelistMiss` 本身）
 4. 缺省 `"ask"`（不可识别的形状也降级为 `"ask"`，绝不降级为 `"deny"`）
 
-**no-UI 退化**：宿主声明 `hasUI=false` 或无可用的 `ui.select` 时，`ask` 模式退化为 `deny`
-（fail-closed），并记 `whitelist_miss_no_ui_fallback`（warn）。
+**no-UI 退化**：宿主无可用菜单（声明 `hasUI=false`，或声明与控件不一致、无可用 `ui.select`）时，凡需要人工决策的批次——`ask` 模式的越界写、以及 `allow` 模式含受保护路径的混合批次（受保护优先）——一律退化为**可见 `deny`**（fail-closed，计入 `read_only_path`，reason 携带出口提示），并记 `whitelist_miss_no_ui_fallback`（warn）。218 round-3 review #6：退化可见性与 `mode` 无关。
 
 **安全边界**（白名单处置「只放松、不放行」）：
 
@@ -828,7 +827,7 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `pipeline_start`                       | /pipeline-start 成功                                            | file, previousStage, command, mode (fresh/resume/spec), startStage |
 | `pipeline_start_launch`                | clarify 子 agent 自动注入成功                                   | agentName, requirementDoc, pipelineId                              |
 | `pipeline_start_launch_skipped`        | 无 pi SDK，降级 notify 提示                                     | agentName, reason                                                  |
-| `pipeline_state`                       | 每次 pipeline_state 查询                                        | snapshot (完整状态 JSON)                                           |
+| `pipeline_state`                       | 每次 pipeline_state 查询                                        | snapshot (完整状态 JSON；其中 `spawnQueue` 视图：`stage`、`agentName`、`attempts`、`requestedAt` 与 `stalledAt`/`dispatchAuthorizedAt`/`dispatchConsumedAt` 生命周期时刻，ISO 字符串、未发生为 `null`；`dispatchAuthorizedAt` 与 `stalledAt` **同刻**落盘，仅为 Q23-A「授权时刻」的语义命名，非独立测量值) |
 | `loop_check`                           | 每次 loop_check 调用                                            | action (advance/retry/halt), loopCount, summary                    |
 | `review_auto_route_fix`                | review 声明 `reviewConclusion: "fail"` 自动路由至 fix           | stage, toStage, confirmRejections, reason                          |
 | `review_declaration_missing`           | review settle 未声明 reviewConclusion，退回 verify + confirm 门 | stage, reason                                                      |
@@ -910,13 +909,15 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | 事件                             | 触发时机                                                                          | 关键字段                           |
 | -------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- |
 | `whitelist_miss_allowed`         | `whitelistMiss="allow"` 或菜单 Allow 放行的越界写（每 stage+类别 60s 节流）              | stage, pathClass, targets          |
-| `whitelist_miss_no_ui_fallback`  | `ask` 模式在无 UI 宿主退化为 deny（warn）                                           | stage, targets, classes            |
+| `whitelist_miss_no_ui_fallback`  | 无可用菜单时，需人工决策的批次（`ask` 越界写 / `allow` 含 protected 混合）退化为可见 deny（warn） | stage, targets, classes            |
 | `whitelist_miss_denial_overflow` | 同阶段连续 Deny 达上限 → 升级冻结（`violation_overflow` 菜单）                     | stage, classes                     |
 | `write_approval_queued`          | 越界写进入 owner 审批队列（child 会话或 settle 前排队；批量目标 `… +N` 折叠）        | stage, fingerprint, count, targets |
 | `write_approval_approved`        | owner 菜单批准（会话级授权写入 `sessionAllowedWritePaths`）                             | stage, count, targets              |
-| `write_approval_denied`          | owner 菜单拒绝（计入连续 Deny 计数）                                                | stage, count, targets              |
+| `write_approval_denied`          | owner 菜单**明确 Deny**（仅 `"Deny (block)"`；计入连续 Deny 熔断）                | stage, count, targets, fingerprints, classes |
+| `write_approval_dismissed`       | 审批菜单被取消（Esc / 流式自动 dismiss / select 抛错 / 未知选项）：条目**保留队列**、不计数、不冻结（warn；select 抛错为 error） | stage, count, targets, fingerprints, reason, error? |
 | `pipeline_write_ask`             | 越界写一次性合并菜单（出根 file-arg 的审计由 `pipeline_command_ask` 改记本事件）     | stage, action, count, categories, paths |
 | `pipeline_write_ask_denied`      | 菜单选择 Deny（含默认项）                                                           | stage, count, paths                |
+| `pipeline_write_ask_select_error` | owner 直弹合并菜单的 `ui.select` 抛错（error 级；按 noUi→dismissed 处理：block、不计数、不冻结） | stage, count, error               |
 | `owner_approval_consume_error`   | settle 消费审批抛错（warn，fail-open 不吞冻结菜单）                                 | stage, error                       |
 
 *冻结升级与解冻派发（Phase 3）*：
@@ -924,13 +925,13 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | 事件                                    | 触发时机                                                                                     | 关键字段              |
 | --------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------- |
 | `menu_escalation_selfheal`              | owner hook 桥自愈：`menuEscalationPending` 持续为真 + blocked → 每个 owner turn 重投一次（`agent_settled` 除外） | stage, delivered, reason |
-| `decision_menu_deferred_for_approval`   | 冻结 settle 中 pending 审批优先占用交互槽（approved/denied 才消费；no_ui/none 落回决策菜单）    | stage, kind, outcome  |
+| `decision_menu_deferred_for_approval`   | 冻结 settle 中 pending 审批优先占用交互槽（approved/denied 才消费；no_ui/dismissed/none 落回决策菜单）    | stage, kind, outcome  |
 | `frozen_read_allowed`                   | `blocked`（未 aborted）期间 read/grep/glob/list 只读探针放行（每 pipeline+工具 60s 节流）       | stage, tool, flowState |
 | `resume_dispatch_invoked`               | flow-state resume 分支派发 stage executor（三入口唯一派发点；owner 角色）                       | stage, source         |
 | `resume_dispatch_skipped_live`          | 派发被同 stage live 证据抑制（菜单 resume 探活 / 命令层 skip-rollback-restart 兜底）             | stage, basis?         |
 | `resume_dispatch_unavailable`           | 组合根未接线时 resume 成功但无派发通道（warn + 一次可见提示）                                    | stage, source, error? |
 
-**pendingSpawns 条目新增字段**（⑥）：`stalledAt`（3f 挂起时刻）、`dispatchAuthorizedAt`（解冻授权时刻）、`dispatchConsumedAt`（授权派发消费时刻）；旧条目缺省即「未 stall / 未授权 / 未消费」，行为不变。
+**pendingSpawns 条目新增字段**（⑥）：`stalledAt`（3f 挂起时刻）、`dispatchAuthorizedAt`（解冻授权时刻，与 `stalledAt` **同刻**写入——仅为 Q23-A「持久化授权时刻」的语义命名，非独立测量值）、`dispatchConsumedAt`（授权派发消费时刻）；旧条目缺省即「未 stall / 未授权 / 未消费」，行为不变。
 
 **218 行为变更说明**（供复盘对照）：
 

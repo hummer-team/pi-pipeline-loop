@@ -20,6 +20,10 @@
  * module-level accessors from the composition root (`src/index.ts`), the same
  * process-wide "one active pipeline session" assumption already codified by
  * `setOwnerMetaAccessor` in `subagent-lifecycle-registry.ts`.
+ * 218 round-3 review #7: the ledger↔registry edge is ONE-WAY — the registry
+ * feeds this module; the terminal callback below is EXPORTED as a factory and
+ * subscribed by `src/index.ts`, so this module imports nothing from the
+ * registry and the utils-internal runtime cycle is gone.
  *
  * Fail-safe: missing accessors or malformed events degrade to silent no-ops —
  * ledger bookkeeping must never break dispatch.
@@ -30,7 +34,11 @@ import { ACTIVE_SPAWN_TTL_MS } from "../constants";
 import { safeWriteAuditLog } from "./auditLog";
 import { resolveAgentMention } from "./subagent-rpc";
 import { probeAgentState } from "./subagents-introspect";
-import { registerTerminalObserver, type SubagentLifecycleEntry } from "./subagent-lifecycle-registry";
+// 218 round-3 review #7 (Low): NO import from `./subagent-lifecycle-registry`
+// — the registry feeds THIS module (one-way edge) and the composition root
+// subscribes the terminal callback exported below. A runtime require in this
+// direction would create a utils-internal cycle whose behaviour depends on
+// which side loads first.
 
 /** A single `activeSpawns` entry (structural view of the meta map value). */
 type ActiveSpawnEntry = NonNullable<SessionMeta["activeSpawns"]>[PipelineStage];
@@ -157,10 +165,13 @@ export function recordSpawnFromEvent(
   const stage = stageOfExecutorName(agentName);
   if (!stage) return;
   const existing = ledger[stage];
-  // 218 review #3: SYNTHETIC ids (`takeover-…` / `dispatch:…`, written by the
-  // 3d takeover / self-reserve paths) are placeholders, not identities — a
-  // `started` event with a genuine id must upgrade the slot, otherwise the
-  // ledger keeps an id no terminal can clear (T0.5 misses it) until TTL.
+  // 218 review #3 + round-3 review #4: BOTH placeholder shapes are replaceable
+  // by a genuine event id — SYNTHETIC ids (`takeover-…` / `dispatch:…`, the 3d
+  // takeover / self-reserve paths) AND the ID-LESS `reserved:true` entry the
+  // RPC `writeReserved` writes before the reply. A `started`/`created` event
+  // must UPGRADE the slot in both cases, otherwise the ledger keeps a `reserved`
+  // marker (and for synthetic ids an unclerable one) until TTL, contradicting
+  // the "marker must not survive" contract below.
   const existingId = existing?.agentId;
   const isPlaceholder =
     !existingId ||
@@ -170,25 +181,27 @@ export function recordSpawnFromEvent(
     // A DIFFERENT real agentId in this slot: never overwrite (218 T0.3).
     return;
   }
-  const nextEntry: ActiveSpawnEntry =
-    existingId && isPlaceholder
-      ? // Placeholder replacement: FULL rewrite. The `reserved` marker and the
-        // synthetic age must not survive — the event itself is the liveness
-        // proof now. A bound operationContext still rides along.
-        {
-          agentName,
-          agentId,
-          startedAt: Date.now(),
-          source: "event",
-          ...(existing?.operationContext ? { operationContext: existing.operationContext } : {}),
-        }
-      : {
-          ...(existing ?? {}),
-          agentName,
-          agentId,
-          startedAt: Date.now(),
-          source: "event",
-        };
+  const nextEntry: ActiveSpawnEntry = isPlaceholder
+    ? // Placeholder replacement (covers synthetic-id AND id-less shapes):
+      // FULL rewrite. The `reserved` marker, the absent/synthetic id and the
+      // synthetic age must not survive — the event itself is the liveness
+      // proof now. A bound operationContext still rides along.
+      {
+        agentName,
+        agentId,
+        startedAt: Date.now(),
+        source: "event",
+        ...(existing?.operationContext ? { operationContext: existing.operationContext } : {}),
+      }
+    : // Same REAL identity already on the slot: merge-refresh keeps the
+      // original fields (RPC-writeGuard entries carry no `source`).
+      {
+        ...(existing ?? {}),
+        agentName,
+        agentId,
+        startedAt: Date.now(),
+        source: "event",
+      };
   const latest = session.getMeta();
   session.updateMeta({
     activeSpawns: {
@@ -293,27 +306,39 @@ export function reconcileActiveSpawns(now: number = Date.now()): void {
 }
 
 /**
- * Subscribes the ledger to terminal lifecycle events: a terminal agentId
- * clears its entry (`spawn_ledger_cleared`), so "already live" evidence never
- * outlives the executor.
+ * Minimal structural shape the ledger reads from a terminal lifecycle entry.
+ * Declared LOCALLY (218 round-3 review #7): `spawn-ledger` imports nothing
+ * from `subagent-lifecycle-registry` — the full `SubagentLifecycleEntry` is
+ * structurally assignable to this, so the registry→ledger edge stays one-way
+ * and the utils-internal runtime cycle is gone.
+ */
+export interface SpawnLedgerTerminalSignal {
+  agentId?: string;
+}
+
+/**
+ * 218 P0 (T0.5): the ledger's terminal-observer CALLBACK factory — a terminal
+ * agentId clears its entry (`spawn_ledger_cleared`), so "already live"
+ * evidence never outlives the executor.
  *
- * REGISTRATION ORDER IS A CONTRACT (218 T0.5): terminal observers run
- * synchronously in insertion order (`subagent-lifecycle-registry.ts`). This
- * observer MUST be registered AFTER `registerOwnerWakeObserver()` — the wake
+ * REGISTRATION ORDER IS A CONTRACT (218 T0.5, wired at `src/index.ts`):
+ * terminal observers run synchronously in insertion order
+ * (`subagent-lifecycle-registry.ts`). This callback MUST be handed to
+ * `registerTerminalObserver` AFTER `registerOwnerWakeObserver()` — the wake
  * decision reads the ledger (predicates 2/3); clearing first would make wake
  * behavior depend on registration order instead of evidence.
  *
- * @returns Cleanup function removing the observer
+ * @returns Observer callback to subscribe via `registerTerminalObserver`
  */
-export function registerSpawnLedgerObserver(): () => void {
-  return registerTerminalObserver((entry: SubagentLifecycleEntry) => {
+export function createSpawnLedgerTerminalObserver(): (entry: SpawnLedgerTerminalSignal) => void {
+  return (entry: SpawnLedgerTerminalSignal): void => {
     try {
       if (!entry.agentId) return;
       clearSpawnByAgentId(entry.agentId);
     } catch {
       // Fail-safe: ledger bookkeeping must never break lifecycle registration.
     }
-  });
+  };
 }
 
 /** Test-only reset: clears installed accessors (mirrors __resetLifecycleRegistry). */

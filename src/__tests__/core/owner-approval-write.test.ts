@@ -320,6 +320,94 @@ describe("Deny breaker via the owner menu (case 4)", () => {
   });
 });
 
+// ── 218 round-3 review #1 (Medium): a DISMISSAL is NOT a human Deny ──────
+describe("write-menu dismissal (Esc / auto-dismiss / select error) keeps the queue", () => {
+  it("Esc / auto-dismiss (undefined choice) → entries KEEP, breaker untouched, no freeze", async () => {
+    const config = makeTestConfig();
+    // Script EMPTY: the harness select resolves `undefined` — the 173 C11
+    // confirmed host shapes (user Esc, streaming-output auto-dismiss).
+    const { meta, session, ctx, notices } = makeHarness(undefined, []);
+    const enq = enqueueWriteApproval(session, "develop", [candidate("tmp/dis1")]);
+
+    const r = await consumePendingOwnerApprovalDetailed(ctx as never, config);
+    expect(r).toEqual({ outcome: "dismissed", kind: "write", fingerprint: enq.fingerprint });
+
+    // THE defect this review fixed: dismissals no longer feed the breaker…
+    expect(meta.whitelistMissDenials).toBeUndefined();
+    expect(isFrozen(meta)).toBe(false);
+    // …and the request is no longer silently dropped (contrast the old
+    // removeBatch + write_approval_denied path that mimicked a human rejection).
+    expect(Object.keys(meta.pendingOwnerApprovals ?? {})).toEqual([enq.fingerprint]);
+
+    const dismissed = audits.find((a) => a.event === "write_approval_dismissed");
+    expect(dismissed).toBeDefined();
+    expect(dismissed!.message).toMatchObject({ stage: "develop", reason: "dismissed", fingerprints: enq.fingerprint });
+    expect(dismissed!.level).toBe("warn");
+    expect(audits.some((a) => a.event === "write_approval_denied")).toBe(false);
+    expect(notices.some((n) => n.includes("stay queued"))).toBe(true);
+  });
+
+  it("3 dismissals across 3 distinct target sets → ZERO breaker pressure, nothing dropped (incident shape)", async () => {
+    const config = makeTestConfig();
+    const { meta, session, ctx } = makeHarness(undefined, []); // every menu → undefined
+    for (let i = 0; i < 3; i++) {
+      enqueueWriteApproval(session, "develop", [candidate(`tmp/ds${i}`)]);
+      const r = await consumePendingOwnerApprovalDetailed(ctx as never, config);
+      expect(r.outcome).toBe("dismissed");
+    }
+    // Pre-fix this EXACT sequence (3 × undefined) triggered violation_overflow.
+    expect(meta.whitelistMissDenials).toBeUndefined();
+    expect(isFrozen(meta)).toBe(false);
+    expect(audits.some((a) => a.event === "whitelist_miss_denial_overflow")).toBe(false);
+    // All three batches survive for a turn that delivers a real choice.
+    expect(Object.keys(meta.pendingOwnerApprovals ?? {})).toHaveLength(3);
+  });
+
+  it("unknown option string → dismissed (kept queued), never a Deny", async () => {
+    const config = makeTestConfig();
+    const { meta, session, ctx } = makeHarness(undefined, ["stale-host-label"]);
+    const enq = enqueueWriteApproval(session, "develop", [candidate("tmp/unk")]);
+    const r = await consumePendingOwnerApprovalDetailed(ctx as never, config);
+    expect(r.outcome).toBe("dismissed");
+    expect(meta.whitelistMissDenials).toBeUndefined();
+    expect(Object.keys(meta.pendingOwnerApprovals ?? {})).toEqual([enq.fingerprint]);
+  });
+
+  it("select throws → error-level write_approval_dismissed (reason select_error), entries kept, no throw", async () => {
+    const config = makeTestConfig();
+    const { meta, session, ctx } = makeHarness(undefined, ["Allow for this session"]); // script irrelevant
+    (ctx.ui as { select?: unknown }).select = async () => {
+      throw new Error("host stream reset");
+    };
+    const enq = enqueueWriteApproval(session, "develop", [candidate("tmp/boom")]);
+
+    const r = await consumePendingOwnerApprovalDetailed(ctx as never, config);
+    expect(r.outcome).toBe("dismissed");
+    expect(meta.whitelistMissDenials).toBeUndefined();
+    expect(isFrozen(meta)).toBe(false);
+    expect(Object.keys(meta.pendingOwnerApprovals ?? {})).toEqual([enq.fingerprint]);
+
+    const dismissed = audits.find((a) => a.event === "write_approval_dismissed");
+    expect(dismissed!.message?.reason).toBe("select_error");
+    expect(dismissed!.message?.error).toContain("host stream reset");
+    expect(dismissed!.level).toBe("error");
+  });
+
+  it("explicit Deny still works AFTER dismissals mixed in (tri-state not defanged)", async () => {
+    const config = makeTestConfig();
+    const { meta, session, ctx } = makeHarness(undefined, [undefined, "Deny (block)"]);
+    enqueueWriteApproval(session, "develop", [candidate("tmp/mix1")]);
+    const d1 = await consumePendingOwnerApprovalDetailed(ctx as never, config); // dismissed → kept
+    expect(d1.outcome).toBe("dismissed");
+    enqueueWriteApproval(session, "develop", [candidate("tmp/mix2")]); // batch now covers BOTH
+    const d2 = await consumePendingOwnerApprovalDetailed(ctx as never, config); // explicit Deny
+    expect(d2.outcome).toBe("denied");
+    // ONE strike (per distinct class), not two — only the explicit Deny counted.
+    expect(meta.whitelistMissDenials?.counts["tmp"]).toBe(1);
+    expect(isFrozen(meta)).toBe(false);
+  });
+});
+
 describe("legacy 217 compatibility (case 5)", () => {
   it("entries WITHOUT kind (historical) still consume through the command branch", async () => {
     const config = makeTestConfig();

@@ -31,12 +31,13 @@ import {
   recordSpawnFromEvent,
   clearSpawnByAgentId,
   reconcileActiveSpawns,
-  registerSpawnLedgerObserver,
+  createSpawnLedgerTerminalObserver,
   __resetSpawnLedger,
 } from "../../utils/spawn-ledger";
 import {
   wireSubagentLifecycleListeners,
   setOwnerMetaAccessor,
+  registerTerminalObserver,
   __resetLifecycleRegistry,
 } from "../../utils/subagent-lifecycle-registry";
 import type { PipelineConfig, SessionMeta } from "../../types";
@@ -194,7 +195,9 @@ describe("218 P0 spawn-ledger: three-source writes and boundaries", () => {
 
     const bus = createMockEventBus();
     const off = wireSubagentLifecycleListeners(makePi(bus));
-    const offObserver = registerSpawnLedgerObserver();
+    // 218 round-3 review #7: the composition-root wiring reproduced verbatim —
+    // spawn-ledger exports the callback, the registry side subscribes it.
+    const offObserver = registerTerminalObserver(createSpawnLedgerTerminalObserver());
 
     // Terminal for an UNRELATED id — the d1 entry must stay untouched.
     bus.trigger("subagents:completed", { id: "other-9", reason: "completed" });
@@ -309,6 +312,38 @@ describe("218 P0 spawn-ledger: three-source writes and boundaries", () => {
     recordSpawnFromEvent({ id: "real-3", type: "twin-agent" }, "started");
     await flush();
     expect(meta.activeSpawns!.develop!.agentId).toBe("real-2");
+  });
+
+  // ── 218 round-3 review #4: the ID-LESS placeholder must be fully rewritten too ──
+  it("case 5d: id-less reserved placeholder (RPC writeReserved shape) → started event drops `reserved`", async () => {
+    const config = makeTwinConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-ledger-noid" });
+    setSpawnLedgerConfig(config);
+    setSpawnLedgerSession(sessionFor(meta) as never);
+
+    // The exact shape `subagent-rpc.writeReserved`/`writeReservedStrict` write
+    // before the RPC reply: reserved:true with NO agentId at all.
+    meta.activeSpawns = {
+      develop: {
+        agentName: "twin-agent",
+        startedAt: Date.now(),
+        reserved: true,
+        operationContext: { operationId: "op-9", kind: "develop", stage: "develop", round: 1 } as never,
+      },
+    };
+    recordSpawnFromEvent({ id: "real-42", type: "twin-agent" }, "started");
+    await flush();
+
+    // Pre-fix this fell into the MERGE branch: `reserved:true` survived next
+    // to the real id (the comment's "must not survive" contract was broken).
+    const entry = meta.activeSpawns!.develop!;
+    expect(entry.agentId).toBe("real-42");
+    expect(entry.source).toBe("event");
+    expect(entry.reserved).toBeUndefined();
+    expect(entry.operationContext).toBeDefined(); // bound identity still rides along
+    // T0.5 clearing by the real id works.
+    clearSpawnByAgentId("real-42");
+    expect(meta.activeSpawns!.develop).toBeUndefined();
   });
 
   it("case 6: no config / no session accessor → every writer no-ops without throwing", () => {

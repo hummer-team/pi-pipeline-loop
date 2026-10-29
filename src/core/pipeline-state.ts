@@ -144,6 +144,10 @@ export function createPipelineState(config: PipelineConfig): Tool {
         // by the stall watchdog and consumed by the 3f manual gate, so the
         // status surface shows stage, request age, and both authorization
         // timestamps (null when a step never happened).
+        // 218 round-3 review #3: `dispatchAuthorizedAt` is stamped TOGETHER
+        // with `stalledAt` (same instant — see `pending-spawn-stall.fire`);
+        // it persists the Q23-A "dispatch authorized" semantics onto the
+        // entry, it is NOT an independently measured timestamp.
         spawnQueue: Object.entries(meta.pendingSpawns ?? {}).flatMap(
           ([qStage, entry]) => entry
             ? [{

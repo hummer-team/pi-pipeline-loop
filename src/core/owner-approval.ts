@@ -14,10 +14,12 @@
 import { createHash } from "node:crypto";
 import type { OwnerApprovalRequest, OwnerCommandApproval, OwnerWriteApproval, PipelineConfig, PipelineStage, SessionMeta } from "../types";
 import { safeWriteAuditLog, encodeAuditValue } from "../utils/auditLog";
-// 217 review issue 2 (Medium): ONE capability predicate shared with Phase 2
-// (P4 / R1-Q4=A) — a host that DECLARES hasUI=false must never be driven
-// through a select() call even if it hands over a select control.
-import { resolveDeclaredHasUI } from "./ui-capability";
+// 217 review issue 2 (Medium) + 218 round-3 review #5: ONE shared menu
+// predicate — a host that DECLARES hasUI=false must never be driven through a
+// select() call even if it hands over a select control, and a declared true
+// must still hand over a REAL select control. Both menu gates in this module
+// call `isMenuCapable` (no inlined copies that could drift again).
+import { isMenuCapable } from "./ui-capability";
 // 218 T2.4: the batched write menu feeds the SAME Deny breaker + freeze path
 // as the owner direct ask (write-scope/decision). flow-state / pipeline-start
 // never import this module, so these edges are cycle-free.
@@ -129,7 +131,19 @@ export function writeApprovalBlockReason(candidates: WriteCandidate[], fingerpri
   );
 }
 
-export type OwnerApprovalOutcome = "approved" | "denied" | "no_ui" | "none";
+/**
+ * Outcome of ONE owner-side approval consumption.
+ * - `approved` / `denied`: REAL consumptions (a human choice was applied).
+ * - `no_ui`: the host cannot show a menu — the request STAYS QUEUED.
+ * - `dismissed` (218 round-3 review #1, Medium): the menu WAS shown but no
+ *   human choice landed (Esc / streaming auto-dismiss / select threw /
+ *   unknown option). This is an environment fact, NOT a Deny (plan Q15-B /
+ *   T2.5): entries STAY QUEUED, no breaker count, no freeze.
+ * - `none`: nothing consumable.
+ * `no_ui` / `dismissed` / `none` are all NON-consumptions — callers
+ * (agent-settled T3.3) only let `approved`/`denied` take the settle slot.
+ */
+export type OwnerApprovalOutcome = "approved" | "denied" | "no_ui" | "dismissed" | "none";
 
 /**
  * Owner side: present ONE pending approval (oldest first) and apply the choice.
@@ -235,16 +249,13 @@ export async function consumePendingOwnerApprovalDetailed(
     ctx.session.updateMeta({ pendingOwnerApprovals: rest });
   };
 
-  // 217 review issue 2 (Medium): declared `false` WINS over a present select
-  // (Phase 2 P4/R1-Q4=A capability unification) — the approval menu obeys the
-  // SAME predicate as the decision menu, and the request stays queued
-  // (owner_approval_no_ui) instead of being driven through a select() call.
-  // `select` local keeps the type narrowing the old truthy check provided
-  // (menuCapable already requires a real select).
+  // 217 review issue 2 (Medium) + 218 round-3 review #5: the approval menu
+  // obeys the SINGLE shared predicate `isMenuCapable` (declared false wins;
+  // declared true still needs a real select control), and the request stays
+  // queued (owner_approval_no_ui) instead of being driven through a select()
+  // call. The `select` local keeps the call-site type narrowing.
   const select = ctx.ui?.select;
-  const declared = resolveDeclaredHasUI(ctx);
-  const menuCapable = declared !== false && typeof select === "function";
-  if (!menuCapable) {
+  if (!select || !isMenuCapable(ctx)) {
     // Fail-closed and visible: the request stays queued for a UI-capable turn.
     await safeWriteAuditLog("owner_approval_no_ui", {
       pipelineId: meta.pipelineId, stage: request.stage, fingerprint,
@@ -274,14 +285,21 @@ export async function consumePendingOwnerApprovalDetailed(
 
 /**
  * 218 T2.4/F.3-2: consume the CURRENT-stage write batch with ONE menu.
- * Choices act on ALL entries at once:
+ * The menu is TRI-STATE (plan Q15-B / T2.4 / T2.5; 218 round-3 review #1):
  * - Allow for this session → every target joins sessionAllowedWritePaths,
  *   the Deny breaker clears, entries are removed, audit `write_approval_approved`,
  *   and a visible /pipeline-resume exit is notified (the blocked child call
  *   already FAILED — re-dispatch is the owner's next move, T3.5 owns recovery).
- * - otherwise (Deny / Esc) → per DISTINCT pathClass one `recordDenial(+1)`;
- *   any class reaching DEFAULT_MAX_VIOLATIONS freezes the pipeline
- *   (`whitelist_miss_denial_overflow`); audit `write_approval_denied`.
+ * - EXPLICIT Deny (`"Deny (block)"`) → per DISTINCT pathClass one
+ *   `recordDenial(+1)`; any class reaching DEFAULT_MAX_VIOLATIONS freezes the
+ *   pipeline (`whitelist_miss_denial_overflow`); audit `write_approval_denied`.
+ * - dismissed (Esc / host auto-dismiss / select threw / unknown option) → an
+ *   ENVIRONMENT fact, never a human "no": entries STAY queued, NO counting,
+ *   NO freeze; audit `write_approval_dismissed` (warn; error when select
+ *   threw) plus one visible notify. A headless/pressured host can therefore
+ *   no longer be escalated into a global `violation_overflow` freeze by a
+ *   choice the user never made (the 20261028 three-strike shape this whole
+ *   requirement set out to fix).
  * No menu capability → entries STAY queued (217 owner_approval_no_ui parity).
  */
 async function consumeWriteBatch(
@@ -302,10 +320,10 @@ async function consumeWriteBatch(
   const display = mergedTargets.length > 5 ? `${head} …+${mergedTargets.length - 5}` : head;
   const firstFingerprint = fingerprints[0] ?? "";
 
+  // 218 round-3 review #5: the SINGLE shared menu predicate (same gate as the
+  // command branch above).
   const select = ctx.ui?.select;
-  const declared = resolveDeclaredHasUI(ctx);
-  const menuCapable = declared !== false && typeof select === "function";
-  if (!menuCapable) {
+  if (!select || !isMenuCapable(ctx)) {
     await safeWriteAuditLog("owner_approval_no_ui", {
       pipelineId: meta.pipelineId, stage: meta.currentStage, kind: "write",
       fingerprints: fingerprints.join(","),
@@ -316,11 +334,22 @@ async function consumeWriteBatch(
     return { outcome: "no_ui", kind: "write", fingerprint: firstFingerprint };
   }
 
-  const choice = await select(
-    `Child sessions request these writes (stage "${meta.currentStage}"):\n  ${display}`,
-    ["Deny (block)", "Allow for this session"],
-  );
+  // 218 round-3 review #1 (Medium): a THROWING select is an environment fact
+  // too — caught HERE so it lands on the dismissed path (entries stay queued)
+  // with an honest error-level audit, instead of escaping to the settle site
+  // as a bare owner_approval_consume_error.
+  let choice: string | undefined;
+  let selectErr: string | undefined;
+  try {
+    choice = await select(
+      `Child sessions request these writes (stage "${meta.currentStage}"):\n  ${display}`,
+      ["Deny (block)", "Allow for this session"],
+    );
+  } catch (err) {
+    selectErr = err instanceof Error ? err.message : String(err);
+  }
   const approved = choice === "Allow for this session";
+  const explicitDeny = choice === "Deny (block)";
 
   // Remove ALL served entries from the FRESHEST queue snapshot (shared-store
   // discipline: a concurrent enqueue during the await must not be clobbered).
@@ -357,7 +386,32 @@ async function consumeWriteBatch(
     return { outcome: "approved", kind: "write", fingerprint: firstFingerprint };
   }
 
-  // Deny path: per DISTINCT pathClass the +1 feeds the stage-scoped breaker.
+  // ── Dismissed branch (218 round-3 review #1) ──
+  // Neither Allow nor the EXACT "Deny (block)" option (Esc, 173-C11 streaming
+  // auto-dismiss, select threw, unknown option): Q15-B/T2.5 semantics — NOT a
+  // human Deny. The entries STAY QUEUED (never silently dropped), the breaker
+  // is untouched and NO freeze may follow; the audit distinguishes this from
+  // a real rejection so replay can tell the two apart.
+  if (!explicitDeny) {
+    await safeWriteAuditLog("write_approval_dismissed", {
+      pipelineId: meta.pipelineId, stage: meta.currentStage,
+      count: String(mergedTargets.length),
+      targets: mergedTargets.map((target) => encodeAuditValue(target)).join(","),
+      fingerprints: fingerprints.join(","),
+      reason: selectErr !== undefined ? "select_error" : "dismissed",
+      ...(selectErr !== undefined ? { error: encodeAuditValue(selectErr) } : {}),
+    }, selectErr !== undefined ? "error" : "warn");
+    try {
+      ctx.ui?.notify?.(
+        `Write approvals (stage "${meta.currentStage}") were neither allowed nor denied. ` +
+        `The requests stay queued — the menu returns on the next settle.`,
+      );
+    } catch { /* fail-open */ }
+    return { outcome: "dismissed", kind: "write", fingerprint: firstFingerprint };
+  }
+
+  // Explicit-Deny path: per DISTINCT pathClass the +1 feeds the stage-scoped
+  // breaker. ONLY reached by the exact "Deny (block)" choice.
   // 218 review #4: merged batches carry EVERY class they cover (`pathClasses`);
   // legacy single-class entries fall back to `[pathClass]`.
   const classes = Array.from(new Set(

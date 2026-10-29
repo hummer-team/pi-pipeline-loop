@@ -41,6 +41,9 @@ import { safeWriteAuditLog } from "./auditLog";
 import { reportStageProgress } from "./stage-progress-sink";
 // 218 P0 (T0.3/T0.4): the spawn ledger writer — same-layer (utils) module, fed
 // from these listeners. Config/session accessors are installed by index.ts.
+// 218 round-3 review #7: this edge is ONE-WAY — spawn-ledger exports its
+// terminal observer as a callback factory (subscribed in src/index.ts) and
+// imports nothing from this module, so utils/ holds no runtime cycle.
 import { recordSpawnFromEvent, stageOfExecutorName } from "./spawn-ledger";
 
 /**
