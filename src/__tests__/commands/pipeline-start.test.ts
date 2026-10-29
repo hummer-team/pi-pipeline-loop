@@ -643,16 +643,16 @@ describe("Phase 1 / 175: argsSource and derived label in maybeAutoLaunchClarify"
   });
 });
 
-// ─── Phase 4 (182): dispatchAfterResume name-probe live → skip spawn ─────────
+// ─── 218 T0.6: dispatchAfterResume ledger-live → skip spawn ─────────────────
 
-describe("Phase 4 (182): dispatchAfterResume name-probe live skip", () => {
+describe("218 T0.6: dispatchAfterResume ledger-live skip (name-probe retired)", () => {
   const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
   afterEach(async () => {
     delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
   });
 
-  it("name-probe live → 0 spawn + notify 'already running'", async () => {
+  it("ledger hit + probe live → 0 spawn + notify 'already running'", async () => {
     await scaffoldMinimalPi();
     const config = makeTestConfig({ projectRoot: TMP });
 
@@ -661,20 +661,25 @@ describe("Phase 4 (182): dispatchAfterResume name-probe live skip", () => {
     await fs.mkdir(path.join(TMP, "agents"), { recursive: true });
     await fs.writeFile(path.join(TMP, "agents", "test-agent.md"), "---\nname: develop-agent\n---\n# Agent\n", "utf-8");
 
-    // Install manager with listRecords returning a live agent matching the expected name
+    // 0.22.0-exact manager: per-id getRecord liveness for the ledgered id.
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => undefined,
+      getRecord: (id: string) => (id === "manual-dev-agent-1" ? { status: "running" } : undefined),
       hasRunning: () => true,
-      listRecords: () => [
-        { id: "manual-dev-agent-1", name: "develop-agent", status: "running" },
-      ],
     };
 
     const meta = makeTestMeta({
       currentStage: "develop",
       flowState: "blocked",
       blockedReason: "awaiting_human",
-      // No activeSpawns — ledger empty
+      // The same-name executor is LEDGERED (via subagents:started in
+      // production) — the only evidence the pre-check reads since 218.
+      activeSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          agentId: "manual-dev-agent-1",
+          startedAt: Date.now(),
+        },
+      },
     });
     const ctx = createMockCtx(meta);
     const notifications: string[] = [];
@@ -703,7 +708,10 @@ describe("Phase 4 (182): dispatchAfterResume name-probe live skip", () => {
     if (fsSync.existsSync(auditPath)) {
       const auditContent = await fs.readFile(auditPath, "utf-8");
       expect(auditContent).toContain("pipeline_resume_dispatch_skipped");
-      expect(auditContent).toContain("manual_live_probe");
+      // 218 T0.6: the skip reason is the ledger probe hit (the retired
+      // name-probe basis value must not reappear).
+      expect(auditContent).toContain("reason=ledger_live");
+      expect(auditContent).not.toContain("manual_live_probe");
     }
   });
 });

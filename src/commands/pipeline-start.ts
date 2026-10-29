@@ -38,7 +38,9 @@ import { buildNewPeriodResetFields } from "../core/meta-reset";
 // 210 Phase 7: restart/resume clears the in-process usage ledger.
 import { resetUsage } from "../core/usage-recorder";
 // Phase 0 (182): name-probe for out-of-band agent detection before dispatch
-import { findLiveAgentByName } from "../utils/subagents-introspect";
+// 218 P0 (T0.6): `findLiveAgentByName` replaced by the ledger scanner — resume
+// pre-check must not depend on the retired fake contract.
+import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { isSubagentsReady } from "../utils/subagent-availability";
 import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
@@ -816,18 +818,21 @@ export async function dispatchAfterResume(
   }
 
   // plan/develop/review/fix: spawn stage subagent via existing helper
-  // Phase 0 (182): name-probe check before spawning — if a same-name agent is
-  // already live (manual/out-of-band), skip the spawn to avoid duplicate execution.
+  // Phase 0 (182) → 218 P0 (T0.6): the name-probe is retired; the EVENT LEDGER
+  // is the same-stage truth (manual dispatches land there via
+  // `subagents:started`). A ledger hit with probeable live evidence means a
+  // same-name executor is already running — skip the spawn to avoid a twin.
   const expectedAgent = resolveAgentMention(config, stage);
   if (expectedAgent) {
-    const nameProbe = findLiveAgentByName(expectedAgent);
-    if (nameProbe) {
-      ui.notify(ctx, `Agent "${expectedAgent}" is already running (id ${nameProbe.agentId}). Skipping duplicate spawn.`);
+    const ledgerHit = scanActiveSpawnEvidence(meta.activeSpawns, expectedAgent);
+    if (ledgerHit && ledgerHit.basis === "probe_live") {
+      ui.notify(ctx, `Agent "${expectedAgent}" is already running (id ${ledgerHit.agentId ?? "n/a"}, ledger stage ${ledgerHit.stage}). Skipping duplicate spawn.`);
       await safeWriteAuditLog("pipeline_resume_dispatch_skipped", {
         stage,
         pipelineId: meta.pipelineId,
-        reason: "manual_live_probe",
-        agentId: nameProbe.agentId,
+        reason: "ledger_live",
+        agentId: ledgerHit.agentId ?? "",
+        evidenceStage: ledgerHit.stage,
       });
       return;
     }

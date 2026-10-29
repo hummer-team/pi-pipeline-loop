@@ -340,9 +340,11 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
     expect(result).toBeUndefined();
   });
 
-  // ── Phase 4 (182) G4: name-probe manual_live_probe suppression ───────────
+  // ── 218 T0.6: name-probe suppression retired — ledger is the ONLY evidence
+  // source. An un-ledgered live agent (manual UI spawn) no longer blocks the
+  // owner's Agent call; it merely keeps the fail-open contract intact. ──────
 
-  it("Phase 4 (182): empty ledger but name-probe live → block + basis=manual_live_probe", async () => {
+  it("218 T0.6: empty ledger but a live top-level agent → NO block (name-probe retired)", async () => {
     const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
     await writeAgentFile(TMP, config.stages["plan"].agentPath!, "feat-design-plan-agent");
     const meta = makeTestMeta({
@@ -351,13 +353,11 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
       // activeSpawns is empty — no ledger entry
     });
 
-    // Install manager with listRecords returning a live agent matching the name
+    // 0.22.0-exact manager: getRecord-only, no enumeration. Some agent is
+    // running, but with no ledger evidence the guard must not block.
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
       getRecord: () => undefined,
       hasRunning: () => true,
-      listRecords: () => [
-        { id: "manual-agent-xyz", name: "feat-design-plan-agent", status: "running" },
-      ],
     };
 
     const ctx = createMockCtx(meta, { sessionFile: "main-session" });
@@ -365,18 +365,17 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
 
     const result = await createToolGuard(config).handler(ctx as any);
 
-    // Should block via name-probe (manual_live_probe basis)
-    expect(result).toBeDefined();
-    expect((result as any).block).toBe(true);
-    expect((result as any).reason).toContain("already running");
-    expect((result as any).reason).toContain("manual_live_probe");
-
-    const logContent = await readFile(auditLogFileFor(join(TMP, ".pi", "audit")), "utf-8");
-    expect(logContent).toContain("spawn_suppressed");
-    expect(logContent).toContain("manual_live_probe");
+    // No ledger entry → no evidence → the call is allowed through and NO
+    // suppression is audited (the audit file itself stays unwritten).
+    expect(result).toBeUndefined();
+    const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"));
+    const logContent = await readFile(auditPath, "utf-8").catch(() => "");
+    // The retired basis value must not reappear anywhere in the audit trail.
+    expect(logContent).not.toContain("spawn_suppressed");
+    expect(logContent).not.toContain("manual_live_probe");
   });
 
-  it("Phase 4 (182): name-probe null (no match) → no suppression (fail-open)", async () => {
+  it("218 T0.6: ledger miss with an idle registry → no suppression (fail-open)", async () => {
     const config = makeTestConfig({ projectRoot: TMP, takeoverStages: [] });
     await writeAgentFile(TMP, config.stages["plan"].agentPath!, "feat-design-plan-agent");
     const meta = makeTestMeta({
@@ -385,13 +384,9 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
       // activeSpawns is empty
     });
 
-    // Manager returns records but none match the expected name
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
       getRecord: () => undefined,
       hasRunning: () => false,
-      listRecords: () => [
-        { id: "other-agent", name: "unrelated-agent", status: "running" },
-      ],
     };
 
     const ctx = createMockCtx(meta, { sessionFile: "main-session" });
@@ -399,7 +394,7 @@ describe("Phase 2 / 175: suppressDuplicateSpawn (default-on evidence-based)", ()
 
     const result = await createToolGuard(config).handler(ctx as any);
 
-    // No matching name-probe → fail-open, no suppression
+    // No ledger evidence at all → fail-open, no suppression
     expect(result).toBeUndefined();
   });
 

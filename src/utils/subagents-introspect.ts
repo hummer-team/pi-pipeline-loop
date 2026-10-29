@@ -19,12 +19,16 @@ const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 /** Agent statuses considered "live" (actively occupying a slot) */
 const LIVE_STATUSES = new Set(["queued", "running", "steered"]);
 
-/** Minimal interface for the manager registry (fail-safe on field drift) */
+/**
+ * Minimal interface for the manager registry (fail-safe on field drift).
+ *
+ * 218 Q19-B: `listRecords`/`listAgents` are NOT exposed by pi-subagents 0.22.0
+ * (docs/rpc.md §The manager registry); do not depend on them. The only
+ * reachable members are `getRecord(id)` and `hasRunning()`.
+ */
 interface ManagerRegistry {
   getRecord?: (id: string) => { status?: string; sessionFile?: string } | undefined;
   hasRunning?: () => boolean;
-  /** Phase 0 (182): optional method for enumerating all records (name-based lookup). */
-  listRecords?: () => Array<{ id?: string; name?: string; status?: string; sessionFile?: string }>;
 }
 
 /**
@@ -62,39 +66,13 @@ export function anyTopLevelRunning(): boolean | null {
   }
 }
 
-/**
- * Phase 0 (182): Finds a live agent by name from the manager registry.
- *
- * Used to detect out-of-band (manual/external) agents that share the same
- * name as the plugin's expected stage executor. When a live match is found,
- * the plugin should defer/avoid spawning a duplicate.
- *
- * Fail-open: returns null when:
- * - Manager singleton is unavailable (SDK not installed)
- * - `listRecords` is not exposed (API drift)
- * - No matching live record found
- *
- * @param name - The agent name to search for
- * @returns Object with agentId if found, null otherwise
- */
-export function findLiveAgentByName(name: string): { agentId: string } | null {
-  try {
-    const manager = (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] as ManagerRegistry | undefined;
-    if (!manager || typeof manager.listRecords !== "function") return null;
-
-    const records = manager.listRecords();
-    if (!Array.isArray(records)) return null;
-
-    for (const record of records) {
-      if (record.name === name && record.status && LIVE_STATUSES.has(record.status) && record.id) {
-        return { agentId: record.id };
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
+// 218 Q19-B: `findLiveAgentByName` (Phase 0 / 182) was DELETED here.
+// It depended on `manager.listRecords`, which pi-subagents 0.22.0 never
+// exposed — the probe was constant `null`, and every caller silently
+// degraded to "not live" (incident 20261028: a manually dispatched twin
+// was invisible to the plugin). Same-stage liveness evidence now comes
+// exclusively from the event ledger (`src/utils/spawn-ledger.ts`,
+// `activeSpawns[*].source === "event"` + `probeAgentState(agentId)`).
 
 /**
  * 194 Phase 0 (C3): narrow identity evidence for ONE full agent id, read from
@@ -112,7 +90,9 @@ export interface AgentSessionEvidence {
   readonly recordStatus?: string;
   /** Session file recorded by the runtime — only registry-sourced evidence */
   readonly sessionFile?: string;
-  /** True when the id enumerates more than once (never identity) */
+  /** 218 Q19-B: enumeration is not exposed upstream, so duplicate ids are
+   *  not determinable — this flag is permanently false; callers judge on
+   *  `found`/`status`. */
   readonly ambiguous: boolean;
 }
 
@@ -159,18 +139,10 @@ export function probeAgentSessionEvidence(agentId: string): AgentSessionEvidence
         ? { sessionFile: record.sessionFile }
         : {}),
     };
-    // Ambiguity guard: an id that enumerates more than once is never identity.
-    if (typeof manager.listRecords === "function") {
-      try {
-        const records = manager.listRecords();
-        if (Array.isArray(records)) {
-          const matches = records.filter((r) => r && r.id === agentId).length;
-          if (matches > 1) return { ...resolved, ambiguous: true, status: "unknown", sessionFile: undefined };
-        }
-      } catch {
-        // Enumeration drift: keep getRecord evidence, ambiguity stays false.
-      }
-    }
+    // 218 Q19-B: the old `listRecords` ambiguity guard was removed — the
+    // upstream registry exposes no enumeration, so duplicate ids are NOT
+    // determinable and `ambiguous` stays false by construction. Callers judge
+    // on `found`/`status` only.
     return resolved;
   } catch {
     return { ...base, found: false, status: "unknown", ambiguous: false };

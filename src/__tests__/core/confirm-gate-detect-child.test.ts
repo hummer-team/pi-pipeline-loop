@@ -567,10 +567,13 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
 describe("G3 (188): narrow confirm gate defer to expected stage agent liveness", () => {
   const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
+  // 218 T0.6: the 0.22.0 manager exposes NO enumeration — liveness resolves
+  // per-id via getRecord. Records are keyed by id; ledger entries carry the
+  // ids, so a seeded entry probes live exactly when its record is running.
   function setManagerWithRecords(records: Array<{ id: string; name: string; status: string }>): void {
+    const byId = new Map(records.map(r => [r.id, r]));
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      listRecords: () => records,
-      getRecord: () => undefined,
+      getRecord: (id: string) => byId.get(id),
       hasRunning: () => records.some(r => ["running", "spawning"].includes(r.status)),
     };
   }
@@ -579,7 +582,6 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
       getRecord: () => undefined,
       hasRunning: () => running,
-      listRecords: () => [],
     };
   }
 
@@ -604,7 +606,7 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     return { ...base, stages: { ...base.stages, plan: planStage as typeof base.stages.plan } };
   }
 
-  it("expected agent settled (findLiveAgentByName=null) → gate fires (present)", async () => {
+  it("expected agent settled (no ledger evidence) → gate fires (present)", async () => {
     await createPlanDoc("# Plan\n");
     const tmpDir = getTmpDir();
     const config = await makePlanConfigWithAgent(tmpDir);
@@ -614,7 +616,7 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     let selectCalls = 0;
     ctx.ui.select = async () => { selectCalls++; return "Approve & Advance"; };
 
-    // No live agents at all → findLiveAgentByName("plan-agent") returns null
+    // No live agents at all → no ledger probe can hit for "plan-agent"
     setManagerWithRecords([]);
 
     const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
@@ -626,16 +628,23 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     expect((result as any).toStage).toBe("design-review");
   });
 
-  it("expected agent live (findLiveAgentByName returns record) → gate defers", async () => {
+  it("expected agent live (ledger hit + probe_live) → gate defers", async () => {
     await createPlanDoc("# Plan\n");
     const tmpDir = getTmpDir();
     const config = await makePlanConfigWithAgent(tmpDir);
 
-    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
+    // 218 T0.6: evidence is the LEDGER entry whose agentId probes live.
+    const meta = makeTestMeta({
+      currentStage: "plan",
+      requirementDoc: "docs/design/77_Config.md",
+      activeSpawns: {
+        plan: { agentName: "plan-agent", agentId: "agent-1", startedAt: Date.now() },
+      },
+    });
     const ctx = createMockCtx(meta);
     ctx.ui.select = async () => "Approve & Advance";
 
-    // Expected agent "plan-agent" is live
+    // Expected agent "plan-agent" (agent-1) is live
     setManagerWithRecords([{ id: "agent-1", name: "plan-agent", status: "running" }]);
 
     const result = await maybeHandleConfirmGate(config, ctx, meta, { notify: () => {}, transition: () => {} } as any, { mode: "manual" });
@@ -690,9 +699,9 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
 
   it("manager singleton unavailable + expectedAgentName set → falls back to anyTopLevelRunning/evidence", async () => {
     // Plan Phase 3 boundary: when the manager singleton is unavailable,
-    // findLiveAgentByName returns null (same as "agent not found"). The code
-    // must distinguish these cases and fall back to anyTopLevelRunning()
-    // instead of immediately returning "present".
+    // (legacy) the name probe returned null (same as "agent not found"). The
+    // code must distinguish these cases and fall back to the global evidence
+    // scan instead of immediately returning "present".
     await createPlanDoc("# Plan\n");
     const tmpDir = getTmpDir();
     const config = await makePlanConfigWithAgent(tmpDir);

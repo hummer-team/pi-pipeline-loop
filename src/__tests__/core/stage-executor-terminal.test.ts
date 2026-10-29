@@ -167,7 +167,6 @@ describe("194 Phase 3 (C3): trusted dispatch establishes the run", () => {
     adapter = makeRealAdapter();
     withManager({
       getRecord: (id: string) => (id === AGENT ? { status: "running", sessionFile: CHILD_FILE } : undefined),
-      listRecords: () => [{ id: AGENT, status: "running" }],
     });
     seedMeta(baseMeta());
 

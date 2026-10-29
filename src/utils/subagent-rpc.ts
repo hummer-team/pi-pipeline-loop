@@ -20,7 +20,7 @@ import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
 import { appendPipelineIdMarker } from "./pipeline-id-marker";
 import { findLatestReviewReport } from "./review-conclusion";
-import { probeAgentState, findLiveAgentByName } from "./subagents-introspect";
+import { probeAgentState, anyTopLevelRunning } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { checkDispatchConflicts } from "./guard-conflict-report";
 import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
@@ -1518,13 +1518,24 @@ async function maybeDeferSpawnForLiveTwin(
     }
   }
 
-  // Tier 3 — name-probe fallback (new):
-  //   findLiveAgentByName checks the manager registry directly, catching
-  //   out-of-band (manual/external) spawns not yet in activeSpawns.
+  // 218 P0 (T0.6): Tier-3 (name-probe) DELETED — it depended on the fake
+  // `listRecords` contract (constant null on 0.22.0). The event ledger is the
+  // same-stage truth; manual/Agent-tool dispatches appear there via
+  // `subagents:started` (source:"event"), covered by Tier 1/2 above.
+  //
+  // Tier 2.5 (defer-only supplement, Q16-B): a same-name ledger entry WITHOUT
+  // a probeable agentId means a dispatch is in flight whose RPC reply has not
+  // arrived. When the manager has NOT authoritatively confirmed "nothing is
+  // running" (`hasRunning()` true or null), defer this dispatch instead of
+  // racing a twin. With no such entry the miss fails open (no defer), matching
+  // the old name-probe behavior — but now the ledger actually fills.
   if (!hit || hit.basis !== "probe_live") {
-    const nameProbe = findLiveAgentByName(agentName);
-    if (nameProbe) {
-      hit = { stage, agentId: nameProbe.agentId, basis: "probe_live" };
+    if (anyTopLevelRunning() !== false) {
+      const reservedSameName = Object.entries(activeSpawns ?? {})
+        .find(([, spawn]) => spawn?.agentName === agentName && !spawn?.agentId);
+      if (reservedSameName) {
+        hit = { stage: reservedSameName[0] as PipelineStage, basis: "probe_live" };
+      }
     }
   }
 

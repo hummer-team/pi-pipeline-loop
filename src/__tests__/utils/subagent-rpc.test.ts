@@ -1630,20 +1630,13 @@ function clearManager(): void {
   delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
 }
 
-/**
- * Phase 4 (182) helper: installs a fake manager registry with both
- * `getRecord` (for probeAgentState) and `listRecords` (for findLiveAgentByName
- * Tier 3 name-probe fallback). `namedRecords` is the array returned by
- * listRecords — each entry carries { id, name, status }.
- */
-function setManagerWithListRecords(
-  records: Record<string, string | undefined>,
-  namedRecords: Array<{ id: string; name: string; status: string }>,
-): void {
+// 218 T0.6: the `setManagerWithListRecords` helper is DELETED — its
+// `listRecords` contract never existed in the real 0.22.0 registry. Fakes use
+// `setManager` (getRecord/hasRunning only), matching the shipped surface.
+function setManagerNoEnumeration(running: boolean): void {
   (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
-    hasRunning: () => Object.values(records).some((s) => s === "running" || s === "queued" || s === "steered"),
-    listRecords: () => namedRecords,
+    getRecord: () => undefined,
+    hasRunning: () => running,
   };
 }
 
@@ -2034,9 +2027,11 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
   });
 
   // ── Phase 4 (182): same-stage deferral, self-reserved exclusion, settle-dequeue ─
-  // These tests cover the Tier 2 (same-stage probe) and Tier 3 (name-probe)
-  // evidence branches added in Phase 4. The earlier G3 tests only exercised
-  // Tier 1 (cross-stage) deferral.
+  // These tests cover the Tier 2 (same-stage probe) evidence branch added in
+  // Phase 4 plus its 218 replacements: Tier 3 (name-probe) is retired — the
+  // event ledger is the same-stage truth; Tier 2.5 lives in
+  // subagent-rpc-tier25.test.ts. The earlier G3 tests only exercised Tier 1
+  // (cross-stage) deferral.
 
   it("Phase 4 (182): same-stage manual live → defers with evidenceStage=同stage (Tier 2)", async () => {
     markSubagentsReady();
@@ -2090,23 +2085,24 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("Phase 4 (182): name-probe hit defers spawn when activeSpawns is empty (Tier 3)", async () => {
+  // 218 T0.6: the Tier-3 name-probe is DELETED. An out-of-band live agent that
+  // was never ledgered produces NO evidence — the dispatch fails open and the
+  // spawn proceeds. (Manual dispatches become observable in production via the
+  // `subagents:started` ledger write, not through registry enumeration.)
+  it("218 T0.6: empty ledger + live registry does NOT defer (Tier 3 name-probe retired)", async () => {
     markSubagentsReady();
     const { config, tmpDir } = makeDevelopConfig();
     await initAuditLog(config);
-    // No activeSpawns entry for "develop-agent" — the out-of-band manual spawn
-    // is only visible through the manager registry (listRecords).
+    // No activeSpawns entry at all — nothing the ledger scan can hit.
     const meta = makeTestMeta({
       currentStage: "develop",
       pipelineId: "pipe-phase4-name-probe",
     });
-    // Install manager with listRecords returning a live record named "develop-agent".
-    setManagerWithListRecords(
-      { "manual-name-probe-id": "running" },
-      [{ id: "manual-name-probe-id", name: "develop-agent", status: "running" }],
-    );
+    // 0.22.0-exact manager: something IS running, but only per-id getRecord
+    // exists (no enumeration) and we have no ids to probe.
+    setManagerNoEnumeration(true);
     const bus = createMockEventBus();
-    const mockPi = makeSpawnPi(bus);
+    const mockPi = makeSpawnPi(bus, "sa-name-probe");
     const session = {
       getMeta: () => meta,
       updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
@@ -2117,17 +2113,17 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
       session: session as any,
     });
 
-    // findLiveAgentByName hits → defers.
-    expect(result.deferred).toBe(true);
-    expect(meta.pendingSpawns?.develop?.agentName).toBe("develop-agent");
-    expect(bus.emitted.some((e) => e.event === "subagents:rpc:spawn")).toBe(false);
+    // No ledger evidence → no deferral; the spawn goes straight through.
+    expect(result.deferred).toBeFalsy();
+    expect(result.spawned).toBe(true);
+    expect(meta.pendingSpawns?.develop).toBeUndefined();
+    expect(bus.emitted.filter((e) => e.event === "subagents:rpc:spawn").length).toBe(1);
 
     const logContent = fs.readFileSync(
       auditLogFileFor(join(tmpDir, ".pi", "audit")),
       "utf-8",
     );
-    expect(logContent).toContain("stage_spawn_deferred");
-    expect(logContent).toContain("oldChildId=manual-name-probe-id");
+    expect(logContent).not.toContain("stage_spawn_deferred");
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -2153,7 +2149,7 @@ describe("Phase 2 / 179 (G3): deferred spawn wait-and-settle", () => {
     // probeAgentState("dispatch:develop-self") returns "unknown" (not in manager)
     // so scanActiveSpawnEvidence returns { basis: "reserved" } (within window).
     // Tier 2 skips because basis !== "probe_live".
-    // Tier 3: no listRecords installed → findLiveAgentByName returns null.
+    // Tier 2.5: the entry HAS an agentId, so the id-less supplement never runs.
     setManager({});
     const bus = createMockEventBus();
     const mockPi = makeSpawnPi(bus, "sa-no-selflock");

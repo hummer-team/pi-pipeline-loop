@@ -382,7 +382,6 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
   // runtime registry evidence C3 requires (one unique record per id).
   (globalThis as Record<symbol, unknown>)[MANAGER_KEY] = {
     getRecord: (id: string) => agentRecords.get(id),
-    listRecords: () => spawnIds.map((id) => ({ id, ...agentRecords.get(id) })),
   };
 
   session.updateMeta(

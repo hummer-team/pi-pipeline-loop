@@ -74,7 +74,8 @@ import { enqueueOwnerApproval } from "./owner-approval";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // Phase 0 (182): secondary name-probe for manual/out-of-band agent detection
-import { findLiveAgentByName } from "../utils/subagents-introspect";
+// 218 P0 (T0.6): `findLiveAgentByName` import dropped — the name-probe is gone;
+// same-stage evidence comes exclusively from the event ledger.
 import { isDormant, DORMANT_KEEP_PROTECTION } from "./dormancy";
 // 193 Phase 3 (task 8): paused/decision-pending read-only enforcement
 import { designReviewPendingWriteBlockReason } from "./design-review/decision-guard";
@@ -1128,24 +1129,13 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 });
                 return { block: true, reason: suppressReason };
               }
-
-              // Phase 0 (182): secondary name-probe — detect manual/out-of-band
-              // agents that are live but not in the activeSpawns ledger.
-              // Reuses the spawn_suppressed audit event with basis "manual_live_probe".
-              const nameProbe = findLiveAgentByName(expectedAgent);
-              if (nameProbe) {
-                const suppressReason = `Stage executor '${expectedAgent}' is already running (id ${nameProbe.agentId}) [evidence: manual_live_probe]. Await its result; do not spawn a duplicate.`;
-                await safeWriteAuditLog("spawn_suppressed", {
-                  pipelineId: meta.pipelineId,
-                  stage: meta.currentStage,
-                  tool: toolName,
-                  subagentType,
-                  agentId: nameProbe.agentId,
-                  basis: "manual_live_probe",
-                  evidenceStage: meta.currentStage,
-                });
-                return { block: true, reason: suppressReason };
-              }
+              // 218 P0 (T0.6): the 182 secondary name-probe was DELETED. It
+              // depended on `manager.listRecords` which 0.22.0 never exposed —
+              // a constant-null probe that made every manual twin invisible
+              // (incident 20261028). The event ledger is now the ONLY same-
+              // stage "already live" truth: manual/Agent-tool dispatches feed
+              // `activeSpawns` via `subagents:started` (source:"event"), and
+              // `scanActiveSpawnEvidence` above covers them.
             }
           }
         }

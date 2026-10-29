@@ -96,9 +96,14 @@ describe("agent-settled probe deferral cap (Phase 8)", () => {
     expect(updatedMeta.dispatchedProbeDeferrals![`${pipelineId}:${stage}`]).toBeDefined();
   });
 
-  it("positive evidence (manual_live_probe) ×3 → all deferred, no gave_up, count stays undefined", async () => {
+  // 218 T0.6: positive evidence is now a LEDGER hit with a live agentId
+  // (basis=probe_live). The retired name-probe (`manual_live_probe`) had no
+  // ledger entry; the same scenario is re-seeded through activeSpawns.
+  it("positive evidence (probe_live, ledger hit) ×3 → all deferred, no gave_up, count stays undefined", async () => {
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      listRecords: () => [{ name: "test-agent", status: "running", id: "fake-agent-live-001" }],
+      getRecord: (id: string) =>
+        id === "fake-agent-live-001" ? { status: "running", id } : undefined,
+      hasRunning: () => true,
     };
 
     const config = makeTestConfig({ projectRoot: TMP });
@@ -108,12 +113,22 @@ describe("agent-settled probe deferral cap (Phase 8)", () => {
     let meta = makeTestMeta({
       currentStage: stage,
       pipelineId,
+      activeSpawns: {
+        develop: {
+          agentName: "test-agent",
+          agentId: "fake-agent-live-001",
+          startedAt: Date.now(),
+        },
+      },
     });
     let ctx = createMockCtx(meta);
     const hook = createAgentSettled(config);
 
     for (let i = 0; i < 3; i++) {
       meta = ctx.session.getMeta();
+      // Re-seed the ledger each round: a live probe keeps the entry, but the
+      // mock session must not lose it between handler invocations.
+      meta.activeSpawns = { develop: { agentName: "test-agent", agentId: "fake-agent-live-001", startedAt: Date.now() } };
       ctx = createMockCtx(meta);
       await hook.handler(ctx as any);
     }

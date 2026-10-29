@@ -43,7 +43,8 @@ import { extractFirstUserMessageText, extractLastUserMessageText } from "./sessi
 import { consumePendingSpawns, resolveAgentMention, spawnStageSubagent, isChildRuntimeCtx } from "../utils/subagent-rpc";
 import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 // Phase 0 (182) G5: name-probe for advance liveness guard
-import { findLiveAgentByName } from "../utils/subagents-introspect";
+// 218 P0 (T0.6): `findLiveAgentByName` import dropped — same-stage liveness
+// comes from the event ledger only (`scanActiveSpawnEvidence`).
 import { detectSessionRole } from "./session-role";
 // 217 Phase 3 (T3.4): owner-side consumption of the child approval queue.
 import { consumeOnePendingOwnerApproval } from "./owner-approval";
@@ -390,16 +391,18 @@ export function createAgentSettled(
         if (!isChild) {
           const expectedAgent = resolveAgentMention(config, meta.currentStage);
           if (expectedAgent) {
-            const evidenceHit = scanActiveSpawnEvidence(meta.activeSpawns, expectedAgent);
-            const nameProbeHit = !evidenceHit ? findLiveAgentByName(expectedAgent) : null;
-            const liveEvidence = evidenceHit ?? (nameProbeHit ? { basis: "manual_live_probe" as const, agentId: nameProbeHit.agentId, stage: meta.currentStage } : null);
+            // 218 P0 (T0.6): the 182 name-probe is deleted. The event ledger
+            // covers manual dispatches (`subagents:started` → source:"event"),
+            // so `scanActiveSpawnEvidence` alone is authoritative and `basis`
+            // converges to `probe_live` / `reserved`.
+            const liveEvidence = scanActiveSpawnEvidence(meta.activeSpawns, expectedAgent);
             if (liveEvidence) {
               // Phase 8 (195 Bug T2): the deferral cap applies ONLY to
               // probe-unavailable deferrals. A "reserved" basis means the spawn
               // registry holds a reservation the probe could not confirm as a
               // live executor — deferring on it forever would strand the
               // pipeline on a stale entry (issue-20-D). Positive evidence
-              // ("probe_live" / "manual_live_probe") keeps G5's unbounded
+              // ("probe_live") keeps G5's unbounded
               // deferral: the owner MUST wait while the executor verifiably
               // runs (194 handoff-ledger contract depends on this).
               if (liveEvidence.basis !== "reserved") {

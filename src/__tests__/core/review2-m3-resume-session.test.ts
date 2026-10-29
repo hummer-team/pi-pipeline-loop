@@ -376,12 +376,12 @@ describe("M3: dispatchAfterResume session passthrough", () => {
     expect(afterSettle.activeSpawns?.plan).toBeUndefined();
   });
 
-  // review#4 Medium-1 regression: dispatchAfterResume must recognize result.deferred
-  // from spawnStageSubagent and suppress the false "Run the <stage> agent" prompt.
-  // When a same-agent twin is live in another stage, maybeDeferSpawnForLiveTwin returns
-  // deferred=true → dispatchAfterResume should audit pipeline_resume_deferred and NOT
-  // notify the user to run manually (which would cause dual execution with the pending
-  // dequeue). Deleting the result.deferred branch → test turns red.
+  // review#4 Medium-1 regression: dispatchAfterResume must suppress the false
+  // "Run the <stage> agent" prompt when a same-agent twin is already live in
+  // another stage. 218 T0.6: the ledger pre-check now short-circuits the
+  // dispatch with `pipeline_resume_dispatch_skipped reason=ledger_live`
+  // (the name-probe defer path is retired). Deleting the pre-check → test
+  // turns red (the manual-run prompt would fire after the pending dequeue).
   it("H2-deferred: dispatchAfterResume with live twin in another stage → deferred, no manual-run prompt", async () => {
     const config = makeTestConfig({
       projectRoot: TMP,
@@ -432,10 +432,14 @@ describe("M3: dispatchAfterResume session passthrough", () => {
       // 1. No false "Run the develop agent" prompt
       expect(notifications.some((n) => n.includes("Run the develop agent"))).toBe(false);
 
-      // 2. Audit pipeline_resume_deferred is written
+      // 2. Audit pipeline_resume_dispatch_skipped reason=ledger_live is
+      // written. 218 T0.6: the ledger-based pre-check SKIPS the dispatch
+      // (equivalent-replacement for the retired name-probe defer) — the
+      // incident invariant "no false manual-run prompt" is assertion 1.
       const auditPath = auditLogFileFor(join(TMP, ".pi", "audit"));
       const auditContent = await fsp.readFile(auditPath, "utf-8");
-      expect(auditContent).toContain("pipeline_resume_deferred");
+      expect(auditContent).toContain("pipeline_resume_dispatch_skipped");
+      expect(auditContent).toContain("reason=ledger_live");
     } finally {
       clearManager();
       __resetActiveDeferredSpawns();

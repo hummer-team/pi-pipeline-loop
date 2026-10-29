@@ -120,7 +120,9 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     await rm(TMP5, { recursive: true, force: true });
   });
 
-  it("defers advance when name-probe finds live agent (manual spawn)", async () => {
+  // 218 T0.6: the name-probe fallback is retired — positive evidence must now
+  // come from the LEDGER (activeSpawns entry with a live agentId).
+  it("defers advance when the ledger entry probes live (218: name-probe retired)", async () => {
     const TMP5 = join(tmpdir(), "pi-advance-guard-2-" + Date.now());
     await mkdir(join(TMP5, ".pi", "audit"), { recursive: true });
     await mkdir(join(TMP5, "agents"), { recursive: true });
@@ -129,18 +131,24 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     const config = makeTestConfig({ projectRoot: TMP5 });
     await initAuditLog(config);
 
-    // Install mock manager with a live agent matching the expected name
+    // 0.22.0-exact manager surface: getRecord-only liveness for the ledger id.
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      listRecords: () => [
-        { id: "manual-agent-1", name: "develop-agent", status: "running" },
-      ],
-      getRecord: () => undefined,
+      getRecord: (id: string) => (id === "manual-agent-1" ? { status: "running" } : undefined),
+      hasRunning: () => true,
     };
 
     const meta = makeTestMeta({
       currentStage: "develop",
       flowState: "running",
-      // No activeSpawns evidence (manual spawn not in ledger)
+      // The dispatch is LEDGERED with its agentId — the only evidence source
+      // the G5 guard reads since 218 T0.6.
+      activeSpawns: {
+        develop: {
+          agentName: "develop-agent",
+          agentId: "manual-agent-1",
+          startedAt: Date.now(),
+        },
+      },
     });
     const ctx = createMockCtx(meta);
     (ctx._ctx.sessionManager as any).getBranch = () => [];
@@ -158,9 +166,9 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     }
     // Primary assertion: stage not advanced
     expect(meta.currentStage).toBe("develop");
-    // Explicit assertion: audit must contain the defer event with manual_live_probe basis
+    // Explicit assertion: audit must contain the defer event with probe_live basis
     expect(auditContent).toContain("advance_deferred_stage_agent_live");
-    expect(auditContent).toContain("manual_live_probe");
+    expect(auditContent).toContain("probe_live");
 
     // Cleanup
     delete (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL];
@@ -323,7 +331,6 @@ describe("Phase 0 (182) G5: advance_deferred_stage_agent_live", () => {
     (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
       getRecord: (id: string) => (id === "agent-race-test" ? { status: "running" } : undefined),
       hasRunning: () => true,
-      listRecords: () => [{ id: "agent-race-test", name: "develop-agent", status: "running" }],
     };
 
     const ownerCtx = createMockCtx(meta);

@@ -123,7 +123,6 @@ describe("194 Phase 0 C3: registry evidence probe (short-id collisions, missing 
     withManager({
       getRecord: (id: string) =>
         id === BINDING.agentId ? { status: "running", sessionFile: "/sessions/child.jsonl" } : undefined,
-      listRecords: () => [{ id: BINDING.agentId, status: "running" }],
     });
     const evidence = probeAgentSessionEvidence(BINDING.agentId);
     expect(evidence).toEqual({
@@ -141,11 +140,9 @@ describe("194 Phase 0 C3: registry evidence probe (short-id collisions, missing 
     // Two live records whose ids share the queried prefix; only the FULL ids
     // resolve via getRecord, so a short id answers found:false.
     withManager({
+      // Short-id collisions are decided by getRecord alone (no enumeration):
+      // a prefix below 8 chars never resolves. (218 T0.1 fail-open shape.)
       getRecord: (id: string) => (id.length > 8 ? { status: "running" } : undefined),
-      listRecords: () => [
-        { id: "01a11bbb-c3b4-72bc-9397-4f54b23e81c6", status: "running" },
-        { id: "01a11bbb-c3b4-0000-0000-000000000000", status: "running" },
-      ],
     });
     const short = probeAgentSessionEvidence("01a11bbb");
     expect(short.found).toBe(false);
@@ -153,18 +150,17 @@ describe("194 Phase 0 C3: registry evidence probe (short-id collisions, missing 
     expect(short.sessionFile).toBeUndefined();
   });
 
-  it("an id enumerating more than once is ambiguous and loses evidence", () => {
+  // 218 Bug T0.1: the probe is getRecord-only. Without an enumeration the
+  // legacy `ambiguous` state is NOT determinable, so duplicate-listing ids
+  // fail OPEN to the resolved record rather than losing the evidence.
+  it("duplicate-listing ids are no longer detectable — evidence fails open", () => {
     withManager({
       getRecord: () => ({ status: "running", sessionFile: "/sessions/dup.jsonl" }),
-      listRecords: () => [
-        { id: BINDING.agentId, status: "running" },
-        { id: BINDING.agentId, status: "running" },
-      ],
     });
     const evidence = probeAgentSessionEvidence(BINDING.agentId);
-    expect(evidence.ambiguous).toBe(true);
-    expect(evidence.status).toBe("unknown");
-    expect(evidence.sessionFile).toBeUndefined();
+    expect(evidence.ambiguous).toBe(false);
+    expect(evidence.status).toBe("live");
+    expect(evidence.sessionFile).toBe("/sessions/dup.jsonl");
   });
 
   it("missing registry / no sessionFile / empty id all mean ABSENT evidence", () => {

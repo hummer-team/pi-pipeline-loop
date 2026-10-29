@@ -14,13 +14,15 @@
  * - Primary: entry has an `agentId` AND `probeAgentState(agentId) === "live"`
  * - Secondary: entry is `reserved` and started less than RESERVED_SPAWN_EVIDENCE_MS ago
  *
- * Phase 4 (182) same-stage blind spot supplement:
- * The cross-stage scan (`excludeStage`) catches twins from prior stages, but a
- * same-stage manual spawn (e.g. @mention while the plugin hasn't advanced) is
- * invisible to the cross-stage probe alone. The same-stage avoidance in
- * `maybeDeferSpawnForLiveTwin` (subagent-rpc) is supplemented by a
- * `findLiveAgentByName` name-probe fallback from the manager registry, which
- * catches out-of-band agents not yet recorded in activeSpawns.
+ * Phase 4 (182) same-stage blind spot supplement → 218 P0 (T0.6):
+ * The cross-stage scan (`excludeStage`) catches twins from prior stages; the
+ * same-stage blind spot is closed by the EVENT LEDGER alone: manual and
+ * Agent-tool dispatches enter `activeSpawns` via `subagents:started`
+ * (`source:"event"`, see `src/utils/spawn-ledger.ts`). The old
+ * `findLiveAgentByName` name-probe is RETIRED in 218 — the upstream manager
+ * exposes no enumeration (`listRecords` never existed in 0.22.0), so the
+ * probe was constant null. Same-stage evidence comes exclusively from the
+ * ledger.
  */
 
 import type { PipelineStage, SessionMeta } from "../types";

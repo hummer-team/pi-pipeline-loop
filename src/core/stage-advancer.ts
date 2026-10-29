@@ -57,8 +57,8 @@ import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "./dormancy";
 import { isDecisionPolicyEnabled } from "./decision-policy/policy-config";
 // 210 Phase 2: re-arm the stage clocks on a successful advance (requirement 5.4).
 import { armStageWatchdog, clearStageWatchdog } from "./stage-watchdog";
-import { anyTopLevelRunning, findLiveAgentByName } from "../utils/subagents-introspect";
-import { anyActiveSpawnEvidence } from "../utils/spawn-evidence";
+import { anyTopLevelRunning } from "../utils/subagents-introspect";
+import { anyActiveSpawnEvidence, scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { detectSessionRole } from "./session-role";
 // 212 Phase 0: provable owner-session resolution (no "" bindings).
 import { resolveOwnerSessionFile } from "./design-review/owner-evidence";
@@ -807,11 +807,11 @@ function getEffectiveDeferredStamp(
  * A bounded timeout (`config.spawnWaitTimeoutMs`) prevents a permanent
  * "never pop" deadlock when an unrelated subagent hangs.
  *
- * Probe order:
- * 1. G3 (188): When `expectedAgentName` is provided, use `findLiveAgentByName`
- *    to check only the expected stage agent (narrow probe).
+ * Probe order (218 P0 / T0.6 — name-probe retired, the event ledger is truth):
+ * 1. G3 (188): When `expectedAgentName` is provided, `scanActiveSpawnEvidence`
+ *    checks only the expected stage agent against the ledger (narrow probe).
  * 2. Fallback: `anyTopLevelRunning()` — global coarse probe (when expectedAgentName
- *    is undefined or findLiveAgentByName is unavailable).
+ *    is undefined or the manager singleton is unavailable).
  * 3. `anyActiveSpawnEvidence()` — per-stage scan + probe + reserved window (degrade)
  *
  * @param expectedAgentName - The expected agent name for the current stage (narrow probe)
@@ -822,31 +822,30 @@ function evaluateConfirmGateDeferral(
   meta: SessionMeta,
   expectedAgentName?: string,
 ): ConfirmGateDeferralDecision {
-  // G3 (188): narrow defer to the expected stage agent when its name is known.
-  // If the expected agent has settled (findLiveAgentByName returns null), the
-  // confirm gate can safely pop — no need to wait for unrelated subagents.
+  // G3 (188) → 218 P0 (T0.6): narrow defer for the expected stage agent now
+  // reads the EVENT LEDGER (`scanActiveSpawnEvidence`), not the deleted
+  // `findLiveAgentByName` name-probe (fake `listRecords` contract — constant
+  // null on 0.22.0, so manual twins looked "not live" here and the confirm
+  // gate popped over a running executor).
   //
-  // IMPORTANT boundary (Plan Phase 3): `findLiveAgentByName` returns null for
-  // BOTH "manager singleton unavailable" and "no matching live agent found".
-  // These must be distinguished:
-  //   - Manager unavailable → fall back to anyTopLevelRunning() + anyActiveSpawnEvidence()
-  //   - Agent genuinely not found → safe to present the gate ("present")
-  // We detect manager availability via anyTopLevelRunning(): it returns null
-  // ONLY when the manager singleton is missing (same symbol/method check).
+  // Decision table:
+  //   - ledger hit for the expected name           → live (defer)
+  //   - no hit + manager unavailable (probe null)  → degrade to global evidence
+  //   - no hit + manager available                 → "present" (same as the
+  //     old "manager confirmed no such agent" branch — but now backed by real
+  //     ledger evidence, since `subagents:started` records manual dispatches)
   let anyLive: boolean;
   if (expectedAgentName) {
-    const globalProbe = anyTopLevelRunning();
-    if (globalProbe === null) {
-      // Manager singleton unavailable → degrade to global probe + evidence
-      // (same fallback path as when expectedAgentName is undefined)
-      anyLive = anyActiveSpawnEvidence(meta.activeSpawns) !== null;
+    const ledgerHit = scanActiveSpawnEvidence(meta.activeSpawns, expectedAgentName);
+    if (ledgerHit) {
+      anyLive = true;
     } else {
-      // Manager available → use narrow name-based probe
-      const agent = findLiveAgentByName(expectedAgentName);
-      if (agent !== null) {
-        anyLive = true;
+      const globalProbe = anyTopLevelRunning();
+      if (globalProbe === null) {
+        // Manager singleton unavailable → degrade to global evidence scan.
+        anyLive = anyActiveSpawnEvidence(meta.activeSpawns) !== null;
       } else {
-        // Expected agent not live (manager confirmed) → safe to present the gate
+        // Expected agent has no live ledger evidence → safe to present.
         return "present";
       }
     }
