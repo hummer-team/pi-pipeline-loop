@@ -28,6 +28,7 @@ import {
   wireSubagentLifecycleListeners,
   setOwnerMetaAccessor,
   __resetLifecycleRegistry,
+  snapshotAll,
 } from "../../utils/subagent-lifecycle-registry";
 import {
   setSpawnLedgerConfig,
@@ -148,6 +149,36 @@ describe("218 P0 T0.8: wake attribution from ledger / dispatch snapshot", () => 
     expect(h.wakeSends).toHaveLength(0);
     const skipped = h.wakeAudits.find((a) => a.event === "owner_wake_skipped");
     expect(skipped?.payload.reason).toBe("not_stage_executor");
+    offWake();
+    h.cleanup();
+  });
+
+  it("case 5: NON-executor (manual `explore`) started+completed → never wakes (218 review #1)", () => {
+    const config = makeConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-wake-nonexec" });
+    const h = bootstrap(meta, config);
+    const offWake = registerOwnerWakeObserver();
+
+    // The owner pulls a helper agent mid-stage: the lifecycle listener sees it,
+    // but `explore` resolves to no configured stage executor. Pre-fix, the
+    // `?? meta.currentStage` fallback stamped stage="develop" onto the dispatch
+    // snapshot and wake predicate 2 trusted it (false owner_wake_on_terminal).
+    h.bus.trigger("subagents:started", { id: "helper-1", type: "explore" });
+
+    // Ledger side stays clean (never got an entry for a non-executor)…
+    expect(meta.activeSpawns?.develop).toBeUndefined();
+    // …and the dispatch snapshot is stage-LESS by design, NOT the owner stage.
+    const snapshot = snapshotAll().find((e) => e.agentId === "helper-1");
+    expect(snapshot).toBeDefined();
+    expect(snapshot?.stage).toBeUndefined();
+    expect(snapshot?.stageAt).toBe("dispatch");
+
+    h.bus.trigger("subagents:completed", { id: "helper-1", type: "explore", reason: "completed" });
+
+    expect(h.wakeSends).toHaveLength(0);
+    const skipped = h.wakeAudits.find((a) => a.event === "owner_wake_skipped" && a.payload.agentId === "helper-1");
+    expect(skipped?.payload.reason).toBe("not_stage_executor");
+    expect(h.wakeAudits.some((a) => a.event === "owner_wake_on_terminal")).toBe(false);
     offWake();
     h.cleanup();
   });

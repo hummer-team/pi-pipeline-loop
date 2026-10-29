@@ -258,6 +258,59 @@ describe("218 P0 spawn-ledger: three-source writes and boundaries", () => {
     expect(sweeps.some((l) => l.includes("kept=1") && l.includes("cleared=1") && l.includes("total=2"))).toBe(true);
   });
 
+  // ── 218 review #3: synthetic placeholder ids are replaceable ─────────────
+  it("case 5b: a started event with a REAL id upgrades a takeover placeholder (reserved dropped)", async () => {
+    const config = makeTwinConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-ledger-takeover" });
+    setSpawnLedgerConfig(config);
+    setSpawnLedgerSession(sessionFor(meta) as never);
+
+    // 3d takeover pre-claimed the slot with a SYNTHETIC id + reserved marker.
+    meta.activeSpawns = {
+      develop: {
+        agentName: "twin-agent",
+        agentId: `takeover-develop-${Date.now()}`,
+        startedAt: Date.now() - 5_000,
+        reserved: true,
+        source: "rpc",
+        operationContext: { operationId: "op-1", kind: "develop", stage: "develop", round: 1 } as never,
+      },
+    };
+
+    recordSpawnFromEvent({ id: "real-agent-1", type: "twin-agent" }, "started");
+    await flush();
+
+    // Pre-fix the entry kept `takeover-…` + reserved forever (no terminal
+    // could ever clear it by the real id).
+    const entry = meta.activeSpawns!.develop!;
+    expect(entry.agentId).toBe("real-agent-1");
+    expect(entry.reserved).toBeUndefined();
+    expect(entry.source).toBe("event");
+    expect(entry.operationContext).toBeDefined(); // bound identity rides along
+    // T0.5 clearing by the real id now works.
+    clearSpawnByAgentId("real-agent-1");
+    expect(meta.activeSpawns!.develop).toBeUndefined();
+  });
+
+  it("case 5c: a dispatch: placeholder upgrades too; a REAL different id is never overwritten", async () => {
+    const config = makeTwinConfig();
+    const meta = makeTestMeta({ currentStage: "develop", pipelineId: "pipe-ledger-dispatch" });
+    setSpawnLedgerConfig(config);
+    setSpawnLedgerSession(sessionFor(meta) as never);
+
+    meta.activeSpawns = {
+      develop: { agentName: "twin-agent", agentId: "dispatch:develop:1", startedAt: Date.now(), reserved: true },
+    };
+    recordSpawnFromEvent({ id: "real-2", type: "twin-agent" }, "created");
+    await flush();
+    expect(meta.activeSpawns!.develop!.agentId).toBe("real-2");
+
+    // Now the slot holds a REAL id: a different real id must never replace it.
+    recordSpawnFromEvent({ id: "real-3", type: "twin-agent" }, "started");
+    await flush();
+    expect(meta.activeSpawns!.develop!.agentId).toBe("real-2");
+  });
+
   it("case 6: no config / no session accessor → every writer no-ops without throwing", () => {
     __resetSpawnLedger(); // accessors absent (cold start / non-owner hook)
     expect(() => recordSpawnFromEvent({ id: "x", type: "solo-agent" }, "started")).not.toThrow();

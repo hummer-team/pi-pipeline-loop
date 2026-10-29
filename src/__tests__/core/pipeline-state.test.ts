@@ -41,6 +41,34 @@ describe("createPipelineState", () => {
     expect(result.stageStartTime).toBeDefined();
   });
 
+  // 218 review #7: `dispatchAuthorizedAt` was written-but-invisible; the tool
+  // view now surfaces the queued-spawn authorization lifecycle.
+  it("surfaces the spawnQueue view with the full authorization lifecycle", async () => {
+    const config = makeTestConfig();
+    const now = Date.now();
+    const meta = makeTestMeta({
+      pendingSpawns: {
+        fix: {
+          agentName: "fix-agent", requestedAt: now - 5000, attempts: 1,
+          stalledAt: now - 2000, dispatchAuthorizedAt: now - 2000,
+        },
+      },
+    });
+    const ctx = createCtx(meta);
+    const tool = createPipelineState(config);
+    const result = (await tool.execute({}, ctx as any)) as any;
+
+    expect(result.spawnQueue).toHaveLength(1);
+    const q = result.spawnQueue[0];
+    expect(q.stage).toBe("fix");
+    expect(q.agentName).toBe("fix-agent");
+    expect(q.attempts).toBe(1);
+    expect(q.requestedAt).toBe(new Date(now - 5000).toISOString());
+    expect(q.stalledAt).toBe(new Date(now - 2000).toISOString());
+    expect(q.dispatchAuthorizedAt).toBe(new Date(now - 2000).toISOString());
+    expect(q.dispatchConsumedAt).toBeNull();
+  });
+
   it("includes stage sequence", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "clarify" });

@@ -1573,19 +1573,27 @@ async function maybeDeferSpawnForLiveTwin(
   // running" (`hasRunning()` true or null), defer this dispatch instead of
   // racing a twin. With no such entry the miss fails open (no defer), matching
   // the old name-probe behavior — but now the ledger actually fills.
+  // 218 review #6: the hit carries its TRUE basis — `reserved` (in-flight,
+  // not probeable), never a borrowed `probe_live` label.
   if (!hit || hit.basis !== "probe_live") {
     if (anyTopLevelRunning() !== false) {
       const reservedSameName = Object.entries(activeSpawns ?? {})
         .find(([, spawn]) => spawn?.agentName === agentName && !spawn?.agentId);
       if (reservedSameName) {
-        hit = { stage: reservedSameName[0] as PipelineStage, basis: "probe_live" };
+        hit = { stage: reservedSameName[0] as PipelineStage, basis: "reserved" };
       }
     }
   }
 
-  // Only defer on hard live evidence (a probeable, currently-running child).
-  // Reserved in-flight evidence is transient and handled by the 3c guard.
-  if (!hit || hit.basis !== "probe_live") return false;
+  // 218 review #6: two-stage defer gate on FACTS, not borrowed labels —
+  // hard live evidence (`probe_live`: probeable and currently running) OR a
+  // reserved in-flight entry (`reserved`) while the manager has not
+  // authoritatively confirmed "nothing is running".
+  if (!hit) return false;
+  const deferrableBasis =
+    hit.basis === "probe_live" ||
+    (hit.basis === "reserved" && anyTopLevelRunning() !== false);
+  if (!deferrableBasis) return false;
 
   const key = deferredSpawnKey(stage, hit.agentId);
   // Dedup: if a deferral is already armed for this (stage, oldChildId) pair,
@@ -1605,6 +1613,9 @@ async function maybeDeferSpawnForLiveTwin(
     agentName,
     oldChildId: hit.agentId ?? "",
     evidenceStage: hit.stage,
+    // 218 review #6: replay can now tell a live-twin defer from a reserved
+    // in-flight defer.
+    evidenceBasis: hit.basis,
   });
   return true;
 }

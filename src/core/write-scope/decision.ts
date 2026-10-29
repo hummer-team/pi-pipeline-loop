@@ -27,7 +27,7 @@ import { DEFAULT_MAX_VIOLATIONS, AUDIT_THROTTLE_WINDOW_MS } from "../../constant
 import { safeWriteAuditLog, encodeAuditValue } from "../../utils/auditLog";
 import { shouldEmitWithinWindow } from "../../utils/audit-throttle";
 import { askProtectDecision, askWriteDecision } from "../../utils/protect-ask";
-import { hasInteractiveUI } from "../ui-capability";
+import { isMenuCapable } from "../ui-capability";
 import { freezeAndPrompt } from "../flow-state";
 import { buildOnStageChangedCallback } from "../../commands/pipeline-start";
 import { detectSessionRole } from "../session-role";
@@ -59,7 +59,10 @@ function buildBatchReason(candidates: WriteCandidate[], stage: PipelineStage): s
   const list = formatCandidateList(candidates);
   return (
     `FORBIDDEN: write target(s) [${list}] not allowed by the '${stage}' stage whitelist. ` +
-    `Next step: choose an allowed path, or grant the write when prompted.`
+    // 218 review #5: honest wording — a dismiss/cancel may stem from a host
+    // that could not show the menu at all, so never promise a prompt that
+    // might never come.
+    `Next step: choose an allowed path, or expect an approval prompt when this host can show a menu.`
   );
 }
 
@@ -177,7 +180,11 @@ async function decideWhitelistMiss(
   }
 
   // Owner, ask mode (mixed batches under allow arrive here too — protected wins).
-  if (deps.mode === "ask" && !hasInteractiveUI(ctx)) {
+  // 218 review #5: gate on MENU OPERABILITY, not the declared-true display
+  // predicate — a host declaring hasUI=true without a select control used to
+  // pass here and then silently degrade inside askWriteDecision (block with
+  // no notify, no fallback audit). Now it takes the same visible path.
+  if (deps.mode === "ask" && !isMenuCapable(ctx)) {
     // No-UI degradation: fail closed EXACTLY like deny mode (same bucket) plus
     // a visible fallback audit + exit hints (docs/, $TMPDIR are hints only).
     const first = all[0]!;

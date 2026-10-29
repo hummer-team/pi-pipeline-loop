@@ -96,6 +96,10 @@ function fire(key: string, stage: PipelineStage, requestedAt: number): void {
     requestedAt: String(entry.requestedAt), ageMs: String(Date.now() - entry.requestedAt),
     attempts: String(entry.attempts),
     stalledAt: String(stalledAt),
+    // 218 review #7: the field is persisted together with `stalledAt` and read
+    // by the 3f manual gate — surface it so replay can confirm the
+    // authorization actually landed (it previously had no read point at all).
+    dispatchAuthorizedAt: String(stalledAt),
   });
   current.deliver(
     `The ${stage} stage spawn request has been queued for ${Math.round((Date.now() - entry.requestedAt) / 1000)}s without being consumed. Run /pipeline-resume if no dialog appears.`,

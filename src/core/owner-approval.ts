@@ -24,10 +24,12 @@ import { resolveDeclaredHasUI } from "./ui-capability";
 import { DEFAULT_MAX_VIOLATIONS } from "../constants";
 import { freezeAndPrompt } from "./flow-state";
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
-import { recordDenial, clearDenials } from "./write-scope/denials";
+import { recordDenial, clearDenials, readDenialCount } from "./write-scope/denials";
 // 218 T2.4: write-approval candidates reuse the merged-decision candidate shape.
 import type { WriteCandidate } from "./write-scope/types";
-import { formatCandidateList } from "./write-scope/types";
+// 218 review #4: a merged batch covers ALL its coarse classes — the breaker
+// must count every class, not just the batch's first one.
+import { formatCandidateList, uniqueClasses } from "./write-scope/types";
 
 /** Stable short key for a command (the queue's identity, not a security hash). */
 export function commandFingerprint(command: string): string {
@@ -87,10 +89,15 @@ export function enqueueWriteApproval(
   if (!meta) return { queued: false, fingerprint };
   const existing = meta.pendingOwnerApprovals ?? {};
   if (existing[fingerprint]) return { queued: false, fingerprint }; // already waiting
+  const classes = uniqueClasses(candidates);
   const entry: OwnerWriteApproval = {
     kind: "write",
     targets,
-    pathClass: candidates[0]?.pathClass ?? "@root",
+    // 218 review #4: `pathClass` stays the first class (legacy display), but
+    // `pathClasses` carries every distinct class so the Deny path can feed
+    // the breaker for ALL of them.
+    pathClass: classes[0] ?? "@root",
+    pathClasses: classes,
     categories: Array.from(new Set(candidates.map((c) => c.category))),
     stage,
     requestedAt: Date.now(),
@@ -103,6 +110,7 @@ export function enqueueWriteApproval(
     pipelineId: meta.pipelineId, stage, fingerprint,
     count: String(targets.length),
     targets: targets.map((t) => encodeAuditValue(t)).join(","),
+    classes: classes.join(","),
   });
   return { queued: true, fingerprint };
 }
@@ -350,7 +358,11 @@ async function consumeWriteBatch(
   }
 
   // Deny path: per DISTINCT pathClass the +1 feeds the stage-scoped breaker.
-  const classes = Array.from(new Set(entries.map(([, request]) => request.pathClass)));
+  // 218 review #4: merged batches carry EVERY class they cover (`pathClasses`);
+  // legacy single-class entries fall back to `[pathClass]`.
+  const classes = Array.from(new Set(
+    entries.flatMap(([, request]) => request.pathClasses?.length ? request.pathClasses : [request.pathClass]),
+  ));
   for (const pathClass of classes) {
     recordDenial(ctx.session, ctx.session.getMeta() ?? meta, meta.currentStage, pathClass);
   }
@@ -360,12 +372,13 @@ async function consumeWriteBatch(
     count: String(mergedTargets.length),
     targets: mergedTargets.map((target) => encodeAuditValue(target)).join(","),
     fingerprints: fingerprints.join(","),
+    classes: classes.join(","),
   });
   const afterMeta = ctx.session.getMeta();
+  // 218 review #2: use the single canonical read (stage AND pipeline-period
+  // scoped) instead of an ad-hoc raw record read.
   const overflowed = classes.some(
-    (pathClass) => (afterMeta?.whitelistMissDenials?.stage === meta.currentStage
-      ? afterMeta.whitelistMissDenials.counts[pathClass] ?? 0
-      : 0) >= DEFAULT_MAX_VIOLATIONS,
+    (pathClass) => readDenialCount(afterMeta ?? meta, meta.currentStage, pathClass) >= DEFAULT_MAX_VIOLATIONS,
   );
   if (overflowed) {
     await freezeAndPrompt(

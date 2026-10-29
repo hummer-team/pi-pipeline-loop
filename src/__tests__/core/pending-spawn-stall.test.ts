@@ -117,6 +117,9 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
     expect(stamped.dispatchAuthorizedAt).toBe(stamped.stalledAt);
     expect(stamped.dispatchConsumedAt).toBeUndefined();
     expect(audits[0]?.payload.stalledAt).toBe(String(stamped.stalledAt));
+    // 218 review #7: the authorization instant is OBSERVABLE in the audit too
+    // (previously written-but-invisible, contradicting the field doc).
+    expect(audits[0]?.payload.dispatchAuthorizedAt).toBe(String(stamped.dispatchAuthorizedAt));
   });
 
   it("live executor for the stage → progress, not a stall", async () => {

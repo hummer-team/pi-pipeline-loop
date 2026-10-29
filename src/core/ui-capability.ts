@@ -63,3 +63,19 @@ export function hasInteractiveUI(ctx: UiCapabilitySource | undefined): boolean {
   if (declared !== undefined) return declared;
   return typeof ctx?.ui?.select === "function";
 }
+
+/**
+ * 218 review #5: "can a menu ACTUALLY be operated right now". Unlike
+ * `hasInteractiveUI`, a declared `true` is NOT trusted on its own — it still
+ * needs a real `select` control. Hosts that declare hasUI=true but hand over
+ * no select would otherwise pass an interactive gate and then silently
+ * degrade inside the ask (no menu, no notify, no breaker count). Declared
+ * `false` still wins over a present control (217 review issue 2 boundary).
+ *
+ * Use this to gate CODE PATHS that must show a menu or visibly degrade
+ * (whitelist-miss owner ask, approval menus); keep `hasInteractiveUI` for
+ * DISPLAY decisions (presenters, resume hints).
+ */
+export function isMenuCapable(ctx: UiCapabilitySource | undefined): boolean {
+  return resolveDeclaredHasUI(ctx) !== false && typeof ctx?.ui?.select === "function";
+}

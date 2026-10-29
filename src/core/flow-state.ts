@@ -639,6 +639,10 @@ export async function executeDecision(
         transientRetryCount: undefined, // 189 Phase 2: clear retry counter on decision
         // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
         confirmGateDeferredAt: undefined,
+        // 218 review #2: a rollback upstream exit starts fresh human-Deny
+        // pressure; the stage-scoped self-invalidation alone would let the
+        // breaker survive if a later stage transition returned to the stage.
+        whitelistMissDenials: undefined,
         ...summariesPatch,
       });
 
@@ -679,6 +683,12 @@ export async function executeDecision(
         ...buildNewPeriodResetFields(meta, config),
         pipelineId: newPipelineId,
         currentStage: "clarify",
+        // 218 review #2: new pipeline period — Deny pressure never crosses the
+        // restart boundary. Cleared explicitly here (NOT inside
+        // buildNewPeriodResetFields, which /pipeline-start resume also shares —
+        // plan guide.md: resume deliberately keeps this record, the
+        // pipelineId self-invalidation in readDenialCount covers it).
+        whitelistMissDenials: undefined,
       });
 
       // 210 Phase 7: the superseded pipeline's pending usage must not leak into
@@ -1070,6 +1080,9 @@ export async function executeDecision(
         flowState: "running",
         blockedReason: undefined,
         stageVisitOrder: visitOrder,
+        // 218 review #2: rework rewind starts fresh human-Deny pressure —
+        // explicit clear instead of relying on the target stage differing.
+        whitelistMissDenials: undefined,
       });
 
       await safeWriteAuditLog("pipeline_decision", {

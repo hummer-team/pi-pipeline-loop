@@ -264,6 +264,41 @@ describe("Deny breaker via the owner menu (case 4)", () => {
     expect(menus.filter((m) => m.title.includes("request these writes")).length).toBe(3);
   });
 
+  // ── 218 review #4: a MERGED batch denies EVERY class it covers ───────────
+  it("Deny of a multi-class batch counts EVERY pathClass, not just the first", async () => {
+    const config = makeTestConfig();
+    const { meta, session, ctx } = makeHarness(undefined, ["Deny (block)"]);
+    // One batch spanning TWO coarse classes: `tmp/…` and `other/…`.
+    const enq = enqueueWriteApproval(session, "develop", [
+      candidate("tmp/m0"),
+      candidate("other/m1"),
+      candidate("tmp/m2"),
+    ]);
+    expect(enq.queued).toBe(true);
+    // The stored entry carries the FULL deduped class set (display keeps the first).
+    const fp = Object.keys(meta.pendingOwnerApprovals ?? {})[0]!;
+    const entry = meta.pendingOwnerApprovals![fp]!;
+    expect(entry.kind).toBe("write");
+    if (entry.kind === "write") {
+      expect(entry.pathClass).toBe("tmp");
+      expect(entry.pathClasses).toEqual(["tmp", "other"]);
+    }
+
+    const r = await consumePendingOwnerApprovalDetailed(ctx as never, config);
+    expect(r.outcome).toBe("denied");
+
+    // BOTH classes took a strike (pre-fix only `tmp` did — the `other`
+    // paths' stage-scoped pressure was silently lost).
+    expect(meta.whitelistMissDenials?.counts["tmp"]).toBe(1);
+    expect(meta.whitelistMissDenials?.counts["other"]).toBe(1);
+    // Period stamp + audit class list make the record reviewable.
+    expect(meta.whitelistMissDenials?.pipelineId).toBe("pipe-218-write");
+    const denied = audits.find((a) => a.event === "write_approval_denied");
+    expect(denied?.message?.classes).toBe("tmp,other");
+    const queued = audits.find((a) => a.event === "write_approval_queued");
+    expect(queued?.message?.classes).toBe("tmp,other");
+  });
+
   it("×2 denies stay below the breaker; a stage switch recounts from zero (self-invalidating)", async () => {
     const config = makeTestConfig();
     const { meta, session, ctx } = makeHarness(undefined, ["Deny (block)", "Deny (block)", "Deny (block)"]);

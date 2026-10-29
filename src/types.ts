@@ -480,6 +480,13 @@ export interface OwnerWriteApproval {
   targets: string[];
   /** Coarse Deny-breaker class of the batch's first candidate. */
   pathClass: string;
+  /**
+   * 218 review #4: ALL coarse classes covered by the batch (deduped). The
+   * breaker accumulates per class on Deny — the first class alone would
+   * under-count the other paths' stage-scoped strikes. Legacy entries fall
+   * back to `[pathClass]` at read time.
+   */
+  pathClasses?: string[];
   /** Protection categories covered (F.3-1 merged batch). */
   categories: Array<"protected" | "whitelist_miss">;
   stage: PipelineStage;
@@ -633,9 +640,16 @@ export interface SessionMeta {
    * first directory segment, `@root`). Self-invalidating: reads for another
    * stage return 0, so a stage transition resets the breaker without touching
    * the stage-migration patch sites. Cleared by any Allow.
+   * 218 review #2: `pipelineId` scopes the count to the period that collected
+   * it — re-entering the same stage in a NEW period never resurrects the old
+   * strikes (a `/pipeline-start` resume keeps both stage and pipelineId, so
+   * its pressure intentionally survives); legacy records without pipelineId
+   * fail closed to 0.
    */
   whitelistMissDenials?: {
     stage: PipelineStage;
+    /** Pipeline period that collected these counts (review #2 scoping). */
+    pipelineId?: string;
     counts: Record<string, number>;
     updatedAt: number;
   };

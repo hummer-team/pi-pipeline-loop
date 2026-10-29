@@ -139,6 +139,28 @@ export function createPipelineState(config: PipelineConfig): Tool {
             resume: DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
           } : {}),
         } : null,
+        // 218 review #7 (Q23-A observability): the queued-spawn ledger with
+        // its FULL authorization lifecycle — `dispatchAuthorizedAt` is written
+        // by the stall watchdog and consumed by the 3f manual gate, so the
+        // status surface shows stage, request age, and both authorization
+        // timestamps (null when a step never happened).
+        spawnQueue: Object.entries(meta.pendingSpawns ?? {}).flatMap(
+          ([qStage, entry]) => entry
+            ? [{
+                stage: qStage,
+                agentName: entry.agentName,
+                attempts: entry.attempts,
+                requestedAt: new Date(entry.requestedAt).toISOString(),
+                stalledAt: entry.stalledAt !== undefined ? new Date(entry.stalledAt).toISOString() : null,
+                dispatchAuthorizedAt: entry.dispatchAuthorizedAt !== undefined
+                  ? new Date(entry.dispatchAuthorizedAt).toISOString()
+                  : null,
+                dispatchConsumedAt: entry.dispatchConsumedAt !== undefined
+                  ? new Date(entry.dispatchConsumedAt).toISOString()
+                  : null,
+              }]
+            : [],
+        ),
       };
 
       // Audit pipeline_state query with full snapshot

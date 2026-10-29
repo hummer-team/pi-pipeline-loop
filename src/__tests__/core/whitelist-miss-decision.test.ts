@@ -29,7 +29,8 @@ import { createToolGuard } from "../../core/tool-guard";
 import { makeTestConfig, makeTestMeta, createMockCtx, STAGE_LIST } from "../helpers";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import { initAuditLog } from "../../utils/auditLog";
-import { isFrozen } from "../../core/flow-state";
+import { isFrozen, executeDecision } from "../../core/flow-state";
+import { readDenialCount, recordDenial } from "../../core/write-scope/denials";
 import type { PipelineConfig, SessionMeta, WhitelistMissMode } from "../../types";
 
 /** Exact askWriteDecision option strings (protect-ask.ts). */
@@ -249,6 +250,89 @@ describe("whitelist-miss decision routing (218 Phase 2)", () => {
     expect(isFrozen(meta)).toBe(true);
     expect(meta.whitelistMissDenials?.counts["tmp"]).toBe(3);
     expect((await auditText()).includes("whitelist_miss_denial_overflow")).toBe(true);
+  });
+
+  // ── Case 3c: 218 review #2 — the breaker never crosses pipeline periods ──
+  it("restart → re-enter develop starts from zero (guide.md clear promise)", async () => {
+    boot("ask");
+    const meta = makeTestMeta({ pipelineId: "wl-period-restart", currentStage: "develop" });
+    const { ctx } = harness(meta, W_DENY);
+    for (let i = 0; i < 2; i++) {
+      expect((await run(ctx, "write", { file_path: join(TMP, `tmp/pr${i}.txt`) }))?.block).toBe(true);
+    }
+    expect(meta.whitelistMissDenials?.counts["tmp"]).toBe(2);
+    expect(meta.whitelistMissDenials?.pipelineId).toBe("wl-period-restart");
+
+    const restart = await executeDecision(ctx as never, meta, "restart", currentConfig);
+    expect(restart.success).toBe(true);
+    expect(meta.whitelistMissDenials).toBeUndefined(); // explicit new-period clear
+
+    // Re-enter the SAME stage in the NEW period: old strikes must not
+    // resurrect (the pre-fix `stored.stage === stage` check alone would
+    // continue from 2 and freeze on the very first deny).
+    meta.currentStage = "develop";
+    expect((await run(ctx, "write", { file_path: join(TMP, "tmp/pr2.txt") }))?.block).toBe(true);
+    expect(meta.whitelistMissDenials?.counts["tmp"]).toBe(1);
+    expect(meta.whitelistMissDenials?.pipelineId).toBe(meta.pipelineId);
+    expect(isFrozen(meta)).toBe(false); // 1 < 3: a resurrected count would have frozen
+  });
+
+  it("rollback clears the deny record explicitly", async () => {
+    boot("ask");
+    const meta = makeTestMeta({ pipelineId: "wl-period-rollback", currentStage: "develop", previousStage: "plan" });
+    const { ctx } = harness(meta, W_DENY);
+    for (let i = 0; i < 2; i++) {
+      expect((await run(ctx, "write", { file_path: join(TMP, `tmp/pl${i}.txt`) }))?.block).toBe(true);
+    }
+    expect(meta.whitelistMissDenials?.counts["tmp"]).toBe(2);
+
+    meta.flowState = "blocked"; // rollback precondition: frozen decision point
+    const res = await executeDecision(ctx as never, meta, "rollback", currentConfig);
+    expect(res.success).toBe(true);
+    expect(meta.whitelistMissDenials).toBeUndefined();
+  });
+
+  it("unit: legacy / foreign-period records fail closed; same-period strikes keep counting", () => {
+    boot("ask");
+    const meta = makeTestMeta({ pipelineId: "wl-period-unit", currentStage: "develop" });
+    // Pre-fix record WITHOUT pipelineId: fail closed rather than trusted.
+    meta.whitelistMissDenials = { stage: "develop", counts: { tmp: 2 }, updatedAt: Date.now() };
+    expect(readDenialCount(meta, "develop", "tmp")).toBe(0);
+    // Another period's record: not readable in this one.
+    meta.whitelistMissDenials = { stage: "develop", pipelineId: "pipe-old", counts: { tmp: 2 }, updatedAt: Date.now() };
+    expect(readDenialCount(meta, "develop", "tmp")).toBe(0);
+    // Current-period record: counts continue.
+    meta.whitelistMissDenials = { stage: "develop", pipelineId: "wl-period-unit", counts: { tmp: 2 }, updatedAt: Date.now() };
+    const session = {
+      getMeta: () => meta,
+      updateMeta: (patch: Partial<SessionMeta>) => { Object.assign(meta, patch); return meta; },
+    };
+    expect(recordDenial(session, meta, "develop", "tmp")).toBe(3);
+    expect(readDenialCount(meta, "develop", "tmp")).toBe(3);
+    // A foreign-period record is never MERGED into — it restarts the table.
+    meta.whitelistMissDenials = { stage: "develop", pipelineId: "pipe-old", counts: { tmp: 2 }, updatedAt: Date.now() };
+    expect(recordDenial(session, meta, "develop", "tmp")).toBe(1);
+  });
+
+  // ── Case 4b: 218 review #5 — declared hasUI=true WITHOUT a select control ─
+  it("hasUI declared true + no select → visible no-UI fallback (count + audit + notify)", async () => {
+    boot("ask");
+    const meta = makeTestMeta({ pipelineId: "wl4b", currentStage: "develop" });
+    const { ctx, menus } = harness(meta, undefined, { noUi: true });
+    // The buggy shape: the host DECLARES interactivity but ships no select.
+    // Pre-fix, `hasInteractiveUI` trusted the declaration → the ask silently
+    // degraded inside askWriteDecision (block with zero visible evidence).
+    (ctx as { hasUI?: boolean }).hasUI = true;
+
+    const res = await run(ctx, "write", { file_path: join(TMP, "tmp/nui.txt") });
+    expect(res?.block).toBe(true);
+    expect(menus.length).toBe(0); // no menu was attempted
+    // Now it takes the SAME visible path as an undeclared no-UI host:
+    expect(meta.violations?.length).toBe(1); // read_only_path counted
+    expect(meta.violations?.[0]?.guardSource).toBe("read_only_path");
+    expect((await auditText()).includes("whitelist_miss_no_ui_fallback")).toBe(true);
+    // …and the model is NOT promised a prompt that can never appear.
+    expect(res?.reason).not.toContain("when prompted");
   });
 
   // ── Case 4: no interactive UI ────────────────────────────────────────────

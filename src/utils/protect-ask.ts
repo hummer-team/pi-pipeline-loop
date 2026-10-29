@@ -33,7 +33,7 @@ import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 // 218 T2.5: declared-UI predicate for the merged write decision (type-only
 // candidates import — no runtime utils→core dependency beyond the existing
 // freeze/pipeline-start edges this file already declares).
-import { resolveDeclaredHasUI } from "../core/ui-capability";
+import { isMenuCapable } from "../core/ui-capability";
 import type { WriteCandidate } from "../core/write-scope/types";
 import { formatCandidateList } from "../core/write-scope/types";
 
@@ -289,10 +289,11 @@ export async function askWriteDecision(
     "Allow these writes for this session",
   ];
 
-  const declared = resolveDeclaredHasUI(ctx);
-  const hasUi = typeof ctx?.ui?.select === "function";
-  // Declared false WINS over a present select (217 review issue 2 predicate).
-  const menuCapable = declared !== false && hasUi;
+  // 217 review issue 2 + 218 review #5 in ONE predicate: declared false wins
+  // over a present select, and a declared true WITHOUT a real select control
+  // is no longer trusted (the caller's isMenuCapable gate already routes that
+  // host to the visible fallback; this stays the single source of truth).
+  const menuCapable = isMenuCapable(ctx);
   let selection: string | undefined;
   let selectThrew = false;
   const attemptAt = Date.now();
@@ -303,12 +304,18 @@ export async function askWriteDecision(
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[protect-ask] askWriteDecision select error: count=${candidates.length}, error=${errMsg}`);
+    // 218 review #9: stderr is invisible to pipeline operators — the failure
+    // goes to the audit sink instead (fire-and-forget, fail-open like every
+    // other audit edge here).
+    void safeWriteAuditLog("pipeline_write_ask_select_error", {
+      pipelineId: meta.pipelineId, stage: meta.currentStage,
+      count: String(candidates.length), error: encodeAuditValue(errMsg),
+    }, "error");
     selection = undefined;
     selectThrew = true;
   }
   const elapsed = Date.now() - attemptAt;
-  const noUi = declared === false || !hasUi || selectThrew;
+  const noUi = !menuCapable || selectThrew;
 
   const { action, decision } = classifyOutcome(selection, elapsed, options);
   // noUi is an environment fact: force the honest "dismissed" classification

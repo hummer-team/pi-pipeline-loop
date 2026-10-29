@@ -4,6 +4,9 @@
  */
 
 import { describe, expect, it, beforeEach } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   registerStarted,
   registerTerminal,
@@ -14,10 +17,33 @@ import {
   setOwnerMetaAccessor,
   __resetLifecycleRegistry,
 } from "../../utils/subagent-lifecycle-registry";
+import { setSpawnLedgerConfig, __resetSpawnLedger } from "../../utils/spawn-ledger";
+import { makeTestConfig, makeStageConfig } from "../helpers";
+import type { PipelineConfig } from "../../types";
+
+const LEDGER_TMP = join(tmpdir(), "pi-lifecycle-ledger-" + Date.now());
+
+/**
+ * Ledger config whose `develop` stage resolves to `develop-agent` (218 review
+ * #1: stage attribution now comes ONLY from the executor name — the listeners
+ * need `stageOfExecutorName` to be backed by a real config + agent file).
+ */
+function makeLedgerConfig(): PipelineConfig {
+  mkdirSync(join(LEDGER_TMP, "agents"), { recursive: true });
+  writeFileSync(join(LEDGER_TMP, "agents", "dev.md"), "---\nname: develop-agent\n---\n# D\n");
+  return makeTestConfig({
+    projectRoot: LEDGER_TMP,
+    stages: {
+      ...makeTestConfig().stages,
+      develop: makeStageConfig({ agentPath: "agents/dev.md", nextStage: "review" }),
+    },
+  } as never);
+}
 
 describe("subagent-lifecycle-registry", () => {
   beforeEach(() => {
     __resetLifecycleRegistry();
+    __resetSpawnLedger();
   });
 
   describe("registerStarted", () => {
@@ -57,6 +83,28 @@ describe("subagent-lifecycle-registry", () => {
   });
 
   describe("registerTerminal", () => {
+    it("never backfills stage onto a stage-less dispatch snapshot (218 review #1)", () => {
+      // Non-executor dispatch snapshot (stage undefined by design) + terminal
+      // carrying the owner's CURRENT stage: backfill would fabricate exactly
+      // the snapshot wake predicate 2 trusts.
+      registerStarted("explore", "helper-9", undefined, "pipe-1");
+      registerTerminal("explore", "helper-9", "terminal", "completed", "develop", "pipe-1");
+
+      const entry = findTerminal("helper-9");
+      expect(entry).toBeDefined();
+      expect(entry?.status).toBe("terminal");
+      expect(entry?.stage).toBeUndefined();
+      expect(entry?.pipelineId).toBe("pipe-1");
+    });
+
+    it("still backfills stage for late-arriving terminal-stamped entries", () => {
+      // Orphan terminal (never registered at dispatch): stage rides along —
+      // unchanged behavior for entries without a dispatch snapshot.
+      registerTerminal("develop-agent", "orphan-1", "terminal", "completed", "develop", "pipe-1");
+      const entry = findTerminal("orphan-1");
+      expect(entry?.stage).toBe("develop");
+    });
+
     it("should mark existing entry as terminal", () => {
       registerStarted("develop-agent", "agent-123", "develop", "pipe-123");
       registerTerminal("develop-agent", "agent-123", "terminal", "completed", "develop", "pipe-123");
@@ -176,6 +224,7 @@ describe("subagent-lifecycle-registry", () => {
         currentStage: "develop",
         pipelineId: "pipe-123",
       } as any));
+      setSpawnLedgerConfig(makeLedgerConfig());
       
       wireSubagentLifecycleListeners(mockPi);
       
@@ -186,7 +235,41 @@ describe("subagent-lifecycle-registry", () => {
       expect(all).toHaveLength(1);
       expect(all[0].agentId).toBe("agent-123");
       expect(all[0].agentType).toBe("develop-agent");
+      // 218 review #1: resolved from the EXECUTOR NAME (config), not from the
+      // removed `meta.currentStage` fallback.
       expect(all[0].stage).toBe("develop");
+      expect(all[0].pipelineId).toBe("pipe-123");
+    });
+
+    it("non-executor created event stays stage-less even with an owner stage (218 review #1)", () => {
+      const handlers: Record<string, Array<(payload: unknown) => void>> = {};
+      const mockBus = {
+        on: (event: string, handler: (payload: unknown) => void) => {
+          if (!handlers[event]) handlers[event] = [];
+          handlers[event].push(handler);
+          return () => {};
+        },
+      };
+      const mockPi = { events: mockBus };
+
+      setOwnerMetaAccessor(() => ({
+        currentStage: "develop",
+        pipelineId: "pipe-123",
+      } as any));
+      setSpawnLedgerConfig(makeLedgerConfig());
+
+      wireSubagentLifecycleListeners(mockPi);
+
+      // `explore` is not a configured stage executor: the dispatch snapshot
+      // must NOT inherit the owner's currentStage (wake predicate 2 keeps
+      // skipping such entries instead of firing false owner_wake_on_terminal).
+      handlers["subagents:created"][0]({ id: "helper-1", type: "explore" });
+
+      const all = snapshotAll();
+      expect(all).toHaveLength(1);
+      expect(all[0].agentId).toBe("helper-1");
+      expect(all[0].stage).toBeUndefined();
+      expect(all[0].stageAt).toBe("dispatch");
       expect(all[0].pipelineId).toBe("pipe-123");
     });
 

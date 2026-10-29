@@ -158,7 +158,8 @@ export function setOwnerMetaAccessor(
  *
  * @param agentType - Agent type name (e.g. "develop-agent")
  * @param agentId - Subagent unique identifier
- * @param stage - Current pipeline stage (optional)
+ * @param stage - Resolved executor stage (218 review #1: undefined for
+ *   non-executors — the owner's currentStage is NOT a valid substitute)
  * @param pipelineId - Current pipeline ID (optional)
  */
 export function registerStarted(
@@ -222,8 +223,12 @@ export function registerTerminal(
     existing.status = "terminal";
     existing.terminalAt = now;
     existing.reason = reason;
-    // Fill in optional fields if not already set
-    if (!existing.stage && stage) existing.stage = stage;
+    // Fill in optional fields if not already set.
+    // 218 review #1: a dispatch-time entry with NO stage was deliberately
+    // left unattributable (non-executor). Backfilling the owner's TERMINAL-time
+    // stage here would fabricate exactly the snapshot predicate 2 trusts —
+    // only late-arriving terminal-stamped entries may receive a stage.
+    if (!existing.stage && stage && existing.stageAt !== "dispatch") existing.stage = stage;
     if (!existing.pipelineId && pipelineId) existing.pipelineId = pipelineId;
   } else {
     // Defensive: create a minimal entry for orphaned terminal events
@@ -357,9 +362,15 @@ export function wireSubagentLifecycleListeners(
         if (!event.id || !event.type) return;
 
         const meta = _ownerMetaAccessor?.();
-        // True stage ownership from the config; currentStage ONLY when the
-        // name matches no configured stage (fail-safe: never guess further).
-        const stage = stageOfExecutorName(event.type) ?? meta?.currentStage;
+        // 218 review #1: ONLY a name that resolves to a configured stage
+        // executor may carry the dispatch-time snapshot. The old
+        // `?? meta?.currentStage` fallback attributed every observed child
+        // (manual `explore`, helper agents…) to whatever stage the owner
+        // happened to be in, and wake predicate 2 trusted it — producing
+        // false owner_wake_on_terminal. Non-executors stay stage-less;
+        // pipelineId scoping (below) is unaffected.
+        // `null` (not configurable) normalizes to `undefined` (unattributable).
+        const stage = stageOfExecutorName(event.type) ?? undefined;
         registerStarted(event.type, event.id, stage, meta?.pipelineId);
         // Ledger write (config/session are module-level accessors installed
         // by the composition root; missing ⇒ silent no-op).
@@ -377,11 +388,11 @@ export function wireSubagentLifecycleListeners(
         if (!event.id || !event.type) return;
 
         // Get current stage and pipelineId from the owner meta accessor.
-        // 218 T0.4: same name-first resolution as `started` — `created` may
-        // arrive after the dispatch-time snapshot; the agent name remains the
-        // authoritative stage evidence, `currentStage` is only the fallback.
+        // 218 T0.4 + review #1: same resolution as `started` — the agent name
+        // is the ONLY stage evidence; there is no currentStage fallback, so a
+        // non-executor `created` event stays unattributable by design.
         const meta = _ownerMetaAccessor?.();
-        const stage = stageOfExecutorName(event.type) ?? meta?.currentStage;
+        const stage = stageOfExecutorName(event.type) ?? undefined;
         const pipelineId = meta?.pipelineId;
 
         registerStarted(event.type, event.id, stage, pipelineId);

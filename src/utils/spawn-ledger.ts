@@ -5,8 +5,9 @@
  *   1. plugin RPC reply id (`subagent-rpc` writeGuard — existing, unmarked ⇒
  *      legacy/"rpc" display per 218 T0.1);
  *   2. `subagents:started` (covers RPC / Agent-tool / scheduler / queue→running);
- *   3. `subagents:created` (adds isBackground; background-only today — an
- *      enrichment, never the source).
+ *   3. `subagents:created` (carries `isBackground` into the audit trail only —
+ *      never onto `ActiveSpawnEntry`; background-only today, an enrichment,
+ *      never the source).
  *
  * Boundaries (Q16 / 4.6-2):
  * - Events arrive AFTER dispatch → the ledger can never replace the queue
@@ -156,19 +157,38 @@ export function recordSpawnFromEvent(
   const stage = stageOfExecutorName(agentName);
   if (!stage) return;
   const existing = ledger[stage];
-  if (existing?.agentId && existing.agentId !== agentId) {
-    // Never overwrite an entry that carries a DIFFERENT agentId.
-    // (Reserved placeholders WITHOUT an id — e.g. `writeReserved` before an
-    // RPC reply — are intentionally replaceable below.)
+  // 218 review #3: SYNTHETIC ids (`takeover-…` / `dispatch:…`, written by the
+  // 3d takeover / self-reserve paths) are placeholders, not identities — a
+  // `started` event with a genuine id must upgrade the slot, otherwise the
+  // ledger keeps an id no terminal can clear (T0.5 misses it) until TTL.
+  const existingId = existing?.agentId;
+  const isPlaceholder =
+    !existingId ||
+    existingId.startsWith("takeover-") ||
+    existingId.startsWith("dispatch:");
+  if (existingId && !isPlaceholder && existingId !== agentId) {
+    // A DIFFERENT real agentId in this slot: never overwrite (218 T0.3).
     return;
   }
-  const nextEntry: ActiveSpawnEntry = {
-    ...(existing ?? {}),
-    agentName,
-    agentId,
-    startedAt: Date.now(),
-    source: "event",
-  };
+  const nextEntry: ActiveSpawnEntry =
+    existingId && isPlaceholder
+      ? // Placeholder replacement: FULL rewrite. The `reserved` marker and the
+        // synthetic age must not survive — the event itself is the liveness
+        // proof now. A bound operationContext still rides along.
+        {
+          agentName,
+          agentId,
+          startedAt: Date.now(),
+          source: "event",
+          ...(existing?.operationContext ? { operationContext: existing.operationContext } : {}),
+        }
+      : {
+          ...(existing ?? {}),
+          agentName,
+          agentId,
+          startedAt: Date.now(),
+          source: "event",
+        };
   const latest = session.getMeta();
   session.updateMeta({
     activeSpawns: {

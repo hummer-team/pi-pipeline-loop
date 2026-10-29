@@ -120,6 +120,9 @@ describe("218 P0 Tier-2.5: id-less in-flight ledger entry defers (defer-only)", 
     const logContent = fs.readFileSync(auditLogFileFor(join(tmpDir, ".pi", "audit")), "utf-8");
     expect(logContent).toContain("stage_spawn_deferred");
     expect(logContent).toContain("evidenceStage=develop");
+    // 218 review #6: the defer audit carries the TRUE evidence basis —
+    // reserved in-flight, not a borrowed live-probe label.
+    expect(logContent).toContain("evidenceBasis=reserved");
 
     // Q16-B boundedness: each poll's consume re-encounters the SAME id-less
     // evidence and defers again (defer-only — a twin never races out). The
