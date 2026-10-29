@@ -17,6 +17,8 @@
 
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+// 218 T4.2: real-shape ManagerRegistry double (replaces hand-rolled stubs).
+import { makeRealisticManagerRegistry } from "../helpers";
 import type { FlowStateCtx } from "../../core/flow-state";
 import type { SessionMeta } from "../../types";
 import {
@@ -127,10 +129,9 @@ describe("High A: probeAgentState", () => {
 
   it("returns settled when manager exists but record is gone", () => {
     const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
-    const manager = {
-      getRecord: (_id: string) => undefined,
-    };
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = manager;
+    // 218 T4.2: real-shape double — empty registry, getRecord → undefined.
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry();
     try {
       const result = probeAgentState("some-agent-id");
       expect(result).toBe("settled");
@@ -141,10 +142,8 @@ describe("High A: probeAgentState", () => {
 
   it("returns live when manager record has running status", () => {
     const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
-    const manager = {
-      getRecord: (id: string) => ({ status: "running" }),
-    };
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = manager;
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({ "some-agent-id": { status: "running" } });
     try {
       const result = probeAgentState("some-agent-id");
       expect(result).toBe("live");
@@ -155,10 +154,8 @@ describe("High A: probeAgentState", () => {
 
   it("returns settled when manager record has completed status", () => {
     const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
-    const manager = {
-      getRecord: (id: string) => ({ status: "completed" }),
-    };
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = manager;
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({ "some-agent-id": { status: "completed" } });
     try {
       const result = probeAgentState("some-agent-id");
       expect(result).toBe("settled");

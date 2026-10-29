@@ -37,7 +37,7 @@ import {
   __peekResumeDispatchHandler,
 } from "../../core/resume-dispatch";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, makeRealisticManagerRegistry } from "../helpers";
 import type { SessionMeta } from "../../types";
 
 const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
@@ -51,12 +51,10 @@ type AuditRow = {
 let audits: AuditRow[] = [];
 let notifications: string[] = [];
 
-/** Install a fake manager registry driving `probeAgentState`. */
+/** Install the real-shape manager registry (218 T4.2 helper) driving `probeAgentState`. */
 function installRegistry(records: Record<string, { status: string }>): void {
-  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-    getRecord: (id: string) => records[id],
-    hasRunning: () => false,
-  };
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+    makeRealisticManagerRegistry(records);
 }
 
 afterEach(() => {

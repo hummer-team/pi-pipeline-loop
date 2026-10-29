@@ -20,7 +20,7 @@ import {
 } from "../../utils/subagent-rpc";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, createMockEventBus, auditLogFileFor } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockEventBus, auditLogFileFor, makeRealisticManagerRegistry } from "../helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
@@ -53,10 +53,8 @@ function makeDevelopConfig() {
  * per-id probes (empty ⇒ every agentId the ledger knows probes settled).
  */
 function setManager220(running: boolean, records: Record<string, string> = {}): void {
-  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
-    hasRunning: () => running,
-  };
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+    makeRealisticManagerRegistry(records, { hasRunning: running });
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

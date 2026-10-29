@@ -7,7 +7,7 @@ import {
   detectPendingConfirmGate,
   recordConfirmGateOutcome,
 } from "../../core/stage-advancer";
-import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor, makeRealisticManagerRegistry } from "../helpers";
 import type { PipelineConfig } from "../../types";
 import {
   makePlanConfigWithConfirm,
@@ -457,12 +457,11 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
       confirmGateDeferredAt: staleStamp,
       confirmGateReask: { stage: "plan", count: 1 },
     });
-    // Simulate a running subagent via the global manager symbol.
+    // Simulate a running subagent via the global manager symbol
+    // (218 T4.2 real-shape double; hasRunning override — no top-level record).
     const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => undefined,
-      hasRunning: () => true,
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({}, { hasRunning: true });
 
     try {
       // Production-semantic mock: updateMeta returns a new object via spread,
@@ -570,19 +569,19 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
   // 218 T0.6: the 0.22.0 manager exposes NO enumeration — liveness resolves
   // per-id via getRecord. Records are keyed by id; ledger entries carry the
   // ids, so a seeded entry probes live exactly when its record is running.
+  // 218 T4.2: converted to the real-shape double — `hasRunning` now derives
+  // from the REAL live statuses (queued/running/steered); "spawning" is not
+  // an upstream registry status and never counted in production.
   function setManagerWithRecords(records: Array<{ id: string; name: string; status: string }>): void {
-    const byId = new Map(records.map(r => [r.id, r]));
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: (id: string) => byId.get(id),
-      hasRunning: () => records.some(r => ["running", "spawning"].includes(r.status)),
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry(
+        new Map(records.map((r) => [r.id, { status: r.status }])),
+      );
   }
 
   function setManagerRunning(running: boolean): void {
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => undefined,
-      hasRunning: () => running,
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({}, { hasRunning: running });
   }
 
   function clearManager(): void {

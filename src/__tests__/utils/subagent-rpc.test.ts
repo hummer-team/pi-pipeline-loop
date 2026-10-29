@@ -24,7 +24,7 @@ import {
   __resetSubagentsReady,
 } from "../../utils/subagent-availability";
 import { initAuditLog, getDateAuditFileName, __resetAuditRoutingState } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, createMockEventBus, makeStageConfig } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockEventBus, makeStageConfig, makeRealisticManagerRegistry } from "../helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { join } from "node:path";
@@ -1617,12 +1617,10 @@ describe("Phase 2 / 177 (D4): spawn audit sessionFile", () => {
 
 const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
-/** Install a fake manager registry so probeAgentState can resolve live records. */
+/** Install the real-shape manager double (218 T4.2) so probeAgentState can resolve live records. */
 function setManager(records: Record<string, string | undefined>): void {
-  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
-    hasRunning: () => Object.values(records).some((s) => s === "running" || s === "queued" || s === "steered"),
-  };
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+    makeRealisticManagerRegistry(records);
 }
 
 /** Remove the fake manager registry. */
@@ -1634,10 +1632,8 @@ function clearManager(): void {
 // `listRecords` contract never existed in the real 0.22.0 registry. Fakes use
 // `setManager` (getRecord/hasRunning only), matching the shipped surface.
 function setManagerNoEnumeration(running: boolean): void {
-  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-    getRecord: () => undefined,
-    hasRunning: () => running,
-  };
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+    makeRealisticManagerRegistry({}, { hasRunning: running });
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

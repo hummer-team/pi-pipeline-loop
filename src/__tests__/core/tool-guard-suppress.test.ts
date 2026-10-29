@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createToolGuard } from "../../core/tool-guard";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, makeRealisticManagerRegistry } from "../helpers";
 import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -19,12 +19,10 @@ async function writeAgentFile(projectRoot: string, agentPath: string, name: stri
 /** pi-subagents manager singleton symbol (shared with subagents-introspect). */
 const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
-/** Install a fake manager registry so probeAgentState can resolve live records. */
+/** Install the real-shape manager double (218 T4.2) so probeAgentState can resolve live records. */
 function setManager(records: Record<string, string | undefined>): void {
-  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-    getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
-    hasRunning: () => Object.values(records).some((s) => s === "running" || s === "queued" || s === "steered"),
-  };
+  (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+    makeRealisticManagerRegistry(records);
 }
 
 /** Remove the fake manager registry. */

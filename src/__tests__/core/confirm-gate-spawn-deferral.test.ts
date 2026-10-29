@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import {
   maybeHandleConfirmGate,
 } from "../../core/stage-advancer";
-import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor, makeRealisticManagerRegistry } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import type { SessionMeta, PipelineConfig } from "../../types";
@@ -258,12 +258,10 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
 describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", () => {
   const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
-  /** Manager with a working hasRunning() probe. */
+  /** Manager with a working hasRunning() probe (218 T4.2 real-shape double). */
   function setManagerRunning(running: boolean): void {
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => undefined,
-      hasRunning: () => running,
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({}, { hasRunning: running });
   }
 
   /** Manager with getRecord only (anyTopLevelRunning → null, degraded path). */
@@ -370,10 +368,8 @@ describe("Phase 1 / 180: stale confirmGateDeferredAt invalidation", () => {
   const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
   function setManagerRunning(running: boolean): void {
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => undefined,
-      hasRunning: () => running,
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({}, { hasRunning: running });
   }
 
   afterEach(() => {
@@ -515,10 +511,8 @@ describe("Phase 2 / 180: repeat-defer throttled audit", () => {
   const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
   function setManagerRunning(running: boolean): void {
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => undefined,
-      hasRunning: () => running,
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({}, { hasRunning: running });
   }
 
   afterEach(() => {

@@ -29,6 +29,8 @@ import {
 } from "../../core/pending-spawn-stall";
 import { registerOwnerDelivery, __resetOwnerDeliveryRegistry, unregisterOwnerDelivery } from "../../core/owner-delivery-registry";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+// 218 T4.2: real-shape ManagerRegistry double (replaces hand-rolled stubs).
+import { makeRealisticManagerRegistry } from "../helpers";
 import type { SessionMeta } from "../../types";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -124,9 +126,10 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
     // `live` branch of pending-spawn-stall.ts:57 is actually exercised —
     // an unregistered id would return "unknown", not "live".
     const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: (id: string) => (id === "agent-live" ? { status: "running" } : undefined),
-    };
+    // 218 T4.2: the double now comes from the REAL-shape helper (the old
+    // hand-rolled stub is what let a fake `listRecords` contract drift in).
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({ "agent-live": "running" });
     meta.activeSpawns = { fix: { agentId: "agent-live", agentName: "fix-agent", startedAt: Date.now() } };
     armNow();
     await sleep(STALL_WINDOW_MS + 30);
@@ -140,9 +143,8 @@ describe("pending-spawn-stall (217 Phase 1 / T1.1)", () => {
     // Reverse case: a resolved-but-settled executor is NOT progress — the
     // guard at :57 must let the stall fire (proves the guard both ways).
     const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => ({ status: "completed" }),
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({ "agent-settled": "completed" });
     meta.activeSpawns = { fix: { agentId: "agent-settled", agentName: "fix-agent", startedAt: Date.now() } };
     armNow();
     await sleep(STALL_WINDOW_MS + 30);

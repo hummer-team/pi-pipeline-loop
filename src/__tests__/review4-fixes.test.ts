@@ -22,7 +22,7 @@ import {
 } from "../core/flow-state";
 import type { FlowStateCtx } from "../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../types";
-import { makeTestMeta, makeTestConfig, createMockCtx, createMockRuntimeCtx } from "./helpers";
+import { makeTestMeta, makeTestConfig, createMockCtx, createMockRuntimeCtx, makeRealisticManagerRegistry } from "./helpers";
 import { initAuditLog } from "../utils/auditLog";
 import { readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -585,10 +585,8 @@ describe("Phase 4 / 180: duplicate_spawn_suspect observability", () => {
   const MANAGER_SYMBOL = Symbol.for("pi-subagents:manager");
 
   function setManagerRecords(records: Record<string, string>): void {
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: (id: string) => (records[id] !== undefined ? { status: records[id] } : undefined),
-      hasRunning: () => false,
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry(records, { hasRunning: false });
   }
 
   afterEach(() => {

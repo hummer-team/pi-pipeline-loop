@@ -21,6 +21,8 @@ import { tmpdir } from "node:os";
 import { createAgentSettled } from "../core/agent-settled";
 import { createPipelineResumeCommand } from "../commands/pipeline-resume";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "./helpers";
+// 218 T4.2: real-shape ManagerRegistry double.
+import { makeRealisticManagerRegistry } from "./helpers";
 import { initAuditLog } from "../utils/auditLog";
 import type { PipelineConfig } from "../types";
 import { auditLogFileFor } from "./helpers";
@@ -38,10 +40,8 @@ describe("Issue 180: confirm-gate recovery timeline", () => {
   });
 
   function setManagerRunning(running: boolean): void {
-    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] = {
-      getRecord: () => undefined,
-      hasRunning: () => running,
-    };
+    (globalThis as Record<symbol, unknown>)[MANAGER_SYMBOL] =
+      makeRealisticManagerRegistry({}, { hasRunning: running });
   }
 
   it("verify → subagent-live defer → collateral dismiss → /pipeline-resume re-opens the dialog", async () => {

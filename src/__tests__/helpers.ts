@@ -683,3 +683,99 @@ export function auditLogFileFor(auditRoot: string, pipelineId?: string): string 
   
   return join(auditRoot, segment, "log", getDateAuditFileName());
 }
+
+// ─── 218 Phase 4 (T4.2): real-shape ManagerRegistry fixture ────────────────
+
+/** Statuses the pi-subagents registry counts as live (types.ts:174). */
+const REGISTRY_LIVE_STATUSES = new Set(["queued", "running", "steered"]);
+
+/**
+ * One manager-registry record reachable through `getRecord`
+ * (the 0.22.0 `AgentRecord` subset the plugin may observe).
+ */
+export interface RealisticAgentRecord {
+  status?: string;
+  sessionFile?: string;
+}
+
+/** Record input: bare status shorthand, the full record, or absent (undefined). */
+export type RealisticAgentRecordInput = string | RealisticAgentRecord | undefined;
+
+/**
+ * ManagerRegistry in the REAL installed shape (pi-subagents 0.22.0,
+ * `dist/index.js:681-692`, docs/rpc.md §The manager registry): exactly
+ * four members — `waitForAll / hasRunning / spawn / getRecord`.
+ *
+ * 218 T4.2 fidelity pin: the registry exposes NO enumeration.
+ * `listRecords`/`listAgents` never existed upstream; the pre-218 fakes DID
+ * provide `listRecords`, so the name-probe unit tests stayed green while the
+ * production probe was constant-null (incident 20261028, R1/R2). Registry
+ * dependent tests must install this shape instead of hand-rolled partial
+ * objects:
+ *
+ * ```ts
+ * (globalThis as Record<symbol, unknown>)[Symbol.for("pi-subagents:manager")] =
+ *   makeRealisticManagerRegistry({ "agent-1": "running" });
+ * ```
+ *
+ * @param records - id → record map (a live `Map` keeps later mutations
+ * visible, mirroring the real registry's mutable store; a plain object or
+ * status shorthand is fine for one-shot fixtures)
+ * @param opts.hasRunning - force `hasRunning()`. Default derives from
+ * `records`. The override mirrors a legitimate real-world state: the real
+ * `hasRunning()` counts TOP-LEVEL agents only, so an unrelated running
+ * child (or a filtered sibling) can make it true while every probed ledger
+ * id resolves settled — and vice versa.
+ */
+export function makeRealisticManagerRegistry(
+  records?:
+    | Record<string, RealisticAgentRecordInput>
+    | ReadonlyMap<string, RealisticAgentRecordInput>,
+  opts?: { hasRunning?: boolean },
+): {
+  waitForAll: () => Promise<void>;
+  hasRunning: () => boolean;
+  spawn: (input?: unknown) => Promise<never>;
+  getRecord: (id: string) => RealisticAgentRecord | undefined;
+} {
+  const normalize = (raw: string | RealisticAgentRecord): RealisticAgentRecord =>
+    typeof raw === "string" ? { status: raw } : raw;
+  const lookup = (id: string): RealisticAgentRecord | undefined => {
+    if (!records) return undefined;
+    const raw =
+      records instanceof Map
+        ? records.get(id)
+        : (records as Record<string, RealisticAgentRecordInput>)[id];
+    return raw === undefined ? undefined : normalize(raw);
+  };
+  const liveNow = (): boolean => {
+    if (!records) return false;
+    const values: Iterable<RealisticAgentRecordInput> =
+      records instanceof Map
+        ? Array.from(records.values())
+        : Object.values(records as Record<string, RealisticAgentRecordInput>);
+    for (const raw of values) {
+      // Sparse fixtures (explicit `undefined` entries) are absent records.
+      if (raw === undefined) continue;
+      if (REGISTRY_LIVE_STATUSES.has(normalize(raw).status ?? "")) return true;
+    }
+    return false;
+  };
+  return {
+    // The double starts fully settled: waiting is an immediate no-op.
+    waitForAll: async () => {},
+    hasRunning:
+      opts?.hasRunning !== undefined ? () => opts.hasRunning === true : liveNow,
+    // The plugin dispatches stage executors through the pi-subagents event
+    // bus, NEVER through manager.spawn — a silent stub would hide misuse,
+    // so the double fails loudly on any call.
+    spawn: () =>
+      Promise.reject(
+        new Error(
+          "makeRealisticManagerRegistry: spawn must not be called — " +
+            "the plugin dispatches via the subagent RPC event bus (218 T4.2).",
+        ),
+      ),
+    getRecord: (id: string) => lookup(id),
+  };
+}
