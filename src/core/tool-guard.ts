@@ -73,6 +73,9 @@ import { detectSessionRole } from "./session-role";
 import { enqueueOwnerApproval } from "./owner-approval";
 import { resolveAgentMention } from "../utils/subagent-rpc";
 import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
+// 218 Phase 1 (T1.2/T1.3): queue-ownership gate + the deduped owner-wake entry.
+import { evaluateSpawnQueueOwnership, type QueueGateDecision } from "./spawn-queue-gate";
+import { deliverOwnerWakeOnce } from "./owner-wake-dedupe";
 // Phase 0 (182): secondary name-probe for manual/out-of-band agent detection
 // 218 P0 (T0.6): `findLiveAgentByName` import dropped — the name-probe is gone;
 // same-stage evidence comes exclusively from the event ledger.
@@ -1141,6 +1144,59 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         }
       }
 
+      // 3f. 218 Q12-A+C: pendingSpawns[stage] is ownership — the plugin WILL dispatch
+      // it at the end of this turn. Blocking here is not a violation.
+      // 218: takeover stages are EXCLUDED — 3d rewrites the entry
+      // (fresh requestedAt, no stall/authorization fields) and returns its own
+      // reserved-evidence block, so authorizing here would be a lie to the user.
+      // (F.1: this gate is INDEPENDENT of 3c's `suppressDuplicateSpawn` switch.)
+      const takeoverStages = config.takeoverStages ?? ["clarify"];
+      const spawnType = args.subagent_type as string | undefined;
+      if (spawnType && SPAWN_TOOL_NAMES.includes(toolName)) {
+        const queueAgent = resolveAgentMention(config, meta.currentStage);
+        const { isChild: queueIsChild } = detectSessionRole(ctx);
+        if (queueAgent && spawnType === queueAgent && !queueIsChild) {
+          const queueVerdict: QueueGateDecision = takeoverStages.includes(meta.currentStage)
+            ? { action: "pass" }
+            : evaluateSpawnQueueOwnership(meta, meta.currentStage, spawnType);
+          if (queueVerdict.action === "block") {
+            await safeWriteAuditLog("spawn_queued_blocked", {
+              pipelineId: meta.pipelineId, stage: meta.currentStage, tool: toolName,
+              subagentType: spawnType,
+              requestedAt: String(queueVerdict.entry.requestedAt),
+              ageMs: String(Date.now() - queueVerdict.entry.requestedAt),
+            });
+            deliverOwnerWakeOnce(ctx.session, meta,
+              `The ${meta.currentStage} executor is already queued by the plugin; it will be dispatched automatically at the end of this turn. Do not spawn it manually.`,
+              "queued_block");
+            return { block: true, reason:
+              `Plugin queue owns the ${meta.currentStage} executor: it is already queued and will be dispatched automatically at the end of this turn. Do not spawn a duplicate; only after a pending_spawn_stalled event may you dispatch it once.` };
+          }
+          if (queueVerdict.action === "authorize") {
+            // Pessimistic consumption: the gate cannot observe dispatch success.
+            // 218: re-read the CURRENT table (3d does the same at its entry) —
+            // `meta` is the hook-entry snapshot and `updateMeta` merges the
+            // TOP-LEVEL key only, so writing `{...meta.pendingSpawns}` would
+            // erase an entry another session enqueued during this hook.
+            const latest = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+            ctx.session.updateMeta({ pendingSpawns: { ...(latest.pendingSpawns ?? {}),
+              [meta.currentStage]: { ...queueVerdict.entry, dispatchConsumedAt: Date.now() } } });
+            await safeWriteAuditLog("spawn_queue_authorization_consumed", {
+              pipelineId: meta.pipelineId, stage: meta.currentStage, subagentType: spawnType,
+              stalledAt: String(queueVerdict.entry.stalledAt ?? ""),
+            });
+            // Visible fallback: a failed manual dispatch will not be retried by the plugin.
+            // 218: this notify is only reachable when every gate above the
+            // dispatch PASSED (3c no live twin, 3f authorize, 3d skipped, 3e N/A) —
+            // it must never be shown on a path that still blocks.
+            ctx.ui?.notify?.(
+              `One-shot manual dispatch authorized for stage "${meta.currentStage}". ` +
+              `If it fails, run /pipeline-resume to re-dispatch.`,
+            );
+          }
+        }
+      }
+
       // 3d. Phase 4 / 177 (D7): plugin-owned spawn takeover.
       // Four conditions (ALL must hold):
       //   - owner session (child sessions never spawn in place)
@@ -1149,7 +1205,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       //   - subagent_type === resolveAgentMention(config, stage)
       // On hit: write reserved evidence FIRST (side effect ①), then block and
       // route the spawn to the owner via pendingSpawns. NOT a violation (②).
-      const takeoverStages = config.takeoverStages ?? ["clarify"];
+      // 218 T1.2: `takeoverStages` is hoisted to the 3f block above (shared).
       if (SPAWN_TOOL_NAMES.includes(toolName) && takeoverStages.includes(meta.currentStage)) {
         const takeoverSubagentType = args.subagent_type as string | undefined;
         if (takeoverSubagentType) {
