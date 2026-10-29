@@ -18,6 +18,13 @@ import { safeWriteAuditLog, encodeAuditValue } from "../utils/auditLog";
 // (P4 / R1-Q4=A) — a host that DECLARES hasUI=false must never be driven
 // through a select() call even if it hands over a select control.
 import { resolveDeclaredHasUI } from "./ui-capability";
+// 218 T2.4: the batched write menu feeds the SAME Deny breaker + freeze path
+// as the owner direct ask (write-scope/decision). flow-state / pipeline-start
+// never import this module, so these edges are cycle-free.
+import { DEFAULT_MAX_VIOLATIONS } from "../constants";
+import { freezeAndPrompt } from "./flow-state";
+import { buildOnStageChangedCallback } from "../commands/pipeline-start";
+import { recordDenial, clearDenials } from "./write-scope/denials";
 // 218 T2.4: write-approval candidates reuse the merged-decision candidate shape.
 import type { WriteCandidate } from "./write-scope/types";
 import { formatCandidateList } from "./write-scope/types";
@@ -127,19 +134,51 @@ export type OwnerApprovalOutcome = "approved" | "denied" | "no_ui" | "none";
  * visible audit so a new pipeline's first owner settle never surfaces an
  * approval for a destructive command it never asked about.
  */
+/**
+ * 218 T2.4/F.4-2: detailed consume result. `kind` lets callers (T3.3 freeze
+ * branch) distinguish WHICH channel was surfaced; the legacy outcome string
+ * stays byte-compatible for existing call sites (agent-settled).
+ */
+export interface OwnerApprovalConsumeResult {
+  outcome: OwnerApprovalOutcome;
+  kind: "command" | "write" | "none";
+  /** Queue fingerprint of the served batch/entry (absent for "none"). */
+  fingerprint?: string;
+}
+
+/** Minimal owner-side runtime surface (structurally compatible with RuntimeCtx). */
+export interface OwnerApprovalConsumeCtx {
+  session: { getMeta: () => SessionMeta | undefined; updateMeta: (p: Partial<SessionMeta>) => unknown };
+  /** 217 review issue 2: declared capability rides on the runtime ctx. */
+  hasUI?: boolean | (() => boolean);
+  ui?: { select?: (m: string, o: string[]) => Promise<string | undefined>; notify?: (m: string) => void };
+}
+
+/**
+ * 218 T2.4: legacy entry point — delegates to the detailed variant and returns
+ * `.outcome`, so the 217 call site (agent-settled) is untouched.
+ */
 export async function consumeOnePendingOwnerApproval(
-  ctx: {
-    session: { getMeta: () => SessionMeta | undefined; updateMeta: (p: Partial<SessionMeta>) => unknown };
-    /** 217 review issue 2: declared capability rides on the runtime ctx. */
-    hasUI?: boolean | (() => boolean);
-    ui?: { select?: (m: string, o: string[]) => Promise<string | undefined>; notify?: (m: string) => void };
-  },
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _config: PipelineConfig,
+  ctx: OwnerApprovalConsumeCtx,
+  config: PipelineConfig,
 ): Promise<OwnerApprovalOutcome> {
+  return (await consumePendingOwnerApprovalDetailed(ctx, config)).outcome;
+}
+
+/**
+ * 218 F.3-2 — deterministic selection, ONE interaction per settle:
+ * 1. Only entries of the CURRENT pipeline (the existing stale-residue drop stays).
+ * 2. Prefer a BATCH of kind:"write" entries of the CURRENT stage, merged into one menu.
+ * 3. Otherwise the OLDEST entry whose kind is missing or "command" (217 behaviour verbatim).
+ * 4. Otherwise "none" — other stages' writes stay queued for THEIR own settle.
+ */
+export async function consumePendingOwnerApprovalDetailed(
+  ctx: OwnerApprovalConsumeCtx,
+  config: PipelineConfig,
+): Promise<OwnerApprovalConsumeResult> {
   const meta = ctx.session.getMeta();
   const pending = meta?.pendingOwnerApprovals;
-  if (!meta || !pending) return "none";
+  if (!meta || !pending) return { outcome: "none", kind: "none" };
 
   // ── Cross-pipeline residue guard (217 review issue 3) ──
   // Entries from another (or unknown-origin) pipeline are NOT consumable: they
@@ -162,16 +201,25 @@ export async function consumeOnePendingOwnerApproval(
   // Re-read AFTER the stale drop, then narrow to CURRENT-pipeline requests only.
   const consumable = Object.entries(ctx.session.getMeta()?.pendingOwnerApprovals ?? {})
     .filter(([, request]) => request.pipelineId === meta.pipelineId);
-  if (consumable.length === 0) return "none";
+  if (consumable.length === 0) return { outcome: "none", kind: "none" };
 
-  // Oldest first among CURRENT-pipeline requests only.
-  // 218 T2.4 (interim): only command requests are consumable here; kind:"write"
-  // entries are served by `consumePendingOwnerApprovalDetailed` (added with the
-  // batched write menu) and simply stay queued until then.
+  // ── Step 2 (218 T2.4): ALL current-stage kind:"write" entries merge into
+  // ONE batched menu (F.4-2: "3 blocked calls → 1 ask" across the queue).
+  // Other stages' writes stay queued untouched — they belong to THEIR settle.
+  const stageWrites = consumable.filter(
+    (entry): entry is [string, OwnerWriteApproval] =>
+      entry[1].kind === "write" && entry[1].stage === meta.currentStage,
+  );
+  if (stageWrites.length > 0) {
+    return await consumeWriteBatch(ctx, config, meta, stageWrites);
+  }
+
+  // ── Step 3: oldest COMMAND entry (217 behaviour verbatim, strict one-per-settle).
   const commandEntries = consumable.filter(
     (entry): entry is [string, OwnerCommandApproval] => !entry[1].kind || entry[1].kind === "command",
   );
-  if (commandEntries.length === 0) return "none";
+  // ── Step 4: only other-stage writes remain → "none", no menu.
+  if (commandEntries.length === 0) return { outcome: "none", kind: "none" };
   const entry = commandEntries.sort((a, b) => a[1].requestedAt - b[1].requestedAt)[0];
   const [fingerprint, request] = entry;
   const remove = (): void => {
@@ -194,7 +242,7 @@ export async function consumeOnePendingOwnerApproval(
       pipelineId: meta.pipelineId, stage: request.stage, fingerprint,
     }, "warn");
     try { ctx.ui?.notify?.(`A destructive command is waiting for approval (stage: ${request.stage}).`); } catch { /* fail-open */ }
-    return "no_ui";
+    return { outcome: "no_ui", kind: "command", fingerprint };
   }
 
   const display = request.command.length > 60 ? `${request.command.slice(0, 57)}...` : request.command;
@@ -213,5 +261,126 @@ export async function consumeOnePendingOwnerApproval(
   await safeWriteAuditLog(approved ? "destructive_command_approved" : "destructive_command_denied", {
     pipelineId: meta.pipelineId, stage: request.stage, fingerprint, command: request.command,
   });
-  return approved ? "approved" : "denied";
+  return { outcome: approved ? "approved" : "denied", kind: "command", fingerprint };
+}
+
+/**
+ * 218 T2.4/F.3-2: consume the CURRENT-stage write batch with ONE menu.
+ * Choices act on ALL entries at once:
+ * - Allow for this session → every target joins sessionAllowedWritePaths,
+ *   the Deny breaker clears, entries are removed, audit `write_approval_approved`,
+ *   and a visible /pipeline-resume exit is notified (the blocked child call
+ *   already FAILED — re-dispatch is the owner's next move, T3.5 owns recovery).
+ * - otherwise (Deny / Esc) → per DISTINCT pathClass one `recordDenial(+1)`;
+ *   any class reaching DEFAULT_MAX_VIOLATIONS freezes the pipeline
+ *   (`whitelist_miss_denial_overflow`); audit `write_approval_denied`.
+ * No menu capability → entries STAY queued (217 owner_approval_no_ui parity).
+ */
+async function consumeWriteBatch(
+  ctx: OwnerApprovalConsumeCtx,
+  config: PipelineConfig,
+  meta: SessionMeta,
+  entries: Array<[string, OwnerWriteApproval]>,
+): Promise<OwnerApprovalConsumeResult> {
+  // Merged, order-preserving, deduped target list (plan: one menu per batch).
+  const mergedTargets: string[] = [];
+  for (const [, request] of entries) {
+    for (const target of request.targets) {
+      if (!mergedTargets.includes(target)) mergedTargets.push(target);
+    }
+  }
+  const fingerprints = entries.map(([fingerprint]) => fingerprint);
+  const head = mergedTargets.slice(0, 5).join(", ");
+  const display = mergedTargets.length > 5 ? `${head} …+${mergedTargets.length - 5}` : head;
+  const firstFingerprint = fingerprints[0] ?? "";
+
+  const select = ctx.ui?.select;
+  const declared = resolveDeclaredHasUI(ctx);
+  const menuCapable = declared !== false && typeof select === "function";
+  if (!menuCapable) {
+    await safeWriteAuditLog("owner_approval_no_ui", {
+      pipelineId: meta.pipelineId, stage: meta.currentStage, kind: "write",
+      fingerprints: fingerprints.join(","),
+    }, "warn");
+    try {
+      ctx.ui?.notify?.(`Write approvals are waiting for approval (stage: ${meta.currentStage}).`);
+    } catch { /* fail-open */ }
+    return { outcome: "no_ui", kind: "write", fingerprint: firstFingerprint };
+  }
+
+  const choice = await select(
+    `Child sessions request these writes (stage "${meta.currentStage}"):\n  ${display}`,
+    ["Deny (block)", "Allow for this session"],
+  );
+  const approved = choice === "Allow for this session";
+
+  // Remove ALL served entries from the FRESHEST queue snapshot (shared-store
+  // discipline: a concurrent enqueue during the await must not be clobbered).
+  const removeBatch = (): void => {
+    const current = ctx.session.getMeta()?.pendingOwnerApprovals ?? {};
+    const served = new Set(fingerprints);
+    ctx.session.updateMeta({
+      pendingOwnerApprovals: Object.fromEntries(Object.entries(current).filter(([key]) => !served.has(key))),
+    });
+  };
+
+  if (approved) {
+    const fresh = ctx.session.getMeta() ?? meta;
+    const allowed = fresh.sessionAllowedWritePaths ?? [];
+    const toAdd = mergedTargets.filter((target) => !allowed.includes(target));
+    if (toAdd.length > 0) {
+      ctx.session.updateMeta({ sessionAllowedWritePaths: [...allowed, ...toAdd] });
+    }
+    // Any human Allow replaces the deny pressure entirely (Q15-B).
+    clearDenials(ctx.session);
+    removeBatch();
+    await safeWriteAuditLog("write_approval_approved", {
+      pipelineId: meta.pipelineId, stage: meta.currentStage,
+      count: String(mergedTargets.length),
+      targets: mergedTargets.map((target) => encodeAuditValue(target)).join(","),
+      fingerprints: fingerprints.join(","),
+    });
+    try {
+      ctx.ui?.notify?.(
+        `Write approval granted for this session (stage "${meta.currentStage}"). ` +
+        `No executor is running for this stage — run /pipeline-resume to re-dispatch it.`,
+      );
+    } catch { /* fail-open */ }
+    return { outcome: "approved", kind: "write", fingerprint: firstFingerprint };
+  }
+
+  // Deny path: per DISTINCT pathClass the +1 feeds the stage-scoped breaker.
+  const classes = Array.from(new Set(entries.map(([, request]) => request.pathClass)));
+  for (const pathClass of classes) {
+    recordDenial(ctx.session, ctx.session.getMeta() ?? meta, meta.currentStage, pathClass);
+  }
+  removeBatch();
+  await safeWriteAuditLog("write_approval_denied", {
+    pipelineId: meta.pipelineId, stage: meta.currentStage,
+    count: String(mergedTargets.length),
+    targets: mergedTargets.map((target) => encodeAuditValue(target)).join(","),
+    fingerprints: fingerprints.join(","),
+  });
+  const afterMeta = ctx.session.getMeta();
+  const overflowed = classes.some(
+    (pathClass) => (afterMeta?.whitelistMissDenials?.stage === meta.currentStage
+      ? afterMeta.whitelistMissDenials.counts[pathClass] ?? 0
+      : 0) >= DEFAULT_MAX_VIOLATIONS,
+  );
+  if (overflowed) {
+    await freezeAndPrompt(
+      // Structural parity: the owner ctx always satisfies FlowStateCtx at
+      // runtime; the narrow local type only differs in updateMeta's return.
+      ctx as unknown as Parameters<typeof freezeAndPrompt>[0],
+      ctx.session.getMeta() ?? meta,
+      "violation_overflow",
+      config,
+      { onStageChanged: buildOnStageChangedCallback(ctx, config) },
+    );
+    await safeWriteAuditLog("whitelist_miss_denial_overflow", {
+      pipelineId: meta.pipelineId, stage: meta.currentStage,
+      classes: classes.join(","),
+    });
+  }
+  return { outcome: "denied", kind: "write", fingerprint: firstFingerprint };
 }
