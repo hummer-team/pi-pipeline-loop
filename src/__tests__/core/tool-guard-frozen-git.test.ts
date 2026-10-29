@@ -113,7 +113,9 @@ describe("createToolGuard", () => {
       // Use "blocked" instead of "aborted" — aborted is now dormant (pass-through)
       const meta = makeTestMeta({ currentStage: "develop", flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta); // No sessionFile
-      ctx.toolCall = { name: "read", arguments: { path: "src/x.ts" } };
+      // 218 T3.4 (R7): read-only probes are exempt while blocked — use the
+      // same write-capable tool as the sibling sessionFile test above.
+      ctx.toolCall = { name: "write", arguments: { path: "src/x.ts" } };
 
       const hook = createToolGuard(config);
       await hook.handler(ctx as any);

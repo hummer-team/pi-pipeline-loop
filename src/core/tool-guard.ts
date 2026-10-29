@@ -51,7 +51,7 @@ import {
   isFinishedReleaseProtectedPath,
   type LifecycleWriteAccess,
 } from "./stage-executor/lifecycle-access";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, FROZEN_BLOCKED_READONLY_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
 import { resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
@@ -1165,6 +1165,25 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             });
           }
           // Allow the tool call (return undefined = no block)
+          return undefined;
+        }
+
+        // 218 Phase 3 (T3.4, Q20-A / R7): read-only probes are re-allowed ONLY
+        // while `blocked` — the process is alive, and a pipeline that cannot
+        // `read` its own state cannot self-diagnose the freeze. `aborted`
+        // keeps the full block (173 Q2-B: "wait for resume", not investigate).
+        if (fs === "blocked" && FROZEN_BLOCKED_READONLY_TOOLS.includes(toolName)) {
+          // Throttled audit (same 60s window pattern as the probe exemption).
+          const readThrottleKey = `frozen-read:${meta.pipelineId}:${toolName}`;
+          if (shouldEmitWithinWindow(readThrottleKey, AUDIT_THROTTLE_WINDOW_MS)) {
+            await safeWriteAuditLog("frozen_read_allowed", {
+              pipelineId: meta.pipelineId,
+              stage: meta.currentStage,
+              tool: toolName,
+              flowState: fs,
+            });
+          }
+          // Allow the read-only tool call (return undefined = no block)
           return undefined;
         }
 

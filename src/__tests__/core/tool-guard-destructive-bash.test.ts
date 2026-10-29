@@ -50,9 +50,11 @@ describe("createToolGuard", () => {
         blockedReason: "loop_overflow",
       });
       const ctx = createMockCtx(meta);
-      // "read" is allowed so passes step 1, not bash so skips step 2,
-      // then hits step 3 (freeze check) → blocks without recording a violation
-      ctx.toolCall = { name: "read", arguments: {} };
+      // 218 T3.4 (R7): read-only probes now PASS while blocked, so this
+      // fixture uses "write" — allowed by the develop-stage whitelist (step 1),
+      // not bash (skips step 2), reaching step 3 (freeze check) → blocks
+      // without recording a violation.
+      ctx.toolCall = { name: "write", arguments: { file_path: "src/x.ts" } };
 
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);

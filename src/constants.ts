@@ -228,6 +228,20 @@ export const FROZEN_ABORT_EXEMPT_TOOLS: readonly string[] = [
   "get_subagent_result",
 ] as const;
 
+/**
+ * 218 Phase 3 (T3.4, Q20-A / R7): read-only probes re-allowed ONLY while
+ * `blocked` (the process is alive and the owner can still decide). A frozen
+ * pipeline that cannot `read` its own state cannot self-diagnose why it is
+ * blocked. `aborted` keeps the full block (173 Q2-B) — its semantics is
+ * "wait for resume", not "investigate".
+ */
+export const FROZEN_BLOCKED_READONLY_TOOLS: readonly string[] = [
+  "read",
+  "grep",
+  "glob",
+  "list",
+] as const;
+
 // ─── Decision Menu Interrupt Threshold (Phase 6 / 172) ──────────────────────
 
 /**

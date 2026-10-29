@@ -34,11 +34,14 @@ describe("createToolGuard", () => {
       expect((result as any).reason).toContain("frozen");
     });
 
-    it("blocks all tools when flowState is blocked", async () => {
+    it("blocks write-capable tools when flowState is blocked", async () => {
       const config = makeTestConfig();
       const meta = makeTestMeta({ flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "read", arguments: {} };
+      // 218 T3.4 (R7): read-only probes are exempt while blocked, so the
+      // frozen-rejection fixture uses a write-capable tool (bash). The
+      // exemption itself is pinned in frozen-readonly-exempt.test.ts.
+      ctx.toolCall = { name: "bash", arguments: { command: "echo 218" } };
 
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
@@ -65,7 +68,8 @@ describe("createToolGuard", () => {
       const config = makeTestConfig();
       const meta = makeTestMeta({ flowState: "blocked", blockedReason: "loop_overflow" });
       const ctx = createMockCtx(meta);
-      ctx.toolCall = { name: "read", arguments: {} };
+      // 218 T3.4 (R7): use a write-capable tool — read-only probes now pass.
+      ctx.toolCall = { name: "bash", arguments: { command: "echo 218" } };
 
       const hook = createToolGuard(config);
       const result = await hook.handler(ctx as any);
