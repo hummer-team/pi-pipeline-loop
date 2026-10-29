@@ -34,6 +34,8 @@ import { deliverOwnerWake } from "./core/owner-delivery";
 import { setPendingSpawnStallDeps, armPendingSpawnStall } from "./core/pending-spawn-stall";
 import { deliverOwnerWakeOnce } from "./core/owner-wake-dedupe";
 import { detectSessionRole } from "./core/session-role";
+// 218 Phase 3 (T3.2): the owner per-hook self-heal reads the frozen flow state.
+import { getFlowState } from "./core/flow-state";
 import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
@@ -316,6 +318,39 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
           notify: (message) => { try { rctx.ui.notify(message); } catch { /* fail-open */ } },
           audit: (event, payload) => wakeAudit(event, payload),
         });
+
+        // 218 Phase 3 (T3.2, Q11-B): self-heal. The PERSISTENT pending flag is
+        // the retry token — a lost delivery / owner restart / unregistered
+        // handle converges here. `agent_settled` is EXCLUDED: that hook
+        // presents the menu itself (and clears the flag), so waking there
+        // would produce a spurious followUp every settle. Delivery shares the
+        // owner-turn dedup key, so one turn re-wakes at most once.
+        if (!isChildSession && h.event !== "agent_settled") {
+          const healMeta = rctx.session.getMeta();
+          if (healMeta?.menuEscalationPending === true && getFlowState(healMeta) === "blocked") {
+            const summary = `Pipeline is still blocked at stage "${healMeta.currentStage}". The decision menu will appear when this turn ends.`;
+            const wake = deliverOwnerWakeOnce(
+              rctx.session,
+              healMeta,
+              summary,
+              "selfheal",
+              // 218: this IS the owner session, so its own raw sender is a
+              // valid last resort when the registry resolves nothing.
+              () => rawFollowUp(summary),
+            );
+            if (!wake.deduped) {
+              wakeAudit(
+                wake.outcome.delivered ? "menu_escalation_selfheal" : "owner_wake_escalation_skipped",
+                {
+                  pipelineId: healMeta.pipelineId,
+                  stage: healMeta.currentStage,
+                  delivered: String(wake.outcome.delivered),
+                  reason: wake.outcome.reason ?? "",
+                },
+              );
+            }
+          }
+        }
         // 217 Phase 0 (F1): the wake WRITER side (module-level deps) is
         // owner-scoped now — same gate shape as the escalation deps below.
         // A child-bound deps snapshot would aim terminal delivery at the child

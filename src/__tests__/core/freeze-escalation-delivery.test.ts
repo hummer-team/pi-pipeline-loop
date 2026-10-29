@@ -22,6 +22,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createPipeline } from "../../index";
+import { PIPELINE_META_CUSTOM_TYPE } from "../../core/session-state";
 import { freezeAndPrompt } from "../../core/flow-state";
 import {
   registerOwnerDelivery,
@@ -36,6 +41,8 @@ import {
 import type { EscalationPayload } from "../../utils/escalation-bus";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { setFixExecutorCompletedHandler } from "../../utils/subagent-rpc";
+import { setStageProgressReporter } from "../../utils/stage-progress-sink";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import type { SessionMeta } from "../../types";
 
@@ -93,10 +100,17 @@ beforeEach(() => {
   __resetMemoryThrottle();
 });
 
-afterEach(() => {
+/** Tmp roots created by the createPipeline bridge harness (cleaned per test). */
+const tmpDirs: string[] = [];
+
+afterEach(async () => {
   __setSafeWriteAuditLogOverride(null);
   __resetOwnerDeliveryRegistry();
   __resetMemoryThrottle();
+  while (tmpDirs.length > 0) {
+    const dir = tmpDirs.pop()!;
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 describe("218 T3.1: child freeze escalates via the deduped DIRECT wake", () => {
@@ -207,5 +221,139 @@ describe("218 T3.1: the dedup closure keeps 211/216 verbatim", () => {
     );
     expect(depsSend).toHaveLength(1); // frozen wake DEDUPED (not sent again)
     expect(audits.some((a) => a.event === "owner_wake_deduped")).toBe(true);
+  });
+});
+
+describe("218 T3.2: owner hook-bridge self-heal", () => {
+  /**
+   * Drive the REAL hook bridge (createPipeline + fake pi): mutable entries
+   * array + pi.appendEntry so `session.getMeta()` re-reads the wake stamp;
+   * shared meta.json (TMP/.pi/audit/{pipelineId}/meta.json) is the
+   * authoritative source once the first updateMeta dual-write lands.
+   */
+  async function makeSelfHealHarness(meta: SessionMeta) {
+    const TMP = join(tmpdir(), "pi-218-selfheal-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    tmpDirs.push(TMP);
+    const config = makeTestConfig({ projectRoot: TMP, auditDir: ".pi/audit" });
+
+    const entries: Array<{ type: string; customType: string; data: unknown }> = [
+      { type: "custom", customType: PIPELINE_META_CUSTOM_TYPE, data: meta },
+    ];
+    const sent: string[] = [];
+    const registered: Array<{ event: string; handler: Function }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pi: any = {
+      on: (event: string, handler: Function) => registered.push({ event, handler }),
+      registerTool: () => {},
+      registerCommand: () => {},
+      registerShortcut: () => {},
+      appendEntry: (customType: string, data: unknown) => {
+        entries.push({ type: "custom", customType, data });
+      },
+      sendUserMessage: (msg: string) => {
+        sent.push(msg);
+      },
+      events: { emit: () => {}, on: () => {} },
+      exec: undefined,
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const extCtx: any = {
+      ui: { notify: () => {}, setStatus: () => {} },
+      sessionManager: {
+        getEntries: () => entries,
+        getBranch: () => [],
+        getSessionFile: () => "/sessions/owner-selfheal-218.jsonl",
+        getHeader: () => undefined,
+        getSessionName: () => "owner-selfheal-218",
+      },
+    };
+
+    const factory = createPipeline(config);
+    await factory(pi);
+
+    // Process-global DI cleanup discipline (index-registration precedent):
+    // the factory installs the fix-executor handler and the stage-progress
+    // sink; leaving them set leaks into other files' "initially null" checks.
+    setFixExecutorCompletedHandler(null);
+    setStageProgressReporter(null);
+
+    const metaPath = join(TMP, ".pi", "audit", meta.pipelineId ?? "", "meta.json");
+
+    /** Read the authoritative shared snapshot (seed meta until first write). */
+    const currentMeta = async (): Promise<SessionMeta> => {
+      try {
+        return JSON.parse(await readFile(metaPath, "utf-8")) as SessionMeta;
+      } catch {
+        return meta;
+      }
+    };
+
+    return {
+      sent,
+      /** Fire one registered hook handler through the bridge. */
+      fire: async (event: string): Promise<void> => {
+        const h = registered.find((r) => r.event === event);
+        if (!h) throw new Error(`handler for ${event} not registered`);
+        await h.handler({}, extCtx);
+      },
+      /** Drain the fire-and-forget audit queue. */
+      flush: (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10)),
+      /** Simulate the settle-`finally` turn advance on the shared snapshot. */
+      bumpOwnerTurn: async (): Promise<void> => {
+        const cur = await currentMeta();
+        await writeFile(metaPath, JSON.stringify({ ...cur, ownerTurnSeq: (cur.ownerTurnSeq ?? 0) + 1 }));
+      },
+      /** Patch the shared snapshot (e.g. the settle path consumed the flag). */
+      patchSharedMeta: async (patch: Partial<SessionMeta>): Promise<void> => {
+        const cur = await currentMeta();
+        await writeFile(metaPath, JSON.stringify({ ...cur, ...patch }));
+      },
+    };
+  }
+
+  // ── Case 3: retry token = persistent `menuEscalationPending` ─────────────
+  it("pending + blocked: delivered once per owner turn, deduped within a turn, stops when the flag clears", async () => {
+    const meta = makeTestMeta({
+      pipelineId: "pipe-218-sh",
+      currentStage: "review",
+      flowState: "blocked",
+      menuEscalationPending: true,
+      ownerTurnSeq: 0,
+    });
+    const h = await makeSelfHealHarness(meta);
+
+    // Turn 1, hook A: self-heal delivers through the bridge and audits.
+    await h.fire("message_end");
+    await h.flush();
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]).toContain('Pipeline is still blocked at stage "review"');
+    expect(h.sent[0]).toContain("The decision menu will appear when this turn ends.");
+    const selfHeals = () => audits.filter((a) => a.event === "menu_escalation_selfheal");
+    expect(selfHeals()).toHaveLength(1);
+    expect(selfHeals()[0]?.message.delivered).toBe("true");
+    expect(selfHeals()[0]?.message.stage).toBe("review");
+
+    // Turn 1, hook B: SAME dedupe key → no second send, only deduped audit.
+    await h.fire("message_end");
+    await h.flush();
+    expect(h.sent).toHaveLength(1);
+    expect(selfHeals()).toHaveLength(1);
+    expect(audits.some((a) => a.event === "owner_wake_deduped")).toBe(true);
+
+    // Turn 2 (ownerTurnSeq advanced): the armed flag re-wakes once.
+    await h.bumpOwnerTurn();
+    await h.fire("message_end");
+    await h.flush();
+    expect(h.sent).toHaveLength(2);
+    expect(selfHeals()).toHaveLength(2);
+
+    // Menu consumed (flag cleared): the self-heal stops.
+    await h.patchSharedMeta({ menuEscalationPending: false });
+    await h.bumpOwnerTurn();
+    await h.fire("message_end");
+    await h.flush();
+    expect(h.sent).toHaveLength(2);
+    expect(selfHeals()).toHaveLength(2);
   });
 });
