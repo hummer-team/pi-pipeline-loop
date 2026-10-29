@@ -50,6 +50,8 @@ describe("Phase 7: guardSource assignment (empirical triggers)", () => {
   it("write outside stage write whitelist records read_only_path", async () => {
     const root = await freshRoot("wl");
     const config = makeTestConfig({ projectRoot: root });
+    // 218: pin the PRE-218 deny behaviour — whitelist-miss now defaults to the merged ask
+    config.protect = { ...config.protect, whitelistMiss: "deny" };
     config.stages["develop"] = {
       ...config.stages["develop"],
       allowedWritePaths: ["docs/"],

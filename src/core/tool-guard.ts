@@ -23,7 +23,7 @@
  */
 
 import path from "node:path";
-import type { PipelineConfig, Hook, SessionMeta, ExecFn, ViolationItem, PipelineStage } from "../types";
+import type { PipelineConfig, Hook, SessionMeta, ExecFn, ViolationItem, PipelineStage, WhitelistMissMode } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import type { GuardSource } from "./violation-tracker";
 import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent";
@@ -67,6 +67,12 @@ import { staleConfigNotice } from "../utils/config-staleness";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
+// 218 Phase 2 (T2.3): whitelist-miss mode resolution + merged write decision.
+import { resolveWhitelistMissMode } from "./write-scope/mode";
+import { applyCollectedWrites } from "./write-scope/decision";
+import type { ApplyWriteDecisionDeps } from "./write-scope/decision";
+import { createWriteCandidateCollector, inRootPathClass } from "./write-scope/types";
+import type { WriteCandidate, WriteCandidateCollector } from "./write-scope/types";
 import { detectSessionRole } from "./session-role";
 // 217 Phase 3 (T3.3): child destructive commands fail closed and escalate to
 // the owner's approval queue (the host does not inherit the owner's select).
@@ -132,7 +138,14 @@ function buildGitWriteBlockReason(config: PipelineConfig, currentStage: Pipeline
  * - exempted?: boolean indicates the path was exempted from read-only check (195 Phase 1)
  */
 type StageWriteCheckResult =
-  | { status: "block"; reason: string; exempted?: boolean }
+  | {
+      status: "block";
+      reason: string;
+      exempted?: boolean;
+      /** 218 T2.2: coarse classification for the merged write decision.
+       *  "whitelist_miss" is attached ONLY outside deny mode (byte-equivalence). */
+      kind?: "readonly" | "protected" | "whitelist_miss";
+    }
   | { status: "allow-whitelist"; exempted?: boolean }
   | { status: "continue"; exempted?: boolean };
 
@@ -299,7 +312,8 @@ function checkStageWriteBlock(
   stageName: string,
   state: ProtectState,
   allowedReadOnlyPaths?: string[],
-  exemptedPaths?: string[]
+  exemptedPaths?: string[],
+  whitelistMissMode?: WhitelistMissMode
 ): StageWriteCheckResult {
   // 195 Phase 1: Check if path is in exempted list before read-only check.
   // Exempted paths skip read-only interception and return exempted: true.
@@ -317,6 +331,7 @@ function checkStageWriteBlock(
     return {
       status: "block",
       reason: `FORBIDDEN: '${relPath}' is in read-only paths for '${stageName}' stage. Next step: use a path from allowedWritePaths or wait for stage transition.`,
+      kind: "readonly",
     };
   }
 
@@ -335,6 +350,9 @@ function checkStageWriteBlock(
     return {
       status: "block",
       reason: `FORBIDDEN: '${relPath}' not in allowed write paths for '${stageName}' stage. Next step: write to [${(allowedWritePaths ?? []).join(", ")}].`,
+      // 218 T2.2/T2.3: classified ONLY outside deny mode — deny keeps the
+      // pre-218 untagged per-target flow byte-for-byte (global constraint 8).
+      kind: whitelistMissMode !== undefined && whitelistMissMode !== "deny" ? "whitelist_miss" : undefined,
     };
   }
 
@@ -343,6 +361,7 @@ function checkStageWriteBlock(
     return {
       status: "block",
       reason: buildHardcodedForbiddenReason(relPath, state.hardcoded),
+      kind: "protected",
     };
   }
 
@@ -398,6 +417,10 @@ async function checkBashFileTargets(
   trackViolation: (item: Omit<ViolationItem, "timestamp">, guardSource?: GuardSource) => void,
   ui: ReturnType<typeof createPipelineUI>,
   access: LifecycleWriteAccess,
+  /** 218 T2.3: resolved stage whitelist-miss mode (deny keeps HEAD flow). */
+  whitelistMissMode: WhitelistMissMode,
+  /** 218 T2.3: per-call candidate sink merged into ONE decision after the loop. */
+  collector: WriteCandidateCollector,
   opts?: { skipGitDirTargets?: boolean; allowGitLockFiles?: boolean },
 ): Promise<{ block: true; reason: string } | undefined> {
   const targets = extractBashFileTargets(segment);
@@ -573,7 +596,7 @@ async function checkBashFileTargets(
       const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
       
       // Stage-level write whitelist check (with read-only path priority)
-      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths);
+      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode);
       
       // 195 Phase 1: Audit log when path is exempted from read-only check
       if (stageCheck.exempted) {
@@ -587,6 +610,57 @@ async function checkBashFileTargets(
           "info"
         );
       }
+      // 218 Phase 2 (T2.3, F.3-1/2): merged per-call decision routing. deny
+      // mode and read-only deliverables keep the pre-218 per-target flow
+      // byte-for-byte (global constraint 8); protected / whitelist_miss
+      // targets are collected for ONE decision per bash call (R6 fix).
+      if (
+        stageCheck.status === "block" &&
+        whitelistMissMode !== "deny" &&
+        (stageCheck.kind === "protected" || stageCheck.kind === "whitelist_miss")
+      ) {
+        // F.2: protection NEVER relaxes — a whitelist miss onto a protected
+        // (hardcoded / gitignore) path is handled as PROTECTED, not as a miss.
+        const isProtectedTarget =
+          stageCheck.kind === "protected" || isPathProtectedForModify(relPath, state);
+        if (isProtectedTarget) {
+          const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
+          // Child + protected is never delegated (D3/R9b): immediate hard
+          // block for ANY protect.ask value (190 Fix-A extended per F.2).
+          const childBlock = await childHardBlockForProtectedPath(
+            isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx
+          );
+          if (childBlock) return childBlock;
+          if (config.protect?.ask === true) {
+            // Owner protected-ask targets ride the merged batch (F.3-2:
+            // protected wins the decision, but a mixed batch asks ONCE).
+            collector.protectedBatch.push({
+              path: relPath,
+              category: "protected",
+              source: "bash",
+              pathClass: inRootPathClass(relPath),
+              reason: stageCheck.reason,
+            });
+            continue;
+          }
+          // Owner without the protected-ask channel: HEAD hard block verbatim.
+          await trackViolation({
+            type: "write_protected", tool: "bash", detail: stageCheck.reason,
+            suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+          }, "read_only_path");
+          ui.notify(ctx, stageCheck.reason);
+          return { block: true, reason: stageCheck.reason };
+        }
+        // Pure whitelist miss → collected; ONE merged decision after the loop.
+        collector.miss.push({
+          path: relPath,
+          category: "whitelist_miss",
+          source: "bash",
+          pathClass: inRootPathClass(relPath),
+        });
+        continue;
+      }
+
       if (stageCheck.status === "block") {
         if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
           // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
@@ -663,6 +737,11 @@ async function checkBashFileTargets(
         ui.notify(ctx, reason);
         return { block: true, reason };
       }
+      // 218 T2.4 bookkeeping: a session-level Allow recorded the ABSOLUTE
+      // target of out-of-root candidates; honour it here. Routing out-of-root
+      // misses through the merged decision lands with T2.6 (commit 4).
+      if (sessionPaths.includes(absTarget)) continue;
+
       const isWhitelistMode =
         stageConfig.allowedWritePaths !== undefined &&
         !stageConfig.allowedWritePaths.includes(ALLOWED_WRITE_ALL);
@@ -859,6 +938,24 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           }
         }
 
+        // 218 Phase 2 (T2.3, R6 fix): per-stage whitelist-miss mode + ONE
+        // write-candidate collector shared by ALL bash segments of this call
+        // ("one tool call → at most one human decision"). deny mode never
+        // collects (HEAD flow inside checkBashFileTargets).
+        const whitelistMissMode = resolveWhitelistMissMode(config, meta.currentStage);
+        const writeCollector = createWriteCandidateCollector();
+        const writeDecisionDeps: ApplyWriteDecisionDeps = {
+          ctx,
+          config,
+          meta,
+          stage: meta.currentStage,
+          mode: whitelistMissMode,
+          trackViolation,
+          notify: (msg: string) => ui.notify(ctx, msg),
+          formatProtectedReason: (c: { path: string }) =>
+            `FORBIDDEN: Bash command modifies protected path '${c.path}'.`,
+        };
+
         // ── SEGMENT-LEVEL PROTECTION (Bug 2: split compound commands) ──
         // Phase 4 (172): per-stage git modify policy + hard blacklist + .git exemption.
         const segments = splitShellSegments(command);
@@ -990,6 +1087,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               const blockResult = await checkBashFileTargets(
                 segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
                 bashAccess,
+                whitelistMissMode, writeCollector,
                 { skipGitDirTargets: true },
               );
               if (blockResult) return blockResult;
@@ -1008,9 +1106,22 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const blockResult = await checkBashFileTargets(
             segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
             bashAccess,
+            whitelistMissMode, writeCollector,
             { allowGitLockFiles: gitPolicy === "allow" },
           );
           if (blockResult) return blockResult;
+        }
+
+        // 218 Phase 2 (T2.3): ONE merged decision for every collected write
+        // candidate of this bash call (protected first, F.3-2 priority).
+        // A block here is surfaced verbatim; the decision layer notified when
+        // its own policy blocked (no double notify at this call site).
+        const collectedWrites: WriteCandidate[] = [...writeCollector.protectedBatch, ...writeCollector.miss];
+        if (collectedWrites.length > 0) {
+          const outcome = await applyCollectedWrites(collectedWrites, writeDecisionDeps);
+          if (outcome.action === "block") {
+            return { block: true, reason: outcome.reason };
+          }
         }
 
         // Aggregate warnings (non-blocking, not counted as violations)
@@ -1447,11 +1558,26 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const sessionAllowed = sessionPaths.includes(relPath);
 
           if (!sessionAllowed) {
+            // 218 Phase 2 (T2.3): per-stage whitelist-miss mode + decision deps
+            // for this single-candidate call (write/edit targets exactly one file).
+            const whitelistMissMode = resolveWhitelistMissMode(config, meta.currentStage);
+            const writeDecisionDeps: ApplyWriteDecisionDeps = {
+              ctx,
+              config,
+              meta,
+              stage: meta.currentStage,
+              mode: whitelistMissMode,
+              trackViolation,
+              notify: (msg: string) => ui.notify(ctx, msg),
+              formatProtectedReason: (c: { path: string }) =>
+                `FORBIDDEN: Cannot modify protected path '${c.path}'.`,
+            };
+
             // 195 Phase 1: Get stage deliverable exemptions for read-only path checks
             const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
             
             // Stage-level write whitelist check (with read-only path priority)
-            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths);
+            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode);
             
             // 195 Phase 1: Audit log when path is exempted from read-only check
             if (stageCheck.exempted) {
@@ -1466,7 +1592,64 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               );
             }
 
-            if (stageCheck.status === "block") {
+            // 218 Phase 2 (T2.3): merged decision routing for the single
+            // candidate. deny mode / read-only / untagged keep the pre-218
+            // chain byte-for-byte (global constraint 8). A routed PASS falls
+            // through to hash recording exactly like the pre-218 ask-allow.
+            if (
+              stageCheck.status === "block" &&
+              whitelistMissMode !== "deny" &&
+              (stageCheck.kind === "protected" || stageCheck.kind === "whitelist_miss")
+            ) {
+              const candidateSource = toolName === "edit" ? "edit" : "write";
+              // F.2: protection never relaxes — a whitelist miss onto a
+              // protected (hardcoded / gitignore) path is PROTECTED.
+              const isProtectedTarget =
+                stageCheck.kind === "protected" || isPathProtectedForModify(relPath, state);
+              if (isProtectedTarget) {
+                const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
+                // Child + protected is never delegated (D3/R9b): immediate
+                // hard block for ANY protect.ask value.
+                const childBlock = await childHardBlockForProtectedPath(
+                  isChild, relPath, protectionType, state, toolName, trackViolation, ui, ctx
+                );
+                if (childBlock) return childBlock;
+                if (config.protect?.ask === true) {
+                  const outcome = await applyCollectedWrites(
+                    [{
+                      path: relPath,
+                      category: "protected",
+                      source: candidateSource,
+                      pathClass: inRootPathClass(relPath),
+                      reason: stageCheck.reason,
+                    }],
+                    writeDecisionDeps,
+                  );
+                  if (outcome.action === "block") return { block: true, reason: outcome.reason };
+                  // pass (HEAD askProtectDecision allowed) → fall through.
+                } else {
+                  // Owner without the protected-ask channel: HEAD hard block verbatim.
+                  await trackViolation({
+                    type: "write_protected", tool: toolName, detail: stageCheck.reason,
+                    suggestion: `Stage whitelist: [${(stageConfig.allowedWritePaths || []).join(", ")}].`,
+                  }, "read_only_path");
+                  ui.notify(ctx, stageCheck.reason);
+                  return { block: true, reason: stageCheck.reason };
+                }
+              } else {
+                const outcome = await applyCollectedWrites(
+                  [{
+                    path: relPath,
+                    category: "whitelist_miss",
+                    source: candidateSource,
+                    pathClass: inRootPathClass(relPath),
+                  }],
+                  writeDecisionDeps,
+                );
+                if (outcome.action === "block") return { block: true, reason: outcome.reason };
+                // pass (allow mode / approved ask) → fall through to hash recording.
+              }
+            } else if (stageCheck.status === "block") {
               // Phase 1 (190) Fix-A: child sessions hard-block immediately on protected paths
               // without entering askProtectDecision (prevents dismissCount accumulation on child)
               if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {

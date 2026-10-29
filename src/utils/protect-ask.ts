@@ -30,6 +30,12 @@ import { freezeAndPrompt } from "../core/flow-state";
 import { getHostRole } from "../core/dormancy";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
+// 218 T2.5: declared-UI predicate for the merged write decision (type-only
+// candidates import — no runtime utils→core dependency beyond the existing
+// freeze/pipeline-start edges this file already declares).
+import { resolveDeclaredHasUI } from "../core/ui-capability";
+import type { WriteCandidate } from "../core/write-scope/types";
+import { formatCandidateList } from "../core/write-scope/types";
 
 /**
  * Tri-state outcome for protect-ask decisions.
@@ -246,4 +252,97 @@ export async function askCommandDecision(
   });
 
   return { decision, action };
+}
+
+/**
+ * 218 Phase 2 (T2.5, F.3-2/Q15-B): ONE merged decision for ALL write
+ * candidates of ONE tool call (bash segments included). Reuses the tri-state
+ * classifier; deliberately does NOT touch `dismissCount` — whitelistMiss has
+ * its own explicit-Deny breaker (`whitelistMissDenials`), and dismissed /
+ * canceled are environment/user-pressure facts that must never feed
+ * `dismiss_overflow`.
+ *
+ * Semantics:
+ * - "allow_once"   → pass THIS call only (Q22-A: no persistent token).
+ * - "allow_session"→ record EVERY candidate path (project-relative when in-root,
+ *                    absolute when out-of-root) in `sessionAllowedWritePaths`.
+ * - noUi (declared false, select absent, or select threw) → `{ block,
+ *   "dismissed" }` with `noUi: true` audit — an environment fact, never a
+ *   user selection. The primary no-UI host route is the caller's hard-block
+ *   fallback (T2.3 flow 6); this return shape keeps a throwing select honest.
+ *
+ * @param ctx - Runtime context (`ui.select`, `session.getMeta/updateMeta`)
+ * @param meta - Current session metadata
+ * @param candidates - ALL write candidates of this tool call (protected + whitelist_miss)
+ * @param config - Pipeline configuration
+ * @returns ProtectAskOutcome for the merged batch
+ */
+export async function askWriteDecision(
+  ctx: any,
+  meta: SessionMeta,
+  candidates: WriteCandidate[],
+  config: PipelineConfig,
+): Promise<ProtectAskOutcome> {
+  const options = [
+    "Follow plugin default rules (default)",
+    "Allow these writes only",
+    "Allow these writes for this session",
+  ];
+
+  const declared = resolveDeclaredHasUI(ctx);
+  const hasUi = typeof ctx?.ui?.select === "function";
+  // Declared false WINS over a present select (217 review issue 2 predicate).
+  const menuCapable = declared !== false && hasUi;
+  let selection: string | undefined;
+  let selectThrew = false;
+  const attemptAt = Date.now();
+  try {
+    if (menuCapable) {
+      const display = formatCandidateList(candidates);
+      selection = await ctx.ui.select(`Pipeline write approval — allow these writes?\n  ${display}`, options);
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[protect-ask] askWriteDecision select error: count=${candidates.length}, error=${errMsg}`);
+    selection = undefined;
+    selectThrew = true;
+  }
+  const elapsed = Date.now() - attemptAt;
+  const noUi = declared === false || !hasUi || selectThrew;
+
+  const { action, decision } = classifyOutcome(selection, elapsed, options);
+  // noUi is an environment fact: force the honest "dismissed" classification
+  // (block, no deny-breaker count, no dismissCount) regardless of timing.
+  const finalAction: ProtectAskOutcome["action"] = noUi ? "dismissed" : action;
+  const finalDecision: ProtectAskOutcome["decision"] = noUi ? "block" : decision;
+
+  // allow_session: record ALL candidate paths in one write (deduped). The
+  // caller (write-scope/decision) additionally clears the deny breaker — the
+  // meta write here is idempotent against that follow-up.
+  if (finalAction === "allow_session" && !noUi && ctx?.session?.updateMeta) {
+    const freshMeta = (ctx.session.getMeta?.() as SessionMeta | undefined) ?? meta;
+    const existing = freshMeta.sessionAllowedWritePaths || [];
+    const toAdd = candidates.map((c) => c.path).filter((p) => !existing.includes(p));
+    if (toAdd.length > 0) {
+      ctx.session.updateMeta({ sessionAllowedWritePaths: [...existing, ...toAdd] });
+    }
+  }
+
+  await safeWriteAuditLog("pipeline_write_ask", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    action: finalAction,
+    count: String(candidates.length),
+    categories: Array.from(new Set(candidates.map((c) => c.category))).join(","),
+    paths: candidates.map((c) => encodeAuditValue(c.path)).join(","),
+    elapsedMs: String(elapsed),
+    hostRole: getHostRole(ctx),
+    ...(noUi ? { noUi: "true" } : {}),
+  });
+
+  // config is intentionally unused here (no dismiss overflow — see the Q15-B
+  // rule above); kept in the signature for call-site symmetry with the other
+  // ask*Decision functions.
+  void config;
+  return { decision: finalDecision, action: finalAction };
 }

@@ -454,6 +454,43 @@ export interface PendingSpawnEntry {
 }
 
 /**
+ * 218 F.3-2: one queued owner approval. Discriminated by `kind`:
+ * - command (or absent `kind` — legacy 217 entries): destructive command awaiting the owner menu.
+ * - write: child whitelist-miss write targets awaiting the owner's BATCHED menu.
+ */
+export interface OwnerCommandApproval {
+  kind?: "command";
+  command: string;
+  stage: PipelineStage;
+  requestedAt: number;
+  /** Escalation count (visibility only; never a bound — see 216 R6-2). */
+  attempts: number;
+  /**
+   * 217 review issue 3: pipelineId of ORIGIN (stamped by enqueue). The
+   * owner-side consumer only serves entries matching the CURRENT pipeline;
+   * anything else is stale boundary residue and is dropped (audited).
+   */
+  pipelineId?: string;
+}
+
+/** 218 T2.4: queued write approval (targets fingerprinted, batch-consumed per stage). */
+export interface OwnerWriteApproval {
+  kind: "write";
+  /** Distinct write targets (project-relative in-root, absolute out-of-root). */
+  targets: string[];
+  /** Coarse Deny-breaker class of the batch's first candidate. */
+  pathClass: string;
+  /** Protection categories covered (F.3-1 merged batch). */
+  categories: Array<"protected" | "whitelist_miss">;
+  stage: PipelineStage;
+  requestedAt: number;
+  attempts: number;
+  pipelineId?: string;
+}
+
+export type OwnerApprovalRequest = OwnerCommandApproval | OwnerWriteApproval;
+
+/**
  * Runtime metadata stored in the pi session, tracking the pipeline's
  * current state across stage transitions and loop iterations.
  */
@@ -584,20 +621,24 @@ export interface SessionMeta {
    * Written by a child (fail-closed), consumed by the owner on settle.
    * Keyed by a command fingerprint so re-escalating the same command is
    * idempotent (216 R6-2 boundary: `attempts` is visibility only, never a bound).
+   * 218 F.3-2: gains a `kind:"write"` variant — batched write approvals from
+   * child whitelist-miss denials, keyed by a targets fingerprint ("w:…").
+   * Legacy entries without `kind` are command requests (217 verbatim).
    */
-  pendingOwnerApprovals?: Record<string, {
-    command: string;
+  pendingOwnerApprovals?: Record<string, OwnerApprovalRequest>;
+
+  /**
+   * 218 Q15-B / T2.7: explicit human Deny counts for whitelist-miss write
+   * decisions, keyed by the CURRENT stage + coarse path class (`@outside`,
+   * first directory segment, `@root`). Self-invalidating: reads for another
+   * stage return 0, so a stage transition resets the breaker without touching
+   * the stage-migration patch sites. Cleared by any Allow.
+   */
+  whitelistMissDenials?: {
     stage: PipelineStage;
-    requestedAt: number;
-    /** Escalation count (visibility only; never a bound — see 216 R6-2). */
-    attempts: number;
-    /**
-     * 217 review issue 3: pipelineId of ORIGIN (stamped by enqueue). The
-     * owner-side consumer only serves entries matching the CURRENT pipeline;
-     * anything else is stale boundary residue and is dropped (audited).
-     */
-    pipelineId?: string;
-  }>;
+    counts: Record<string, number>;
+    updatedAt: number;
+  };
 
   /**
    * C2 flag: set true when stage_advance successfully advances within the current turn.

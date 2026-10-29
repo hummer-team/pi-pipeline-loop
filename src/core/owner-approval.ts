@@ -12,16 +12,27 @@
  */
 
 import { createHash } from "node:crypto";
-import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
-import { safeWriteAuditLog } from "../utils/auditLog";
+import type { OwnerApprovalRequest, OwnerCommandApproval, OwnerWriteApproval, PipelineConfig, PipelineStage, SessionMeta } from "../types";
+import { safeWriteAuditLog, encodeAuditValue } from "../utils/auditLog";
 // 217 review issue 2 (Medium): ONE capability predicate shared with Phase 2
 // (P4 / R1-Q4=A) — a host that DECLARES hasUI=false must never be driven
 // through a select() call even if it hands over a select control.
 import { resolveDeclaredHasUI } from "./ui-capability";
+// 218 T2.4: write-approval candidates reuse the merged-decision candidate shape.
+import type { WriteCandidate } from "./write-scope/types";
+import { formatCandidateList } from "./write-scope/types";
 
 /** Stable short key for a command (the queue's identity, not a security hash). */
 export function commandFingerprint(command: string): string {
   return createHash("sha256").update(command).digest("hex").slice(0, 16);
+}
+
+/**
+ * 218 T2.4: stable fingerprint for a WRITE batch — target-order independent
+ * (sorted join), so the same intent from any call shape dedupes to one entry.
+ */
+export function writeFingerprint(targets: string[]): string {
+  return "w:" + createHash("sha256").update([...targets].sort().join("\n")).digest("hex").slice(0, 16);
 }
 
 export interface OwnerApprovalQueueResult { queued: boolean; fingerprint: string }
@@ -37,16 +48,70 @@ export function enqueueOwnerApproval(
   if (!meta) return { queued: false, fingerprint };
   const existing = meta.pendingOwnerApprovals ?? {};
   if (existing[fingerprint]) return { queued: false, fingerprint }; // already waiting
+  const entry: OwnerCommandApproval = {
+    command, stage, requestedAt: Date.now(), attempts: 0, pipelineId: meta.pipelineId,
+  };
   session.updateMeta({
     pendingOwnerApprovals: {
       ...existing,
       // 217 review issue 3 (Medium): stamp the pipeline of ORIGIN so the
       // owner-side consumer can reject cross-pipeline residue instead of
       // raising an unrelated destructive-command approval on a new pipeline.
-      [fingerprint]: { command, stage, requestedAt: Date.now(), attempts: 0, pipelineId: meta.pipelineId },
+      [fingerprint]: entry,
     },
   });
   return { queued: true, fingerprint };
+}
+
+/**
+ * 218 T2.4/F.3-2: child-side enqueue of a WRITE approval batch (called from
+ * write-scope/decision when a child's whitelist-miss candidates are denied).
+ * Same fingerprint already waiting → {queued:false}, no duplicate entry and
+ * NO violation counting (Q22-A). Audit: `write_approval_queued`.
+ */
+export function enqueueWriteApproval(
+  session: { getMeta: () => SessionMeta | undefined; updateMeta: (p: Partial<SessionMeta>) => unknown },
+  stage: PipelineStage,
+  candidates: WriteCandidate[],
+): OwnerApprovalQueueResult {
+  const targets = Array.from(new Set(candidates.map((c) => c.path)));
+  const fingerprint = writeFingerprint(targets);
+  const meta = session.getMeta();
+  if (!meta) return { queued: false, fingerprint };
+  const existing = meta.pendingOwnerApprovals ?? {};
+  if (existing[fingerprint]) return { queued: false, fingerprint }; // already waiting
+  const entry: OwnerWriteApproval = {
+    kind: "write",
+    targets,
+    pathClass: candidates[0]?.pathClass ?? "@root",
+    categories: Array.from(new Set(candidates.map((c) => c.category))),
+    stage,
+    requestedAt: Date.now(),
+    attempts: 0,
+    pipelineId: meta.pipelineId,
+  };
+  session.updateMeta({ pendingOwnerApprovals: { ...existing, [fingerprint]: entry } });
+  // Fire-and-forget: the child's tool call must never wait on the audit sink.
+  void safeWriteAuditLog("write_approval_queued", {
+    pipelineId: meta.pipelineId, stage, fingerprint,
+    count: String(targets.length),
+    targets: targets.map((t) => encodeAuditValue(t)).join(","),
+  });
+  return { queued: true, fingerprint };
+}
+
+/**
+ * 218 T2.4: block reason shown to the child — carries the fingerprint and the
+ * "do NOT retry" instruction (the queue entry makes retrying pointless; the
+ * owner decides on its next settle).
+ */
+export function writeApprovalBlockReason(candidates: WriteCandidate[], fingerprint: string, stage: PipelineStage): string {
+  const list = formatCandidateList(candidates);
+  return (
+    `FORBIDDEN: write target(s) [${list}] need owner approval ` +
+    `(fingerprint ${fingerprint}, stage "${stage}"). Submitted to the owner session — ` +
+    `do NOT retry; the owner decides when it settles.`
+  );
 }
 
 export type OwnerApprovalOutcome = "approved" | "denied" | "no_ui" | "none";
@@ -100,7 +165,14 @@ export async function consumeOnePendingOwnerApproval(
   if (consumable.length === 0) return "none";
 
   // Oldest first among CURRENT-pipeline requests only.
-  const entry = consumable.sort((a, b) => a[1].requestedAt - b[1].requestedAt)[0];
+  // 218 T2.4 (interim): only command requests are consumable here; kind:"write"
+  // entries are served by `consumePendingOwnerApprovalDetailed` (added with the
+  // batched write menu) and simply stay queued until then.
+  const commandEntries = consumable.filter(
+    (entry): entry is [string, OwnerCommandApproval] => !entry[1].kind || entry[1].kind === "command",
+  );
+  if (commandEntries.length === 0) return "none";
+  const entry = commandEntries.sort((a, b) => a[1].requestedAt - b[1].requestedAt)[0];
   const [fingerprint, request] = entry;
   const remove = (): void => {
     const { [fingerprint]: _removed, ...rest } = ctx.session.getMeta()?.pendingOwnerApprovals ?? {};

@@ -165,6 +165,8 @@ describe("193 Phase 3: tool-guard decision-pending read-only", () => {
   it("no design-review pipeline keeps the EXACT pre-193 whitelist behavior", async () => {
     TMP = await withTmpDir("nodomain");
     const config = makeTestConfig({ projectRoot: TMP });
+    // 218: pin the PRE-218 deny behaviour — whitelist-miss now defaults to the merged ask
+    config.protect = { ...config.protect, whitelistMiss: "deny" };
     config.stages["develop"] = {
       ...config.stages["develop"],
       allowedWritePaths: ["docs/"],

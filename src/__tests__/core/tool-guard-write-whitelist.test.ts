@@ -41,6 +41,8 @@ describe("createToolGuard", () => {
       await mkdir(join(TMP, "src"), { recursive: true });
 
       const config = makeTestConfig({ projectRoot: TMP });
+      // 218: pin the PRE-218 deny behaviour — whitelist-miss now defaults to the merged ask
+      config.protect = { ...config.protect, whitelistMiss: "deny" };
       config.stages["develop"] = {
         ...config.stages["develop"],
         allowedWritePaths: ["docs/"],
@@ -86,6 +88,8 @@ describe("createToolGuard", () => {
       await mkdir(join(TMP, "docs"), { recursive: true });
 
       const config = makeTestConfig({ projectRoot: TMP });
+      // 218: pin the PRE-218 deny behaviour — whitelist-miss now defaults to the merged ask
+      config.protect = { ...config.protect, whitelistMiss: "deny" };
       config.stages["develop"] = {
         ...config.stages["develop"],
         allowedWritePaths: [],
@@ -152,6 +156,8 @@ describe("createToolGuard", () => {
       await mkdir(join(TMP, "src"), { recursive: true });
 
       const config = makeTestConfig({ projectRoot: TMP });
+      // 218: pin the PRE-218 deny behaviour — whitelist-miss now defaults to the merged ask
+      config.protect = { ...config.protect, whitelistMiss: "deny" };
       config.stages["develop"] = {
         ...config.stages["develop"],
         allowedWritePaths: ["docs/"],

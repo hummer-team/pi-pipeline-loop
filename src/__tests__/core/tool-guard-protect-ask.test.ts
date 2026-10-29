@@ -205,7 +205,7 @@ describe("createToolGuard", () => {
       const TMP = join(tmpdir(), "pi-tg-ask-whitelist-block-" + Date.now());
       await mkdir(join(TMP, "src"), { recursive: true });
 
-      const config = makeTestConfig({ projectRoot: TMP, protect: { ask: true } });
+      const config = makeTestConfig({ projectRoot: TMP, protect: { ask: true, whitelistMiss: "deny" } });
       // clarify stage: whitelist = docs/ only (does not include src/)
       config.stages["clarify"] = {
         ...config.stages["clarify"],
@@ -476,7 +476,8 @@ describe("createToolGuard", () => {
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: true },
+        // 218: pin the PRE-218 deny behaviour — whitelist-miss now defaults to the merged ask
+        protect: { ask: true, whitelistMiss: "deny" },
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
@@ -670,7 +671,8 @@ describe("createToolGuard", () => {
 
       const config = makeTestConfig({
         projectRoot: TMP,
-        protect: { ask: true },
+        // 218: pin the PRE-218 deny behaviour — whitelist-miss now defaults to the merged ask
+        protect: { ask: true, whitelistMiss: "deny" },
       });
       config.stages["clarify"] = {
         ...config.stages["clarify"],
