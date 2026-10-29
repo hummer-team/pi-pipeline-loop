@@ -7,7 +7,9 @@
  * reason check is a blacklist — only `stopped`/empty/unknown are exempt):
  *
  * 1. Terminal reason exempt-set: `stopped` (and explicit empty/unknown) skip wake.
- * 2. Terminal agentId must match an activeSpawns[*].agentId (stage executor).
+ * 2. Stage attribution (218 R11): ledger entry with this agentId FIRST, else
+ *    the lifecycle entry's dispatch-time stage snapshot (`started` registration).
+ *    Both absent → not a stage executor, skip.
  * 3. No in-flight executors: all other activeSpawns agentIds must be non-live
  *    (probe via probeAgentState).
  * 4. Unprocessed pipeline work: pendingSpawns non-empty OR current stage not closed.
@@ -119,11 +121,25 @@ function evaluateWake(
     return;
   }
 
-  // Predicate 2: Terminal agentId must match an activeSpawns[*].agentId
+  // Predicate 2: stage attribution for the terminal agent.
+  // 218 R11: prefer the ledger (dispatch-time evidence), then fall back to the
+  // lifecycle entry's stage SNAPSHOT — written at `subagents:started`
+  // registration (T0.4), i.e. at DISPATCH time. The old ledger-only lookup
+  // lost the agent the moment the executor advanced its own stage (incident
+  // 19:15:49: owner_wake_skipped reason=not_stage_executor ×5), and a ledger
+  // cleared by the T0.5 terminal sweep would strand the wake even later.
+  // The snapshot fallback is restricted to `stageAt === "dispatch"`: an
+  // orphan-terminal entry's stage is the OWNER's currentStage stamped at
+  // terminal time — trusting it would re-create the misattribution incident
+  // (and defeat the (agentId, stage, visitOrder) dedup triple).
+  // Both missing → keep skipping (fail-safe: never guess a stage).
   const activeSpawns = meta.activeSpawns ?? {};
-  const matchingStage = Object.entries(activeSpawns).find(
+  const ledgerStage = Object.entries(activeSpawns).find(
     ([, spawn]) => spawn.agentId === agentId,
   )?.[0] as PipelineStage | undefined;
+  const dispatchStage =
+    entry.stageAt === "dispatch" ? (entryStage as PipelineStage | undefined) : undefined;
+  const matchingStage = ledgerStage ?? dispatchStage;
 
   if (!matchingStage) {
     deps.audit("owner_wake_skipped", {

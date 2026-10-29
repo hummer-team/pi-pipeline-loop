@@ -39,6 +39,9 @@ import { safeWriteAuditLog } from "./auditLog";
 // whitelist), reported through the leaf sink so `utils/` keeps zero runtime
 // imports from `core/`.
 import { reportStageProgress } from "./stage-progress-sink";
+// 218 P0 (T0.3/T0.4): the spawn ledger writer — same-layer (utils) module, fed
+// from these listeners. Config/session accessors are installed by index.ts.
+import { recordSpawnFromEvent, stageOfExecutorName } from "./spawn-ledger";
 
 /**
  * 203_Bug Phase 0: Builds a leak-safe key summary of a raw SDK event payload.
@@ -75,6 +78,16 @@ export interface SubagentLifecycleEntry {
   agentId: string;
   /** Pipeline stage when the subagent was created (if available) */
   stage?: string;
+  /**
+   * 218 Bug T0.8: WHEN the `stage` value was observed.
+   * - "dispatch": captured at `started`/`created` registration — a genuine
+   *   dispatch-time snapshot, safe to use for wake attribution after the
+   *   ledger entry is gone.
+   * - "terminal": stamped by the orphan-terminal defensive branch. At that
+   *   point `currentStage` describes the OWNER session, not this agent, so
+   *   wake attribution must NOT trust it (incident 19:15:49 lesson).
+   */
+  stageAt?: "dispatch" | "terminal";
   /** Lifecycle status */
   status: "active" | "terminal";
   /** Timestamp when the subagent was created */
@@ -159,6 +172,7 @@ export function registerStarted(
     agentType,
     agentId,
     stage,
+    stageAt: "dispatch",
     status: "active",
     startedAt: now,
     pipelineId,
@@ -217,6 +231,7 @@ export function registerTerminal(
       agentType,
       agentId,
       stage,
+      stageAt: "terminal",
       status: "terminal",
       startedAt: now,
       terminalAt: now,
@@ -324,18 +339,55 @@ export function wireSubagentLifecycleListeners(
   const cleanups: Array<() => void> = [];
 
   try {
-    // subagents:created → register as started
+    // 218 P0 (T0.4): `started` is the ONLY event that covers EVERY top-level
+    // dispatch (RPC / Agent tool / scheduler / queued→running). `created` is
+    // background-only in 0.22.0, so it is an enrichment, not the source.
+    //
+    // Why `registerStarted` here matters (T0.8 dependency): the lifecycle
+    // entry's `stage` was ONLY written by `subagents:created` before 218, and
+    // RPC dispatches never emit `created`. Without this registration,
+    // `registerTerminal` falls into the orphan branch and stamps the stage at
+    // TERMINAL time — after the executor advanced its own stage (incident
+    // 19:15:49: 5× owner_wake_skipped reason=not_stage_executor). The
+    // dispatch-time snapshot written here is what wake attribution falls back
+    // to when the ledger entry is already cleared (T0.8).
+    const offStarted = bus.on("subagents:started", (payload: unknown) => {
+      try {
+        const event = payload as { id?: string; type?: string; description?: string; isBackground?: boolean };
+        if (!event.id || !event.type) return;
+
+        const meta = _ownerMetaAccessor?.();
+        // True stage ownership from the config; currentStage ONLY when the
+        // name matches no configured stage (fail-safe: never guess further).
+        const stage = stageOfExecutorName(event.type) ?? meta?.currentStage;
+        registerStarted(event.type, event.id, stage, meta?.pipelineId);
+        // Ledger write (config/session are module-level accessors installed
+        // by the composition root; missing ⇒ silent no-op).
+        recordSpawnFromEvent(event, "started");
+      } catch {
+        // Fail-safe: ledger bookkeeping must never break dispatch.
+      }
+    });
+    if (typeof offStarted === "function") cleanups.push(offStarted as () => void);
+
+    // subagents:created → register as started (background spawns only)
     const offCreated = bus.on("subagents:created", (payload: unknown) => {
       try {
-        const event = payload as { id?: string; type?: string };
+        const event = payload as { id?: string; type?: string; isBackground?: boolean };
         if (!event.id || !event.type) return;
-        
-        // Get current stage and pipelineId from the owner meta accessor
+
+        // Get current stage and pipelineId from the owner meta accessor.
+        // 218 T0.4: same name-first resolution as `started` — `created` may
+        // arrive after the dispatch-time snapshot; the agent name remains the
+        // authoritative stage evidence, `currentStage` is only the fallback.
         const meta = _ownerMetaAccessor?.();
-        const stage = meta?.currentStage;
+        const stage = stageOfExecutorName(event.type) ?? meta?.currentStage;
         const pipelineId = meta?.pipelineId;
-        
+
         registerStarted(event.type, event.id, stage, pipelineId);
+        // 218 T0.4: enrichment path — carries `isBackground` for background
+        // spawns; the ledger writer never overwrites an existing agentId.
+        recordSpawnFromEvent(event, "created");
       } catch {
         // Fail-safe: never crash on event handling
       }
