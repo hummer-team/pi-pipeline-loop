@@ -30,6 +30,7 @@ import { strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { isAuthorizationValid } from "./design-review/state";
 import { broadcastEscalation } from "../utils/escalation-bus";
 import type { EscalationPayload } from "../utils/escalation-bus";
+import { deliverOwnerWakeOnce } from "./owner-wake-dedupe";
 import { buildContinueResetFields, buildNewPeriodResetFields } from "./meta-reset";
 // 210 Phase 7: usage ledger drain (abort aggregate) + restart clear.
 import { flushUsageToMetaSafely, resetUsage } from "./usage-recorder";
@@ -2162,6 +2163,17 @@ async function armChildEscalation(
     stage: meta.currentStage,
     reason,
   });
+
+  // 218 F.3-4: the escalation ALSO wakes the owner through the deduped entry
+  // (cross-session pi.events must never be the delivery dependency — 4.6-1).
+  // Called from a CHILD session, so `ctx.session.updateMeta` writes the SHARED
+  // meta: the wake stamp takes effect for every session of this pipeline.
+  deliverOwnerWakeOnce(
+    ctx.session,
+    meta,
+    `The ${meta.currentStage} stage is blocked (${reason}). A decision menu is pending for you; run /pipeline-resume if no dialog appears.`,
+    "blocked_escalation",
+  );
 }
 
 /**

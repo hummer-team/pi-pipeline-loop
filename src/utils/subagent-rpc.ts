@@ -41,6 +41,16 @@ let _pendingSpawnStallHook: PendingSpawnStallHook | null = null;
 /** 217 F3: registered by index.ts (core owns delivery; utils must not import core). */
 export function setPendingSpawnStallHook(hook: PendingSpawnStallHook | null): void { _pendingSpawnStallHook = hook; }
 
+// 218 Phase 1 (T1.3): same seam as `setPendingSpawnStallHook` —
+// utils must NOT import ../core at runtime (the static guard in
+// `src/__tests__/utils/subagent-rpc.test.ts` scans every non-`import type`
+// line for "../core/" and fails). The enqueue-side owner wake is delivered
+// through the dedupe entry installed by `src/index.ts`.
+export interface OwnerWakeOnceReport { delivered: boolean; via: string; deduped: boolean }
+type OwnerWakeOnceHook = (stage: PipelineStage, reason: "enqueue") => OwnerWakeOnceReport;
+let _ownerWakeOnceHook: OwnerWakeOnceHook | null = null;
+export function setOwnerWakeOnceHook(hook: OwnerWakeOnceHook | null): void { _ownerWakeOnceHook = hook; }
+
 // Module-level cache for lazy import of ../core/design-review/write-policy
 // (Cannot use static import due to circular dependency guard test)
 let _writePolicyModule: Promise<typeof import("../core/design-review/write-policy")> | null = null;
@@ -743,6 +753,16 @@ export async function spawnStageSubagent(
       stage,
       agentName,
       ...(extractSessionFile(opts.runtimeCtx) ? { sessionFile: extractSessionFile(opts.runtimeCtx)! } : {}),
+    });
+
+    // 218 R10 / Q18-A: wake the owner IMMEDIATELY instead of waiting for the 120s
+    // stall watchdog. Fail-open: a missing hook / failed delivery never blocks the
+    // enqueue (the watchdog stays as the last resort).
+    const wake = _ownerWakeOnceHook?.(stage, "enqueue");
+    await safeWriteAuditLog(wake ? "pending_spawn_wake_delivered" : "pending_spawn_wake_unavailable", {
+      pipelineId: meta.pipelineId, stage,
+      delivered: String(wake?.delivered ?? false), via: wake?.via ?? "hook_unregistered",
+      deduped: String(wake?.deduped ?? false),
     });
     return {
       spawned: false,

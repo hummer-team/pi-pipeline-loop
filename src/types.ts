@@ -506,6 +506,16 @@ export interface SessionMeta {
     at: number;
   };
 
+  /** 218 F.3-4: +1 per OWNER `agent_settled` (the turn counter for wake dedupe). */
+  ownerTurnSeq?: number;
+
+  /**
+   * 218 F.3-4: last SUCCESSFUL owner-wake delivery key
+   * (`${pipelineId}:${stage}:${ownerTurnSeq}`). Written AFTER delivery (217 F2
+   * contract) — a failed delivery never stamps, so the next hook retries.
+   */
+  ownerWakeStamp?: { key: string; at: number };
+
   /**
    * Phase 0 (195_Bug): Count of loop budget extensions via "set rounds" (question 24-B).
    * Incremented when the owner grants additional loop cycles after exhaustion.

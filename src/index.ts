@@ -32,11 +32,12 @@ import { registerOwnerDelivery } from "./core/owner-delivery-registry";
 import { deliverOwnerWake } from "./core/owner-delivery";
 // 217 Phase 1 (T1.3): pending-spawn stall watchdog deps + enqueue-side hook.
 import { setPendingSpawnStallDeps, armPendingSpawnStall } from "./core/pending-spawn-stall";
+import { deliverOwnerWakeOnce } from "./core/owner-wake-dedupe";
 import { detectSessionRole } from "./core/session-role";
 import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
-import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler, setPendingSpawnStallHook } from "./utils/subagent-rpc";
+import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler, setPendingSpawnStallHook, setOwnerWakeOnceHook } from "./utils/subagent-rpc";
 import { handleFixExecutorCompleted } from "./core/fix-executor-completion";
 // 192 Phase 1: DI handler for design-review operation terminal evidence
 import { handleDesignReviewOperationTerminal } from "./core/design-review/coordinator";
@@ -377,6 +378,19 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             armPendingSpawnStall(rctx.session.getMeta()?.pipelineId ?? "", stage, requestedAt),
         );
 
+        // 218 Phase 1 (T1.3): the enqueue-side owner wake delivered through the
+        // deduped single entry (owner AND child sessions install it — the child
+        // route is where the queue is born; delivery itself resolves the OWNER
+        // handle via the 217 registry).
+        setOwnerWakeOnceHook((stage, reason) => {
+          const meta = rctx.session.getMeta();
+          if (!meta) return { delivered: false, via: "no_meta", deduped: false };
+          const wake = deliverOwnerWakeOnce(rctx.session, meta,
+            `The ${stage} executor has been queued by the plugin; it will be dispatched automatically at the end of this turn. Do not spawn it manually.`,
+            reason);
+          return { delivered: wake.outcome.delivered, via: wake.outcome.via ?? "", deduped: wake.deduped };
+        });
+
         // 203_Bug Phase 0 (RC1): owner escalation deps — refreshed per OWNER
         // hook invocation, same source data as owner-wake deps. Child hooks
         // must not install/overwrite them: the child shares this module, and a
@@ -408,7 +422,25 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             registerOwnerEscalationObserver(pi);
           }
         }
-        return h.handler(rctx);
+        // 218 F.3-4: owner turn counter. The increment runs in the `finally`
+        // of the handler call, so it advances even when the handler throws —
+        // and every wake delivery INSIDE one owner turn (including the
+        // settle-time auto-advance wakes, which run while the counter still
+        // holds this turn's value) shares the same `ownerTurnSeq`. The next
+        // turn gets a fresh wake-dedupe key. Owner only: child settles must
+        // never advance the counter.
+        try {
+          return await h.handler(rctx);
+        } finally {
+          if (!isChildSession && h.event === "agent_settled") {
+            try {
+              const m = rctx.session.getMeta();
+              if (m) rctx.session.updateMeta({ ownerTurnSeq: (m.ownerTurnSeq ?? 0) + 1 });
+            } catch {
+              // fail-open: a counter-write error must not mask the handler result
+            }
+          }
+        }
       });
     }
 
