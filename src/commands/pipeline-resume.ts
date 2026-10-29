@@ -39,6 +39,8 @@ import { detectSessionRole } from "../core/session-role";
 import { safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { isSpawnableStage } from "../utils/subagent-rpc";
+// 218 Phase 3 (T3.5): same-stage live evidence (probe + reserved window).
+import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { coordinateDesignReview, type CoordinatorResult } from "../core/design-review/coordinator";
 // 193 Phase 3 (tasks 1/2/4): shared safe builder, flow classification and the
@@ -86,14 +88,32 @@ async function idempotentStageDispatch(
   let shouldSpawn = true;
 
   if (existingSpawn?.agentId || existingSpawn?.agentName) {
+    // 218 Phase 3 (T3.5): liveness evidence = direct probe OR the ledger scan
+    // finding SAME-STAGE live/reserved evidence for the same agent. A twin in
+    // another stage must not stall this dispatch, so only a same-stage hit
+    // suppresses it. Probe failure keeps the fail-open spawn.
+    const probeId = existingSpawn.agentId ?? existingSpawn.agentName!;
+    let liveBasis: string | undefined;
     try {
-      const probe = probeAgentState(existingSpawn.agentId ?? existingSpawn.agentName!);
-      if (probe === "live") {
-        shouldSpawn = false;
-        ui.notify(ctx, `Agent "${existingSpawn.agentName}" is already running for stage "${stage}". Skipping duplicate spawn.`);
+      if (probeAgentState(probeId) === "live") {
+        liveBasis = "probe_live";
+      } else if (existingSpawn.agentName) {
+        const hit = scanActiveSpawnEvidence(currentMeta.activeSpawns, existingSpawn.agentName);
+        if (hit && hit.stage === stage) liveBasis = hit.basis;
       }
     } catch {
       // Probe failure → fail-open, proceed with spawn
+    }
+    if (liveBasis) {
+      shouldSpawn = false;
+      ui.notify(ctx, `Agent "${existingSpawn.agentName}" is already running for stage "${stage}". Skipping duplicate spawn.`);
+      // 218 T3.5: every suppressed dispatch is auditable (skip/rollback/restart
+      // entries share the label with the flow-state resume branch).
+      await safeWriteAuditLog("resume_dispatch_skipped_live", {
+        pipelineId: currentMeta.pipelineId ?? "unknown",
+        stage,
+        basis: liveBasis,
+      });
     }
   }
 
@@ -435,7 +455,11 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
             }
             const message = `Decision policy resolved the freeze. Pipeline at stage "${current.currentStage}".`;
             ui.notify(ctx, message);
-            await idempotentStageDispatch(ctx, config, ui, current, forwardArgs);
+            // 218 Phase 3 (T3.5, Q13-A): the policy unfreeze IS a `resume`
+            // decision executed through `executeDecision` — the flow-state
+            // resume branch already dispatched the stage executor (or audited
+            // `resume_dispatch_unavailable` / `resume_dispatch_skipped_live`).
+            // Re-dispatching here was the 20261028 double spawn (R8/R12).
             return { message };
           }
           const retrySeconds = Math.max(1, Math.round((menu.retryDelayMs ?? 5000) / 1000));
@@ -460,8 +484,17 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
               // and dispatch is needed.
               if (!isFrozen(current)) {
                 ui.notify(ctx, `Decision executed. Pipeline at stage "${current.currentStage}".`);
-                // Shared idempotent dispatch helper (probe-live skip + spawn)
-                await idempotentStageDispatch(ctx, config, ui, current, forwardArgs);
+                // 218 Phase 3 (T3.5): a `resume` decision was ALREADY dispatched
+                // by the flow-state resume branch (exactly once). Only the
+                // non-resume decisions still need this helper: skip / rollback /
+                // restart do not run the resume branch. `choose_stage` primary
+                // dispatch is its `onStageChanged` callback; this call stays as
+                // the safety net and is deduped by the same-stage live probe
+                // above (`resume_dispatch_skipped_live`).
+                if (menu.decision !== "resume") {
+                  // Shared idempotent dispatch helper (probe-live skip + spawn)
+                  await idempotentStageDispatch(ctx, config, ui, current, forwardArgs);
+                }
               }
               return { message: "Decision executed." };
             }
@@ -515,9 +548,12 @@ export function createPipelineResumeCommand(config: PipelineConfig): Command {
         const freshMeta = ctx.session.getMeta() as SessionMeta;
         ui.notify(ctx, `Pipeline resumed at stage "${freshMeta.currentStage}". ${result.message}`);
 
-        // Stage-aware dispatch: re-spawn the stage subagent if not already live
-        await idempotentStageDispatch(ctx, config, ui, freshMeta, forwardArgs);
-
+        // 218 Phase 3 (T3.5, Q13-A): `executeDecision("resume")` above already
+        // dispatched the stage executor exactly once through the flow-state
+        // resume branch. The old direct re-dispatch here is REMOVED — keeping
+        // it is what produced the double `stage_spawn_rpc` on --force-resume.
+        // The status bar sync above stays; the menu-less resume converges with
+        // the menu-driven one through the same single dispatch point.
         return { message: result.message };
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);

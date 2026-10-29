@@ -6,6 +6,8 @@ import { mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { __peekFixExecutorCompletedHandler, setFixExecutorCompletedHandler } from "../utils/subagent-rpc";
+// 218 Phase 3 (T3.5): the resume-dispatch DI seam installed by the factory.
+import { setResumeDispatchHandler, __peekResumeDispatchHandler } from "../core/resume-dispatch";
 import {
   setStageProgressReporter,
   __hasStageProgressReporter,
@@ -415,6 +417,24 @@ describe("composition root wiring", () => {
     
     // Clean up
     setFixExecutorCompletedHandler(null);
+  });
+
+  it("factory initialization wires the resume dispatch seam (218 Phase 3 T3.5)", async () => {
+    // The flow-state resume branch dispatches the stage executor through
+    // this DI seam (core may not import commands/pipeline-start directly);
+    // the composition root is the ONLY place that installs it.
+    setResumeDispatchHandler(null);
+    expect(__peekResumeDispatchHandler()).toBeNull();
+
+    const { pi } = makeMockPi();
+    const factory = createPipeline(makeTestConfig());
+    await factory(pi);
+
+    expect(__peekResumeDispatchHandler()).not.toBeNull();
+
+    // Clean up (process-global discipline — resume-dispatch tests assert the
+    // un-wired branch).
+    setResumeDispatchHandler(null);
   });
 
   it("factory initialization wires the stage-progress sink (210 Phase 2)", async () => {

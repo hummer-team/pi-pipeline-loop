@@ -43,6 +43,8 @@ import { __setSafeWriteAuditLogOverride, initAuditLog } from "../../utils/auditL
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { setFixExecutorCompletedHandler } from "../../utils/subagent-rpc";
 import { setStageProgressReporter } from "../../utils/stage-progress-sink";
+// 218 Phase 3 (T3.5): factory-installed DI seam that must be cleared per test.
+import { setResumeDispatchHandler } from "../../core/resume-dispatch";
 import { createAgentSettled } from "../../core/agent-settled";
 import { commandFingerprint, enqueueOwnerApproval } from "../../core/owner-approval";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
@@ -275,10 +277,12 @@ describe("218 T3.2: owner hook-bridge self-heal", () => {
     await factory(pi);
 
     // Process-global DI cleanup discipline (index-registration precedent):
-    // the factory installs the fix-executor handler and the stage-progress
-    // sink; leaving them set leaks into other files' "initially null" checks.
+    // the factory installs the fix-executor handler, the stage-progress
+    // sink and the resume-dispatch seam; leaving them set leaks into other
+    // files' "un-wired" assertions.
     setFixExecutorCompletedHandler(null);
     setStageProgressReporter(null);
+    setResumeDispatchHandler(null);
 
     const metaPath = join(TMP, ".pi", "audit", meta.pipelineId ?? "", "meta.json");
 

@@ -38,6 +38,9 @@ import { flushUsageToMetaSafely, resetUsage } from "./usage-recorder";
 import { collectRunAggregate } from "./stage-evidence";
 import { clearStageSpawnResidue } from "../utils/spawn-cleanup";
 import { probeAgentState } from "../utils/subagents-introspect";
+// 218 Phase 3 (T3.5): the resume dispatch seam (composition root wires the
+// real `dispatchAfterResume`; core must not import commands directly).
+import { invokeResumeDispatch } from "./resume-dispatch";
 import { isFrozenMeta } from "./dormancy";
 // 217 Phase 2 (T2.2): declared capability read for BOTH menu gates (the main
 // presenter and requestDecision); flow-state did not need ui-capability before.
@@ -445,10 +448,64 @@ export async function executeDecision(
       // when the stage executor is still actually live, keep the record.
       if (!executorLive) {
         clearStageSpawnResidue(ctx.session, toStage);
+
+        // 218 Phase 3 (T3.5, Q13-A / R8 / R12): dispatch the stage executor
+        // from EVERY resume entry. The decision menu, the policy unfreeze and
+        // `--force-resume` all funnel through this one branch, so exactly one
+        // dispatch happens per resume decision — the command layer must NOT
+        // re-dispatch after `executeDecision`. Owner role only: a child
+        // session must never spawn a stage executor.
+        if (detectHostRole(ctx) === "owner") {
+          // RE-READ AFTER the residue clear — the caller snapshot is stale:
+          // the dispatch must see cleared `activeSpawns`/`spawnedStages` or
+          // duplicate_spawn_guarded swallows the fresh spawn.
+          const fresh = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+          const missHint =
+            `Pipeline resumed at "${fresh.currentStage}", but no stage executor could be dispatched — ` +
+            "run /pipeline-resume again in the plugin-owned session.";
+          try {
+            const outcome = await invokeResumeDispatch(ctx, config, fresh);
+            if (outcome === "dispatched") {
+              await safeWriteAuditLog("resume_dispatch_invoked", {
+                pipelineId: fresh.pipelineId ?? "unknown",
+                stage: fresh.currentStage,
+                ...(opts?.source ? { source: opts.source } : {}),
+              });
+            } else {
+              // Un-wired composition root (unit tests / partial plugin): the
+              // resume succeeded but nothing will spawn — record the miss at
+              // warn level and make it VISIBLE exactly once.
+              await safeWriteAuditLog("resume_dispatch_unavailable", {
+                pipelineId: fresh.pipelineId ?? "unknown",
+                stage: fresh.currentStage,
+                ...(opts?.source ? { source: opts.source } : {}),
+              }, "warn");
+              ctx.ui?.notify?.(missHint);
+            }
+          } catch (err) {
+            // Fail-safe: a throwing dispatch must not undo the completed
+            // resume. Same audited convergence as "unavailable", with the
+            // error attributed for diagnosis.
+            await safeWriteAuditLog("resume_dispatch_unavailable", {
+              pipelineId: fresh.pipelineId ?? "unknown",
+              stage: fresh.currentStage,
+              ...(opts?.source ? { source: opts.source } : {}),
+              error: err instanceof Error ? err.message : String(err),
+            }, "warn");
+            ctx.ui?.notify?.(missHint);
+          }
+        }
       } else {
         ctx.ui?.notify?.(
           `Stage "${toStage}" executor still live — spawn residue kept.`,
         );
+        // 218 Phase 3 (T3.5): the skipped dispatch is now auditable too —
+        // the incident replay must be able to tell "live twin" apart from
+        // "silent miss" without guessing from timestamps.
+        await safeWriteAuditLog("resume_dispatch_skipped_live", {
+          pipelineId: meta.pipelineId ?? "unknown",
+          stage: toStage,
+        });
       }
 
       await safeWriteAuditLog("pipeline_decision", {

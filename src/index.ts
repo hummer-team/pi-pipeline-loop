@@ -40,6 +40,8 @@ import { createPipelineUI, syncStageStatusBar } from "./core/pipeline-ui";
 import { validateSubagentCreated, setOwnerSessionAccessor } from "./utils/subagent-identity";
 // Phase 0 (189): DI handler for fix-executor completion (breaks circular dependency)
 import { setFixExecutorCompletedHandler, setDesignReviewTerminalHandler, setPendingSpawnStallHook, setOwnerWakeOnceHook } from "./utils/subagent-rpc";
+// 218 Phase 3 (T3.5): the resume-dispatch seam installed by the composition root.
+import { setResumeDispatchHandler } from "./core/resume-dispatch";
 import { handleFixExecutorCompleted } from "./core/fix-executor-completion";
 // 192 Phase 1: DI handler for design-review operation terminal evidence
 import { handleDesignReviewOperationTerminal } from "./core/design-review/coordinator";
@@ -68,7 +70,7 @@ import { createPipelineVerify } from "./tools/pipeline-verify";
 
 // Commands
 import { createPipelineStatusCommand } from "./commands/pipeline-status";
-import { createPipelineStartCommand } from "./commands/pipeline-start";
+import { createPipelineStartCommand, dispatchAfterResume } from "./commands/pipeline-start";
 import { createPipelineInitCommand } from "./commands/pipeline-init";
 import { createPipelineQuitCommand } from "./commands/pipeline-quit";
 import { createPipelineResumeCommand } from "./commands/pipeline-resume";
@@ -169,6 +171,14 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // Phase 0 (189): register fix-executor-completion handler via DI.
     // Breaks circular dependency: utils/subagent-rpc no longer imports core modules.
     setFixExecutorCompletedHandler(handleFixExecutorCompleted);
+
+    // 218 Phase 3 (T3.5, Q13-A): wire the resume-dispatch seam. The flow-state
+    // resume branch invokes this EXACTLY ONCE per resume decision (menu,
+    // policy unfreeze or --force-resume) so the stage executor always starts
+    // after unfreeze — core may not import commands/pipeline-start directly.
+    setResumeDispatchHandler(async (rctx, cfg, freshMeta) => {
+      await dispatchAfterResume(rctx, cfg, createPipelineUI(cfg), freshMeta, freshMeta.requirementDoc ?? "");
+    });
 
     // 192 Phase 1 (task 8): register the design-review operation-terminal
     // handler via the same DI precedent. The RPC lifecycle watcher records
