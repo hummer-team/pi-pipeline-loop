@@ -2130,14 +2130,15 @@ export function detectHostRole(ctx: FlowStateCtx): "owner" | "child" {
 }
 
 /**
- * Phase 6 (195): Arms the child-side escalation path.
+ * Phase 6 (195) + 218 Phase 3 (T3.1, Q11-B): arms the child-side escalation.
  * Flags the owner via `menuEscalationPending`, writes the
- * `menu_escalation_armed` audit and broadcasts the freeze on the event bus
- * so the owner instance wakes immediately (followUp), instead of waiting
- * for its next settle/shortcut/replay — freezes previously sat silent for
- * tens of hours. Wake ≠ popup: the decision menu remains the single popup
- * entry (owner consumes menuEscalationPending at end of turn).
- * Fail-safe: broadcastEscalation never throws.
+ * `menu_escalation_armed` audit, then — as the ONLY trusted channel — delivers
+ * the wake DIRECTLY through the deduped owner-wake entry (the 217 registry
+ * resolves the owner handle from a child session; cross-session `pi.events`
+ * may be a separate bus for the child, 4.6-1). The broadcast stays for
+ * in-process observers but is NOT a delivery dependency. Wake ≠ popup: the
+ * decision menu remains the single popup entry (owner consumes
+ * `menuEscalationPending` at end of turn). Fail-safe: broadcast never throws.
  */
 async function armChildEscalation(
   ctx: FlowStateCtx,
@@ -2151,6 +2152,45 @@ async function armChildEscalation(
     reason,
   });
 
+  // 218 Q11-B: direct in-process delivery is the ONLY trusted channel.
+  // NOTE: no `fallback` argument here — the fallback sender belongs to the
+  // CALLING session, and a child falling back would wake ITSELF (217 incident).
+  // Delivery failure stays retryable via the settle menu / owner self-heal.
+  const wake = deliverOwnerWakeOnce(
+    ctx.session,
+    meta,
+    `Pipeline blocked (${reason}) at stage "${meta.currentStage}". The decision menu will appear when this turn ends.`,
+    "blocked_escalation",
+  );
+  if (wake.deduped) {
+    // The wake was already delivered this owner turn — the deduped entry
+    // itself audited `owner_wake_deduped` (owner-wake-dedupe.ts); no second
+    // stamp for the same event.
+  } else if (wake.outcome.delivered) {
+    // 218 T3.1: `owner_wake_escalation` semantics = DIRECT DELIVERY SUCCEEDED
+    // (was: "the observer received the broadcast"). Fields per plan.
+    await safeWriteAuditLog("owner_wake_escalation", {
+      pipelineId: meta.pipelineId ?? "",
+      stage: meta.currentStage,
+      reason,
+      delivered: "true",
+      via: wake.outcome.via,
+      targetSessionFile: wake.outcome.targetSessionFile ?? "",
+      actualSessionFile: wake.outcome.actualSessionFile ?? "",
+    });
+  } else {
+    // Not delivered — keep the EXISTING event name (no new vocabulary), the
+    // persistent-undeliverable signal stays `owner_wake_undeliverable`.
+    await safeWriteAuditLog("owner_wake_escalation_skipped", {
+      pipelineId: meta.pipelineId ?? "",
+      stage: meta.currentStage,
+      reason: "delivery_failed",
+      detail: wake.outcome.reason ?? "",
+    });
+  }
+
+  // Kept for in-process observers (owner-escalation listener on the same
+  // bus); NOT a dependency — the direct delivery above already ran.
   const escalationPayload: EscalationPayload = {
     pipelineId: meta.pipelineId,
     stage: meta.currentStage,
@@ -2163,17 +2203,6 @@ async function armChildEscalation(
     stage: meta.currentStage,
     reason,
   });
-
-  // 218 F.3-4: the escalation ALSO wakes the owner through the deduped entry
-  // (cross-session pi.events must never be the delivery dependency — 4.6-1).
-  // Called from a CHILD session, so `ctx.session.updateMeta` writes the SHARED
-  // meta: the wake stamp takes effect for every session of this pipeline.
-  deliverOwnerWakeOnce(
-    ctx.session,
-    meta,
-    `The ${meta.currentStage} stage is blocked (${reason}). A decision menu is pending for you; run /pipeline-resume if no dialog appears.`,
-    "blocked_escalation",
-  );
 }
 
 /**

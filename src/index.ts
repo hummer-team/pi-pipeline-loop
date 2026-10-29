@@ -402,6 +402,9 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
             sendFollowUp: wakeFollowUp,
             syncStatusBar: wakeSyncStatusBar,
             audit: wakeAudit,
+            // 218 T3.1: enables the deduped wake entry for the FROZEN channel
+            // (owner-turn key, same stamp as the child's direct delivery).
+            updateMeta: (patch) => rctx.session.updateMeta(patch),
             // 211 Phase 1: actionable hint when the wake could not be delivered.
             notifyHint: (stage) => {
               try {

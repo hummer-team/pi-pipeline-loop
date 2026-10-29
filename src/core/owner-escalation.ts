@@ -34,6 +34,10 @@ import {
 // 216 P3 (R5-Q2-A): running-state stage-exit refusal channel (no frozen state,
 // credential = `stageExitRefusal.escalatedAt` matched against payload.at)
 import { STAGE_EXIT_REFUSED_ESCALATION_REASON } from "../constants";
+// 218 Phase 3 (T3.1, F.3-4): the deduped owner-wake entry — ONLY the frozen
+// channel routes through it (owner-turn key shared with the child's direct
+// delivery and the T3.2 self-heal).
+import { deliverOwnerWakeOnce } from "./owner-wake-dedupe";
 
 /**
  * Owner escalation observer dependencies.
@@ -53,6 +57,16 @@ export interface OwnerEscalationDeps {
   syncStatusBar: () => void;
   /** Audit log writer */
   audit: (event: string, payload: Record<string, unknown>) => void;
+  /**
+   * 218 T3.1 (F.3-4): when present, the FROZEN channel's wake goes through the
+   * deduped owner-wake entry — the SAME owner-turn key as the child's direct
+   * delivery (armChildEscalation) and the T3.2 self-heal, so one freeze wakes
+   * the owner at most once per turn. The 211 confirm-gate and 216 stage-exit
+   * channels are NEVER deduped (their predicates carry their own arm
+   * credentials and keep the verbatim `sendFollowUp` guarantee). Absent =
+   * pre-218 callers keep the legacy broadcast-observer delivery.
+   */
+  updateMeta?: (patch: Partial<SessionMeta>) => unknown;
   /** 211 Phase 1: actionable fallback when the wake could not be delivered. */
   notifyHint?: (stage: PipelineStage) => void;
   /**
@@ -170,6 +184,57 @@ export function evaluateEscalationWake(
   // Wake only — the sole popup entries run when the owner's turn ends: the
   // frozen decision menu (203 consumption) or the Phase 0 re-presentation
   // entry (211 consumption) consumes its own state itself.
+  //
+  // 218 T3.1 (F.3-4): ONLY the frozen channel joins the deduped wake entry —
+  // the child's direct delivery (armChildEscalation) may already have stamped
+  // this owner turn, and the observer must not re-wake. The 211/216 channels
+  // keep "every predicate hit delivers via sendFollowUp" VERBATIM (their
+  // predicates self-dedupe via arm credentials), so a frozen/enqueue stamp
+  // opened in the same turn can never swallow them.
+  if (!confirmPending && !stageExitRefused && deps.updateMeta) {
+    const wakeSummary = buildEscalationWakeSummary(payload);
+    const wake = deliverOwnerWakeOnce(
+      { getMeta: deps.getMeta, updateMeta: deps.updateMeta },
+      meta,
+      wakeSummary,
+      "blocked_escalation",
+      // This IS the owner session (role gate above), so its own raw sender
+      // is a valid last resort for the registry-first delivery.
+      () => deps.sendFollowUp(wakeSummary),
+    );
+    if (wake.deduped) {
+      // Already delivered this owner turn — the deduped entry itself audited
+      // `owner_wake_deduped`; NO delivery, NO `owner_wake_escalation` here.
+      return;
+    }
+    if (!wake.outcome.delivered) {
+      deps.audit("owner_wake_escalation_skipped", {
+        reason: "delivery_failed",
+        pipelineId: payload.pipelineId,
+        stage: payload.stage,
+        detail: wake.outcome.reason ?? "",
+      });
+      try {
+        deps.notifyHint?.(payload.stage);
+      } catch {
+        // fail-open: hint errors must not block the wake logic
+      }
+      return; // NOT delivered ⇒ no owner_wake_escalation audit
+    }
+    // 218 T3.1: `owner_wake_escalation` now means DIRECT DELIVERY SUCCEEDED.
+    deps.audit("owner_wake_escalation", {
+      pipelineId: payload.pipelineId,
+      stage: payload.stage,
+      reason: payload.reason,
+      at: payload.at,
+      delivered: "true",
+      via: wake.outcome.via,
+      targetSessionFile: wake.outcome.targetSessionFile ?? "",
+      actualSessionFile: wake.outcome.actualSessionFile ?? "",
+    });
+    return;
+  }
+
   if (!deps.sendFollowUp(
     confirmPending
       ? buildConfirmGatePendingWakeSummary(payload.stage)
