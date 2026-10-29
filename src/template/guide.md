@@ -148,6 +148,7 @@ bun add @earendil-works/pi-pipeline
   - `allow`：仅放开 gitignore 动态保护的**编辑**权限（git add/commit 仍拦截）
   - `gitModify`：全局 git 写操作策略（`"allow"` | `"block"`）。控制 git 原生写子命令（add/commit/merge 等）在各阶段是否允许。三级解析链：`stages.{stage}.protect.gitModify > protect.gitModify > 内置矩阵默认`。内置矩阵：clarify/plan/review/completed/awaiting_human = `"block"`；develop/fix = `"allow"`。危险子命令（filter-branch、reset --hard、push --force 等）恒拒，不受此配置影响
   - `stages.{stage}.protect.gitModify`：阶段级覆盖（仅 `gitModify` 子字段生效，其他 ProtectConfig 子字段在阶段级无效）
+  - `whitelistMiss`：**218 新增**越界写三态处置（`"ask"`（默认）| `"deny"` | `"allow"`；字符串简写或 `{ mode, stages }` 对象形式，四级解析链详见 3.3.1）
 - `guard`：Stage 级策略工具拦截配置（Phase 2 / 170，默认关），配置在 `stages.{stage}.guard` 下（非顶层）
   - `blockedTools`：可选，字符串数组。当 `stages.{stage}.guard.blockedTools` 包含当前工具名时，直接 block（不计入 violations）。默认空数组 `[]`（不拦截任何工具）
   - 典型用法：`"blockedTools": ["ask_user_question"]` 在 clarify 阶段硬拦交互式工具，强制模型通过需求文档收集答复
@@ -172,7 +173,11 @@ bun add @earendil-works/pi-pipeline
     "gitignore": true,               // 默认 true：解析 .gitignore 动态保护
     "paths": ["dist/"],              // 追加硬编码保护（与内置 .pi/、AGENTS.md、.git/ 合并）
     "allow": ["docs/design/", "src/template/"],  // 仅放开编辑；git add/commit 仍拦截
-    "gitModify": "allow"             // 全局 git 写策略（三级链第 2 级；矩阵默认：develop/fix=allow, 其余=block）
+    "gitModify": "allow",            // 全局 git 写策略（三级链第 2 级；矩阵默认：develop/fix=allow, 其余=block）
+    "whitelistMiss": {
+      "mode": "ask",                 // 越界写统一三态（缺省即 ask；字符串简写 `"whitelistMiss": "deny"` 等价）
+      "stages": { "review": "deny" } // 表项覆盖全局 mode
+    },
   },
   "spawnWaitTimeoutMs": 120000,         // 子代理等待超时（默认 120000ms）：同名子未 settle 时新阶段 spawn 与确认弹窗后置的安全网；非法值告警并回落默认
   // ── 阶段配置 ──
@@ -327,6 +332,41 @@ bun add @earendil-works/pi-pipeline
 - 硬编码保护路径（`.pi/`、`AGENTS.md`、`.git/`）**不可豁免**，即使白名单命中仍 block
 - `git add` / `git commit` 仍走全局内容级保护，不受 stage 白名单影响
 - 读通道（read 工具、只读 bash）不受白名单限制
+
+#### 3.3.1 protect.whitelistMiss 越界写三态处置（218）
+
+命中写白名单之外的路径时（如 clarify/plan/review 阶段写 `docs/` 以外、或只读交付阶段写源码），
+由 `protect.whitelistMiss` 决定处置方式。
+
+**三态表**：
+
+| 模式 | 行为 | 审计 |
+| --- | --- | --- |
+| `"ask"`（默认） | 一次合并菜单询问（批量目标、`… +N` 折叠）；无 UI 时退化为 deny（fail-closed） | `pipeline_write_ask`、`pipeline_write_ask_denied`、`whitelist_miss_*` |
+| `"deny"` | 立即拦截（与 218 之前 HEAD 行为逐字节一致，计入 `read_only_path` violation 桶） | `whitelist_miss_allowed` 不出现 |
+| `"allow"` | 放行并留痕 | `whitelist_miss_allowed` |
+
+**四级解析链**（优先级从高到低）：
+
+1. `stages.{stage}.protect.whitelistMiss`（阶段块，单值）
+2. `protect.whitelistMiss.stages.{stage}`（全局表中的阶段覆盖）
+3. `protect.whitelistMiss.mode`（或字符串简写 `protect.whitelistMiss` 本身）
+4. 缺省 `"ask"`（不可识别的形状也降级为 `"ask"`，绝不降级为 `"deny"`）
+
+**no-UI 退化**：宿主声明 `hasUI=false` 或无可用的 `ui.select` 时，`ask` 模式退化为 `deny`
+（fail-closed），并记 `whitelist_miss_no_ui_fallback`（warn）。
+
+**安全边界**（白名单处置「只放松、不放行」）：
+
+- 硬编码保护（`.pi/`、`AGENTS.md`、`.git/`）、gitignore 动态保护、git 策略、
+  破坏性命令检查**均不受 `whitelistMiss` 影响**——这些层在自己的通道里先做决策；
+- `allow` 仅放松「白名单未命中」这一层，**不放开**任何受保护路径；
+- 连续 Deny 计数按阶段持久化（`meta.whitelistMissDenials`），超过阈值升级冻结并记
+  `whitelist_miss_denial_overflow`；`rollback` / `restart` / `rewind_last_round` 清空计数，
+  `resume` 不清空（同一决策周期内连续拒绝必须仍能升级）。
+
+**旧行为迁移**：需要 218 之前「越界写=硬阻断」语义的项目，请显式配置
+`"whitelistMiss": "deny"`（全局或按阶段）。
 
 **clarify/plan/review 默认行为**：
 
@@ -822,7 +862,7 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | `confirm_gate_owner_reprompt_skipped`   | 重呈现被拒：`child` / `not_bound` / `predicate_mismatch` / `reask_exhausted`                               | pipelineId, stage, reason                             |
 | `confirm_gate_owner_reprompt_error`     | 重呈现抛错（fail-open，warn）                                                                             | pipelineId, stage, error                              |
 | `confirm_gate_escalation_armed`         | child 抑制后一次性 arm 唤醒凭证并广播 `confirm_gate_pending`                                               | pipelineId, stage, visitOrder                         |
-| `owner_wake_escalation`                 | 升级观察器唤醒 owner（冻结 203 或确认门 211，`reason` 可辨）                                               | pipelineId, stage, reason, at                         |
+| `owner_wake_escalation`                 | **218 语义变更**：升级唤醒**直投成功**（owner-delivery 注册表解析 owner 句柄，`deliverOwnerWakeOnce` 去重后投递；不再是「广播被收到」）。去重粒度 = owner turn（`pipelineId:stage:ownerTurnSeq`），同 turn 重复唤醒记 `owner_wake_deduped`。确认门 211 通道保持 `sendFollowUp` 不变 | pipelineId, stage, reason, at                         |
 | `owner_wake_escalation_skipped`         | 升级事件被拒（`child_session`/`no_meta`/`predicate_mismatch`/`delivery_failed`）                           | reason, pipelineId, stage                             |
 | `owner_wake_escalation_failed`          | 唤醒 `sendUserMessage` 投递失败（warn，伴随一次 `ui.notify` 指引 `/pipeline-resume`）                       | pipelineId, stage, error                              |
 | `out_of_stage_spawn_allowed_review_fix` | review→fix 合法人工推进放行（3e 唯一例外路径）                                                            | stage, tool, subagentType, targetStage                |
@@ -847,6 +887,61 @@ Per-stage 提取提示词（`verify_extract_{stage}`）支持按阶段定制提�
 | ----------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | `prompt_skills_dedup`         | 拦截时刻检测到一致重复 `<available_skills>` 块并完成切除（info） | stage, pipelineId, removed_pairs, removed_bytes, hash_before, hash_after |
 | `prompt_skills_dedup_skipped` | 内容不一致或结构异常时的 fail-open 跳过记录（warn）              | stage, pipelineId, reason (mismatch/malformed)                           |
+
+**218 新增审计事件**（事故 20261028 修复；spawn 台账 / 写审批 / 升级投递 / 解冻派发）：
+
+*台账三源（Phase 0）*：
+
+| 事件                                 | 触发时机                                                                                       | 关键字段                                           |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `spawn_ledger_event_written`         | `subagents:started` 事件为台账补写/刷新同 stage 条目（`source="event"` 为唯一 live 证据源）     | stage, agentId, agentName, source, kind, refreshed |
+| `spawn_ledger_cleared`               | 终端生命周期事件清账（settle/error/aborted/stopped），live 证据不越过执行器存活期                | stage, agentId                                     |
+| `spawn_ledger_reconciled`            | owner hook 桥的 TTL/重启对账扫描（probe live→keep，settled→clear，unknown→TTL）                 | kept, cleared, total                               |
+| `spawn_type_fallback_detected`       | started 事件的 agentName 与台账记录不一致（仅观察，不迁移条目）                                  | stage, agentId, agentName, ledgerAgentName, kind   |
+| `spawn_queued_blocked`               | 模型 spawn 被 3f 接管门禁挂起（同名执行器仍 live，入队 `pendingSpawns`）                         | stage, tool, subagentType, requestedAt             |
+| `spawn_queue_authorization_consumed` | 解冻/出队获得单次派发授权后消费队列条目（授权位一次性，消费即清）                                | stage, subagentType, stalledAt                     |
+| `pending_spawn_authorized_consumed`  | 插件消费路径发现该条目已被授权手动派发（Q23-A 防双开）：清账且不重复派发孪生 executor             | stage, agentName, stalledAt, consumedAt            |
+| `pending_spawn_wake_delivered`       | 入队即唤醒 owner（owner-turn 去重后的直投成功）                                                  | stage, delivered, via, deduped                     |
+| `pending_spawn_wake_unavailable`     | 入队唤醒不可用（hook 未注册/owner 不可解析）——fail-open 不阻断入队                               | stage, delivered, via, deduped                     |
+| `owner_wake_deduped`                 | 同一 owner turn（`pipelineId:stage:ownerTurnSeq`）内重复唤醒被去重，零二次投递                    | stage, reason                                      |
+
+*越界写三态与写审批（Phase 2）*：
+
+| 事件                             | 触发时机                                                                          | 关键字段                           |
+| -------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------- |
+| `whitelist_miss_allowed`         | `whitelistMiss="allow"` 或菜单 Allow 放行的越界写（每 stage+类别 60s 节流）              | stage, pathClass, targets          |
+| `whitelist_miss_no_ui_fallback`  | `ask` 模式在无 UI 宿主退化为 deny（warn）                                           | stage, targets, classes            |
+| `whitelist_miss_denial_overflow` | 同阶段连续 Deny 达上限 → 升级冻结（`violation_overflow` 菜单）                     | stage, classes                     |
+| `write_approval_queued`          | 越界写进入 owner 审批队列（child 会话或 settle 前排队；批量目标 `… +N` 折叠）        | stage, fingerprint, count, targets |
+| `write_approval_approved`        | owner 菜单批准（会话级授权写入 `sessionAllowedWritePaths`）                             | stage, count, targets              |
+| `write_approval_denied`          | owner 菜单拒绝（计入连续 Deny 计数）                                                | stage, count, targets              |
+| `pipeline_write_ask`             | 越界写一次性合并菜单（出根 file-arg 的审计由 `pipeline_command_ask` 改记本事件）     | stage, action, count, categories, paths |
+| `pipeline_write_ask_denied`      | 菜单选择 Deny（含默认项）                                                           | stage, count, paths                |
+| `owner_approval_consume_error`   | settle 消费审批抛错（warn，fail-open 不吞冻结菜单）                                 | stage, error                       |
+
+*冻结升级与解冻派发（Phase 3）*：
+
+| 事件                                    | 触发时机                                                                                     | 关键字段              |
+| --------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------- |
+| `menu_escalation_selfheal`              | owner hook 桥自愈：`menuEscalationPending` 持续为真 + blocked → 每个 owner turn 重投一次（`agent_settled` 除外） | stage, delivered, reason |
+| `decision_menu_deferred_for_approval`   | 冻结 settle 中 pending 审批优先占用交互槽（approved/denied 才消费；no_ui/none 落回决策菜单）    | stage, kind, outcome  |
+| `frozen_read_allowed`                   | `blocked`（未 aborted）期间 read/grep/glob/list 只读探针放行（每 pipeline+工具 60s 节流）       | stage, tool, flowState |
+| `resume_dispatch_invoked`               | flow-state resume 分支派发 stage executor（三入口唯一派发点；owner 角色）                       | stage, source         |
+| `resume_dispatch_skipped_live`          | 派发被同 stage live 证据抑制（菜单 resume 探活 / 命令层 skip-rollback-restart 兜底）             | stage, basis?         |
+| `resume_dispatch_unavailable`           | 组合根未接线时 resume 成功但无派发通道（warn + 一次可见提示）                                    | stage, source, error? |
+
+**pendingSpawns 条目新增字段**（⑥）：`stalledAt`（3f 挂起时刻）、`dispatchAuthorizedAt`（解冻授权时刻）、`dispatchConsumedAt`（授权派发消费时刻）；旧条目缺省即「未 stall / 未授权 / 未消费」，行为不变。
+
+**218 行为变更说明**（供复盘对照）：
+
+1. `protect.whitelistMiss` 默认 `ask`：「只读阶段越界写」从硬阻断变为人工决策；需要旧行为请配置 `"deny"`（`deny` 模式的 violation 桶归属与 218 之前完全一致，均为 `read_only_path`）。
+2. 出根 `file-arg`（bash rm/mv/cp 等目标在项目根外）的审计由 `pipeline_command_ask` 改为 `pipeline_write_ask` / `whitelist_miss_*` 家族。
+3. 写审批菜单 Allow 后**不会**自动恢复执行器：需要再跑 `/pipeline-resume`（解冻派发已统一至 flow-state 单一入口）。
+4. `owner_wake_escalation` 语义由「广播被收到」变为「**直投成功**」；去重粒度 = owner turn（`ownerTurnSeq`），同 turn 重复唤醒记 `owner_wake_deduped`。
+5. `pendingSpawns` 条目新增 `stalledAt` / `dispatchAuthorizedAt` / `dispatchConsumedAt` 三个生命周期字段（见上）。
+6. `pipeline-resume` 三处命令级派发（策略解冻 / 菜单 decided-resume / `--force-resume`）已全部移除，派发收敛到 `executeDecision("resume")` 的 flow-state 分支（见 `resume_dispatch_*`）。
+
+**存量项目迁移提示**：`/pipeline-init` 不覆盖已有 `stage_executor_*` Scheduling 段。存量 `.pi/prompts/` 中的阶段提示词需**手动**把「## Stage Executor Scheduling」段落替换为「插件拥有派发」措辞（参考模板 `src/template/references/pipeline-stage-prompt.yml`），否则模型仍会尝试自行 @mention 派发。
 
 **Agent 速查表**：
 
