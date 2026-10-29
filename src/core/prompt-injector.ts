@@ -25,7 +25,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
 import { planDocRelPathFromRequirementDoc } from "./naming/doc-naming";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot, setAuditPipelineContext } from "../utils/auditLog";
@@ -1344,7 +1344,12 @@ async function buildStageExecutor(
   // Phase 4 (171) High A: compute active-spawn note (shared by yml and fallback paths).
   // Gated by probe=live to avoid "zombie clause" when the spawn has already settled.
   // review#2 Low: on probe=unknown (manager singleton absent), fall back to the
-  // 30-min time-window check for visibility hint purposes (non-blocking).
+  // ACTIVE_SPAWN_TTL_MS heuristic for visibility hint purposes (non-blocking).
+  // 218 P0 (T0.7): entries with `source === "event"` (manual / Agent-tool
+  // dispatches recorded by `subagents:started`) follow the SAME probe rules —
+  // the ledger is the single "already live" truth regardless of source; an
+  // event entry with an agentId is live only while `probeAgentState` says so,
+  // and `reserved` in-flight entries are covered by the time-based degrade.
   // Note: tool-guard's checkLiveSpawn was removed in Phase 2 / 175 (dead code after
   // evidence-based refactor); this prompt-injector visibility logic is independent.
   const activeSpawn = meta.activeSpawns?.[meta.currentStage];
@@ -1352,20 +1357,20 @@ async function buildStageExecutor(
   if (activeSpawn) {
     let isLive = false;
     if (activeSpawn.agentId) {
-      // Primary: probe manager singleton
+      // Primary: probe manager singleton (rpc- AND event-sourced entries alike)
       const probe = probeAgentState(activeSpawn.agentId);
       if (probe === "live") {
         isLive = true;
       } else if (probe === "unknown") {
         // Manager singleton absent → degrade to time-based check (aligned with tool-guard)
         const age = Date.now() - activeSpawn.startedAt;
-        isLive = age < 30 * 60 * 1000;
+        isLive = age < ACTIVE_SPAWN_TTL_MS;
       }
       // probe === "settled" → isLive stays false
     } else {
-      // Fallback: time-based check (no agentId recorded, e.g. fallback spawn)
+      // Fallback: time-based check (no agentId recorded, e.g. reserved dispatch in flight)
       const age = Date.now() - activeSpawn.startedAt;
-      isLive = age < 30 * 60 * 1000; // 30min staleness threshold
+      isLive = age < ACTIVE_SPAWN_TTL_MS; // staleness threshold (218: single source constant)
     }
     if (isLive) {
       activeSpawnNote = `\n**⚠ Active spawn**: An auto-spawned \`${executor.subagent_type}\` is already executing this stage. Await its completion notification; do NOT spawn a duplicate, and do NOT self-execute its deliverable in the main thread.`;

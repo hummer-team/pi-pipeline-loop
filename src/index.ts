@@ -6,7 +6,7 @@
 
 import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn, AuditLogLevel } from "./types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG_DIR_NAME, TEMPLATE_DIR } from "./constants";
+import { CONFIG_DIR_NAME, TEMPLATE_DIR, AUDIT_THROTTLE_WINDOW_MS } from "./constants";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
 
@@ -14,6 +14,16 @@ import { parseCommandArgs } from "./utils/command-args";
 // Phase 2 / 177 (D4): event-driven subagent availability latch
 import { wireSubagentsReadyListener } from "./utils/subagent-availability";
 import { wireSubagentLifecycleListeners, setOwnerMetaAccessor } from "./utils/subagent-lifecycle-registry";
+// 218 P0 (T0.3–T0.5): the spawn ledger — three-source `activeSpawns` writer,
+// terminal observer (registered AFTER the wake observer, order is a contract)
+// and the TTL/restart reconciliation sweep.
+import {
+  setSpawnLedgerConfig,
+  setSpawnLedgerSession,
+  registerSpawnLedgerObserver,
+  reconcileActiveSpawns,
+} from "./utils/spawn-ledger";
+import { shouldEmitWithinWindow } from "./utils/audit-throttle";
 import { registerOwnerWakeObserver, setOwnerWakeDeps } from "./core/owner-wake";
 import { registerOwnerEscalationObserver, setOwnerEscalationDeps } from "./core/owner-escalation";
 // 217 Phase 0 (T0.4): per-session delivery-handle registry + target-resolving
@@ -132,9 +142,19 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
     // and maintain the in-memory registry for wake-up diagnostics.
     wireSubagentLifecycleListeners(pi);
 
+    // 218 P0 (T0.3): install the factory-scoped config so the ledger can
+    // resolve agent name → stage without hardcoded stage lists.
+    setSpawnLedgerConfig(config);
+
     // Phase 1 / 200_Bug (G1-1, G1-2): register owner wake observer
     // When a subagent reaches terminal state, check if owner should be woken
     registerOwnerWakeObserver();
+
+    // 218 P0 (T0.5): terminal ledger clearing runs AFTER the wake decision.
+    // Terminal observers fire synchronously in insertion order — registering
+    // this first would empty `activeSpawns` before `evaluateWake` predicates
+    // 2/3 read it, making wake behavior depend on registration order.
+    registerSpawnLedgerObserver();
 
     // 203_Bug Phase 0 (RC1): the owner escalation observer is NOT registered
     // here. Owner and child sessions share this module in the same process, and
@@ -300,6 +320,28 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         // A child-bound deps snapshot would aim terminal delivery at the child
         // session and leave the owner unwoken (the 217 incident).
         if (!isChildSession) {
+          // 218 P0 (T0.3/T0.5): owner-scoped ledger writer + throttled TTL/
+          // restart reconciliation. Child hooks never install the writer (the
+          // ledger belongs to the owner session); reconcile is a pure sweep
+          // over `activeSpawns` (probe live/settled, TTL for unknown).
+          setSpawnLedgerSession({
+            getMeta: () => rctx.session.getMeta(),
+            updateMeta: (patch) => rctx.session.updateMeta(patch),
+          });
+          const reconcileMeta = rctx.session.getMeta();
+          if (
+            reconcileMeta?.pipelineId &&
+            shouldEmitWithinWindow(
+              `spawn-ledger-reconcile:${reconcileMeta.pipelineId}`,
+              AUDIT_THROTTLE_WINDOW_MS,
+            )
+          ) {
+            try {
+              reconcileActiveSpawns();
+            } catch {
+              // Fail-safe: reconciliation must never break the hook chain.
+            }
+          }
           setOwnerWakeDeps({
             getMeta: () => rctx.session.getMeta(),
             updateMeta: (patch) => rctx.session.updateMeta(patch),

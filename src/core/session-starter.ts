@@ -28,6 +28,8 @@ import { staleConfigNotice } from "../utils/config-staleness";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 import { probeAgentState } from "../utils/subagents-introspect";
+// 218 P0 (T0.5): one-shot ledger reconciliation on owner resume/reload.
+import { reconcileActiveSpawns } from "../utils/spawn-ledger";
 import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen replay
 import { dispatchAfterResume } from "../commands/pipeline-start";
@@ -766,6 +768,15 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
           // re-arms against the PERSISTED `stageStartTime` (wall clock keeps the
           // remaining ceiling, idle starts from now). No-op when disabled.
           armStageWatchdog(ctx, config);
+          // 218 P0 (T0.5): restart reconciliation — sweep the ledger once so
+          // entries whose ids the new process cannot resolve die by TTL, and
+          // settled ids are dropped immediately. Fail-safe (no-op without the
+          // owner session accessor installed by the hook bridge).
+          try {
+            reconcileActiveSpawns();
+          } catch {
+            // Fail-safe: reconciliation must not break session recovery.
+          }
         }
       }
     },

@@ -197,6 +197,15 @@ export const DEFAULT_CONFIRM_OVERFLOW = "ask" as const;
  */
 export const AUDIT_THROTTLE_WINDOW_MS = 60_000;
 
+/**
+ * 218 P0 (T0.3): Staleness ceiling for `activeSpawns` ledger entries whose
+ * agentId the manager registry cannot resolve (`probeAgentState = "unknown"`).
+ * `reconcileActiveSpawns` deletes such entries once their age exceeds this
+ * window; live entries are kept regardless of age. Same value as the previous
+ * inline 30-min heuristics in `prompt-injector.ts` (single source now).
+ */
+export const ACTIVE_SPAWN_TTL_MS = 30 * 60_000;
+
 // ─── Frozen Aborted Exempt Tools (Phase 2 / 171) ─────────────────────────────
 
 /**

@@ -686,7 +686,22 @@ export interface SessionMeta {
    * - Cleared on resume/restart (buildResumeMeta/buildStartMeta/buildRestartMeta)
    * - 30min stale entries treated as absent (fail-open)
    */
-   activeSpawns?: Partial<Record<PipelineStage, { agentName: string; agentId?: string; startedAt: number; reserved?: boolean; /** 192 Phase 0: operation identity attached when the spawn was dispatched as a design-review operation; absent for ordinary spawns (original fields unchanged). */ operationContext?: SpawnOperationContext }>>;
+  activeSpawns?: Partial<Record<PipelineStage, {
+    agentName: string;
+    agentId?: string;
+    startedAt: number;
+    reserved?: boolean;
+    /**
+     * 218 R1/R2: how this entry entered the ledger.
+     * Absent = legacy entry (pre-218): treat as "rpc" for display,
+     * never as proof of liveness by itself.
+     * `reserved` needs no extra marker: the existing boolean `reserved`
+     * already means "dispatch in flight".
+     */
+    source?: "rpc" | "event";
+    /** 192 Phase 0: operation identity attached when the spawn was dispatched as a design-review operation; absent for ordinary spawns (original fields unchanged). */
+    operationContext?: SpawnOperationContext;
+  }>>;
 
   /**
    * Phase 2 / 177 (D4③): Owner-routed pending spawn requests.
