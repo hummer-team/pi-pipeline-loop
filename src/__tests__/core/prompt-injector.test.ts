@@ -1804,7 +1804,10 @@ describe("Phase 3 (170): PIPELINE STATE section in prompt-injector", () => {
     const prompt = result.systemPrompt!;
 
     expect(prompt).toContain("Stage Executor Scheduling");
-    expect(prompt).toContain("plugin owns spawning");
+    // 218 T1.4: the wording converged to the yml `stage_executor_*` sentence —
+    // the plugin OWNS dispatch; a queued spawn is never main-thread work.
+    expect(prompt).toContain("The plugin owns dispatch");
+    expect(prompt).toContain("Main thread must NOT re-invoke");
     // Old wording that invited a model-driven task call must be gone.
     expect(prompt).not.toContain("via task tool");
     expect(prompt).not.toContain("RPC unavailable fallback");

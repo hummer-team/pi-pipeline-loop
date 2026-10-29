@@ -258,7 +258,10 @@ function buildWakeSummary(
   ];
 
   if (hasPendingSpawns) {
-    parts.push("There are pending spawn requests that need processing.");
+    // 218 T1.4 (R4): never phrase a queued spawn as main-thread work — the
+    // plugin dispatches it at the end of the turn (this wording fed the
+    // incident's manual-twin spawns).
+    parts.push("The plugin has queued the next stage executor and will dispatch it automatically at the end of this turn. Do not spawn it manually.");
   } else {
     parts.push("The current stage has not been closed yet.");
   }

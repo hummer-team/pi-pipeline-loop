@@ -471,7 +471,10 @@ describe('owner-wake (Phase 1 / 200_Bug G1-1, G1-2)', () => {
 
       registerTerminal('develop-agent', 'agent-123', 'terminal', 'completed', 'develop', 'pipe-1');
 
-      expect(summaryContent).toContain('pending spawn requests');
+      // 218 T1.4: the wake summary no longer reads as main-thread work; it
+      // states the plugin owns the queued dispatch.
+      expect(summaryContent).toContain('The plugin has queued the next stage executor');
+      expect(summaryContent).not.toContain('need processing');
     });
   });
 

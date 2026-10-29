@@ -1377,6 +1377,16 @@ async function buildStageExecutor(
     }
   }
 
+  // 218 Phase 1 (T1.5): "queued" must never read as main-thread work. When the
+  // plugin already owns the dispatch queue for this stage, say so explicitly.
+  // Mutually exclusive with the active-spawn note (an ACTIVE executor wins —
+  // the queued entry is about to become that active spawn).
+  let queuedNote = "";
+  if (meta.pendingSpawns?.[meta.currentStage]) {
+    queuedNote = `\n**⏳ Spawn queued**: the plugin has already queued this stage's executor; it will dispatch automatically at the end of this turn. Do NOT spawn it.`;
+  }
+  const queuedSpawnNote = activeSpawnNote ? "" : queuedNote;
+
   // Try to load per-stage executor text from yml `stage_executor_{stage}` key
   const ymlKey = `stage_executor_${meta.currentStage}`;
   const promptConfig = await loadPromptConfig(config.projectRoot);
@@ -1387,7 +1397,8 @@ async function buildStageExecutor(
     return ymlTemplate
       .replaceAll("{subagent_type}", executor.subagent_type)
       .replaceAll("{context_arg}", `<document path filled by main thread, e.g. _Plan.md>`)
-      .replaceAll("{active_spawn_note}", activeSpawnNote);
+      .replaceAll("{active_spawn_note}", activeSpawnNote)
+      .replaceAll("{queued_spawn_note}", queuedSpawnNote);
   }
 
   // Fallback: hardcoded English default text (when yml key is missing/empty)
@@ -1410,7 +1421,9 @@ async function buildStageExecutor(
     lines.push(`This stage is executed by sub-agent: \`${executor.subagent_type}\``);
     lines.push("");
     // Phase 2 / 175 (R2Q5A) + Phase 4 / 177 (D7④): the plugin owns spawning.
-    lines.push(`**Scheduling**: The plugin owns spawning of \`${executor.subagent_type}\` on stage entry. If the main thread calls \`${executor.subagent_type}\` via the Agent/task tool, the call is intercepted and rewritten to the plugin spawn path — do NOT rely on self-invocation.`);
+    // 218 T1.4: synced with the yml `stage_executor_*` wording — a queued spawn
+    // is plugin-owned work, never an instruction for the main thread.
+    lines.push(`**Scheduling**: The plugin auto-spawns \`${executor.subagent_type}\` on stage entry. Main thread must NOT re-invoke. The plugin owns dispatch. Never call \`${executor.subagent_type}\` yourself while a plugin spawn is queued or active. A one-shot manual dispatch is authorized ONLY after the plugin reports a \`pending_spawn_stalled\` event, and only once.`);
     lines.push(`**Return protocol**: Sub-agent returns \`nextStage: <stage>\` suggestion; main thread calls stage_advance.`);
     lines.push(`**Context**: context_arg filled by main thread from document artifacts (e.g. \`_Plan.md\`, \`_Develop_Commit.md\`)`);
   } else {
@@ -1421,9 +1434,11 @@ async function buildStageExecutor(
     lines.push(`**Context**: context_arg filled by main thread from document artifacts`);
   }
 
-  // Append active-spawn note (probe=live gated) to fallback path
-  if (activeSpawnNote) {
-    lines.push(activeSpawnNote);
+  // 218 T1.5: the active note wins over the queued note (mutual exclusion —
+  // same slot semantics as the yml `{active_spawn_note}`/`{queued_spawn_note}`).
+  const executorNote = activeSpawnNote || queuedSpawnNote;
+  if (executorNote) {
+    lines.push(executorNote);
   }
 
   return lines.join("\n");

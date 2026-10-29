@@ -355,38 +355,42 @@ stage_executor_plan: |
 stage_executor_design-review: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
-  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. The plugin owns dispatch. Never call `{subagent_type}` yourself while a plugin spawn is queued or active. A one-shot manual dispatch is authorized ONLY after the plugin reports a `pending_spawn_stalled` event, and only once.
   **Return protocol**: The reviewer ONLY writes/updates the current design-review report file and stops. It never approves stages, never calls `stage_advance`, and never routes its own verdict — the plugin validates the report (identity + completeness) and owns every transition.
   **Context**: {context_arg}
   **Verdict routing (plugin-enforced, 193)**: a trusted, contract-complete PASS proceeds to develop in EVERY confirmation mode. A valid FAIL is handled by the configured mode: auto = an authorized plan-revision pass then re-review; manual = the human decision menu (Revise Plan / Proceed to Develop / Cancel); smart = the reviewer's binary declaration (`revise-plan` / `request-human`) — smart NEVER releases a FAIL automatically. Any valid `## Issues` entry forces FAIL regardless of the conclusion line; entry authorization never pre-approves a future FAIL.
   {active_spawn_note}
+  {queued_spawn_note}
 
 stage_executor_develop: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
-  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. The plugin owns dispatch. Never call `{subagent_type}` yourself while a plugin spawn is queued or active. A one-shot manual dispatch is authorized ONLY after the plugin reports a `pending_spawn_stalled` event, and only once.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
   **Checkpoint**: Build + tests must pass before `stage_advance` with `nextStage: review`.
   {active_spawn_note}
+  {queued_spawn_note}
 
 stage_executor_review: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
-  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. The plugin owns dispatch. Never call `{subagent_type}` yourself while a plugin spawn is queued or active. A one-shot manual dispatch is authorized ONLY after the plugin reports a `pending_spawn_stalled` event, and only once.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
   **Checkpoint**: Review report must contain a verdict line before `stage_advance`.
   {active_spawn_note}
+  {queued_spawn_note}
 
 stage_executor_fix: |
   ## Stage Executor Scheduling
   This stage is executed by sub-agent: `{subagent_type}`
-  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. Only when no Active-spawn prompt appears (RPC unavailable fallback), the main thread may call `{subagent_type}` via task tool.
+  **Scheduling**: The plugin auto-spawns `{subagent_type}` on stage entry. Main thread must NOT re-invoke. The plugin owns dispatch. Never call `{subagent_type}` yourself while a plugin spawn is queued or active. A one-shot manual dispatch is authorized ONLY after the plugin reports a `pending_spawn_stalled` event, and only once.
   **Return protocol**: Sub-agent returns `nextStage: <stage>` suggestion; main thread calls stage_advance.
   **Context**: {context_arg}
   **Checkpoint**: Build + tests must pass before `stage_advance` with `nextStage: review`.
   {active_spawn_note}
+  {queued_spawn_note}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Per-stage Plugin Default Deliverables (5 keys) — Phase 0 (146)
