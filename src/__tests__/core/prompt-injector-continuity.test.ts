@@ -19,6 +19,7 @@ import { acquireJobLock, __resetAutoJobLockForTests } from "../../core/auto-pipe
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
+const OWNER_PIPELINE_ID = "pipe-continuity-owner";
 
 let ROOT: string;
 let errorSpy: ReturnType<typeof spyOn>;
@@ -42,6 +43,7 @@ async function installRunningJob(overrides?: Partial<AutoJobState>): Promise<Aut
     ...overrides,
   };
   state.docs[0]!.lastStage = "review";
+  state.docs[0]!.pipelineId = OWNER_PIPELINE_ID;
   await writeJobState(ROOT, state);
   const lock = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
   if (!lock.ok) throw new Error("lock acquire failed");
@@ -101,13 +103,27 @@ describe("prompt-injector — task continuity section", () => {
     expect(section).toContain("Stage: review");
   });
 
-  it("a job that settled DURING this session renders nothing (no per-turn 'resume')", async () => {
+  it("the session that OWNS the running doc renders nothing (no per-turn 'resume')", async () => {
     // Review 219 issue 10: `sessionStartedAt: Date.now()` made rule 2 true on
-    // every turn of a merely RUNNING job. A settle recorded after this session
-    // started must NOT claim an interruption.
-    await installRunningJob({ lastSettleAt: Date.now() });
-    const meta = makeTestMeta({ requirementDoc: "docs/design/a.md" });
+    // every turn of a legitimately running job. Identity, not a clock, tells
+    // the owner apart: the sidecar's running doc carries this pipelineId.
+    await installRunningJob({ lastSettleAt: Date.now() - 60_000 });
+    const meta = makeTestMeta({
+      pipelineId: OWNER_PIPELINE_ID,
+      requirementDoc: "docs/design/a.md",
+    });
     expect(buildTaskContinuitySection(config(), meta)).toBeNull();
+  });
+
+  it("a DIFFERENT session (no meta / other pipeline) still resumes the running job", async () => {
+    await installRunningJob({ lastSettleAt: Date.now() - 60_000 });
+    const meta = makeTestMeta({
+      pipelineId: "pipe-someone-else",
+      requirementDoc: "docs/design/a.md",
+    });
+    const section = buildTaskContinuitySection(config(), meta);
+    expect(section).not.toBeNull();
+    expect(section).toContain("Decision: resume");
   });
 
   it("auto tier adds job name, queue progress and budgets", async () => {

@@ -683,24 +683,31 @@ function hasCommitDocFor(requirementDoc: string | undefined, projectRoot: string
  * an auto job adds the queue/budget tier. The section is distinct from
  * PIPELINE STATE (that one is frozen-only); this one is "interrupted/resumed".
  *
- * Review 219 issue 10 (Medium): the rule-2 comparison needs a REAL session
- * start. `Date.now()` made "`lastSettleAt < sessionStartedAt`" true on every
- * turn, so a merely RUNNING job rendered "Decision: resume / unsettled" in
- * every prompt. The module is loaded once per session bootstrap, so its load
- * time is the stable reference; the authoritative verdict stays
- * `meta.continuity` (written by `session_start`).
+ * Review 219 issue 10 (Medium): rule 2 needs the session that OWNS the running
+ * doc to be recognised as "not interrupted". Passing `Date.now()` made
+ * `lastSettleAt < sessionStartedAt` true on EVERY turn of a legitimately
+ * running job, so "Decision: resume / unsettled" was injected permanently.
+ * The owner is identified by identity (the sidecar's running doc carries THIS
+ * `pipelineId`), which needs no clock; every other session (a fresh clone or
+ * the chained new session with no meta) is judged against the real clock —
+ * exactly the crash-resume case rule 2 was written for. `meta.continuity`
+ * (written by `session_start`) always wins.
  */
-const SESSION_BOOT_AT = Date.now();
-
 export function buildTaskContinuitySection(
   config: PipelineConfig,
   meta: SessionMeta,
 ): string | null {
   const state = readStateForActiveLock(config.projectRoot) ?? listRunningJobs(config.projectRoot)[0]?.state ?? null;
+  const ownsRunningDoc =
+    state !== null &&
+    meta.pipelineId !== undefined &&
+    state.docs[state.docIndex]?.pipelineId === meta.pipelineId;
   const computed = decideContinuity({
     meta,
     state,
-    sessionStartedAt: SESSION_BOOT_AT,
+    // Authoritative: this session owns the doc that is running → nothing is
+    // interrupted (0 can never be greater than `lastSettleAt`).
+    sessionStartedAt: ownsRunningDoc ? 0 : Date.now(),
     hasCommitDoc: hasCommitDocFor(meta.requirementDoc, config.projectRoot),
   });
   const decision = meta.continuity ?? computed.decision;
