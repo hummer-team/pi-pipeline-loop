@@ -1933,7 +1933,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - `writePolicy.allowGlobs` 映射到 `protect.whitelistAllow`，与 `protect.allow` **不同**：前者只豁免 `whitelist_miss`，后者只豁免 gitignore 动态保护。
 - `decisionPolicy` 是 **job 私有**：只由冻结自动驾驶消费，**不会**写进 `pipeline_loop.json`（那里是 210 provider 链的 `decisionPolicy`，结构不兼容）。
 - `onFailure`：`stop`（默认，出错的文档记失败后终止 job）/ `continue`（跳过继续下一份）。**硬停无视该值**。
-- 示例见 `docs/jobs/example.yaml`。
+- 示例见模板 `auto_job_example.yaml`（`/pipeline-init` 安装到 `.pi/auto_job_example.yaml`；复制到 `docs/jobs/` 并改名即可被扫描到）。
 
 ### 19.2 `/pipeline-auto` 用法
 

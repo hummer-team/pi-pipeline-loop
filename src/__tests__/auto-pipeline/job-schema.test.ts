@@ -185,10 +185,10 @@ describe("job-schema — numeric guards", () => {
   });
 });
 
-describe("job-schema — example.yaml stays parseable (anti-drift)", () => {
-  it("docs/jobs/example.yaml parses ok with the expected defaults", () => {
-    const raw = readFileSync(path.join(SRC, "docs", "jobs", "example.yaml"), "utf8");
-    const result = parseAutoJob(raw, "docs/jobs/example.yaml");
+describe("job-schema — the bundled job example stays parseable (anti-drift)", () => {
+  it("template auto_job_example.yaml parses ok with the expected defaults", () => {
+    const raw = readFileSync(path.join(SRC, "src", "template", "auto_job_example.yaml"), "utf8");
+    const result = parseAutoJob(raw, "docs/jobs/my-job.yaml");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.job.enabled).toBe(true);

@@ -127,7 +127,7 @@ export async function selectJobFromMenu(
     return {
       kind: "error",
       error:
-        "未发现 docs/jobs/*.yaml，请先创建任务文件（可参考 docs/jobs/example.yaml）",
+        "未发现 docs/jobs/*.yaml，请先创建任务文件（可参考示例 .pi/auto_job_example.yaml，由 /pipeline-init 安装）",
     };
   }
   if (typeof ctx.ui?.select !== "function") {

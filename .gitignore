@@ -12,15 +12,7 @@ rule.md
 .gemini
 GEMINI.md.bak
 CODEBUDDY.md
-# `docs/` is a LOCAL workspace, except the auto-pipeline job example: it is a
-# shipped deliverable (the `/pipeline-auto` menu points users at it and
-# `job-schema.test.ts` parses it), so a clean clone / CI must have it. Git
-# cannot re-include a file under an excluded DIRECTORY, hence the `docs/*`
-# form plus explicit re-inclusions.
-docs/*
-!docs/jobs/
-docs/jobs/*
-!docs/jobs/example.yaml
+docs
 .qoderignore
 design/udf.md
 design/udf_3.md

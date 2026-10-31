@@ -178,7 +178,7 @@ describe("job-menu — selection", () => {
     const { ctx } = ctxWithSelect([]);
     const result = await selectJobFromMenu(ctx, config());
     expect(result.kind).toBe("error");
-    if (result.kind === "error") expect(result.error).toContain("docs/jobs/example.yaml");
+    if (result.kind === "error") expect(result.error).toContain("auto_job_example.yaml");
   });
 
   it("no ui.select → error", async () => {
