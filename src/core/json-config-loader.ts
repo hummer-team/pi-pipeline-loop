@@ -210,10 +210,12 @@ function parseOutputConfig(raw: unknown): { pipelineStage?: boolean } | undefine
 
 /**
  * Parses the audit configuration from JSON config.
- * Validates promptSnapshot is one of "full" | "plugin" | "off".
- * Returns undefined for missing/invalid audit config.
+ * Validates promptSnapshot is one of "full" | "plugin" | "off" and
+ * autoDecisions is a boolean (219 Phase 0). Invalid keys warn and resolve to
+ * the defaults at resolvePipelineConfig (promptSnapshot "full",
+ * autoDecisions true). Returns undefined for missing/invalid audit config.
  */
-function parseAuditConfig(raw: unknown): { promptSnapshot?: "full" | "plugin" | "off" } | undefined {
+function parseAuditConfig(raw: unknown): { promptSnapshot?: "full" | "plugin" | "off"; autoDecisions?: boolean } | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw !== "object") {
     console.warn(`[pi-pipeline] Invalid audit config — expected object, got ${typeof raw}`);
@@ -230,7 +232,19 @@ function parseAuditConfig(raw: unknown): { promptSnapshot?: "full" | "plugin" | 
     );
     return undefined;
   }
-  return { promptSnapshot: (promptSnapshot as "full" | "plugin" | "off") ?? undefined };
+  // 219 Phase 0: autoDecisions gates ONLY pipeline_auto_decision; invalid
+  // values warn and resolve to the default (true) at resolvePipelineConfig.
+  const autoDecisions = obj.autoDecisions;
+  if (autoDecisions !== undefined && typeof autoDecisions !== "boolean") {
+    console.warn(
+      `[pi-pipeline] Invalid audit.autoDecisions "${String(autoDecisions)}" — expected boolean, using default true`,
+    );
+    return { promptSnapshot: (promptSnapshot as "full" | "plugin" | "off") ?? undefined };
+  }
+  return {
+    promptSnapshot: (promptSnapshot as "full" | "plugin" | "off") ?? undefined,
+    autoDecisions: typeof autoDecisions === "boolean" ? autoDecisions : undefined,
+  };
 }
 
 /**
@@ -431,13 +445,63 @@ function parseProtectConfig(raw: unknown): ProtectConfig | undefined {
     }
   }
 
-  // 218 F.2: parse whitelistMiss — string shorthand ("ask"|"deny"|"allow") or
-  // the object form { mode?, stages? }. Invalid values warn and are ignored,
-  // following the established style of this function.
+  // 218 F.2 + 219 Phase 0: parse whitelistMiss — string shorthand
+  // ("ask"|"deny"|"allow") or the object form { mode?, stages? }.
   if (obj.whitelistMiss !== undefined) {
     const parsed = parseWhitelistMissConfig(obj.whitelistMiss);
     if (parsed !== undefined) {
       result.whitelistMiss = parsed;
+    }
+  }
+
+  // 219 Phase 0: parse destructiveCommand / protectedPathPolicy — enum
+  // ("deny" | "ask"). Invalid values warn and stay unset; the read-point
+  // inheritance (`protect.ask` fallback) then applies (B1/M4).
+  if (obj.destructiveCommand !== undefined) {
+    if (obj.destructiveCommand === "deny" || obj.destructiveCommand === "ask") {
+      result.destructiveCommand = obj.destructiveCommand;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.destructiveCommand "${String(obj.destructiveCommand)}" — expected "deny"|"ask", inheriting protect.ask instead`,
+      );
+    }
+  }
+  if (obj.protectedPathPolicy !== undefined) {
+    if (obj.protectedPathPolicy === "deny" || obj.protectedPathPolicy === "ask") {
+      result.protectedPathPolicy = obj.protectedPathPolicy;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.protectedPathPolicy "${String(obj.protectedPathPolicy)}" — expected "deny"|"ask", inheriting protect.ask instead`,
+      );
+    }
+  }
+
+  // 219 Phase 0: parse whitelistAllow — string[] of project-relative globs.
+  // Entries are trimmed, empties dropped, deduplicated; absolute paths and
+  // ".." segments are rejected (fail-safe: never exempt such paths).
+  if (obj.whitelistAllow !== undefined) {
+    if (Array.isArray(obj.whitelistAllow) && obj.whitelistAllow.every((g) => typeof g === "string")) {
+      const seen = new Set<string>();
+      const cleaned: string[] = [];
+      for (const rawGlob of obj.whitelistAllow as string[]) {
+        const glob = rawGlob.trim();
+        if (glob.length === 0) continue;
+        if (path.posix.isAbsolute(glob) || path.win32.isAbsolute(glob) || glob.split("/").some((seg) => seg === "..")) {
+          console.warn(
+            `[pi-pipeline] Invalid protect.whitelistAllow entry "${glob}" — absolute paths and ".." segments are rejected, ignoring`,
+          );
+          continue;
+        }
+        if (!seen.has(glob)) {
+          seen.add(glob);
+          cleaned.push(glob);
+        }
+      }
+      result.whitelistAllow = cleaned;
+    } else {
+      console.warn(
+        `[pi-pipeline] Invalid protect.whitelistAllow — expected string[], ignoring`,
+      );
     }
   }
 
@@ -1430,9 +1494,18 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       // object form; resolution to a concrete mode happens in
       // write-scope/mode.resolveWhitelistMissMode, default "ask").
       whitelistMiss: json.protect?.whitelistMiss,
+      // 219 Phase 0: preserve the fine-grained policy keys; the read-point
+      // inheritance (`protect.ask` fallback) applies when unset (B1/M4).
+      destructiveCommand: json.protect?.destructiveCommand,
+      protectedPathPolicy: json.protect?.protectedPathPolicy,
+      whitelistAllow: json.protect?.whitelistAllow ?? [],
     },
     startStageMode: json.startStageMode ?? "auto",
-    audit: { promptSnapshot: json.audit?.promptSnapshot ?? "full" },
+    audit: {
+      promptSnapshot: json.audit?.promptSnapshot ?? "full",
+      // 219 Phase 0: default true — only pipeline_auto_decision is gated.
+      autoDecisions: json.audit?.autoDecisions ?? true,
+    },
     init: { conflictCheck: json.init?.conflictCheck ?? "model" },
     maxConfirmRejections:
       json.maxConfirmRejections ?? DEFAULT_CONFIRM_MAX_REJECTIONS,

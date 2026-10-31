@@ -409,6 +409,68 @@ export function describeGitModifySource(
   return "matrix-default";
 }
 
+// ─── 219 Phase 0: Fine-Grained Policy Keys (destructiveCommand / protectedPathPolicy / whitelistAllow) ──
+
+/**
+ * 219 Phase 0 (B1/M4): resolve the destructive-command policy from a LIVE config.
+ * Defensive: works for configs that never went through `resolvePipelineConfig`
+ * (`makeTestConfig`, direct literals in tests) — `ask` stays the fallback.
+ * Priority: 1) explicit `protect.destructiveCommand`; 2) `protect.ask`
+ * (true → "ask", false/absent → "deny"). Never consults or relaxes the
+ * system-path safety net and never participates in the `gitModify:"block"`
+ * fallback gate (those keep reading `protect.ask` directly).
+ */
+export function resolveDestructiveCommandPolicy(config: PipelineConfig): "deny" | "ask" {
+  if (config.protect?.destructiveCommand !== undefined) {
+    return config.protect.destructiveCommand;
+  }
+  return config.protect?.ask === true ? "ask" : "deny";
+}
+
+/**
+ * 219 Phase 0 (B1/M4): resolve the protected-path policy. Governs ONLY
+ * hardcoded + gitignore protection (`isPathProtectedForModify`). Does NOT
+ * govern:
+ *  - out-of-project targets (OUTSIDE_PATH_CLASS) — those keep `protect.ask`
+ *  - the `gitModify:"block"` fallback gate — that keeps `protect.ask`
+ * Same two-tier resolution as `resolveDestructiveCommandPolicy`.
+ */
+export function resolveProtectedPathPolicy(config: PipelineConfig): "deny" | "ask" {
+  if (config.protect?.protectedPathPolicy !== undefined) {
+    return config.protect?.protectedPathPolicy;
+  }
+  return config.protect?.ask === true ? "ask" : "deny";
+}
+
+/**
+ * 219 Phase 0: resolve the `protect.whitelistAllow` glob list. Returns [] for
+ * absent/invalid input — the caller never needs an `undefined` guard.
+ */
+export function resolveWhitelistAllowGlobs(config: PipelineConfig): string[] {
+  const globs = config.protect?.whitelistAllow;
+  return Array.isArray(globs) && globs.every((g) => typeof g === "string") ? globs : [];
+}
+
+/**
+ * 219 Phase 0 (H1): does a project-internal path hit the `whitelistAllow`
+ * glob list (the whitelist-miss exemption)? `*` matches within one segment,
+ * `**` crosses `/`; plain entries use directory prefix matching — the same
+ * pattern language as the stage read-only paths. The list MUST be
+ * pre-resolved via `resolveWhitelistAllowGlobs`; never exempt out-of-root or
+ * absolute targets with it.
+ */
+export function isPathWhitelistAllowHit(relPath: string, globs: string[]): boolean {
+  for (const pattern of globs) {
+    if (pattern.includes("*")) {
+      if (globToRegExp(pattern).test(relPath)) return true;
+    } else {
+      // Directory prefix matching (same normalization as allow/whitelist paths)
+      if (isPathAllowed(relPath, normalizeAllow([pattern]))) return true;
+    }
+  }
+  return false;
+}
+
 // ─── Design-Review Dynamic Write Scope (Phase 4 / 191) ──────────────────────
 
 /**

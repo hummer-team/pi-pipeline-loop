@@ -13,6 +13,11 @@
  * - child sessions never pop a menu: `whitelist_miss` batches queue an owner
  *   write approval (owner-approval) instead; child + `protected` is hard-blocked
  *   in-loop by the guard (190 Fix-A, R9b untouched).
+ * - 219 Phase 0 (H1): the `protect.whitelistAllow` exemption is applied at the
+ *   CANDIDATE CLASSIFICATION point (`checkStageWriteBlock` in tool-guard), so an
+ *   exempted path never becomes a `whitelist_miss` candidate at all — denied
+ *   batches must never contain exemption candidates here; protected / git
+ *   policy / out-of-root targets are likewise never exempted in the guard.
  *
  * Dependency direction (plan T2.3 note): flow-state / pipeline-start /
  * constants static edges are the exact shape protect-ask.ts already declares
@@ -21,6 +26,7 @@
  */
 
 import type { PipelineConfig, PipelineStage, SessionMeta, ViolationItem, WhitelistMissMode } from "../../types";
+import { resolveProtectedPathPolicy } from "../../utils/protect";
 import type { RuntimeCtx } from "../runtime-ctx";
 import type { GuardSource } from "../violation-tracker";
 import { DEFAULT_MAX_VIOLATIONS, AUDIT_THROTTLE_WINDOW_MS } from "../../constants";
@@ -111,9 +117,11 @@ export async function applyCollectedWrites(
   return await decideWhitelistMiss(candidates, missItems, protectedItems.length > 0, deps);
 }
 
-/** `protect.ask === true` guard for the protected human channel (unchanged semantics). */
+/** 219 Phase 0 (B1): `ask` guard for the protected human channel — now the
+ * fine-grained `protectedPathPolicy` with the `protect.ask` fallback, same
+ * semantics at every protected-path read point in tool-guard. */
 function protectAskEnabled(deps: ApplyWriteDecisionDeps): boolean {
-  return deps.config.protect?.ask === true;
+  return resolveProtectedPathPolicy(deps.config) === "ask";
 }
 
 /**

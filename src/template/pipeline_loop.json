@@ -21,13 +21,21 @@
     "ask": true,
     "allow": [],
     "gitModify": "allow",
-    "_comment_allow": "Add paths here to exempt from gitignore protection (prefix match). Example: [\"docs/\"] exempts docs/** from gitignore blocking. NOTE: allowedWritePaths per-stage is NOT the exemption channel — use protect.allow for gitignore exemption.",
+    "destructiveCommand": "ask",
+    "protectedPathPolicy": "ask",
+    "whitelistAllow": [],
+    "_comment_destructiveCommand": "219: fine-grained override for destructive bash command dialogs. \"ask\" = route to the existing 3-choice dialog; \"deny\" = hard block without any dialog. Unset = inherit protect.ask (ask=true → \"ask\", else \"deny\"). Invariants: NEVER relaxes the system-path safety net (rm/mv/chmod/chown on system paths); NEVER participates in the gitModify:\"block\" fallback gate (keep reading protect.ask there).",
+    "_comment_protectedPathPolicy": "219: fine-grained override for hardcoded/gitignore-protected write dialogs. Same inheritance and value domain as destructiveCommand. Governs ONLY in-project protected writes: out-of-project targets (stage whitelist misses outside the root) and the gitModify fallback gate KEEP using protect.ask.",
+    "_comment_whitelistAllow": "219: project-relative glob list exempting PLAIN whitelist misses from blocking, e.g. [\"docs/**\", \"src/*.ts\"]. DIFFERENT from protect.allow (which only exempts gitignore dynamic protection). whitelistAllow ONLY exempts the whitelist_miss classification and is honoured even when whitelistMiss=\"deny\"; hardcoded/gitignore-protected paths, git policy and out-of-root targets are NEVER exempted. Entries are trimmed, deduplicated; absolute paths and \"..\" segments are rejected.",
+    "_comment_allow": "Add paths here to exempt from gitignore protection (prefix match). Example: [\"docs/\"] exempts docs/** from gitignore blocking. NOTE: allowedWritePaths per-stage is NOT the exemption channel — use protect.allow for gitignore exemption. NOTE (219): protect.whitelistAllow is a DIFFERENT key — it only exempts whitelist_miss.",
     "_comment_whitelistMiss": "218 F.2: behavior when a write misses the stage allowedWritePaths whitelist (or targets outside the project root via bash file-arg). \"ask\" (default) = one interactive decision per tool call; \"deny\" = pre-218 hard block + violation counting; \"allow\" = pass with throttled audit (managed hosts). NEVER relaxes hardcoded/gitignore protection, git policy, destructive commands or read-only deliverables. Not set here = \"ask\".",
     "_comment_whitelistMiss_forms": "String shorthand: \"deny\". Object form: { \"whitelistMiss\": { \"mode\": \"ask\", \"stages\": { \"review\": \"deny\" } } } — the stages table overrides per stage; highest priority is the single value inside a stage block: stages.fix.protect.whitelistMiss = \"allow\"."
   },
   "audit": {
-    "promptSnapshot": "full"
+    "promptSnapshot": "full",
+    "autoDecisions": true
   },
+  "_comment_audit": "promptSnapshot controls the prompt snapshot audit log (\"full\"|\"plugin\"|\"off\"). autoDecisions (219) gates ONLY the pipeline_auto_decision event (per-gate auto decisions, largest volume) — false disables just that event; lifecycle/safety audited events are ALWAYS written.",
   "init": {
     "conflictCheck": "model"
   },

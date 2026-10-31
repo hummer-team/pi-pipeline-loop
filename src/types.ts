@@ -1632,6 +1632,42 @@ export interface ProtectConfig {
    * with a global per-stage override table.
    */
   whitelistMiss?: WhitelistMissMode | WhitelistMissConfig;
+
+  /**
+   * 219 Phase 0: fine-grained override for destructive bash commands.
+   * - unset  : inherit `ask` (ask === true → "ask", else "deny")
+   * - "deny" : hard block (no dialog, even when protect.ask is true)
+   * - "ask"  : route to the existing 3-choice dialog (session allowlist still applies)
+   * Invariant: NEVER relaxes the system-path safety net
+   * (`["rm","mv","chmod","chown"]` + `isSystemPath(absTarget)` branch).
+   * Invariant: NEVER participates in the `gitModify:"block"` fallback gate.
+   * Read this value ONLY through `resolveDestructiveCommandPolicy` (defensive
+   * normalization at the read point — never `config.protect?.xxx === "ask"`).
+   */
+  destructiveCommand?: "deny" | "ask";
+
+  /**
+   * 219 Phase 0: fine-grained override for hardcoded/gitignore-protected writes.
+   * Same inheritance as `destructiveCommand` (unset → inherit `ask`).
+   * Governs ONLY hardcoded + gitignore protection (`isPathProtectedForModify`).
+   * Does NOT govern:
+   *  - out-of-project targets (OUTSIDE_PATH_CLASS) — those keep `protect.ask`
+   *  - the `gitModify:"block"` fallback gate — that keeps `protect.ask`
+   * Read this value ONLY through `resolveProtectedPathPolicy`.
+   */
+  protectedPathPolicy?: "deny" | "ask";
+
+  /**
+   * 219 Phase 0: glob allowlist exempting project-internal writes from
+   * `whitelist_miss`. DIFFERENT from `allow` (which only exempts gitignore
+   * dynamic protection). Purely additive — never interacts with `ask`,
+   * `destructiveCommand` or `protectedPathPolicy`; protected paths (hardcoded /
+   * gitignore), git policy and out-of-root targets are NEVER exempted.
+   * Only the plain `whitelist_miss` classification is exempted, and the check
+   * runs BEFORE deny-mode classification so `whitelistMiss:"deny"` configs
+   * still honour the exemption.
+   */
+  whitelistAllow?: string[];
 }
 
 // ─── Pipeline Configuration ──────────────────────────────────────────────────
@@ -1760,8 +1796,12 @@ export interface PipelineConfig {
    *   - "full": Record complete systemPrompt (base + pluginPromptFull).
    *   - "plugin": Record only the plugin segment (backward compatible).
    *   - "off": Do not write prompt snapshot (zero overhead).
+   *
+   * 219 Phase 0 (M3): controls the `pipeline_auto_decision` event ONLY (the
+   * per-gate auto decision log; largest volume). Lifecycle / safety audit
+   * events are ALWAYS written regardless of this flag. Default: true.
    */
-  audit?: { promptSnapshot?: "full" | "plugin" | "off" };
+  audit?: { promptSnapshot?: "full" | "plugin" | "off"; autoDecisions?: boolean };
 
   /**
    * Initialization behavior configuration for /pipeline-init command.
@@ -2094,8 +2134,11 @@ export interface PipelineJsonConfig {
    * Audit configuration for prompt snapshots.
    * Controls what is recorded in the prompt snapshot audit log.
    * Default: { promptSnapshot: "full" }.
+   *
+   * 219 Phase 0: `autoDecisions` gates ONLY `pipeline_auto_decision`
+   * (default true); lifecycle/safety events are always written.
    */
-  audit?: { promptSnapshot?: "full" | "plugin" | "off" };
+  audit?: { promptSnapshot?: "full" | "plugin" | "off"; autoDecisions?: boolean };
 
   /**
    * Initialization behavior configuration for /pipeline-init command.

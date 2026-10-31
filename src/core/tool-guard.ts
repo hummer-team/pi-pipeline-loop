@@ -37,6 +37,10 @@ import {
   isPathProtectedForModify,
   toProjectRelative,
   resolveSymlinkPathStrict,
+  resolveProtectedPathPolicy,
+  resolveDestructiveCommandPolicy,
+  resolveWhitelistAllowGlobs,
+  isPathWhitelistAllowHit,
   type ProtectState,
 } from "../utils/protect";
 import {
@@ -136,6 +140,9 @@ function buildGitWriteBlockReason(config: PipelineConfig, currentStage: Pipeline
  * - "allow-whitelist": Path is allowed by stage whitelist (skip global chain).
  * - "continue": No stage-level decision (full mode / undefined) — caller should apply global chain.
  * - exempted?: boolean indicates the path was exempted from read-only check (195 Phase 1)
+ * - whitelistAllowExempt?: 219 Phase 0 (H1): the path missed the stage whitelist
+ *   but hit `protect.whitelistAllow` — treated as allow-whitelist. Callers write
+ *   the throttled `whitelist_allow_exempt` audit when this flag is set.
  */
 type StageWriteCheckResult =
   | {
@@ -146,7 +153,7 @@ type StageWriteCheckResult =
        *  "whitelist_miss" is attached ONLY outside deny mode (byte-equivalence). */
       kind?: "readonly" | "protected" | "whitelist_miss";
     }
-  | { status: "allow-whitelist"; exempted?: boolean }
+  | { status: "allow-whitelist"; exempted?: boolean; whitelistAllowExempt?: boolean }
   | { status: "continue"; exempted?: boolean };
 
 /**
@@ -313,7 +320,9 @@ function checkStageWriteBlock(
   state: ProtectState,
   allowedReadOnlyPaths?: string[],
   exemptedPaths?: string[],
-  whitelistMissMode?: WhitelistMissMode
+  whitelistMissMode?: WhitelistMissMode,
+  /** 219 Phase 0 (H1): `protect.whitelistAllow` globs — pre-resolved by the caller. */
+  whitelistAllowGlobs?: string[]
 ): StageWriteCheckResult {
   // 195 Phase 1: Check if path is in exempted list before read-only check.
   // Exempted paths skip read-only interception and return exempted: true.
@@ -347,6 +356,19 @@ function checkStageWriteBlock(
 
   // Whitelist mode: path must be in the stage write whitelist
   if (!isPathAllowedWrite(relPath, allowedWritePaths)) {
+    // 219 Phase 0 (H1): `whitelistAllow` glob exemption — checked BEFORE the
+    // deny classification, so a "deny"-mode config still honours the
+    // exemption. Protection NEVER relaxes: hardcoded or gitignore-protected
+    // paths (and anything outside the project root, which never reaches this
+    // function) are never exempted.
+    if (
+      whitelistAllowGlobs !== undefined &&
+      whitelistAllowGlobs.length > 0 &&
+      !isPathProtectedForModify(relPath, state) &&
+      isPathWhitelistAllowHit(relPath, whitelistAllowGlobs)
+    ) {
+      return { status: "allow-whitelist", whitelistAllowExempt: true };
+    }
     return {
       status: "block",
       reason: `FORBIDDEN: '${relPath}' not in allowed write paths for '${stageName}' stage. Next step: write to [${(allowedWritePaths ?? []).join(", ")}].`,
@@ -367,6 +389,28 @@ function checkStageWriteBlock(
 
   // Whitelist hit + not hardcoded → allowed (gitignore/allow exemptions are bypassed)
   return { status: "allow-whitelist" };
+}
+
+/**
+ * 219 Phase 0 (H1): throttled audit for a `whitelistAllow` exemption.
+ * One record per stage+pathClass within the throttle window, mirroring the
+ * `whitelist_miss_allowed` style.
+ */
+async function auditWhitelistAllowExempt(
+  relPath: string,
+  stage: PipelineStage,
+  pipelineId: string
+): Promise<void> {
+  if (!shouldEmitWithinWindow(`whitelist_allow_exempt:${stage}`, AUDIT_THROTTLE_WINDOW_MS)) return;
+  try {
+    await safeWriteAuditLog("whitelist_allow_exempt", {
+      pipelineId,
+      stage,
+      path: relPath,
+    });
+  } catch (err) {
+    console.error(`[tool-guard] auditWhitelistAllowExempt failed: stage=${stage}, relPath="${relPath}", error=${String(err)}`);
+  }
 }
 
 // askProtectDecision is shared with pipeline-init (verify merge ask).
@@ -421,6 +465,8 @@ async function checkBashFileTargets(
   whitelistMissMode: WhitelistMissMode,
   /** 218 T2.3: per-call candidate sink merged into ONE decision after the loop. */
   collector: WriteCandidateCollector,
+  /** 219 Phase 0 (H1): `protect.whitelistAllow` globs for the stage-write exemption. */
+  whitelistAllowGlobs: string[],
   opts?: { skipGitDirTargets?: boolean; allowGitLockFiles?: boolean },
 ): Promise<{ block: true; reason: string } | undefined> {
   const targets = extractBashFileTargets(segment);
@@ -596,7 +642,11 @@ async function checkBashFileTargets(
       const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
       
       // Stage-level write whitelist check (with read-only path priority)
-      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode);
+      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs);
+      // 219 Phase 0 (H1): throttled audit when `whitelistAllow` exempted this target
+      if (stageCheck.status === "allow-whitelist" && stageCheck.whitelistAllowExempt) {
+        await auditWhitelistAllowExempt(relPath, meta.currentStage, meta.pipelineId);
+      }
       
       // 195 Phase 1: Audit log when path is exempted from read-only check
       if (stageCheck.exempted) {
@@ -631,7 +681,8 @@ async function checkBashFileTargets(
             isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx
           );
           if (childBlock) return childBlock;
-          if (config.protect?.ask === true) {
+          // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
+          if (resolveProtectedPathPolicy(config) === "ask") {
             // Owner protected-ask targets ride the merged batch (F.3-2:
             // protected wins the decision, but a mixed batch asks ONCE).
             collector.protectedBatch.push({
@@ -662,7 +713,8 @@ async function checkBashFileTargets(
       }
 
       if (stageCheck.status === "block") {
-        if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
+        // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
+        if (resolveProtectedPathPolicy(config) === "ask" && isPathProtectedForModify(relPath, state)) {
           // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
           const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
           const childBlock = await childHardBlockForProtectedPath(
@@ -695,7 +747,8 @@ async function checkBashFileTargets(
       // Global protection chain (only when whitelist did not allow)
       if (stageCheck.status !== "allow-whitelist") {
         if (isPathProtectedForModify(relPath, state)) {
-          if (config.protect?.ask === true) {
+          // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
+          if (resolveProtectedPathPolicy(config) === "ask") {
             // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
             const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
             const childBlock = await childHardBlockForProtectedPath(
@@ -920,7 +973,10 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               ui.notify(ctx, reason);
               return { block: true, reason };
             }
-            if (config.protect?.ask === true) {
+            // 219 Phase 0 (B1): destructive-command policy from the fine-grained
+            // key, falling back to protect.ask (never relaxes the system-path
+            // safety net or the gitModify fallback gate).
+            if (resolveDestructiveCommandPolicy(config) === "ask") {
               const outcome = await askCommandDecision(ctx, meta, command, config);
               if (outcome.decision === "block") {
                 const reason = buildBlockedReason(command);
@@ -955,6 +1011,9 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         // ("one tool call → at most one human decision"). deny mode never
         // collects (HEAD flow inside checkBashFileTargets).
         const whitelistMissMode = resolveWhitelistMissMode(config, meta.currentStage);
+        // 219 Phase 0 (H1): resolve once per bash call for the stage-write
+        // check + exemption audit.
+        const whitelistAllowGlobs = resolveWhitelistAllowGlobs(config);
         const writeCollector = createWriteCandidateCollector();
         const writeDecisionDeps: ApplyWriteDecisionDeps = {
           ctx,
@@ -1099,7 +1158,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               const blockResult = await checkBashFileTargets(
                 segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
                 bashAccess,
-                whitelistMissMode, writeCollector,
+                whitelistMissMode, writeCollector, whitelistAllowGlobs,
                 { skipGitDirTargets: true },
               );
               if (blockResult) return blockResult;
@@ -1118,7 +1177,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const blockResult = await checkBashFileTargets(
             segment, bashFileState, stageConfig, meta, config, ctx, trackViolation, ui,
             bashAccess,
-            whitelistMissMode, writeCollector,
+            whitelistMissMode, writeCollector, whitelistAllowGlobs,
             { allowGitLockFiles: gitPolicy === "allow" },
           );
           if (blockResult) return blockResult;
@@ -1514,6 +1573,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
         // branches of the in/out-of-root split. deny mode collects nothing and
         // keeps the pre-218 flow byte-for-byte (global constraint 8).
         const whitelistMissMode = resolveWhitelistMissMode(config, meta.currentStage);
+        // 219 Phase 0 (H1): resolve once per write/edit call for the exemption.
+        const whitelistAllowGlobs = resolveWhitelistAllowGlobs(config);
         const writeDecisionDeps: ApplyWriteDecisionDeps = {
           ctx,
           config,
@@ -1609,8 +1670,12 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
             
             // Stage-level write whitelist check (with read-only path priority)
-            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode);
-            
+            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs);
+            // 219 Phase 0 (H1): throttled audit when `whitelistAllow` exempted this target
+            if (stageCheck.status === "allow-whitelist" && stageCheck.whitelistAllowExempt) {
+              await auditWhitelistAllowExempt(relPath, meta.currentStage, meta.pipelineId);
+            }
+
             // 195 Phase 1: Audit log when path is exempted from read-only check
             if (stageCheck.exempted) {
               await safeWriteAuditLog(
@@ -1646,7 +1711,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   isChild, relPath, protectionType, state, toolName, trackViolation, ui, ctx
                 );
                 if (childBlock) return childBlock;
-                if (config.protect?.ask === true) {
+                // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
+                if (resolveProtectedPathPolicy(config) === "ask") {
                   const outcome = await applyCollectedWrites(
                     [{
                       path: relPath,
@@ -1684,7 +1750,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             } else if (stageCheck.status === "block") {
               // Phase 1 (190) Fix-A: child sessions hard-block immediately on protected paths
               // without entering askProtectDecision (prevents dismissCount accumulation on child)
-              if (config.protect?.ask === true && isPathProtectedForModify(relPath, state)) {
+              // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
+              if (resolveProtectedPathPolicy(config) === "ask" && isPathProtectedForModify(relPath, state)) {
                 // Determine protection type for appropriate error message
                 const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
                 const childBlock = await childHardBlockForProtectedPath(
@@ -1722,7 +1789,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               // "continue" → global protection chain (hardcoded + allow + gitignore)
               // Hardcoded protection (allow cannot exempt)
               if (isHardcodedProtected(relPath, state.hardcoded)) {
-                if (config.protect?.ask === true) {
+                // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
+                if (resolveProtectedPathPolicy(config) === "ask") {
                   // Phase 1 (190) Fix-A: child sessions hard-block immediately
                   // without entering askProtectDecision (prevents dismissCount accumulation on child)
                   const childBlock = await childHardBlockForProtectedPath(
@@ -1764,7 +1832,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 } else if (state.gitignore) {
                   // Check gitignore protection
                   if (isGitignored(state.gitignore, relPath)) {
-                    if (config.protect?.ask === true) {
+                    // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
+                    if (resolveProtectedPathPolicy(config) === "ask") {
                       // Phase 1 (190) Fix-A extension: child sessions hard-block on gitignore paths
                       const childBlock = await childHardBlockForProtectedPath(
                         isChild, relPath, "gitignore", state, toolName, trackViolation, ui, ctx

@@ -295,6 +295,30 @@ bun add @earendil-works/pi-pipeline
 - 例如：`"allow": ["docs/design/", "src/template/"]` 允许编辑设计文档和模板文件
 - 但 git add/commit 仍会拦截这些路径（gitignore 中的路径本不应提交）
 
+#### 3.2.2 protect 细粒度策略键（219 新增：destructiveCommand / protectedPathPolicy / whitelistAllow）
+
+`protect.ask` 是**全局兜底**开关；`destructiveCommand` / `protectedPathPolicy` 是**细粒度覆盖**，两级继承优先级如下：
+
+```
+优先级 1：protect.destructiveCommand / protect.protectedPathPolicy 的显式值
+优先级 2：protect.ask（兜底）— true → "ask"；false / 缺省 → "deny"
+优先级 3：硬边界（永不参与上述解析）：系统路径安全网、PROTECTED_PATHS、git policy
+```
+
+真值表：
+
+| 场景 | `ask` | 新键 | 解析结果 |
+|---|---|---|---|
+| 存量默认 | 缺省 / false | 未配置 | `deny`（硬拦，逐字同改动前） |
+| 存量弹窗用户 | **true** | 未配置 | `ask`（弹窗，逐字同改动前） |
+| 显式收紧 | true | `"deny"` | `deny`（不弹窗，直接拦） |
+| 显式放宽 | false | `"ask"` | `ask`（弹窗，仍非放行） |
+
+- **`protect.destructiveCommand`**：危险命令三选一对话框的开关（继承式）。**不变量**：永不放宽系统路径安全网（`rm/mv/chmod/chown` + 系统路径）；永不参与 `gitModify:"block"` 的 fallback gate —— 越界目标与 git fallback **只认 `protect.ask`**，新键不接入。
+- **`protect.protectedPathPolicy`**：硬编码/gitignore 保护写对话框的开关（继承式）。**不变量**：只治理项目内受保护路径（`isPathProtectedForModify` 通道）；项目外目标（stage 白名单越界）与 gitModify fallback 不在其治理范围内。
+- **`protect.whitelistAllow`**：项目相对 glob 列表（如 `["docs/**", "src/*.ts"]`），**只豁免 `whitelist_miss` 分类**且在 deny 分类**之前**判定（`whitelistMiss:"deny"` 时依然生效），豁免命中写节流审计 `whitelist_allow_exempt`。**与 `allow` 不同**：`allow` 只豁免 gitignore 动态保护的编辑权限；`whitelistAllow` 豁免的是"未命中 stage 写白名单"这一分类本身。**永不豁免**：受保护路径（硬编码/gitignore）、git policy、项目外目标。
+- `audit.autoDecisions`：**只控制** `pipeline_auto_decision` 一个事件（受控白名单）；生命周期/安全类审计事件恒写。缺省 `true`。
+
 ### 3.3 Stage 级写白名单（allowedWritePaths）
 
 在 `protect` 全局保护之外，插件还支持 **per-stage 写白名单**，限定各阶段可写文件范围，形成"stage 白名单 + 全局黑名单"混合模型。
