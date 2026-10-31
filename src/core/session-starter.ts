@@ -41,6 +41,8 @@ import { createDesignReviewRuntimeContext } from "./design-review/runtime-contex
 import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "./design-review/entry-result";
 // 194 Phase 3 (C3, task 2): child-side executor binding record after JOIN
 import { recordChildBindingFromRuntimeEvidence } from "./stage-executor/runtime-binding";
+// 219 Phase 2: auto-job config overlay replay gate (four states, plan §3-a)
+import { replayOverlayForSessionStart } from "./auto-pipeline/config-overlay";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -499,6 +501,14 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
 
       // Preload prompt-config cache (failure silently returns {} — never blocks session start)
       await loadPromptConfig(projectRoot);
+
+      // ─── 219 Phase 2: auto-job config overlay replay (owner sessions only) ────
+      // Four-state gate (plan Phase 2 §3-a): replay the sidecar-tracked job
+      // overlay when this process can safely own the lock; child members and
+      // external live holders NEVER have their session flipped to auto semantics.
+      if (!detectSessionRole(ctx).isChild) {
+        await replayOverlayForSessionStart(config, (message) => ui.notify(ctx, message));
+      }
 
       if (!meta?.currentStage) {
         // ── Subagent/fork JOIN detection (Q7) ──────────────────────────

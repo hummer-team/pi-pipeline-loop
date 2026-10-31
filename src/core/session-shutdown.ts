@@ -36,6 +36,8 @@ import { clearActiveSpawnRecord, clearStageSpawnRecords } from "../utils/spawn-c
 import { markSubagentsUnavailable } from "../utils/subagent-availability";
 // 210 Phase 7: shutdown-time usage drain (record-only, fail-open).
 import { flushUsageToMetaSafely } from "./usage-recorder";
+// 219 Phase 2: overlay rollback guard (job-state gated, never reason-based).
+import { readStateForActiveLock, restoreOverlay, shouldRestoreOnShutdown } from "./auto-pipeline/config-overlay";
 
 /**
  * Creates the `session_shutdown` hook that handles session teardown.
@@ -192,6 +194,17 @@ export function createSessionShutdown(config: PipelineConfig): Hook<"session_shu
 
         // Do NOT call markPipelineAborted or clearStage for child sessions
         return;
+      }
+
+      // 219 Phase 2: overlay rollback guard — gated on the sidecar `status`
+      // (never the shutdown `reason`: session replacement also terminates).
+      // Job running → the live config keeps the auto values ("kept" audit);
+      // snapshot + non-running → finalizeJob did not run, rollback here.
+      const autoJobState = readStateForActiveLock(config.projectRoot);
+      if (shouldRestoreOnShutdown(autoJobState)) {
+        restoreOverlay(config, autoJobState.overlaySnapshot);
+      } else if (autoJobState) {
+        await safeWriteAuditLog("pipeline_auto_overlay_kept", { reason: "job_running" });
       }
 
       // Owner session: reset flowState on quit/new — resume/fork/reload preserve user intent
