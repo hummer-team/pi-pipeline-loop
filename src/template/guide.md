@@ -1916,3 +1916,130 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | 旧 run 的迟到 terminal | 与当前 identity 不匹配 → 当前记录零触碰                                                                                                                                                                                                      | `late_event_ignored`             |
 | 子会话绑定旧 run       | `child-stale` 拒绝，零写入（身份一经更早 run 冻结）                                                                                                                                                                                          | `identity_frozen_by_earlier_run` |
 | 同 visit 失败预算      | 执行器连续失败预算由 `DEFAULT_EXECUTOR_FAILURE_BUDGET`（默认 3）管控，与返工预算 `maxLoopCycles`（默认 5）解耦；继承 `consecutiveFailures`，达到执行器预算上限后新 run 拒绝 `budget_exhausted_same_visit`；completed terminal **不**重置预算 | —                                |
+
+---
+
+## 19. 自动托管模式（Auto Pipeline，219）
+
+自动托管让插件在**无人值守**下跑完 `clarify → plan → design-review → develop → review → fix`：用户只维护任务文件，插件按文档队列逐份执行、每份完成后清理会话级资源并按配置起新 session，全部结束后产出汇总。
+
+### 19.1 任务文件 `docs/jobs/*.yaml`
+
+- 位置：只扫描 `docs/jobs/`（**不递归**），按 mtime 取最新的 ≤5 份。该目录**不在** `archive.dirs` 的默认归档范围，任务文件不会随设计文档被归档移动。
+- 只读：插件**永不**回写 job 文件；进度状态写入 `.pi/auto_pipeline/{jobId}/state.json`（sidecar）。`.pi/auto_pipeline/` 与 `.pi/audit/` 同级，属于运行期产物，**不随任务归档**。
+- `jobId` = 文件名去掉 `.yaml`，只允许 `[A-Za-z0-9._-]`；含路径分隔符/`..` 一律拒绝。
+- 缺省值在解析期填满（下游永远看不到 `undefined`）：`finalLoopGrace: 1`（上限 3，`0` 关闭）、`maxTotalLoops: 20`、`maxConsecutiveVerifyFailures: 3`、`designReview.maxRounds: 3`、`reviewFix.maxRounds: 6`、`reviewFix.maxLoopsPerStage: 6`、`maxAutoResumes: 2`、`wallClockMs: 0`、`maxTotalFreezes: 0`（不限制）。
+- fail-fast（**不接受**静默降级）：`clarify.mode` 只允许 `self-answer` / `orchestrated`（`prefilled` 报错）；`clarify.fallback` / `clarify.answerStrategy` 属于已移除键，出现即报错；`designReview.mode` 只允许 `auto`（`manual` 报错）；`decisionPolicy.byReason` 的值只能是 `resume` / `abort` / `stop-and-report`。未知键只告警。
+- `writePolicy.allowGlobs` 映射到 `protect.whitelistAllow`，与 `protect.allow` **不同**：前者只豁免 `whitelist_miss`，后者只豁免 gitignore 动态保护。
+- `decisionPolicy` 是 **job 私有**：只由冻结自动驾驶消费，**不会**写进 `pipeline_loop.json`（那里是 210 provider 链的 `decisionPolicy`，结构不兼容）。
+- `onFailure`：`stop`（默认，出错的文档记失败后终止 job）/ `continue`（跳过继续下一份）。**硬停无视该值**。
+- 示例见 `docs/jobs/example.yaml`。
+
+### 19.2 `/pipeline-auto` 用法
+
+| 用法 | 面向 | 说明 |
+|---|---|---|
+| `/pipeline-auto` | 用户 | 打开 job 菜单（≤5 行，`{文件名}（{已完成}/{总数} 已完成）`；running 追加 `续跑 {i}/{N}`；hash 漂移追加 `（job 已变更）`） |
+| `/pipeline-auto --next --job <jobId> --token <uuid>` | 内部（链式续跑） | 续跑当前 job 的下一份文档；不接受文件路径 |
+
+- 菜单拒绝的情形：无 `docs/jobs/*.yaml`（提示创建 + 示例位置）、宿主无 `ui.select`、sidecar 损坏/`schemaVersion` 不识别（要求人工清理）、另一个 job 正持有进程级锁。
+- `jobHash` 漂移三选一：`按新 job 续跑`（按 doc 路径重新对齐进度）/ `重新开始`（进度重置）/ `取消`。
+- 已完成（`status=completed`）的 job 选中后二次确认 `重新开始 / 取消`。
+- `docIndex` 语义 = **正在执行的文档**序号；它只在「启动下一份文档」时推进，收尾（`finalizeCurrentDoc`）**不**推进。
+
+### 19.3 配置 overlay 与单实例锁
+
+- overlay 在 **JSON 层**计算 → 重新 `resolvePipelineConfig` → **原地写回**共享 config（7 个 hook 在加载期捕获同一对象引用，因此零改造即生效）。磁盘上的 `pipeline_loop.json` **从不被写**。
+- 映射键只有：`confirm.plan/review` → `stages.plan/review.confirm.mode`；`reviewFix.maxLoopsPerStage` → `maxLoops`；`reviewFix.maxRounds` → `maxLoopCycles`；`writePolicy.*` → `protect.*`；`audit.recordAutoDecisions` → `audit.autoDecisions`。`clarify.*` / `docs.*` / `chain.*` / `stopConditions.*` / `designReview.*` / `decisionPolicy.*` **永不**进入 config。
+- `writePolicy.whitelistMiss` 是「本任务的最终口径」：阶段级 `stages.<stage>.protect.whitelistMiss` 会被**移除**，否则 Tier 1 会静默压过 job 值；回滚时按键还原。
+- `applyOverlay` 按 `jobHash` **幂等**：同 hash 的重复应用只重放已记录的 `to` 值，不重算 `before`，「session_start 重放 + `--next`」不会把 auto 值烤进回滚快照。
+- 锁是**进程级**（`.pi/auto_pipeline/lock.json`）：`jobA` / `jobB` 不能同时 active。僵尸锁（pid 已死）会被自动接管并审计 `pipeline_auto_lock`（`stale_reclaimed`）；存活但 token 不符 → `stale_token`，绝不抢占。
+- 回滚只发生在两处且互斥：`finalizeJob`（job 结束）与 `session_shutdown` 的 `shouldRestoreOnShutdown` 门控（sidecar 非 running 且存在快照）。
+
+### 19.4 三套独立预算
+
+| 预算 | 来源 | 落点 | 触发时的行为 |
+|---|---|---|---|
+| `reviewFix.maxRounds` | job | `maxLoopCycles`（overlay） | 既有 `recordStageVisit` 冻结语义（`max_loop_cycles`） |
+| `designReview.maxRounds` | job | `meta.autoJob.designReviewRounds` | 只在**派发前**（`review_ready` / FAIL 后重派）冻结；第 N 轮 PASS 照常推进到 develop，第 N+1 次派发才冻结（`design_review_budget_exhausted`） |
+| `stopConditions.maxTotalLoops` | job | sidecar `counters.totalLoops`（settle 时按 `loopCycleCount` 增量派生） | 只在「发起新 develop/fix 循环」处软停（`budget_exhausted`），当前文档仍可拿到 `finalLoopGrace` 次完成机会 |
+
+> 预算互不影响：`designReviewRounds` 达限不会冻结循环预算，`totalLoops` 达限也不会冻结 design-review 轮次。结果消费路径（`review_running` / `update_ready` / `update_running`）**永不**因轮次预算冻结。
+
+### 19.5 软停 / 硬停：两个函数、两个 seam
+
+| 函数 | 调用位置 | 判定 |
+|---|---|---|
+| `evaluateHardStop` | settle seam（`handleAutoSettle`）与冻结裁决 | 墙钟 `wallClockMs` / `stopOnBlockedReasons` / 连续验证失败 / 冻结不可解 / 历史冻结预算；命中即**文档失败**并走收尾 |
+| `evaluateLoopBrake` | 5 个「发起新 develop/fix 循环」位（`verify-advance`、`develop-transition`、`stage-advancer`×2、`pipeline-handoff`） | `totalLoops` 达限且当前文档未完成 → 先给 `finalLoopGrace`（默认 1，逐文档独立），再软停 |
+
+- **完成态优先**：已 `completed` 的文档永不会被硬停改判为失败。
+- 硬停无视 `onFailure`；软失败由 `onFailure` 决定停或继续。
+- `recordStageVisit` 保持纯工具语义：所有 sidecar 写点都在 `stop-policy` / `settle-seam`，软停**不**伪装成 `visit.ok=false`。
+
+### 19.6 收尾、失败降级与链式续跑
+
+- `releaseSessionResources`（`/pipeline-quit` 与自动任务共用）：使 design-review 授权与执行器绑定失效、清 `sessionAllowed*`/`verify*`/`stageExitRefusal`/`pendingOwnerApprovals`/`blockedReason`、清状态栏；不写 `flowState` / `terminateReason`。
+- 文档收尾 `finalizeCurrentDoc`：sidecar（含幂等凭据 `finalizeKey`）→ release → 审计 `pipeline_auto_cleanup` → notify。**不**回滚 overlay、**不**释放锁。
+- job 收尾 `finalizeJob`：sidecar 终态 → release → `pipeline_auto_cleanup` + `pipeline_auto_stop` → **回滚 overlay** → **释放锁** → 汇总。
+- 成功链：完成一份后仍有待跑文档 → `chain.newSession` 为真则起新 session（`/pipeline-auto --next --job … --token …`），被取消/抛错则**同 session 串行**，再失败才 `session_fail`；无待跑文档 → `job_completed`。
+- 失败链（三段降级）：① 文档收尾 → ② 硬停直接 `finalizeJob` → ③ `onFailure:stop` 终止 → ④ `onFailure:continue` 起下一份（新 session → 同 session → `session_fail`）。
+- 幂等：进程内键集 + sidecar `finalizeKey` 两层，连续多次 settle 只收尾一次，且与 `docIndex` 无关。
+
+### 19.7 人类闸门的自动应答
+
+| 闸门 | 自动应答 |
+|---|---|
+| clarify 完成标记 | job 指令要求自答并写 `## 模型确认`；未产出 → 记 `clarifyFallbackUsed` 并降级 `orchestrated`，再次未产出 → 文档失败（`clarify_marker_missing`） |
+| plan/review confirm | 由 overlay 写 `confirm.mode: auto`，既有 confirm 守卫（先读 config 再决定是否弹窗）因此不再弹窗 |
+| design-review 入口授权 | 第 4 参 `{ autoPipeline: { jobId } }`：保留 child 拒绝与前置校验，跳过 TUI 检测与确认，审计 `authorised_auto` |
+| manual FAIL | v1 只允许 `designReview.mode: auto`，FAIL 走 `auto-revise`（不伪造人工裁决） |
+| 写/命令对话框 | auto 活跃时：受保护路径、危险命令一律 `block`（`ask` 也**不放行**）；`whitelist_miss` 按解析后的模式：`allow` 放行，`deny`/`ask` 拦截 |
+| 冻结决策 | `byReason[reason]` → `onFreeze` → `stop-and-report`；`stop-and-report` **永不**回落 210 provider 链；`maxAutoResumes` 用尽即停；`set_budget` 直接按取消处理（不追加预算） |
+
+### 19.8 `pipeline_loop.json` 新增键（219 Phase 0）
+
+| 键 | 取值 | 语义 |
+|---|---|---|
+| `protect.destructiveCommand` | `deny` / `ask` | 危险命令对话框的细粒度覆盖；未设置时继承 `protect.ask`（`true`→`ask`，否则 `deny`） |
+| `protect.protectedPathPolicy` | `deny` / `ask` | 受保护路径写对话框的细粒度覆盖；同一继承规则 |
+| `protect.whitelistAllow` | glob 列表 | 仅豁免 `whitelist_miss`（在 `deny` 分支之前生效）；受保护路径 / git policy / 越界目标**永不**豁免 |
+| `audit.autoDecisions` | boolean（默认 `true`） | **只控制** `pipeline_auto_decision` 事件 |
+
+继承真值表：
+
+| 场景 | `protect.ask` | 新键 | 结果 |
+|---|---|---|---|
+| 存量默认 | 缺省/false | 未配置 | `deny`（与改动前逐字一致） |
+| 存量弹窗用户 | true | 未配置 | `ask`（逐字一致） |
+| 显式收紧 | true | `deny` | `deny`（不弹窗） |
+| 显式放宽 | false | `ask` | `ask`（弹窗，仍非放行） |
+
+**故意不读新键**的三处：越界目标（`OUTSIDE_PATH_CLASS`）、edit/write 的越界 `absPath`、`gitModify:"block"` 的 fallback gate —— 它们只认 `protect.ask`；系统路径安全网 `rm/mv/chmod/chown` + 系统路径判定与任何 `protect` 键无关。
+
+### 19.9 审计事件
+
+| 事件 | 是否受 `audit.autoDecisions` 控制 |
+|---|---|
+| `pipeline_auto_decision` | **是**（`false` → 不写） |
+| `pipeline_auto_start` / `pipeline_auto_job_overlay` / `pipeline_auto_overlay_replay` / `pipeline_auto_overlay_restore` / `pipeline_auto_overlay_kept` / `pipeline_auto_cleanup` / `pipeline_auto_stop` / `pipeline_auto_chain` / `pipeline_auto_continuity` / `pipeline_auto_lock` / `whitelist_allow_exempt` | 否（**恒写**，生命周期与安全相关） |
+
+### 19.10 `designReview.mode` / `failAction` / 模板 `confirm.mode` 真值表
+
+| `designReview.mode` | `confirm.mode`（`stages.design-review.confirm.mode`） | `failAction` | FAIL 时的行为 |
+|---|---|---|---|
+| `auto`（v1 唯一取值） | `auto`（模板默认） | `auto-revise`（默认） | 授权自动修订 plan 后重评（既有 auto 语义） |
+| `auto` | `auto` | `stop` | 文档失败并终止（`budget_exhausted`） |
+| `manual` | — | — | v1 **拒绝**（解析期报错），人工 FAIL 菜单只存在于 `/pipeline-start` 人机流程 |
+
+### 19.11 任务连续性（`/pipeline-auto` 之外同样生效）
+
+`session_start` 用纯函数 `decideContinuity` 硬判定「继续 / 重跑 / 无中断」，结论写入 `meta.continuity` 并审计 `pipeline_auto_continuity`；提示词新增「任务连续性」section（`{{task_continuity}}`）只陈述结论：
+
+1. `flowState=blocked` → `resume`（`stage` 取 `meta.currentStage`，缺失时回落 sidecar `lastStage`）
+2. sidecar running 且本 session 未 settle → `resume`（新 session 无 meta 也可用，`stage` 同样回落 `lastStage`）
+3. meta 无 `currentStage` → `none`
+4. sidecar completed 且已存在 commit 文档 → `none`（供 runner 跳过）
+5. 其余 → `none`
+
+无判定（`none`）时不注入该 section，人机模式提示词与改动前逐字一致。

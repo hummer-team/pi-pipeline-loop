@@ -22,6 +22,7 @@
  */
 
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
@@ -43,6 +44,10 @@ import { buildReviewChangeEvidence } from "./review-change-evidence";
 // 193 Phase 1 (task 4): the smart decision guidance builder is the SAME one
 // the review-dispatch exact prompt uses — one protocol source of truth.
 import { buildDesignReviewSmartGuidanceSection } from "./design-review/smart-prompt";
+// 219 Phase 6: "task continuity" section (plugin hard judgement, prompt only states it).
+import { decideContinuity } from "./auto-pipeline/continuity";
+import { listRunningJobs } from "./auto-pipeline/job-state";
+import { readStateForActiveLock } from "./auto-pipeline/config-overlay";
 // 193 Phase 3 (task 8): ONE read-only view for the decision-pending pause,
 // shared with pipeline-state / pipeline-status / pipeline-ui displays.
 import {
@@ -663,6 +668,66 @@ function buildRunHealthWarning(ctx: RuntimeCtx): string | null {
   }
 }
 
+/** TRUE when the commit-proof document for `requirementDoc` exists. */
+function hasCommitDocFor(requirementDoc: string | undefined, projectRoot: string): boolean {
+  if (!requirementDoc) return false;
+  const base = requirementDoc.replace(/\.md$/i, "");
+  return existsSync(path.join(projectRoot, `${base}_Develop_Commit.md`));
+}
+
+/**
+ * 219 Phase 6: the "task continuity" section.
+ *
+ * Injected ONLY when there IS an interruption context (`resume`) — a clean
+ * session keeps the prompt byte-identical. The human tier always renders;
+ * an auto job adds the queue/budget tier. The section is distinct from
+ * PIPELINE STATE (that one is frozen-only); this one is "interrupted/resumed".
+ */
+export function buildTaskContinuitySection(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): string | null {
+  const state = readStateForActiveLock(config.projectRoot) ?? listRunningJobs(config.projectRoot)[0]?.state ?? null;
+  const computed = decideContinuity({
+    meta,
+    state,
+    sessionStartedAt: Date.now(),
+    hasCommitDoc: hasCommitDocFor(meta.requirementDoc, config.projectRoot),
+  });
+  const decision = meta.continuity ?? computed.decision;
+  if (decision === "none") return null;
+
+  const stage = meta.currentStage ?? computed.stage;
+  const lines: string[] = [
+    "# TASK CONTINUITY",
+    `- Decision: ${decision}`,
+    `- Document: ${computed.doc ?? meta.requirementDoc ?? "<unbound>"}`,
+    `- Stage: ${stage ?? "<unknown>"}`,
+    `- Flow state: ${getFlowState(meta)}`,
+    `- Interruption: ${computed.reason}`,
+    "- Allowed actions: continue from the current stage, restart the current stage, or stop.",
+  ];
+
+  const auto = meta.autoJob;
+  if (auto) {
+    lines.push(`- Auto job: ${auto.jobId} — queue ${auto.docIndex + 1}/${auto.totalDocs}`);
+    if (auto.designReviewMaxRounds !== undefined) {
+      const used = auto.designReviewRounds ?? 0;
+      lines.push(`- Remaining design-review rounds: ${Math.max(0, auto.designReviewMaxRounds - used)}`);
+    }
+    if (state) {
+      lines.push(
+        `- Auto state: ${state.status}` +
+          (state.stopReason ? ` (${state.stopReason})` : "") +
+          (state.lastSettleAt ? `, last settle ${new Date(state.lastSettleAt).toISOString()}` : ""),
+      );
+      lines.push(`- Total loops used: ${state.counters.totalLoops}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 /**
  * Phase 3 (170) ⑤: Builds the PIPELINE STATE section for frozen pipelines.
  *
@@ -1241,8 +1306,10 @@ async function buildDefaultPrompt(
   // gets an explicit "Evidence unavailable" section (210 review issue 4), so
   // the reviewer always sees why the deterministic list is missing.
   const part13 = await buildReviewChangeEvidence(config, meta, execFn);
+  // Part 14: Task Continuity (219 Phase 6 — only when there IS an interruption).
+  const part14 = buildTaskContinuitySection(config, meta);
 
-  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11, part12, part13].filter(
+  const promptParts = [part1, part2, part3, part4, part5, part6, part6b, part7, part8, part9, part10, part11, part12, part13, part14].filter(
     (p): p is string => p !== null,
   );
 
@@ -1303,6 +1370,9 @@ async function buildDynamicValues(
     // null outside review → paragraph removed; on review never null, 210 review
     // issue 4)
     review_change_evidence: await buildReviewChangeEvidence(config, meta, execFn),
+    // 219 Phase 6: task-continuity section (null when there is no interruption →
+    // paragraph removed, keeping clean prompts byte-identical).
+    task_continuity: buildTaskContinuitySection(config, meta),
   };
 }
 

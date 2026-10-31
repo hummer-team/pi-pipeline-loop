@@ -6,6 +6,7 @@
  */
 
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, Hook, SessionMeta } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
@@ -43,6 +44,10 @@ import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "./design
 import { recordChildBindingFromRuntimeEvidence } from "./stage-executor/runtime-binding";
 // 219 Phase 2: auto-job config overlay replay gate (four states, plan §3-a)
 import { replayOverlayForSessionStart } from "./auto-pipeline/config-overlay";
+// 219 Phase 6: interrupt-continuity hard judgement (`meta.continuity`).
+import { decideContinuity } from "./auto-pipeline/continuity";
+import { listRunningJobs } from "./auto-pipeline/job-state";
+import { readStateForActiveLock } from "./auto-pipeline/config-overlay";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -508,6 +513,37 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
       // external live holders NEVER have their session flipped to auto semantics.
       if (!detectSessionRole(ctx).isChild) {
         await replayOverlayForSessionStart(config, (message) => ui.notify(ctx, message));
+      }
+
+      // ─── 219 Phase 6: continuity judgement (owner sessions only) ──────────────
+      if (!detectSessionRole(ctx).isChild) {
+        const jobState =
+          readStateForActiveLock(config.projectRoot) ??
+          listRunningJobs(config.projectRoot)[0]?.state ??
+          null;
+        const commitBase = meta?.requirementDoc?.replace(/\.md$/i, "");
+        const continuity = decideContinuity({
+          meta: meta ?? null,
+          state: jobState,
+          sessionStartedAt: Date.now(),
+          hasCommitDoc: commitBase
+            ? existsSync(`${projectRoot}/${commitBase}_Develop_Commit.md`)
+            : false,
+        });
+        // Only an EXISTING pipeline owns a continuity verdict; a dormant new
+        // session must stay untouched (no meta write at all). A clean session
+        // with no verdict never writes either — no meaningless churn.
+        const ownedPipeline = !!meta?.pipelineId;
+        const verdict = continuity.decision === "none" ? undefined : continuity.decision;
+        if (ownedPipeline && meta!.continuity !== verdict) {
+          ctx.session.updateMeta({ continuity: verdict });
+        }
+        await safeWriteAuditLog("pipeline_auto_continuity", {
+          decision: continuity.decision,
+          reason: continuity.reason,
+          doc: continuity.doc ?? "",
+          stage: continuity.stage ?? "",
+        });
       }
 
       if (!meta?.currentStage) {

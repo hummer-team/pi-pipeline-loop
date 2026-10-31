@@ -995,6 +995,13 @@ export interface SessionMeta {
     /** Last counted round number (dedupe for `noteDesignReviewDispatch`). */
     lastCountedDesignReviewRound?: number;
   };
+
+  /**
+   * 219 Phase 6: the interrupt-continuity verdict written by `session_start`
+   * (`decideContinuity`). Read by the prompt injector to render the
+   * "task continuity" section; `undefined` means "no interruption context".
+   */
+  continuity?: "resume" | "restart-stage" | "none";
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
