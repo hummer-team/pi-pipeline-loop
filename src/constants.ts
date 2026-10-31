@@ -38,6 +38,28 @@ export const RESUMABLE_STAGES: PipelineStage[] = [
   "clarify", "plan", "design-review", "develop", "review", "fix",
 ];
 
+// ─── Auto Pipeline (219) ─────────────────────────────────────────────────────
+
+/**
+ * 219 Phase 1: project-root-relative directory holding the auto-pipeline
+ * sidecar state (`.pi/auto_pipeline/{jobId}/state.json`) and, from Phase 2,
+ * the process-level single-instance lock. Runtime artifacts only — never
+ * archived; job definitions live in `docs/jobs/*.yaml` (user-maintained).
+ */
+export const AUTO_PIPELINE_DIR = ".pi/auto_pipeline";
+
+/**
+ * 219 Phase 2: process-level (not per-job) single-instance lock file, resolved
+ * against projectRoot inside AUTO_PIPELINE_DIR.
+ */
+export const AUTO_PIPELINE_LOCK_FILE = ".pi/auto_pipeline/lock.json";
+
+/**
+ * 219 Phase 4: directory the `/pipeline-auto` job menu scans (project-root
+ * relative, non-recursive).
+ */
+export const AUTO_PIPELINE_JOB_DIR = "docs/jobs";
+
 /** Paths that agents in loop stages (develop/fix) must not modify.
  * Project rule files (e.g. AGENTS.md) are NOT protected by default;
  * users may add them via `config.protect.paths` if needed.
