@@ -12,7 +12,9 @@ import { freezeAndPrompt } from "../core/flow-state";
 import { checkStageSummaryHash } from "../utils/summary-hash";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
-import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
+import { effectiveMax } from "../utils/stage-visit";
+// 219 Phase 5 (Seam A): auto-aware visits (loop brake).
+import { recordAutoAwareStageVisit, finalizeOnSoftStop } from "../core/auto-pipeline/stop-policy";
 import { toProjectRelative } from "../utils/path-display";
 import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
@@ -218,7 +220,13 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       // Cycle detection: unified via recordStageVisit helper (DRY with stage-advancer,
       // routeConfirmReject, verify-advance). Preserves original handoff semantics.
       const maxCycles = effectiveMax(meta, config);
-      const visitResult = recordStageVisit(meta, nextStage, maxCycles, config);
+      // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.
+      const autoVisit = recordAutoAwareStageVisit({ meta, nextStage, maxCycles, config });
+      if (autoVisit.kind === "soft-stop") {
+        await finalizeOnSoftStop(ctx, config, autoVisit.verdict);
+        return { error: "Auto job loop budget exhausted — the current document was stopped." };
+      }
+      const visitResult = autoVisit.visit;
 
       if (!visitResult.ok) {
         // Max loop cycles reached — freeze pipeline and prompt for user decision

@@ -5,11 +5,11 @@
  */
 
 import type { PipelineConfig, Command, SessionMeta } from "../types";
-import { getFlowState, invalidateDesignReviewAuthorization } from "../core/flow-state";
+import { getFlowState } from "../core/flow-state";
+// 219 Phase 5: shared release (identical behaviour to the pre-extraction block).
+import { releaseSessionResources } from "../core/auto-pipeline/cleanup";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
-// 194 Phase 3 (task 7, review issue 3): quit invalidates a stale executor binding
-import { invalidateExecutorRunOnBoundary } from "../core/stage-executor/recovery";
 
 export function createPipelineQuitCommand(config: PipelineConfig): Command {
   return {
@@ -34,33 +34,15 @@ export function createPipelineQuitCommand(config: PipelineConfig): Command {
       const stage = meta.currentStage;
       const pipelineId = meta.pipelineId;
 
-      // Phase 4 (191): invalidate design-review authorization on quit
-      // Ensures stale authorization does not persist across pipeline runs
-      await invalidateDesignReviewAuthorization(ctx, "user_quit");
-
-      // 194 Phase 3 (task 7, review issue 3): quitting is a pipeline boundary —
-      // a stale executor run must not survive into whatever starts next. Same
-      // controlled strict-commit pattern as the authorization clear above; an
-      // invalidation that cannot be committed is audited honestly by the
-      // helper and never re-attempted by silently keeping the binding.
-      await invalidateExecutorRunOnBoundary({ session: ctx.session, reason: "user_quit" });
+      // 219 Phase 5: shared release (authorisation + executor binding +
+      // per-session allowlists + verify counters + TUI bar). The terminal
+      // attribution below stays here — the helper never touches flowState.
+      await releaseSessionResources(ctx, config, { reason: "user_quit" });
 
       // Release session-level resources (preserve pipelineId/currentStage/summaries/domain/requirementDoc)
       ctx.session.updateMeta({
         flowState: "aborted",
         terminateReason: "user_quit",
-        blockedReason: undefined,
-        sessionAllowedCommands: [],
-        verifyAttempts: 0,
-        verifyFailures: [],
-        sessionAllowedWritePaths: [],
-        // 216 P3: quitting is a pipeline boundary — the refusal counter must
-        // not leak into whatever pipeline starts next.
-        stageExitRefusal: undefined,
-        // 217 review issue 3 (Medium): quitting is the same pipeline boundary —
-        // approvals waiting for an OWNER decision belong to THIS run and must
-        // not surface on the first settle of whatever pipeline starts next.
-        pendingOwnerApprovals: undefined,
       });
 
       // Phase 1 (197): set audit routing context before writing audit

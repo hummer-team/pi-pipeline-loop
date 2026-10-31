@@ -33,6 +33,7 @@ import {
 } from "../../core/auto-pipeline/job-state";
 import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
 
 const JOB_YAML = [
   "version: 1",
@@ -94,6 +95,7 @@ function ctxWithSelect(answers: Array<string | undefined>) {
 beforeEach(() => {
   ROOT = fs.mkdtempSync(path.join(tmpdir(), "pi-219-menu-"));
   __resetAutoJobLockForTests();
+  __resetFinalizeStateForTests();
   errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
   __setSafeWriteAuditLogOverride(async () => undefined);
 });

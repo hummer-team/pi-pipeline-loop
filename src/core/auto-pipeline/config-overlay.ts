@@ -492,6 +492,15 @@ export function acquireJobLock(input: {
       }
       if (input.takeover === true) {
         if (input.token && input.token === existing.token) {
+          // Token hand-over: THIS process now holds the lock — re-stamp the pid
+          // so `readActiveJobContext` (which requires lock.pid === process.pid)
+          // keeps working for the adopted job.
+          writeJobLock(input.projectRoot, {
+            token: existing.token,
+            jobId: existing.jobId,
+            pid: process.pid,
+            startedAt: existing.startedAt,
+          });
           heldLock = { jobId: existing.jobId, token: existing.token };
           return { ok: true, adopted: true, token: existing.token };
         }
@@ -555,6 +564,11 @@ export function isAutoJobActive(): boolean {
 /** The jobId of the lock THIS process holds; `null` when not active. */
 export function getActiveJobId(): string | null {
   return heldLock?.jobId ?? null;
+}
+
+/** The lock token THIS process holds (needed by `finalizeJob` to release). */
+export function getActiveJobToken(): string | null {
+  return heldLock?.token ?? null;
 }
 
 /**

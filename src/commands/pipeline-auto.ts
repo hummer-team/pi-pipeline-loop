@@ -45,6 +45,8 @@ import {
   type AutoJobSnapshot,
 } from "../core/auto-pipeline/config-overlay";
 import { NEW_COMMIT_RE } from "../core/naming/doc-naming";
+// 219 Phase 5: the ONE terminal transaction (release + audit + rollback + unlock).
+import { finalizeJob, handleDocFailure } from "../core/auto-pipeline/finalize";
 import {
   buildAutoJobMeta,
   readJobFile,
@@ -256,6 +258,12 @@ export async function startAutoJob(input: {
   ctx: AutoPipelineCommandCtx;
   jobId: string;
   token?: string;
+  /**
+   * Internal (chained continuation): report the failure to the caller instead
+   * of running the terminal transaction, so `session_fail` stays write-once on
+   * the chain side (219 Phase 5 §6.2).
+   */
+  deferFailure?: boolean;
 }): Promise<AutoPipelineResult> {
   const { config, ctx, jobId, token } = input;
   const projectRoot = config.projectRoot;
@@ -299,8 +307,18 @@ export async function startAutoJob(input: {
   state.jobHash = parsed.hash;
   state.jobPath = jobRelPath;
   state.updatedAt = Date.now();
+  await writeJobState(projectRoot, state);
 
-  return startPendingDoc({ config, ctx, jobId, job, state, token: lock.token, projectRoot });
+  return startPendingDoc({
+    config,
+    ctx,
+    jobId,
+    job,
+    state,
+    token: lock.token,
+    projectRoot,
+    deferFailure: input.deferFailure === true,
+  });
 }
 
 /** Pick the next doc (honouring `skipCompleted`) and start it. */
@@ -312,12 +330,17 @@ async function startPendingDoc(input: {
   state: AutoJobState;
   token: string;
   projectRoot: string;
+  deferFailure?: boolean;
 }): Promise<AutoPipelineResult> {
   const { config, ctx, jobId, job, state, token, projectRoot } = input;
 
   const target = pickNextDoc(state, job);
   if (!target) {
-    return stopJob({ config, ctx, jobId, state, token, projectRoot, stopReason: "job_completed" });
+    await writeJobState(projectRoot, state);
+    const done = await finalizeJob(ctx as never, config, { stopReason: "job_completed" });
+    return done.skipped
+      ? { success: true, message: `Auto job "${jobId}" already finished.` }
+      : { success: true, message: done.summary };
   }
 
   // Sidecar first: persist the overlay snapshot. `docIndex` / doc status are
@@ -440,83 +463,45 @@ function readOverlayBase(
 }
 
 /**
- * Doc-level failure. Phase 4 keeps the terminal transaction inline; Phase 5
- * replaces it with the shared `handleDocFailure` (same outcomes + release).
+ * Doc-level failure → the shared `handleDocFailure` (Phase 5): receipt +
+ * release + `onFailure` scheduling. `docIndex` stays where it was (M3); the
+ * attempted doc is passed explicitly so the receipt is correct.
  */
 async function failDoc(
   input: Parameters<typeof startPendingDoc>[0],
   docIndex: number,
   reason: string,
 ): Promise<AutoPipelineResult> {
-  const { config, ctx, jobId, job, state, token, projectRoot } = input;
-  const progress = state.docs[docIndex];
-  if (progress) {
-    progress.status = "failed";
-    progress.failReason = reason;
-    progress.updatedAt = Date.now();
-  }
-  state.updatedAt = Date.now();
-  await safeWriteAuditLog("pipeline_auto_decision", {
-    source: "auto_pipeline",
-    gate: "doc_failure",
-    jobId,
-    doc: progress?.doc ?? "",
-    reason,
-  }, "warn");
-
-  if (job.docs.onFailure === "continue") {
-    const next = pickNextDoc(state, job);
-    if (next) {
-      await writeJobState(projectRoot, state);
-      return startPendingDoc(input);
+  const { config, ctx, job, state } = input;
+  if (input.deferFailure) {
+    // Record the attempt, hand the decision back to the caller (chain side).
+    const progress = state.docs[docIndex];
+    if (progress) {
+      progress.status = "failed";
+      progress.failReason = reason;
+      progress.updatedAt = Date.now();
     }
+    state.updatedAt = Date.now();
+    await writeJobState(config.projectRoot, state);
+    return { success: false, error: reason };
   }
-  await writeJobState(projectRoot, state);
-  return stopJob({
-    config,
-    ctx,
-    jobId,
-    state,
-    token,
-    projectRoot,
-    stopReason: job.docs.onFailure === "continue" ? "job_completed" : "session_fail",
+  const result = await handleDocFailure(ctx as never, config, state, job, {
+    outcome: "failed",
+    reason,
+    docIndex,
   });
-}
-
-/** Terminal transaction for one job (Phase 5 extends it with the rollback). */
-async function stopJob(input: {
-  config: PipelineConfig;
-  ctx: AutoPipelineCommandCtx;
-  jobId: string;
-  state: AutoJobState;
-  token: string;
-  projectRoot: string;
-  stopReason: AutoJobState["stopReason"];
-}): Promise<AutoPipelineResult> {
-  const { config, ctx, jobId, state, token, projectRoot, stopReason } = input;
-  state.status = stopReason === "job_completed" ? "completed" : "failed";
-  state.stopReason = stopReason;
-  state.updatedAt = Date.now();
-  await writeJobState(projectRoot, state);
-  await safeWriteAuditLog("pipeline_auto_cleanup", { jobId, stopReason: stopReason ?? "" });
-  await safeWriteAuditLog("pipeline_auto_stop", { jobId, stopReason: stopReason ?? "" }, "warn");
-
-  // Phase 4 rolls the overlay back here; Phase 5 moves the rollback into the
-  // shared `finalizeJob` together with the `--next` chain decision.
-  if (state.overlaySnapshot) {
-    const { restoreOverlay } = await import("../core/auto-pipeline/config-overlay");
-    restoreOverlay(config, state.overlaySnapshot);
-    await safeWriteAuditLog("pipeline_auto_overlay_restore", { jobId });
+  if (result.skipped) {
+    return { success: false, error: `Auto job doc failed: ${reason}` };
   }
-  releaseJobLock({ projectRoot, token });
-
-  const completed = state.docs.filter((d) => d.status === "completed" || d.status === "skipped").length;
-  const message =
-    stopReason === "job_completed"
-      ? `Auto job "${jobId}" finished: ${completed}/${state.jobTotalDocs} docs completed.`
-      : `Auto job "${jobId}" stopped (${stopReason ?? "unknown"}): ${completed}/${state.jobTotalDocs} docs completed.`;
-  ctx.ui?.notify?.(message, stopReason === "job_completed" ? undefined : "error");
-  return { success: stopReason === "job_completed", message, ...(stopReason === "job_completed" ? {} : { error: message }) };
+  // The job is still running only when `onFailure:continue` started the next
+  // doc; any other outcome is terminal for this invocation.
+  const live = readJobState(config.projectRoot, input.jobId);
+  const continued = live?.status === "running";
+  return {
+    success: continued,
+    message: result.summary,
+    ...(continued ? {} : { error: result.summary }),
+  };
 }
 
 /** Hashes a job file's bytes (re-exported for the menu/tests). */

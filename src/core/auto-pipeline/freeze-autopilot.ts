@@ -136,24 +136,21 @@ export async function runFreezeAutopilot(
     );
   }
 
-  // "stop-and-report": no provider fallback, no menu. Phase 5 replaces this
-  // tail with `handleDocFailure` (which owns the full finalize transaction).
-  state.stopReason = "freeze_unresolvable";
-  state.status = "stopped";
-  state.updatedAt = Date.now();
-  try {
-    await writeJobState(config.projectRoot, state);
-  } catch (err) {
-    console.error(`[auto-pipeline] runFreezeAutopilot: failed persisting stop state: ${String(err)}`);
-  }
+  // "stop-and-report": no provider fallback, no menu. The shared failure
+  // transaction owns the receipt + release + stop (Phase 5 §6.2 ②).
+  // Dynamic import breaks the load-time cycle flow-state → freeze-autopilot →
+  // finalize → cleanup → flow-state.
+  const { handleDocFailure } = await import("./finalize");
+  await handleDocFailure(ctx as never, config, state, job, {
+    outcome: "failed",
+    reason: "freeze_unresolvable",
+    verdict: { kind: "hard", stopReason: "freeze_unresolvable" },
+  });
   await safeWriteAuditLog("pipeline_auto_stop", {
     jobId,
     stopReason: "freeze_unresolvable",
     reason,
   }, "warn");
-  ctx.ui?.notify?.(
-    `Auto job "${jobId}" stopped: freeze "${reason}" is unresolvable (no auto action matched).`,
-  );
   return decidedResult(`Auto job ${jobId} stopped: freeze "${reason}" is unresolvable.`);
 }
 

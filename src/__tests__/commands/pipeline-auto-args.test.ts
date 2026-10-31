@@ -24,6 +24,7 @@ import {
 import { createJobState, readJobState, writeJobState } from "../../core/auto-pipeline/job-state";
 import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
 
 const DEAD_PID = 4194303;
 const JOB_YAML = [
@@ -88,6 +89,7 @@ beforeEach(() => {
   ROOT = fs.mkdtempSync(path.join(tmpdir(), "pi-219-args-"));
   writeConfigJson();
   __resetAutoJobLockForTests();
+  __resetFinalizeStateForTests();
   audits = [];
   errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
   __setSafeWriteAuditLogOverride(async (stage) => {

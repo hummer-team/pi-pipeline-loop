@@ -51,6 +51,9 @@ import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
 import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
+// 219 Phase 5 (Seam A): auto-aware visits (loop brake). The `→ design-review`
+// menu entry deliberately keeps the plain helper (it is NOT a loop edge).
+import { recordAutoAwareStageVisit, finalizeOnSoftStop } from "./auto-pipeline/stop-policy";
 import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "./dormancy";
 // 210 Phase 3: the confirm-stall convergence is gated on the decision policy
 // (`isDecisionPolicyEnabled`), so an unconfigured project keeps baseline behaviour.
@@ -450,7 +453,13 @@ async function routeConfirmReject(
   const sessionForSpawn = ctx.session as unknown as { getMeta?: () => SessionMeta | undefined; updateMeta: (patch: Partial<SessionMeta>) => SessionMeta | undefined };
   const freshMetaForVisit = sessionForSpawn.getMeta?.() ?? meta;
   const maxCycles = effectiveMax(freshMetaForVisit, config);
-  const visitResult = recordStageVisit(freshMetaForVisit, toStage, maxCycles, config);
+  // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.
+  const autoVisit = recordAutoAwareStageVisit({ meta: freshMetaForVisit, nextStage: toStage, maxCycles, config });
+  if (autoVisit.kind === "soft-stop") {
+    await finalizeOnSoftStop(ctx, config, autoVisit.verdict);
+    return false;
+  }
+  const visitResult = autoVisit.visit;
 
   // Nit 4 (reaudit): honor recordStageVisit().ok — when maxLoopCycles reached,
   // freeze the pipeline and abort routing (aligned with stage-advancer tool + verify-advance).
@@ -2069,7 +2078,13 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // Record stage visit via shared helper (DRY with handoff, routeConfirmReject, verify-advance)
       const advanceTarget = resolvedTarget ?? "completed";
       const maxCycles = effectiveMax(meta, config);
-      const visitResult = recordStageVisit(meta, advanceTarget, maxCycles, config);
+      // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.
+      const autoVisit = recordAutoAwareStageVisit({ meta, nextStage: advanceTarget, maxCycles, config });
+      if (autoVisit.kind === "soft-stop") {
+        await finalizeOnSoftStop(ctx, config, autoVisit.verdict);
+        return { success: false, message: "Auto job loop budget exhausted — the current document was stopped." };
+      }
+      const visitResult = autoVisit.visit;
 
       if (!visitResult.ok) {
         // Max loop cycles reached — freeze and return error (aligned with handoff)

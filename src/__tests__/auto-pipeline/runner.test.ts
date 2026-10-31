@@ -21,6 +21,7 @@ import { isAutoJobActive, __resetAutoJobLockForTests } from "../../core/auto-pip
 import { readJobState, resolveJobStatePath, writeJobState, createJobState } from "../../core/auto-pipeline/job-state";
 import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
 
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
 const TEMPLATE_JSON: PipelineJsonConfig = JSON.parse(
@@ -111,6 +112,7 @@ function makeCtx() {
 beforeEach(() => {
   ROOT = fs.mkdtempSync(path.join(tmpdir(), "pi-219-runner-"));
   __resetAutoJobLockForTests();
+  __resetFinalizeStateForTests();
   audits = [];
   errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
   __setSafeWriteAuditLogOverride(async (stage) => {
@@ -215,11 +217,11 @@ describe("runner — skipCompleted", () => {
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
 
     expect(result.success).toBe(true);
-    expect(result.message).toContain("finished");
+    expect(result.message).toContain("completed");
     const state = readJobState(ROOT, JOB_ID)!;
     expect(state.status).toBe("completed");
     expect(state.docs[0]?.status).toBe("skipped");
-    expect(meta()).toBeUndefined(); // no pipeline was started
+    expect(meta()?.requirementDoc).toBeUndefined(); // no pipeline was started
     expect(isAutoJobActive()).toBe(false);
   });
 });

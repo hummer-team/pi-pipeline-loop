@@ -53,6 +53,10 @@ import { escapeRegExp } from "../utils/regex-utils";
 import { dispatchAfterResume, buildOnStageChangedCallback } from "../commands/pipeline-start";
 import type { SessionMeta as AgentSettledSessionMeta } from "../types";
 import { coordinateDesignReview } from "./design-review/coordinator";
+// 219 Phase 5 (Seam B): the settle-side auto transaction (completed wins over
+// hard stop) + the clarify marker degrade/fail channel.
+import { handleAutoSettle, handleAutoClarifyMarkerMiss } from "./auto-pipeline/settle-seam";
+import { isAutoJobActive } from "./auto-pipeline/config-overlay";
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "./design-review/entry-result";
 // 193 Phase 3 (task 1): ONE safe builder for coordinator ctx at every entry
@@ -107,6 +111,11 @@ export function createAgentSettled(
       // Phase 2b (173) C3: dormant guard — short-circuit
       // Covers: no meta, aborted (user_quit/abort/stale_startup), completed
       // No agent_settled audit, no notify, no frozen block, no verify
+      // 219 Phase 5 (Seam B): BEFORE the dormant guard — a completed document is
+      // dormant, yet the auto job must finalize it exactly once (completed wins
+      // over any hard-stop judgement inside the seam). Non-auto → no-op.
+      if (rawMeta && (await handleAutoSettle(ctx, config, rawMeta))) return;
+
       if (!rawMeta || isDormant(rawMeta)) return;
       const meta: SessionMeta = rawMeta;
 
@@ -867,6 +876,9 @@ export function createAgentSettled(
           }
         } else {
           // Doc is bound but marker not yet written — silent skip (existing semantics)
+          // 219 Phase 3 (G1): unattended clarify never stalls silently — one
+          // degrade to orchestrated, then a doc failure.
+          if (await handleAutoClarifyMarkerMiss(ctx, config, meta)) return;
           await writeAuditLog("verify_completion_marker_pending", {
             pipelineId: meta.pipelineId,
             stage: meta.currentStage,
@@ -1136,6 +1148,9 @@ async function compactIfTerminal(
       { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx } as Parameters<typeof maybeCompactOnPipelineCompleted>[0],
       config,
     );
+    // 219 Phase 5: an auto doc that landed on `completed` in THIS turn is
+    // finalized immediately instead of waiting for the next settle.
+    if (isAutoJobActive()) await handleAutoSettle(ctx as never, config, freshMeta);
   }
 }
 

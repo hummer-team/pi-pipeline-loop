@@ -227,14 +227,16 @@ describe("freeze-autopilot — runFreezeAutopilot", () => {
     const result = await runFreezeAutopilot(ctx, meta, config(), "verify_budget");
 
     expect(result?.applied).toBe(true);
-    // M7: no decision applied at all — the provider would have resumed.
-    expect(patches).toEqual([]);
+    // M7: no DECISION was applied — the provider would have resumed. (The
+    // shared finalize legitimately clears session allowlists; it never touches
+    // the flow state, so the pipeline stays blocked.)
+    expect(patches.every((p) => p.flowState === undefined)).toBe(true);
     const persisted = readJobState(ROOT, JOB_ID)!;
-    expect(persisted.status).toBe("stopped");
+    expect(persisted.status).toBe("failed");
     expect(persisted.stopReason).toBe("freeze_unresolvable");
     expect(persisted.counters.totalFreezes).toBe(1);
     expect(audits).toContain("pipeline_auto_stop");
-    expect(notified).toHaveLength(1);
+    expect(notified.length).toBeGreaterThan(0);
   });
 
   it("totalFreezes increments once per intervention and autoResumes stops at the cap", async () => {
@@ -251,7 +253,7 @@ describe("freeze-autopilot — runFreezeAutopilot", () => {
     const persisted = readJobState(ROOT, JOB_ID)!;
     expect(persisted.counters.totalFreezes).toBe(2);
     expect(persisted.counters.autoResumes).toBe(2);
-    expect(persisted.status).toBe("stopped");
+    expect(persisted.status).toBe("failed");
   });
 });
 
@@ -271,8 +273,9 @@ describe("freeze-autopilot — M7: direct requestDecision path", () => {
     const result = await requestDecision(ctx, meta, cfg, "verify_budget");
 
     expect(result).not.toBeNull();
-    // The provider chain would have mutated meta (resume); it never ran.
-    expect(patches).toEqual([]);
+    // The provider chain would have RESUMED (flowState change); it never ran.
+    expect(patches.every((p) => p.flowState === undefined)).toBe(true);
+    expect(ctx.session.getMeta()?.flowState).toBe("blocked");
     expect(audits).not.toContain("decision_policy_applied");
     expect(readJobState(ROOT, JOB_ID)?.stopReason).toBe("freeze_unresolvable");
   });

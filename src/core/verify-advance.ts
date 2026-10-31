@@ -42,6 +42,8 @@ import {
 import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc";
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
+// 219 Phase 5 (Seam A): auto-aware stage visits (loop brake).
+import { recordAutoAwareStageVisit, finalizeOnSoftStop } from "./auto-pipeline/stop-policy";
 import { describeEmptyOrInvalidRuleSet } from "../utils/guard-conflict-report";
 
 /**
@@ -464,7 +466,15 @@ export async function applyVerifyPass(
     // Record stage visit via shared helper before updateMeta (DRY with handoff,
     // stage-advancer, routeConfirmReject). Max cycles from meta with default 3.
     const maxCycles = effectiveMax(meta, ctx.config);
-    const visitResult = recordStageVisit(meta, nextStage, maxCycles, ctx.config);
+    // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.
+    const autoVisit = recordAutoAwareStageVisit({ meta, nextStage, maxCycles, config: ctx.config });
+    if (autoVisit.kind === "soft-stop") {
+      await finalizeOnSoftStop(ctx, ctx.config, autoVisit.verdict);
+      return opts.returnResult
+        ? { success: false, passed: true, message: "Auto job loop budget exhausted — document stopped.", verifyResult: verifyResult?.verifyResult ?? null }
+        : undefined;
+    }
+    const visitResult = autoVisit.visit;
 
     // Issue #20: Check budget early stop — if recordStageVisit failed (budget exceeded),
     // freeze the pipeline instead of advancing. This prevents the "advance first, freeze later"

@@ -33,7 +33,9 @@ import {
   type StrictCommitSession,
 } from "../session-state";
 import { computeHash, createOperation, computeHandoffInputHash, transitionPhase } from "./state";
-import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
+import { effectiveMax } from "../../utils/stage-visit";
+// 219 Phase 5 (Seam A): auto-aware visits (loop brake).
+import { recordAutoAwareStageVisit, finalizeOnSoftStop } from "../auto-pipeline/stop-policy";
 import { stageMigrationResetCounters } from "../stage-exit/migration-reset";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 
@@ -134,7 +136,18 @@ export async function prepareDevelopTransition(args: {
   }
 
   // Record transition (fresh develop visit material).
-  const visitResult = recordStageVisit(meta, "develop", effectiveMax(meta, ctx.config), ctx.config);
+  // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.
+  const autoVisit = recordAutoAwareStageVisit({
+    meta,
+    nextStage: "develop",
+    maxCycles: effectiveMax(meta, ctx.config),
+    config: ctx.config,
+  });
+  if (autoVisit.kind === "soft-stop") {
+    await finalizeOnSoftStop(ctx, ctx.config, autoVisit.verdict);
+    return { ok: false, result: { status: "handled", action: "frozen", reason: "budget_exhausted" } };
+  }
+  const visitResult = autoVisit.visit;
   if (!visitResult.ok) {
     ctx.session.updateMeta(visitResult.patch);
     return { ok: false, result: { status: "handled", action: "frozen", reason: "max_loop_cycles" } };
