@@ -51,6 +51,7 @@ import { clearDecisionDeadline, clearDecisionTimer } from "../core/decision-menu
 import { clearStageWatchdog } from "../core/stage-watchdog";
 import { isAuthorizationValid } from "../core/design-review/state";
 import { designReviewAuthorisationGate } from "../core/design-review/authorization";
+import { autoPipelineAuthOpts } from "../core/auto-pipeline/config-overlay";
 import type { RuntimeCtx } from "../core/runtime-ctx";
 import { resolveCurrentDocOption } from "../core/doc-discovery";
 // 213 Phase 2 (D14/D5/D13): the shared execution units — one doc menu shell,
@@ -523,7 +524,14 @@ export async function runRestoreBranch(deps: ResumeMenuDeps): Promise<ResumeBran
       ui: ctx.ui,
       session: ctx.session,
     } as unknown as RuntimeCtx;
-    const gateResult = await designReviewAuthorisationGate(gateCtx, config, meta);
+    const gateResult = await designReviewAuthorisationGate(
+      gateCtx,
+      config,
+      meta,
+      // 219 Phase 3 (G3/B3): the auto channel must be reachable from BOTH
+      // production call sites, otherwise it is dead code at runtime.
+      autoPipelineAuthOpts(),
+    );
     if (!gateResult.ok) {
       return {
         changed: false,

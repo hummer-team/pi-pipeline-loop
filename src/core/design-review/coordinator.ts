@@ -123,6 +123,11 @@ import {
   type DecisionAutoRepromptReason,
 } from "./decision-reprompt";
 import { recordStageVisit, effectiveMax } from "../../utils/stage-visit";
+// 219 Phase 3 §7c: independent design-review round budget (auto jobs only).
+import {
+  isDesignReviewRoundBudgetExhausted,
+  noteDesignReviewDispatch,
+} from "../auto-pipeline/round-budget";
 import { spawnStageSubagent, type DesignReviewTerminalEvent, type StageDispatchOutcome } from "../../utils/subagent-rpc";
 // 194 Phase 3 (tasks 2/3): closed-loop executor run lifecycle + trusted wake.
 import { issueExecutorRunOnDispatch, applyExecutorTerminal, isHandoffReceiptFinal } from "../stage-executor/terminal";
@@ -260,6 +265,15 @@ export async function coordinateDesignReview(
       phase: drState.phase,
     });
     return { status: "not-applicable" };
+  }
+
+  // 219 Phase 3 §7c: count each dispatched review round exactly ONCE, at the
+  // single coordination entry (deduped + monotonic — a rewind never refunds a
+  // counted round). `noteDesignReviewDispatch` writes ONLY `meta.autoJob`, so
+  // human sessions are untouched.
+  if (drState.phase === "review_running" && drState.operation?.kind === "review") {
+    const patch = noteDesignReviewDispatch(meta, drState.round);
+    if (patch) ctx.session.updateMeta(patch);
   }
 
   // Handle based on current phase and trigger
@@ -422,6 +436,19 @@ async function handleReviewReady(
       round: String(drState.round),
     });
     return { status: "handled", action: "pending", reason: "review_ready_settle_or_advance_only" };
+  }
+
+  // 219 Phase 3 §7c (B2): independent round budget — judged BEFORE dispatch
+  // only. When exhausted the loop freezes with its own reason so the auto job
+  // can distinguish it from the ordinary loop-cycle budget.
+  if (isDesignReviewRoundBudgetExhausted(meta)) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "auto_round_budget_exceeded_before_review",
+      round: String(drState.round),
+      designReviewRounds: String(meta.autoJob?.designReviewRounds ?? 0),
+      maxRounds: String(meta.autoJob?.designReviewMaxRounds ?? 0),
+    }, "warn");
+    return { status: "handled", action: "frozen", reason: "design_review_budget_exhausted" };
   }
 
   // Check budget before dispatch
@@ -629,6 +656,9 @@ async function handleReviewRunning(
   }
 
   // Check budget before transition
+  // 219 Phase 3 §7c: this path CONSUMES an already dispatched review round —
+  // it must NEVER freeze for the auto round budget (the Nth PASS has to be
+  // able to advance to develop). Do not add an auto-budget predicate here.
   const budgetCheck = checkBudget(meta, ctx.config);
   if (!budgetCheck.ok) {
     await safeWriteAuditLog("design_review_coordinator", {
@@ -1029,6 +1059,17 @@ async function handleFail(
   reportPath: string,
   verifiedIssues?: readonly ReviewIssue[],
 ): Promise<CoordinatorResult> {
+  // 219 Phase 3 §7c (B2): independent round budget — judged BEFORE re-dispatch.
+  if (isDesignReviewRoundBudgetExhausted(meta)) {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "auto_round_budget_exceeded_before_fail_dispatch",
+      round: String(drState.round),
+      designReviewRounds: String(meta.autoJob?.designReviewRounds ?? 0),
+      maxRounds: String(meta.autoJob?.designReviewMaxRounds ?? 0),
+    }, "warn");
+    return { status: "handled", action: "frozen", reason: "design_review_budget_exhausted" };
+  }
+
   // Check budget before proceeding
   const budgetCheck = checkBudget(meta, ctx.config);
   if (!budgetCheck.ok) {
@@ -2162,6 +2203,8 @@ async function handleUpdateReady(
   }
 
   // Check budget before dispatch
+  // 219 Phase 3 §7c: an update pass consumes a result, so the auto round
+  // budget must never freeze here (only review_ready / handleFail do).
   const budgetCheck = checkBudget(meta, ctx.config);
   if (!budgetCheck.ok) {
     return { status: "handled", action: "frozen", reason: "budget_exceeded" };
@@ -2310,6 +2353,9 @@ async function handleUpdateRunning(
   // 192 Phase 3 (F05): ALL triggers are consumed through the shared
   // verification outcome — advance/verify/handoff must not fall back to the
   // ordinary plan-confirm/auto-advance branches for an authorized update.
+  //
+  // 219 Phase 3 §7c: this path CONSUMES an already dispatched update result —
+  // it must NEVER freeze for the auto design-review round budget.
   let outcome = ctx.verificationResult?.designReviewOutcome;
   if (!outcome) {
     const vr = await runVerification(ctx.config, meta, [], ctx.verificationOptions);

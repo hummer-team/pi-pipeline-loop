@@ -25,6 +25,10 @@ import { detectSessionRole } from "./session-role";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { designReviewAuthorisationGate } from "./design-review/authorization";
+// 219 Phase 3 (G3/B3): auto-pipeline authorisation channel (job = authoriser).
+import { autoPipelineAuthOpts, isAutoJobActive } from "./auto-pipeline/config-overlay";
+import { runFreezeAutopilot } from "./auto-pipeline/freeze-autopilot";
+import { auditAutoDecision } from "./auto-pipeline/auto-audit";
 import { guardGenericFlowDecision } from "./design-review/flow-decision-guard";
 import { strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { isAuthorizationValid } from "./design-review/state";
@@ -818,6 +822,9 @@ export async function executeDecision(
           buildRoleCtxForGate(ctx),
           config,
           refreshedMeta,
+          // 219 Phase 3 (G3): auto job ⇒ skip TUI/confirm (child rejection and
+          // prerequisite validation still run inside the gate).
+          autoPipelineAuthOpts(),
         );
         if (gateResult.ok) {
           // Authorization granted - persist the new state.
@@ -1888,6 +1895,17 @@ async function presentDecisionMenuCore(
 
         // 208 (J1/J3): set_budget collects the absolute value through `ui.input`.
         if (decision === "set_budget") {
+          // 219 Phase 3 (G6): auto mode never extends a budget interactively —
+          // there is no human to type a value. Return the cancel-equivalent
+          // shape (the pipeline stays frozen) and record the answer.
+          if (isAutoJobActive()) {
+            await auditAutoDecision(config, {
+              gate: "set_budget",
+              decision: "block",
+              reason: "auto_mode_no_interactive_budget",
+            });
+            return { outcome: "cancelled", applied: false, decision };
+          }
           const input = await promptBudgetValue(ui, freshMeta, config);
           if (input.kind === "cancelled") {
             // 208: same cancel semantics as Esc — keep frozen and (unless the
@@ -2323,7 +2341,7 @@ function buildDecisionPolicyAuditFields(config: PipelineConfig): Record<string, 
 /**
  * Options for {@link requestDecision}; mirrors the freezeAndPrompt extras.
  */
-interface RequestDecisionOpts {
+export interface RequestDecisionOpts {
   /** UI override for external callers (same as freezeAndPrompt). */
   ui?: FlowStateCtx["ui"];
   /** Phase 0 (182): forwarded for the choose_stage aftermath. */
@@ -2400,6 +2418,17 @@ export async function requestDecision(
   opts?: RequestDecisionOpts,
 ): Promise<EnsureDecisionMenuResult | null> {
   const source = opts?.source ?? "freeze";
+
+  // ─── G6 auto seam (219 Phase 3) ──────────────────────────────────────────
+  // The ONLY freeze authority while an auto job is active: resolve the job's
+  // action (byReason → onFreeze → stop-and-report) and return BEFORE the human
+  // menu and BEFORE the 210 provider chain. A "stop-and-report" decision must
+  // never be auto-resumed by a provider rule.
+  if (isAutoJobActive()) {
+    const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+    const routed = await runFreezeAutopilot(ctx, freshMeta, config, reason, opts);
+    if (routed) return routed;
+  }
 
   // Shared presentation options (policy-disabled passthrough and the human
   // slot use the same shape, so replay/command semantics stay baseline-exact).

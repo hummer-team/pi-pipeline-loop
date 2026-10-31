@@ -35,6 +35,8 @@ import {
 import { registerSession } from "../utils/session-registry";
 import { spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resolveAgentMention } from "../utils/subagent-rpc";
 import { buildNewPeriodResetFields } from "../core/meta-reset";
+// 219 Phase 3 (G1): auto clarify plan (self-answer instruction + args).
+import { buildClarifyAutoPlan, type ClarifyAutoPlan } from "../core/auto-pipeline/clarify-autopilot";
 // 210 Phase 7: restart/resume clears the in-process usage ledger.
 import { resetUsage } from "../core/usage-recorder";
 // Phase 0 (182): name-probe for out-of-band agent detection before dispatch
@@ -1225,7 +1227,15 @@ async function maybeAutoLaunchClarify(
   // Phase 1 / 175: derived round number for notify text (undefined when explicit)
   let derivedRound: number | undefined;
 
-  if (forwardArgs && forwardArgs.trim()) {
+  // 219 Phase 3 (G1): an active auto job self-answers clarify. Its plan replaces
+  // the human-derived args and contributes the instruction appended below.
+  const autoClarify: ClarifyAutoPlan | null =
+    !forwardArgs || !forwardArgs.trim() ? buildClarifyAutoPlan(config.projectRoot) : null;
+
+  if (autoClarify) {
+    effectiveArgs = autoClarify.args;
+    argsSource = "derived";
+  } else if (forwardArgs && forwardArgs.trim()) {
     // Explicit user args → transparent passthrough (Q3-A)
     effectiveArgs = forwardArgs.trim();
     argsSource = "user";
@@ -1310,7 +1320,10 @@ async function maybeAutoLaunchClarify(
 
   // 204 Phase 0: carry the `Pipeline: {id}` marker so the spawned clarify session
   // can JOIN back even when it is in-memory (no `parentSession` header).
-  const prompt = appendPipelineIdMarker(`${file} ${effectiveArgs}`.trim(), meta.pipelineId);
+  // 219 Phase 3 (G1): the auto instruction rides the existing extraArgs channel
+  // (appended after the mention), so no new dispatch parameter is introduced.
+  const autoSuffix = autoClarify ? `\n\n${autoClarify.instruction}` : "";
+  const prompt = appendPipelineIdMarker(`${file} ${effectiveArgs}${autoSuffix}`.trim(), meta.pipelineId);
   const message = `@${agentName} ${prompt}`;
 
   // Phase 1 / 175 (R2Q2A): description — explicit carries args verbatim;

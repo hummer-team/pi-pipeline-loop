@@ -32,6 +32,20 @@ export type AuthorisationGateResult =
   | { ok: false; reason: string };
 
 /**
+ * 219 Phase 3 (G3 / B3): optional auto-pipeline channel.
+ *
+ * When present the gate keeps Step 1 (child rejection) and Step 2
+ * (prerequisite validation) VERBATIM, and skips only Step 3 (TUI detection)
+ * and Step 4 (`ui.confirm`) — an auto job has no human to confirm, but it
+ * must never gain the ability to authorise from a child session or with
+ * missing docs. `HumanDecision.source` is deliberately untouched: the auto
+ * channel is an authorisation gate answer, not a fabricated human decision.
+ */
+export interface DesignReviewAuthOpts {
+  autoPipeline?: { jobId: string };
+}
+
+/**
  * Validates prerequisites for design-review authorisation.
  *
  * Delegates shared document/asset resolution to `entry.ts` so the menu path
@@ -118,6 +132,7 @@ export async function designReviewAuthorisationGate(
   ctx: RuntimeCtx,
   config: PipelineConfig,
   meta: SessionMeta,
+  opts?: DesignReviewAuthOpts,
 ): Promise<AuthorisationGateResult> {
   const pipelineId = meta.pipelineId ?? "unknown";
 
@@ -152,31 +167,44 @@ export async function designReviewAuthorisationGate(
     return { ok: false, reason: validation.error! };
   }
 
-  // Step 3: Check for TUI availability
-  const hasTui = typeof ctx.ui?.select === "function" && typeof ctx.ui?.confirm === "function";
-  if (!hasTui) {
+  // Step 3: Check for TUI availability — SKIPPED on the auto channel.
+  const autoJobId = opts?.autoPipeline?.jobId;
+  if (!autoJobId) {
+    const hasTui = typeof ctx.ui?.select === "function" && typeof ctx.ui?.confirm === "function";
+    if (!hasTui) {
+      await safeWriteAuditLog("design_review_authorisation_gate", {
+        pipelineId,
+        result: "rejected_no_tui",
+      }, "warn");
+      return { ok: false, reason: "tui_unavailable" };
+    }
+
+    // Step 4: Prompt user with MODE-AWARE PASS/FAIL behavior (193 Phase 4
+    // task 3): the mode that will be pinned at the first review dispatch —
+    // the confirm text must match what the loop actually enforces.
+    const promptTitle = "Design Review Stage Entry";
+    const confirmMode: ConfirmMode =
+      config.stages?.["design-review"]?.confirm?.mode ?? "auto";
+    const promptMessage = buildDesignReviewAuthorisationPrompt(confirmMode);
+
+    const confirmed = await ctx.ui.confirm(promptTitle, promptMessage);
+    if (!confirmed) {
+      await safeWriteAuditLog("design_review_authorisation_gate", {
+        pipelineId,
+        result: "user_cancelled",
+      });
+      return { ok: false, reason: "user_cancelled" };
+    }
+  } else {
+    // 219 Phase 3 (G3): auto channel — the job IS the authorisation, audited
+    // with a distinct result so a human authorisation can never be confused
+    // with an automatic one.
     await safeWriteAuditLog("design_review_authorisation_gate", {
       pipelineId,
-      result: "rejected_no_tui",
-    }, "warn");
-    return { ok: false, reason: "tui_unavailable" };
-  }
-
-  // Step 4: Prompt user with MODE-AWARE PASS/FAIL behavior (193 Phase 4
-  // task 3): the mode that will be pinned at the first review dispatch —
-  // the confirm text must match what the loop actually enforces.
-  const promptTitle = "Design Review Stage Entry";
-  const confirmMode: ConfirmMode =
-    config.stages?.["design-review"]?.confirm?.mode ?? "auto";
-  const promptMessage = buildDesignReviewAuthorisationPrompt(confirmMode);
-
-  const confirmed = await ctx.ui.confirm(promptTitle, promptMessage);
-  if (!confirmed) {
-    await safeWriteAuditLog("design_review_authorisation_gate", {
-      pipelineId,
-      result: "user_cancelled",
+      result: "authorised_auto",
+      source: "auto_pipeline",
+      jobId: autoJobId,
     });
-    return { ok: false, reason: "user_cancelled" };
   }
 
   // Step 5: Compute plan hash and create new authorisation.

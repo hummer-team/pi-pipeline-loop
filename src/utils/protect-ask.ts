@@ -36,6 +36,46 @@ import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 import { isMenuCapable } from "../core/ui-capability";
 import type { WriteCandidate } from "../core/write-scope/types";
 import { formatCandidateList } from "../core/write-scope/types";
+// 219 Phase 3 (G5): auto-job gate answers — the ONLY auto branch in this file.
+import { resolveAutoGate, type AutoGateKind, type AutoGateDetail } from "../core/auto-pipeline/gate-answers";
+import { auditAutoDecision } from "../core/auto-pipeline/auto-audit";
+
+/**
+ * 219 Phase 3: answer a dialog automatically when an auto job owns this
+ * process. Returns `null` when the caller must run the real dialog (human
+ * mode), keeping every existing branch byte-identical.
+ *
+ * The existing per-dialog audit row is still written — with the auto verdict
+ * as its `action` — plus the gated `pipeline_auto_decision` row.
+ */
+async function answerGateAutomatically(input: {
+  kind: AutoGateKind;
+  ctx: any;
+  meta: SessionMeta;
+  config: PipelineConfig;
+  detail: AutoGateDetail;
+  auditEvent: string;
+  auditPayload: Record<string, string | boolean>;
+}): Promise<ProtectAskOutcome | null> {
+  const verdict = resolveAutoGate(input.kind, input.config, input.meta, input.detail);
+  if (!verdict.auto) return null;
+  const action: ProtectAskOutcome["action"] = verdict.decision === "allow" ? "allow_once" : "denied";
+  await safeWriteAuditLog(input.auditEvent, {
+    pipelineId: input.meta.pipelineId,
+    stage: input.meta.currentStage,
+    action,
+    ...input.auditPayload,
+    hostRole: getHostRole(input.ctx),
+    autoPipeline: "true",
+  });
+  await auditAutoDecision(input.config, {
+    gate: input.kind,
+    decision: verdict.decision,
+    reason: verdict.reason,
+    stage: input.meta.currentStage,
+  });
+  return { decision: verdict.decision, action };
+}
 
 /**
  * Tri-state outcome for protect-ask decisions.
@@ -117,6 +157,18 @@ export async function askProtectDecision(
   relPath: string,
   config: PipelineConfig,
 ): Promise<ProtectAskOutcome> {
+  // 219 Phase 3 (G5): an active auto job answers this gate without a dialog.
+  const autoOutcome = await answerGateAutomatically({
+    kind: "protected_path",
+    ctx,
+    meta,
+    config,
+    detail: { path: relPath },
+    auditEvent: "pipeline_protect_ask",
+    auditPayload: { file: encodeAuditValue(relPath) },
+  });
+  if (autoOutcome) return autoOutcome;
+
   const options = [
     "Follow plugin default rules (default)",
     "Allow this edit only",
@@ -195,6 +247,18 @@ export async function askCommandDecision(
   command: string,
   config: PipelineConfig,
 ): Promise<ProtectAskOutcome> {
+  // 219 Phase 3 (G5): an active auto job answers this gate without a dialog.
+  const autoOutcome = await answerGateAutomatically({
+    kind: "destructive_command",
+    ctx,
+    meta,
+    config,
+    detail: { command },
+    auditEvent: "pipeline_command_ask",
+    auditPayload: { command: encodeAuditValue(command) },
+  });
+  if (autoOutcome) return autoOutcome;
+
   const options = [
     "Follow default rules (block, default)",
     "Allow this command once",
@@ -283,6 +347,28 @@ export async function askWriteDecision(
   candidates: WriteCandidate[],
   config: PipelineConfig,
 ): Promise<ProtectAskOutcome> {
+  // 219 Phase 3 (G5): an active auto job answers this gate without a dialog.
+  // A batch carrying ANY protected candidate is answered as a protected gate
+  // (always block in auto mode); a plain whitelist-miss batch follows the
+  // resolved `whitelistMiss` mode.
+  const autoKind: AutoGateKind = candidates.some((c) => c.category === "protected")
+    ? "protected_path"
+    : "whitelist_miss";
+  const autoOutcome = await answerGateAutomatically({
+    kind: autoKind,
+    ctx,
+    meta,
+    config,
+    detail: { path: candidates.map((c) => c.path).join(",") },
+    auditEvent: "pipeline_write_ask",
+    auditPayload: {
+      count: String(candidates.length),
+      categories: Array.from(new Set(candidates.map((c) => c.category))).join(","),
+      paths: candidates.map((c) => encodeAuditValue(c.path)).join(","),
+    },
+  });
+  if (autoOutcome) return autoOutcome;
+
   const options = [
     "Follow plugin default rules (default)",
     "Allow these writes only",

@@ -970,6 +970,31 @@ export interface SessionMeta {
    * period (R2). Reset with the new-period clears.
    */
   usageByStage?: Partial<Record<PipelineStage, StageUsageSnapshot>>;
+
+  /**
+   * 219 Phase 3/5: auto-pipeline context for the doc CURRENTLY executing.
+   *
+   * Facts:
+   * - Written by the runner AFTER `startNewPipeline` (buildStartMeta would
+   *   otherwise overwrite it), and cleared with every new doc period.
+   * - Thresholds only: sidecar `.pi/auto_pipeline/{jobId}/state.json` is the
+   *   single source of truth for progress, counters and the overlay snapshot —
+   *   `overlaySnapshot` MUST NOT live here (meta is per-pipelineId).
+   * - Absent ⇒ every auto judgement takes the "not active" branch (human-mode
+   *   behaviour stays verbatim).
+   */
+  autoJob?: {
+    jobId: string;
+    jobPath: string;
+    docIndex: number;
+    totalDocs: number;
+    /** Threshold written by the runner at doc startup; read by round-budget. */
+    designReviewMaxRounds?: number;
+    /** Dispatched review rounds of THIS doc (monotonic; never refunded). */
+    designReviewRounds?: number;
+    /** Last counted round number (dedupe for `noteDesignReviewDispatch`). */
+    lastCountedDesignReviewRound?: number;
+  };
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
@@ -1418,7 +1443,7 @@ export interface SpawnOperationContext {
  * - "policy": automatic decision applied by the decision-provider chain
  *   (`tryApplyPolicy`) when the frozen pipeline has no human responder.
  */
-export type DecisionSource = "human" | "policy";
+export type DecisionSource = "human" | "policy" | "auto";
 
 /**
  * 210 Phase 0: canonical decision vocabulary consumed by the decision menu

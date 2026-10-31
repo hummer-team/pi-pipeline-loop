@@ -580,6 +580,44 @@ export function readStateForActiveLock(projectRoot: string): AutoJobState | null
 }
 
 /**
+ * The job context of the CURRENT process-level lock (state + parsed job), or
+ * null. Single reader used by every auto seam (freeze autopilot, settle hard
+ * stop, loop brake) so the parse/hash/validation rules cannot diverge.
+ */
+export interface ActiveAutoJobContext {
+  jobId: string;
+  state: AutoJobState;
+  job: AutoJobConfig;
+  jobHash: string;
+}
+
+export function readActiveJobContext(projectRoot: string): ActiveAutoJobContext | null {
+  if (!isAutoJobActive()) return null;
+  const lock = readJobLock(projectRoot);
+  // The lock file must still name THIS process; otherwise the in-process fact
+  // and the disk record disagree and no auto seam may act.
+  if (!lock || lock.pid !== process.pid) return null;
+  const state = readJobState(projectRoot, lock.jobId);
+  if (!state) return null;
+  let raw: string;
+  try {
+    const jobPathAbs = pathMod.isAbsolute(state.jobPath)
+      ? state.jobPath
+      : pathMod.join(projectRoot, state.jobPath);
+    raw = fs.readFileSync(jobPathAbs, "utf8");
+  } catch (err) {
+    console.error(`[auto-pipeline] readActiveJobContext: job file unreadable for ${lock.jobId}: ${String(err)}`);
+    return null;
+  }
+  const parsed = parseAutoJob(raw, state.jobPath);
+  if (!parsed.ok) {
+    console.error(`[auto-pipeline] readActiveJobContext: job file invalid for ${lock.jobId} — no auto seam acts`);
+    return null;
+  }
+  return { jobId: lock.jobId, state, job: parsed.job, jobHash: parsed.hash };
+}
+
+/**
  * M5 (round 2): shutdown rollback guard. TRUE guarantees
  * `state.overlaySnapshot` exists (assertion-free type guard), meaning
  * `finalizeJob` did NOT already own the rollback and shutdown may restore.
