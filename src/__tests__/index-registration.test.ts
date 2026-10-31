@@ -91,8 +91,8 @@ describe("registerCommand bridge", () => {
     const factory = createPipeline(makeTestConfig());
     await factory(pi);
 
-    // Six commands: pipeline-status, pipeline-start, pipeline-init, pipeline-quit, pipeline-resume, pipeline-archive
-    expect(registeredCommands.length).toBe(6);
+    // Seven commands: pipeline-status, pipeline-start, pipeline-init, pipeline-quit, pipeline-resume, pipeline-archive, pipeline-auto (219 Phase 4)
+    expect(registeredCommands.length).toBe(7);
 
     for (const reg of registeredCommands) {
       // Object-style: name as first arg, options object as second

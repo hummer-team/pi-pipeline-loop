@@ -61,6 +61,26 @@ export function parseCommandArgs(
       // 206 Phase 4: /pipeline-archive is TUI-only with no argument parsing —
       // the interactive menu collects everything (threshold/action/confirms).
       return { raw: args };
+    case "pipeline-auto": {
+      // 219 Phase 4: internal continuation flags only — never a file path.
+      //   /pipeline-auto                     → menu
+      //   /pipeline-auto --next --job x --token y
+      const tokens = args.trim().split(/\s+/).filter(Boolean);
+      const readFlag = (flag: string): string | undefined => {
+        const idx = tokens.indexOf(flag);
+        if (idx < 0) return undefined;
+        const value = tokens[idx + 1];
+        return value && !value.startsWith("--") ? value : undefined;
+      };
+      const job = readFlag("--job");
+      const token = readFlag("--token");
+      return {
+        next: tokens.includes("--next"),
+        ...(job ? { job } : {}),
+        ...(token ? { token } : {}),
+        raw: args,
+      };
+    }
     default:
       return { raw: args };
   }

@@ -5,7 +5,7 @@
  */
 
 import type { PipelineConfig, ExtensionAPI, ExtensionFactory, ExecFn, AuditLogLevel } from "./types";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, TEMPLATE_DIR, AUDIT_THROTTLE_WINDOW_MS } from "./constants";
 import { initAuditLog } from "./utils/auditLog";
 import { buildRuntimeCtx } from "./core/runtime-ctx";
@@ -76,6 +76,8 @@ import { createPipelineInitCommand } from "./commands/pipeline-init";
 import { createPipelineQuitCommand } from "./commands/pipeline-quit";
 import { createPipelineResumeCommand } from "./commands/pipeline-resume";
 import { createPipelineArchiveCommand } from "./commands/pipeline-archive";
+// 219 Phase 4: /pipeline-auto (job menu + internal --next continuation).
+import { createPipelineAutoCommand } from "./commands/pipeline-auto";
 
 // Agent settled and session shutdown lifecycle hooks
 import { createAgentSettled } from "./core/agent-settled";
@@ -570,6 +572,8 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createPipelineResumeCommand(config),
       // 206 Phase 4: archive command gets the wrapped execFn for system-zip DI
       createPipelineArchiveCommand(config, { execFn }),
+      // 219 Phase 4: auto pipeline (job menu + internal --next continuation)
+      createPipelineAutoCommand(config),
     ];
     for (const cmd of commands) {
       pi.registerCommand(cmd.name, {
@@ -577,7 +581,19 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
         handler: async (args: string, ctx: ExtensionContext) => {
           const rctx = buildRuntimeCtx(pi, ctx, undefined, config);
           const parsed = parseCommandArgs(cmd.name, args);
-          const result = await cmd.execute(parsed, rctx);
+          // 219 Phase 4: the auto command additionally needs the session
+          // replacement channel (`newSession`) for the Phase 5 chain. The
+          // widening is scoped to this command only — `RuntimeCtx` and the
+          // other six command signatures stay untouched.
+          const autoCtx = cmd.name === "pipeline-auto"
+            ? {
+                ...rctx,
+                ...(typeof (ctx as Partial<ExtensionCommandContext>).newSession === "function"
+                  ? { newSession: (ctx as ExtensionCommandContext).newSession.bind(ctx) }
+                  : {}),
+              }
+            : rctx;
+          const result = await cmd.execute(parsed, autoCtx);
           if (result && typeof result === "object") {
             const r = result as Record<string, unknown>;
             if (r.error) ctx.ui.notify(String(r.error), "error");

@@ -55,7 +55,8 @@ describe("createPipeline", () => {
     expect(registeredCommands).toContain("pipeline-init");
     expect(registeredCommands).toContain("pipeline-quit");
     expect(registeredCommands).toContain("pipeline-archive");
-    expect(registeredCommands.length).toBe(6);
+    expect(registeredCommands).toContain("pipeline-auto");
+    expect(registeredCommands.length).toBe(7);
   });
 
   it("passes correct tool metadata during registration", async () => {
@@ -154,12 +155,13 @@ describe("default export", () => {
     expect(registeredTools).toContain("stage_advance");
     expect(registeredTools).toContain("pipeline_handoff");
 
-    expect(registeredCommands.length).toBe(6);
+    expect(registeredCommands.length).toBe(7);
     expect(registeredCommands).toContain("pipeline-status");
     expect(registeredCommands).toContain("pipeline-start");
     expect(registeredCommands).toContain("pipeline-init");
     expect(registeredCommands).toContain("pipeline-quit");
     expect(registeredCommands).toContain("pipeline-archive");
+    expect(registeredCommands).toContain("pipeline-auto");
   });
 
   // Test C: config file missing → fallback registration from built-in template (184_Bug Phase 2).
