@@ -18,11 +18,12 @@ import type { PipelineConfig, SessionMeta } from "../../types";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { detectSessionRole } from "../session-role";
 import { noteDocStage, writeJobState } from "./job-state";
-import { readActiveJobContext } from "./config-overlay";
+import { readActiveJobContext, readStateForActiveLock, isAutoJobActive } from "./config-overlay";
 import { evaluateHardStop } from "./stop-policy";
 import {
   continueJobAfterCompleted,
   finalizeCurrentDoc,
+  finalizeJob,
   handleDocFailure,
   syncAutoCountersFromMeta,
   type FinalizeCtx,
@@ -40,12 +41,32 @@ export async function handleAutoSettle(
   config: PipelineConfig,
   meta: SessionMeta,
 ): Promise<boolean> {
-  const active = readActiveJobContext(config.projectRoot);
-  if (!active) return false;
+  // Phase 5 §4 + review 219 issue 9: the seam's ENTRY GATE reads only the
+  // sidecar. `readActiveJobContext` re-parses the user-maintained job file, so
+  // an edit/delete would make every seam silently inert (doc stuck in
+  // `running`, lock never released, no audit).
+  const state = readStateForActiveLock(config.projectRoot);
+  if (!state) return false;
   if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return false;
-  if (active.state.status !== "running") return false;
+  // The sidecar ALONE is not enough: only the process that holds the lock may
+  // run the auto transaction (a human session in another terminal must stay
+  // inert even though the sidecar is running).
+  if (!isAutoJobActive()) return false;
+  if (state.status !== "running") return false;
 
-  const { state, job } = active;
+  const active = readActiveJobContext(config.projectRoot);
+  if (!active) {
+    // The job file is no longer readable/valid ⇒ no budget can be judged. Stop
+    // and report instead of idling (Phase 5 §4: any termination runs the
+    // transaction; the overlay/lock are released by `finalizeJob`).
+    console.error(
+      `[auto-pipeline] handleAutoSettle: job ${state.jobId} unreadable — stopping the job (job_drift)`,
+    );
+    await finalizeJob(ctx, config, { stopReason: "job_drift" });
+    return true;
+  }
+
+  const { job } = active;
 
   // 1) Completed wins over every hard-stop judgement.
   if (meta.currentStage === "completed") {

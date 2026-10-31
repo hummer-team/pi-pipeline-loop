@@ -34,7 +34,10 @@ let ROOT: string;
 let audits: string[];
 let errorSpy: ReturnType<typeof spyOn>;
 
-function jobYaml(docs: string[], extra?: { enabled?: boolean; startStage?: string; onFailure?: string }): string {
+function jobYaml(
+  docs: string[],
+  extra?: { enabled?: boolean; startStage?: string; onFailure?: string; newSession?: boolean },
+): string {
   const lines = [
     `version: 1`,
     `enabled: ${extra?.enabled ?? true}`,
@@ -47,6 +50,10 @@ function jobYaml(docs: string[], extra?: { enabled?: boolean; startStage?: strin
   }
   lines.push(`  skipCompleted: true`);
   lines.push(`  onFailure: ${extra?.onFailure ?? "stop"}`);
+  if (extra?.newSession !== undefined) {
+    lines.push(`chain:`);
+    lines.push(`  newSession: ${extra.newSession}`);
+  }
   return lines.join("\n");
 }
 
@@ -81,6 +88,7 @@ function config(): PipelineConfig {
 function makeCtx() {
   let meta: SessionMeta | undefined;
   const notified: string[] = [];
+  const dispatched: string[] = [];
   return {
     ctx: {
       session: {
@@ -94,7 +102,7 @@ function makeCtx() {
         notify: (message: string) => notified.push(message),
         select: async () => undefined,
       },
-      pi: { sendUserMessage: () => undefined },
+      pi: { sendUserMessage: (message: string) => dispatched.push(message) },
       _ctx: {
         sessionManager: {
           getBranch: () => [],
@@ -106,6 +114,7 @@ function makeCtx() {
     },
     meta: () => meta,
     notified,
+    dispatched,
   };
 }
 
@@ -172,8 +181,8 @@ describe("runner — start failure handling", () => {
     expect(audits).toContain("pipeline_auto_cleanup");
   });
 
-  it("onFailure:continue moves to the next document in the same invocation", async () => {
-    writeJob(jobYaml(["docs/design/missing.md", "docs/design/ok.md"], { onFailure: "continue" }));
+  it("onFailure:continue + chain.newSession:false starts the next document in the same invocation", async () => {
+    writeJob(jobYaml(["docs/design/missing.md", "docs/design/ok.md"], { onFailure: "continue", newSession: false }));
     writeDoc("docs/design/ok.md");
     const { ctx, meta } = makeCtx();
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
@@ -184,6 +193,26 @@ describe("runner — start failure handling", () => {
     expect(state.docs[1]?.status).toBe("running");
     expect(state.docIndex).toBe(1);
     expect(meta()?.requirementDoc).toBe("docs/design/ok.md");
+  });
+
+  it("onFailure:continue + chain.newSession dispatches the continuation command (no same-session start)", async () => {
+    writeJob(jobYaml(["docs/design/missing.md", "docs/design/ok.md"], { onFailure: "continue" }));
+    writeDoc("docs/design/ok.md");
+    // A hook-shaped ctx: it can DISPATCH (pi.sendUserMessage) but cannot replace
+    // the session — the production `agent_settled` shape.
+    const { ctx, meta, dispatched } = makeCtx();
+    const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
+
+    expect(result.success).toBe(true);
+    const state = readJobState(ROOT, JOB_ID)!;
+    expect(state.docs[0]?.status).toBe("failed");
+    // The NEW session owns the next doc — it must not start in this one.
+    expect(state.docs[1]?.status).toBe("pending");
+    expect(state.docIndex).toBe(0);
+    expect(meta()?.requirementDoc).toBeUndefined();
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toContain(`/pipeline-auto --next --job ${JOB_ID}`);
+    expect(dispatched[0]).toContain("--token");
   });
 
   it("all documents failing with onFailure:stop stops the job immediately", async () => {

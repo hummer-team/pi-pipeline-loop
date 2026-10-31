@@ -118,6 +118,9 @@ export async function runPipelineAuto(
     ctx,
     jobId: resolution.jobId,
     ...(args.token ? { token: args.token } : {}),
+    // Phase 5 §6.1: a dispatched `--next` is a CHAINED continuation — the
+    // command host performs the session rotation first (`ctx.newSession`).
+    ...(args.next ? { continuation: true } : {}),
   });
 }
 
@@ -180,10 +183,38 @@ async function runMenu(config: PipelineConfig, ctx: AutoPipelineCommandCtx): Pro
   if (state?.status === "completed") {
     const choice = await ctx.ui?.select?.("This job is already completed.", ["重新开始", "取消"]);
     if (choice !== "重新开始") return { success: true, message: "Auto pipeline cancelled" };
-    state = null; // fresh state
+    // 219 Phase 4 §2 + review issue 3: "重新开始" must REBUILD the sidecar.
+    // Clearing a local variable changed nothing: `startAutoJob` re-reads the
+    // same completed sidecar, `pickNextDoc` finds no pending doc and the job
+    // ends as `job_completed` ("already finished"). The drift branch already
+    // shows the correct construction — reuse the SAME one.
+    const rebuilt = await rebuildJobState(config, row, jobFile.raw, jobFile.hash);
+    if (!rebuilt.ok) return { success: false, error: rebuilt.error };
   }
-
   return startAutoJob({ config, ctx, jobId: row.jobId });
+}
+
+/**
+ * Replace the sidecar of `row.jobId` with a FRESH state built from the current
+ * job bytes (the "重新开始" construction shared by the completed and drift
+ * branches).
+ */
+async function rebuildJobState(
+  config: PipelineConfig,
+  row: JobMenuRow,
+  raw: string,
+  hash: string,
+): Promise<{ ok: true; state: AutoJobState } | { ok: false; error: string }> {
+  const parsed = parseAutoJob(raw, row.jobPath);
+  if (!parsed.ok) return { ok: false, error: parsed.errors.join("\n") };
+  const fresh = createJobState({
+    jobId: row.jobId,
+    jobPath: pathMod.join(AUTO_PIPELINE_JOB_DIR, row.fileName),
+    jobHash: hash,
+    docs: parsed.job.docs.list,
+  });
+  await writeJobState(config.projectRoot, fresh);
+  return { ok: true, state: fresh };
 }
 
 /**
@@ -215,14 +246,8 @@ async function resolveDrift(
   const parsed = parseAutoJob(raw, row.jobPath);
   if (!parsed.ok) return null;
   if (choice === "重新开始") {
-    const fresh = createJobState({
-      jobId: row.jobId,
-      jobPath: pathMod.join(AUTO_PIPELINE_JOB_DIR, row.fileName),
-      jobHash: hash,
-      docs: parsed.job.docs.list,
-    });
-    await writeJobState(config.projectRoot, fresh);
-    return fresh;
+    const rebuilt = await rebuildJobState(config, row, raw, hash);
+    return rebuilt.ok ? rebuilt.state : null;
   }
 
   // "按新 job 续跑": keep per-doc statuses aligned BY DOC PATH, then fall back
@@ -250,6 +275,89 @@ async function resolveDrift(
 }
 
 /**
+ * Phase 5 §6.1 — COMMAND-SIDE session rotation for a chained continuation.
+ *
+ * The settle seam runs on a hook ctx (`RuntimeCtx`/`ExtensionContext`) which
+ * has no `newSession`, so it dispatches `/pipeline-auto --next …`; THIS handler
+ * is the only place that can replace the session. Two guards keep it honest:
+ * - only a session that ALREADY ran a document rotates (`meta.autoJob` or a
+ *   `completed` stage) — the fresh session created here must start the doc,
+ *   otherwise the chain would rotate forever;
+ * - `{ cancelled }` from the host is the documented same-session fallback
+ *   (Phase 5 §6.2), never a terminal state; `chain.onSessionFail: "stop"`
+ *   turns that fallback into `session_fail` instead.
+ *
+ * @returns the final result when the call is DONE (rotated, or stopped), or
+ *   `null` when the caller must continue starting the doc in THIS session.
+ */
+async function rotateSessionForContinuation(input: {
+  config: PipelineConfig;
+  ctx: AutoPipelineCommandCtx;
+  job: AutoJobConfig;
+  jobId: string;
+  token?: string;
+}): Promise<AutoPipelineResult | null> {
+  const { config, ctx, job, jobId, token } = input;
+  if (typeof ctx.newSession !== "function") return null;
+  if (!job.chain.newSession) return null;
+
+  const meta = ctx.session?.getMeta?.();
+  const ranADocument = meta?.autoJob !== undefined || meta?.currentStage === "completed";
+  if (!ranADocument) return null;
+
+  const command = [
+    "/pipeline-auto",
+    "--next",
+    "--job",
+    jobId,
+    ...(token ? ["--token", token] : []),
+  ].join(" ");
+
+  let cancelled = false;
+  try {
+    const result = (await ctx.newSession({
+      withSession: async (replaced) => {
+        const send = (replaced as {
+          sendUserMessage?: (content: string, opts?: Record<string, unknown>) => unknown;
+        }).sendUserMessage;
+        if (typeof send === "function") {
+          await Promise.resolve(send.call(replaced, command, { expandPromptTemplates: true }));
+        }
+      },
+    })) as { cancelled?: boolean } | undefined;
+    cancelled = result?.cancelled === true;
+  } catch (err) {
+    console.error(`[pipeline-auto] --next: newSession failed for ${jobId}: ${String(err)}`);
+    cancelled = true;
+  }
+
+  if (!cancelled) {
+    await safeWriteAuditLog("pipeline_auto_chain", {
+      jobId,
+      result: "new_session",
+      channel: "command_new_session",
+    });
+    return { success: true, message: `Auto job "${jobId}": next doc continued in a new session.` };
+  }
+
+  await safeWriteAuditLog(
+    "pipeline_auto_chain",
+    { jobId, result: "cancelled", channel: "command_new_session" },
+    "warn",
+  );
+  if (job.chain.onSessionFail === "stop") {
+    await safeWriteAuditLog("pipeline_auto_chain", { jobId, result: "stopped" }, "warn");
+    const done = await finalizeJob(ctx as never, config, { stopReason: "session_fail" });
+    return {
+      success: false,
+      error: done.summary ?? `Auto job "${jobId}" stopped: session_fail`,
+    };
+  }
+  // Documented same-session fallback: start the next doc HERE.
+  return null;
+}
+
+/**
  * Start (or continue) the job: the ONLY place that acquires the lock, applies
  * the overlay and dispatches the first/next document.
  */
@@ -264,6 +372,12 @@ export async function startAutoJob(input: {
    * the chain side (219 Phase 5 §6.2).
    */
   deferFailure?: boolean;
+  /**
+   * Internal (chained continuation, Phase 5 §6.1): TRUE only for a dispatched
+   * `--next`. The command host owns the session rotation, so this call first
+   * hops to a new session and lets the fresh session start the document.
+   */
+  continuation?: boolean;
 }): Promise<AutoPipelineResult> {
   const { config, ctx, jobId, token } = input;
   const projectRoot = config.projectRoot;
@@ -281,6 +395,11 @@ export async function startAutoJob(input: {
   if (!parsed.ok) return { success: false, error: parsed.errors.join("\n") };
   const job = parsed.job;
   if (!job.enabled) return { success: false, error: `auto job "${jobId}" is disabled (enabled: false)` };
+
+  if (input.continuation === true) {
+    const outcome = await rotateSessionForContinuation({ config, ctx, job, jobId, ...(token ? { token } : {}) });
+    if (outcome) return outcome;
+  }
 
   // M8 token resolution: an explicit token means "reclaim if needed"; the lock
   // module decides between adopt / stale_token / busy.
@@ -407,6 +526,7 @@ async function startPendingDoc(input: {
       docIndex: target.index,
       totalDocs: state.jobTotalDocs,
       designReviewMaxRounds: job.designReview.maxRounds,
+      totalLoopsBudget: job.stopConditions.maxTotalLoops,
     }),
   });
 

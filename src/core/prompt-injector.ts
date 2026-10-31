@@ -682,7 +682,16 @@ function hasCommitDocFor(requirementDoc: string | undefined, projectRoot: string
  * session keeps the prompt byte-identical. The human tier always renders;
  * an auto job adds the queue/budget tier. The section is distinct from
  * PIPELINE STATE (that one is frozen-only); this one is "interrupted/resumed".
+ *
+ * Review 219 issue 10 (Medium): the rule-2 comparison needs a REAL session
+ * start. `Date.now()` made "`lastSettleAt < sessionStartedAt`" true on every
+ * turn, so a merely RUNNING job rendered "Decision: resume / unsettled" in
+ * every prompt. The module is loaded once per session bootstrap, so its load
+ * time is the stable reference; the authoritative verdict stays
+ * `meta.continuity` (written by `session_start`).
  */
+const SESSION_BOOT_AT = Date.now();
+
 export function buildTaskContinuitySection(
   config: PipelineConfig,
   meta: SessionMeta,
@@ -691,7 +700,7 @@ export function buildTaskContinuitySection(
   const computed = decideContinuity({
     meta,
     state,
-    sessionStartedAt: Date.now(),
+    sessionStartedAt: SESSION_BOOT_AT,
     hasCommitDoc: hasCommitDocFor(meta.requirementDoc, config.projectRoot),
   });
   const decision = meta.continuity ?? computed.decision;
@@ -721,7 +730,17 @@ export function buildTaskContinuitySection(
           (state.stopReason ? ` (${state.stopReason})` : "") +
           (state.lastSettleAt ? `, last settle ${new Date(state.lastSettleAt).toISOString()}` : ""),
       );
-      lines.push(`- Total loops used: ${state.counters.totalLoops}`);
+      // Phase 6 §3: the auto tier reports the REMAINING budget, not the used
+      // counter (a bare "used" number cannot tell the agent how much room is
+      // left). The budget comes from `meta.autoJob` so no job file is re-parsed
+      // per prompt build.
+      const used = state.counters.totalLoops;
+      const budget = auto.totalLoopsBudget;
+      lines.push(
+        budget !== undefined && budget > 0
+          ? `- Remaining total loops: ${Math.max(0, budget - used)} (budget ${budget}, used ${used})`
+          : `- Total loops used: ${used} (budget unlimited)`,
+      );
     }
   }
 

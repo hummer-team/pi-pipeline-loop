@@ -47,6 +47,13 @@ export interface AutoJobDocProgress {
   pipelineId?: string;
   /** last seen meta.loopCycleCount — used to derive totalLoops (monotonic). */
   lastLoopCycleCount?: number;
+  /**
+   * 219 Phase 5 §3 #3: last seen `meta.verifyAttempts` — the delta source of
+   * `counters.consecutiveVerifyFailures`. A failed ATTEMPT counts once, no
+   * matter how many rules it violated; a reset (stage advance / pass) rebases
+   * it so the streak restarts instead of freezing on a stale number.
+   */
+  lastVerifyAttempts?: number;
   updatedAt: number;
   failReason?: string;
   /** per-doc clarify degradation flag. */
@@ -164,6 +171,21 @@ export function readJobState(projectRoot: string, jobId: string): AutoJobState |
 }
 
 /**
+ * Monotonic suffix for the tmp file name. A FIXED name (`tmp-${pid}`) is unsafe
+ * because the same process writes this sidecar from several independent paths
+ * (settle seam, runner, fire-and-forget loop-brake persist): two concurrent
+ * writes would share one tmp path, truncate each other, and a rename could
+ * publish a half-written JSON. The per-call suffix makes every write own its
+ * tmp file.
+ */
+let writeSequence = 0;
+
+function nextTmpSuffix(): string {
+  writeSequence += 1;
+  return `${process.pid}-${writeSequence}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
  * Write the sidecar atomically: write to a tmp file in the SAME directory,
  * then rename over the target (atomic on POSIX). Fail-closed: failures are
  * logged (error level) and rethrown — callers must convert to stop-and-report.
@@ -171,7 +193,7 @@ export function readJobState(projectRoot: string, jobId: string): AutoJobState |
 export async function writeJobState(projectRoot: string, state: AutoJobState): Promise<void> {
   const statePath = resolveJobStatePath(projectRoot, state.jobId);
   const dir = pathMod.dirname(statePath);
-  const tmpPath = pathMod.join(dir, `state.json.tmp-${process.pid}`);
+  const tmpPath = pathMod.join(dir, `state.json.tmp-${nextTmpSuffix()}`);
   try {
     await fs.promises.mkdir(dir, { recursive: true });
     const serialized = JSON.stringify({ ...state, schemaVersion: 1 as const }, null, 2);

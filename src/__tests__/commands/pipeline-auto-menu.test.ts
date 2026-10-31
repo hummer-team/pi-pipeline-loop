@@ -262,6 +262,30 @@ describe("job-menu — command guards", () => {
     expect(readJobState(ROOT, "alpha")?.status).toBe("completed");
   });
 
+  it("重新开始 on a completed sidecar REBUILDS the progress (no 'already finished')", async () => {
+    writeJobFile("alpha");
+    // Every doc already completed: without a rebuild `pickNextDoc` finds
+    // nothing and the job ends as `job_completed` ("already finished").
+    await writeSidecar("alpha", {
+      status: "completed",
+      docs: [
+        { doc: "docs/design/a.md", status: "completed", updatedAt: 0 },
+        { doc: "docs/design/b.md", status: "completed", updatedAt: 0 },
+      ],
+      docIndex: 1,
+    } as never);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "重新开始"]);
+    const result = await runPipelineAuto(config(), {}, ctx);
+
+    // The rebuild restarted at doc 1; its file is absent, so the runner fails
+    // fast — the point is that the job did NOT report "already finished".
+    expect(result.message ?? "").not.toContain("already finished");
+    const state = readJobState(ROOT, "alpha")!;
+    expect(state.docs[0]?.status).toBe("failed");
+    expect(state.docs[1]?.status).toBe("pending");
+    expect(state.docIndex).toBe(0);
+  });
+
   it("selecting a job starts it (document missing → fail-fast but START was audited)", async () => {
     writeJobFile("alpha");
     await writeSidecar("alpha", { status: "completed" } as never);

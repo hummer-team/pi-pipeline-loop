@@ -105,6 +105,31 @@ describe('meta-reset (203_Bug Phase 1)', () => {
       expect(check.confirmGateEscalation).toBeUndefined();
     });
 
+    it('219: clears the per-doc auto-job context and the continuity verdict', () => {
+      // Review 219 issue 4: a stale `autoJob` made a human `/pipeline-start`
+      // inherit the previous job's design-review budget (first dispatch froze);
+      // a stale `continuity: "resume"` kept the TASK CONTINUITY section alive.
+      const stale = makeTestMeta({
+        autoJob: {
+          jobId: "alpha",
+          jobPath: "docs/jobs/alpha.yaml",
+          docIndex: 1,
+          totalDocs: 3,
+          designReviewMaxRounds: 1,
+          designReviewRounds: 1,
+          lastCountedDesignReviewRound: 1,
+        },
+        continuity: "resume",
+      } as Partial<SessionMeta>);
+      const cleared = buildNewPeriodResetFields(stale, makeTestConfig());
+      expect(cleared.autoJob).toBeUndefined();
+      expect(cleared.continuity).toBeUndefined();
+      // Continue-resume keeps the SAME doc's context on purpose.
+      const continued = buildContinueResetFields(stale, makeTestConfig());
+      expect(continued).not.toHaveProperty("autoJob");
+      expect(continued).not.toHaveProperty("continuity");
+    });
+
     it('does NOT include pipelineId (assigned by the caller)', () => {
       expect(check).not.toHaveProperty("pipelineId");
     });

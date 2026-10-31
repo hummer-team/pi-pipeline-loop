@@ -25,6 +25,21 @@
  * - `acquireJobLock` auto-reclaims a stale holder (pid is dead) — a
  *   permanently busy state cannot exist. Release happens ONLY in
  *   `finalizeJob` (Phase 5); token mismatch warns and never throws.
+ *
+ * G2 invariant — "guard BEFORE literal" (Phase 3 §2, review 219 issue 12):
+ * The confirm gate is closed purely by this overlay rewriting
+ * `stages.<stage>.confirm.mode` in the live config. Two call sites pass the
+ * literal `mode: "manual"` into `maybeHandleConfirmGate`:
+ *   - `agent-settled.ts` (inside `if (stageConfig.confirm?.mode === "manual")`,
+ *     where `stageConfig = config.stages[meta.currentStage]` reads the LIVE
+ *     object),
+ *   - `confirm-gate-owner-reprompt.ts` (inside the `detectPendingConfirmGate`
+ *     predicate, which re-reads the same config key).
+ * Both literals MUST stay behind that config guard. Any refactor that reads a
+ * mode first and branches afterwards (or hardcodes `mode:"manual"` on an
+ * unguarded path) makes the overlay silently ineffective — the auto job would
+ * pop a human dialog with no one to answer it. `config-overlay.test.ts`
+ * asserts the source order so such a refactor fails instead of degrading.
  */
 
 import * as fs from "node:fs";

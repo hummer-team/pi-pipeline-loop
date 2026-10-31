@@ -101,6 +101,15 @@ describe("prompt-injector — task continuity section", () => {
     expect(section).toContain("Stage: review");
   });
 
+  it("a job that settled DURING this session renders nothing (no per-turn 'resume')", async () => {
+    // Review 219 issue 10: `sessionStartedAt: Date.now()` made rule 2 true on
+    // every turn of a merely RUNNING job. A settle recorded after this session
+    // started must NOT claim an interruption.
+    await installRunningJob({ lastSettleAt: Date.now() });
+    const meta = makeTestMeta({ requirementDoc: "docs/design/a.md" });
+    expect(buildTaskContinuitySection(config(), meta)).toBeNull();
+  });
+
   it("auto tier adds job name, queue progress and budgets", async () => {
     await installRunningJob();
     const meta = makeTestMeta({
@@ -119,7 +128,25 @@ describe("prompt-injector — task continuity section", () => {
     expect(section).toContain("Auto job: alpha");
     expect(section).toContain("queue 2/2");
     expect(section).toContain("Remaining design-review rounds: 2");
-    expect(section).toContain("Total loops used: 3");
+    expect(section).toContain("Total loops used: 3 (budget unlimited)");
+  });
+
+  it("auto tier reports the REMAINING total-loop budget when the job set one", async () => {
+    await installRunningJob();
+    const meta = makeTestMeta({
+      requirementDoc: "docs/design/a.md",
+      continuity: "resume",
+      autoJob: {
+        jobId: "alpha",
+        jobPath: "docs/jobs/alpha.yaml",
+        docIndex: 0,
+        totalDocs: 2,
+        totalLoopsBudget: 5,
+      },
+    });
+    const section = buildTaskContinuitySection(config(), meta)!;
+    expect(section).toContain("Remaining total loops: 2 (budget 5, used 3)");
+    expect(section).not.toContain("Total loops used:");
   });
 
   it("human tier never leaks auto-job fields", () => {

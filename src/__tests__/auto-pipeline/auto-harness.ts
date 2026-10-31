@@ -61,6 +61,8 @@ export interface AutoHarness {
   state: () => AutoJobState;
   install: (opts?: { counters?: Partial<AutoJobState["counters"]>; status?: AutoJobState["status"] }) => Promise<AutoJobState>;
   writeDoc: (rel: string) => void;
+  /** Corrupt the job YAML (a user edit) without touching the sidecar. */
+  writeBrokenJob: () => void;
   dispose: () => void;
 }
 
@@ -116,6 +118,9 @@ export function createAutoHarness(): AutoHarness {
       const abs = path.join(root, rel);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, `# ${rel}\n`, "utf8");
+    },
+    writeBrokenJob: () => {
+      fs.writeFileSync(jobPath, "version: 1\ndocs: [ this is not: valid yaml\n", "utf8");
     },
   };
   return harness;

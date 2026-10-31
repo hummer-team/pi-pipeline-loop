@@ -78,6 +78,63 @@ describe("chain — success path", () => {
     expect(harness.state()!.docIndex).toBe(1);
   });
 
+  it("a hook host (no newSession) DISPATCHES the continuation command", async () => {
+    await harness.install();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    const dispatched: string[] = [];
+    // Production `agent_settled` shape: pi can send a user message but the ctx
+    // cannot replace the session (only ExtensionCommandContext has newSession).
+    const hookCtx = {
+      ...stub,
+      pi: { sendUserMessage: (message: string) => dispatched.push(message) },
+    };
+
+    const result = await continueJobAfterCompleted(hookCtx, harness.config, harness.job);
+
+    expect(result.skipped).toBe(false);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toContain(`/pipeline-auto --next --job ${HARNESS_JOB_ID}`);
+    expect(dispatched[0]).toContain("--token");
+    // Never started in this session — the dispatched command owns the hop.
+    expect(harness.state()!.docs[1]?.status).toBe("pending");
+  });
+
+  it("a CANCELLED newSession falls back to the same-session serial", async () => {
+    await harness.install();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    stub.setNewSession(async ({ withSession }) => {
+      await withSession({ sendUserMessage: () => undefined });
+      return { cancelled: true };
+    });
+
+    const result = await continueJobAfterCompleted(
+      { ...stub, ...stub.withNewSession() },
+      harness.config,
+      harness.job,
+    );
+
+    expect(result.skipped).toBe(false);
+    expect(harness.state()!.docs[1]?.status).toBe("running");
+    expect(harness.state()!.docIndex).toBe(1);
+  });
+
+  it("chain.onSessionFail:'stop' turns a refused hop into session_fail", async () => {
+    await harness.install();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    stub.setNewSession(async () => ({ cancelled: true }));
+    const stopChain = { ...harness.job, chain: { ...harness.job.chain, onSessionFail: "stop" as const } };
+
+    await continueJobAfterCompleted({ ...stub, ...stub.withNewSession() }, harness.config, stopChain);
+
+    const persisted = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(persisted.status).toBe("failed");
+    expect(persisted.stopReason).toBe("session_fail");
+    expect(persisted.docs[1]?.status).toBe("pending");
+  });
+
   it("no pending docs → finalizeJob(job_completed)", async () => {
     const state = await harness.install();
     state.docs[0]!.status = "completed";

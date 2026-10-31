@@ -367,3 +367,60 @@ describe("config-overlay — restoreOverlay", () => {
     expect(live.stages.plan?.confirm?.mode).toBe("manual");
   });
 });
+
+/**
+ * G2 regression guard (Phase 3 §2, review 219 issue 12): the confirm gate is
+ * closed ONLY by this overlay rewriting `stages.*.confirm.mode`. The two call
+ * sites that pass the literal `mode: "manual"` must therefore stay BEHIND a
+ * config guard — a "read the mode first, branch later" refactor would make the
+ * overlay silently ineffective with no failing test.
+ */
+describe("G2 — 'guard before literal' source invariant", () => {
+  const SRC = path.resolve(__dirname, "..", "..", "..", "src");
+
+  function readSource(rel: string): string[] {
+    return fs.readFileSync(path.join(SRC, rel), "utf8").split("\n");
+  }
+
+  /** Index of the nearest preceding line matching `guard`, or -1. */
+  function precedingGuard(lines: string[], from: number, guard: RegExp): number {
+    for (let i = from; i >= 0; i--) {
+      if (guard.test(lines[i]!)) return i;
+    }
+    return -1;
+  }
+
+  it("agent-settled guards `mode: \"manual\"` with the live stage confirm mode", () => {
+    const lines = readSource("core/agent-settled.ts");
+    const literalIndices = lines
+      .map((line, i) => ({ line, i }))
+      .filter(({ line }) => /mode:\s*"manual"/.test(line))
+      .map(({ i }) => i);
+    expect(literalIndices.length).toBeGreaterThan(0);
+
+    for (const index of literalIndices) {
+      const guard = precedingGuard(
+        lines,
+        index,
+        /(stageConfig\.confirm\?\.mode|confirmMode)\s*===\s*"manual"/,
+      );
+      expect(guard).toBeGreaterThanOrEqual(0);
+      expect(guard).toBeLessThan(index);
+    }
+  });
+
+  it("owner re-prompt gates the literal behind the config predicate", () => {
+    const lines = readSource("core/confirm-gate-owner-reprompt.ts");
+    const literalIndices = lines
+      .map((line, i) => ({ line, i }))
+      .filter(({ line }) => /mode:\s*"manual"/.test(line))
+      .map(({ i }) => i);
+    expect(literalIndices.length).toBeGreaterThan(0);
+
+    const predicate = lines.findIndex((line) => line.includes("detectPendingConfirmGate("));
+    expect(predicate).toBeGreaterThanOrEqual(0);
+    for (const index of literalIndices) {
+      expect(predicate).toBeLessThan(index);
+    }
+  });
+});

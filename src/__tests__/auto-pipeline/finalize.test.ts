@@ -16,10 +16,11 @@ import {
   buildJobSummary,
   finalizeCurrentDoc,
   finalizeJob,
+  syncAutoCountersFromMeta,
   __resetFinalizeStateForTests,
 } from "../../core/auto-pipeline/finalize";
 import { isAutoJobActive, readJobLock, __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
-import { readJobState } from "../../core/auto-pipeline/job-state";
+import { createJobState, readJobState } from "../../core/auto-pipeline/job-state";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 
 let harness: ReturnType<typeof createAutoHarness>;
@@ -204,5 +205,70 @@ describe("finalize — buildJobSummary", () => {
     expect(summary).toContain("1 failed");
     expect(summary).toContain("1 pending");
     expect(summary).toContain("budget_exhausted");
+  });
+});
+
+describe("finalize — sidecar-only transaction (review 219 issue 9)", () => {
+  it("finalizes even when the job file is unreadable/unparseable", async () => {
+    await harness.install();
+    // A user edit that breaks the YAML must never skip the receipt / release /
+    // lock release (`readActiveJobContext` would have returned null).
+    harness.writeBrokenJob();
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop", pipelineId: "pipe-1" }));
+
+    const result = await finalizeCurrentDoc(stub, harness.config, { outcome: "completed" });
+
+    expect(result.skipped).toBe(false);
+    const state = harness.state()!;
+    expect(state.docs[0]?.status).toBe("completed");
+    expect(state.docs[0]?.finalizeKey).toBe(`${HARNESS_JOB_ID}:0:completed`);
+  });
+});
+
+describe("finalize — consecutiveVerifyFailures (review 219 issue 7)", () => {
+  function freshState() {
+    return createJobState({
+      jobId: HARNESS_JOB_ID,
+      jobPath: `docs/jobs/${HARNESS_JOB_ID}.yaml`,
+      jobHash: "h",
+      docs: HARNESS_DOCS.map((doc) => ({ doc })),
+    });
+  }
+
+  const failures = (n: number) =>
+    Array.from({ length: n }, (_v, i) => ({ ruleType: "keywords", detail: `rule ${i}`, timestamp: 0 }));
+
+  it("ONE failed attempt with three violated rules counts once (not three)", () => {
+    const state = freshState();
+    syncAutoCountersFromMeta({
+      state,
+      meta: makeTestMeta({ verifyAttempts: 1, verifyFailures: failures(3) }),
+      docIndex: 0,
+    });
+    expect(state.counters.consecutiveVerifyFailures).toBe(1);
+  });
+
+  it("each failed attempt adds one and a pass resets the streak", () => {
+    const state = freshState();
+    for (const attempts of [1, 2, 3]) {
+      syncAutoCountersFromMeta({
+        state,
+        meta: makeTestMeta({ verifyAttempts: attempts, verifyFailures: failures(2) }),
+        docIndex: 0,
+      });
+    }
+    expect(state.counters.consecutiveVerifyFailures).toBe(3);
+
+    // Same attempt window seen twice → no double counting.
+    syncAutoCountersFromMeta({
+      state,
+      meta: makeTestMeta({ verifyAttempts: 3, verifyFailures: failures(2) }),
+      docIndex: 0,
+    });
+    expect(state.counters.consecutiveVerifyFailures).toBe(3);
+
+    // A pass clears the failures → the streak restarts.
+    syncAutoCountersFromMeta({ state, meta: makeTestMeta({ verifyAttempts: 3, verifyFailures: [] }), docIndex: 0 });
+    expect(state.counters.consecutiveVerifyFailures).toBe(0);
   });
 });

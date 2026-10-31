@@ -994,6 +994,12 @@ export interface SessionMeta {
     designReviewRounds?: number;
     /** Last counted round number (dedupe for `noteDesignReviewDispatch`). */
     lastCountedDesignReviewRound?: number;
+    /**
+     * 219 Phase 6 §3: `stopConditions.maxTotalLoops` of the running job. Written
+     * by the runner at doc startup so the prompt can render the REMAINING loop
+     * budget without re-reading the user-maintained job file.
+     */
+    totalLoopsBudget?: number;
   };
 
   /**

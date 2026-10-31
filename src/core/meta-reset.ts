@@ -152,6 +152,15 @@ export function buildNewPeriodResetFields(
     advancedThisTurn: undefined,
     reviewConclusionDeclared: undefined,
 
+    // 219 review issue 4 (High): the auto-job context and the continuity verdict
+    // are PER-DOC facts. They must be cleared with every new period, otherwise
+    // a human `/pipeline-start` in the same session inherits the previous job's
+    // `designReviewMaxRounds` (the first design-review dispatch would freeze as
+    // `design_review_budget_exhausted`), keeps writing `autoJob` counters, and a
+    // stale `continuity: "resume"` renders the TASK CONTINUITY section forever.
+    autoJob: undefined,
+    continuity: undefined,
+
     // 210 Phase 0: per-period evidence snapshots. These fields are set
     // ONLY here (single construction point) — buildStartMeta / buildRestartMeta /
     // buildResumeMeta all spread this function, so no separate writes exist.

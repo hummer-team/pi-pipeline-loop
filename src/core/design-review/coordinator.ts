@@ -271,30 +271,39 @@ export async function coordinateDesignReview(
   // single coordination entry (deduped + monotonic — a rewind never refunds a
   // counted round). `noteDesignReviewDispatch` writes ONLY `meta.autoJob`, so
   // human sessions are untouched.
+  //
+  // Review 219 issue 5 (High): the committed patch must be reflected in the
+  // LOCAL snapshot too. `handleReviewRunning` → `handleFail` re-reads the round
+  // budget from the meta it was handed; keeping the pre-increment snapshot
+  // granted one extra dispatch (the freeze landed one round late).
+  let effectiveMeta = meta;
   if (drState.phase === "review_running" && drState.operation?.kind === "review") {
     const patch = noteDesignReviewDispatch(meta, drState.round);
-    if (patch) ctx.session.updateMeta(patch);
+    if (patch) {
+      const committed = ctx.session.updateMeta(patch);
+      effectiveMeta = committed ?? ({ ...meta, ...patch } as SessionMeta);
+    }
   }
 
   // Handle based on current phase and trigger
   switch (drState.phase) {
     case "review_ready":
-      return await handleReviewReady(ctx, meta, drState, trigger);
+      return await handleReviewReady(ctx, effectiveMeta, drState, trigger);
     
     case "review_running":
-      return await handleReviewRunning(ctx, meta, drState, trigger);
+      return await handleReviewRunning(ctx, effectiveMeta, drState, trigger);
     
     case "update_ready":
-      return await handleUpdateReady(ctx, meta, drState, trigger);
+      return await handleUpdateReady(ctx, effectiveMeta, drState, trigger);
     
     case "update_running":
-      return await handleUpdateRunning(ctx, meta, drState, trigger);
+      return await handleUpdateRunning(ctx, effectiveMeta, drState, trigger);
     
     case "pass_ready":
-      return await handlePassReady(ctx, meta, drState, trigger);
+      return await handlePassReady(ctx, effectiveMeta, drState, trigger);
     
     case "paused":
-      return await handlePaused(ctx, meta, drState, trigger);
+      return await handlePaused(ctx, effectiveMeta, drState, trigger);
     
     case "finished":
       return { status: "not-applicable" };
@@ -1040,6 +1049,52 @@ async function handlePassReady(
 }
 
 /**
+ * 219 Phase 3 §4 (G4): consume `designReview.failAction`.
+ *
+ * The schema parses `"auto-revise" | "stop"`, but nothing read it — a job that
+ * explicitly asked "FAIL stops this document" silently kept revising until some
+ * other budget happened to trip (the guide promised the opposite).
+ *
+ * Facts:
+ * - Judged ONLY for an ACTIVE auto job in the owner process
+ *   (`readActiveJobContext` already enforces the lock/pid rules); human sessions
+ *   and child sessions keep the verbatim revise-plan route.
+ * - The failure goes through `handleDocFailure` (Phase 5 §6.2), so the receipt,
+ *   the release and the `onFailure` scheduling stay single-sourced. Without a
+ *   verdict the stop reason is `budget_exhausted` (plan §4).
+ * - `finalize` is imported lazily: it pulls `cleanup` → `flow-state`, and a
+ *   static edge would close a load cycle back into this module.
+ *
+ * @returns the coordinator result to return, or `null` when the normal
+ *   revise-plan route must continue.
+ */
+async function maybeApplyAutoFailActionStop(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+): Promise<CoordinatorResult | null> {
+  if (!meta.autoJob) return null;
+  const { readActiveJobContext } = await import("../auto-pipeline/config-overlay");
+  const active = readActiveJobContext(ctx.config.projectRoot);
+  if (!active || active.state.status !== "running") return null;
+  if (active.job.designReview.failAction !== "stop") return null;
+
+  const { handleDocFailure } = await import("../auto-pipeline/finalize");
+  await handleDocFailure(
+    ctx as unknown as Parameters<typeof handleDocFailure>[0],
+    ctx.config,
+    active.state,
+    active.job,
+    { outcome: "failed", reason: "design_review_fail_action_stop" },
+  );
+  await safeWriteAuditLog("design_review_coordinator", {
+    action: "auto_fail_action_stop",
+    jobId: active.jobId,
+    round: String(meta.designReview?.round ?? 0),
+  }, "warn");
+  return { status: "handled", action: "pending", reason: "auto_fail_action_stop" };
+}
+
+/**
  * Handle FAIL verdict: consume the report, keep its attribution, create the
  * UPDATE operation (new kind, fresh visit) and dispatch it exactly once.
  *
@@ -1059,6 +1114,15 @@ async function handleFail(
   reportPath: string,
   verifiedIssues?: readonly ReviewIssue[],
 ): Promise<CoordinatorResult> {
+  // 219 Phase 3 §4 (G4): `designReview.failAction: "stop"` — the job asked us
+  // NOT to revise. The doc failure must run the Phase 5 transaction
+  // (`handleDocFailure`, stopReason "budget_exhausted"), never a copied loop.
+  // Human mode is untouched: without an ACTIVE auto job this is a no-op.
+  // Ordered before the budget predicates on purpose: an explicit "stop" is the
+  // more specific instruction, and both outcomes are terminal for this doc.
+  const failActionStop = await maybeApplyAutoFailActionStop(ctx, meta);
+  if (failActionStop) return failActionStop;
+
   // 219 Phase 3 §7c (B2): independent round budget — judged BEFORE re-dispatch.
   if (isDesignReviewRoundBudgetExhausted(meta)) {
     await safeWriteAuditLog("design_review_coordinator", {

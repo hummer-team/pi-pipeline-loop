@@ -243,6 +243,50 @@ describe("round-budget — B2 end-to-end (coordinator)", () => {
     expect(ctx.session.getMeta()!.autoJob?.lastCountedDesignReviewRound).toBe(1);
   });
 
+  it("a FAIL on the ONLY budgeted round freezes immediately (the counter is visible to handleFail)", async () => {
+    // Review 219 issue 5: the dispatch count happens at the coordination entry,
+    // but `handleFail` used to see the PRE-increment snapshot (0 here), which
+    // granted one extra dispatch past `designReviewMaxRounds`.
+    await writeFile(
+      join(tempDir, "Design_Review_1_plan_Design.md"),
+      reviewReportContent({
+        pipelineId: "pipe-test-001",
+        planDoc,
+        round: 1,
+        operationId: REVIEW_OP_ID,
+        inputHash: planHash,
+        verdict: "FAIL",
+        issues: ["Missing error handling"],
+      }),
+      "utf-8",
+    );
+    const drState = createInitialState(planDoc, "menu", planHash, undefined, { pipelineId: "pipe-test-001" });
+    const meta = makeTestMeta({
+      currentStage: "design-review",
+      designReview: {
+        ...drState,
+        phase: "review_running",
+        round: 1,
+        operation: boundReviewOperation(REVIEW_OP_ID, planHash, 1),
+      },
+      loopCycleCount: 0,
+      autoJob: { ...AUTO_JOB, designReviewMaxRounds: 1, designReviewRounds: 0, lastCountedDesignReviewRound: 0 },
+    });
+    const ctx = coordinatorCtx(meta);
+
+    const result = await coordinateDesignReview(ctx, meta, "settle");
+
+    expect(result).toEqual({
+      status: "handled",
+      action: "frozen",
+      reason: "design_review_budget_exhausted",
+    });
+    // The counted round is committed and NO update operation was dispatched.
+    expect(ctx.session.getMeta()!.autoJob?.designReviewRounds).toBe(1);
+    expect(ctx.session.getMeta()!.designReview?.operation?.kind).toBe("review");
+    expect(ctx.session.getMeta()!.currentStage).toBe("design-review");
+  });
+
   it("human mode keeps the coordinator behaviour unchanged (no auto freeze)", async () => {
     const drState = createInitialState(planDoc, "menu", planHash, undefined, { pipelineId: "pipe-test-001" });
     const meta = makeTestMeta({

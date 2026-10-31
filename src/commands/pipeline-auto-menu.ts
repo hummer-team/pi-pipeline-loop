@@ -170,6 +170,8 @@ export function buildAutoJobMeta(input: {
   docIndex: number;
   totalDocs: number;
   designReviewMaxRounds: number;
+  /** Phase 6 §3: the job's `stopConditions.maxTotalLoops` (remaining-budget display). */
+  totalLoopsBudget?: number;
 }): NonNullable<SessionMeta["autoJob"]> {
   return {
     jobId: input.jobId,
@@ -179,5 +181,6 @@ export function buildAutoJobMeta(input: {
     designReviewMaxRounds: input.designReviewMaxRounds,
     designReviewRounds: 0,
     lastCountedDesignReviewRound: 0,
+    ...(input.totalLoopsBudget !== undefined ? { totalLoopsBudget: input.totalLoopsBudget } : {}),
   };
 }
