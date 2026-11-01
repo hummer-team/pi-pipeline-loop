@@ -3,14 +3,13 @@
  * 220 Phase 1/5 (D5): the evidence gate in front of every start stage.
  *
  * Facts:
- * - Paths are derived EXACTLY (`{dir}/{base}_Plan.md`, `docs/design/{base}_Develop_Commit.md`,
- *   `docs/review/Code_Review_{base}_Develop_Commit_*.md`). No glob fallback: binding a
- *   document to ANOTHER document's plan/commit/report is the failure this gate prevents.
+ * - Paths are derived EXACTLY (`{dir}/{base}_Plan.md`, `{reqBase}_Develop_Commit.md`,
+ *   `Code_Review_{reqBase}_Develop_Commit_*.md`). No glob fallback: binding a document
+ *   to ANOTHER document's plan/commit/report is the failure this gate prevents.
  * - Read-only: the module never writes, never freezes and never advances. The
  *   caller (`pipeline-auto`) turns a missing evidence into `handleDocFailure`.
- * - The review verdict is read through the runtime contract anchors
- *   (`loadVerifyContractAnchors(config, "review").anchors.verdict`), so no new
- *   verdict regex exists in this codebase.
+ * - The review verdict is read through `loadVerifyContractAnchors(config,
+ *   "review").anchors.verdict`, so no new verdict regex exists here.
  */
 
 import * as fs from "node:fs";
@@ -25,10 +24,7 @@ export type StartStageBasis = "requirement" | "plan" | "plan-confirmed" | "commi
 /** Result of the evidence gate. */
 export type StartStageEvidence =
   | { ok: true; basis: StartStageBasis }
-  | {
-      ok: false;
-      missing: "requirement" | "plan" | "plan-confirmed" | "commit" | "review-verdict";
-    };
+  | { ok: false; missing: "requirement" | "plan" | "plan-confirmed" | "commit" | "review-verdict" };
 
 /** Directory holding review reports (`docs/review`). */
 const REVIEW_DIR = path.join("docs", "review");
@@ -89,11 +85,8 @@ async function findLatestReviewReport(projectRoot: string, reqBase: string): Pro
   return latest;
 }
 
-/**
- * TRUE when the report declares a FAIL verdict through the deployed anchor.
- * Contract-unavailable or unmatched reports fall through to `false` here; the
- * `To-Fix` body marker is the second (independent) evidence source.
- */
+/** TRUE when the report declares FAIL through the deployed anchor (unmatched or
+ * contract-unavailable reports fall through; `To-Fix` is the second source). */
 async function reportDeclaresFail(config: PipelineConfig, body: string): Promise<boolean> {
   const { anchors } = await loadVerifyContractAnchors(config, "review");
   for (const pattern of anchors.verdict?.patterns ?? []) {
