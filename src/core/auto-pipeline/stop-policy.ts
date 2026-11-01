@@ -23,8 +23,9 @@ import { recordStageVisit } from "../../utils/stage-visit";
 import type { AutoJobConfig } from "./job-schema";
 import type { AutoJobState, AutoJobStopReason } from "./job-state";
 import { writeJobState } from "./job-state";
-import { readActiveJobContext } from "./config-overlay";
+import { readActiveJobContext, readStateForActiveLock } from "./config-overlay";
 import { isUnresolvableFreeze } from "./freeze-autopilot";
+import { auditAutoDiagnostic } from "./diagnostics";
 
 export type HardStopVerdict =
   | { kind: "continue" }
@@ -104,28 +105,65 @@ export type AutoAwareVisitResult =
   | { kind: "soft-stop"; verdict: LoopBrakeVerdict };
 
 /**
- * Apply a soft stop at a loop-initiating call site: the doc is finalized
- * through the ONE transaction (release + audit + notify; no overlay rollback,
- * no lock release — the job continues with the next doc).
+ * Apply a soft stop at a loop-initiating call site.
+ *
+ * Review round 2 (issue 1, Medium): the soft stop used to call
+ * `finalizeCurrentDoc` only. `finalizeCurrentDoc` writes the doc receipt but
+ * NEVER schedules: the sidecar stayed `running`, the process lock stayed held,
+ * no `pipeline_auto_stop`/summary was produced, and the very same doc could
+ * still land a SECOND `:completed` receipt later (the brake refuses to advance,
+ * so the agent may finish the file anyway). `stopConditions.maxTotalLoops`
+ * (decision 14, "完成机会" budget) was therefore almost inert at run time.
+ *
+ * Phase 5 §4 makes `handleDocFailure` the ONE failure-scheduling implementation
+ * (receipt → hard stop → `onFailure` stop → `onFailure` continue). A soft stop
+ * is exactly a doc failure with `stopReason: budget_exhausted`, so it must go
+ * through that transaction, preserving the verdict so the audit keeps the
+ * concrete reason.
+ *
+ * When the job file is unreadable no budget can be judged (same rule as the
+ * settle seam): the doc is receipted and the job is stopped as
+ * `budget_exhausted` instead of idling.
  */
 export async function finalizeOnSoftStop(
   ctx: unknown,
   config: PipelineConfig,
   verdict: LoopBrakeVerdict,
 ): Promise<void> {
-  const { finalizeCurrentDoc } = await import("./finalize");
-  await finalizeCurrentDoc(ctx as never, config, { outcome: "failed", verdict });
+  const finalize = await import("./finalize");
+  const stopReason = verdict.kind === "soft" ? verdict.stopReason : "budget_exhausted";
+  const active = readActiveJobContext(config.projectRoot);
+  if (active) {
+    await finalize.handleDocFailure(ctx as never, config, active.state, active.job, {
+      outcome: "failed",
+      reason: stopReason,
+      verdict,
+    });
+    return;
+  }
+
+  const state = readStateForActiveLock(config.projectRoot);
+  if (!state) return; // No sidecar → nothing to receipt (non-auto context).
+  auditAutoDiagnostic("loop_brake_job_unreadable", "Auto-job soft stop: job file unreadable — stopping the job.", {
+    jobId: state.jobId,
+    stopReason,
+  }, "error");
+  await finalize.finalizeCurrentDoc(ctx as never, config, { outcome: "failed", verdict, reason: stopReason });
+  await finalize.finalizeJob(ctx as never, config, { stopReason });
 }
 
 /**
  * Persist a sidecar change made by a synchronous seam. Fire-and-forget with an
- * error log: the loop-brake decision must not become async (every call site is
- * a synchronous transition helper), and a failed write is surfaced, never
- * swallowed.
+ * audit diagnostic: the loop-brake decision must not become async (every call
+ * site is a synchronous transition helper), and a failed write is surfaced,
+ * never swallowed.
  */
 function persistStateAsync(projectRoot: string, state: AutoJobState): void {
   void writeJobState(projectRoot, state).catch((err: unknown) => {
-    console.error(`[auto-pipeline] stop-policy: failed persisting sidecar: ${String(err)}`);
+    auditAutoDiagnostic("loop_brake_persist_failed", "Auto-job loop-brake sidecar write failed.", {
+      jobId: state.jobId,
+      error: String(err),
+    }, "error");
   });
 }
 

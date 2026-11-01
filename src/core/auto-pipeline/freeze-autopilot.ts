@@ -31,6 +31,7 @@ import type { AutoJobState } from "./job-state";
 import { writeJobState } from "./job-state";
 import { readActiveJobContext } from "./config-overlay";
 import { auditAutoDecision } from "./auto-audit";
+import { auditAutoDiagnostic } from "./diagnostics";
 
 /** One resolved freeze action plus the precedence branch that produced it. */
 export interface ResolvedFreezeAction {
@@ -105,7 +106,9 @@ export async function runFreezeAutopilot(
   } catch (err) {
     // Fail-closed for the counter, fail-open for the flow: the decision still
     // applies, but the operator sees a persisted-state failure.
-    console.error(`[auto-pipeline] runFreezeAutopilot: failed persisting counters: ${String(err)}`);
+    auditAutoDiagnostic("freeze_counters_persist_failed", "Auto-job freeze counters could not be persisted.", {
+      error: String(err),
+    }, "error");
   }
 
   await auditAutoDecision(config, {

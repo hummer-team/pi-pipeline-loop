@@ -25,6 +25,7 @@ import {
   finalizeCurrentDoc,
   finalizeJob,
   handleDocFailure,
+  reconcilePendingContinuation,
   syncAutoCountersFromMeta,
   type FinalizeCtx,
 } from "./finalize";
@@ -34,6 +35,7 @@ import {
   auditClarifyMarkerMiss,
 } from "./clarify-autopilot";
 import { resolveAgentMention } from "../../utils/subagent-rpc";
+import { auditAutoDiagnostic, reportAutoFailure } from "./diagnostics";
 
 /** TRUE when the settle was consumed by the auto transaction. */
 export async function handleAutoSettle(
@@ -54,13 +56,21 @@ export async function handleAutoSettle(
   if (!isAutoJobActive()) return false;
   if (state.status !== "running") return false;
 
+  // 0) Review round 2 (issue 3): a continuation dispatched by a PREVIOUS turn
+  // may have been dropped by the host. The record is proof; once overdue the
+  // reconcile falls back to the same-session serial or stops the job honestly.
+  if (await reconcilePendingContinuation(ctx, config)) return true;
+
   const active = readActiveJobContext(config.projectRoot);
   if (!active) {
     // The job file is no longer readable/valid ⇒ no budget can be judged. Stop
     // and report instead of idling (Phase 5 §4: any termination runs the
     // transaction; the overlay/lock are released by `finalizeJob`).
-    console.error(
-      `[auto-pipeline] handleAutoSettle: job ${state.jobId} unreadable — stopping the job (job_drift)`,
+    reportAutoFailure(
+      ctx,
+      "settle_job_unreadable",
+      `Auto job "${state.jobId}": job file is unreadable or invalid — stopping the job (job_drift).`,
+      { jobId: state.jobId },
     );
     await finalizeJob(ctx, config, { stopReason: "job_drift" });
     return true;
@@ -83,7 +93,10 @@ export async function handleAutoSettle(
   try {
     await writeJobState(config.projectRoot, state);
   } catch (err) {
-    console.error(`[auto-pipeline] handleAutoSettle: failed persisting counters: ${String(err)}`);
+    auditAutoDiagnostic("settle_counters_persist_failed", "Auto-job counters could not be persisted.", {
+      jobId: state.jobId,
+      error: String(err),
+    }, "error");
   }
 
   // 3) Hard stop (wall clock / blocked reason / verify failures / freeze).
@@ -126,7 +139,10 @@ export async function handleAutoClarifyMarkerMiss(
     try {
       await writeJobState(config.projectRoot, state);
     } catch (err) {
-      console.error(`[auto-pipeline] clarify degrade: failed persisting sidecar: ${String(err)}`);
+      auditAutoDiagnostic("clarify_degrade_persist_failed", "Auto-job clarify degradation could not be persisted.", {
+        jobId: state.jobId,
+        error: String(err),
+      }, "error");
     }
     // Re-dispatch the SAME clarify doc with the orchestrated (finalisation)
     // instruction — the documented degradation path.

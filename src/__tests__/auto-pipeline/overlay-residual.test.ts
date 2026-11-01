@@ -14,7 +14,7 @@
  * - Shutdown rollback only when the sidecar exists, carries a snapshot and is
  *   NOT running (`shouldRestoreOnShutdown` type guard).
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -64,7 +64,6 @@ const JOB_YAML = [
 let ROOT: string;
 let audits: string[];
 let notified: string[];
-let errorSpy: ReturnType<typeof spyOn>;
 
 function writeJobFile(content = JOB_YAML): string {
   const jobPath = path.join(ROOT, JOB_REL_PATH);
@@ -118,7 +117,6 @@ beforeEach(() => {
   __resetAutoJobLockForTests();
   audits = [];
   notified = [];
-  errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
   __setSafeWriteAuditLogOverride(async (stage) => {
     audits.push(stage);
   });
@@ -126,7 +124,6 @@ beforeEach(() => {
 
 afterEach(() => {
   __setSafeWriteAuditLogOverride(null);
-  errorSpy.mockRestore();
   __resetAutoJobLockForTests();
   fs.rmSync(ROOT, { recursive: true, force: true });
 });
@@ -242,7 +239,7 @@ describe("overlay-residual — session_start replay gate", () => {
     await writeRunningState(); // job file deliberately absent
     await replayOverlayForSessionStart(config, (m) => notified.push(m));
     expect(config.stages.plan?.confirm?.mode).toBe("manual");
-    expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(audits).toContain("pipeline_auto_diagnostic");
   });
 
   it("replaying twice reuses the recorded snapshot (B4: no before pollution)", async () => {

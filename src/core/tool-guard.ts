@@ -409,7 +409,18 @@ async function auditWhitelistAllowExempt(
       path: relPath,
     });
   } catch (err) {
-    console.error(`[tool-guard] auditWhitelistAllowExempt failed: stage=${stage}, relPath="${relPath}", error=${String(err)}`);
+    // Review round 2 (issue 6): diagnostics go to the project audit log, never
+    // to the process console. A failed audit write is itself audited.
+    await safeWriteAuditLog(
+      "tool_guard_diagnostic",
+      {
+        action: "whitelist_allow_exempt_audit_failed",
+        stage,
+        relPath,
+        error: String(err),
+      },
+      "warn",
+    );
   }
 }
 

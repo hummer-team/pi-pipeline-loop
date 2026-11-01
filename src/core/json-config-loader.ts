@@ -1,6 +1,14 @@
 /**
  * @module json-config-loader
  * Reads pipeline_loop.json and resolves it into a full PipelineConfig.
+ *
+ * Diagnostics: this module runs BEFORE `initAuditLog` (the composition root
+ * loads the config, then `createPipeline` initializes the audit directory), so a
+ * config-parse warning can never reach the audit log — `console.warn` is the
+ * only channel that survives, and it is the established style of this file.
+ * Everything that runs AFTER initialization (219 auto-pipeline runtime,
+ * tool-guard, cleanup, …) writes diagnostics through `safeWriteAuditLog`
+ * instead (review round 2, issue 6).
  */
 
 import * as fs from "node:fs";

@@ -11,7 +11,7 @@
  * - `deriveLoopsSinceLastSeen` clamps counter rewinds to 0 (never negative)
  * - `listRunningJobs` is bounded and tolerant of unreadable entries
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   createJobState,
   deriveLoopsSinceLastSeen,
@@ -26,13 +26,14 @@ import {
   type AutoJobState,
 } from "../../core/auto-pipeline/job-state";
 import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import type { AutoJobDoc } from "../../core/auto-pipeline/job-schema";
 
 let ROOT: string;
-let errorSpy: ReturnType<typeof spyOn>;
+let diagnostics: string[];
 
 const DOCS: AutoJobDoc[] = [{ doc: "docs/design/a.md" }, { doc: "docs/design/b.md" }];
 
@@ -49,11 +50,16 @@ function makeState(overrides?: Partial<AutoJobState>): AutoJobState {
 
 beforeEach(() => {
   ROOT = fs.mkdtempSync(path.join(tmpdir(), "pi-219-jobstate-"));
-  errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
+  diagnostics = [];
+  // Review round 2 (issue 6): diagnostics go to the AUDIT LOG, never console.
+  __setSafeWriteAuditLogOverride(async (stage, message) => {
+    if (stage !== "pipeline_auto_diagnostic") return;
+    diagnostics.push(String((message as { action?: string } | undefined)?.action ?? ""));
+  });
 });
 
 afterEach(() => {
-  errorSpy.mockRestore();
+  __setSafeWriteAuditLogOverride(null);
   fs.rmSync(ROOT, { recursive: true, force: true });
 });
 
@@ -110,7 +116,7 @@ describe("job-state — create + write + read", () => {
     fs.mkdirSync(path.join(readOnlyRoot, ".pi"), { recursive: true });
     fs.chmodSync(path.join(readOnlyRoot, ".pi"), 0o444);
     await expect(writeJobState(readOnlyRoot, state)).rejects.toBeDefined();
-    expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(diagnostics).toContain("sidecar_write_failed");
     fs.chmodSync(path.join(readOnlyRoot, ".pi"), 0o755);
     fs.rmSync(readOnlyRoot, { recursive: true, force: true });
   });
@@ -124,12 +130,13 @@ describe("job-state — create + write + read", () => {
 
     fs.writeFileSync(statePath, JSON.stringify({ ...makeState(), schemaVersion: 2 }), "utf8");
     expect(readJobState(ROOT, "alpha")).toBeNull();
-    expect(errorSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(diagnostics).toContain("sidecar_corrupt");
+    expect(diagnostics).toContain("sidecar_schema_unknown");
   });
 
   it("missing file → null WITHOUT error log", async () => {
     expect(readJobState(ROOT, "never-created")).toBeNull();
-    expect(errorSpy.mock.calls.length).toBe(0);
+    expect(diagnostics).toHaveLength(0);
   });
 });
 
@@ -206,7 +213,7 @@ describe("job-state — listRunningJobs", () => {
 
     const runningJobs = listRunningJobs(ROOT);
     expect(runningJobs.map((j) => j.jobId)).toEqual(["alpha"]);
-    expect(errorSpy.mock.calls.length).toBe(1); // the corrupt entry
+    expect(diagnostics).toEqual(["sidecar_unreadable"]); // the corrupt entry
   });
 
   it("empty/missing directory → []", () => {

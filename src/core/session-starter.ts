@@ -46,8 +46,11 @@ import { recordChildBindingFromRuntimeEvidence } from "./stage-executor/runtime-
 import { replayOverlayForSessionStart } from "./auto-pipeline/config-overlay";
 // 219 Phase 6: interrupt-continuity hard judgement (`meta.continuity`).
 import { decideContinuity } from "./auto-pipeline/continuity";
-import { listRunningJobs } from "./auto-pipeline/job-state";
-import { readStateForActiveLock } from "./auto-pipeline/config-overlay";
+// Review round 2 (issue 2): a sidecar only counts when it belongs to THIS session.
+import { resolveContinuityState } from "./auto-pipeline/config-overlay";
+// 219 Phase 5 (review round 2 issue 3): a lost continuation dispatch is reconciled
+// here too, so a job can never hang on the dispatch channel.
+import { reconcilePendingContinuation } from "./auto-pipeline/finalize";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -515,12 +518,24 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
         await replayOverlayForSessionStart(config, (message) => ui.notify(ctx, message));
       }
 
-      // ─── 219 Phase 6: continuity judgement (owner sessions only) ──────────────
+      // ─── 219 Phase 5 (review round 2 issue 3): lost continuation reconcile ────
+      // The dispatch channel has no callback, so a dispatched `--next` that the
+      // host never executed would leave the job `running` forever. The owner
+      // process reconciles an OVERDUE record here (session start = the moment a
+      // user comes back to a hung job).
+      // A reconcile that OWNED this start already decided the document's fate,
+      // so the stale `meta` snapshot must not produce a continuity verdict for a
+      // document that was just (re)started or stopped.
+      let autoStartOwned = false;
       if (!detectSessionRole(ctx).isChild) {
-        const jobState =
-          readStateForActiveLock(config.projectRoot) ??
-          listRunningJobs(config.projectRoot)[0]?.state ??
-          null;
+        autoStartOwned = await reconcilePendingContinuation(ctx as never, config);
+      }
+
+      // ─── 219 Phase 6: continuity judgement (owner sessions only) ──────────────
+      if (!detectSessionRole(ctx).isChild && !autoStartOwned) {
+        // Review round 2 (issue 2): the sidecar must belong to THIS session —
+        // another live process's job is never this session's interruption.
+        const jobState = resolveContinuityState(config.projectRoot, meta ?? null);
         const commitBase = meta?.requirementDoc?.replace(/\.md$/i, "");
         const continuity = decideContinuity({
           meta: meta ?? null,

@@ -27,8 +27,10 @@ import { safeWriteAuditLog } from "../../utils/auditLog";
 import type { AutoJobConfig } from "./job-schema";
 import type { AutoJobState, AutoJobStopReason } from "./job-state";
 import {
+  clearPendingContinuation,
   deriveLoopsSinceLastSeen,
   hasFinalizeKey,
+  markPendingContinuation,
   nextPendingDoc,
   readJobState,
   writeJobState,
@@ -36,12 +38,15 @@ import {
 import {
   getActiveJobId,
   getActiveJobToken,
+  isAutoJobActive,
+  readActiveJobContext,
   readStateForActiveLock,
   releaseJobLock,
   restoreOverlay,
 } from "./config-overlay";
 import { releaseSessionResources } from "./cleanup";
 import type { HardStopVerdict, LoopBrakeVerdict } from "./stop-policy";
+import { auditAutoDiagnostic, notifyAuto } from "./diagnostics";
 
 export interface FinalizeResult {
   skipped: boolean;
@@ -161,6 +166,15 @@ export async function finalizeCurrentDoc(
   // Layer 2: disk truth, decoupled from docIndex (M3).
   const disk = readJobState(projectRoot, jobId);
   if (disk && hasFinalizeKey(disk, key)) return { skipped: true };
+  // Layer 2b (review round 2 issue 1): a doc has ONE terminal outcome. A soft
+  // stop writes `:failed`; if the same doc later reaches `completed` (the loop
+  // brake only refuses to ADVANCE, the agent may still finish the file), the
+  // sidecar must not flip to `failed → completed` — that would spend the job
+  // budget twice and contradict the receipt/report the human already saw.
+  const oppositeKey = `${jobId}:${targetIndex}:${opts.outcome === "completed" ? "failed" : "completed"}`;
+  if (finalizedKeys.has(oppositeKey) || (disk && hasFinalizeKey(disk, oppositeKey))) {
+    return { skipped: true };
+  }
 
   const now = Date.now();
   const doc = state.docs[targetIndex];
@@ -230,6 +244,8 @@ export async function finalizeJob(
 
   state.status = terminalStatus(opts.stopReason);
   state.stopReason = opts.stopReason;
+  // A terminal job has no outstanding hop left (review round 2 issue 3).
+  clearPendingContinuation(state);
   state.updatedAt = Date.now();
   await writeJobState(projectRoot, state);
 
@@ -300,10 +316,16 @@ function buildChainCommand(jobId: string, token: string): string {
  * - `newSession()` returns `{ cancelled }`. Ignoring it left the job neither
  *   chained nor finalised (sidecar stuck on `running`, process lock held); a
  *   cancelled hop is a DOCUMENTED fallback, never a terminal state.
+ * - Review round 2 (issue 3): the DISPATCH branch has no callback at all. The
+ *   hop is recorded in the sidecar (`pendingContinuation`) BEFORE the command is
+ *   sent, cleared when the next doc really starts, and reconciled by
+ *   {@link reconcilePendingContinuation} once it is provably overdue. The audit
+ *   says `dispatched` (not `new_session`): nothing has rotated yet.
  */
 export async function rotateSessionForChain(
   ctx: FinalizeCtx,
   jobId: string,
+  opts: { projectRoot: string; state?: AutoJobState } = { projectRoot: "" },
 ): Promise<ChainRotationResult> {
   const command = buildChainCommand(jobId, getActiveJobToken() ?? "");
 
@@ -326,7 +348,11 @@ export async function rotateSessionForChain(
       }
       return { rotated: true, channel: "new_session" };
     } catch (err) {
-      console.error(`[auto-pipeline] rotateSessionForChain: newSession failed for ${jobId}: ${String(err)}`);
+      auditAutoDiagnostic("chain_new_session_failed", `Auto job "${jobId}": session rotation failed.`, {
+        jobId,
+        error: String(err),
+      }, "error");
+      notifyAuto(ctx, `Auto job "${jobId}": could not open a new session — continuing in this session.`, "warning");
       return { rotated: false, channel: "new_session", reason: "failed" };
     }
   }
@@ -334,11 +360,36 @@ export async function rotateSessionForChain(
   // ② Hook host: no replacement API — dispatch the internal command; the
   // command handler owns `ctx.newSession` (Phase 4 §4 ctx widening).
   if (typeof ctx.pi?.sendUserMessage === "function") {
+    // Record the outstanding hop BEFORE the command leaves this process: the
+    // dispatch has no callback, so the sidecar is the only evidence left when
+    // the host silently drops the message.
+    if (opts.state && opts.projectRoot) {
+      markPendingContinuation(opts.state, "dispatch", Date.now());
+      try {
+        await writeJobState(opts.projectRoot, opts.state);
+      } catch (err) {
+        auditAutoDiagnostic("chain_dispatch_persist_failed", `Auto job "${jobId}": continuation record could not be written.`, {
+          jobId,
+          error: String(err),
+        }, "error");
+      }
+    }
     try {
       ctx.pi.sendUserMessage(command, { expandPromptTemplates: true });
       return { rotated: true, channel: "dispatch" };
     } catch (err) {
-      console.error(`[auto-pipeline] rotateSessionForChain: dispatch failed for ${jobId}: ${String(err)}`);
+      if (opts.state && opts.projectRoot && clearPendingContinuation(opts.state)) {
+        try {
+          await writeJobState(opts.projectRoot, opts.state);
+        } catch {
+          // The dispatch already failed; a stale record is reconciled later.
+        }
+      }
+      auditAutoDiagnostic("chain_dispatch_failed", `Auto job "${jobId}": continuation command could not be dispatched.`, {
+        jobId,
+        error: String(err),
+      }, "error");
+      notifyAuto(ctx, `Auto job "${jobId}": could not dispatch the continuation — continuing in this session.`, "warning");
       return { rotated: false, channel: "dispatch", reason: "failed" };
     }
   }
@@ -404,11 +455,14 @@ export async function handleDocFailure(
   }
 
   if (job.chain.newSession) {
-    const rotation = await rotateSessionForChain(ctx, state.jobId);
+    const rotation = await rotateSessionForChain(ctx, state.jobId, {
+      projectRoot: config.projectRoot,
+      state: fresh,
+    });
     if (rotation.rotated) {
       await safeWriteAuditLog("pipeline_auto_chain", {
         jobId: state.jobId,
-        result: "new_session_after_failure",
+        result: rotation.channel === "dispatch" ? "dispatched" : "new_session_after_failure",
         channel: rotation.channel,
       });
       return { skipped: false, summary: `Auto job "${state.jobId}": next doc continued in a new session.` };
@@ -439,6 +493,95 @@ export async function handleDocFailure(
 }
 
 /**
+ * How long an outstanding continuation hop may stay unanswered before the
+ * owner treats the dispatch as LOST (review round 2 issue 3). The host runs the
+ * dispatched command in the next turn, so a healthy hop resolves in seconds;
+ * the window only has to be long enough not to fight a slow host.
+ */
+export const PENDING_CONTINUATION_TIMEOUT_MS = 120_000;
+
+/**
+ * Reconcile a dispatched continuation that never started a document
+ * (review round 2, issue 3).
+ *
+ * Why it is needed: `pi.sendUserMessage` has NO callback. When the host drops
+ * the message (slash command not expanded, `--next` rejected by a busy/stale
+ * lock, unparseable job file, `startNewPipeline` failure), the previous doc is
+ * already `completed`, the sidecar stays `running`, the process lock stays held
+ * and nothing ever reports it — the job hangs forever because later settles are
+ * skipped as "already finalized".
+ *
+ * Contract:
+ * - runs only in the process that holds the lock (identity, not a clock);
+ * - a fresh record is left alone (the hop may still be in flight);
+ * - an OVERDUE record falls back to the documented same-session serial and,
+ *   when even that fails, to the honest terminal `session_fail`.
+ *
+ * @returns TRUE when the reconcile owned this turn (the caller must stop).
+ */
+export async function reconcilePendingContinuation(
+  ctx: FinalizeCtx,
+  config: PipelineConfig,
+): Promise<boolean> {
+  if (!isAutoJobActive()) return false;
+  const active = readActiveJobContext(config.projectRoot);
+  if (!active) return false;
+  const { state } = active;
+
+  if (!state.pendingContinuation) return false;
+  if (state.status !== "running") {
+    // Terminal jobs never keep a hop record (defensive: a crash between the two
+    // writes must not resurrect the record).
+    if (clearPendingContinuation(state)) {
+      try {
+        await writeJobState(config.projectRoot, state);
+      } catch (err) {
+        auditAutoDiagnostic("continuation_clear_failed", "Auto-job stale continuation record could not be cleared.", {
+          jobId: state.jobId,
+          error: String(err),
+        }, "error");
+      }
+    }
+    return false;
+  }
+
+  const pending = state.pendingContinuation;
+  const waitedMs = Date.now() - pending.at;
+  if (waitedMs < PENDING_CONTINUATION_TIMEOUT_MS) return false;
+
+  await safeWriteAuditLog(
+    "pipeline_auto_chain",
+    {
+      jobId: state.jobId,
+      result: "dispatch_timeout",
+      channel: pending.channel,
+      waitedMs: String(waitedMs),
+      docIndex: String(pending.docIndex),
+    },
+    "warn",
+  );
+  clearPendingContinuation(state);
+  try {
+    await writeJobState(config.projectRoot, state);
+  } catch (err) {
+    auditAutoDiagnostic("continuation_clear_failed", "Auto-job continuation record could not be cleared.", {
+      jobId: state.jobId,
+      error: String(err),
+    }, "error");
+  }
+
+  // The documented fallback: serial continuation in the session that still owns
+  // the pipeline. Only an honest terminal state may follow a second failure.
+  if (await startNextDocSameSession(ctx, config, state.jobId)) {
+    await safeWriteAuditLog("pipeline_auto_chain", { jobId: state.jobId, result: "same_session" });
+    return true;
+  }
+  await safeWriteAuditLog("pipeline_auto_chain", { jobId: state.jobId, result: "stopped" }, "warn");
+  await finalizeJob(ctx, config, { stopReason: "session_fail" });
+  return true;
+}
+
+/**
  * Start the job's next pending doc in THIS session (used by both the success and
  * failure chains). Returns false when the doc could not be started.
  *
@@ -461,7 +604,10 @@ async function startNextDocSameSession(
     });
     return result.success;
   } catch (err) {
-    console.error(`[auto-pipeline] startNextDocSameSession failed for ${jobId}: ${String(err)}`);
+    auditAutoDiagnostic("same_session_start_failed", `Auto job "${jobId}": next doc could not start in this session.`, {
+      jobId,
+      error: String(err),
+    }, "error");
     return false;
   }
 }
@@ -487,9 +633,13 @@ export async function continueJobAfterCompleted(
   }
 
   if (job.chain.newSession) {
-    const rotation = await rotateSessionForChain(ctx, jobId);
+    const rotation = await rotateSessionForChain(ctx, jobId, { projectRoot: config.projectRoot, state });
     if (rotation.rotated) {
-      await safeWriteAuditLog("pipeline_auto_chain", { jobId, result: "new_session", channel: rotation.channel });
+      await safeWriteAuditLog("pipeline_auto_chain", {
+        jobId,
+        result: rotation.channel === "dispatch" ? "dispatched" : "new_session",
+        channel: rotation.channel,
+      });
       return { skipped: false, summary: `Auto job "${jobId}": next doc continued in a new session.` };
     }
     await safeWriteAuditLog(

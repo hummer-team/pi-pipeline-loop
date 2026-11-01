@@ -7,7 +7,7 @@
  * - Critical steps (authorization, executor binding) surface `criticalFailed`;
  *   non-critical failures only warn + land in `failedSteps` (never throws).
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { releaseSessionResources } from "../../core/auto-pipeline/cleanup";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
@@ -24,19 +24,19 @@ const EXPECTED_CLEARED_KEYS = [
   "blockedReason",
 ].sort();
 
-let errorSpy: ReturnType<typeof spyOn>;
-let warnSpy: ReturnType<typeof spyOn>;
+let diagnosticActions: string[];
 
 beforeEach(() => {
-  __setSafeWriteAuditLogOverride(async () => undefined);
-  errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
-  warnSpy = spyOn(console, "warn").mockImplementation(() => undefined);
+  diagnosticActions = [];
+  // Review round 2 (issue 6): diagnostics go to the AUDIT LOG, never console.
+  __setSafeWriteAuditLogOverride(async (stage, message) => {
+    if (stage !== "pipeline_auto_diagnostic") return;
+    diagnosticActions.push(String((message as { action?: string } | undefined)?.action ?? ""));
+  });
 });
 
 afterEach(() => {
   __setSafeWriteAuditLogOverride(null);
-  errorSpy.mockRestore();
-  warnSpy.mockRestore();
 });
 
 function makeCtx(overrides?: {
@@ -112,6 +112,6 @@ describe("cleanup — failure classification", () => {
     });
     expect(result.criticalFailed).toBe(false);
     expect(result.failedSteps).toContain("clear_session_fields");
-    expect(warnSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(diagnosticActions).toContain("release_meta_clear_failed");
   });
 });

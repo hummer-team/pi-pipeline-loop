@@ -46,8 +46,7 @@ import { buildReviewChangeEvidence } from "./review-change-evidence";
 import { buildDesignReviewSmartGuidanceSection } from "./design-review/smart-prompt";
 // 219 Phase 6: "task continuity" section (plugin hard judgement, prompt only states it).
 import { decideContinuity } from "./auto-pipeline/continuity";
-import { listRunningJobs } from "./auto-pipeline/job-state";
-import { readStateForActiveLock } from "./auto-pipeline/config-overlay";
+import { resolveContinuityState } from "./auto-pipeline/config-overlay";
 // 193 Phase 3 (task 8): ONE read-only view for the decision-pending pause,
 // shared with pipeline-state / pipeline-status / pipeline-ui displays.
 import {
@@ -692,12 +691,18 @@ function hasCommitDocFor(requirementDoc: string | undefined, projectRoot: string
  * the chained new session with no meta) is judged against the real clock —
  * exactly the crash-resume case rule 2 was written for. `meta.continuity`
  * (written by `session_start`) always wins.
+ *
+ * Review round 2 (issue 2, Medium): the sidecar itself must first BELONG to this
+ * session — `resolveContinuityState` refuses a job another live process owns,
+ * and refuses an orphaned job when this session is already running its own
+ * document. Without that, a second terminal's human session was told every turn
+ * that it had an interrupted task (showing the other process's document).
  */
 export function buildTaskContinuitySection(
   config: PipelineConfig,
   meta: SessionMeta,
 ): string | null {
-  const state = readStateForActiveLock(config.projectRoot) ?? listRunningJobs(config.projectRoot)[0]?.state ?? null;
+  const state = resolveContinuityState(config.projectRoot, meta);
   const ownsRunningDoc =
     state !== null &&
     meta.pipelineId !== undefined &&

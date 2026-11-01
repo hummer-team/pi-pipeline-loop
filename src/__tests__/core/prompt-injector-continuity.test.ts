@@ -126,6 +126,43 @@ describe("prompt-injector — task continuity section", () => {
     expect(section).toContain("Decision: resume");
   });
 
+  it("a job owned by ANOTHER LIVE process is never this session's interruption", async () => {
+    // Review round 2 (issue 2): a second terminal's human session must not be
+    // told every turn that it has an interrupted task (showing the other
+    // process's document). `readStateForActiveLock` alone never checked the pid.
+    await installRunningJob({ lastSettleAt: Date.now() - 60_000 });
+    // Re-stamp the lock with a FOREIGN, alive pid (pid 1: EPERM ⇒ "alive").
+    const lockPath = path.join(ROOT, ".pi", "auto_pipeline", "lock.json");
+    fs.writeFileSync(lockPath, JSON.stringify({ token: "foreign", jobId: "alpha", pid: 1, startedAt: 1 }, null, 2), "utf8");
+
+    const meta = makeTestMeta({
+      pipelineId: "pipe-human-second-terminal",
+      requirementDoc: "docs/design/a.md",
+    });
+    expect(buildTaskContinuitySection(config(), meta)).toBeNull();
+  });
+
+  it("an ORPHANED job is ignored when this session already runs its own document", async () => {
+    // Crash residue (dead pid) + a human session busy with its own pipeline:
+    // the orphan belongs to somebody else, so it must not hijack the prompt.
+    await installRunningJob({ lastSettleAt: Date.now() - 60_000 });
+    __resetAutoJobLockForTests();
+    const lockPath = path.join(ROOT, ".pi", "auto_pipeline", "lock.json");
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ token: "dead", jobId: "alpha", pid: 4194303, startedAt: 1 }, null, 2),
+      "utf8",
+    );
+
+    const busy = makeTestMeta({ pipelineId: "pipe-human-second-terminal", requirementDoc: "docs/design/a.md" });
+    expect(buildTaskContinuitySection(config(), busy)).toBeNull();
+
+    // …while a FRESH session (no pipeline of its own) still gets the crash
+    // recovery notice — that is what rule 2 exists for.
+    const fresh = makeTestMeta({ pipelineId: undefined, requirementDoc: "docs/design/a.md" });
+    expect(buildTaskContinuitySection(config(), fresh)).toContain("Decision: resume");
+  });
+
   it("auto tier adds job name, queue progress and budgets", async () => {
     await installRunningJob();
     const meta = makeTestMeta({

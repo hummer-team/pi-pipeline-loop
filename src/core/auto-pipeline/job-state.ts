@@ -14,8 +14,9 @@
  *   file behind). Write failures log an error and THROW — callers convert to
  *   `stop-and-report`.
  * - Back-compat: optional doc fields (`clarifyFallbackUsed` / `finalizeKey` /
- *   `lastStage` / `lastStageStartedAt`) are tolerated as `undefined` on read
- *   and never back-filled on write (schemaVersion stays 1).
+ *   `lastStage` / `lastStageStartedAt`) and the optional `pendingContinuation`
+ *   record are tolerated as `undefined` on read and never back-filled on write
+ *   (schemaVersion stays 1).
  */
 
 import * as fs from "node:fs";
@@ -23,6 +24,7 @@ import * as pathMod from "node:path";
 import type { PipelineStage } from "../../types";
 import { AUTO_PIPELINE_DIR } from "../../constants";
 import type { AutoJobDoc } from "./job-schema";
+import { auditAutoDiagnostic } from "./diagnostics";
 
 /**
  * One recorded config overlay mutation (219 Phase 2). Declared here so the
@@ -104,6 +106,23 @@ export interface AutoJobState {
     before: Record<string, unknown>;
     entries: OverlayEntry[];
   };
+  /**
+   * 219 review round 2 (issue 3): the OUTSTANDING `--next` dispatch.
+   *
+   * The dispatch channel (`pi.sendUserMessage`) has no callback, so a host that
+   * never executes the dispatched command would leave the job `running` with a
+   * completed doc, a held process lock and no receipt. The record is written
+   * BEFORE the dispatch, cleared when the next doc really starts (runner) and
+   * reconciled by {@link reconcilePendingContinuation} once it is provably
+   * overdue.
+   */
+  pendingContinuation?: {
+    /** Unix ms of the dispatch. */
+    at: number;
+    /** The doc index that was current when the dispatch was made. */
+    docIndex: number;
+    channel: "dispatch" | "new_session";
+  };
 }
 
 export type AutoJobStopReason =
@@ -158,11 +177,18 @@ export function readJobState(projectRoot: string, jobId: string): AutoJobState |
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    console.error(`[auto-pipeline] readJobState: corrupt sidecar at ${statePath}: ${String(err)}`);
+    auditAutoDiagnostic("sidecar_corrupt", `Auto-job sidecar is not valid JSON — treated as absent: ${statePath}`, {
+      error: String(err),
+    });
     return null;
   }
   if (!parsed || typeof parsed !== "object" || (parsed as { schemaVersion?: unknown }).schemaVersion !== 1) {
-    console.error(`[auto-pipeline] readJobState: unrecognized sidecar schema at ${statePath} — refusing to start`);
+    auditAutoDiagnostic(
+      "sidecar_schema_unknown",
+      `Auto-job sidecar uses an unrecognized schema — refusing to use it: ${statePath}`,
+      {},
+      "error",
+    );
     return null;
   }
   const state = parsed as unknown as AutoJobState;
@@ -200,8 +226,11 @@ export async function writeJobState(projectRoot: string, state: AutoJobState): P
     await fs.promises.writeFile(tmpPath, serialized, "utf8");
     await fs.promises.rename(tmpPath, statePath);
   } catch (err) {
-    console.error(
-      `[auto-pipeline] writeJobState FAILED: jobId=${state.jobId}, path=${statePath}, error=${String(err)}`,
+    auditAutoDiagnostic(
+      "sidecar_write_failed",
+      `Auto-job sidecar write FAILED — the job stops and reports: ${statePath}`,
+      { jobId: state.jobId, error: String(err) },
+      "error",
     );
     try {
       await fs.promises.rm(tmpPath, { force: true });
@@ -266,7 +295,7 @@ export function listRunningJobs(projectRoot: string): { jobId: string; state: Au
         running.push({ jobId: candidate, state: parsed as unknown as AutoJobState });
       }
     } catch {
-      console.error(`[auto-pipeline] listRunningJobs: unreadable sidecar at ${statePath} — skipped`);
+      auditAutoDiagnostic("sidecar_unreadable", `Auto-job sidecar unreadable — entry skipped: ${statePath}`);
     }
   }
   return running;
@@ -292,6 +321,32 @@ export function noteDocStage(state: AutoJobState, docIndex: number, stage: Pipel
   doc.lastStageStartedAt = now;
   doc.updatedAt = now;
   state.updatedAt = now;
+}
+
+/**
+ * 219 review round 2 (issue 3): record the OUTSTANDING continuation hop.
+ *
+ * Written BEFORE the dispatch/rotation leaves this process so a lost channel is
+ * provable from the sidecar alone (`reconcilePendingContinuation`).
+ */
+export function markPendingContinuation(
+  state: AutoJobState,
+  channel: "dispatch" | "new_session",
+  now: number,
+): void {
+  state.pendingContinuation = { at: now, docIndex: state.docIndex, channel };
+  state.updatedAt = now;
+}
+
+/**
+ * Clear the outstanding continuation record. Returns TRUE when something was
+ * actually cleared (callers persist only then).
+ */
+export function clearPendingContinuation(state: AutoJobState): boolean {
+  if (!state.pendingContinuation) return false;
+  state.pendingContinuation = undefined;
+  state.updatedAt = Date.now();
+  return true;
 }
 
 /**

@@ -20,6 +20,7 @@ import type { RuntimeCtx } from "../runtime-ctx";
 import { invalidateDesignReviewAuthorization } from "../flow-state";
 import { invalidateExecutorRunOnBoundary } from "../stage-executor/recovery";
 import { createPipelineUI } from "../pipeline-ui";
+import { auditAutoDiagnostic, notifyAuto } from "./diagnostics";
 
 export type ReleaseReason = "user_quit" | "auto_completed" | "auto_failed" | "auto_stopped";
 
@@ -46,7 +47,11 @@ export async function releaseSessionResources(
   } catch (err) {
     criticalFailed = true;
     failedSteps.push("invalidate_design_review_authorization");
-    console.error(`[auto-pipeline] releaseSessionResources: authorization invalidation failed: ${String(err)}`);
+    auditAutoDiagnostic("release_authorization_failed", "Auto-job release: design-review authorization invalidation failed.", {
+      reason: opts.reason,
+      error: String(err),
+    }, "error");
+    notifyAuto(ctx, "Pipeline cleanup: design-review authorization could not be invalidated.", "warning");
   }
 
   try {
@@ -54,7 +59,11 @@ export async function releaseSessionResources(
   } catch (err) {
     criticalFailed = true;
     failedSteps.push("invalidate_executor_binding");
-    console.error(`[auto-pipeline] releaseSessionResources: executor invalidation failed: ${String(err)}`);
+    auditAutoDiagnostic("release_executor_failed", "Auto-job release: executor binding invalidation failed.", {
+      reason: opts.reason,
+      error: String(err),
+    }, "error");
+    notifyAuto(ctx, "Pipeline cleanup: executor binding could not be invalidated.", "warning");
   }
 
   try {
@@ -69,14 +78,20 @@ export async function releaseSessionResources(
     });
   } catch (err) {
     failedSteps.push("clear_session_fields");
-    console.warn(`[auto-pipeline] releaseSessionResources: meta clear failed: ${String(err)}`);
+    auditAutoDiagnostic("release_meta_clear_failed", "Auto-job release: session meta clear failed.", {
+      reason: opts.reason,
+      error: String(err),
+    });
   }
 
   try {
     createPipelineUI(config).clearStage(ctx);
   } catch (err) {
     failedSteps.push("clear_stage");
-    console.warn(`[auto-pipeline] releaseSessionResources: stage bar clear failed: ${String(err)}`);
+    auditAutoDiagnostic("release_stage_bar_failed", "Auto-job release: stage bar clear failed.", {
+      reason: opts.reason,
+      error: String(err),
+    });
   }
 
   return { criticalFailed, failedSteps };

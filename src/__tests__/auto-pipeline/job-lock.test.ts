@@ -14,7 +14,7 @@
  * - `isAutoJobActive` / `getActiveJobId` read the same in-process fact that a
  *   successful acquire sets, and `releaseJobLock` is idempotent.
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -34,8 +34,7 @@ const DEAD_PID = 4194303; // Above the usual pid_max on macOS/Linux — never al
 
 let ROOT: string;
 let auditEvents: string[];
-let errorSpy: ReturnType<typeof spyOn>;
-let warnSpy: ReturnType<typeof spyOn>;
+let diagnosticActions: string[];
 
 function lockPath(): string {
   return path.join(ROOT, AUTO_PIPELINE_LOCK_FILE);
@@ -54,17 +53,17 @@ beforeEach(() => {
   ROOT = fs.mkdtempSync(path.join(tmpdir(), "pi-219-lock-"));
   __resetAutoJobLockForTests();
   auditEvents = [];
-  errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
-  warnSpy = spyOn(console, "warn").mockImplementation(() => undefined);
-  __setSafeWriteAuditLogOverride(async (stage) => {
+  diagnosticActions = [];
+  __setSafeWriteAuditLogOverride(async (stage, message) => {
     auditEvents.push(stage);
+    if (stage === "pipeline_auto_diagnostic") {
+      diagnosticActions.push(String((message as { action?: string } | undefined)?.action ?? ""));
+    }
   });
 });
 
 afterEach(() => {
   __setSafeWriteAuditLogOverride(null);
-  errorSpy.mockRestore();
-  warnSpy.mockRestore();
   __resetAutoJobLockForTests();
   fs.rmSync(ROOT, { recursive: true, force: true });
 });
@@ -94,7 +93,7 @@ describe("job-lock — fresh acquire / release", () => {
 
     // Second release only warns, never throws.
     releaseJobLock({ projectRoot: ROOT, token: acquired.token });
-    expect(warnSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(diagnosticActions).toContain("lock_release_token_mismatch");
   });
 
   it("release with a mismatched token leaves the lock untouched", () => {
@@ -216,7 +215,7 @@ describe("job-lock — corrupt lock file", () => {
   it("corrupt JSON is treated as no lock + error log", () => {
     writeRawLock("{ not json");
     expect(readJobLock(ROOT)).toBeNull();
-    expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(diagnosticActions.length).toBeGreaterThan(0);
     // And acquiring proceeds as if there were no lock.
     const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
     expect(result.ok).toBe(true);
@@ -225,6 +224,6 @@ describe("job-lock — corrupt lock file", () => {
   it("foreign schema / unsafe jobId is treated as no lock + error log", () => {
     writeRawLock({ token: "t", jobId: "../x", pid: process.pid, startedAt: 1 });
     expect(readJobLock(ROOT)).toBeNull();
-    expect(errorSpy.mock.calls.length).toBeGreaterThan(0);
+    expect(diagnosticActions.length).toBeGreaterThan(0);
   });
 });

@@ -54,6 +54,7 @@ import type { AutoJobConfig } from "./job-schema";
 import { parseAutoJob, hashJobBytes } from "./job-schema";
 import type { AutoJobState, OverlayEntry } from "./job-state";
 import { listRunningJobs, readJobState, writeJobState, isValidJobId } from "./job-state";
+import { auditAutoDiagnostic } from "./diagnostics";
 
 export type { OverlayEntry };
 
@@ -359,7 +360,11 @@ function resolveOverlaidJson(json: PipelineJsonConfig): PipelineConfig | null {
   try {
     return resolvePipelineConfig(json);
   } catch (err) {
-    console.error(`[auto-pipeline] applyOverlay: resolvePipelineConfig failed — using raw job values: ${String(err)}`);
+    auditAutoDiagnostic(
+      "overlay_resolve_failed",
+      "Auto-job overlay could not resolve the pipeline config — raw job values used instead.",
+      { error: String(err) },
+    );
     return null;
   }
 }
@@ -453,10 +458,12 @@ export function readJobLock(projectRoot: string): LockInfo | null {
     ) {
       return parsed as LockInfo;
     }
-    console.error(`[auto-pipeline] readJobLock: malformed lock at ${lockPath} — treating as no lock`);
+    auditAutoDiagnostic("lock_malformed", `Auto-job lock file is malformed — treated as absent: ${lockPath}`);
     return null;
   } catch (err) {
-    console.error(`[auto-pipeline] readJobLock: corrupt lock at ${lockPath} — treating as no lock: ${String(err)}`);
+    auditAutoDiagnostic("lock_corrupt", `Auto-job lock file could not be parsed — treated as absent: ${lockPath}`, {
+      error: String(err),
+    });
     return null;
   }
 }
@@ -535,7 +542,9 @@ export function acquireJobLock(input: {
   try {
     writeJobLock(input.projectRoot, lock);
   } catch (err) {
-    console.error(`[auto-pipeline] acquireJobLock: failed writing lock: ${String(err)}`);
+    auditAutoDiagnostic("lock_write_failed", "Auto-job lock could not be written — the job cannot start.", {
+      error: String(err),
+    }, "error");
     return { ok: false, reason: "stale_token" };
   }
   heldLock = { jobId: lock.jobId, token: lock.token };
@@ -556,14 +565,16 @@ export function acquireJobLock(input: {
  */
 export function releaseJobLock(input: { projectRoot: string; token: string }): void {
   if (!heldLock || heldLock.token !== input.token) {
-    console.warn("[auto-pipeline] releaseJobLock: token mismatch — lock left untouched");
+    auditAutoDiagnostic("lock_release_token_mismatch", "Auto-job lock release ignored: token mismatch — lock left untouched.");
     return;
   }
   heldLock = null;
   try {
     fs.rmSync(resolveLockPath(input.projectRoot), { force: true });
   } catch (err) {
-    console.error(`[auto-pipeline] releaseJobLock: failed removing lock: ${String(err)}`);
+    auditAutoDiagnostic("lock_remove_failed", "Auto-job lock file could not be removed — a stale lock may remain.", {
+      error: String(err),
+    }, "error");
   }
 }
 
@@ -635,15 +646,70 @@ export function readActiveJobContext(projectRoot: string): ActiveAutoJobContext 
       : pathMod.join(projectRoot, state.jobPath);
     raw = fs.readFileSync(jobPathAbs, "utf8");
   } catch (err) {
-    console.error(`[auto-pipeline] readActiveJobContext: job file unreadable for ${lock.jobId}: ${String(err)}`);
+    auditAutoDiagnostic("job_file_unreadable", "Auto-job file unreadable — no auto seam acts.", {
+      jobId: lock.jobId,
+      error: String(err),
+    });
     return null;
   }
   const parsed = parseAutoJob(raw, state.jobPath);
   if (!parsed.ok) {
-    console.error(`[auto-pipeline] readActiveJobContext: job file invalid for ${lock.jobId} — no auto seam acts`);
+    auditAutoDiagnostic("job_file_invalid", "Auto-job file failed validation — no auto seam acts.", {
+      jobId: lock.jobId,
+    });
     return null;
   }
   return { jobId: lock.jobId, state, job: parsed.job, jobHash: parsed.hash };
+}
+
+/**
+ * The sidecar THIS session may reason about for the continuity judgement
+ * (219 Phase 6 §1 rule 2 / review round 2 issue 2), or `null` when the running
+ * job belongs to somebody else.
+ *
+ * Facts:
+ * - `readStateForActiveLock` reads the lock FILE but never compares `lock.pid`,
+ *   and `listRunningJobs` knows nothing about sessions at all. Used raw, a
+ *   second terminal's human session saw another PROCESS's running auto job and
+ *   was told every single turn that "your task was interrupted" (with the other
+ *   job's document) — exactly the cross-terminal contamination Phase 2 §3(a)
+ *   state 2 forbids.
+ * - Ownership is therefore decided in this order:
+ *   ① a lock held by ANOTHER LIVE process → not ours (`null`);
+ *   ② a lock held by THIS process → ours (the in-process auto session; a
+ *      rotated/chained session in the same process is ours too);
+ *   ③ a dead/absent lock (crash residue) → the single running job is a crash
+ *      candidate, but ONLY for a session that is not already busy with its own
+ *      document (a human session whose own `pipelineId` differs from the
+ *      orphan's running-doc owner must stay untouched).
+ */
+export function resolveContinuityState(
+  projectRoot: string,
+  meta: { pipelineId?: string } | null | undefined,
+): AutoJobState | null {
+  const lock = readJobLock(projectRoot);
+  if (lock && lock.pid !== process.pid && pidAlive(lock.pid)) {
+    // ① Another terminal owns the job. Never claim its document as ours.
+    return null;
+  }
+
+  let state: AutoJobState | null;
+  if (lock) {
+    state = readJobState(projectRoot, lock.jobId);
+  } else {
+    // ③ No lock residue: the crash candidate is unambiguous only when exactly
+    // one job is running (zero/several → inert, same rule as the menu).
+    const running = listRunningJobs(projectRoot);
+    state = running.length === 1 ? running[0]!.state : null;
+  }
+  if (!state) return null;
+
+  // ③ A session already running ITS OWN document must not be handed a stranger's
+  // doc: identity, not a clock, decides (the owner keeps its own meta).
+  const docOwner = state.docs[state.docIndex]?.pipelineId;
+  const mine = meta?.pipelineId;
+  if (!isAutoJobActive() && mine && docOwner && docOwner !== mine) return null;
+  return state;
 }
 
 /**
@@ -711,7 +777,10 @@ export async function replayOverlayForSessionStart(
       : pathMod.join(projectRoot, state.jobPath);
     raw = await fsPromises.readFile(jobPathAbs, "utf8");
   } catch (err) {
-    console.error(`[auto-pipeline] replayOverlay: job file unreadable for ${jobId}: ${String(err)}`);
+    auditAutoDiagnostic("replay_job_file_unreadable", "Auto-job file unreadable at session start — no overlay replay.", {
+      jobId,
+      error: String(err),
+    });
     return;
   }
   if (hashJobBytes(raw) !== state.jobHash) {
@@ -721,7 +790,10 @@ export async function replayOverlayForSessionStart(
     try {
       await writeJobState(projectRoot, state);
     } catch (err) {
-      console.error(`[auto-pipeline] replayOverlay: failed persisting job_drift for ${jobId}: ${String(err)}`);
+      auditAutoDiagnostic("replay_drift_persist_failed", "Auto-job drift could not be persisted.", {
+        jobId,
+        error: String(err),
+      }, "error");
     }
     notify(`Auto job "${jobId}" file changed since the run started — pipeline paused for review.`);
     return;
@@ -729,7 +801,9 @@ export async function replayOverlayForSessionStart(
 
   const parsed = parseAutoJob(raw, state.jobPath);
   if (!parsed.ok) {
-    console.error(`[auto-pipeline] replayOverlay: job file failed validation for ${jobId} — no replay`);
+    auditAutoDiagnostic("replay_job_file_invalid", "Auto-job file failed validation at session start — no overlay replay.", {
+      jobId,
+    });
     await safeWriteAuditLog("pipeline_auto_overlay_replay", { jobId, result: "invalid_job" }, "warn");
     return;
   }
@@ -742,7 +816,9 @@ export async function replayOverlayForSessionStart(
     const rawJson = await fsPromises.readFile(jsonPath, "utf8");
     baseJson = JSON.parse(rawJson) as unknown as PipelineJsonConfig;
   } catch (err) {
-    console.error(`[auto-pipeline] replayOverlay: config source unreadable: ${String(err)}`);
+    auditAutoDiagnostic("replay_config_unreadable", "Pipeline config source unreadable at session start — no overlay replay.", {
+      error: String(err),
+    });
     return;
   }
 
@@ -776,7 +852,10 @@ export async function replayOverlayForSessionStart(
     try {
       await writeJobState(projectRoot, state);
     } catch (err) {
-      console.error(`[auto-pipeline] replayOverlay: failed persisting overlay snapshot for ${jobId}: ${String(err)}`);
+      auditAutoDiagnostic("replay_snapshot_persist_failed", "Auto-job overlay snapshot could not be persisted.", {
+        jobId,
+        error: String(err),
+      }, "error");
     }
   }
   await safeWriteAuditLog("pipeline_auto_overlay_replay", {

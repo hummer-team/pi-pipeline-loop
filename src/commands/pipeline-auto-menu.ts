@@ -5,9 +5,10 @@
  * Rules (frozen):
  * - Scan ONLY `{projectRoot}/docs/jobs/*.yaml` (no recursion), take the ≤5
  *   newest by mtime.
- * - Row copy: `{文件名}（{已完成}/{总数} 已完成）`, plus `续跑 {docIndex+1}/{总数}`
- *   when the sidecar is running, plus `（job 已变更）` when the job file's hash
- *   no longer matches the sidecar (drift is the caller's three-way choice).
+ * - Row copy is ENGLISH (project language rule): `{file} ({done}/{total} done)`,
+ *   plus `resume {docIndex+1}/{total}` when the sidecar is running, plus
+ *   `(job changed)` when the job file's hash no longer matches the sidecar
+ *   (drift is the caller's three-way choice).
  * - A corrupt / foreign-schema sidecar is reported as `corrupt` and must be
  *   REFUSED by the caller (never silently restarted).
  */
@@ -23,6 +24,7 @@ import {
   resolveJobStatePath,
   type AutoJobState,
 } from "../core/auto-pipeline/job-state";
+import { auditAutoDiagnostic } from "../core/auto-pipeline/diagnostics";
 
 /** One menu row (one `docs/jobs/*.yaml` file). */
 export interface JobMenuRow {
@@ -64,7 +66,7 @@ export function scanJobFiles(projectRoot: string): JobMenuRow[] {
     const jobPath = pathMod.join(dir, fileName);
     const jobId = fileName.slice(0, -".yaml".length);
     if (!isValidJobId(jobId)) {
-      console.error(`[auto-pipeline] scanJobFiles: skipping unsafe job file name "${fileName}"`);
+      auditAutoDiagnostic("job_file_name_unsafe", `Auto-job file name is not a safe job id — skipped: ${fileName}`);
       continue;
     }
     let mtime = 0;
@@ -73,7 +75,9 @@ export function scanJobFiles(projectRoot: string): JobMenuRow[] {
       mtime = fs.statSync(jobPath).mtimeMs;
       raw = fs.readFileSync(jobPath, "utf8");
     } catch (err) {
-      console.error(`[auto-pipeline] scanJobFiles: unreadable job file ${jobPath}: ${String(err)}`);
+      auditAutoDiagnostic("job_file_unreadable", `Auto-job file unreadable — skipped: ${jobPath}`, {
+        error: String(err),
+      });
       continue;
     }
 
@@ -96,15 +100,15 @@ export function scanJobFiles(projectRoot: string): JobMenuRow[] {
   return rows.sort((a, b) => b.mtime - a.mtime).slice(0, MAX_MENU_ROWS);
 }
 
-/** Menu label for one row (R5Q3-A copy). */
+/** Menu label for one row (R5Q3-A copy, English). */
 export function formatJobMenuLabel(row: JobMenuRow): string {
-  const progress = `${row.completedDocs}/${row.totalDocs} 已完成`;
-  const parts = [`${row.fileName}（${progress}）`];
+  const progress = `${row.completedDocs}/${row.totalDocs} done`;
+  const parts = [`${row.fileName} (${progress})`];
   if (row.state?.status === "running") {
-    parts.push(`续跑 ${row.state.docIndex + 1}/${row.state.jobTotalDocs}`);
+    parts.push(`resume ${row.state.docIndex + 1}/${row.state.jobTotalDocs}`);
   }
-  if (row.corrupt) parts.push("（进度状态损坏）");
-  if (row.drifted) parts.push("（job 已变更）");
+  if (row.corrupt) parts.push("(progress state corrupt)");
+  if (row.drifted) parts.push("(job changed)");
   return parts.join(" ");
 }
 
@@ -127,7 +131,7 @@ export async function selectJobFromMenu(
     return {
       kind: "error",
       error:
-        "未发现 docs/jobs/*.yaml，请先创建任务文件（可参考示例 .pi/auto_job_example.yaml，由 /pipeline-init 安装）",
+        "No job files found in docs/jobs/*.yaml. Create one first (see the example installed by /pipeline-init: .pi/auto_job_example.yaml).",
     };
   }
   if (typeof ctx.ui?.select !== "function") {

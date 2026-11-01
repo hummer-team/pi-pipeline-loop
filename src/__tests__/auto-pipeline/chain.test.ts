@@ -16,9 +16,12 @@ import {
   continueJobAfterCompleted,
   finalizeCurrentDoc,
   handleDocFailure,
+  reconcilePendingContinuation,
+  PENDING_CONTINUATION_TIMEOUT_MS,
   __resetFinalizeStateForTests,
 } from "../../core/auto-pipeline/finalize";
 import { isAutoJobActive, __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
+import { runPipelineAuto } from "../../commands/pipeline-auto";
 import { readJobState, writeJobState } from "../../core/auto-pipeline/job-state";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 
@@ -146,6 +149,103 @@ describe("chain — success path", () => {
 
     expect(result.skipped).toBe(false);
     expect(readJobState(harness.root, HARNESS_JOB_ID)?.status).toBe("completed");
+    expect(isAutoJobActive()).toBe(false);
+  });
+});
+
+describe("chain — dispatch channel bookkeeping (review round 2 issue 3)", () => {
+  /** Re-stamp the outstanding hop as overdue (never wait 2 minutes in a test). */
+  async function agePendingContinuation(): Promise<void> {
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    state.pendingContinuation = {
+      at: Date.now() - (PENDING_CONTINUATION_TIMEOUT_MS + 1_000),
+      docIndex: state.docIndex,
+      channel: "dispatch",
+    };
+    await writeJobState(harness.root, state);
+  }
+
+  it("the dispatch branch records the outstanding hop in the sidecar", async () => {
+    await harness.install();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    const hookCtx = { ...stub, pi: { sendUserMessage: () => undefined } };
+
+    await continueJobAfterCompleted(hookCtx, harness.config, harness.job);
+
+    const pending = readJobState(harness.root, HARNESS_JOB_ID)!.pendingContinuation;
+    expect(pending?.channel).toBe("dispatch");
+    expect(pending?.docIndex).toBe(0);
+    // The audit says `dispatched`: nothing has rotated yet.
+    expect(audits).toContain("pipeline_auto_chain");
+  });
+
+  it("a FRESH record is left alone (the hop may still be in flight)", async () => {
+    await harness.install();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    await continueJobAfterCompleted({ ...stub, pi: { sendUserMessage: () => undefined } }, harness.config, harness.job);
+
+    const owned = await reconcilePendingContinuation(stub, harness.config);
+
+    expect(owned).toBe(false);
+    expect(readJobState(harness.root, HARNESS_JOB_ID)!.pendingContinuation).toBeDefined();
+    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docIndex).toBe(0);
+  });
+
+  it("an OVERDUE record falls back to the same-session serial", async () => {
+    await harness.install();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    await agePendingContinuation();
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+
+    const owned = await reconcilePendingContinuation(stub, harness.config);
+
+    expect(owned).toBe(true);
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(state.status).toBe("running");
+    expect(state.docIndex).toBe(1);
+    expect(state.docs[1]?.status).toBe("running");
+    // The hop was answered → the record is gone.
+    expect(state.pendingContinuation).toBeUndefined();
+  });
+
+  it("an OVERDUE record whose next doc cannot start ends as session_fail", async () => {
+    await harness.install();
+    await agePendingContinuation();
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+
+    const owned = await reconcilePendingContinuation(stub, harness.config);
+
+    expect(owned).toBe(true);
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(state.status).toBe("failed");
+    expect(state.stopReason).toBe("session_fail");
+    expect(state.pendingContinuation).toBeUndefined();
+    expect(isAutoJobActive()).toBe(false);
+  });
+
+  it("a dispatched --next that cannot start the next doc closes the job (no hung run)", async () => {
+    // The dispatched command body itself failed (here: the next document does
+    // not exist). Without the close the job would stay `running` for ever.
+    const installed = await harness.install();
+    installed.docs[0]!.status = "completed";
+    installed.docs[0]!.finalizeKey = `${HARNESS_JOB_ID}:0:completed`;
+    await writeJobState(harness.root, installed);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "completed" }));
+
+    const result = await runPipelineAuto(
+      harness.config,
+      { next: true, job: HARNESS_JOB_ID },
+      stub as unknown as Parameters<typeof runPipelineAuto>[2],
+    );
+
+    expect(result.success).toBe(false);
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    // Terminal either way — the exact reason is the documented failure chain's
+    // (`start_failed` → `onFailure: stop`); the point is that nothing hangs.
+    expect(state.status).toBe("failed");
+    expect(state.pendingContinuation).toBeUndefined();
     expect(isAutoJobActive()).toBe(false);
   });
 });

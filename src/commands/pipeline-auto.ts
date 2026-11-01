@@ -26,6 +26,7 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldRecordAutoDecision } from "../core/auto-pipeline/auto-audit";
 import { parseAutoJob, hashJobBytes, type AutoJobConfig } from "../core/auto-pipeline/job-schema";
 import {
+  clearPendingContinuation,
   createJobState,
   isValidJobId,
   listRunningJobs,
@@ -41,12 +42,14 @@ import {
   applyOverlay,
   getActiveJobId,
   isAutoJobActive,
+  readActiveJobContext,
   releaseJobLock,
   type AutoJobSnapshot,
 } from "../core/auto-pipeline/config-overlay";
 import { NEW_COMMIT_RE } from "../core/naming/doc-naming";
 // 219 Phase 5: the ONE terminal transaction (release + audit + rollback + unlock).
 import { finalizeJob, handleDocFailure } from "../core/auto-pipeline/finalize";
+import { auditAutoDiagnostic, notifyAuto } from "../core/auto-pipeline/diagnostics";
 import {
   buildAutoJobMeta,
   readJobFile,
@@ -60,6 +63,14 @@ export interface AutoPipelineResult {
   message?: string;
   error?: string;
 }
+
+/**
+ * Menu choices (project language rule: user-facing copy is English, and the
+ * caller compares against these constants instead of repeating literals).
+ */
+const RESTART_CHOICE = "Restart job";
+const CANCEL_CHOICE = "Cancel";
+const RESUME_WITH_NEW_JOB_CHOICE = "Resume with the new job file";
 
 /** Parsed command arguments (`pipeline-auto` case in `command-args`). */
 export interface PipelineAutoArgs {
@@ -112,8 +123,17 @@ export async function runPipelineAuto(
     return runMenu(config, ctx);
   }
   const resolution = resolveInternalTarget(config, jobArg);
-  if (!resolution.ok) return { success: false, error: resolution.error };
-  return startAutoJob({
+  if (!resolution.ok) {
+    if (args.next) {
+      // A dispatched continuation that cannot even resolve its target has no
+      // owner left (review round 2 issue 3) — leave a receipt in the audit.
+      auditAutoDiagnostic("chain_dispatch_unresolved", `Auto-job continuation target unresolved: ${resolution.error}`, {
+        jobId: jobArg,
+      });
+    }
+    return { success: false, error: resolution.error };
+  }
+  const result = await startAutoJob({
     config,
     ctx,
     jobId: resolution.jobId,
@@ -122,6 +142,44 @@ export async function runPipelineAuto(
     // command host performs the session rotation first (`ctx.newSession`).
     ...(args.next ? { continuation: true } : {}),
   });
+  if (args.next && !result.success) {
+    // Review round 2 (issue 3): the chain has no callback, so the failure must
+    // be closed HERE instead of leaving the job `running` with a held lock.
+    await closeAbandonedContinuation(config, ctx, resolution.jobId, result.error);
+  }
+  return result;
+}
+
+/**
+ * Close a dispatched continuation that could not start the next document
+ * (review round 2, issue 3).
+ *
+ * Guards: only the lock OWNER (this process, this job) may close the job — a
+ * dispatch that lost the lock to another terminal must never finalize it.
+ */
+async function closeAbandonedContinuation(
+  config: PipelineConfig,
+  ctx: AutoPipelineCommandCtx,
+  jobId: string,
+  error: string | undefined,
+): Promise<void> {
+  const active = readActiveJobContext(config.projectRoot);
+  if (!active || active.jobId !== jobId || active.state.status !== "running") return;
+  await safeWriteAuditLog(
+    "pipeline_auto_chain",
+    {
+      jobId,
+      result: "continuation_start_failed",
+      channel: "dispatch",
+      reason: error ?? "",
+    },
+    "warn",
+  );
+  notifyAuto(
+    ctx,
+    `Auto job "${jobId}": the continuation could not start the next document — stopping the job (session_fail).`,
+  );
+  await finalizeJob(ctx as never, config, { stopReason: "session_fail" });
 }
 
 /**
@@ -181,9 +239,9 @@ async function runMenu(config: PipelineConfig, ctx: AutoPipelineCommandCtx): Pro
     state = resolved;
   }
   if (state?.status === "completed") {
-    const choice = await ctx.ui?.select?.("This job is already completed.", ["重新开始", "取消"]);
-    if (choice !== "重新开始") return { success: true, message: "Auto pipeline cancelled" };
-    // 219 Phase 4 §2 + review issue 3: "重新开始" must REBUILD the sidecar.
+    const choice = await ctx.ui?.select?.("This job is already completed.", [RESTART_CHOICE, CANCEL_CHOICE]);
+    if (choice !== RESTART_CHOICE) return { success: true, message: "Auto pipeline cancelled" };
+    // 219 Phase 4 §2 + review issue 3: the restart choice must REBUILD the sidecar.
     // Clearing a local variable changed nothing: `startAutoJob` re-reads the
     // same completed sidecar, `pickNextDoc` finds no pending doc and the job
     // ends as `job_completed` ("already finished"). The drift branch already
@@ -196,8 +254,7 @@ async function runMenu(config: PipelineConfig, ctx: AutoPipelineCommandCtx): Pro
 
 /**
  * Replace the sidecar of `row.jobId` with a FRESH state built from the current
- * job bytes (the "重新开始" construction shared by the completed and drift
- * branches).
+ * job bytes (the RESTART choice shared by the completed and drift branches).
  */
 async function rebuildJobState(
   config: PipelineConfig,
@@ -229,9 +286,9 @@ async function resolveDrift(
   ctx: AutoPipelineCommandCtx,
 ): Promise<AutoJobState | null> {
   const choice = await ctx.ui?.select?.("The job file changed since this run started.", [
-    "按新 job 续跑",
-    "重新开始",
-    "取消",
+    RESUME_WITH_NEW_JOB_CHOICE,
+    RESTART_CHOICE,
+    CANCEL_CHOICE,
   ]);
   if (shouldRecordAutoDecision(config)) {
     await safeWriteAuditLog("pipeline_auto_decision", {
@@ -241,16 +298,16 @@ async function resolveDrift(
       choice: choice ?? "cancelled",
     });
   }
-  if (choice === "取消" || choice === undefined) return null;
+  if (choice === CANCEL_CHOICE || choice === undefined) return null;
 
   const parsed = parseAutoJob(raw, row.jobPath);
   if (!parsed.ok) return null;
-  if (choice === "重新开始") {
+  if (choice === RESTART_CHOICE) {
     const rebuilt = await rebuildJobState(config, row, raw, hash);
     return rebuilt.ok ? rebuilt.state : null;
   }
 
-  // "按新 job 续跑": keep per-doc statuses aligned BY DOC PATH, then fall back
+  // "resume with the new job file": keep per-doc statuses aligned BY DOC PATH, then fall back
   // to the first pending doc when the current doc disappeared.
   const previous = row.state!;
   const byDoc = new Map(previous.docs.map((d) => [d.doc, d]));
@@ -327,7 +384,10 @@ async function rotateSessionForContinuation(input: {
     })) as { cancelled?: boolean } | undefined;
     cancelled = result?.cancelled === true;
   } catch (err) {
-    console.error(`[pipeline-auto] --next: newSession failed for ${jobId}: ${String(err)}`);
+    auditAutoDiagnostic("chain_new_session_failed", `Auto job "${jobId}": session rotation failed in the command host.`, {
+      jobId,
+      error: String(err),
+    }, "error");
     cancelled = true;
   }
 
@@ -537,6 +597,9 @@ async function startPendingDoc(input: {
   state.docIndex = target.index;
   // H4: the startup stage is the ONLY other `lastStage` write besides settle.
   noteDocStage(state, target.index, (target.doc.startStage ?? "clarify") as PipelineStage, Date.now());
+  // Review round 2 (issue 3): the outstanding continuation hop is ANSWERED —
+  // the reconcile must never fire for a doc that really started.
+  clearPendingContinuation(state);
   await writeJobState(projectRoot, state);
 
   return {

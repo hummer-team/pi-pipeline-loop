@@ -143,15 +143,15 @@ describe("job-menu — literals", () => {
     await writeJobState(ROOT, base);
 
     const [row] = scanJobFiles(ROOT);
-    expect(formatJobMenuLabel(row!)).toContain("（1/2 已完成）");
-    expect(formatJobMenuLabel(row!)).not.toContain("续跑");
+    expect(formatJobMenuLabel(row!)).toContain("(1/2 done)");
+    expect(formatJobMenuLabel(row!)).not.toContain("resume");
   });
 
   it("running rows add the resume marker", async () => {
     writeJobFile("alpha");
     await writeSidecar("alpha", { status: "running", docIndex: 1 } as never);
     const [row] = scanJobFiles(ROOT);
-    expect(formatJobMenuLabel(row!)).toContain("续跑 2/2");
+    expect(formatJobMenuLabel(row!)).toContain("resume 2/2");
   });
 
   it("drifted rows add the drift marker", async () => {
@@ -159,7 +159,7 @@ describe("job-menu — literals", () => {
     await writeSidecar("alpha", { jobHash: "stale-hash" } as never);
     const [row] = scanJobFiles(ROOT);
     expect(row?.drifted).toBe(true);
-    expect(formatJobMenuLabel(row!)).toContain("job 已变更");
+    expect(formatJobMenuLabel(row!)).toContain("(job changed)");
   });
 
   it("corrupt sidecars are flagged, never silently treated as fresh", () => {
@@ -169,7 +169,7 @@ describe("job-menu — literals", () => {
     fs.writeFileSync(statePath, "not json", "utf8");
     const [row] = scanJobFiles(ROOT);
     expect(row?.corrupt).toBe(true);
-    expect(formatJobMenuLabel(row!)).toContain("进度状态损坏");
+    expect(formatJobMenuLabel(row!)).toContain("(progress state corrupt)");
   });
 });
 
@@ -227,11 +227,11 @@ describe("job-menu — command guards", () => {
     expect(cfg.stages.plan?.confirm?.mode).toBe(modeBefore);
   });
 
-  it("drift + 取消 leaves the sidecar untouched", async () => {
+  it("drift + cancel leaves the sidecar untouched", async () => {
     writeJobFile("alpha");
     await writeSidecar("alpha", { jobHash: "stale-hash" } as never);
     const before = readJobState(ROOT, "alpha");
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "取消"]);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Cancel"]);
     const result = await runPipelineAuto(config(), {}, ctx);
 
     expect(result.success).toBe(true);
@@ -239,10 +239,10 @@ describe("job-menu — command guards", () => {
     expect(readJobState(ROOT, "alpha")?.jobHash).toBe(before?.jobHash);
   });
 
-  it("drift + 重新开始 rewrites the sidecar with the new hash", async () => {
+  it("drift + restart rewrites the sidecar with the new hash", async () => {
     writeJobFile("alpha");
     await writeSidecar("alpha", { jobHash: "stale-hash" } as never);
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "重新开始"]);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Restart job"]);
     await runPipelineAuto(config(), {}, ctx);
 
     const refreshed = readJobState(ROOT, "alpha");
@@ -256,13 +256,13 @@ describe("job-menu — command guards", () => {
   it("a completed sidecar asks restart/cancel and keeps the state on cancel", async () => {
     writeJobFile("alpha");
     await writeSidecar("alpha", { status: "completed" } as never);
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "取消"]);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Cancel"]);
     const result = await runPipelineAuto(config(), {}, ctx);
     expect(result.message).toContain("cancelled");
     expect(readJobState(ROOT, "alpha")?.status).toBe("completed");
   });
 
-  it("重新开始 on a completed sidecar REBUILDS the progress (no 'already finished')", async () => {
+  it("restart on a completed sidecar REBUILDS the progress (no 'already finished')", async () => {
     writeJobFile("alpha");
     // Every doc already completed: without a rebuild `pickNextDoc` finds
     // nothing and the job ends as `job_completed` ("already finished").
@@ -274,7 +274,7 @@ describe("job-menu — command guards", () => {
       ],
       docIndex: 1,
     } as never);
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "重新开始"]);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Restart job"]);
     const result = await runPipelineAuto(config(), {}, ctx);
 
     // The rebuild restarted at doc 1; its file is absent, so the runner fails
@@ -291,7 +291,7 @@ describe("job-menu — command guards", () => {
     await writeSidecar("alpha", { status: "completed" } as never);
     // Restart → then start; the doc file does not exist, so the runner fails
     // fast — the interesting part is that the selection reached the runner.
-    const { ctx, notified } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "重新开始"]);
+    const { ctx, notified } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Restart job"]);
     const result = await runPipelineAuto(config(), {}, ctx);
     expect(result.success).toBe(false);
     expect(notified.length).toBeGreaterThan(0);
