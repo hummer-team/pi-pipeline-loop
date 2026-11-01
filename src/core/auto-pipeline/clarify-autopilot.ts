@@ -17,9 +17,19 @@
  *   `full-und?` dispatch recorded as `clarifyFallbackUsed`).
  */
 
+import type { PipelineConfig, SessionMeta } from "../../types";
 import type { AutoJobConfig } from "./job-schema";
 import type { AutoJobState } from "./job-state";
 import { readActiveJobContext } from "./config-overlay";
+import { auditAutoDecision } from "./auto-audit";
+import { dispatchClarifyRound } from "./clarify-round-dispatch";
+import {
+  FORCED_FULL_UND_ARGS,
+  persistClarifyState,
+  type ClarifyDocState,
+  type ClarifyEntryCtx,
+  type ClarifyEntryDeps,
+} from "./clarify-state";
 
 /** The clarify plan for the currently executing doc. */
 export interface ClarifyAutoPlan {
@@ -94,4 +104,75 @@ export function buildClarifyFinalisationInstruction(): string {
     "[auto-pipeline] Finalise the clarification: run the full-und? flow and write the " +
     "completion marker (`## 模型确认`) with the confirmation line. Do not skip the marker."
   );
+}
+
+/**
+ * 220 Phase 3 (D6/Q4): the round budget is exhausted.
+ *
+ * - `onExhausted: "stop"` (default) → freeze with `clarify_budget_exhausted`;
+ *   the job's `freezePolicy` owns what happens next (Q11 single escape hatch).
+ * - `onExhausted: "self-confirm"` → force exactly ONE `full-und?` round, recorded
+ *   as `clarifyFallbackUsed`; a second exhaustion fails the document with
+ *   `clarify_marker_missing` instead of looping.
+ *
+ * `finalize` is imported lazily: `finalize.ts` imports THIS module, so a static
+ * import would create a load-time cycle (same precedent as `freeze-autopilot`).
+ */
+export async function handleClarifyBudgetExhausted(
+  ctx: ClarifyEntryCtx,
+  config: PipelineConfig,
+  meta: SessionMeta,
+  state: AutoJobState,
+  job: AutoJobConfig,
+  docState: ClarifyDocState,
+  deps: ClarifyEntryDeps,
+): Promise<boolean> {
+  const { decision } = docState;
+  if (job.clarify.onExhausted !== "self-confirm") {
+    await auditAutoDecision(config, {
+      gate: "clarify_freeze",
+      decision: decision.action,
+      reason: "clarify_budget_exhausted",
+      round: String(decision.round),
+    });
+    await deps.freeze(ctx as never, meta, "clarify_budget_exhausted", config, { ui: ctx.ui as never });
+    return true;
+  }
+
+  const allowed = noteClarifyFallbackUsed({ state, docIndex: state.docIndex });
+  await auditAutoDecision(config, {
+    gate: "clarify_fallback",
+    decision: allowed ? "self_confirm" : "fail",
+    reason: allowed ? "budget_exhausted_forced_full_und" : "budget_exhausted_fallback_used",
+    round: String(decision.round),
+  });
+  await persistClarifyState(config, state);
+  const { handleDocFailure } = await import("./finalize");
+  if (!allowed) {
+    // The one fallback round was already spent — fail honestly.
+    await handleDocFailure(ctx as never, config, state, job, {
+      outcome: "failed",
+      reason: "clarify_marker_missing",
+    });
+    return true;
+  }
+
+  const dispatched = await dispatchClarifyRound(
+    ctx,
+    config,
+    meta,
+    state,
+    job,
+    docState,
+    deps,
+    FORCED_FULL_UND_ARGS,
+    buildClarifyFinalisationInstruction(),
+  );
+  if (!dispatched) {
+    await handleDocFailure(ctx as never, config, state, job, {
+      outcome: "failed",
+      reason: "clarify_marker_missing",
+    });
+  }
+  return true;
 }

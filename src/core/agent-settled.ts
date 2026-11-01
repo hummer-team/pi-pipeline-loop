@@ -56,6 +56,7 @@ import { coordinateDesignReview } from "./design-review/coordinator";
 // 219 Phase 5 (Seam B): the settle-side auto transaction (completed wins over
 // hard stop) + the clarify marker degrade/fail channel.
 import { handleAutoSettle, handleAutoClarifyMarkerMiss } from "./auto-pipeline/settle-seam";
+import { runAutoClarifyRound } from "./auto-pipeline/clarify-entry";
 import { isAutoJobActive } from "./auto-pipeline/config-overlay";
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "./design-review/entry-result";
@@ -146,6 +147,14 @@ export function createAgentSettled(
       });
 
       ui.notify(ctx, `Agent settled in "${meta.currentStage}" stage`);
+
+      // 220 D2: an auto job must never idle in awaiting_human. It is a FROZEN
+      // state (`dormancy.isFrozenMeta`), so the later verify block is
+      // unreachable — the gate has to run before the frozen short-circuit.
+      if (meta.autoJob && meta.currentStage === "awaiting_human") {
+        await freezeAndPrompt(ctx, meta, "awaiting_human_in_auto", config, { ui: ctx.ui });
+        return;
+      }
 
       // 1b. Frozen short-circuit: skip verification when pipeline is frozen
       if (isFrozen(meta)) {
@@ -801,6 +810,8 @@ export function createAgentSettled(
       // where the model settles before the user has written the answer, triggering
       // auto_verify_fail cascading to verify_attempt_overflow freeze.
       if (meta.currentStage === "clarify") {
+        // 220 D1/D2: auto job owns clarify rounds (job-gated; human track untouched).
+        if (meta.autoJob && (await runAutoClarifyRound(ctx, config, meta))) return;
         try {
           const awaitCheck = await precheckClarifyAwaitAnswer(config, meta);
           if (awaitCheck.awaiting) {
