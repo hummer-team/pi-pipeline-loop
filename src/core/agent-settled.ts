@@ -59,6 +59,8 @@ import { coordinateDesignReview } from "./design-review/coordinator";
 import { handleAutoSettle, handleAutoClarifyMarkerMiss } from "./auto-pipeline/settle-seam";
 import { runAutoClarifyRound } from "./auto-pipeline/clarify-entry";
 import { isAutoJobActive } from "./auto-pipeline/config-overlay";
+// 221 Phase 2: one-shot human completion release (settle-side fallback).
+import { finalizeHumanPipelineCompletion } from "./human-completion";
 // 193 Phase 0: single honest consumer for design-review coordinator results
 import { consumeDesignReviewResult } from "./design-review/entry-result";
 // 193 Phase 3 (task 1): ONE safe builder for coordinator ctx at every entry
@@ -117,6 +119,14 @@ export function createAgentSettled(
       // dormant, yet the auto job must finalize it exactly once (completed wins
       // over any hard-stop judgement inside the seam). Non-auto → no-op.
       if (rawMeta && (await handleAutoSettle(ctx, config, rawMeta))) return;
+
+      // 221 Phase 2: a HUMAN pipeline that reached `completed` releases its
+      // session resources once (auto jobs are excluded inside the helper). This
+      // is the fallback for flow-state skip/choose_stage paths that bypass the
+      // tool-advance / hook-advance emitters.
+      if (rawMeta) {
+        await finalizeHumanPipelineCompletion(ctx as never, config);
+      }
 
       if (!rawMeta || isDormant(rawMeta)) return;
       const meta: SessionMeta = rawMeta;

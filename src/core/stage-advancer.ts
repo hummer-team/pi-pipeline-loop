@@ -34,6 +34,8 @@ import {
 } from "./stage-evidence";
 // 210 Phase 7: stage-exit usage drain + `stage_usage` audit fields.
 import { takeStageUsageAuditFields } from "./usage-recorder";
+// 221 Phase 2: one-shot human completion release.
+import { finalizeHumanPipelineCompletion } from "./human-completion";
 import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { stageMigrationResetCounters } from "./stage-exit/migration-reset";
 import { applyVerifyFail } from "./verify-advance";
@@ -2203,6 +2205,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         if (usageFields) {
           await safeWriteStageAudit(config, "stage_usage", freshMetaForAudit, usageFields);
         }
+        // 221 Phase 2: terminal human completion releases the session resources
+        // exactly once (auto jobs are excluded inside the helper).
+        await finalizeHumanPipelineCompletion(ctx as never, config);
         // 210 Phase 2: `completed` is dormant — no stage clock may survive it.
         clearStageWatchdog(freshMetaForAudit.pipelineId);
         return {

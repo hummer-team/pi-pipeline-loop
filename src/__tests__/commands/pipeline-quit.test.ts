@@ -177,3 +177,29 @@ describe("createPipelineQuitCommand", () => {
     expect(clearCall).toBeDefined();
   });
 });
+
+// ─── 221 Phase 2: the shared release accepts the human-completed reason ─────
+
+describe("221 Phase 2: shared release reason union", () => {
+  it("accepts `human_completed` and clears the same session resources", async () => {
+    const TMP = join(tmpdir(), "pi-quit-human-completed-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    const meta = makeTestMeta({
+      currentStage: "completed",
+      sessionAllowedCommands: ["git status"],
+      verifyAttempts: 2,
+    });
+    const ctx = createCtx(meta);
+
+    const { releaseSessionResources } = await import("../../core/auto-pipeline/cleanup");
+    const result = await releaseSessionResources(ctx as never, config, {
+      reason: "human_completed",
+    });
+
+    expect(result.criticalFailed).toBe(false);
+    expect(meta.sessionAllowedCommands).toEqual([]);
+    expect(meta.verifyAttempts).toBe(0);
+  });
+});

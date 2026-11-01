@@ -508,8 +508,12 @@ describe("createAgentSettled", () => {
     // completed has nextStage=null — should NOT wake (real null boundary, not "completed" exclusion)
     expect(sentMessages.length).toBe(0);
 
-    // Stage should NOT advance (terminal stage, applyVerifyPass skips updateMeta when nextStage=null)
-    expect(ctx.metadataUpdates.length).toBe(0);
+    // Stage should NOT advance (terminal stage, applyVerifyPass skips updateMeta when nextStage=null).
+    // 221 Phase 2: the ONLY meta writes are the one-shot human completion cleanup
+    // (stamp + shared release), never a stage transition.
+    expect(meta.currentStage).toBe("completed");
+    expect(meta.stageVisitOrder).toBeUndefined();
+    expect(meta.terminalCleanupAt).toBeGreaterThan(0);
 
     await rm(stageTmp, { recursive: true, force: true });
   });

@@ -108,6 +108,8 @@ export function buildNewPeriodResetFields(
     terminated: undefined,
     terminateReason: undefined,
     terminalCompact: undefined,
+    // 221 Phase 2: the human-completion release is one-shot per period.
+    terminalCleanupAt: undefined,
 
     // Confirm-gate deferral window
     confirmGateDeferredAt: undefined,

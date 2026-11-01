@@ -13,6 +13,8 @@ import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } fr
 import { writeAuditLog, writeStageAudit, safeWriteAuditLog } from "../utils/auditLog";
 // 210 Phase 7: per-stage usage drain + `stage_usage` audit fields at exit.
 import { takeStageUsageAuditFields } from "./usage-recorder";
+// 221 Phase 2: one-shot human completion release.
+import { finalizeHumanPipelineCompletion } from "./human-completion";
 import type { PipelineUI } from "./pipeline-ui";
 import { freezeAndPrompt } from "./flow-state";
 // 210 Phase 2: re-arm the stage clocks once a transition is committed (5.4).
@@ -394,6 +396,9 @@ async function emitVerifyStageExitEvidence(
     method: `verify_${method}`,
     ...aggregate,
   });
+  // 221 Phase 2: terminal completion releases session resources exactly once
+  // (auto jobs are excluded inside the helper).
+  await finalizeHumanPipelineCompletion(ctx as never, ctx.config);
 }
 
 /**
@@ -1223,6 +1228,8 @@ export async function autoAdvanceAfterVerify(
       method: "hook_auto_advance",
       ...aggregate,
     });
+    // 221 Phase 2: terminal completion releases session resources exactly once.
+    await finalizeHumanPipelineCompletion(ctx as never, config);
   }
 
   // Phase 2 / 179 (G8): chain-terminal owner wake.

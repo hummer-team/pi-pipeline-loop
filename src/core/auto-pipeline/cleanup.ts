@@ -22,7 +22,13 @@ import { invalidateExecutorRunOnBoundary } from "../stage-executor/recovery";
 import { createPipelineUI } from "../pipeline-ui";
 import { auditAutoDiagnostic, notifyAuto } from "./diagnostics";
 
-export type ReleaseReason = "user_quit" | "auto_completed" | "auto_failed" | "auto_stopped";
+export type ReleaseReason =
+  | "user_quit"
+  | "auto_completed"
+  | "auto_failed"
+  | "auto_stopped"
+  /** 221 Phase 2: a HUMAN pipeline reached `completed` (shared release). */
+  | "human_completed";
 
 export interface ReleaseResult {
   criticalFailed: boolean;
