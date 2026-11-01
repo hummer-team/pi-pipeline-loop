@@ -3210,7 +3210,11 @@ async function spawnDesignReviewAgent(
     return { ok: false, error: "unsupported_operation_kind", outcome: "not_sent" };
   }
   const stage = task.stage;
-  const finalPrompt = task.prompt;
+  // 220 D4: auto-only ledger traceability guidance. `null` without an active
+  // auto job ⇒ `finalPrompt` is byte-identical to the pre-220 prompt (INV-1).
+  const { resolveAutoLedgerGuidance } = await import("../auto-pipeline/design-review-ledger-inject");
+  const ledgerGuidance = await resolveAutoLedgerGuidance({ config: ctx.config, planDoc: drState.planDoc });
+  const finalPrompt = ledgerGuidance ? `${task.prompt}\n\n${ledgerGuidance}` : task.prompt;
   const spawnDescription = task.description;
 
   const operationContext = makeOperationContext(freshMeta, drState, operation);

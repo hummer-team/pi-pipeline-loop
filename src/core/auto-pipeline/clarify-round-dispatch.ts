@@ -43,16 +43,23 @@ import type { AutoJobState } from "./job-state";
  * Round args first, protocol directive second: the args channel is positional,
  * the directive is prose (`subagent-rpc` appends `extraArgs` to the prompt).
  */
-function composeExtraArgs(decision: ClarifyDispatchDecision, docText: string | null, tier: AutoJobConfig["tier"]): string {
-  const baseArgs = decision.extraArgs ?? "";
-  if (docText === null) return baseArgs;
+function composeExtraArgs(
+  decision: ClarifyDispatchDecision,
+  docText: string | null,
+  tier: AutoJobConfig["tier"],
+  baseArgsOverride?: string,
+): { extraArgs: string; protocolApplied: boolean } {
+  const baseArgs = baseArgsOverride ?? decision.extraArgs ?? "";
+  if (docText === null) return { extraArgs: baseArgs, protocolApplied: false };
   const directive = buildProtocolDirective({
     assessment: parseRequirementAssessment(docText),
     ledger: parseDecisionLedger(docText),
     questionCount: parseClarifyQuestionCount(docText),
     tier,
   });
-  return directive ? `${baseArgs}\n\n${directive}` : baseArgs;
+  return directive
+    ? { extraArgs: `${baseArgs}\n\n${directive}`, protocolApplied: true }
+    : { extraArgs: baseArgs, protocolApplied: false };
 }
 
 /** Clear the same-visit spawn guard so the auto round really dispatches (B1). */
@@ -83,8 +90,16 @@ export async function dispatchClarifyRound(
 ): Promise<boolean> {
   const { decision, doc, docText, progress } = docState;
   const now = Date.now();
-  const baseArgs = extraArgsOverride ?? composeExtraArgs(decision, docText, job.tier);
+  const composed = composeExtraArgs(decision, docText, job.tier, extraArgsOverride);
+  const baseArgs = composed.extraArgs;
   const extraArgs = finalisationInstruction ? `${baseArgs}\n\n${finalisationInstruction}` : baseArgs;
+  if (composed.protocolApplied) {
+    await auditAutoDecision(config, {
+      gate: "clarify_protocol",
+      decision: decision.action,
+      round: String(decision.round),
+    });
+  }
 
   // ③ Monotonic round stamp — written BEFORE the dispatch so a crash can never
   // refund a round. `clarifyDispatchedAt` follows every dispatch (dedupe ②).
