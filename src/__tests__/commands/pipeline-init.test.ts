@@ -127,6 +127,18 @@ describe("createPipelineInitCommand", () => {
       expect(fsSync.existsSync(path.join(TMP, ".pi", "guide.md"))).toBe(true);
       expect(fsSync.existsSync(path.join(TMP, ".pi", "skills", "design", "SKILL.md"))).toBe(true);
       expect(fsSync.existsSync(path.join(TMP, "pipeline_loop.json"))).toBe(true);
+      // 221 Phase 0: the optional clarify protocol template is deployed too.
+      expect(fsSync.existsSync(path.join(TMP, ".pi", "pipeline_loop_job.json"))).toBe(true);
+    });
+
+    it("keeps the job config anchor in .pi/ even when piWorkDir differs", async () => {
+      const config = makeInitConfig();
+      config.piWorkDir = ".pi-alt";
+      const cmd = createPipelineInitCommand(config);
+      const result: any = await cmd.execute("0" as any);
+      expect(result.success).toBe(true);
+      expect(fsSync.existsSync(path.join(TMP, ".pi", "pipeline_loop_job.json"))).toBe(true);
+      expect(fsSync.existsSync(path.join(TMP, ".pi-alt", "pipeline_loop_job.json"))).toBe(false);
     });
 
     it("accepts string argument '1'", async () => {

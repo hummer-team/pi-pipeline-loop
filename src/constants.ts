@@ -60,6 +60,21 @@ export const AUTO_PIPELINE_LOCK_FILE = ".pi/auto_pipeline/lock.json";
  */
 export const AUTO_PIPELINE_JOB_DIR = "docs/jobs";
 
+/**
+ * 221 Phase 0: OPTIONAL per-project clarify protocol anchors. The file is an
+ * anchor like `pipeline_loop.json` (never relocated by `piWorkDir`); its absence
+ * is the default and must keep the human path byte-identical to today.
+ */
+export const PIPELINE_LOOP_JOB_CONFIG_FILE = ".pi/pipeline_loop_job.json";
+
+/**
+ * 221 Phase 0: code-side fallback for the clarify completion marker (used when
+ * neither `pipeline_loop_job.json` nor the stage `completionMarker` config
+ * declares one). Never written back to configuration — the deployed
+ * `pipeline_loop.json` stays the authoritative precheck source.
+ */
+export const DEFAULT_COMPLETION_MARKERS = ["## 模型确认", "## Model Confirmation"] as const;
+
 /** Paths that agents in loop stages (develop/fix) must not modify.
  * Project rule files (e.g. AGENTS.md) are NOT protected by default;
  * users may add them via `config.protect.paths` if needed.

@@ -168,12 +168,16 @@ export interface VerifyConfig {
   selfVerifySkip?: boolean;
 
   /**
-   * Interactive completion marker text. When configured, agent_settled prechecks
-   * whether this marker has been written to the requirement document before running
-   * verification. If the marker is not found on disk, verification is skipped,
-   * the stage is NOT advanced, and verifyAttempts is NOT incremented (prevents freeze).
+   * Interactive completion marker text (221 Phase 0: string or alias array).
+   * When configured, agent_settled prechecks whether one of these markers has
+   * been written to the requirement document before running verification. If no
+   * marker is found on disk, verification is skipped, the stage is NOT advanced,
+   * and verifyAttempts is NOT incremented (prevents freeze).
+   *
+   * Semantics are frozen: `undefined` / an empty array means "no precheck".
+   * The first entry is the PRIMARY marker used by injectors and prompts.
    */
-  completionMarker?: string;
+  completionMarker?: string | string[];
 
   /**
    * 210 Phase 0: require git commit evidence reconciliation before verify passes.
@@ -773,6 +777,14 @@ export interface SessionMeta {
     tokensAfter?: number | null;
     error?: string;
   };
+
+  /**
+   * 221 Phase 2: Unix timestamp (ms) of the ONE-SHOT human completion cleanup.
+   * Set BEFORE the shared release runs, so a concurrent settle cannot release
+   * twice. Field existence = consumed (same convention as `terminalCompact`);
+   * cleared by the new-period / quit / handoff meta resets.
+   */
+  terminalCleanupAt?: number;
 
   /**
    * Phase 4 (171): Active spawn tracking for duplicate-spawn suppression (Q5-B + Q7-A).
@@ -1711,6 +1723,49 @@ export interface ProtectConfig {
 // ─── Pipeline Configuration ──────────────────────────────────────────────────
 
 /**
+ * 221 Phase 0: clarify protocol anchors declared by an OPTIONAL
+ * `.pi/pipeline_loop_job.json`.
+ *
+ * Every key is optional and means "explicitly declared by the project" — an
+ * absent key falls back to the deployed verify.md runtime anchors, then to the
+ * bilingual defaults in `core/auto-pipeline/clarify-anchors.ts`.
+ *
+ * Literal keys (headings / markers / verdicts) are compared by
+ * `String.prototype.includes` or exact line match. `*Patterns` keys are regex
+ * sources evaluated with the `m`/`gm` flags.
+ */
+export interface ClarifyProtocolConfig {
+  /** Requirement-assessment heading aliases (`## 需求评估`). */
+  assessmentHeading?: string[];
+  /** Goal section heading aliases (`## 目标`). */
+  goalHeading?: string[];
+  /** Scope section heading aliases (`## 范围`). */
+  scopeHeading?: string[];
+  /** Acceptance-criteria heading aliases (`## 验收标准`). */
+  acceptanceHeading?: string[];
+  /** Decision-ledger heading aliases (`## 组合决策台账`). */
+  ledgerHeading?: string[];
+  /** Ledger substrings that document elimination reasons. */
+  eliminationMarkers?: string[];
+  /** Ledger substrings that document a conflict matrix. */
+  conflictMarkers?: string[];
+  /** Regex sources that open one clarify question (`## 问题 1`). */
+  questionPatterns?: string[];
+  /** Regex sources that open one clarify round (`## 第 1 轮`). */
+  roundPatterns?: string[];
+  /** Answer field literals (`答：`). */
+  answerMarkers?: string[];
+  /** Answer field regex sources (`^\s*答\s*[:：]`). */
+  answerPatterns?: string[];
+  /** Assessment verdict literals meaning "ready". */
+  verdictReady?: string[];
+  /** Assessment verdict literals meaning "needs clarification". */
+  verdictNeedsClarify?: string[];
+  /** Model confirmation marker aliases (`## 模型确认`). */
+  modelConfirm?: string[];
+}
+
+/**
  * Top-level configuration interface that projects provide to `createPipeline()`.
  * Maps each pipeline stage to its configuration and sets global pipeline options.
  */
@@ -1798,6 +1853,14 @@ export interface PipelineConfig {
     plan?: PipelineStage;
     "design-review"?: PipelineStage;
   };
+
+  /**
+   * 221 Phase 0: clarify protocol anchors from the OPTIONAL
+   * `.pi/pipeline_loop_job.json`. Attached ONLY when the file exists and
+   * declares at least one key, so existing config-shape assertions on
+   * configs without the file stay untouched.
+   */
+  clarifyProtocol?: ClarifyProtocolConfig;
 
   /**
    * TUI output configuration.
@@ -2024,11 +2087,13 @@ export interface VerifyJsonConfig {
   selfVerifySkip?: boolean;
 
   /**
-   * Interactive completion marker text. When configured, agent_settled prechecks
-   * whether this marker exists in the requirement document before running verification.
-   * If not found, verification is skipped (no advance, no verifyAttempts increment).
+   * Interactive completion marker text (221 Phase 0: string or alias array).
+   * When configured, agent_settled prechecks whether one of these markers exists
+   * in the requirement document before running verification. If none is found,
+   * verification is skipped (no advance, no verifyAttempts increment).
+   * An empty array normalizes to `undefined` (= no precheck).
    */
-  completionMarker?: string;
+  completionMarker?: string | string[];
 
   /**
    * 210 Phase 0: global commit-proof reconciliation switch (verify level).

@@ -51,17 +51,27 @@ function collectTemplateFiles(dir: string, base: string = dir): string[] {
 }
 
 /**
+ * 221 Phase 0: config files that are ANCHORS — they always land in `.pi/`
+ * regardless of the configured `piWorkDir` (D4 convention).
+ */
+const ANCHOR_CONFIG_FILES: ReadonlySet<string> = new Set([
+  "pipeline_loop.json",
+  "pipeline_loop_job.json",
+]);
+
+/**
  * Counts how many template files already exist in the target .pi/ directory.
- * Excludes guide.md (always overwritten) and `.pi/pipeline_loop.json` (D4, anchor
- * — always exempt from piWorkDir relocation) from the check.
+ * Excludes guide.md (always overwritten) and the anchor config files
+ * (`.pi/pipeline_loop.json` / `.pi/pipeline_loop_job.json`, always exempt from
+ * piWorkDir relocation) from the check.
  */
 function countExistingFiles(templateFiles: string[], targetDir: string): number {
   let count = 0;
   for (const relPath of templateFiles) {
     // Skip guide.md — it's always overwritten, not checked
     if (relPath === "guide.md") continue;
-    // Anchor lives at .pi/pipeline_loop.json (D4); a convenience copy may also exist at project root
-    if (relPath === "pipeline_loop.json") continue;
+    // Anchors live at .pi/ (D4); a convenience copy may also exist at project root
+    if (ANCHOR_CONFIG_FILES.has(relPath)) continue;
     const targetPath = path.join(targetDir, relPath);
     if (fs.existsSync(targetPath)) {
       count++;
@@ -222,11 +232,11 @@ async function executeDirBranch(
 
 /**
  * Returns the display path for a template file.
- * `pipeline_loop.json` lives at .pi/ (anchor — always shown as `.pi/pipeline_loop.json`);
+ * Anchor config files live at .pi/ (always shown as `.pi/<file>`);
  * all others live under the configured piWorkDir.
  */
 function displayPath(rel: string, piWorkDir: string): string {
-  if (rel === "pipeline_loop.json") return `${CONFIG_DIR_NAME}/${rel}`;
+  if (ANCHOR_CONFIG_FILES.has(rel)) return `${CONFIG_DIR_NAME}/${rel}`;
   return `${piWorkDir}/${rel}`;
 }
 
@@ -251,9 +261,10 @@ async function copyTemplateFiles(
 
     for (const relPath of templateFiles) {
       const srcPath = path.join(TEMPLATE_DIR, relPath);
-      // Anchor exception (D4): pipeline_loop.json always lands in .pi/ (CONFIG_DIR_NAME),
-      // not piWorkDir — the anchor path is unaffected by piWorkDir migration.
-      const destPath = relPath === "pipeline_loop.json"
+      // Anchor exception (D4): anchor config files always land in .pi/
+      // (CONFIG_DIR_NAME), not piWorkDir — the anchor path is unaffected by
+      // piWorkDir migration.
+      const destPath = ANCHOR_CONFIG_FILES.has(relPath)
         ? path.join(config.projectRoot, CONFIG_DIR_NAME, relPath)
         : path.join(targetDir, relPath);
 

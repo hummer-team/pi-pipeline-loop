@@ -37,6 +37,7 @@ import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp, shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
+import { normalizeMarkers } from "./auto-pipeline/clarify-anchors";
 import { AUDIT_THROTTLE_WINDOW_MS, CONFIRM_GATE_REASK_MAX, PIPELINE_TURN_SIGNATURES, TRANSIENT_RETRY_MAX } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
@@ -845,7 +846,10 @@ export function createAgentSettled(
       // - Unbound: audit `verify_completion_marker_unbound` + throttled ui.notify with escape hatch.
       // - Bound but pending: maintain existing silent semantics (168 decision).
       const marker = stageConfig.verify.completionMarker;
-      if (marker && !await precheckCompletionMarker(meta, marker, config.projectRoot)) {
+      // 221 Phase 0: `completionMarker` may be a bilingual alias array; an empty
+      // array is equivalent to "no precheck" (never truthy on its own).
+      const markerAliases = normalizeMarkers(marker);
+      if (markerAliases.length > 0 && !await precheckCompletionMarker(meta, markerAliases, config.projectRoot)) {
         if (!meta.requirementDoc) {
           // Phase 3 (171): settle-retry binding — at settle time, first user message
           // must be on disk. Try to extract and bind the requirement doc path.
@@ -868,7 +872,7 @@ export function createAgentSettled(
               await writeAuditLog("verify_completion_marker_unbound", {
                 pipelineId: meta.pipelineId,
                 stage: meta.currentStage,
-                marker,
+                marker: markerAliases.join(", "),
               });
               if (shouldNotifyAndStamp(meta, "lastUnboundNotifiedAt", AUDIT_THROTTLE_WINDOW_MS)) {
                 ctx.session.updateMeta({ lastUnboundNotifiedAt: Date.now() });
@@ -881,7 +885,7 @@ export function createAgentSettled(
             await writeAuditLog("verify_completion_marker_unbound", {
               pipelineId: meta.pipelineId,
               stage: meta.currentStage,
-              marker,
+              marker: markerAliases.join(", "),
             });
             return;
           }
@@ -894,7 +898,7 @@ export function createAgentSettled(
           await writeAuditLog("verify_completion_marker_pending", {
             pipelineId: meta.pipelineId,
             stage: meta.currentStage,
-            marker,
+            marker: markerAliases.join(", "),
           });
         }
         return;

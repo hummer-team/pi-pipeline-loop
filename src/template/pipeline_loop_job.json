@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "clarify": {
+    "assessment": {
+      "heading": ["## 需求评估", "## Requirement Assessment"]
+    },
+    "sections": {
+      "goal": ["## 目标", "## Goal"],
+      "scope": ["## 范围", "## Scope"],
+      "acceptance": ["## 验收标准", "## Acceptance Criteria"]
+    },
+    "ledger": {
+      "heading": ["## 组合决策台账", "## Decision Ledger"],
+      "eliminationMarkers": ["淘汰理由", "淘汰原因", "elimination reason"],
+      "conflictMarkers": ["冲突矩阵", "conflict matrix"]
+    },
+    "questions": {
+      "patterns": ["^##\\s*问题\\s+(\\d+)", "^##\\s*Question\\s+(\\d+)"]
+    },
+    "verdicts": {
+      "ready": ["ready", "已明确"],
+      "needsClarify": ["needs-clarify", "需澄清"]
+    }
+  }
+}

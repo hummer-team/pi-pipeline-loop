@@ -33,6 +33,8 @@ import type {
   WatchdogConfig,
 } from "../types";
 import { validateDecisionPolicy } from "./decision-policy/policy-config";
+import { loadClarifyProtocolConfig } from "./auto-pipeline/clarify-protocol-config";
+import { mergeCompletionMarkers, normalizeMarkerConfig } from "./auto-pipeline/clarify-anchors";
 import {
   CONFIG_DIR_NAME,
   PI_PREFIX,
@@ -1310,6 +1312,9 @@ function normalizeCycleKey(cycle: PipelineStage[]): string {
 
 export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig {
   const projectRoot = json.projectRoot || process.cwd();
+  // 221 Phase 0: OPTIONAL clarify protocol anchors (absent ⇒ undefined, so the
+  // human path and every existing config-shape assertion stay untouched).
+  const clarifyProtocol = loadClarifyProtocolConfig(projectRoot);
   // Validate piWorkDir once (dual insurance with loadJsonConfig — handles the
   // case where callers construct PipelineJsonConfig directly, bypassing loadJsonConfig).
   const piWorkDir = parsePiWorkDir(json.piWorkDir);
@@ -1375,7 +1380,17 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
             ),
             mode: parseVerifyMode(jsonStage.verify.mode),
             selfVerifySkip: jsonStage.verify.selfVerifySkip ?? false,
-            completionMarker: jsonStage.verify.completionMarker,
+            // 221 Phase 0: the clarify stage additionally absorbs the job-JSON
+            // `modelConfirm` aliases (additive only — aliases never enable the
+            // precheck on their own). Empty arrays normalize to undefined.
+            completionMarker: normalizeMarkerConfig(
+              stageName === "clarify"
+                ? mergeCompletionMarkers(
+                    jsonStage.verify.completionMarker,
+                    clarifyProtocol?.modelConfirm,
+                  )
+                : jsonStage.verify.completionMarker,
+            ),
             // 210 Phase 0: commit-proof switch; attached ONLY when configured
             // so unconfigured deep-equality assertions stay untouched.
             ...parseRequireCommitProofEntry(jsonStage.verify.requireCommitProof),
@@ -1554,5 +1569,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     // configured (same optional-field convention — deep-equality config-shape
     // assertions must not see an empty object).
     ...(designReviewConfig ? { designReview: designReviewConfig } : {}),
+    // 221 Phase 0: clarify protocol anchors; attached ONLY when the optional
+    // `.pi/pipeline_loop_job.json` declares at least one key.
+    ...(clarifyProtocol ? { clarifyProtocol } : {}),
   };
 }
