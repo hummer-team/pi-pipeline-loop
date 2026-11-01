@@ -41,6 +41,12 @@ function jobYaml(
   const lines = [
     `version: 1`,
     `enabled: ${extra?.enabled ?? true}`,
+    // 220 C-2: these orchestration tests strip every `verify` block (the runner
+    // does not verify), so the `assisted` tier precondition (design-review must
+    // be a verify stage) would reject the job before the start. `rule` is the
+    // tier that does not require it; the precondition itself is pinned by
+    // `tier-precondition.test.ts`.
+    `tier: rule`,
     `docs:`,
     `  list:`,
   ];
@@ -165,7 +171,7 @@ describe("runner — fail fast", () => {
 });
 
 describe("runner — start failure handling", () => {
-  it("missing document → doc failed, sidecar stopped (no running), lock released", async () => {
+  it("missing document → evidence gate fails, doc failed, sidecar stopped, lock released", async () => {
     writeJob(jobYaml(["docs/design/missing.md"]));
     const { ctx } = makeCtx();
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
@@ -174,7 +180,9 @@ describe("runner — start failure handling", () => {
     const state = readJobState(ROOT, JOB_ID)!;
     expect(state.status).toBe("failed");
     expect(state.docs[0]?.status).toBe("failed");
-    expect(state.docs[0]?.failReason).toContain("File not found");
+    // 220 D5: the requirement must exist BEFORE the pipeline starts, so the
+    // failure is the evidence gate (not the downstream "File not found").
+    expect(state.docs[0]?.failReason).toContain("start_stage_evidence_missing:requirement");
     expect(state.docIndex).toBe(0); // never advanced by a failed start
     expect(isAutoJobActive()).toBe(false);
     expect(audits).toContain("pipeline_auto_stop");

@@ -99,6 +99,8 @@ describe("soft stop — onFailure: continue", () => {
     writeJobYaml([
       "version: 1",
       "enabled: true",
+      // 220 C-2: the harness config has no verify blocks ⇒ `rule` tier.
+      "tier: rule",
       "docs:",
       "  list:",
       `    - doc: ${HARNESS_DOCS[0]}`,

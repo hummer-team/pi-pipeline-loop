@@ -30,6 +30,9 @@ const DEAD_PID = 4194303;
 const JOB_YAML = [
   "version: 1",
   "enabled: true",
+  // 220 C-2: `makeTestConfig()` ships no verify blocks ⇒ the `assisted` tier
+  // precondition (design-review must verify) would reject before the start.
+  "tier: rule",
   "docs:",
   "  list:",
   "    - doc: docs/design/missing.md",
@@ -168,9 +171,12 @@ describe("pipeline-auto — scan fallback (no --job)", () => {
     await writeRunningSidecar("alpha");
     const result = await runPipelineAuto(config(), { next: true }, ctxStub());
     // The doc file is absent, so the start fails fast — proving alpha was
-    // resolved by the scan and reached the runner.
+    // resolved by the scan and reached the runner. 220 D5: the requirement is
+    // checked by the evidence gate BEFORE the pipeline starts.
     expect(result.success).toBe(false);
-    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain("File not found");
+    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain(
+      "start_stage_evidence_missing:requirement",
+    );
   });
 });
 
@@ -182,8 +188,11 @@ describe("pipeline-auto — M8 token resolution", () => {
 
     const result = await runPipelineAuto(config(), { next: true, job: "alpha" }, ctxStub());
 
-    // Reclaim happened (no stale_token/busy) and the run reached the dispatch.
-    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain("File not found");
+    // Reclaim happened (no stale_token/busy) and the run reached the dispatch
+    // (220 D5: the evidence gate rejects the absent requirement first).
+    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain(
+      "start_stage_evidence_missing:requirement",
+    );
     expect(audits).toContain("pipeline_auto_start");
     // The stale holder was reclaimed with a NEW token.
     await Promise.resolve();
@@ -219,6 +228,8 @@ describe("pipeline-auto — M8 token resolution", () => {
       ctxStub(),
     );
 
-    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain("File not found");
+    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain(
+      "start_stage_evidence_missing:requirement",
+    );
   });
 });

@@ -54,7 +54,10 @@ function writeFile(rel: string, text: string): void {
 
 function appendJobYaml(extra: string): void {
   const jobPath = path.join(harness.projectRoot, "docs", "jobs", "alpha.yaml");
-  fs.writeFileSync(jobPath, `${HARNESS_JOB_YAML}\n${extra}\n`, "utf8");
+  // The extra block REPLACES any harness default on the same top-level key
+  // (`tier:`), so the YAML never carries a duplicate key.
+  const base = HARNESS_JOB_YAML.split("\n").filter((line) => !/^tier:/.test(line));
+  fs.writeFileSync(jobPath, `${base.join("\n")}\n${extra}\n`, "utf8");
 }
 
 function coordinatorCtx(meta: SessionMeta): CoordinatorContext {

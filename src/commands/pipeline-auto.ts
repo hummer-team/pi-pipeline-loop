@@ -47,6 +47,10 @@ import {
   type AutoJobSnapshot,
 } from "../core/auto-pipeline/config-overlay";
 import { NEW_COMMIT_RE } from "../core/naming/doc-naming";
+// 220 D5: start-stage resolution + the evidence gate in front of every start.
+import { derivePlanDocPath, checkStartStageEvidence } from "../core/auto-pipeline/start-stage-evidence";
+import { resolveStartStage } from "../core/auto-pipeline/resolve-start-stage";
+import { planDocHasConfirmMarker } from "../core/verify-path-resolver";
 // 219 Phase 5: the ONE terminal transaction (release + audit + rollback + unlock).
 import { finalizeJob, handleDocFailure } from "../core/auto-pipeline/finalize";
 import { auditAutoDiagnostic, notifyAuto } from "../core/auto-pipeline/diagnostics";
@@ -456,6 +460,24 @@ export async function startAutoJob(input: {
   const job = parsed.job;
   if (!job.enabled) return { success: false, error: `auto job "${jobId}" is disabled (enabled: false)` };
 
+  // 220 C-2/B15: `tier: "assisted"` promises the full comparison, which only the
+  // design-review verification stage can enforce. Judged at the COMMAND layer
+  // (never in `parseAutoJob`, which stays a pure parser) and BEFORE the
+  // lock/sidecar, so a misconfigured job leaves no state behind. The overlay
+  // only maps decision keys and never enables a stage, so this is equivalent to
+  // judging it right after `applyOverlay` — and strictly earlier is safer.
+  if (job.tier === "assisted" && !config.stages["design-review"]?.verify?.require) {
+    await safeWriteAuditLog("pipeline_auto_tier_rejected", {
+      jobId,
+      tier: job.tier,
+      reason: "design_review_stage_not_enabled",
+    }, "warn");
+    return {
+      success: false,
+      error: `auto job "${jobId}" rejected: tier "assisted" requires the design-review stage to be enabled`,
+    };
+  }
+
   if (input.continuation === true) {
     const outcome = await rotateSessionForContinuation({ config, ctx, job, jobId, ...(token ? { token } : {}) });
     if (outcome) return outcome;
@@ -565,14 +587,43 @@ async function startPendingDoc(input: {
     reused: String(existing !== undefined),
   });
 
-  const ui = createPipelineUI(config);
-  const started = await startNewPipeline(
-    ctx,
+  // 220 D5: the evidence gate runs BEFORE `startNewPipeline`, so a document can
+  // never be attached to another document's plan/commit/report (no fallback to
+  // an earlier stage is ever attempted).
+  const derivedPlan = target.doc.doc.endsWith(".md") ? derivePlanDocPath(target.doc.doc) : null;
+  // A plan path only exists as a FACT when the file does: an absent plan must
+  // derive `clarify`, not "a plan without a confirmation marker" (= `plan`).
+  const planExists = derivedPlan !== null && fs.existsSync(pathMod.resolve(projectRoot, derivedPlan));
+  const facts = {
+    planPath: planExists ? derivedPlan : null,
+    planConfirmed:
+      derivedPlan !== null &&
+      planExists &&
+      (await planDocHasConfirmMarker(pathMod.resolve(projectRoot, derivedPlan))),
+  };
+  const requestedStage = target.doc.startStage ?? job.defaults.startStage;
+  const { stage, derivation } = resolveStartStage(requestedStage, facts);
+  const evidence = await checkStartStageEvidence({
     config,
-    ui,
-    target.doc.doc,
-    (target.doc.startStage ?? "clarify") as PipelineStage,
-  );
+    meta: { requirementDoc: target.doc.doc },
+    startStage: stage,
+    projectRoot,
+  });
+  if (!evidence.ok) {
+    await safeWriteAuditLog("pipeline_auto_start_stage_rejected", {
+      jobId,
+      doc: target.doc.doc,
+      startStage: stage,
+      missing: evidence.missing,
+      onFailure: job.docs.onFailure,
+    }, "warn");
+    // B8: the missing evidence kind is encoded in `reason` — the shared failure
+    // transaction's signature is NOT extended.
+    return failDoc(input, target.index, `start_stage_evidence_missing:${evidence.missing}`);
+  }
+
+  const ui = createPipelineUI(config);
+  const started = await startNewPipeline(ctx, config, ui, target.doc.doc, stage);
   if (!started.success) {
     return failDoc(input, target.index, started.error ?? "start_failed");
   }
@@ -593,10 +644,14 @@ async function startPendingDoc(input: {
   state.docs[target.index]!.pipelineId = started.pipelineId;
   state.docs[target.index]!.status = "running";
   state.docs[target.index]!.updatedAt = Date.now();
+  // 220 D5: the evidence the start stage was verified against (B7) — same
+  // resolved value that was handed to `startNewPipeline` (H4 consistency).
+  state.docs[target.index]!.startStageBasis = evidence.basis;
+  state.docs[target.index]!.startStageDerivation = derivation;
   // M3: `docIndex` = the doc CURRENTLY executing — advanced only here.
   state.docIndex = target.index;
   // H4: the startup stage is the ONLY other `lastStage` write besides settle.
-  noteDocStage(state, target.index, (target.doc.startStage ?? "clarify") as PipelineStage, Date.now());
+  noteDocStage(state, target.index, stage, Date.now());
   // Review round 2 (issue 3): the outstanding continuation hop is ANSWERED —
   // the reconcile must never fire for a doc that really started.
   clearPendingContinuation(state);

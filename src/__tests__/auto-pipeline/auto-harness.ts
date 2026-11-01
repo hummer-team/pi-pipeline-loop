@@ -31,6 +31,10 @@ export const HARNESS_DOCS = ["docs/design/a.md", "docs/design/b.md"];
 export const HARNESS_JOB_YAML = [
   "version: 1",
   "enabled: true",
+  // 220 C-2: the harness config strips every `verify` block (transaction tests
+  // never verify), and the `assisted` tier precondition requires the
+  // design-review verify stage — `rule` is the tier that does not.
+  "tier: rule",
   "docs:",
   "  list:",
   `    - doc: ${HARNESS_DOCS[0]}`,

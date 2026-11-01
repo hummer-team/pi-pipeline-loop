@@ -38,6 +38,8 @@ import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize"
 const JOB_YAML = [
   "version: 1",
   "enabled: true",
+  // 220 C-2: `makeTestConfig()` ships no verify blocks ⇒ `rule` tier.
+  "tier: rule",
   "docs:",
   "  list:",
   "    - doc: docs/design/a.md",
