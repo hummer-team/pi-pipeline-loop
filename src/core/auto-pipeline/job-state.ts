@@ -142,7 +142,12 @@ export interface AutoJobState {
     at: number;
     /** The doc index that was current when the dispatch was made. */
     docIndex: number;
-    channel: "dispatch" | "new_session";
+    /**
+     * `new_session` / `dispatch`: the pre-221 channels (kept readable).
+     * `session_start` (221 Phase 4): a new session was opened and will start the
+     * pending doc on `session_start` — no command is injected any more.
+     */
+    channel: "dispatch" | "new_session" | "session_start";
   };
 }
 
@@ -357,7 +362,7 @@ export function noteDocStage(state: AutoJobState, docIndex: number, stage: Pipel
  */
 export function markPendingContinuation(
   state: AutoJobState,
-  channel: "dispatch" | "new_session",
+  channel: "dispatch" | "new_session" | "session_start",
   now: number,
 ): void {
   state.pendingContinuation = { at: now, docIndex: state.docIndex, channel };

@@ -211,7 +211,7 @@ describe("pipeline-auto — M8 token resolution", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("token mismatch");
+    expect(result.error).toContain("check .pi/auto_pipeline/lock.json");
     const lock = readJobLock(ROOT);
     expect(lock?.pid).toBe(1);
     expect(lock?.token).toBe("live-token");
@@ -231,5 +231,45 @@ describe("pipeline-auto — M8 token resolution", () => {
     expect(readJobState(ROOT, "alpha_loop")?.docs[0]?.failReason).toContain(
       "start_stage_evidence_missing:requirement",
     );
+  });
+});
+
+describe("pipeline-auto — 221 Phase 4 error copy", () => {
+  it("--job without the _loop suffix points at the naming rule", async () => {
+    const result = await runPipelineAuto(config(), { job: "foo" }, ctxStub());
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("job files must be named <name>_loop.yaml");
+  });
+
+  it("a live foreign holder is actionable and never mentions a token", async () => {
+    writeJobFile("alpha_loop");
+    await writeRunningSidecar("alpha_loop");
+    writeRawLock(1, "live-token");
+
+    const result = await runPipelineAuto(
+      config(),
+      { next: true, job: "alpha_loop" },
+      ctxStub(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("held by another process (pid 1)");
+    expect(result.error).not.toContain("token");
+  });
+
+  it("a lock mismatch points at the lock file (no token to paste)", async () => {
+    writeJobFile("alpha_loop");
+    await writeRunningSidecar("alpha_loop");
+    writeRawLock(1, "live-token");
+
+    const result = await runPipelineAuto(
+      config(),
+      { next: true, job: "alpha_loop", token: "other-token" },
+      ctxStub(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("check .pi/auto_pipeline/lock.json");
+    expect(result.error).not.toContain("--token");
   });
 });

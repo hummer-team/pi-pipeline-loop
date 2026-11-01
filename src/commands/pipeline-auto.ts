@@ -4,10 +4,11 @@
  * automatic pipelines.
  *
  * Frozen decisions (219_Feat.md 6.5 #1/#2/#11/#13):
- * - No user-supplied path is ever accepted: the menu scans `docs/jobs/*.yaml`
+ * - No user-supplied path is ever accepted: the menu scans `docs/jobs/*_loop.yaml`
  *   and `--job` takes a jobId only (a separator is rejected).
- * - `--next` / `--job` / `--token` are INTERNAL (chained continuation); the
- *   token resolution order is the M8 one from Phase 2.
+ * - 221 Phase 4: the chained continuation is ONE minimal `/pipeline-auto --next`
+ *   (no `--job`, no `--token`); the job id + lock token live in `lock.json` only.
+ *   `--token` is still PARSED for backward compatibility.
  * - The runner starts ONE document per invocation: stage progression is owned
  *   by the existing hook chain, never polled here.
  * - Ordering invariants: lock + "another job active" are checked BEFORE
@@ -30,6 +31,7 @@ import {
   createJobState,
   isValidJobId,
   listRunningJobs,
+  markPendingContinuation,
   nextPendingDoc,
   noteDocStage,
   readJobState,
@@ -197,7 +199,10 @@ function resolveInternalTarget(
 ): { ok: true; jobId: string } | { ok: false; error: string } {
   if (jobId) {
     if (!fs.existsSync(resolveJobStatePath(config.projectRoot, jobId))) {
-      return { ok: false, error: `auto job state not found: ${jobId}` };
+      return {
+        ok: false,
+        error: `auto job state not found: ${jobId} — job files must be named <name>_loop.yaml`,
+      };
     }
     return { ok: true, jobId };
   }
@@ -351,14 +356,22 @@ async function resolveDrift(
  * @returns the final result when the call is DONE (rotated, or stopped), or
  *   `null` when the caller must continue starting the doc in THIS session.
  */
+/**
+ * 221 Phase 4: rotate into a NEW session for the chained continuation.
+ *
+ * The new session starts the pending doc on `session_start` (sidecar pending
+ * record + lock ownership), so this helper injects NO command: it only marks
+ * the pending continuation, opens the session and audits. A cancelled/failed
+ * hop clears the pending record and lets the caller fall back to the
+ * same-session serial (or to `session_fail` with `onSessionFail: "stop"`).
+ */
 async function rotateSessionForContinuation(input: {
   config: PipelineConfig;
   ctx: AutoPipelineCommandCtx;
   job: AutoJobConfig;
   jobId: string;
-  token?: string;
 }): Promise<AutoPipelineResult | null> {
-  const { config, ctx, job, jobId, token } = input;
+  const { config, ctx, job, jobId } = input;
   if (typeof ctx.newSession !== "function") return null;
   if (!job.chain.newSession) return null;
 
@@ -366,28 +379,50 @@ async function rotateSessionForContinuation(input: {
   const ranADocument = meta?.autoJob !== undefined || meta?.currentStage === "completed";
   if (!ranADocument) return null;
 
-  const command = [
-    "/pipeline-auto",
-    "--next",
-    "--job",
-    jobId,
-    ...(token ? ["--token", token] : []),
-  ].join(" ");
+  // No sidecar → nothing to hand over; let the caller start in this session.
+  const state = readJobState(config.projectRoot, jobId);
+  if (!state) return null;
+
+  markPendingContinuation(state, "session_start", Date.now());
+  try {
+    await writeJobState(config.projectRoot, state);
+  } catch (err) {
+    auditAutoDiagnostic("chain_pending_persist_failed", `Auto job "${jobId}": continuation record could not be written.`, {
+      jobId,
+      error: String(err),
+    }, "error");
+  }
+
+  const clearPending = async (): Promise<void> => {
+    const fresh = readJobState(config.projectRoot, jobId);
+    if (!fresh || !clearPendingContinuation(fresh)) return;
+    try {
+      await writeJobState(config.projectRoot, fresh);
+    } catch {
+      // The hop already failed; a stale record is reconciled later.
+    }
+    await safeWriteAuditLog(
+      "pipeline_auto_chain",
+      { jobId, result: "pending_cleared_on_cancel" },
+      "warn",
+    );
+  };
 
   let cancelled = false;
   try {
     const result = (await ctx.newSession({
-      withSession: async (replaced) => {
-        const send = (replaced as {
-          sendUserMessage?: (content: string, opts?: Record<string, unknown>) => unknown;
-        }).sendUserMessage;
-        if (typeof send === "function") {
-          await Promise.resolve(send.call(replaced, command, { expandPromptTemplates: true }));
-        }
+      withSession: async () => {
+        // 221: audit-only. The fresh `session_start` starts the doc.
+        await safeWriteAuditLog("pipeline_auto_chain", {
+          jobId,
+          result: "new_session",
+          channel: "session_start",
+        });
       },
     })) as { cancelled?: boolean } | undefined;
     cancelled = result?.cancelled === true;
   } catch (err) {
+    await clearPending();
     auditAutoDiagnostic("chain_new_session_failed", `Auto job "${jobId}": session rotation failed in the command host.`, {
       jobId,
       error: String(err),
@@ -404,6 +439,7 @@ async function rotateSessionForContinuation(input: {
     return { success: true, message: `Auto job "${jobId}": next doc continued in a new session.` };
   }
 
+  await clearPending();
   await safeWriteAuditLog(
     "pipeline_auto_chain",
     { jobId, result: "cancelled", channel: "command_new_session" },
@@ -491,23 +527,32 @@ export async function startAutoJob(input: {
   }
 
   if (input.continuation === true) {
-    const outcome = await rotateSessionForContinuation({ config, ctx, job, jobId, ...(token ? { token } : {}) });
+    const outcome = await rotateSessionForContinuation({ config, ctx, job, jobId });
     if (outcome) return outcome;
   }
 
-  // M8 token resolution: an explicit token means "reclaim if needed"; the lock
-  // module decides between adopt / stale_token / busy.
+  // 221 Phase 4: no token is required any more — a same-process lock is
+  // adopted, another live process is busy, a dead holder is reclaimed.
   const lock = acquireJobLock({
     projectRoot,
     jobId,
-    ...(token ? { token } : {}),
-    ...(token ? { takeover: true } : {}),
+    ...(token ? { token, takeover: true } : {}),
   });
   if (!lock.ok) {
-    if (lock.reason === "stale_token") {
-      return { success: false, error: `auto job lock token mismatch for "${jobId}" — run /pipeline-auto --next --job ${jobId} --token <token>` };
+    // Error copy is split by CAUSE (F8): a live holder is actionable, a token/
+    // lock mismatch points at the lock file. Neither mentions a token to paste.
+    if (lock.reason === "busy") {
+      return {
+        success: false,
+        error:
+          `auto job "${jobId}" is held by another process (pid ${lock.holder.pid}); ` +
+          "wait or continue there",
+      };
     }
-    return { success: false, error: `auto job busy: ${lock.holder.jobId} (pid ${lock.holder.pid})` };
+    return {
+      success: false,
+      error: "auto job lock could not be acquired; check .pi/auto_pipeline/lock.json",
+    };
   }
 
   const state = readJobState(projectRoot, jobId) ?? createJobState({

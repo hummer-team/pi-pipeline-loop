@@ -1,0 +1,244 @@
+/**
+ * 221 Phase 4: `session_start` auto-start of a pending chained continuation.
+ *
+ * Frozen rules:
+ * - only the lock-owning process may start (other/dead pid ⇒ no start, no steal);
+ * - an active pipeline in this session is never preempted;
+ * - a changed job file is drift → terminal `job_drift`, never a start;
+ * - failure BEFORE the lock keeps the pending record retryable; failure AFTER
+ *   the lock runs `session_fail`;
+ * - two session starts in one process never double-start.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { makeTestMeta } from "../helpers";
+import {
+  createAutoHarness,
+  createSessionStub,
+  HARNESS_DOCS,
+  HARNESS_JOB_ID,
+  HARNESS_JOB_YAML,
+  type AutoHarness,
+} from "./auto-harness";
+import {
+  __resetSessionContinuationForTests,
+  resumePendingContinuationOnSessionStart,
+} from "../../core/auto-pipeline/session-continuation";
+import {
+  __resetAutoJobLockForTests,
+  acquireJobLock,
+  isAutoJobActive,
+} from "../../core/auto-pipeline/config-overlay";
+import { readJobState, writeJobState, type AutoJobState } from "../../core/auto-pipeline/job-state";
+import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
+import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+
+let harness: AutoHarness;
+let audits: string[];
+let notified: string[];
+let errorSpy: ReturnType<typeof spyOn>;
+
+beforeEach(() => {
+  __resetAutoJobLockForTests();
+  __resetFinalizeStateForTests();
+  __resetSessionContinuationForTests();
+  audits = [];
+  notified = [];
+  errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
+  __setSafeWriteAuditLogOverride(async (stage, message) => {
+    audits.push(`${stage} ${JSON.stringify(message ?? {})}`);
+  });
+  harness = createAutoHarness();
+});
+
+afterEach(() => {
+  __setSafeWriteAuditLogOverride(null);
+  errorSpy.mockRestore();
+  __resetAutoJobLockForTests();
+  __resetFinalizeStateForTests();
+  __resetSessionContinuationForTests();
+  harness.dispose();
+});
+
+/** A running sidecar whose first doc finished and whose hop is pending. */
+async function installPending(): Promise<AutoJobState> {
+  const state = await harness.install();
+  // The fresh session has no in-process lock ownership: the lock FILE names
+  // this process, and `startAutoJob` adopts it (production `session_start`).
+  __resetAutoJobLockForTests();
+  state.docs[0]!.status = "completed";
+  state.docs[0]!.finalizeKey = `${HARNESS_JOB_ID}:0:completed`;
+  state.pendingContinuation = { at: Date.now(), docIndex: 0, channel: "session_start" };
+  await writeJobState(harness.root, state);
+  return state;
+}
+
+function sessionCtx(currentStage: "completed" | "develop" = "completed") {
+  const stub = createSessionStub(makeTestMeta({ currentStage }));
+  return {
+    stub,
+    ctx: {
+      session: {
+        getMeta: () => stub.session.getMeta(),
+        updateMeta: (patch: Parameters<typeof stub.session.updateMeta>[0]) => {
+          const next = stub.session.updateMeta(patch);
+          return next;
+        },
+      },
+      ui: {
+        notify: (message: string) => {
+          notified.push(message);
+        },
+      },
+    },
+  };
+}
+
+function writeLock(pid: number, jobId = HARNESS_JOB_ID): void {
+  const lockPath = path.join(harness.root, ".pi", "auto_pipeline", "lock.json");
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({ token: "t", jobId, pid, startedAt: 1 }, null, 2), "utf8");
+}
+
+describe("session_start continuation", () => {
+  it("starts the pending doc once and clears the pending record", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(true);
+
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(state.docIndex).toBe(1);
+    expect(state.docs[1]?.status).toBe("running");
+    expect(state.pendingContinuation).toBeUndefined();
+    expect(audits.some((line) => line.includes("session_start_auto"))).toBe(true);
+  });
+
+  it("does not double-start on two concurrent session starts", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const { ctx } = sessionCtx();
+
+    const [first, second] = await Promise.all([
+      resumePendingContinuationOnSessionStart(ctx as never, harness.config),
+      resumePendingContinuationOnSessionStart(ctx as never, harness.config),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docIndex).toBe(1);
+  });
+
+  it("does not start when the lock belongs to another process", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    writeLock(process.pid + 1);
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+  });
+
+  it("does not reclaim a DEAD holder's lock (manual /pipeline-auto --next does)", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    writeLock(4_194_303);
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+  });
+
+  it("never preempts an active pipeline in this session", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const { ctx } = sessionCtx("develop");
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+  });
+
+  it("never starts when another job already owns this process", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    // Another project root acquires beta in THIS process → held lock is beta.
+    const other = createAutoHarness();
+    try {
+      const lock = acquireJobLock({ projectRoot: other.root, jobId: "beta" });
+      expect(lock.ok).toBe(true);
+      const { ctx } = sessionCtx();
+
+      expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+      expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+    } finally {
+      other.dispose();
+      __resetAutoJobLockForTests();
+    }
+  });
+
+  it("a changed job file is drift → terminal job_drift, no start", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    harness.writeBrokenJob();
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(true);
+
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(state.status).toBe("stopped");
+    expect(state.stopReason).toBe("job_drift");
+    expect(state.docs[1]?.status).toBe("pending");
+    expect(isAutoJobActive()).toBe(false);
+    expect(audits.some((line) => line.includes("job_drift"))).toBe(true);
+  });
+
+  it("failure BEFORE the lock keeps the pending record retryable", async () => {
+    const state = await installPending();
+    // A parse-visible-but-invalid job whose hash MATCHES the sidecar keeps the
+    // drift gate quiet, so the failure happens inside `startAutoJob` (pre-lock).
+    const invalid = "version: 1\nenabled: true\ndocs:\n  list: []\n";
+    fs.writeFileSync(path.join(harness.root, "docs", "jobs", `${HARNESS_JOB_ID}.yaml`), invalid, "utf8");
+    state.jobHash = hashJobBytes(invalid);
+    await writeJobState(harness.root, state);
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(true);
+
+    const after = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(after.status).toBe("running");
+    expect(after.pendingContinuation).toBeDefined();
+    expect(audits.some((line) => line.includes("pending_start_retryable"))).toBe(true);
+    expect(notified.some((message) => message.includes("/pipeline-auto --next to retry"))).toBe(true);
+    expect(isAutoJobActive()).toBe(false);
+  });
+
+  it("failure AFTER the lock runs the terminal transaction (session_fail)", async () => {
+    await installPending();
+    // Valid job, but the next document does not exist → start fails after the
+    // lock was adopted by `startAutoJob`.
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(true);
+
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(state.status).toBe("failed");
+    expect(state.stopReason).toBe("session_fail");
+    expect(isAutoJobActive()).toBe(false);
+  });
+
+  it("does nothing without a pending continuation", async () => {
+    const state = await harness.install();
+    state.docs[0]!.status = "completed";
+    await writeJobState(harness.root, state);
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+  });
+
+  it("keeps the shipped harness job file byte-stable (hash helper sanity)", () => {
+    expect(hashJobBytes(HARNESS_JOB_YAML)).toBe(hashJobBytes(HARNESS_JOB_YAML));
+  });
+});

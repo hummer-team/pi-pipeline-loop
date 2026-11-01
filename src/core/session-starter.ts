@@ -52,6 +52,9 @@ import { resolveContinuityState, isAutoJobActive } from "./auto-pipeline/config-
 // 219 Phase 5 (review round 2 issue 3): a lost continuation dispatch is reconciled
 // here too, so a job can never hang on the dispatch channel.
 import { reconcilePendingContinuation } from "./auto-pipeline/finalize";
+// 221 Phase 4: the fresh session starts a pending chained continuation itself
+// (no second injected command).
+import { resumePendingContinuationOnSessionStart } from "./auto-pipeline/session-continuation";
 
 // ─── Template drift one-shot check (Phase 6 / 170) ────────────────────────────
 
@@ -639,7 +642,11 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
       // document that was just (re)started or stopped.
       let autoStartOwned = false;
       if (!detectSessionRole(ctx).isChild) {
-        autoStartOwned = await reconcilePendingContinuation(ctx as never, config);
+        // 221 Phase 4: the fresh session starts the pending continuation itself
+        // (it owns the lock and the sidecar record). A reconcile runs only when
+        // no pending start was owned by this session-start.
+        autoStartOwned = await resumePendingContinuationOnSessionStart(ctx as never, config);
+        if (!autoStartOwned) autoStartOwned = await reconcilePendingContinuation(ctx as never, config);
       }
 
       // ─── 219 Phase 6: continuity judgement (owner sessions only) ──────────────

@@ -297,11 +297,15 @@ export interface ChainRotationResult {
   reason?: "cancelled" | "failed" | "no_channel";
 }
 
-/** Build the internal continuation command (jobId + lock token, never a path). */
-function buildChainCommand(jobId: string, token: string): string {
-  const parts = ["/pipeline-auto", "--next", "--job", jobId];
-  if (token) parts.push("--token", token);
-  return parts.join(" ");
+/**
+ * The internal continuation command.
+ *
+ * 221 Phase 4: ONE minimal command — no `--job` and no `--token`. The job id
+ * and the lock token only travel through `lock.json`; the new session finds the
+ * pending continuation through `session_start` and starts the doc itself.
+ */
+function buildChainCommand(): string {
+  return "/pipeline-auto --next";
 }
 
 /**
@@ -327,27 +331,63 @@ export async function rotateSessionForChain(
   jobId: string,
   opts: { projectRoot: string; state?: AutoJobState } = { projectRoot: "" },
 ): Promise<ChainRotationResult> {
-  const command = buildChainCommand(jobId, getActiveJobToken() ?? "");
+  const command = buildChainCommand();
+  const canRotate = typeof ctx.newSession === "function";
+  const canDispatch = typeof ctx.pi?.sendUserMessage === "function";
+
+  // 221 Phase 4: record the outstanding hop BEFORE any rotation. The new
+  // session starts the pending doc on `session_start`; nothing is injected into
+  // it, so the sidecar is the ONLY hand-over channel.
+  const persistPending = async (channel: "dispatch" | "session_start"): Promise<void> => {
+    if (!opts.state || !opts.projectRoot) return;
+    markPendingContinuation(opts.state, channel, Date.now());
+    try {
+      await writeJobState(opts.projectRoot, opts.state);
+    } catch (err) {
+      auditAutoDiagnostic("chain_dispatch_persist_failed", `Auto job "${jobId}": continuation record could not be written.`, {
+        jobId,
+        error: String(err),
+      }, "error");
+    }
+  };
+  const clearPending = async (): Promise<void> => {
+    if (!opts.state || !opts.projectRoot) return;
+    if (!clearPendingContinuation(opts.state)) return;
+    try {
+      await writeJobState(opts.projectRoot, opts.state);
+    } catch {
+      // The rotation already failed; a stale record is reconciled later.
+    }
+    await safeWriteAuditLog(
+      "pipeline_auto_chain",
+      { jobId, result: "pending_cleared_on_cancel" },
+      "warn",
+    );
+  };
+
+  await persistPending(canRotate ? "session_start" : "dispatch");
 
   // ① Command-capable host: rotate directly. `withSession` runs in the NEW
-  // session, so the continuation command starts the doc there.
-  if (typeof ctx.newSession === "function") {
+  // session — it only writes the audit; the fresh `session_start` starts the
+  // doc there (221: no second injected command).
+  if (canRotate) {
     try {
-      const result = (await ctx.newSession({
-        withSession: async (replaced) => {
-          const send = (replaced as {
-            sendUserMessage?: (content: string, opts?: Record<string, unknown>) => unknown;
-          }).sendUserMessage;
-          if (typeof send === "function") {
-            await Promise.resolve(send.call(replaced, command, { expandPromptTemplates: true }));
-          }
+      const result = (await ctx.newSession!({
+        withSession: async () => {
+          await safeWriteAuditLog("pipeline_auto_chain", {
+            jobId,
+            result: "new_session",
+            channel: "session_start",
+          });
         },
       })) as { cancelled?: boolean } | undefined;
       if (result?.cancelled === true) {
+        await clearPending();
         return { rotated: false, channel: "new_session", reason: "cancelled" };
       }
       return { rotated: true, channel: "new_session" };
     } catch (err) {
+      await clearPending();
       auditAutoDiagnostic("chain_new_session_failed", `Auto job "${jobId}": session rotation failed.`, {
         jobId,
         error: String(err),
@@ -359,32 +399,12 @@ export async function rotateSessionForChain(
 
   // ② Hook host: no replacement API — dispatch the internal command; the
   // command handler owns `ctx.newSession` (Phase 4 §4 ctx widening).
-  if (typeof ctx.pi?.sendUserMessage === "function") {
-    // Record the outstanding hop BEFORE the command leaves this process: the
-    // dispatch has no callback, so the sidecar is the only evidence left when
-    // the host silently drops the message.
-    if (opts.state && opts.projectRoot) {
-      markPendingContinuation(opts.state, "dispatch", Date.now());
-      try {
-        await writeJobState(opts.projectRoot, opts.state);
-      } catch (err) {
-        auditAutoDiagnostic("chain_dispatch_persist_failed", `Auto job "${jobId}": continuation record could not be written.`, {
-          jobId,
-          error: String(err),
-        }, "error");
-      }
-    }
+  if (canDispatch) {
     try {
-      ctx.pi.sendUserMessage(command, { expandPromptTemplates: true });
+      ctx.pi!.sendUserMessage!(command, { expandPromptTemplates: true });
       return { rotated: true, channel: "dispatch" };
     } catch (err) {
-      if (opts.state && opts.projectRoot && clearPendingContinuation(opts.state)) {
-        try {
-          await writeJobState(opts.projectRoot, opts.state);
-        } catch {
-          // The dispatch already failed; a stale record is reconciled later.
-        }
-      }
+      await clearPending();
       auditAutoDiagnostic("chain_dispatch_failed", `Auto job "${jobId}": continuation command could not be dispatched.`, {
         jobId,
         error: String(err),
@@ -394,6 +414,8 @@ export async function rotateSessionForChain(
     }
   }
 
+  // No channel at all: the record must not survive a hop that never existed.
+  await clearPending();
   return { rotated: false, channel: "none", reason: "no_channel" };
 }
 

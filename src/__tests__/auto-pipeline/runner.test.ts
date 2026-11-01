@@ -219,8 +219,9 @@ describe("runner — start failure handling", () => {
     expect(state.docIndex).toBe(0);
     expect(meta()?.requirementDoc).toBeUndefined();
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]).toContain(`/pipeline-auto --next --job ${JOB_ID}`);
-    expect(dispatched[0]).toContain("--token");
+    // 221 Phase 4: the continuation command carries no job id and no token.
+    expect(dispatched[0]).toBe("/pipeline-auto --next");
+    expect(dispatched[0]).not.toContain("--token");
   });
 
   it("all documents failing with onFailure:stop stops the job immediately", async () => {

@@ -54,9 +54,10 @@ describe("chain — success path", () => {
     harness.writeDoc(HARNESS_DOCS[1]!);
     const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
     let calls = 0;
+    const sent: string[] = [];
     stub.setNewSession(async ({ withSession }) => {
       calls += 1;
-      await withSession({ sendUserMessage: () => undefined });
+      await withSession({ sendUserMessage: (message: string) => sent.push(message) });
     });
 
     const result = await continueJobAfterCompleted({ ...stub, ...stub.withNewSession() }, harness.config, harness.job);
@@ -64,6 +65,10 @@ describe("chain — success path", () => {
     expect(calls).toBe(1);
     expect(result.skipped).toBe(false);
     expect(audits).toContain("pipeline_auto_chain");
+    // 221 Phase 4: NO second command is injected — the fresh session finds the
+    // pending continuation and starts it on `session_start`.
+    expect(sent).toHaveLength(0);
+    expect(harness.state()!.pendingContinuation?.channel).toBe("session_start");
     // The next doc does NOT start in this session (the new session owns it).
     expect(harness.state()!.docs[1]?.status).toBe("pending");
   });
@@ -97,8 +102,10 @@ describe("chain — success path", () => {
 
     expect(result.skipped).toBe(false);
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]).toContain(`/pipeline-auto --next --job ${HARNESS_JOB_ID}`);
-    expect(dispatched[0]).toContain("--token");
+    // 221 Phase 4: ONE minimal command — job id + token travel via lock.json.
+    expect(dispatched[0]).toBe("/pipeline-auto --next");
+    expect(dispatched[0]).not.toContain("--job");
+    expect(dispatched[0]).not.toContain("--token");
     // Never started in this session — the dispatched command owns the hop.
     expect(harness.state()!.docs[1]?.status).toBe("pending");
   });
@@ -121,6 +128,9 @@ describe("chain — success path", () => {
     expect(result.skipped).toBe(false);
     expect(harness.state()!.docs[1]?.status).toBe("running");
     expect(harness.state()!.docIndex).toBe(1);
+    // 221 Phase 4: a cancelled hop clears the pending record before the
+    // same-session fallback (the fallback start then runs without a stale hop).
+    expect(harness.state()!.pendingContinuation).toBeUndefined();
   });
 
   it("chain.onSessionFail:'stop' turns a refused hop into session_fail", async () => {
