@@ -12,8 +12,10 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
+import type { SessionMeta } from "../../types";
 import { makeTestConfig, makeTestMeta } from "../helpers";
 import { buildTaskContinuitySection } from "../../core/prompt-injector";
+import { createSessionStarter } from "../../core/session-starter";
 import { createJobState, writeJobState, type AutoJobState } from "../../core/auto-pipeline/job-state";
 import { acquireJobLock, __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
@@ -207,6 +209,35 @@ describe("prompt-injector — task continuity section", () => {
     const section = buildTaskContinuitySection(config(), meta)!;
     expect(section).not.toContain("Auto job:");
     expect(section).not.toContain("Remaining design-review");
+  });
+
+  it("a crash-adopted session (session_start seed) renders the sidecar stage", async () => {
+    // Review round 3 (issue 1): "delete meta, reopen" must produce the section.
+    // `session_start` adopts the sidecar identity (never creates a pipeline) so
+    // the dormant guard in `before_agent_start` no longer swallows the verdict.
+    await installRunningJob({ lastSettleAt: Date.now() - 60_000 });
+    __resetAutoJobLockForTests();
+    fs.rmSync(path.join(ROOT, ".pi", "auto_pipeline", "lock.json"), { force: true });
+
+    const meta: Record<string, unknown> = {};
+    const ctx = {
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Record<string, unknown>) => Object.assign(meta, patch),
+      },
+      ui: { notify: () => undefined, setStatus: () => undefined },
+    };
+    await createSessionStarter(config()).handler(ctx as never);
+
+    expect(meta.continuity).toBe("resume");
+    const section = buildTaskContinuitySection(config(), meta as unknown as SessionMeta)!;
+    expect(section).not.toBeNull();
+    expect(section).toContain("Decision: resume");
+    expect(section).toContain("Document: docs/design/a.md");
+    // H4: the stage comes from the sidecar's `lastStage` — never "<unknown>".
+    expect(section).toContain("Stage: review");
+    expect(section).not.toContain("<unknown>");
+    expect(section).not.toContain("no_interruption");
   });
 });
 

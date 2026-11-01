@@ -29,9 +29,9 @@ import { safeWriteAuditLog } from "../../utils/auditLog";
 import type { AutoJobConfig, FreezeAction } from "./job-schema";
 import type { AutoJobState } from "./job-state";
 import { writeJobState } from "./job-state";
-import { readActiveJobContext } from "./config-overlay";
+import { getActiveJobId, isAutoJobActive, readActiveJobContext } from "./config-overlay";
 import { auditAutoDecision } from "./auto-audit";
-import { auditAutoDiagnostic } from "./diagnostics";
+import { auditAutoDiagnostic, reportAutoFailure } from "./diagnostics";
 
 /** One resolved freeze action plus the precedence branch that produced it. */
 export interface ResolvedFreezeAction {
@@ -76,8 +76,14 @@ function decidedResult(message: string): EnsureDecisionMenuResult {
 /**
  * Resolve + apply ONE auto decision for a frozen pipeline.
  *
- * @returns `null` only when this process is not an active auto runner (the
- *   caller then continues with the unchanged human/provider chain).
+ * @returns `null` only when this process is not the auto runner (the caller then
+ *   continues with the unchanged human/provider chain), or when the job's own
+ *   sidecar says the job already finished (`state.status !== "running"` — its
+ *   finalize path owns any further freeze). An ACTIVE runner whose job cannot be
+ *   re-read (deleted/corrupted job file, vanished or foreign lock record) is NOT
+ *   a `null`: falling through to the provider chain would let a provider rule
+ *   auto-resume a freeze the job policy should have stopped, so that case stops
+ *   the job (`stopReason: "job_drift"` — the settle seam's verdict) and reports.
  */
 export async function runFreezeAutopilot(
   ctx: FlowStateCtx,
@@ -87,7 +93,50 @@ export async function runFreezeAutopilot(
   opts?: RequestDecisionOpts,
 ): Promise<EnsureDecisionMenuResult | null> {
   const active = readActiveJobContext(config.projectRoot);
-  if (!active) return null;
+  if (!active) {
+    // `isAutoJobActive()` is the caller's gate (an in-process fact); the null
+    // above therefore means the DISK record disagrees with it. Phase 3 §6 /
+    // Phase 5 §4: the auto authority must still terminate the job — the same
+    // fault is `job_drift` on the settle seam (`settle-seam.ts`).
+    if (!isAutoJobActive()) return null;
+    const jobId = getActiveJobId() ?? "unknown";
+    reportAutoFailure(
+      ctx,
+      "freeze_job_unreadable",
+      `Auto job "${jobId}": job file is unreadable or invalid — stopping the job (job_drift).`,
+      { jobId, reason },
+    );
+    // Dynamic import breaks the load-time cycle flow-state → freeze-autopilot →
+    // finalize → cleanup → flow-state (same reason as the "stop-and-report" leg).
+    const { finalizeJob } = await import("./finalize");
+    const finalized = await finalizeJob(
+      ctx as unknown as Parameters<typeof finalizeJob>[0],
+      config,
+      { stopReason: "job_drift" },
+    );
+    await auditAutoDecision(config, {
+      gate: "freeze",
+      jobId,
+      reason,
+      action: "stop-and-report",
+      basis: "job_drift",
+    });
+    if (finalized.skipped) {
+      // The sidecar itself is unreadable, so nothing could be released. The
+      // freeze is still NOT handed to the provider chain — the caller receives
+      // a decided result and the operator sees the unrecoverable record.
+      auditAutoDiagnostic(
+        "freeze_job_drift_unfinalized",
+        "Auto-job drift could not be finalized (sidecar unreadable) — the freeze is not delegated to providers.",
+        { jobId, reason },
+        "error",
+      );
+      return decidedResult(
+        `Auto job ${jobId}: freeze "${reason}" not delegated — the job record is unreadable or invalid (job_drift).`,
+      );
+    }
+    return decidedResult(`Auto job ${jobId} stopped: job file is unreadable or invalid (job_drift).`);
+  }
   const { state, job, jobId } = active;
   // A finished/stopped job never answers freezes (its finalize path owns them).
   if (state.status !== "running") return null;

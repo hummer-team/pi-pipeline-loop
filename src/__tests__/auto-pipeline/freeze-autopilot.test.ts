@@ -239,6 +239,29 @@ describe("freeze-autopilot — runFreezeAutopilot", () => {
     expect(notified.length).toBeGreaterThan(0);
   });
 
+  it("an ACTIVE runner whose job file is unreadable stops with job_drift (never null)", async () => {
+    // Review round 3 (issue 2): `readActiveJobContext()` re-parses the
+    // user-maintained job file, so a deleted/corrupted file used to make the
+    // freeze seam return `null` and fall back to the 210 provider chain — a
+    // provider could then auto-resume a freeze the job policy should have
+    // stopped. The settle seam already treats the same fault as `job_drift`.
+    await installJob();
+    fs.rmSync(path.join(ROOT, JOB_REL_PATH));
+    const meta = blockedMeta("verify_budget");
+    const { ctx, patches, notified } = makeCtx(meta);
+
+    const result = await runFreezeAutopilot(ctx, meta, config(), "verify_budget");
+
+    expect(result).not.toBeNull();
+    expect(result?.applied).toBe(true);
+    expect(patches.every((p) => p.flowState === undefined)).toBe(true);
+    const persisted = readJobState(ROOT, JOB_ID)!;
+    expect(persisted.status).toBe("stopped");
+    expect(persisted.stopReason).toBe("job_drift");
+    expect(audits).toContain("pipeline_auto_stop");
+    expect(notified.some((m) => m.includes("job_drift"))).toBe(true);
+  });
+
   it("totalFreezes increments once per intervention and autoResumes stops at the cap", async () => {
     await installJob({ counters: { autoResumes: 1 } });
     const meta = blockedMeta("loop_overflow");
@@ -278,5 +301,29 @@ describe("freeze-autopilot — M7: direct requestDecision path", () => {
     expect(ctx.session.getMeta()?.flowState).toBe("blocked");
     expect(audits).not.toContain("decision_policy_applied");
     expect(readJobState(ROOT, JOB_ID)?.stopReason).toBe("freeze_unresolvable");
+  });
+
+  it("an unreadable job file (active runner) never falls back to the provider chain", async () => {
+    // Review round 3 (issue 2): the seam is decided by `isAutoJobActive()`, so
+    // the provider chain must stay unreachable even when the job record itself
+    // cannot be re-read. The fault converges to `job_drift`, not to a resume.
+    await installJob();
+    fs.rmSync(path.join(ROOT, JOB_REL_PATH));
+    const meta = blockedMeta("loop_overflow");
+    const { ctx, patches } = makeCtx(meta);
+    const cfg = config({
+      decisionPolicy: {
+        enabled: true,
+        byReason: { loop_overflow: { decision: "resume" } },
+      },
+    });
+
+    const result = await requestDecision(ctx, meta, cfg, "loop_overflow");
+
+    expect(result).not.toBeNull();
+    expect(patches.every((p) => p.flowState === undefined)).toBe(true);
+    expect(ctx.session.getMeta()?.flowState).toBe("blocked");
+    expect(audits).not.toContain("decision_policy_applied");
+    expect(readJobState(ROOT, JOB_ID)?.stopReason).toBe("job_drift");
   });
 });

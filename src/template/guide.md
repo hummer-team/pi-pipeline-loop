@@ -1995,7 +1995,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | design-review 入口授权 | 第 4 参 `{ autoPipeline: { jobId } }`：保留 child 拒绝与前置校验，跳过 TUI 检测与确认，审计 `authorised_auto` |
 | manual FAIL | v1 只允许 `designReview.mode: auto`，FAIL 走 `auto-revise`（不伪造人工裁决） |
 | 写/命令对话框 | auto 活跃时：受保护路径、危险命令一律 `block`（`ask` 也**不放行**）；`whitelist_miss` 按解析后的模式：`allow` 放行，`deny`/`ask` 拦截 |
-| 冻结决策 | `byReason[reason]` → `onFreeze` → `stop-and-report`；`stop-and-report` **永不**回落 210 provider 链；`maxAutoResumes` 用尽即停；`set_budget` 直接按取消处理（不追加预算） |
+| 冻结决策 | `byReason[reason]` → `onFreeze` → `stop-and-report`；`stop-and-report` **永不**回落 210 provider 链；`maxAutoResumes` 用尽即停；`set_budget` 直接按取消处理（不追加预算）；auto 活跃但 job 文件/锁记录不可读（`readActiveJobContext` 为空）时按 `stopReason: job_drift` 收尾，同样不回落 provider |
 
 ### 19.8 `pipeline_loop.json` 新增键（219 Phase 0）
 
@@ -2022,7 +2022,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | 事件 | 是否受 `audit.autoDecisions` 控制 |
 |---|---|
 | `pipeline_auto_decision` | **是**（`false` → 不写） |
-| `pipeline_auto_start` / `pipeline_auto_job_overlay` / `pipeline_auto_overlay_replay` / `pipeline_auto_overlay_restore` / `pipeline_auto_overlay_kept` / `pipeline_auto_cleanup` / `pipeline_auto_stop` / `pipeline_auto_chain` / `pipeline_auto_continuity` / `pipeline_auto_lock` / `whitelist_allow_exempt` | 否（**恒写**，生命周期与安全相关） |
+| `pipeline_auto_start` / `pipeline_auto_job_overlay` / `pipeline_auto_overlay_replay` / `pipeline_auto_overlay_restore` / `pipeline_auto_overlay_kept` / `pipeline_auto_cleanup` / `pipeline_auto_stop` / `pipeline_auto_chain` / `pipeline_auto_continuity` / `pipeline_auto_meta_seeded` / `pipeline_auto_meta_seed_rejected` / `pipeline_auto_lock` / `whitelist_allow_exempt` | 否（**恒写**，生命周期与安全相关） |
 
 ### 19.10 `designReview.mode` / `failAction` / 模板 `confirm.mode` 真值表
 
@@ -2037,9 +2037,11 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 `session_start` 用纯函数 `decideContinuity` 硬判定「继续 / 重跑 / 无中断」，结论写入 `meta.continuity` 并审计 `pipeline_auto_continuity`；提示词新增「任务连续性」section（`{{task_continuity}}`）只陈述结论：
 
 1. `flowState=blocked` → `resume`（`stage` 取 `meta.currentStage`，缺失时回落 sidecar `lastStage`）
-2. sidecar running 且本 session 未 settle → `resume`（新 session 无 meta 也可用，`stage` 同样回落 `lastStage`）
+2. sidecar running 且本 session 未 settle → `resume`（新 session 先由 §19.11 末段的「身份认领」播种 meta，`stage` 同样回落 `lastStage`）
 3. meta 无 `currentStage` → `none`
 4. sidecar completed 且已存在 commit 文档 → `none`（供 runner 跳过）
 5. 其余 → `none`
 
 无判定（`none`）时不注入该 section，人机模式提示词与改动前逐字一致。
+
+**崩溃后重开（身份认领）**：提示词注入受 dormant 零注入守卫约束（无 `meta` / 无 `pipelineId` 时插件完全不注入），因此 `session_start` 在「本 session 无 `pipelineId` 与 `currentStage`，且 sidecar 恰好一个 `running` job」时，用该 job **当前文档**的 `pipelineId` / `doc` / `lastStage` 认领身份：写入 `meta`（`lastStage → currentStage`，`completed` 不认领）并置 `continuity: "resume"`，审计 `pipeline_auto_meta_seeded`（`reason=crash_adoption`）。这是认领而非新建——不生成新 `pipelineId`、不写 `stageStartTime`、不注册 session；本进程正在跑该 job（`/pipeline-auto` runner）或锁被存活的他进程持有时不认领。

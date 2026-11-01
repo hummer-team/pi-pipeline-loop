@@ -718,14 +718,26 @@ export function buildTaskContinuitySection(
   const decision = meta.continuity ?? computed.decision;
   if (decision === "none") return null;
 
-  const stage = meta.currentStage ?? computed.stage;
+  // H4: the stage keeps a source chain — `meta.currentStage` → the judgement's
+  // own fallback → the sidecar's `lastStage`. A crash-adopted session carries
+  // the verdict (`meta.continuity`) but the verdict itself has no stage, so
+  // without the last link the section would render `Stage: <unknown>` even
+  // though the sidecar knows exactly where the document stopped.
+  const progress = state ? state.docs[state.docIndex] : undefined;
+  const stage = meta.currentStage ?? computed.stage ?? progress?.lastStage;
+  // The verdict carries no reason of its own. When the recomputation cannot
+  // reproduce it — a crash-adopted session OWNS the running doc's identity, so
+  // rule 2's clock comparison is bypassed by design — the sidecar's status is
+  // the honest interruption reason.
+  const reason =
+    computed.decision === "none" && state?.status === "running" ? "unsettled" : computed.reason;
   const lines: string[] = [
     "# TASK CONTINUITY",
     `- Decision: ${decision}`,
     `- Document: ${computed.doc ?? meta.requirementDoc ?? "<unbound>"}`,
     `- Stage: ${stage ?? "<unknown>"}`,
     `- Flow state: ${getFlowState(meta)}`,
-    `- Interruption: ${computed.reason}`,
+    `- Interruption: ${reason}`,
     "- Allowed actions: continue from the current stage, restart the current stage, or stop.",
   ];
 

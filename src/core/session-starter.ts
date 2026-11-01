@@ -8,7 +8,7 @@
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { PipelineConfig, Hook, SessionMeta } from "../types";
+import type { PipelineConfig, Hook, SessionMeta, PipelineStage } from "../types";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { writeAuditLog, safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
@@ -47,7 +47,8 @@ import { replayOverlayForSessionStart } from "./auto-pipeline/config-overlay";
 // 219 Phase 6: interrupt-continuity hard judgement (`meta.continuity`).
 import { decideContinuity } from "./auto-pipeline/continuity";
 // Review round 2 (issue 2): a sidecar only counts when it belongs to THIS session.
-import { resolveContinuityState } from "./auto-pipeline/config-overlay";
+// Review round 3 (issue 1): crash adoption needs the in-process runner fact too.
+import { resolveContinuityState, isAutoJobActive } from "./auto-pipeline/config-overlay";
 // 219 Phase 5 (review round 2 issue 3): a lost continuation dispatch is reconciled
 // here too, so a job can never hang on the dispatch channel.
 import { reconcilePendingContinuation } from "./auto-pipeline/finalize";
@@ -450,6 +451,116 @@ async function handleSubagentJoin(
   return true;
 }
 
+// ─── 219 Phase 6 (review round 3, issue 1): crash-resume identity seeding ────
+
+/** The identity a crash-orphaned job proves about its CURRENT document. */
+interface CrashContinuitySeed {
+  jobId: string;
+  pipelineId: string;
+  requirementDoc: string;
+  /** `docs[docIndex].lastStage` — the ONLY stage evidence once meta is gone. */
+  stage?: PipelineStage;
+}
+
+/**
+ * Reads the crash-continuity seed from the sidecar, or `null` when this session
+ * has nothing to adopt.
+ *
+ * Facts:
+ * - The prompt injector's dormant guard is a hard zero-injection boundary
+ *   (`!meta || isDormant(meta)` → return), so a session that lost its meta never
+ *   receives ANY plugin section. Without an identity the Phase 6 "task
+ *   continuity" verdict could never reach the only session that needs it: the
+ *   new session opened after a crash. The guard itself stays untouched — the
+ *   missing identity is supplied HERE instead (session_start side).
+ * - This ADOPTS an already recorded identity; it NEVER creates one. Every
+ *   seeded field must be proven by the sidecar's current document — a missing
+ *   `pipelineId` (or document path) means "nothing to adopt" and the session
+ *   stays dormant, so no synthetic pipeline can ever be invented.
+ * - Ownership: `resolveContinuityState` refuses a job another LIVE process
+ *   holds, and a live in-process runner owns its own meta (`startNewPipeline`
+ *   + `autoJob`), so seeding is inert for the runner and for a second terminal.
+ * - `lastStage` becomes `currentStage`: the section would otherwise render
+ *   `Stage: <unknown>` (H4 requires the sidecar to be the stage source when meta
+ *   lost it). A terminal `completed` is never adopted — that state is dormant.
+ * - Only a `resume` verdict seeds: a job whose document already shipped has
+ *   nothing to continue.
+ */
+function readCrashContinuitySeed(config: PipelineConfig): CrashContinuitySeed | null {
+  if (isAutoJobActive()) return null;
+  const state = resolveContinuityState(config.projectRoot, null);
+  if (!state || state.status !== "running") return null;
+  const progress = state.docs[state.docIndex];
+  if (!progress?.pipelineId || !progress.doc) return null;
+
+  const commitBase = progress.doc.replace(/\.md$/i, "");
+  const verdict = decideContinuity({
+    meta: null,
+    state,
+    sessionStartedAt: Date.now(),
+    hasCommitDoc: existsSync(`${config.projectRoot}/${commitBase}_Develop_Commit.md`),
+  });
+  if (verdict.decision !== "resume") return null;
+
+  const stage = progress.lastStage && progress.lastStage !== "completed" ? progress.lastStage : undefined;
+  return {
+    jobId: state.jobId,
+    pipelineId: progress.pipelineId,
+    requirementDoc: progress.doc,
+    ...(stage ? { stage } : {}),
+  };
+}
+
+/**
+ * Seeds the crash-adopted identity into the CURRENT (dormant) session so the
+ * existing prompt-injection path renders the "task continuity" section.
+ *
+ * Deliberately NOT a pipeline start: no `stageStartTime`, no registry write, no
+ * stage entry — the pipeline is identified, not restarted, and the normal
+ * `/pipeline-start` resume/restart remains the only way to actually re-enter it.
+ *
+ * @returns TRUE when a seed was written (the caller must not continue into any
+ *   creation path this turn).
+ */
+async function seedCrashContinuityMeta(
+  config: PipelineConfig,
+  ctx: RuntimeCtx,
+): Promise<boolean> {
+  const live = ctx.session.getMeta() as SessionMeta | undefined;
+  // Never overwrite an identity this session already owns (a JOINed child, a
+  // reconcile that just started a doc, or a normal resume).
+  if (live?.pipelineId || live?.currentStage) return false;
+
+  const seed = readCrashContinuitySeed(config);
+  if (!seed) return false;
+
+  const updated = ctx.session.updateMeta({
+    pipelineId: seed.pipelineId,
+    requirementDoc: seed.requirementDoc,
+    ...(seed.stage ? { currentStage: seed.stage } : {}),
+    continuity: "resume",
+  });
+  if (updated === undefined) {
+    // The plain writer rejects a stale overwrite; a dormant meta has no other
+    // writer, so this is a host-level failure worth one honest audit row.
+    await safeWriteAuditLog("pipeline_auto_meta_seed_rejected", {
+      jobId: seed.jobId,
+      pipelineId: seed.pipelineId,
+    }, "warn");
+    return false;
+  }
+  // The adopted pipeline owns the audit trail from now on (Phase 1 / 197).
+  setAuditPipelineContext(seed.pipelineId);
+  await safeWriteAuditLog("pipeline_auto_meta_seeded", {
+    reason: "crash_adoption",
+    jobId: seed.jobId,
+    pipelineId: seed.pipelineId,
+    doc: seed.requirementDoc,
+    stage: seed.stage ?? "unknown",
+  });
+  return true;
+}
+
 /**
  * Creates the `session_start` hook that initializes or resumes a pipeline session.
  *
@@ -586,6 +697,23 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             return; // JOIN succeeded — child inherits parent pipeline
           }
           // JOIN failed (L3 no_evidence / meta read fail) — fall through to dormant
+        }
+
+        // ── 219 Phase 6 (review round 3, issue 1): crash-resume identity seed ──
+        // A session that lost its meta is dormant, so the prompt injector never
+        // runs (`!meta || isDormant(meta)` short-circuit) and the Phase 6
+        // "task continuity" verdict could never be delivered after a crash. The
+        // sidecar's current document already proves the identity, so it is
+        // ADOPTED here (never created) and the existing injection path then
+        // renders the section normally. Skipped for child sessions (their
+        // identity belongs to the parent JOIN) and when a reconcile already
+        // decided this start's document fate.
+        if (!isSubagent && !autoStartOwned) {
+          if (await seedCrashContinuityMeta(config, ctx)) {
+            // The adopted identity is complete for this turn: no creation, no
+            // registration, and no recovery branch on the stale `meta` snapshot.
+            return;
+          }
         }
 
         // Phase 2b (173) C4: V1 auto-pipeline creation REMOVED.

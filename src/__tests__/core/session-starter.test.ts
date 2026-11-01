@@ -1,14 +1,21 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import { createSessionStarter, __resetPluginVersionStamp } from "../../core/session-starter";
 import { makeTestConfig, makeTestMeta, finalStatusText } from "../helpers";
 import { writeFile, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { initAuditLog, setAuditPipelineContext } from "../../utils/auditLog";
+import { initAuditLog, setAuditPipelineContext, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { auditLogFileFor } from "../helpers";
 import { resetPromptConfigCache, loadPromptConfig } from "../../core/prompt-config";
 import { registerSession } from "../../utils/session-registry";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
+import { AUTO_PIPELINE_LOCK_FILE } from "../../constants";
+import { createJobState, writeJobState } from "../../core/auto-pipeline/job-state";
+import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
+import {
+  acquireJobLock,
+  __resetAutoJobLockForTests,
+} from "../../core/auto-pipeline/config-overlay";
 
 function createCtx(meta: any) {
   const updates: any[] = [];
@@ -1298,6 +1305,119 @@ describe("Phase 1 / 179 (G2 layer ④): subagents agentMentions probe", () => {
     await createSessionStarter(config).handler(makeProbeCtx(notifications) as any);
 
     expect(notifications.filter((n) => n.includes("agentMentions")).length).toBe(0);
+    await rm(TMP, { recursive: true, force: true });
+  });
+});
+
+/**
+ * 219 Phase 6 (review round 3, issue 1): crash-resume identity seeding.
+ *
+ * The prompt injector's dormant guard is a hard zero-injection boundary, so a
+ * session that lost its meta could never receive the "task continuity" section
+ * — the one case the Phase 6 acceptance item ("delete meta, reopen → section
+ * present, stage not unknown") describes. `session_start` therefore ADOPTS the
+ * identity the sidecar's current document already proves (never creates a new
+ * pipeline) and records `continuity: "resume"`.
+ */
+describe("219 Phase 6 — crash-resume identity seed (review round 3, issue 1)", () => {
+  const JOB_ID = "crash-job";
+  const JOB_REL_PATH = "docs/jobs/crash.yaml";
+  const DOC = "docs/design/219_Feat.md";
+  const JOB_YAML = ["version: 1", "enabled: true", "docs:", "  list:", `    - doc: ${DOC}`].join("\n");
+
+  /** Exactly one RUNNING job whose current doc proves `pipelineId`. */
+  async function installRunningJob(root: string, pipelineId?: string): Promise<void> {
+    const jobPath = join(root, JOB_REL_PATH);
+    await mkdir(join(root, "docs", "jobs"), { recursive: true });
+    await writeFile(jobPath, JOB_YAML, "utf-8");
+    const state = createJobState({
+      jobId: JOB_ID,
+      jobPath: JOB_REL_PATH,
+      jobHash: hashJobBytes(JOB_YAML),
+      docs: [{ doc: DOC }],
+    });
+    state.status = "running";
+    state.lastSettleAt = Date.now() - 60_000;
+    if (pipelineId) state.docs[0]!.pipelineId = pipelineId;
+    state.docs[0]!.lastStage = "review";
+    await writeJobState(root, state);
+  }
+
+  afterEach(() => {
+    __resetAutoJobLockForTests();
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  it("adopts the crashed pipeline's identity and records continuity=resume", async () => {
+    const TMP = join(tmpdir(), "pi-ss-crash-seed-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await installRunningJob(TMP, "pipe-crashed");
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    __setSafeWriteAuditLogOverride(async () => undefined);
+    const ctx = createCtx({});
+
+    await createSessionStarter(config).handler(ctx as any);
+
+    const meta = ctx.session.getMeta() as any;
+    expect(meta.pipelineId).toBe("pipe-crashed");
+    expect(meta.requirementDoc).toBe(DOC);
+    // H4: `lastStage` is the only stage evidence once meta is gone.
+    expect(meta.currentStage).toBe("review");
+    expect(meta.continuity).toBe("resume");
+    // ADOPTION, never creation: no stage clock, no fresh identity.
+    expect(meta.stageStartTime).toBeUndefined();
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("stays dormant when the running doc records no pipelineId", async () => {
+    const TMP = join(tmpdir(), "pi-ss-crash-noid-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await installRunningJob(TMP);
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    __setSafeWriteAuditLogOverride(async () => undefined);
+    const ctx = createCtx({});
+
+    await createSessionStarter(config).handler(ctx as any);
+
+    expect(ctx.updates.length).toBe(0);
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("never adopts a job another LIVE process holds", async () => {
+    const TMP = join(tmpdir(), "pi-ss-crash-foreign-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await installRunningJob(TMP, "pipe-other-terminal");
+    // pid 1 never belongs to this test process; EPERM counts as "alive".
+    const lockPath = join(TMP, AUTO_PIPELINE_LOCK_FILE);
+    await mkdir(join(TMP, ".pi", "auto_pipeline"), { recursive: true });
+    await writeFile(lockPath, JSON.stringify({ token: "foreign", jobId: JOB_ID, pid: 1, startedAt: 1 }), "utf-8");
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    __setSafeWriteAuditLogOverride(async () => undefined);
+    const ctx = createCtx({});
+
+    await createSessionStarter(config).handler(ctx as any);
+
+    expect(ctx.updates.length).toBe(0);
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("never adopts over the in-process runner's own job", async () => {
+    const TMP = join(tmpdir(), "pi-ss-crash-inprocess-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await installRunningJob(TMP, "pipe-chained");
+    const acquired = acquireJobLock({ projectRoot: TMP, jobId: JOB_ID });
+    expect(acquired.ok).toBe(true);
+    const config = makeTestConfig({ projectRoot: TMP });
+    await initAuditLog(config);
+    __setSafeWriteAuditLogOverride(async () => undefined);
+    const ctx = createCtx({});
+
+    await createSessionStarter(config).handler(ctx as any);
+
+    expect(ctx.updates.length).toBe(0);
     await rm(TMP, { recursive: true, force: true });
   });
 });
