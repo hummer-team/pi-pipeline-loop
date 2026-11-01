@@ -284,3 +284,36 @@ describe("design-review prompt — auto guidance is a SUFFIX only", () => {
     expect(suffix.startsWith("\n\n[auto-pipeline] Ledger traceability (facts, not a verdict):")).toBe(true);
   });
 });
+
+// ─── INV-2 / INV-3: invariants that are visible in the source ───────────────
+
+describe("INV-2 / INV-3 — source guards", () => {
+  const AUTO_DIR = path.join(SRC_ROOT, "src", "core", "auto-pipeline");
+
+  function moduleSources(): Array<{ file: string; source: string }> {
+    return fs
+      .readdirSync(AUTO_DIR)
+      .filter((file) => file.endsWith(".ts"))
+      .map((file) => ({ file, source: fs.readFileSync(path.join(AUTO_DIR, file), "utf8") }));
+  }
+
+  it("the auto layer never starts or advances a pipeline itself", () => {
+    const offenders = moduleSources()
+      .filter(({ source }) => source.includes("startNewPipeline(") || source.includes("advanceStage("))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("recordStageVisit is only WRAPPED (stop-policy), never called elsewhere", () => {
+    const callers = moduleSources()
+      .filter(({ source }) => source.includes("recordStageVisit("))
+      .map(({ file }) => file);
+    expect(callers).toEqual(["stop-policy.ts"]);
+  });
+
+  it("FlowState keeps its three members (no new state was introduced)", () => {
+    const types = fs.readFileSync(path.join(SRC_ROOT, "src", "types.ts"), "utf8");
+    const match = /export type FlowState = ([^;]+);/.exec(types);
+    expect(match?.[1]).toBe('"running" | "blocked" | "aborted"');
+  });
+});
