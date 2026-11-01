@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { SessionMeta } from "../../types";
+import type { ClarifyProtocolConfig, SessionMeta } from "../../types";
 import {
   runAutoClarifyRound,
   type ClarifyEntryCtx,
@@ -55,6 +55,29 @@ const COMPLETE_DOC = [
 
 /** Missing `## 需求评估` and the mandatory sections. */
 const INCOMPLETE_DOC = ["# 200_Feat", "TBD", "", "# 第 1 轮澄清", "- **方案 A** self-answer", "答：方案 A"].join("\n");
+
+/** English-only project protocol (what an English project installs). */
+const ENGLISH_PROTOCOL: ClarifyProtocolConfig = {
+  assessmentHeading: ["## Requirement Assessment"],
+  goalHeading: ["## Goal"],
+  scopeHeading: ["## Scope"],
+  acceptanceHeading: ["## Acceptance Criteria"],
+  ledgerHeading: ["## Decision Ledger"],
+  eliminationMarkers: ["elimination reason"],
+  conflictMarkers: ["conflict matrix"],
+  questionPatterns: ["^##\\s*Question\\s+(\\d+)"],
+  verdictReady: ["ready"],
+  verdictNeedsClarify: ["needs-clarify"],
+};
+
+const ENGLISH_INCOMPLETE_DOC = [
+  "# 221 Feat",
+  "TBD — unclear for now",
+  "",
+  "# Round 1",
+  "- **Option A** self-answer",
+  "Answer: Option A",
+].join("\n");
 
 type SpawnArgs = Parameters<ClarifyEntryDeps["spawn"]>;
 type SpawnResult = Awaited<ReturnType<ClarifyEntryDeps["spawn"]>>;
@@ -163,5 +186,49 @@ describe("clarify protocol injection", () => {
     await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps);
 
     expect(fs.readFileSync(path.join(harness.projectRoot, DOC), "utf8")).toBe(before);
+  });
+});
+
+describe("clarify protocol injection — English anchors (221 Phase 1)", () => {
+  it("uses the configured English primary aliases in the directive", async () => {
+    harness.config.clarifyProtocol = ENGLISH_PROTOCOL;
+    writeDoc(ENGLISH_INCOMPLETE_DOC);
+    const meta = makeMeta();
+
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+
+    const args = dispatchedArgs();
+    expect(args).toContain("Add a `## Requirement Assessment` section");
+    expect(args).toContain("## Goal");
+    expect(args).toContain("## Scope");
+    expect(args).toContain("## Acceptance Criteria");
+    expect(args).not.toContain("## 需求评估");
+  });
+
+  it("appends nothing for a complete English document", async () => {
+    harness.config.clarifyProtocol = ENGLISH_PROTOCOL;
+    writeDoc(
+      [
+        "# 221 Feat",
+        "## Goal",
+        "Ship it.",
+        "## Scope",
+        "Clarify only.",
+        "## Acceptance Criteria",
+        "One round.",
+        "## Requirement Assessment",
+        "ready",
+        "",
+        "# Round 1",
+        "- **Option A**",
+        "Answer: Option A",
+      ].join("\n"),
+    );
+    const meta = makeMeta();
+
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+
+    expect(dispatchedArgs()).toBe(" full-und?");
+    expect(audits.some((line) => line.includes("clarify_protocol"))).toBe(false);
   });
 });

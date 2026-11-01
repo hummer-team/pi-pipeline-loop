@@ -147,3 +147,54 @@ describe("clarify chain — self answer to confirmation", () => {
     expect(audits.some((line) => line.includes('"gate":"clarify_confirmed"'))).toBe(true);
   });
 });
+
+// ─── 221 Phase 1: the same chain with English protocol anchors ───────────────
+
+describe("clarify chain — English anchors (221 Phase 1)", () => {
+  it("injects the English directive and confirms on the English marker", async () => {
+    harness.config.clarifyProtocol = {
+      assessmentHeading: ["## Requirement Assessment"],
+      goalHeading: ["## Goal"],
+      scopeHeading: ["## Scope"],
+      acceptanceHeading: ["## Acceptance Criteria"],
+      ledgerHeading: ["## Decision Ledger"],
+      questionPatterns: ["^##\\s*Question\\s+(\\d+)"],
+      verdictReady: ["ready"],
+      verdictNeedsClarify: ["needs-clarify"],
+    };
+    // English document without the assessment/mandatory sections.
+    writeDoc(["# 221 Feat", "TBD", "", "# Round 1", "- **Option A**"].join("\n"));
+    const m = meta();
+
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(spawnCalls[0]?.extraArgs).toContain("Add a `## Requirement Assessment`");
+    expect(spawnCalls[0]?.extraArgs).toContain("## Acceptance Criteria");
+
+    // Complete the document and confirm with the English marker only.
+    writeDoc(
+      [
+        "# 221 Feat",
+        "## Goal",
+        "Ship it.",
+        "## Scope",
+        "Clarify only.",
+        "## Acceptance Criteria",
+        "One round.",
+        "## Requirement Assessment",
+        "ready",
+        "",
+        "# Round 1",
+        "- **Option A**",
+        "Answer: Option A",
+        "full-und? confirmation: yes",
+        "",
+        "## Model Confirmation",
+        "confirmed",
+      ].join("\n"),
+    );
+    nextBurst(31);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(false);
+    expect(spawnCalls).toHaveLength(1);
+    expect(audits.some((line) => line.includes('"gate":"clarify_confirmed"'))).toBe(true);
+  });
+});

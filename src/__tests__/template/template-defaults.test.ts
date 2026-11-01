@@ -559,3 +559,38 @@ describe("204 Phase 4: guide.md subagent persistence + JOIN cascade contract", (
     expect(content).not.toContain("必须开启持久化");
   });
 });
+
+// ─── 221 Phase 1: bilingual completion marker + optional job config ─────────
+
+describe("221 Phase 1: clarify protocol assets", () => {
+  const LOOP_JSON = path.join(__dirname, "../../template/pipeline_loop.json");
+  const JOB_JSON = path.join(__dirname, "../../template/pipeline_loop_job.json");
+
+  it("ships a bilingual completionMarker array with the Chinese primary", () => {
+    const config = JSON.parse(fs.readFileSync(LOOP_JSON, "utf-8"));
+    const marker = config.stages.clarify.verify.completionMarker;
+    expect(Array.isArray(marker)).toBe(true);
+    expect(marker[0]).toBe("## 模型确认");
+    expect(marker).toContain("## Model Confirmation");
+  });
+
+  it("ships the optional job config template as valid JSON", () => {
+    expect(fs.existsSync(JOB_JSON)).toBe(true);
+    const config = JSON.parse(fs.readFileSync(JOB_JSON, "utf-8"));
+    expect(config.version).toBe(1);
+    expect(config.clarify.assessment.heading).toEqual(["## 需求评估", "## Requirement Assessment"]);
+    expect(config.clarify.questions.patterns.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the clarify metadata rule bilingual", () => {
+    const yml = fs.readFileSync(
+      path.join(__dirname, "../../template/references/pipeline-stage-prompt.yml"),
+      "utf-8",
+    );
+    // The deliverable is verify-generation input, so it keeps literal bilingual
+    // markers (no {completionMarker} placeholder that verify rules would treat
+    // as required content).
+    expect(yml).toContain("`## 模型确认` / `## Model Confirmation`");
+    expect(yml).toContain("`答：`/`答:`/`**答**`/`Answer:`");
+  });
+});

@@ -220,9 +220,13 @@ fix: |
 # ═══════════════════════════════════════════════════════════════════════════════
 # Per-stage Executor Prompts (5 keys)
 # Rendered as "## Stage Executor Scheduling" section via {{stage_executor}} placeholder.
-# Placeholders within these values: {subagent_type}, {context_arg}
+# Placeholders within these values: {subagent_type}, {context_arg},
+# {active_spawn_note}, {queued_spawn_note}, {completionMarker}, {answerMarker}
 # {subagent_type} is filled from the stage→agent mapping.
 # {context_arg} is a hint for the main thread to fill the document path.
+# 221: {completionMarker}/{answerMarker} resolve to the configured PRIMARY
+# alias (job JSON → completionMarker → bilingual default), so an English
+# document is asked for the marker it will actually be verified against.
 # stage_executor_clarify is optional (not in CRITICAL_PLACEHOLDERS).
 # Trigger: stage entry system-prompt rendering via {{stage_executor}} placeholder
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -231,10 +235,10 @@ stage_executor_clarify: |
   ## Stage Executor Scheduling
   This stage is executed by the user-invoked agent: `{subagent_type}`
   **Scheduling**: User @`{subagent_type}` in chat with the requirement document path.
-  **Return protocol**: On `full-und?` confirmation, write the `## 模型确认` marker to the requirement document and STOP. Do NOT call `stage_advance` — the `agent_settled` hook auto-verifies (completionMarker) and advances to `plan`. **MUST**: end every round's user-facing output with two complete, copy-pasteable command lines containing the full document path and the real agent name — `@<agent> <doc> <round+1> 答` and `@<agent> <doc> full-und?`. Never emit a `{file}` placeholder literal in a user-facing prompt.
+  **Return protocol**: On `full-und?` confirmation, write the `{completionMarker}` marker to the requirement document and STOP. Do NOT call `stage_advance` — the `agent_settled` hook auto-verifies (completionMarker) and advances to `plan`. **MUST**: end every round's user-facing output with two complete, copy-pasteable command lines containing the full document path and the real agent name — `@<agent> <doc> <round+1> 答` and `@<agent> <doc> full-und?`. Never emit a `{file}` placeholder literal in a user-facing prompt.
   **Triage**: If the user asks an unrelated question (not @mention with doc path or round args), answer briefly and do NOT touch pipeline state. Only pipeline-turn messages (containing verification results, stage routing, or @agent doc args) trigger verification.
   **Re-launch**: When the user mentions `@{subagent_type} {file} {args}` during clarify, spawn a **new task** with `description = Clarify: {file} {args}` — do NOT resume the previous task. Each round gets its own task title reflecting the round number. **MUST**: prompt and description must carry the user's current-round args verbatim (e.g. `2 答`); do NOT reuse the previous round's title or args.
-  **Parent wait discipline**: After relaying the clarification questions to the user, STOP and WAIT. Do NOT collect answers interactively (e.g. via `ask_user_question`). The sole answer channel is the `**答**` fields of the requirement document. The user drives the next round by re-mentioning the agent with the document path.
+  **Parent wait discipline**: After relaying the clarification questions to the user, STOP and WAIT. Do NOT collect answers interactively (e.g. via `ask_user_question`). The sole answer channel is the `{answerMarker}` fields of the requirement document. The user drives the next round by re-mentioning the agent with the document path.
   {active_spawn_note}
 
 # ─── Design-review strict prompt keys (192 / 193) ────────────────────────────

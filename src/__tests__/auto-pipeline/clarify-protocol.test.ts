@@ -16,6 +16,7 @@ import {
   parseDecisionLedger,
   parseRequirementAssessment,
 } from "../../core/auto-pipeline/clarify-protocol";
+import { resolveClarifyAnchors } from "../../core/auto-pipeline/clarify-anchors";
 
 const READY_DOC = [
   "## 目标",
@@ -179,5 +180,153 @@ describe("buildProtocolDirective", () => {
       tier: "rule",
     });
     expect(directive).toContain("延迟待定");
+  });
+});
+
+// ─── 221 Phase 1: bilingual anchors + round compatibility ────────────────────
+
+/** The anchors the shipped `pipeline_loop_job.json` template resolves to. */
+const ENGLISH_ANCHORS = resolveClarifyAnchors({
+  job: {
+    assessmentHeading: ["## 需求评估", "## Requirement Assessment"],
+    goalHeading: ["## 目标", "## Goal"],
+    scopeHeading: ["## 范围", "## Scope"],
+    acceptanceHeading: ["## 验收标准", "## Acceptance Criteria"],
+    ledgerHeading: ["## 组合决策台账", "## Decision Ledger"],
+    eliminationMarkers: ["淘汰理由", "elimination reason"],
+    conflictMarkers: ["冲突矩阵", "conflict matrix"],
+    questionPatterns: ["^##\\s*问题\\s+(\\d+)", "^##\\s*Question\\s+(\\d+)"],
+    verdictReady: ["ready", "已明确"],
+    verdictNeedsClarify: ["needs-clarify", "需澄清"],
+  },
+});
+
+const ENGLISH_READY_DOC = [
+  "## Goal",
+  "Ship the protocol.",
+  "## Scope",
+  "Clarify only.",
+  "## Acceptance Criteria",
+  "Every round carries the directive.",
+  "## Requirement Assessment",
+  "ready",
+].join("\n");
+
+describe("bilingual anchors (221 Phase 1)", () => {
+  it("parses an English assessment document", () => {
+    expect(parseRequirementAssessment(ENGLISH_READY_DOC, ENGLISH_ANCHORS)).toEqual({
+      present: true,
+      verdict: "ready",
+      missingSections: [],
+      ambiguities: [],
+    });
+  });
+
+  it("reports missing sections in the configured primary alias", () => {
+    const assessment = parseRequirementAssessment("## Goal\nA\n## Requirement Assessment\nready", ENGLISH_ANCHORS);
+    // The PRIMARY alias is the first configured entry (Chinese first here).
+    expect(assessment.missingSections).toEqual(["## 范围", "## 验收标准"]);
+    expect(assessment.verdict).toBe("needs-clarify");
+  });
+
+  it("parses an English decision ledger", () => {
+    const doc = [
+      ENGLISH_READY_DOC,
+      "## Decision Ledger",
+      "",
+      "| Question | Chosen | Eliminated | Score | elimination reason | conflict matrix |",
+      "| --- | --- | --- | --- | --- | --- |",
+      "| Q1 | A | B | 4.2 | slower | none |",
+    ].join("\n");
+    const ledger = parseDecisionLedger(doc, ENGLISH_ANCHORS);
+    expect(ledger.present).toBe(true);
+    expect(ledger.entries).toBe(1);
+    expect(ledger.hasEliminatedReasons).toBe(true);
+    expect(ledger.hasConflictMatrix).toBe(true);
+  });
+
+  it("counts English questions of the latest English round", () => {
+    const doc = [
+      "## Round 1",
+      "## Question 1",
+      "## Question 2",
+      "## Question 3",
+      "## Round 2",
+      "## Question 1",
+      "## Question 2",
+    ].join("\n");
+    expect(parseClarifyQuestionCount(doc, ENGLISH_ANCHORS)).toBe(2);
+  });
+
+  it("directive text uses the configured primary aliases", () => {
+    // English-only declaration ⇒ the primary IS the English alias (INV-4).
+    const englishOnly = resolveClarifyAnchors({
+      job: {
+        assessmentHeading: ["## Requirement Assessment"],
+        ledgerHeading: ["## Decision Ledger"],
+        conflictMarkers: ["conflict matrix"],
+        verdictReady: ["ready"],
+        verdictNeedsClarify: ["needs-clarify"],
+      },
+    });
+    const directive = buildProtocolDirective(
+      {
+        assessment: { present: false, verdict: "unknown", missingSections: ["## Goal"], ambiguities: [] },
+        ledger: { present: false, entries: 0, labels: [], hasEliminatedReasons: false, hasConflictMatrix: false },
+        questionCount: 2,
+        tier: "assisted",
+      },
+      englishOnly,
+    );
+    expect(directive).toContain("## Requirement Assessment");
+    expect(directive).toContain("## Decision Ledger");
+    expect(directive).toContain("`ready` or `needs-clarify`");
+  });
+
+  it("asked/answered aliases drive the conflict-matrix requirement", () => {
+    const englishOnly = resolveClarifyAnchors({
+      job: { ledgerHeading: ["## Decision Ledger"], conflictMarkers: ["conflict matrix"] },
+    });
+    const directive = buildProtocolDirective(
+      {
+        assessment: { present: true, verdict: "ready", missingSections: [], ambiguities: [] },
+        ledger: { present: true, entries: 2, labels: ["Q1"], hasEliminatedReasons: true, hasConflictMatrix: false },
+        questionCount: 1,
+        tier: "assisted",
+      },
+      englishOnly,
+    );
+    expect(directive).toContain("conflict matrix");
+    expect(directive).toContain("## Decision Ledger");
+  });
+});
+
+describe("round heading compatibility (221 F4)", () => {
+  const countAfter = (roundHeading: string): number =>
+    parseClarifyQuestionCount(
+      [
+        "## 第 1 轮澄清",
+        "## 问题 1",
+        "## 问题 2",
+        "## 问题 3",
+        roundHeading,
+        "## 问题 1",
+      ].join("\n"),
+    );
+
+  it("accepts an h3 round heading", () => {
+    expect(countAfter("### 第 2 轮")).toBe(1);
+  });
+
+  it("accepts a round heading without the word 澄清", () => {
+    expect(countAfter("## 第 2 轮")).toBe(1);
+  });
+
+  it("accepts a Chinese-numeral round heading", () => {
+    expect(countAfter("## 第三轮澄清")).toBe(1);
+  });
+
+  it("accepts an English round heading", () => {
+    expect(countAfter("## Round 2")).toBe(1);
   });
 });

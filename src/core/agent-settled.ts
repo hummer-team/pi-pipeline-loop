@@ -37,7 +37,7 @@ import { parseReviewConclusion } from "../utils/review-conclusion";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp, shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
-import { normalizeMarkers } from "./auto-pipeline/clarify-anchors";
+import { normalizeMarkers, primaryMarker } from "./auto-pipeline/clarify-anchors";
 import { AUDIT_THROTTLE_WINDOW_MS, CONFIRM_GATE_REASK_MAX, PIPELINE_TURN_SIGNATURES, TRANSIENT_RETRY_MAX } from "../constants";
 import { parseRequirementDocPath } from "../utils/doc-path";
 import { extractFirstUserMessageText, extractLastUserMessageText } from "./session-state";
@@ -826,10 +826,15 @@ export function createAgentSettled(
             // emitted the literal "{file}" placeholder and a generic "@agent").
             const clarifyAgent = resolveAgentMention(config, "clarify") ?? "agent";
             const clarifyDoc = meta.requirementDoc ?? "<requirement-doc>";
+            // 221 Phase 1: the answer-field literal follows the resolved protocol
+            // anchors (default stays `答：`, so the human text is unchanged).
+            const answerMarker = primaryMarker(
+              config.clarifyProtocol?.answerMarkers ?? ["答："],
+            );
             ui.notify(
               ctx,
               `Clarify round ${awaitCheck.round} is awaiting your answer. ` +
-                `Please write your answer in the requirement document (答：...) then re-mention ` +
+                `Please write your answer in the requirement document (${answerMarker}...) then re-mention ` +
                 `@${clarifyAgent} ${clarifyDoc} ${awaitCheck.round} 答 ` +
                 `(or @${clarifyAgent} ${clarifyDoc} full-und? to finalize).`,
             );

@@ -480,7 +480,13 @@ describe("194 Phase 4: standalone update-receipt asset consistency", () => {
       .filter(([, stage]) => stage.verify?.completionMarker !== undefined)
       .map(([name]) => name);
     expect(withMarker).toEqual(["clarify"]);
-    expect(cfg.stages["clarify"]!.verify?.completionMarker).toBe("## 模型确认");
+    // 221 Phase 1: the shipped marker is a bilingual alias ARRAY whose first
+    // entry is still the Chinese primary (human prompts stay unchanged).
+    const clarifyMarker = cfg.stages["clarify"]!.verify?.completionMarker;
+    expect(Array.isArray(clarifyMarker)).toBe(true);
+    if (!Array.isArray(clarifyMarker)) throw new Error("clarify completionMarker must be an array");
+    expect(clarifyMarker[0]).toBe("## 模型确认");
+    expect(clarifyMarker).toContain("## Model Confirmation");
 
     // No shipped asset turns the receipt heading into a marker-like proxy:
     // neither the loop config, the design-review verify contract, nor the
@@ -512,9 +518,10 @@ describe("194 Phase 4: standalone update-receipt asset consistency", () => {
     expect(cfg.stages["develop"]!.nextStage).toBe("review");
 
     // The YAML's clarify return-protocol guidance still teaches the marker
-    // auto-verification SOP verbatim.
+    // auto-verification SOP — 221 moved the literal behind the configured
+    // primary placeholder so English projects are asked for their own marker.
     const yml = readTemplate(path.join("references", "pipeline-stage-prompt.yml"));
-    expect(yml).toContain("`## 模型确认` marker");
+    expect(yml).toContain("`{completionMarker}` marker");
     expect(yml).toContain("auto-verifies (completionMarker)");
   });
 });

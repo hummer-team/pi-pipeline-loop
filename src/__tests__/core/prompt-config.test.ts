@@ -772,7 +772,10 @@ describe("prompt-config", () => {
       // Key phrases from the parent wait discipline clause
       expect(clarifyExecutor).toContain("STOP and WAIT");
       expect(clarifyExecutor).toContain("ask_user_question");
-      expect(clarifyExecutor).toContain("**答**");
+      // 221 Phase 1: the answer field is a configured placeholder (primary
+      // alias), so the wording follows the resolved protocol anchors.
+      expect(clarifyExecutor).toContain("{answerMarker}");
+      expect(clarifyExecutor).toContain("{completionMarker}");
       expect(clarifyExecutor).toContain("requirement document");
     });
 

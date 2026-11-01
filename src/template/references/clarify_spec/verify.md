@@ -34,3 +34,5 @@ rules:
             - "^##\\s*Model\\s+Confirmation"
 ---
 澄清验证：等待用户输入 full-und? 询问是否完全理解需求；模型确认理解后须在需求文档末尾写入"## 模型确认"标记节（最终轮确认结果，只在本组求值，不逐轮检查）。澄清节（`# 第 N 轮澄清` 推荐，`# Round N` 兼容；`#{1,2}` 仅限 h1/h2 防误命中）必须逐节包含方案推荐（`- 方案 [A-Z]` / `- Option [A-Z]` / `- Plan [A-Z]`，容忍前导缩进（2/4 空格）与 `*` bullet、`- 方案A` 无空格、`**方案 X**` 加粗形态）与用户答复（`答：`/`答:`/`**答**`/`Answer:`，容忍前导缩进如 `  答：...`）。失败反馈在 detail 中追加规则 `example` 期望示例（`; expected: <example>`），便于模型一轮修复。
+
+> 221 说明：本文件的 `runtime: modelConfirm` 仍然负责**规则求值**（完成标记是否写入文档）。`agent_settled` 的 precheck 权威来源是 `stages.clarify.verify.completionMarker`（字符串或别名数组，空数组=不 precheck），不要把本文件的正则并入 `completionMarker` 字面量列表。

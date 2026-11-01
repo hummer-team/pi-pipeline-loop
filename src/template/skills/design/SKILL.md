@@ -44,7 +44,7 @@ disable-model-invocation: true
    - Full understanding of requirement context (goals, boundaries).
    - Clear solution selection, no ambiguity and no side‑effects.
 3. **If criteria are met**:
-   - use `read` tool to read `@.pi/references/clarify_template.md` for the confirmation workflow (includes the `## 模型确认` record‑keeping protocol).
+   - use `read` tool to read `@.pi/references/clarify_template.md` for the confirmation workflow (includes the `## 模型确认` / `## Model Confirmation` record‑keeping protocol).
    - Append question summary & final solution decision to `{index}_{xxx}.md`.
 4. **If criteria are not met** → Proceed to the next clarification round.
 

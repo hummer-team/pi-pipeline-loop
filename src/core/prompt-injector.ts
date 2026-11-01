@@ -26,7 +26,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX, DEFAULT_COMPLETION_MARKERS } from "../constants";
+import { DEFAULT_CLARIFY_PROTOCOL, primaryMarker } from "./auto-pipeline/clarify-anchors";
 import { planDocRelPathFromRequirementDoc } from "./naming/doc-naming";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot, setAuditPipelineContext } from "../utils/auditLog";
@@ -1505,13 +1506,32 @@ async function buildStageExecutor(
   const promptConfig = await loadPromptConfig(config.projectRoot);
   const ymlTemplate = promptConfig[ymlKey];
 
+  // 221 Phase 1: the marker primaries are config-driven (job JSON → stage
+  // `completionMarker` → defaults). PROMPT-ONLY: the precheck switch is the
+  // stage `completionMarker` alone (see `mergeCompletionMarkers`).
+  const completionPrimary =
+    primaryMarker(
+      config.clarifyProtocol?.modelConfirm
+        ?? config.stages.clarify?.verify?.completionMarker
+        ?? DEFAULT_COMPLETION_MARKERS,
+    ) || DEFAULT_COMPLETION_MARKERS[0];
+  const answerPrimary =
+    primaryMarker(config.clarifyProtocol?.answerMarkers ?? DEFAULT_CLARIFY_PROTOCOL.answerMarkers) ||
+    DEFAULT_CLARIFY_PROTOCOL.answerMarkers[0]!;
+
   if (ymlTemplate && ymlTemplate.trim()) {
     // Fill placeholders from yml template
     return ymlTemplate
       .replaceAll("{subagent_type}", executor.subagent_type)
       .replaceAll("{context_arg}", `<document path filled by main thread, e.g. _Plan.md>`)
       .replaceAll("{active_spawn_note}", activeSpawnNote)
-      .replaceAll("{queued_spawn_note}", queuedSpawnNote);
+      .replaceAll("{queued_spawn_note}", queuedSpawnNote)
+      .replaceAll("{completionMarker}", completionPrimary)
+      .replaceAll("{answerMarker}", answerPrimary)
+      // 221 legacy deployments: an already installed yml still carries the
+      // literal Chinese marker, so the configured primary must win WITHOUT
+      // re-running /pipeline-init (default config stays byte-identical).
+      .replaceAll(DEFAULT_COMPLETION_MARKERS[0], completionPrimary);
   }
 
   // Fallback: hardcoded English default text (when yml key is missing/empty)
@@ -1524,7 +1544,7 @@ async function buildStageExecutor(
     lines.push(`This stage is executed by the user-invoked agent: \`${executor.subagent_type}\``);
     lines.push("");
     lines.push(`**Scheduling**: User @\`${executor.subagent_type}\` in chat with the requirement document path.`);
-    lines.push(`**Return protocol**: On \`full-und?\` confirmation, write the \`## 模型确认\` marker to the requirement document and STOP. Do NOT call \`stage_advance\` — the \`agent_settled\` hook auto-verifies (completionMarker) and advances to \`plan\`.`);
+    lines.push(`**Return protocol**: On \`full-und?\` confirmation, write the \`${completionPrimary}\` marker to the requirement document and STOP. Do NOT call \`stage_advance\` — the \`agent_settled\` hook auto-verifies (completionMarker) and advances to \`plan\`.`);
     // Phase 2 (172) G2: triage guidance for owner session
     lines.push(`**Triage**: If the user asks an unrelated question (not @mention with doc path or round args), answer briefly and do NOT touch pipeline state. Only pipeline-turn messages (containing verification results, stage routing, or @agent doc args) trigger verification.`);
     // Phase 7 (172) G1 + Phase 1 (175 R2Q2) + Phase 4 / 177 (D7): plugin-owned re-launch.

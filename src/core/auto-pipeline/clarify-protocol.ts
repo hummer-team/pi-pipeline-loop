@@ -6,8 +6,8 @@
  * - The protocol is DOCUMENT-LEVEL (headings inside the requirement document),
  *   so no new agent, no new state machine and no verify contract change is
  *   needed: the plugin only injects a "fill this in" directive.
- * - Anchors are constants (never scattered literals) and mirror the deployed
- *   clarify skill: `## 需求评估` (ready / needs-clarify) and `## 组合决策台账`.
+ * - 221 Phase 1: anchors come from `resolveClarifyAnchors` (job JSON →
+ *   verify.md → bilingual defaults). No literal anchor is read here anymore.
  * - Parsing is deterministic and pure so design-review guidance and the
  *   clarify directive agree on the same facts.
  * - The directive NEVER presets a verdict: it lists what is missing and lets
@@ -17,9 +17,14 @@
  */
 
 import {
-  ASSESSMENT_HEADING,
+  DEFAULT_CLARIFY_PROTOCOL,
+  resolveClarifyAnchors,
+  type ResolvedClarifyAnchors,
+} from "./clarify-anchors";
+import {
   VERDICT_NEEDS_CLARIFY,
   VERDICT_READY,
+  sectionBody,
   splitSections,
   type RequirementAssessment,
 } from "./clarify-assessment";
@@ -29,7 +34,7 @@ export type { RequirementAssessment } from "./clarify-assessment";
 
 /** Parsed decision ledger of one requirement document. */
 export interface DecisionLedger {
-  /** TRUE when the `## 组合决策台账` section exists. */
+  /** TRUE when the ledger section exists (any heading alias). */
   present: boolean;
   /** Number of decision rows. */
   entries: number;
@@ -41,12 +46,8 @@ export interface DecisionLedger {
   hasConflictMatrix: boolean;
 }
 
-/** Heading anchor of the decision ledger. */
-export const LEDGER_HEADING = "## 组合决策台账";
-/** Marks a ledger without documented elimination reasons. */
-const ELIMINATION_MARKERS = ["淘汰理由", "淘汰原因"];
-/** Marks a ledger with a cross-question conflict matrix. */
-const CONFLICT_MARKER = "冲突矩阵";
+/** PRIMARY heading anchor of the decision ledger (defaults, first alias). */
+export const LEDGER_HEADING = DEFAULT_CLARIFY_PROTOCOL.ledgerHeading[0]!;
 
 /** Count the data rows of the first markdown table inside a section body. */
 function parseTableRows(body: string): string[][] {
@@ -77,13 +78,16 @@ function parseTableRows(body: string): string[][] {
  * `entries` counts decision rows; `labels` are the first-column values
  * (deduped, order preserved) used by design-review traceability checks.
  */
-export function parseDecisionLedger(docText: string): DecisionLedger {
+export function parseDecisionLedger(
+  docText: string,
+  anchors?: ResolvedClarifyAnchors,
+): DecisionLedger {
+  const effective = anchors ?? resolveClarifyAnchors({});
   const sections = splitSections(docText);
-  const present = sections.has(LEDGER_HEADING);
-  if (!present) {
+  const body = sectionBody(sections, effective.ledgerHeading);
+  if (body === undefined) {
     return { present: false, entries: 0, labels: [], hasEliminatedReasons: false, hasConflictMatrix: false };
   }
-  const body = sections.get(LEDGER_HEADING) ?? "";
   const rows = parseTableRows(body);
   const labels: string[] = [];
   const seen = new Set<string>();
@@ -97,28 +101,51 @@ export function parseDecisionLedger(docText: string): DecisionLedger {
     present: true,
     entries: rows.length,
     labels,
-    hasEliminatedReasons: ELIMINATION_MARKERS.some((marker) => body.includes(marker)),
-    hasConflictMatrix: body.includes(CONFLICT_MARKER),
+    hasEliminatedReasons: effective.eliminationMarkers.some((marker) => body.includes(marker)),
+    hasConflictMatrix: effective.conflictMarkers.some((marker) => body.includes(marker)),
   };
+}
+
+/** Highest `lastIndex`-independent match index of a global pattern in `text`. */
+function lastMatchIndex(pattern: RegExp, text: string): number {
+  const re = new RegExp(pattern.source, "gm");
+  let last = -1;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    last = match.index;
+    // A zero-length match must advance `lastIndex` or the loop never ends.
+    if (match[0].length === 0) re.lastIndex += 1;
+  }
+  return last;
 }
 
 /**
  * Number of open questions of the LATEST clarify round.
  *
- * Round headings are `## … 轮 …` lines; without one the whole document counts
- * (first round of a document often has no explicit round heading).
+ * Round headings are matched by the effective round patterns (job → verify.md →
+ * defaults + the permissive `轮` compatibility alias); without one the whole
+ * document counts (the first round often has no explicit round heading).
  */
-export function parseClarifyQuestionCount(docText: string): number {
-  const questionRe = /^##\s+问题\s+\d+/gm;
-  const roundStarts: number[] = [];
-  const roundRe = /^#+\s+.*轮/mg;
-  let roundMatch: RegExpExecArray | null;
-  while ((roundMatch = roundRe.exec(docText)) !== null) roundStarts.push(roundMatch.index);
-  const start = roundStarts.length > 0 ? roundStarts[roundStarts.length - 1]! : 0;
+export function parseClarifyQuestionCount(
+  docText: string,
+  anchors?: ResolvedClarifyAnchors,
+): number {
+  const effective = anchors ?? resolveClarifyAnchors({});
+  let start = 0;
+  for (const pattern of effective.roundPatterns) {
+    start = Math.max(start, lastMatchIndex(pattern, docText));
+  }
   const slice = docText.slice(start);
-  let count = 0;
-  while (questionRe.exec(slice) !== null) count += 1;
-  return count;
+  const positions = new Set<number>();
+  for (const pattern of effective.questionPatterns) {
+    const re = new RegExp(pattern.source, "gm");
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(slice)) !== null) {
+      positions.add(match.index);
+      if (match[0].length === 0) re.lastIndex += 1;
+    }
+  }
+  return positions.size;
 }
 
 /**
@@ -126,18 +153,27 @@ export function parseClarifyQuestionCount(docText: string): number {
  *
  * @returns NULL when nothing has to be completed.
  */
-export function buildProtocolDirective(input: {
-  assessment: RequirementAssessment;
-  ledger: DecisionLedger;
-  questionCount: number;
-  tier: "rule" | "assisted";
-}): string | null {
+export function buildProtocolDirective(
+  input: {
+    assessment: RequirementAssessment;
+    ledger: DecisionLedger;
+    questionCount: number;
+    tier: "rule" | "assisted";
+  },
+  anchors?: ResolvedClarifyAnchors,
+): string | null {
   const { assessment, ledger, questionCount, tier } = input;
+  const effective = anchors ?? resolveClarifyAnchors({});
+  const assessmentHeading = effective.assessmentHeading[0]!;
+  const ledgerHeading = effective.ledgerHeading[0]!;
+  const verdictReady = effective.verdictReady[0] ?? VERDICT_READY;
+  const verdictNeedsClarify = effective.verdictNeedsClarify[0] ?? VERDICT_NEEDS_CLARIFY;
+  const conflictMarker = effective.conflictMarkers[0] ?? "冲突矩阵";
   const problems: string[] = [];
 
   if (!assessment.present) {
     problems.push(
-      `Add a \`${ASSESSMENT_HEADING}\` section stating \`${VERDICT_READY}\` or \`${VERDICT_NEEDS_CLARIFY}\`.`,
+      `Add a \`${assessmentHeading}\` section stating \`${verdictReady}\` or \`${verdictNeedsClarify}\`.`,
     );
   }
   if (assessment.missingSections.length > 0) {
@@ -150,14 +186,14 @@ export function buildProtocolDirective(input: {
   }
   if (questionCount >= 2 && !ledger.present) {
     problems.push(
-      `Add a \`${LEDGER_HEADING}\` table (question / chosen option / eliminated option / score / elimination reason / dependencies).`,
+      `Add a \`${ledgerHeading}\` table (question / chosen option / eliminated option / score / elimination reason / dependencies).`,
     );
   } else if (ledger.present && !ledger.hasEliminatedReasons) {
-    problems.push(`Document the elimination reasons inside \`${LEDGER_HEADING}\`.`);
+    problems.push(`Document the elimination reasons inside \`${ledgerHeading}\`.`);
   }
   if (tier === "assisted" && ledger.present && !ledger.hasConflictMatrix) {
     problems.push(
-      `Add the \`${CONFLICT_MARKER}\` (cross-question conflict-and-resolution matrix) inside \`${LEDGER_HEADING}\`.`,
+      `Add the \`${conflictMarker}\` (cross-question conflict-and-resolution matrix) inside \`${ledgerHeading}\`.`,
     );
   }
   if (problems.length === 0) return null;

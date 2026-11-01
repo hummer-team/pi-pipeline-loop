@@ -62,7 +62,7 @@
       "nextStage": "plan",
       "verify": {
         "require": true,
-        "completionMarker": "## 模型确认"
+        "completionMarker": ["## 模型确认", "## Model Confirmation"]
       },
       "guard": {
         "blockedTools": [],

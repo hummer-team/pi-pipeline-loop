@@ -7,34 +7,38 @@
  * - The protocol is DOCUMENT-LEVEL (headings inside the requirement document),
  *   so no new agent, no new state machine and no verify-contract change is
  *   needed: the plugin only injects a "fill this in" directive.
- * - Anchors are constants here (never scattered literals) and mirror the
- *   deployed clarify skill: `## 需求评估` declares `ready` / `needs-clarify`.
+ * - 221 Phase 1: anchors come from `resolveClarifyAnchors` (job JSON → verify.md
+ *   → bilingual defaults). The legacy constants below remain as the PRIMARY
+ *   alias of the defaults, so existing callers/tests keep their meaning.
  * - Parsing is deterministic and pure, so the clarify directive and the
  *   design-review guidance agree on the same facts.
- * - Extracted from `clarify-protocol.ts` (220 develop: the file budget is
- *   ≤200 lines per module); the protocol module re-exports this API, so no
- *   caller had to change.
  */
+
+import {
+  DEFAULT_CLARIFY_PROTOCOL,
+  resolveClarifyAnchors,
+  type ResolvedClarifyAnchors,
+} from "./clarify-anchors";
 
 /** Deterministic requirement assessment of one requirement document. */
 export interface RequirementAssessment {
-  /** TRUE when the `## 需求评估` section exists. */
+  /** TRUE when the assessment section exists (any alias). */
   present: boolean;
   /** Declared verdict; `unknown` when the section is missing/ambiguous. */
   verdict: "ready" | "needs-clarify" | "unknown";
-  /** Mandatory sections (`## 目标` / `## 范围` / `## 验收标准`) that are absent. */
+  /** Mandatory sections (goal / scope / acceptance) that are absent, primary aliases. */
   missingSections: string[];
   /** Deterministic ambiguity hits (deduped, ≤ 10). */
   ambiguities: string[];
 }
 
-/** Heading anchors of the assessment protocol (single source of truth). */
-export const ASSESSMENT_HEADING = "## 需求评估";
-export const GOAL_HEADING = "## 目标";
-export const SCOPE_HEADING = "## 范围";
-export const ACCEPTANCE_HEADING = "## 验收标准";
-export const VERDICT_READY = "ready";
-export const VERDICT_NEEDS_CLARIFY = "needs-clarify";
+/** PRIMARY heading anchors of the assessment protocol (defaults, first alias). */
+export const ASSESSMENT_HEADING = DEFAULT_CLARIFY_PROTOCOL.assessmentHeading[0]!;
+export const GOAL_HEADING = DEFAULT_CLARIFY_PROTOCOL.goalHeading[0]!;
+export const SCOPE_HEADING = DEFAULT_CLARIFY_PROTOCOL.scopeHeading[0]!;
+export const ACCEPTANCE_HEADING = DEFAULT_CLARIFY_PROTOCOL.acceptanceHeading[0]!;
+export const VERDICT_READY = DEFAULT_CLARIFY_PROTOCOL.verdictReady[0]!;
+export const VERDICT_NEEDS_CLARIFY = DEFAULT_CLARIFY_PROTOCOL.verdictNeedsClarify[0]!;
 
 /** Vague words that make a requirement ambiguous when they stand alone. */
 const AMBIGUOUS_WORDS = ["TBD", "待定", "若干", "尽快", "优化一下", "更快", "更好", "尽量"];
@@ -69,9 +73,23 @@ export function splitSections(docText: string): Map<string, string> {
   return sections;
 }
 
-/** TRUE when the document carries the given heading (exact line match). */
-function hasHeading(docText: string, heading: string): boolean {
-  return docText.split(/\r?\n/).some((line) => line.trim() === heading);
+/** Body of the first heading alias that exists in `sections`. */
+export function sectionBody(
+  sections: Map<string, string>,
+  headings: string[],
+): string | undefined {
+  for (const heading of headings) {
+    const body = sections.get(heading);
+    if (body !== undefined) return body;
+  }
+  return undefined;
+}
+
+/** TRUE when the document carries ANY of the given headings (exact line match). */
+function hasHeading(docText: string, headings: string[]): boolean {
+  return docText
+    .split(/\r?\n/)
+    .some((line) => headings.some((heading) => line.trim() === heading));
 }
 
 /** Collect the deterministic ambiguity fragments of one document. */
@@ -111,25 +129,38 @@ function collectAmbiguities(docText: string): string[] {
  *
  * `verdict` is `needs-clarify` as soon as the document has a missing mandatory
  * section or a deterministic ambiguity; otherwise the declared verdict wins.
+ *
+ * @param anchors - Resolved protocol anchors; omitted ⇒ bilingual defaults.
  */
-export function parseRequirementAssessment(docText: string): RequirementAssessment {
+export function parseRequirementAssessment(
+  docText: string,
+  anchors?: ResolvedClarifyAnchors,
+): RequirementAssessment {
+  const effective = anchors ?? resolveClarifyAnchors({});
   const sections = splitSections(docText);
-  const present = sections.has(ASSESSMENT_HEADING);
-  const body = sections.get(ASSESSMENT_HEADING) ?? "";
-  const declared = body.includes(VERDICT_NEEDS_CLARIFY)
-    ? "needs-clarify"
-    : body.includes(VERDICT_READY)
-      ? "ready"
-      : "unknown";
+  const body = sectionBody(sections, effective.assessmentHeading);
+  const declared = body === undefined
+    ? "unknown"
+    : effective.verdictNeedsClarify.some((v) => body.includes(v))
+      ? "needs-clarify"
+      : effective.verdictReady.some((v) => body.includes(v))
+        ? "ready"
+        : "unknown";
 
-  const missingSections = [GOAL_HEADING, SCOPE_HEADING, ACCEPTANCE_HEADING].filter(
-    (heading) => !hasHeading(docText, heading),
-  );
+  const missingSections = [
+    effective.goalHeading,
+    effective.scopeHeading,
+    effective.acceptanceHeading,
+  ]
+    .filter((headings) => !hasHeading(docText, headings))
+    // 221 Phase 1: report the PRIMARY alias so the injected directive and the
+    // configured anchors always agree (INV-4).
+    .map((headings) => headings[0]!);
   const ambiguities = collectAmbiguities(docText);
   const needsClarify = missingSections.length > 0 || ambiguities.length > 0;
 
   return {
-    present,
+    present: body !== undefined,
     verdict: needsClarify ? "needs-clarify" : declared,
     missingSections,
     ambiguities,

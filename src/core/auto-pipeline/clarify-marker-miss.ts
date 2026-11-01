@@ -32,6 +32,7 @@ import { handleDocFailure } from "./finalize";
 import {
   buildClarifyFinalisationInstruction,
   noteClarifyFallbackUsed,
+  resolveClarifyPromptMarkers,
 } from "./clarify-autopilot";
 import { dispatchClarifyRound } from "./clarify-round-dispatch";
 import {
@@ -103,7 +104,7 @@ export async function handleAutoClarifyMarkerMiss(
     docState,
     deps,
     FORCED_FULL_UND_ARGS,
-    buildClarifyFinalisationInstruction(),
+    buildClarifyFinalisationInstruction(resolveClarifyPromptMarkers(config)),
   );
   if (!dispatched) {
     await handleDocFailure(ctx, config, state, job, {

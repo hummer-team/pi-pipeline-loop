@@ -37,3 +37,22 @@ describe("Template key assertion (Phase 4 task 5)", () => {
     expect(template.maxLoops).not.toBe(template.maxLoopCycles);
   });
 });
+
+describe("221 Phase 0: clarify protocol job config keys", () => {
+  const jobConfigPath = path.join(__dirname, "../../template/pipeline_loop_job.json");
+
+  it("ships only the new clarify anchor keys", () => {
+    const config = JSON.parse(fs.readFileSync(jobConfigPath, "utf-8"));
+    expect(config.version).toBe(1);
+    expect(Object.keys(config.clarify).sort()).toEqual(
+      ["assessment", "ledger", "questions", "sections", "verdicts"].sort(),
+    );
+  });
+
+  it("declares no rounds/answers/modelConfirm (single-source rule)", () => {
+    const config = JSON.parse(fs.readFileSync(jobConfigPath, "utf-8"));
+    expect(config.clarify.rounds).toBeUndefined();
+    expect(config.clarify.answers).toBeUndefined();
+    expect(config.clarify.modelConfirm).toBeUndefined();
+  });
+});

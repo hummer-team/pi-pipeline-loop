@@ -17,7 +17,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { PipelineConfig } from "../../types";
+import { loadVerifyContractAnchors } from "../../utils/contract-loader";
 import { readActiveJobContext } from "./config-overlay";
+import { resolveClarifyAnchors } from "./clarify-anchors";
 import { parseDecisionLedger } from "./clarify-protocol";
 import { buildLedgerTraceabilityDirective } from "./design-review-ledger-check";
 
@@ -48,7 +50,17 @@ export async function resolveAutoLedgerGuidance(input: {
   if (!doc) return null;
   const requirementText = await readText(input.config.projectRoot, doc);
   if (requirementText === null) return null;
-  const ledger = parseDecisionLedger(requirementText);
+  // 221 Phase 1: the ledger anchors come from the SAME resolution as clarify
+  // (job JSON → verify.md → defaults), so both stages read one protocol.
+  const { anchors: verifyAnchors } = await loadVerifyContractAnchors(input.config, "clarify");
+  const anchors = resolveClarifyAnchors({
+    ...(input.config.clarifyProtocol ? { job: input.config.clarifyProtocol } : {}),
+    ...(verifyAnchors ? { verify: verifyAnchors } : {}),
+    ...(input.config.stages.clarify?.verify?.completionMarker !== undefined
+      ? { completionMarker: input.config.stages.clarify.verify.completionMarker }
+      : {}),
+  });
+  const ledger = parseDecisionLedger(requirementText, anchors);
   if (!ledger.present) return null;
   const planText = (await readText(input.config.projectRoot, input.planDoc)) ?? "";
   return buildLedgerTraceabilityDirective({

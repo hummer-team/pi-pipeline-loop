@@ -73,7 +73,10 @@ export const PIPELINE_LOOP_JOB_CONFIG_FILE = ".pi/pipeline_loop_job.json";
  * declares one). Never written back to configuration — the deployed
  * `pipeline_loop.json` stays the authoritative precheck source.
  */
-export const DEFAULT_COMPLETION_MARKERS = ["## 模型确认", "## Model Confirmation"] as const;
+export const DEFAULT_COMPLETION_MARKERS: string[] = [
+  "## 模型确认",
+  "## Model Confirmation",
+];
 
 /** Paths that agents in loop stages (develop/fix) must not modify.
  * Project rule files (e.g. AGENTS.md) are NOT protected by default;

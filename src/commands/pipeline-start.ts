@@ -1231,7 +1231,7 @@ async function maybeAutoLaunchClarify(
   // 219 Phase 3 (G1): an active auto job self-answers clarify. Its plan replaces
   // the human-derived args and contributes the instruction appended below.
   const autoClarify: ClarifyAutoPlan | null =
-    !forwardArgs || !forwardArgs.trim() ? buildClarifyAutoPlan(config.projectRoot) : null;
+    !forwardArgs || !forwardArgs.trim() ? buildClarifyAutoPlan(config) : null;
 
   if (autoClarify) {
     effectiveArgs = autoClarify.args;

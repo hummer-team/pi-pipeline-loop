@@ -15,10 +15,8 @@
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
 import { resolveClarifyDescription } from "../../utils/clarify-args";
 import { auditAutoDecision } from "./auto-audit";
-import {
-  buildClarifyFinalisationInstruction,
-  noteClarifyFallbackUsed,
-} from "./clarify-autopilot";
+import { noteClarifyFallbackUsed } from "./clarify-autopilot";
+import type { ResolvedClarifyAnchors } from "./clarify-anchors";
 import type { ClarifyDispatchDecision } from "./clarify-dispatch";
 import {
   buildProtocolDirective,
@@ -47,16 +45,20 @@ function composeExtraArgs(
   decision: ClarifyDispatchDecision,
   docText: string | null,
   tier: AutoJobConfig["tier"],
+  anchors: ResolvedClarifyAnchors,
   baseArgsOverride?: string,
 ): { extraArgs: string; protocolApplied: boolean } {
   const baseArgs = baseArgsOverride ?? decision.extraArgs ?? "";
   if (docText === null) return { extraArgs: baseArgs, protocolApplied: false };
-  const directive = buildProtocolDirective({
-    assessment: parseRequirementAssessment(docText),
-    ledger: parseDecisionLedger(docText),
-    questionCount: parseClarifyQuestionCount(docText),
-    tier,
-  });
+  const directive = buildProtocolDirective(
+    {
+      assessment: parseRequirementAssessment(docText, anchors),
+      ledger: parseDecisionLedger(docText, anchors),
+      questionCount: parseClarifyQuestionCount(docText, anchors),
+      tier,
+    },
+    anchors,
+  );
   return directive
     ? { extraArgs: `${baseArgs}\n\n${directive}`, protocolApplied: true }
     : { extraArgs: baseArgs, protocolApplied: false };
@@ -90,7 +92,7 @@ export async function dispatchClarifyRound(
 ): Promise<boolean> {
   const { decision, doc, docText, progress } = docState;
   const now = Date.now();
-  const composed = composeExtraArgs(decision, docText, job.tier, extraArgsOverride);
+  const composed = composeExtraArgs(decision, docText, job.tier, docState.anchors, extraArgsOverride);
   const baseArgs = composed.extraArgs;
   const extraArgs = finalisationInstruction ? `${baseArgs}\n\n${finalisationInstruction}` : baseArgs;
   if (composed.protocolApplied) {

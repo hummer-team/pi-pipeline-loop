@@ -18,6 +18,8 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import { DEFAULT_COMPLETION_MARKERS } from "../../constants";
+import { DEFAULT_CLARIFY_PROTOCOL, primaryMarker } from "./clarify-anchors";
 import type { AutoJobConfig } from "./job-schema";
 import type { AutoJobState } from "./job-state";
 import { readActiveJobContext } from "./config-overlay";
@@ -43,6 +45,36 @@ export interface ClarifyAutoPlan {
   maxRounds: number;
 }
 
+/** Marker primaries used by the clarify PROMPTS (never by the precheck switch). */
+export interface ClarifyPromptMarkers {
+  /** Answer-field literal the agent is asked to write (`答：` by default). */
+  answerMarker: string;
+  /** Completion-marker heading the finalisation round asks for. */
+  completionMarker: string;
+}
+
+/**
+ * 221 Phase 1: resolve the marker primaries shown to the agent.
+ *
+ * Precedence for the completion marker mirrors the frozen protocol:
+ * job JSON `modelConfirm` → stage `completionMarker` → code defaults. This is
+ * PROMPT-ONLY: it never enables the `agent_settled` precheck (that switch is
+ * `completionMarker` alone, see `mergeCompletionMarkers`).
+ */
+export function resolveClarifyPromptMarkers(config: PipelineConfig): ClarifyPromptMarkers {
+  const completionPrimary = primaryMarker(
+    config.clarifyProtocol?.modelConfirm
+      ?? config.stages.clarify?.verify?.completionMarker
+      ?? DEFAULT_COMPLETION_MARKERS,
+  );
+  return {
+    answerMarker: primaryMarker(
+      config.clarifyProtocol?.answerMarkers ?? DEFAULT_CLARIFY_PROTOCOL.answerMarkers,
+    ),
+    completionMarker: completionPrimary || DEFAULT_COMPLETION_MARKERS[0],
+  };
+}
+
 /**
  * Build the self-answer instruction.
  *
@@ -50,13 +82,18 @@ export interface ClarifyAutoPlan {
  * (`full-und?` + completion marker) is dispatched separately, so a single
  * clarify turn has exactly one responsibility.
  */
-export function buildClarifyInstruction(job: AutoJobConfig): string {
+export function buildClarifyInstruction(
+  job: AutoJobConfig,
+  markers: Pick<ClarifyPromptMarkers, "answerMarker"> = {
+    answerMarker: DEFAULT_CLARIFY_PROTOCOL.answerMarkers[0]!,
+  },
+): string {
   const maxRounds = job.clarify.maxRounds;
   return (
     `[auto-pipeline] This run is unattended — no human will answer. ` +
     `Work through the clarification rounds yourself (at most ${maxRounds}). ` +
     "For every open question pick the recommended option and write it into the requirement " +
-    "document as `答：<answer>` with a one-line reason. " +
+    `document as \`${markers.answerMarker}<answer>\` with a one-line reason. ` +
     "Do not write the completion marker and do not run the finalisation flow: " +
     "the plugin dispatches that round itself once the answers are on disk."
   );
@@ -66,13 +103,13 @@ export function buildClarifyInstruction(job: AutoJobConfig): string {
  * Build the clarify plan for the active auto job, or `null` when this process
  * is not an auto runner (human mode keeps its unchanged derivation).
  */
-export function buildClarifyAutoPlan(projectRoot: string): ClarifyAutoPlan | null {
-  const active = readActiveJobContext(projectRoot);
+export function buildClarifyAutoPlan(config: PipelineConfig): ClarifyAutoPlan | null {
+  const active = readActiveJobContext(config.projectRoot);
   if (!active || active.state.status !== "running") return null;
   return {
     args: "1",
     round: 1,
-    instruction: buildClarifyInstruction(active.job),
+    instruction: buildClarifyInstruction(active.job, resolveClarifyPromptMarkers(config)),
     maxRounds: active.job.clarify.maxRounds,
   };
 }
@@ -102,10 +139,14 @@ export function noteClarifyFallbackUsed(input: {
  * plugin dispatches when `clarify.onExhausted: "self-confirm"` accepted a
  * fallback. It is the ONLY instruction that mentions the marker.
  */
-export function buildClarifyFinalisationInstruction(): string {
+export function buildClarifyFinalisationInstruction(
+  markers: Pick<ClarifyPromptMarkers, "completionMarker"> = {
+    completionMarker: DEFAULT_COMPLETION_MARKERS[0],
+  },
+): string {
   return (
     "[auto-pipeline] Finalise the clarification: run the full-und? flow and write the " +
-    "completion marker (`## 模型确认`) with the confirmation line. Do not skip the marker."
+    `completion marker (\`${markers.completionMarker}\`) with the confirmation line. Do not skip the marker.`
   );
 }
 
@@ -169,7 +210,7 @@ export async function handleClarifyBudgetExhausted(
     docState,
     deps,
     FORCED_FULL_UND_ARGS,
-    buildClarifyFinalisationInstruction(),
+    buildClarifyFinalisationInstruction(resolveClarifyPromptMarkers(config)),
   );
   if (!dispatched) {
     await handleDocFailure(ctx as never, config, state, job, {
