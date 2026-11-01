@@ -52,11 +52,11 @@ describe("isClarifyStalled", () => {
   });
 
   it("limit reached → stalled", () => {
-    expect(isClarifyStalled({ stalls: 2, signature: "s", docLength: 1 }, 3)).toBe(false);
-    expect(isClarifyStalled({ stalls: 3, signature: "s", docLength: 1 }, 3)).toBe(true);
+    expect(isClarifyStalled({ stalls: 2 }, 3)).toBe(false);
+    expect(isClarifyStalled({ stalls: 3 }, 3)).toBe(true);
   });
 
   it("limit 0 disables the judgement", () => {
-    expect(isClarifyStalled({ stalls: 99, signature: "s", docLength: 1 }, 0)).toBe(false);
+    expect(isClarifyStalled({ stalls: 99 }, 0)).toBe(false);
   });
 });

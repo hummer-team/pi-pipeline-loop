@@ -22,6 +22,8 @@
 import { deriveClarifyForwardArgs } from "../../utils/clarify-args";
 import type { VerifyContractAnchors } from "../../utils/contract-loader";
 import type { RequirementAssessment } from "./clarify-protocol";
+import { isClarifyRoundBudgetExhausted } from "./clarify-round-budget";
+import { isClarifyStalled } from "./clarify-stall";
 
 /** What the settle seam must do with the current clarify document. */
 export type ClarifyDispatchAction =
@@ -130,10 +132,12 @@ export function decideClarifyDispatch(input: ClarifyDispatchInput): ClarifyDispa
   if (derived.kind === "confirmed") {
     return dispatchDecision(input, "confirmed", derived.round, "clarify_confirmed");
   }
-  if (input.maxRounds > 0 && input.usedRounds >= input.maxRounds) {
+  // The two gate rules live in their owning modules: a second inline copy would
+  // drift the moment either module changes (e.g. the `maxRounds <= 0` bound).
+  if (isClarifyRoundBudgetExhausted(input.usedRounds, input.maxRounds)) {
     return dispatchDecision(input, "budget-exhausted", derivedRound, "clarify_round_budget_exhausted");
   }
-  if (input.stallLimit > 0 && input.stalls >= input.stallLimit) {
+  if (isClarifyStalled({ stalls: input.stalls }, input.stallLimit)) {
     return dispatchDecision(input, "stalled", derivedRound, "clarify_stalled");
   }
   if (input.needsClarifyLimit > 0 && input.needsClarifyStreak >= input.needsClarifyLimit) {

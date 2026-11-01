@@ -62,8 +62,9 @@ export function buildLedgerTraceabilityDirective(input: {
 }): string | null {
   const labels = input.labels.filter((label) => label.length > 0);
   if (labels.length === 0) return null;
+  // Same counter the callers use, so "fully covered" has one definition.
+  if (countLedgerReferences(labels, input.planText) === labels.length) return null;
   const missing = missingLabels(labels, input.planText);
-  if (missing.length === 0) return null;
 
   const checks = input.tier === "assisted" ? [...RULE_CHECKS, ...ASSISTED_CHECKS] : RULE_CHECKS;
   const lines = [

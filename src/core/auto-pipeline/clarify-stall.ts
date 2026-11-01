@@ -43,8 +43,14 @@ export function nextClarifyStallState(
   return { stalls, signature: input.signature, docLength: input.docLength };
 }
 
-/** TRUE when the stall count reached the configured limit (`0` = disabled). */
-export function isClarifyStalled(state: ClarifyStallState, limit: number): boolean {
+/**
+ * TRUE when the stall count reached the configured limit (`0` = disabled).
+ *
+ * Only the count is judged, so the decision layer (`clarify-dispatch.ts`) can
+ * call this predicate with the fact it holds instead of re-implementing the
+ * comparison (single source of truth for the rule).
+ */
+export function isClarifyStalled(state: Pick<ClarifyStallState, "stalls">, limit: number): boolean {
   if (limit <= 0) return false;
   return state.stalls >= limit;
 }

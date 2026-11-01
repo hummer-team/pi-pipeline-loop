@@ -224,6 +224,18 @@ describe("start-stage runner — missing evidence is a doc failure, never a fall
     );
   });
 
+  it("develop without any plan → missing:plan (distinguishable from unconfirmed)", async () => {
+    writeFile(REQUIREMENT, "# requirement\n"); // the plan is absent entirely
+    writeJob(jobYaml({ startStage: "develop" }));
+    const { ctx } = makeCtx();
+
+    await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
+
+    expect(readJobState(ROOT, JOB_ID)?.docs[0]?.failReason).toBe(
+      "start_stage_evidence_missing:plan",
+    );
+  });
+
   it("review without the commit document → missing:commit", async () => {
     writeFile(REQUIREMENT, "# requirement\n");
     writeJob(jobYaml({ startStage: "review" }));

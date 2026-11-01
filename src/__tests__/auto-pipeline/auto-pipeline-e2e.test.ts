@@ -2,27 +2,29 @@
  * 220 Phase 6 (INV-2/INV-3): one unattended run, end to end, at seam level.
  *
  * What is proven here:
- * - the settle transaction walks the whole stage sequence and records it in the
- *   sidecar (`docs[].lastStage`) without ever calling `recordStageVisit` itself;
+ * - ONE real chain driven by document evidence (not by hand-written stage
+ *   values): clarify self-answer → `full-und?` → marker → plan → design-review
+ *   (with the ledger traceability guidance) → develop → review → fix →
+ *   completed, each step audited on the single auto-decision channel;
  * - the three round budgets are INDEPENDENT: exhausting clarify, design-review
  *   or review↔fix never freezes another stage's budget;
- * - the four 220 stop reasons are all reachable and each one names its cause;
- * - six start stages work under both tiers (`rule` / `assisted`).
+ * - the four 220 stop reasons are all reachable and each one names its cause.
+ *
+ * The 6 start stages × 2 tiers matrix lives in `auto-start-stage-matrix.test.ts`
+ * (it drives the command entry, not the settle seam) to keep this file within
+ * the 400-line test budget.
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn, setSystemTime } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { tmpdir } from "node:os";
-import type { PipelineConfig, PipelineJsonConfig, PipelineStage, SessionMeta } from "../../types";
-import { RESUMABLE_STAGES } from "../../constants";
-import { resolvePipelineConfig } from "../../core/json-config-loader";
+import type { PipelineStage, SessionMeta } from "../../types";
 import { handleAutoSettle } from "../../core/auto-pipeline/settle-seam";
 import {
   runAutoClarifyRound,
   type ClarifyEntryCtx,
   type ClarifyEntryDeps,
 } from "../../core/auto-pipeline/clarify-entry";
-import { __resetAutoJobLockForTests, isAutoJobActive } from "../../core/auto-pipeline/config-overlay";
+import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
 import { isClarifyRoundBudgetExhausted, noteClarifyRoundDispatch } from "../../core/auto-pipeline/clarify-round-budget";
 import {
@@ -30,16 +32,14 @@ import {
   noteDesignReviewDispatch,
 } from "../../core/auto-pipeline/round-budget";
 import { writeJobState } from "../../core/auto-pipeline/job-state";
-import { startAutoJob } from "../../commands/pipeline-auto";
+import { resolveAutoLedgerGuidance } from "../../core/auto-pipeline/design-review-ledger-inject";
+import { derivePlanDocPath } from "../../core/auto-pipeline/start-stage-evidence";
 import { createAgentSettled } from "../../core/agent-settled";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { createAutoHarness, createSessionStub, HARNESS_DOCS, type AutoHarness } from "./auto-harness";
 
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
-const TEMPLATE_JSON: PipelineJsonConfig = JSON.parse(
-  fs.readFileSync(path.join(SRC_ROOT, "src", "template", "pipeline_loop.json"), "utf8"),
-) as PipelineJsonConfig;
 
 const DOC = HARNESS_DOCS[0]!;
 const MANDATORY = ["## 目标", "Ship it.", "## 范围", "Clarify only.", "## 验收标准", "One round."];
@@ -57,63 +57,150 @@ afterEach(() => {
   __resetAutoJobLockForTests();
 });
 
-// ─── 1. stage walk ───────────────────────────────────────────────────────────
+// ─── 1. one real chain ──────────────────────────────────────────────────────
 
-describe("auto run — the settle transaction records the whole stage walk", () => {
+const PLAN_DOC = derivePlanDocPath(DOC);
+const PLAN_TEXT = ["# 200_Feat_Plan", "", "## 方案", "存储选型：方案 B（按台账执行）", ""].join("\n");
+const LEDGER = [
+  "## 组合决策台账",
+  "",
+  "| 决策项 | 结论 | 淘汰理由 |",
+  "|---|---|---|",
+  "| 存储选型 | 方案 B | 淘汰方案 A：写入延迟 |",
+  "| 日志方案 | 方案 C | 淘汰方案 D：成本 |",
+].join("\n");
+
+describe("auto run — one unattended chain from clarify to completed", () => {
   let harness: AutoHarness;
-  const AUDIT: string[] = [];
+  let audits: string[];
+  let dispatches: Array<{ extraArgs?: string }>;
+  let deps: ClarifyEntryDeps;
+  let docAbs: string;
 
-  function settleCtx(meta: SessionMeta) {
-    let current = { ...meta };
-    return {
-      session: {
-        getMeta: () => current,
-        updateMeta: (patch: Partial<SessionMeta>) => {
-          current = { ...current, ...patch };
-          return current;
-        },
+  /**
+   * Mutable session whose patches land on the meta the test advances.
+   *
+   * INV-2: `stage-advancer` stays the ONLY advancement authority, so the auto
+   * layer never advances by itself. This suite stands in for the pipeline
+   * (the plan's 替身 wording): `advance()` is what the real advancer would do
+   * after the preceding stage verified.
+   */
+  function makeSession(initial: SessionMeta) {
+    let current = initial;
+    const session = {
+      getMeta: () => current,
+      updateMeta: (patch: Partial<SessionMeta>): SessionMeta => {
+        current = { ...current, ...patch };
+        return current;
       },
-      ui: { notify: () => {} },
-      pi: { sendUserMessage: () => {} },
-      _ctx: { sessionManager: { getHeader: () => ({}), getSessionName: () => "owner" } },
     };
+    return {
+      ctx: {
+        session,
+        ui: { notify: () => {} },
+        pi: { sendUserMessage: () => {} },
+        _ctx: { sessionManager: { getHeader: () => ({}), getSessionName: () => "owner" } },
+      },
+      meta: (): SessionMeta => current,
+      advance: (stage: PipelineStage): SessionMeta => {
+        current = { ...current, currentStage: stage };
+        return current;
+      },
+    };
+  }
+
+  /** Move the clock past the 30s dedupe window (one settle burst is over). */
+  function nextBurst(seconds: number): void {
+    setSystemTime(new Date(Date.UTC(2026, 10, 1, 0, 0, seconds)));
   }
 
   beforeEach(async () => {
     harness = createAutoHarness();
+    // The real clarify contract, so the round derivation is the production one.
+    const specDir = path.join(harness.projectRoot, ".pi", "references", "clarify_spec");
+    fs.mkdirSync(specDir, { recursive: true });
+    fs.copyFileSync(
+      path.join(SRC_ROOT, "src", "template", "references", "clarify_spec", "verify.md"),
+      path.join(specDir, "verify.md"),
+    );
     await harness.install();
-    AUDIT.length = 0;
-    __setSafeWriteAuditLogOverride(async (stage) => {
-      AUDIT.push(stage);
+    __resetFinalizeStateForTests();
+    docAbs = path.join(harness.projectRoot, DOC);
+    audits = [];
+    dispatches = [];
+    deps = {
+      spawn: (async (...args: unknown[]): Promise<{ spawned: boolean; fallback: boolean }> => {
+        dispatches.push(args[4] as { extraArgs?: string });
+        return { spawned: true, fallback: false };
+      }) as unknown as ClarifyEntryDeps["spawn"],
+      freeze: (async (): Promise<void> => {
+        throw new Error("freeze must not be reached in the happy chain");
+      }) as ClarifyEntryDeps["freeze"],
+    };
+    __setSafeWriteAuditLogOverride(async (stage, message) => {
+      audits.push(`${stage} ${JSON.stringify(message ?? {})}`);
     });
+    nextBurst(0);
   });
 
   afterEach(() => {
+    __resetFinalizeStateForTests();
+    setSystemTime();
     harness.dispose();
   });
 
-  it("clarify → plan → design-review → develop → review → fix are each stamped", async () => {
-    const meta = makeTestMeta({ currentStage: "clarify", flowState: "running", requirementDoc: DOC });
-    const ctx = settleCtx(meta);
-    for (const stage of ["clarify", "plan", "design-review", "develop", "review", "fix"] as PipelineStage[]) {
-      meta.currentStage = stage;
-      // No hard stop is judged: the human-visible pipeline keeps control.
-      expect(await handleAutoSettle(ctx as never, harness.config, meta)).toBe(false);
+  it("clarify self-answer → full-und? → marker → plan → design-review → develop → review → fix → completed", async () => {
+    fs.mkdirSync(path.dirname(docAbs), { recursive: true });
+    fs.writeFileSync(docAbs, FRESH_DOC, "utf8");
+    const h = makeSession(makeTestMeta({ currentStage: "clarify", flowState: "running", requirementDoc: DOC }));
+
+    // clarify 1/3: a fresh document dispatches the first round (" 1").
+    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe(true);
+    expect(dispatches[0]?.extraArgs?.startsWith(" 1")).toBe(true);
+
+    // clarify 2/3: the self-answered round requests the finalisation (" full-und?").
+    fs.appendFileSync(docAbs, "\n# 第 1 轮澄清\n- **方案 A** self-answer\n答：方案 A\n", "utf8");
+    nextBurst(31);
+    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe(true);
+    expect(dispatches[1]?.extraArgs?.startsWith(" full-und?")).toBe(true);
+
+    // clarify 3/3: the marker ends clarify without a third dispatch and refunds
+    // the per-doc counters; the decision is audited.
+    fs.appendFileSync(docAbs, `\nfull-und? 理解确认：是\n\n## 模型确认\n是\n\n${LEDGER}\n`, "utf8");
+    nextBurst(62);
+    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe(false);
+    expect(dispatches).toHaveLength(2);
+    expect(audits.some((line) => line.includes('"gate":"clarify_confirmed"'))).toBe(true);
+
+    // The plan deliverable the next stages consume.
+    const planAbs = path.join(harness.projectRoot, PLAN_DOC);
+    fs.mkdirSync(path.dirname(planAbs), { recursive: true });
+    fs.writeFileSync(planAbs, PLAN_TEXT, "utf8");
+
+    // design-review 回指: the requirement ledger reaches the review prompt, and
+    // only the labels the plan never mentions are named.
+    const guidance = await resolveAutoLedgerGuidance({ config: harness.config, planDoc: PLAN_DOC });
+    expect(guidance ?? "").toContain("日志方案");
+    expect(guidance ?? "").not.toContain("存储选型");
+    expect(guidance ?? "").toContain("Checklist:");
+    expect(guidance ?? "").toContain("PASS/FAIL contract is unchanged");
+
+    // plan → design-review → develop → review → fix: each settle stamps its stage.
+    for (const stage of ["plan", "design-review", "develop", "review", "fix"] as PipelineStage[]) {
+      expect(await handleAutoSettle(h.ctx as never, harness.config, h.advance(stage))).toBe(false);
       expect(harness.state().docs[0]?.lastStage).toBe(stage);
     }
-    expect(AUDIT.some((stage) => stage.includes("stop"))).toBe(false);
-  });
 
-  it("completed closes the doc and hands over to the next one", async () => {
-    const meta = makeTestMeta({ currentStage: "completed", flowState: "running", requirementDoc: DOC });
-    const ctx = settleCtx(meta);
-
-    expect(await handleAutoSettle(ctx as never, harness.config, meta)).toBe(true);
-
+    // completed: the doc closes and the chain hands the next doc over.
+    expect(await handleAutoSettle(h.ctx as never, harness.config, h.advance("completed"))).toBe(true);
     const state = harness.state();
     expect(state.docs[0]?.status).toBe("completed");
-    expect(state.status).toBe("running"); // doc b is still pending
-    expect(AUDIT).toContain("pipeline_auto_chain");
+    expect(state.status).toBe("running"); // the job stays alive for the chain
+    expect(state.docs[1]?.status).toBe("pending"); // doc b awaits the dispatched continuation
+
+    // Two dispatches, one confirmation and the chain handover are all on record.
+    expect(audits.filter((line) => line.includes('"gate":"clarify_dispatch"'))).toHaveLength(2);
+    expect(audits.some((line) => line.startsWith("pipeline_auto_chain"))).toBe(true);
   });
 });
 
@@ -263,107 +350,4 @@ describe("auto run — the four clarify stop reasons", () => {
     await createAgentSettled(makeTestConfig()).handler(ctxStub as never);
     expect((ctxStub.session.getMeta() as SessionMeta).blockedReason).toBe("awaiting_human_in_auto");
   });
-});
-
-// ─── 4. six start stages × two tiers ────────────────────────────────────────
-
-describe("auto run — start-stage × tier smoke matrix", () => {
-  const REQUIREMENT = "docs/design/200_Feat.md";
-  const PLAN = "docs/design/200_Feat_Plan.md";
-  const COMMIT = "docs/design/200_Feat_Develop_Commit.md";
-  const REPORT = "docs/review/Code_Review_200_Feat_Develop_Commit_1.md";
-
-  function evidence(stage: PipelineStage): Array<[string, string]> {
-    const requirement: [string, string] = [REQUIREMENT, "# requirement\n"];
-    switch (stage) {
-      case "design-review":
-        return [requirement, [PLAN, "# plan\n"]];
-      case "develop":
-        return [requirement, [PLAN, "# plan\n## User Confirmation\nok\n"]];
-      case "review":
-        return [requirement, [COMMIT, "# commit\n"]];
-      case "fix":
-        return [requirement, [REPORT, "## To-Fix\n- one issue\n"]];
-      default:
-        return [requirement];
-    }
-  }
-
-  function runCase(stage: PipelineStage, tier: "rule" | "assisted", root: string): PipelineConfig {
-    const jobPath = path.join(root, "docs", "jobs", "alpha.yaml");
-    fs.mkdirSync(path.dirname(jobPath), { recursive: true });
-    fs.writeFileSync(
-      jobPath,
-      [
-        "version: 1",
-        "enabled: true",
-        `tier: ${tier}`,
-        "docs:",
-        "  list:",
-        `    - doc: ${REQUIREMENT}`,
-        `      startStage: ${stage}`,
-        "chain:",
-        "  newSession: false",
-      ].join("\n"),
-      "utf8",
-    );
-    if (tier === "assisted") {
-      // Starting at a verifying stage needs its deployed contract file.
-      const specDir = path.join(root, ".pi", "references", "design-review_spec");
-      fs.mkdirSync(specDir, { recursive: true });
-      fs.copyFileSync(
-        path.join(SRC_ROOT, "src", "template", "references", "design-review_spec", "verify.md"),
-        path.join(specDir, "verify.md"),
-      );
-    }
-    for (const [rel, content] of evidence(stage)) {
-      const abs = path.join(root, rel);
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, content, "utf8");
-    }
-    const json: PipelineJsonConfig = { ...structuredClone(TEMPLATE_JSON), projectRoot: root };
-    const jsonPath = path.join(root, ".pi", "pipeline_loop.json");
-    fs.mkdirSync(path.dirname(jsonPath), { recursive: true });
-    fs.writeFileSync(jsonPath, JSON.stringify(json, null, 2), "utf8");
-    const resolved = resolvePipelineConfig(json);
-    // `rule` needs no verify block; `assisted` keeps ONLY the design-review one.
-    for (const [name, stageConfig] of Object.entries(resolved.stages)) {
-      if (stageConfig && (tier === "rule" || name !== "design-review")) {
-        delete (stageConfig as { verify?: unknown }).verify;
-      }
-    }
-    return { ...resolved, configSourcePath: jsonPath };
-  }
-
-  for (const tier of ["rule", "assisted"] as const) {
-    for (const stage of RESUMABLE_STAGES) {
-      it(`tier ${tier} + start ${stage} → starts at that stage`, async () => {
-        const root = fs.mkdtempSync(path.join(tmpdir(), "pi-220-matrix-"));
-        __resetAutoJobLockForTests();
-        __resetFinalizeStateForTests();
-        __setSafeWriteAuditLogOverride(async () => {});
-        try {
-          let meta: SessionMeta | undefined;
-          const ctx = {
-            session: {
-              getMeta: () => meta,
-              updateMeta: (patch: Partial<SessionMeta>) => {
-                meta = { ...(meta ?? ({} as SessionMeta)), ...patch } as SessionMeta;
-                return meta;
-              },
-            },
-            ui: { notify: () => {}, select: async () => undefined },
-            pi: { sendUserMessage: () => {} },
-          };
-          const result = await startAutoJob({ config: runCase(stage, tier, root), ctx: ctx as never, jobId: "alpha" });
-          expect(result.success).toBe(true);
-          expect(meta?.currentStage).toBe(stage);
-          expect(isAutoJobActive()).toBe(true);
-        } finally {
-          __resetAutoJobLockForTests();
-          fs.rmSync(root, { recursive: true, force: true });
-        }
-      });
-    }
-  }
 });

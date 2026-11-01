@@ -8,9 +8,10 @@
  *   verify contract, no report format and no verdict rule changes (D4 red line).
  * - It is derived ONLY from an ACTIVE auto job: without one the dispatcher gets
  *   `null` and the prompt stays byte-identical to the pre-220 text (INV-1).
- * - Facts come from the same parsers the clarify side uses
- *   (`parseDecisionLedger` + `countLedgerReferences`), so both stages agree on
- *   what "the ledger covers the plan" means.
+ * - Facts come from the same parsers the clarify side uses (`parseDecisionLedger`)
+ *   and the reference count behind `buildLedgerTraceabilityDirective`
+ *   (`countLedgerReferences`), so both stages agree on what "the ledger covers
+ *   the plan" means.
  */
 
 import * as fs from "node:fs/promises";

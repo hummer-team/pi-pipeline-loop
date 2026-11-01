@@ -78,6 +78,12 @@ describe("checkStartStageEvidence", () => {
 
   it("develop needs the plan AND its confirmation marker", async () => {
     const meta = makeTestMeta({ requirementDoc: REQUIREMENT });
+    // No plan on disk → `plan`, NOT `plan-confirmed` (D5: the failure kind must
+    // say whether the plan is missing or merely unconfirmed).
+    expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root })).toEqual({
+      ok: false,
+      missing: "plan",
+    });
     await write("docs/design/200_Feat_Plan.md", "## 目的\nno marker");
     expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root })).toEqual({
       ok: false,

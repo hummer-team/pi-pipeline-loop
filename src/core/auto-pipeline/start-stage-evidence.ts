@@ -138,7 +138,9 @@ export async function checkStartStageEvidence(input: {
       return (await isFile(planAbs)) ? { ok: true, basis: "plan" } : { ok: false, missing: "plan" };
     }
     case "develop": {
-      if (!(await isFile(planAbs))) return { ok: false, missing: "plan-confirmed" };
+      // Two distinguishable failures (D5): no plan at all vs. a plan that was
+      // never confirmed. The reviewer/operator sees the kind in the reason.
+      if (!(await isFile(planAbs))) return { ok: false, missing: "plan" };
       return (await planDocHasConfirmMarker(planAbs))
         ? { ok: true, basis: "plan-confirmed" }
         : { ok: false, missing: "plan-confirmed" };
