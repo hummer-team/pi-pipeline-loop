@@ -20,12 +20,13 @@ const JOB_YAML = [
   "stopConditions:",
   "  maxTotalLoops: 5",
   "  maxTotalFreezes: 2",
-  "  maxConsecutiveVerifyFailures: 3",
   "  wallClockMs: 0",
   "  stopOnBlockedReasons:",
   "    - blocked_by_policy",
   "  finalLoopGrace: 1",
-  "decisionPolicy:",
+  "verify:",
+  "  maxAttempts: 3",
+  "freezePolicy:",
   "  onFreeze: resume",
   "  maxAutoResumes: 2",
 ].join("\n");
@@ -74,17 +75,18 @@ describe("stop-policy — evaluateHardStop", () => {
     expect(evaluateHardStop({ state: state(), meta: other, job: job(), now: NOW }).kind).toBe("continue");
   });
 
-  it("consecutive verify failures reach the threshold → hard", () => {
-    // The counter is derived from meta by the settle seam (single write point),
-    // then read here.
-    const meta = makeTestMeta();
-    const atThreshold = state({ counters: { ...state().counters, consecutiveVerifyFailures: 3 } });
-    expect(evaluateHardStop({ state: atThreshold, meta, job: job(), now: NOW })).toEqual({
+  it("verify attempts reach job.verify.maxAttempts → hard", () => {
+    // 220 D7/Q15: the streak is read from LIVE meta (reset on stage advance),
+    // never from a cross-stage sidecar counter.
+    const atThreshold = makeTestMeta({ verifyAttempts: 3 });
+    expect(evaluateHardStop({ state: state(), meta: atThreshold, job: job(), now: NOW })).toEqual({
       kind: "hard",
       stopReason: "verify_failures",
     });
-    const below = state({ counters: { ...state().counters, consecutiveVerifyFailures: 2 } });
-    expect(evaluateHardStop({ state: below, meta, job: job(), now: NOW }).kind).toBe("continue");
+    const below = makeTestMeta({ verifyAttempts: 2 });
+    expect(evaluateHardStop({ state: state(), meta: below, job: job(), now: NOW }).kind).toBe("continue");
+    // Unset (fresh stage) is never a failure.
+    expect(evaluateHardStop({ state: state(), meta: makeTestMeta(), job: job(), now: NOW }).kind).toBe("continue");
   });
 
   it("unresolvable freeze wins over the historical freeze budget", () => {
@@ -92,7 +94,7 @@ describe("stop-policy — evaluateHardStop", () => {
     // onFreeze: resume but the reason is unknown? `onFreeze` applies, so make it
     // stop-and-report explicitly to represent an unresolvable freeze.
     const stopped = job((j) => {
-      j.decisionPolicy.onFreeze = "stop-and-report";
+      j.freezePolicy.onFreeze = "stop-and-report";
     });
     const both = state({ counters: { ...state().counters, totalFreezes: 5 } });
     expect(evaluateHardStop({ state: both, meta, job: stopped, now: NOW })).toEqual({
@@ -206,7 +208,7 @@ describe("stop-policy — H3: the two functions never blur", () => {
   it("inside a loop: a stop-and-report freeze is hard on the settle side", () => {
     const meta = makeTestMeta({ flowState: "blocked", blockedReason: "stuck" });
     const stopped = job((j) => {
-      j.decisionPolicy.onFreeze = "stop-and-report";
+      j.freezePolicy.onFreeze = "stop-and-report";
     });
     expect(evaluateHardStop({ state: state(), meta, job: stopped, now: NOW })).toEqual({
       kind: "hard",

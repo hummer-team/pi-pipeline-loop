@@ -1928,10 +1928,12 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - 位置：只扫描 `docs/jobs/`（**不递归**），按 mtime 取最新的 ≤5 份。该目录**不在** `archive.dirs` 的默认归档范围，任务文件不会随设计文档被归档移动。
 - 只读：插件**永不**回写 job 文件；进度状态写入 `.pi/auto_pipeline/{jobId}/state.json`（sidecar）。`.pi/auto_pipeline/` 与 `.pi/audit/` 同级，属于运行期产物，**不随任务归档**。
 - `jobId` = 文件名去掉 `.yaml`，只允许 `[A-Za-z0-9._-]`；含路径分隔符/`..` 一律拒绝。
-- 缺省值在解析期填满（下游永远看不到 `undefined`）：`finalLoopGrace: 1`（上限 3，`0` 关闭）、`maxTotalLoops: 20`、`maxConsecutiveVerifyFailures: 3`、`designReview.maxRounds: 3`、`reviewFix.maxRounds: 6`、`reviewFix.maxLoopsPerStage: 6`、`maxAutoResumes: 2`、`wallClockMs: 0`、`maxTotalFreezes: 0`（不限制）。
-- fail-fast（**不接受**静默降级）：`clarify.mode` 只允许 `self-answer` / `orchestrated`（`prefilled` 报错）；`clarify.fallback` / `clarify.answerStrategy` 属于已移除键，出现即报错；`designReview.mode` 只允许 `auto`（`manual` 报错）；`decisionPolicy.byReason` 的值只能是 `resume` / `abort` / `stop-and-report`。未知键只告警。
+- 缺省值在解析期填满（下游永远看不到 `undefined`）：`tier: assisted`、`clarify.maxRounds: 5`、`clarify.onExhausted: stop`、`verify.maxAttempts: 3`、`writePolicy.gitModify: block`、`defaults.startStage: clarify`、`finalLoopGrace: 1`（上限 3，`0` 关闭）、`maxTotalLoops: 20`、`designReview.maxRounds: 3`、`reviewFix.maxRounds: 6`、`reviewFix.maxLoopsPerStage: 6`、`maxAutoResumes: 2`、`wallClockMs: 0`、`maxTotalFreezes: 0`（不限制）。
+- fail-fast（**不接受**静默降级）：`tier` 只允许 `rule` / `assisted`；`clarify.strategy` 只允许 `self-answer`；`clarify.onExhausted` 只允许 `stop` / `self-confirm`；`designReview.mode` 只允许 `auto`（`manual` 报错）；`designReview.onFail` 只允许 `auto-revise` / `stop`；`writePolicy.gitModify` 只允许 `allow` / `block`；`defaults.startStage` 只允许可恢复阶段或 `auto`；`freezePolicy.byReason` 的值只能是 `resume` / `abort` / `stop-and-report`。未知键只告警。
+- **已移除的键（写入即报错，绝不静默降级）**：`clarify.mode`、`clarify.fallback`、`clarify.answerStrategy`、`designReview.failAction`（改名 `onFail`）、`decisionPolicy`（改名 `freezePolicy`）、`audit.recordAutoDecisions`（改名 `autoDecisions`）、`stopConditions.maxConsecutiveVerifyFailures`（改用 `verify.maxAttempts`）。
+- 继承口径：`verify.maxAttempts` 与 `writePolicy.gitModify` 在 job **未配置**时不 overlay（沿用 `pipeline_loop.json`）；其余键均为 job 必填默认。
 - `writePolicy.allowGlobs` 映射到 `protect.whitelistAllow`，与 `protect.allow` **不同**：前者只豁免 `whitelist_miss`，后者只豁免 gitignore 动态保护。
-- `decisionPolicy` 是 **job 私有**：只由冻结自动驾驶消费，**不会**写进 `pipeline_loop.json`（那里是 210 provider 链的 `decisionPolicy`，结构不兼容）。
+- `freezePolicy` 是 **job 私有**：只由冻结自动驾驶消费，**不会**写进 `pipeline_loop.json`（那里是 210 provider 链的 `decisionPolicy`，语义不同：`FreezeAction` 字符串 vs 规则对象）。
 - `onFailure`：`stop`（默认，出错的文档记失败后终止 job）/ `continue`（跳过继续下一份）。**硬停无视该值**。
 - 示例见模板 `auto_job_example.yaml`（`/pipeline-init` 安装到 `.pi/auto_job_example.yaml`；复制到 `docs/jobs/` 并改名即可被扫描到）。
 
@@ -1950,7 +1952,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 ### 19.3 配置 overlay 与单实例锁
 
 - overlay 在 **JSON 层**计算 → 重新 `resolvePipelineConfig` → **原地写回**共享 config（7 个 hook 在加载期捕获同一对象引用，因此零改造即生效）。磁盘上的 `pipeline_loop.json` **从不被写**。
-- 映射键只有：`confirm.plan/review` → `stages.plan/review.confirm.mode`；`reviewFix.maxLoopsPerStage` → `maxLoops`；`reviewFix.maxRounds` → `maxLoopCycles`；`writePolicy.*` → `protect.*`；`audit.recordAutoDecisions` → `audit.autoDecisions`。`clarify.*` / `docs.*` / `chain.*` / `stopConditions.*` / `designReview.*` / `decisionPolicy.*` **永不**进入 config。
+- 映射键只有：`confirm.plan/review` → `stages.plan/review.confirm.mode`；`reviewFix.maxLoopsPerStage` → `maxLoops`；`reviewFix.maxRounds` → `maxLoopCycles`；`writePolicy.*` → `protect.*`（含 `writePolicy.gitModify` → `protect.gitModify`）；`verify.maxAttempts` → `maxVerifyAttempts`；`audit.autoDecisions` → `audit.autoDecisions`。`tier` / `clarify.*` / `docs.*` / `chain.*` / `stopConditions.*` / `designReview.*` / `defaults.*` / `freezePolicy` **永不**进入 config。
 - `writePolicy.whitelistMiss` 是「本任务的最终口径」：阶段级 `stages.<stage>.protect.whitelistMiss` 会被**移除**，否则 Tier 1 会静默压过 job 值；回滚时按键还原。
 - `applyOverlay` 按 `jobHash` **幂等**：同 hash 的重复应用只重放已记录的 `to` 值，不重算 `before`，「session_start 重放 + `--next`」不会把 auto 值烤进回滚快照。
 - 锁是**进程级**（`.pi/auto_pipeline/lock.json`）：`jobA` / `jobB` 不能同时 active。僵尸锁（pid 已死）会被自动接管并审计 `pipeline_auto_lock`（`stale_reclaimed`）；存活但 token 不符 → `stale_token`，绝不抢占。
@@ -2024,13 +2026,15 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | `pipeline_auto_decision` | **是**（`false` → 不写） |
 | `pipeline_auto_start` / `pipeline_auto_job_overlay` / `pipeline_auto_overlay_replay` / `pipeline_auto_overlay_restore` / `pipeline_auto_overlay_kept` / `pipeline_auto_cleanup` / `pipeline_auto_stop` / `pipeline_auto_chain` / `pipeline_auto_continuity` / `pipeline_auto_meta_seeded` / `pipeline_auto_meta_seed_rejected` / `pipeline_auto_lock` / `whitelist_allow_exempt` | 否（**恒写**，生命周期与安全相关） |
 
-### 19.10 `designReview.mode` / `failAction` / 模板 `confirm.mode` 真值表
+### 19.10 `designReview.mode` / `onFail` / 模板 `confirm.mode` 真值表
 
-| `designReview.mode` | `confirm.mode`（`stages.design-review.confirm.mode`） | `failAction` | FAIL 时的行为 |
+| `designReview.mode` | `confirm.mode`（`stages.design-review.confirm.mode`） | `onFail` | FAIL 时的行为 |
 |---|---|---|---|
 | `auto`（v1 唯一取值） | `auto`（模板默认） | `auto-revise`（默认） | 授权自动修订 plan 后重评（既有 auto 语义） |
 | `auto` | `auto` | `stop` | 文档失败并终止（`budget_exhausted`） |
 | `manual` | — | — | v1 **拒绝**（解析期报错），人工 FAIL 菜单只存在于 `/pipeline-start` 人机流程 |
+
+> 219 的键名 `failAction` 已改名 `onFail`；旧键写入即解析报错。
 
 ### 19.11 任务连续性（`/pipeline-auto` 之外同样生效）
 

@@ -57,7 +57,11 @@ export function evaluateHardStop(input: {
   if (blockedReason && stop.stopOnBlockedReasons.includes(blockedReason)) {
     return { kind: "hard", stopReason: "blocked_reason" };
   }
-  if (state.counters.consecutiveVerifyFailures >= stop.maxConsecutiveVerifyFailures) {
+  // 220 D7/Q15: the verify-failure streak is judged on the LIVE meta counter
+  // (`meta.verifyAttempts`, reset on stage advance) against the job threshold.
+  // The old cross-stage sidecar streak is gone — a stale sidecar number could
+  // freeze a document that had already recovered.
+  if (meta.verifyAttempts !== undefined && meta.verifyAttempts >= job.verify.maxAttempts) {
     return { kind: "hard", stopReason: "verify_failures" };
   }
   if (

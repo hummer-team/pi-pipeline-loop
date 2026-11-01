@@ -1,22 +1,25 @@
 /**
  * @module auto-pipeline/job-schema
- * 219 Phase 1: task-level YAML job definition — parsing / validation / default
- * filling (fail-fast).
+ * 219 Phase 1 + 220 Phase 2 (D6/D7): task-level YAML job definition —
+ * parsing / validation / default filling (fail-fast).
  *
  * Facts:
  * - The job file is USER-MAINTAINED. The plugin NEVER writes back to it; all
  *   progress lives in the sidecar (`job-state.ts`).
- * - Only IMPLEMENTED values are accepted. Anything "known but not supported in
- *   v1" is a hard ERROR (not silently degraded): `clarify.mode:"prefilled"`,
- *   `clarify.fallback`, `clarify.answerStrategy`, `designReview.mode:"manual"`.
- *   Unknown-by-shape keys stay a WARNING.
- * - `decisionPolicy` is JOB-PRIVATE. It is consumed ONLY by freeze-autopilot
- *   and is NEVER written into `json.decisionPolicy` (that block belongs to the
- *   210 provider chain, and its byReason values are `DecisionPolicyRule`
- *   objects — structurally incompatible with `FreezeAction` strings).
+ * - Only IMPLEMENTED values are accepted. Every removed key is a HARD ERROR
+ *   (never a silent degradation), and keys removed by 220 (`clarify.mode`,
+ *   `clarify.fallback`, `clarify.answerStrategy`, `designReview.failAction`,
+ *   `decisionPolicy`, `audit.recordAutoDecisions`) are rejected through the
+ *   per-section allowlists below — a job written for 219 must fail loudly.
+ * - `freezePolicy` is JOB-PRIVATE: consumed ONLY by freeze-autopilot and never
+ *   written into `json.decisionPolicy` (that block belongs to the 210 provider
+ *   chain, whose byReason values are `DecisionPolicyRule` objects).
+ * - `verify.maxAttempts` / `writePolicy.gitModify` are "inherit-not-overlay"
+ *   keys: they are default-filled for downstream consumers but only overlaid
+ *   onto the JSON config when the job file configured them (`configured`).
  * - Defaults are filled at the schema layer so downstream code never sees
  *   `undefined` inside `stopConditions` (an `undefined < 1 === false` would
- *   silently disable a budget). Every filled default is listed in `warnings`.
+ *   silently disable a budget).
  */
 
 import { createHash } from "node:crypto";
@@ -39,26 +42,51 @@ export interface AutoJobDoc {
  */
 export type FreezeAction = "resume" | "abort" | "stop-and-report";
 
+/** C-2: autonomy tier. `manual` is not a job value (no job = human track). */
+export type AutoJobTier = "rule" | "assisted";
+
+/** What a clarify round budget exhaustion degrades to. */
+export type ClarifyOnExhausted = "stop" | "self-confirm";
+
+/** What a design-review FAIL is routed to (renamed from `failAction`). */
+export type DesignReviewOnFail = "auto-revise" | "stop";
+
+/** Whether an auto job may let the agent run git state-changing commands. */
+export type GitModifyPolicy = "allow" | "block";
+
 /** v1 job document shape. Defaults are filled by `parseAutoJob` before return. */
 export interface AutoJobConfig {
   version: 1;
   enabled: boolean;
+  /** 220 C-2: `assisted` forces design-review + full comparison; `rule` does not. */
+  tier: AutoJobTier;
   docs: { list: AutoJobDoc[]; skipCompleted: boolean; onFailure: "stop" | "continue" };
-  /** v1 accepts only "self-answer" | "orchestrated" (prefilled → parse error). */
-  clarify: { mode: "self-answer" | "orchestrated"; maxRounds: number };
+  /** 220 D6: ONE strategy in v1 (self-answer); the removed `mode` is an error. */
+  clarify: { strategy: "self-answer"; maxRounds: number; onExhausted: ClarifyOnExhausted };
   confirm: { plan: "auto" | "manual" | "smart"; review: "auto" | "manual" | "smart" };
   /** v1 accepts only "auto" (template `design-review.confirm.mode` default is already auto). */
-  designReview: { mode: "auto"; maxRounds: number; failAction: "auto-revise" | "stop" };
+  designReview: { mode: "auto"; maxRounds: number; onFail: DesignReviewOnFail };
   reviewFix: { maxRounds: number; maxLoopsPerStage: number };
+  /** Q15: verify attempts allowed before the verify-failure hard stop. */
+  verify: { maxAttempts: number };
   writePolicy: {
     whitelistMiss: "ask" | "deny" | "allow";
     protectedPath: "deny" | "ask";
     destructiveCommand: "deny" | "ask";
     allowGlobs: string[];
+    /** 220 D7: `block` is the conservative default for an unattended job. */
+    gitModify: GitModifyPolicy;
   };
-  decisionPolicy: { onFreeze: FreezeAction; maxAutoResumes: number; byReason: Record<string, FreezeAction> };
+  /** 220 D7: renamed from `decisionPolicy`; the only non-overlaid block. */
+  freezePolicy: {
+    onFreeze: FreezeAction;
+    maxAutoResumes: number;
+    byReason: Record<string, FreezeAction>;
+  };
+  audit: { autoDecisions: boolean };
+  /** 220 D5: job-wide start stage; `auto` derives it from the evidence on disk. */
+  defaults: { startStage: PipelineStage | "auto" };
   stopConditions: {
-    maxConsecutiveVerifyFailures: number;
     maxTotalFreezes: number;
     maxTotalLoops: number;
     wallClockMs: number;
@@ -68,7 +96,11 @@ export interface AutoJobConfig {
     finalLoopGrace: number;
   };
   chain: { newSession: boolean; onSessionFail: "same-session" | "stop" };
-  audit: { recordAutoDecisions: boolean };
+  /**
+   * Provenance of the inherit-not-overlay keys. `false` ⇒ the value below is
+   * the schema default and MUST NOT be written into the JSON config.
+   */
+  configured: { verifyMaxAttempts: boolean; gitModify: boolean };
 }
 
 export type AutoJobParseResult =
@@ -76,6 +108,9 @@ export type AutoJobParseResult =
   | { ok: false; errors: string[] };
 
 const NOT_SUPPORTED_SUFFIX = "— not supported in this version";
+
+/** Error text used for keys removed by 220 (never silently ignored). */
+const REMOVED_KEY_SUFFIX = "— removed in this version";
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -105,7 +140,26 @@ function applyEnumError(
 }
 
 /**
- * Validate + default-fill `docs`. Returns false on hard error (list missing/empty
+ * Reject keys this schema does not implement.
+ *
+ * The allowlist (not a blocklist) is what makes a 219-era key an error instead
+ * of a silent no-op: any key outside `allowed` names itself in the message.
+ */
+function rejectUnknownKeys(
+  section: Record<string, unknown>,
+  allowed: readonly string[],
+  prefix: string,
+  errors: string[],
+): void {
+  const allow = new Set(allowed);
+  for (const key of Object.keys(section)) {
+    if (allow.has(key)) continue;
+    errors.push(`"${prefix}${key}" is not a supported job key ${REMOVED_KEY_SUFFIX}`);
+  }
+}
+
+/**
+ * Validate + default-fill `docs`. Returns null on hard error (list missing/empty
  * or an entry violating path rules).
  */
 function parseDocsSection(
@@ -127,7 +181,6 @@ function parseDocsSection(
       errors.push('"docs.list[]" entries must carry a "doc" path string');
       return null;
     }
-    // Doc path: project-relative .md, no absolute paths, no ".." traversal.
     const doc = itemObj.doc;
     if (typeof doc !== "string" || doc.length === 0) {
       errors.push('"docs.list[]" entries must carry a "doc" path string');
@@ -194,8 +247,23 @@ function isDenyAskValue(value: unknown): value is "deny" | "ask" {
 function parseWritePolicy(
   raw: unknown,
   errors: string[],
-): { whitelistMiss: "ask" | "deny" | "allow"; protectedPath: "deny" | "ask"; destructiveCommand: "deny" | "ask"; allowGlobs: string[] } | null {
+): {
+  policy: {
+    whitelistMiss: "ask" | "deny" | "allow";
+    protectedPath: "deny" | "ask";
+    destructiveCommand: "deny" | "ask";
+    allowGlobs: string[];
+    gitModify: GitModifyPolicy;
+  };
+  gitModifyConfigured: boolean;
+} | null {
   const write = asObject(raw) ?? {};
+  rejectUnknownKeys(
+    write,
+    ["whitelistMiss", "protectedPath", "destructiveCommand", "allowGlobs", "gitModify"],
+    "writePolicy.",
+    errors,
+  );
   let whitelistMiss: "ask" | "deny" | "allow" = "deny";
   if (write.whitelistMiss !== undefined) {
     if (isWhitelistMissValue(write.whitelistMiss)) {
@@ -232,20 +300,34 @@ function parseWritePolicy(
       return null;
     }
   }
-  return { whitelistMiss, protectedPath, destructiveCommand, allowGlobs };
+  let gitModify: GitModifyPolicy = "block";
+  const gitModifyConfigured = write.gitModify !== undefined;
+  if (gitModifyConfigured) {
+    if (write.gitModify === "allow" || write.gitModify === "block") {
+      gitModify = write.gitModify;
+    } else {
+      applyEnumError(errors, "writePolicy.gitModify", '"allow" | "block"');
+      return null;
+    }
+  }
+  return {
+    policy: { whitelistMiss, protectedPath, destructiveCommand, allowGlobs, gitModify },
+    gitModifyConfigured,
+  };
 }
 
-function parseDecisionPolicy(
+function parseFreezePolicy(
   raw: unknown,
   errors: string[],
-): { onFreeze: FreezeAction; maxAutoResumes: number; byReason: Record<string, FreezeAction> } | null {
+): AutoJobConfig["freezePolicy"] | null {
   const policy = asObject(raw) ?? {};
+  rejectUnknownKeys(policy, ["onFreeze", "maxAutoResumes", "byReason"], "freezePolicy.", errors);
   let onFreeze: FreezeAction = "resume";
   if (policy.onFreeze !== undefined) {
     if (policy.onFreeze === "resume" || policy.onFreeze === "abort" || policy.onFreeze === "stop-and-report") {
       onFreeze = policy.onFreeze;
     } else {
-      applyEnumError(errors, "decisionPolicy.onFreeze", '"resume" | "abort" | "stop-and-report"');
+      applyEnumError(errors, "freezePolicy.onFreeze", '"resume" | "abort" | "stop-and-report"');
       return null;
     }
   }
@@ -253,7 +335,7 @@ function parseDecisionPolicy(
   if (policy.maxAutoResumes !== undefined) {
     const value = asNonNegativeNumber(policy.maxAutoResumes);
     if (value === null) {
-      errors.push('"decisionPolicy.maxAutoResumes" must be a number >= 0');
+      errors.push('"freezePolicy.maxAutoResumes" must be a number >= 0');
       return null;
     }
     maxAutoResumes = value;
@@ -262,7 +344,7 @@ function parseDecisionPolicy(
   if (policy.byReason !== undefined) {
     const table = asObject(policy.byReason);
     if (!table) {
-      errors.push('"decisionPolicy.byReason" must be an object');
+      errors.push('"freezePolicy.byReason" must be an object');
       return null;
     }
     for (const [reason, value] of Object.entries(table)) {
@@ -273,7 +355,7 @@ function parseDecisionPolicy(
       } else {
         applyEnumError(
           errors,
-          `decisionPolicy.byReason.${reason}`,
+          `freezePolicy.byReason.${reason}`,
           '"resume" | "abort" | "stop-and-report"',
           `(got ${JSON.stringify(value)})`,
         );
@@ -284,15 +366,25 @@ function parseDecisionPolicy(
   return { onFreeze, maxAutoResumes, byReason };
 }
 
+/** Allowed keys of the `stopConditions` block (removed keys are rejected). */
+const STOP_CONDITION_KEYS = [
+  "maxTotalFreezes",
+  "maxTotalLoops",
+  "wallClockMs",
+  "stopOnBlockedReasons",
+  "finalLoopGrace",
+] as const;
+
 function parseStopConditions(
   raw: unknown,
   errors: string[],
   warnings: string[],
 ): AutoJobConfig["stopConditions"] | null {
   const stop = asObject(raw) ?? {};
+  rejectUnknownKeys(stop, STOP_CONDITION_KEYS, "stopConditions.", errors);
 
   function numeric(
-    key: keyof typeof stop,
+    key: (typeof STOP_CONDITION_KEYS)[number],
     fallback: number,
     minInclusive: number,
   ): number {
@@ -309,11 +401,10 @@ function parseStopConditions(
     return num;
   }
 
-  const maxConsecutiveVerifyFailures = numeric("maxConsecutiveVerifyFailures", 3, 1);
   const maxTotalFreezes = numeric("maxTotalFreezes", 0, 0);
   const maxTotalLoops = numeric("maxTotalLoops", 20, 1);
   const wallClockMs = numeric("wallClockMs", 0, 0);
-  if (Number.isNaN(maxConsecutiveVerifyFailures) || Number.isNaN(maxTotalFreezes) || Number.isNaN(maxTotalLoops) || Number.isNaN(wallClockMs)) {
+  if (Number.isNaN(maxTotalFreezes) || Number.isNaN(maxTotalLoops) || Number.isNaN(wallClockMs)) {
     return null;
   }
 
@@ -340,7 +431,7 @@ function parseStopConditions(
     warnings.push('"stopConditions.finalLoopGrace" not set — using default 1 (one extra loop after the brake trips)');
   }
 
-  return { maxConsecutiveVerifyFailures, maxTotalFreezes, maxTotalLoops, wallClockMs, stopOnBlockedReasons, finalLoopGrace };
+  return { maxTotalFreezes, maxTotalLoops, wallClockMs, stopOnBlockedReasons, finalLoopGrace };
 }
 
 /**
@@ -384,8 +475,20 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
 
   const docs = parseDocsSection(root.docs, errors, warnings);
 
-  // clarify — v1: two modes ONLY; the removed v0 keys are hard rejects.
-  let clarify: AutoJobConfig["clarify"] | null = { mode: "self-answer", maxRounds: 2 };
+  // tier — C-2: `rule` | `assisted` (manual is not a job value).
+  let tier: AutoJobTier = "assisted";
+  if (root.tier !== undefined) {
+    if (root.tier === "rule" || root.tier === "assisted") {
+      tier = root.tier;
+    } else {
+      applyEnumError(errors, "tier", '"rule" | "assisted"');
+    }
+  } else {
+    warnings.push('"tier" not set — using default "assisted"');
+  }
+
+  // clarify — one strategy only; the 219-era keys are hard rejects.
+  let clarify: AutoJobConfig["clarify"] | null = { strategy: "self-answer", maxRounds: 5, onExhausted: "stop" };
   const clarifyRaw = root.clarify;
   if (clarifyRaw !== undefined) {
     const c = asObject(clarifyRaw);
@@ -393,47 +496,45 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
       errors.push('"clarify" must be an object');
       clarify = null;
     } else {
-      if (c.mode === undefined) {
-        warnings.push('"clarify.mode" not set — using default "self-answer"');
-      } else if (c.mode !== "self-answer" && c.mode !== "orchestrated") {
-        applyEnumError(errors, "clarify.mode", '"self-answer" | "orchestrated"');
+      rejectUnknownKeys(c, ["strategy", "maxRounds", "onExhausted"], "clarify.", errors);
+      if (c.strategy !== undefined && c.strategy !== "self-answer") {
+        applyEnumError(errors, "clarify.strategy", '"self-answer"');
         clarify = null;
       }
-      if (c.fallback !== undefined) {
-        applyEnumError(errors, "clarify.fallback", "removed in the v1 schema (degradation to orchestrated is plugin-managed)");
-        clarify = null;
+      let maxRounds = 5;
+      if (c.maxRounds !== undefined) {
+        const num = asNonNegativeNumber(c.maxRounds);
+        if (num === null || num < 1) {
+          errors.push(`"clarify.maxRounds" must be a number >= 1: ${String(c.maxRounds)}`);
+          clarify = null;
+        } else {
+          maxRounds = num;
+        }
+      } else {
+        warnings.push('"clarify.maxRounds" not set — using default 5');
       }
-      if (c.answerStrategy !== undefined) {
-        applyEnumError(errors, "clarify.answerStrategy", "removed in the v1 schema (self-answer always follows the recommended plan)");
-        clarify = null;
+      let onExhausted: ClarifyOnExhausted = "stop";
+      if (c.onExhausted !== undefined) {
+        if (c.onExhausted === "stop" || c.onExhausted === "self-confirm") {
+          onExhausted = c.onExhausted;
+        } else {
+          applyEnumError(errors, "clarify.onExhausted", '"stop" | "self-confirm"');
+          clarify = null;
+        }
       }
       if (clarify !== null) {
-        const mode = (c.mode ?? "self-answer") as "self-answer" | "orchestrated";
-        let maxRounds = 2;
-        if (c.maxRounds !== undefined) {
-          const num = asNonNegativeNumber(c.maxRounds);
-          if (num === null || num < 1) {
-            errors.push(`"clarify.maxRounds" must be a number >= 1: ${String(c.maxRounds)}`);
-            clarify = null;
-          } else {
-            maxRounds = num;
-          }
-        } else {
-          warnings.push('"clarify.maxRounds" not set — using default 2');
-        }
-        if (clarify !== null) {
-          clarify = { mode, maxRounds };
-        }
+        clarify = { strategy: "self-answer", maxRounds, onExhausted };
       }
     }
   } else {
-    warnings.push('"clarify" not set — using default { mode: "self-answer", maxRounds: 2 }');
+    warnings.push('"clarify" not set — using default { strategy: "self-answer", maxRounds: 5, onExhausted: "stop" }');
   }
 
   // confirm — per-stage mode override (defaults auto).
   let confirm: AutoJobConfig["confirm"] | null = { plan: "auto", review: "auto" };
   const confirmRaw = asObject(root.confirm);
   if (confirmRaw) {
+    rejectUnknownKeys(confirmRaw, ["plan", "review"], "confirm.", errors);
     for (const key of ["plan", "review"] as const) {
       const value = confirmRaw[key];
       if (value === undefined) continue;
@@ -450,8 +551,8 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     }
   }
 
-  // designReview — v1 mode accepts ONLY "auto".
-  let designReview: AutoJobConfig["designReview"] | null = { mode: "auto", maxRounds: 3, failAction: "auto-revise" };
+  // designReview — v1 mode accepts ONLY "auto"; FAIL routing is `onFail`.
+  let designReview: AutoJobConfig["designReview"] | null = { mode: "auto", maxRounds: 3, onFail: "auto-revise" };
   const designReviewRaw = root.designReview;
   if (designReviewRaw !== undefined) {
     const d = asObject(designReviewRaw);
@@ -459,6 +560,7 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
       errors.push('"designReview" must be an object');
       designReview = null;
     } else {
+      rejectUnknownKeys(d, ["mode", "maxRounds", "onFail"], "designReview.", errors);
       if (d.mode !== undefined && d.mode !== "auto") {
         applyEnumError(errors, "designReview.mode", '"auto"');
         designReview = null;
@@ -472,30 +574,31 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
         } else {
           maxRounds = num;
         }
-      } else if (d.mode !== undefined || d.failAction !== undefined) {
+      } else if (d.mode !== undefined || d.onFail !== undefined) {
         warnings.push('"designReview.maxRounds" not set — using default 3');
       }
-      let failAction: "auto-revise" | "stop" = "auto-revise";
-      if (d.failAction !== undefined) {
-        if (d.failAction === "auto-revise" || d.failAction === "stop") {
-          failAction = d.failAction;
+      let onFail: DesignReviewOnFail = "auto-revise";
+      if (d.onFail !== undefined) {
+        if (d.onFail === "auto-revise" || d.onFail === "stop") {
+          onFail = d.onFail;
         } else {
-          applyEnumError(errors, "designReview.failAction", '"auto-revise" | "stop"');
+          applyEnumError(errors, "designReview.onFail", '"auto-revise" | "stop"');
           designReview = null;
         }
       }
       if (errors.length === 0 && designReview !== null) {
-        designReview = { mode: "auto", maxRounds, failAction };
+        designReview = { mode: "auto", maxRounds, onFail };
       }
     }
   } else {
-    warnings.push('"designReview" not set — using default { mode: "auto", maxRounds: 3, failAction: "auto-revise" }');
+    warnings.push('"designReview" not set — using default { mode: "auto", maxRounds: 3, onFail: "auto-revise" }');
   }
 
   // reviewFix budgets (defaults conservative; always warned when absent).
   let reviewFix: AutoJobConfig["reviewFix"] | null = { maxRounds: 6, maxLoopsPerStage: 6 };
   const reviewFixRaw = asObject(root.reviewFix);
   if (reviewFixRaw) {
+    rejectUnknownKeys(reviewFixRaw, ["maxRounds", "maxLoopsPerStage"], "reviewFix.", errors);
     for (const key of ["maxRounds", "maxLoopsPerStage"] as const) {
       const value = reviewFixRaw[key];
       if (value === undefined) continue;
@@ -511,14 +614,62 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     warnings.push('"reviewFix" not set — using default { maxRounds: 6, maxLoopsPerStage: 6 }');
   }
 
-  const writePolicy = parseWritePolicy(root.writePolicy, errors);
-  const decisionPolicy = parseDecisionPolicy(root.decisionPolicy, errors);
+  // verify — inherit-not-overlay: filled for consumers, overlaid only if set.
+  let verify: AutoJobConfig["verify"] = { maxAttempts: 3 };
+  let verifyMaxAttemptsConfigured = false;
+  const verifyRaw = root.verify;
+  if (verifyRaw !== undefined) {
+    const v = asObject(verifyRaw);
+    if (!v) {
+      errors.push('"verify" must be an object');
+    } else {
+      rejectUnknownKeys(v, ["maxAttempts"], "verify.", errors);
+      if (v.maxAttempts !== undefined) {
+        const num = asNonNegativeNumber(v.maxAttempts);
+        if (num === null || num < 1) {
+          errors.push(`"verify.maxAttempts" must be a number >= 1: ${String(v.maxAttempts)}`);
+          verify = { maxAttempts: 3 };
+        } else {
+          verify = { maxAttempts: num };
+          verifyMaxAttemptsConfigured = true;
+        }
+      }
+    }
+  }
+
+  // defaults — D5: job-wide start stage (`auto` = derive from evidence).
+  let defaults: AutoJobConfig["defaults"] = { startStage: "clarify" };
+  const defaultsRaw = root.defaults;
+  if (defaultsRaw !== undefined) {
+    const d = asObject(defaultsRaw);
+    if (!d) {
+      errors.push('"defaults" must be an object');
+    } else {
+      rejectUnknownKeys(d, ["startStage"], "defaults.", errors);
+      if (d.startStage !== undefined) {
+        if (d.startStage === "auto" || RESUMABLE_STAGES.includes(d.startStage as PipelineStage)) {
+          defaults = { startStage: d.startStage as PipelineStage | "auto" };
+        } else {
+          applyEnumError(errors, "defaults.startStage", `${RESUMABLE_STAGES.join(" | ")} | "auto"`);
+        }
+      }
+    }
+  }
+
+  const writePolicyResult = parseWritePolicy(root.writePolicy, errors);
+  const freezePolicy = parseFreezePolicy(root.freezePolicy, errors);
   const stopConditions = parseStopConditions(root.stopConditions, errors, warnings);
+  // `decisionPolicy` was renamed: name the removed key explicitly (it is a
+  // removed top-level block, not an unknown key of another section).
+  if (root.decisionPolicy !== undefined) {
+    errors.push(`"decisionPolicy" is a removed job block ${REMOVED_KEY_SUFFIX} (use "freezePolicy")`);
+  }
 
   // chain
   const chain: AutoJobConfig["chain"] = { newSession: true, onSessionFail: "same-session" };
   const chainRaw = asObject(root.chain);
   if (chainRaw) {
+    rejectUnknownKeys(chainRaw, ["newSession", "onSessionFail"], "chain.", errors);
     if (chainRaw.newSession !== undefined) {
       if (typeof chainRaw.newSession !== "boolean") {
         errors.push('"chain.newSession" must be a boolean');
@@ -535,21 +686,24 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     }
   }
 
-  // audit
-  const audit: AutoJobConfig["audit"] = { recordAutoDecisions: true };
+  // audit — `autoDecisions` (renamed from `recordAutoDecisions`).
+  const audit: AutoJobConfig["audit"] = { autoDecisions: true };
   const auditRaw = asObject(root.audit);
-  if (auditRaw && auditRaw.recordAutoDecisions !== undefined) {
-    if (typeof auditRaw.recordAutoDecisions !== "boolean") {
-      errors.push('"audit.recordAutoDecisions" must be a boolean');
-    } else {
-      audit.recordAutoDecisions = auditRaw.recordAutoDecisions;
+  if (auditRaw) {
+    rejectUnknownKeys(auditRaw, ["autoDecisions"], "audit.", errors);
+    if (auditRaw.autoDecisions !== undefined) {
+      if (typeof auditRaw.autoDecisions !== "boolean") {
+        errors.push('"audit.autoDecisions" must be a boolean');
+      } else {
+        audit.autoDecisions = auditRaw.autoDecisions;
+      }
     }
   }
 
-  // Unknown top-level keys → warning (known-but-unsupported keys error above).
+  // Unknown top-level keys → warning (known-but-removed keys error above).
   const KNOWN_KEYS = new Set([
-    "version", "enabled", "docs", "clarify", "confirm", "designReview", "reviewFix",
-    "writePolicy", "decisionPolicy", "stopConditions", "chain", "audit", "_comment",
+    "version", "enabled", "tier", "docs", "clarify", "confirm", "designReview", "reviewFix",
+    "verify", "writePolicy", "freezePolicy", "stopConditions", "defaults", "chain", "audit", "_comment",
   ]);
   for (const key of Object.keys(root)) {
     if (!KNOWN_KEYS.has(key)) warnings.push(`Unknown job key "${key}" ignored`);
@@ -562,11 +716,9 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     confirm === null ||
     designReview === null ||
     reviewFix === null ||
-    writePolicy === null ||
-    decisionPolicy === null ||
-    stopConditions === null ||
-    chain === null ||
-    audit === null
+    writePolicyResult === null ||
+    freezePolicy === null ||
+    stopConditions === null
   ) {
     return { ok: false, errors: errors.length > 0 ? errors : [`Job file ${sourcePath} failed validation`] };
   }
@@ -574,16 +726,23 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
   const job: AutoJobConfig = {
     version: 1,
     enabled,
+    tier,
     docs: docs!,
     clarify: clarify!,
     confirm: confirm!,
     designReview: designReview!,
     reviewFix: reviewFix!,
-    writePolicy: writePolicy!,
-    decisionPolicy: decisionPolicy!,
+    verify: verify!,
+    writePolicy: writePolicyResult!.policy,
+    freezePolicy: freezePolicy!,
+    audit,
+    defaults,
     stopConditions: stopConditions!,
-    chain: chain!,
-    audit: audit!,
+    chain,
+    configured: {
+      verifyMaxAttempts: verifyMaxAttemptsConfigured,
+      gitModify: writePolicyResult!.gitModifyConfigured,
+    },
   };
   return { ok: true, job, hash: hashJobBytes(yamlText), warnings };
 }

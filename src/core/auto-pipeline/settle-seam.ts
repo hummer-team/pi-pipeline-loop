@@ -30,10 +30,10 @@ import {
   type FinalizeCtx,
 } from "./finalize";
 import {
-  buildClarifyInstruction,
-  noteClarifyMarkerMiss,
-  auditClarifyMarkerMiss,
+  buildClarifyFinalisationInstruction,
+  noteClarifyFallbackUsed,
 } from "./clarify-autopilot";
+import { auditAutoDecision } from "./auto-audit";
 import { resolveAgentMention } from "../../utils/subagent-rpc";
 import { auditAutoDiagnostic, reportAutoFailure } from "./diagnostics";
 
@@ -115,6 +115,13 @@ export async function handleAutoSettle(
 /**
  * G1 degrade/fail for a missing clarify completion marker.
  *
+ * 220 Phase 0 (D1): the autopilot no longer writes the marker and no longer
+ * degrades to `orchestrated`. A missing marker is routed by
+ * `clarify.onExhausted`:
+ * - `stop` (default) → doc failure (`clarify_marker_missing`);
+ * - `self-confirm` → ONE forced `full-und?` dispatch (recorded as
+ *   `clarifyFallbackUsed`); a second miss is a doc failure.
+ *
  * Called ONLY where the pipeline already knows the marker is missing (the
  * settle completion-marker precheck), so a legitimate in-flight clarify turn is
  * never mistaken for a failure.
@@ -132,35 +139,40 @@ export async function handleAutoClarifyMarkerMiss(
   if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return false;
 
   const { state, job } = active;
-  const action = noteClarifyMarkerMiss({ state, docIndex: state.docIndex });
-  await auditClarifyMarkerMiss(config, action);
+  const canFallback =
+    job.clarify.onExhausted === "self-confirm" && noteClarifyFallbackUsed({ state, docIndex: state.docIndex });
 
-  if (action === "degrade") {
+  await auditAutoDecision(config, {
+    gate: "clarify_completion_marker",
+    decision: canFallback ? "self_confirm" : "fail",
+    reason: canFallback ? "marker_missing_forced_full_und" : "marker_missing",
+  });
+
+  if (canFallback) {
     try {
       await writeJobState(config.projectRoot, state);
     } catch (err) {
-      auditAutoDiagnostic("clarify_degrade_persist_failed", "Auto-job clarify degradation could not be persisted.", {
+      auditAutoDiagnostic("clarify_fallback_persist_failed", "Auto-job clarify fallback could not be persisted.", {
         jobId: state.jobId,
         error: String(err),
       }, "error");
     }
-    // Re-dispatch the SAME clarify doc with the orchestrated (finalisation)
-    // instruction — the documented degradation path.
+    // Forced finalisation round — the only place where the plugin asks for the
+    // marker itself.
     const agentName = resolveAgentMention(config, "clarify");
     const doc = meta.requirementDoc;
-    const instruction = buildClarifyInstruction(job, "orchestrated");
     if (agentName && doc) {
-      ctx.pi?.sendUserMessage?.(`@${agentName} ${doc} full-und?\n\n${instruction}`, {
+      ctx.pi?.sendUserMessage?.(`@${agentName} ${doc} full-und?\n\n${buildClarifyFinalisationInstruction()}`, {
         expandPromptTemplates: true,
       });
     }
     ctx.ui?.notify?.(
-      `Auto job "${state.jobId}": clarify marker missing — degraded to orchestrated for ${doc ?? "the requirement doc"}.`,
+      `Auto job "${state.jobId}": clarify answers are missing — forcing one finalisation round for ${doc ?? "the requirement doc"}.`,
     );
     return true;
   }
 
-  // Second miss → doc failure (unified handleDocFailure path).
+  // Second miss (or `onExhausted: "stop"`) → doc failure (unified path).
   await handleDocFailure(ctx, config, state, job, {
     outcome: "failed",
     reason: "clarify_marker_missing",

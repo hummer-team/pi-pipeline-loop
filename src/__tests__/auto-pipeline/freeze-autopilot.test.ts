@@ -46,7 +46,7 @@ const JOB_YAML = [
   "docs:",
   "  list:",
   "    - doc: docs/design/200_Feat.md",
-  "decisionPolicy:",
+  "freezePolicy:",
   "  onFreeze: resume",
   "  maxAutoResumes: 2",
   "  byReason:",
@@ -158,7 +158,7 @@ describe("freeze-autopilot — resolveFreezeAction precedence", () => {
 
   it("missing onFreeze falls through to stop-and-report", () => {
     const state = createJobState({ jobId: JOB_ID, jobPath: JOB_REL_PATH, jobHash: "h", docs: [{ doc: "docs/a.md" }] });
-    const bare = { ...job(), decisionPolicy: { ...job().decisionPolicy, onFreeze: undefined as never } };
+    const bare = { ...job(), freezePolicy: { ...job().freezePolicy, onFreeze: undefined as never } };
     expect(resolveFreezeAction({ meta: blockedMeta("x"), job: bare, state, reason: "x" }).action).toBe("stop-and-report");
   });
 

@@ -12,8 +12,8 @@
  *   that decided to stop must not be auto-resumed by a provider rule.
  * - `totalFreezes` is incremented HERE and nowhere else (one write point next
  *   to `autoResumes`, so a counter can never be silently missed).
- * - `decisionPolicy` is JOB-PRIVATE: nothing from this module is ever written
- *   into `config.decisionPolicy`.
+ * - `freezePolicy` is JOB-PRIVATE: nothing from this module is ever written
+ *   into `config.decisionPolicy` (the 210 provider-chain block).
  *
  * Dependency note: this module calls back into `flow-state` (`executeDecision`)
  * only at runtime, so the `flow-state ↔ freeze-autopilot` import cycle cannot
@@ -55,12 +55,12 @@ export function resolveFreezeAction(input: {
   reason: string;
 }): ResolvedFreezeAction {
   const { job, state, reason } = input;
-  const byReason = job.decisionPolicy?.byReason ?? {};
+  const byReason = job.freezePolicy?.byReason ?? {};
   const explicit = byReason[reason];
-  const action: FreezeAction = explicit ?? job.decisionPolicy?.onFreeze ?? "stop-and-report";
+  const action: FreezeAction = explicit ?? job.freezePolicy?.onFreeze ?? "stop-and-report";
   const basis = explicit ? "by_reason" : "on_freeze";
   if (action !== "resume") return { action, basis };
-  const maxAutoResumes = job.decisionPolicy?.maxAutoResumes ?? 0;
+  const maxAutoResumes = job.freezePolicy?.maxAutoResumes ?? 0;
   const used = state.counters?.autoResumes ?? 0;
   if (used >= maxAutoResumes) {
     return { action: "stop-and-report", basis: "max_auto_resumes" };

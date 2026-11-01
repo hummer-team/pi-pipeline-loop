@@ -1049,7 +1049,8 @@ async function handlePassReady(
 }
 
 /**
- * 219 Phase 3 §4 (G4): consume `designReview.failAction`.
+ * 219 Phase 3 §4 (G4) / 220 D7: consume `designReview.onFail` (renamed from
+ * `failAction` — the 219 key is now a hard parse error).
  *
  * The schema parses `"auto-revise" | "stop"`, but nothing read it — a job that
  * explicitly asked "FAIL stops this document" silently kept revising until some
@@ -1068,7 +1069,7 @@ async function handlePassReady(
  * @returns the coordinator result to return, or `null` when the normal
  *   revise-plan route must continue.
  */
-async function maybeApplyAutoFailActionStop(
+async function maybeApplyAutoOnFailStop(
   ctx: CoordinatorContext,
   meta: SessionMeta,
 ): Promise<CoordinatorResult | null> {
@@ -1076,7 +1077,7 @@ async function maybeApplyAutoFailActionStop(
   const { readActiveJobContext } = await import("../auto-pipeline/config-overlay");
   const active = readActiveJobContext(ctx.config.projectRoot);
   if (!active || active.state.status !== "running") return null;
-  if (active.job.designReview.failAction !== "stop") return null;
+  if (active.job.designReview.onFail !== "stop") return null;
 
   const { handleDocFailure } = await import("../auto-pipeline/finalize");
   await handleDocFailure(
@@ -1084,14 +1085,14 @@ async function maybeApplyAutoFailActionStop(
     ctx.config,
     active.state,
     active.job,
-    { outcome: "failed", reason: "design_review_fail_action_stop" },
+    { outcome: "failed", reason: "design_review_on_fail_stop" },
   );
   await safeWriteAuditLog("design_review_coordinator", {
-    action: "auto_fail_action_stop",
+    action: "auto_on_fail_stop",
     jobId: active.jobId,
     round: String(meta.designReview?.round ?? 0),
   }, "warn");
-  return { status: "handled", action: "pending", reason: "auto_fail_action_stop" };
+  return { status: "handled", action: "pending", reason: "auto_on_fail_stop" };
 }
 
 /**
@@ -1114,14 +1115,14 @@ async function handleFail(
   reportPath: string,
   verifiedIssues?: readonly ReviewIssue[],
 ): Promise<CoordinatorResult> {
-  // 219 Phase 3 §4 (G4): `designReview.failAction: "stop"` — the job asked us
-  // NOT to revise. The doc failure must run the Phase 5 transaction
+  // 219 Phase 3 §4 (G4) / 220 D7: `designReview.onFail: "stop"` — the job asked
+  // us NOT to revise. The doc failure must run the Phase 5 transaction
   // (`handleDocFailure`, stopReason "budget_exhausted"), never a copied loop.
   // Human mode is untouched: without an ACTIVE auto job this is a no-op.
   // Ordered before the budget predicates on purpose: an explicit "stop" is the
   // more specific instruction, and both outcomes are terminal for this doc.
-  const failActionStop = await maybeApplyAutoFailActionStop(ctx, meta);
-  if (failActionStop) return failActionStop;
+  const onFailStop = await maybeApplyAutoOnFailStop(ctx, meta);
+  if (onFailStop) return onFailStop;
 
   // 219 Phase 3 §7c (B2): independent round budget — judged BEFORE re-dispatch.
   if (isDesignReviewRoundBudgetExhausted(meta)) {

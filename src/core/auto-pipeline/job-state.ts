@@ -24,6 +24,7 @@ import * as pathMod from "node:path";
 import type { PipelineStage } from "../../types";
 import { AUTO_PIPELINE_DIR } from "../../constants";
 import type { AutoJobDoc } from "./job-schema";
+import type { StartStageBasis } from "./start-stage-evidence";
 import { auditAutoDiagnostic } from "./diagnostics";
 
 /**
@@ -67,6 +68,26 @@ export interface AutoJobDocProgress {
    *  (`noteDocStage`) and at doc startup. */
   lastStage?: PipelineStage;
   lastStageStartedAt?: number;
+  // ─── 220 Phase 2: per-doc clarify accounting (B13: sidecar, NOT meta) ──────
+  /** Rounds dispatched for THIS doc (monotonic; see `clarify-round-budget`). */
+  clarifyRounds?: number;
+  /** Highest dispatched round (dedupe + rewind protection). */
+  clarifyLastRound?: number;
+  /** Unix ms of the last clarify dispatch (30s coalescing window). */
+  clarifyDispatchedAt?: number;
+  /** Consecutive no-progress observations (`clarify-stall`). */
+  clarifyStalls?: number;
+  /** Signature of the last stall observation. */
+  clarifyStallSignature?: string;
+  /** Document length of the last stall observation. */
+  clarifyStallDocLength?: number;
+  /** Consecutive rounds assessed as `needs-clarify`. */
+  clarifyNeedsClarifyStreak?: number;
+  // ─── 220 Phase 5: start-stage evidence (B7) ────────────────────────────────
+  /** What the doc's start stage was verified against. */
+  startStageBasis?: StartStageBasis;
+  /** Whether the start stage was explicit or derived (`auto`). */
+  startStageDerivation?: "explicit" | "auto";
 }
 
 export interface AutoJobState {
@@ -136,7 +157,12 @@ export type AutoJobStopReason =
   | "session_fail"
   | "job_completed"
   | "user_cancelled"
-  | "job_drift";
+  | "job_drift"
+  // 220 Phase 3 (D2): clarify discipline + the impossible idle state.
+  | "clarify_stalled"
+  | "clarify_requirement_unclear"
+  | "clarify_budget_exhausted"
+  | "awaiting_human_in_auto";
 
 /**
  * job state path: `<projectRoot>/.pi/auto_pipeline/{jobId}/state.json`.

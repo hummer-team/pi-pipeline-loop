@@ -2,7 +2,7 @@
  * @module auto-pipeline/auto-audit
  * 219 Phase 3 §8: the audit switch whitelist.
  *
- * `audit.autoDecisions` (config) / `audit.recordAutoDecisions` (job) control
+ * `audit.autoDecisions` (config) / `audit.autoDecisions` (job) control
  * EXACTLY ONE event: `pipeline_auto_decision` (the per-gate decision rows —
  * the largest volume, and the only ones that are pure noise when disabled).
  *

@@ -31,7 +31,7 @@ const JOB_YAML = [
   "docs:",
   "  list:",
   "    - doc: docs/design/200_Feat.md",
-  "decisionPolicy:",
+  "freezePolicy:",
   "  onFreeze: stop-and-report",
 ].join("\n");
 

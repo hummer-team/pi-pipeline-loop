@@ -33,8 +33,7 @@ const JOB_YAML = [
   "stopConditions:",
   "  maxTotalLoops: 5",
   "  maxTotalFreezes: 2",
-  "  maxConsecutiveVerifyFailures: 3",
-  "decisionPolicy:",
+    "freezePolicy:",
   "  onFreeze: resume",
   "  maxAutoResumes: 1",
 ].join("\n");

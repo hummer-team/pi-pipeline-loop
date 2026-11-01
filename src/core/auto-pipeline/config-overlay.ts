@@ -2,11 +2,13 @@
  * @module auto-pipeline/config-overlay
  * 219 Phase 2: job → config overlay + process-level single-instance lock.
  *
- * Facts (frozen in 219_Feat.md 6.4 / plan Phase 2):
- * - The overlay writes ONLY the 6.4 mapping-table keys; `decisionPolicy` /
+ * Facts (frozen in 219_Feat.md 6.4 / plan Phase 2 + 220 Phase 2):
+ * - The overlay writes ONLY the mapping-table keys; `freezePolicy` /
  *   `designReview.*` / `stopConditions.*` / `clarify.*` / `docs.*` /
- *   `chain.*` NEVER enter the config (decisionPolicy structurally
- *   incompatible + owned by the 210 provider chain).
+ *   `chain.*` / `tier` / `defaults.*` NEVER enter the config (freezePolicy is
+ *   structurally incompatible + owned by the 210 provider chain).
+ * - `verify.maxAttempts` and `writePolicy.gitModify` are inherit-not-overlay:
+ *   they are written only when `job.configured` records an explicit value.
  * - `applyOverlay` mutates the LIVE `PipelineConfig` object in place (the
  *   object all hooks captured at load time): it never reassigns its
  *   parameter, only does top-level key assignment, per-stage field writes
@@ -230,10 +232,10 @@ function readConfigPath(source: Record<string, unknown>, configPath: string): un
 // ─── Pure overlay (6.4 mapping table — the ONLY allowed writes) ──────────────
 
 /**
- * Pure: deep-copies `base` and overwrites ONLY the 6.4 mapping-table keys.
- * Keys the job never maps (decisionPolicy / designReview / stopConditions /
- * clarify / docs / chain) are left byte-identical; `stages` blocks that do
- * not exist in the base are never invented.
+ * Pure: deep-copies `base` and overwrites ONLY the mapping-table keys.
+ * Keys the job never maps (freezePolicy / designReview / stopConditions /
+ * clarify / docs / chain / tier / defaults) are left byte-identical; `stages`
+ * blocks that do not exist in the base are never invented.
  *
  * Entries record every touched path, including the H2 stage-level
  * `whitelistMiss` deletions (`to: undefined`) so `restoreOverlay` can
@@ -288,6 +290,11 @@ export function overlayJobOnJson(
   if (job.writePolicy) {
     if (json.protect === undefined) json.protect = {} as PipelineJsonConfig["protect"];
     const protect = asMutableRecord(json.protect) as Record<string, unknown>;
+    // 220 D7: `gitModify` is inherit-not-overlay — the schema default must not
+    // rewrite a JSON value the job never mentioned.
+    if (job.configured?.gitModify && job.writePolicy.gitModify !== undefined) {
+      recordSet("writePolicy.gitModify", "protect.gitModify", protect, "gitModify", job.writePolicy.gitModify);
+    }
     if (job.writePolicy.whitelistMiss !== undefined) {
       recordSet("writePolicy.whitelistMiss", "protect.whitelistMiss", protect, "whitelistMiss", job.writePolicy.whitelistMiss);
       // H2: the job value is the FINAL word — stage-level overrides must go,
@@ -316,11 +323,17 @@ export function overlayJobOnJson(
     }
   }
 
-  // audit.recordAutoDecisions → audit block (audit.autoDecisions).
-  if (job.audit?.recordAutoDecisions !== undefined) {
+  // verify.maxAttempts → global verify attempt cap (220 D7 / Q15). Inherit-not-
+  // overlay: an unconfigured job keeps the JSON value.
+  if (job.configured?.verifyMaxAttempts && job.verify?.maxAttempts !== undefined) {
+    recordSet("verify.maxAttempts", "maxVerifyAttempts", jsonView, "maxVerifyAttempts", job.verify.maxAttempts);
+  }
+
+  // audit.autoDecisions → audit block (same-named JSON key, R1).
+  if (job.audit?.autoDecisions !== undefined) {
     if (json.audit === undefined) json.audit = {};
     const audit = (json.audit ?? {}) as Record<string, unknown>;
-    recordSet("audit.recordAutoDecisions", "audit.autoDecisions", audit, "autoDecisions", job.audit.recordAutoDecisions);
+    recordSet("audit.autoDecisions", "audit.autoDecisions", audit, "autoDecisions", job.audit.autoDecisions);
     json.audit = audit as PipelineJsonConfig["audit"];
   }
 

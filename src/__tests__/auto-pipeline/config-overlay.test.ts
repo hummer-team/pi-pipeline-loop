@@ -12,7 +12,8 @@
  *   `to` values, never re-captures `before` and never re-stamps `appliedAt`.
  * - H2: a stage-level `protect.whitelistMiss` override is deleted (job is the
  *   final word) and restored by `restoreOverlay`.
- * - `decisionPolicy` NEVER reaches the config (zero entries; deep-equal).
+ * - `freezePolicy` NEVER reaches the config (zero entries; deep-equal): it is
+ *   job-private and consumed only by freeze-autopilot.
  * - Restore is a deep-equal rollback of the touched keys only and idempotent.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
@@ -53,12 +54,12 @@ const JOB_YAML = [
   "  destructiveCommand: deny",
   "  allowGlobs:",
   "    - docs/**",
-  "decisionPolicy:",
+  "freezePolicy:",
   "  onFreeze: resume",
   "  byReason:",
   "    verify_budget: stop-and-report",
   "audit:",
-  "  recordAutoDecisions: false",
+  "  autoDecisions: false",
 ].join("\n");
 
 function parseJob(yamlText = JOB_YAML): AutoJobConfig {
@@ -143,13 +144,15 @@ describe("config-overlay — overlayJobOnJson (pure)", () => {
     expect(json.protect?.whitelistMiss).toBe("deny");
   });
 
-  it("decisionPolicy is NEVER written into the config (zero entries, deep-equal)", () => {
+  it("freezePolicy is NEVER written into the config (zero entries, deep-equal)", () => {
     const base = baseJson();
     base.decisionPolicy = { byReason: { verify_budget: { decision: "resume" } } };
     const before = structuredClone(base.decisionPolicy);
     const { json, entries } = overlayJobOnJson(base, parseJob());
     expect(json.decisionPolicy).toEqual(before);
     expect(entries.some((e) => e.configPath.startsWith("decisionPolicy"))).toBe(false);
+    expect(entries.some((e) => e.configPath.startsWith("freezePolicy"))).toBe(false);
+    expect((json as unknown as Record<string, unknown>).freezePolicy).toBeUndefined();
   });
 
   it("H2: removes every stage-level whitelistMiss override and records the deletion", () => {

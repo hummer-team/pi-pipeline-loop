@@ -1,5 +1,6 @@
 /**
- * 219 Phase 3 §4 (G4) — `designReview.failAction` consumption.
+ * 219 Phase 3 §4 (G4) — `designReview.onFail` consumption (220 D7 rename of
+ * `failAction`; the old key is now a hard parse error).
  *
  * Review 219 issue 2: the schema parsed `"auto-revise" | "stop"` but NOTHING
  * read it, so a job that asked "FAIL stops this document" kept revising until
@@ -37,7 +38,7 @@ import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 const JOB_ID = "alpha";
 const REVIEW_OP_ID = "op-review-fail-action";
 
-function jobYaml(failAction: "auto-revise" | "stop"): string {
+function jobYaml(onFail: "auto-revise" | "stop"): string {
   return [
     "version: 1",
     "enabled: true",
@@ -47,7 +48,7 @@ function jobYaml(failAction: "auto-revise" | "stop"): string {
     "designReview:",
     "  mode: auto",
     "  maxRounds: 3",
-    `  failAction: ${failAction}`,
+    `  onFail: ${onFail}`,
   ].join("\n");
 }
 
@@ -78,11 +79,11 @@ afterEach(async () => {
   await rm(ROOT, { recursive: true, force: true });
 });
 
-/** Install a running job (sidecar + process lock) with the requested failAction. */
-async function installJob(failAction: "auto-revise" | "stop"): Promise<void> {
+/** Install a running job (sidecar + process lock) with the requested onFail. */
+async function installJob(onFail: "auto-revise" | "stop"): Promise<void> {
   const jobDir = join(ROOT, "docs", "jobs");
   fs.mkdirSync(jobDir, { recursive: true });
-  const yaml = jobYaml(failAction);
+  const yaml = jobYaml(onFail);
   fs.writeFileSync(join(jobDir, `${JOB_ID}.yaml`), yaml, "utf8");
 
   const state = createJobState({
@@ -172,17 +173,17 @@ async function failRoundMeta(): Promise<{ meta: SessionMeta; ctx: CoordinatorCon
   return { meta, ctx };
 }
 
-describe("design-review failAction (G4)", () => {
-  it("failAction:stop ends the DOC through handleDocFailure (no revise dispatch)", async () => {
+describe("design-review onFail (G4)", () => {
+  it("onFail:stop ends the DOC through handleDocFailure (no revise dispatch)", async () => {
     await installJob("stop");
     const { meta, ctx } = await failRoundMeta();
 
     const result = await coordinateDesignReview(ctx, meta, "settle");
 
-    expect(result).toEqual({ status: "handled", action: "pending", reason: "auto_fail_action_stop" });
+    expect(result).toEqual({ status: "handled", action: "pending", reason: "auto_on_fail_stop" });
     const state = readJobState(ROOT, JOB_ID)!;
     expect(state.docs[0]?.status).toBe("failed");
-    expect(state.docs[0]?.failReason).toBe("design_review_fail_action_stop");
+    expect(state.docs[0]?.failReason).toBe("design_review_on_fail_stop");
     // onFailure defaults to "stop" → the job is terminal, never left running.
     expect(state.status).toBe("failed");
     expect(state.stopReason).toBe("budget_exhausted");
@@ -192,7 +193,7 @@ describe("design-review failAction (G4)", () => {
     expect(ctx.session.getMeta()!.currentStage).toBe("design-review");
   });
 
-  it("failAction:auto-revise keeps the existing revise-plan route", async () => {
+  it("onFail:auto-revise keeps the existing revise-plan route", async () => {
     await installJob("auto-revise");
     const { meta, ctx } = await failRoundMeta();
 

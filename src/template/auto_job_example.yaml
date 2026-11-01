@@ -1,5 +1,5 @@
 # ============================================================================
-# pi-pipeline — Auto Pipeline 任务文件示例 (219)
+# pi-pipeline — Auto Pipeline 任务文件示例 (220)
 # ============================================================================
 # 本文件随模板分发（构建后位于 dist/template/，`/pipeline-init` 安装到
 # `.pi/auto_job_example.yaml`）。用法：复制/改写为 `docs/jobs/*.yaml`（插件只扫描该目录，不递归、
@@ -13,46 +13,71 @@
 #   docs:
 #     list:
 #       - doc: docs/design/200_Feat.md
+#
+# 已移除的键（写入即报错，绝不静默降级）：
+#   clarify.mode / clarify.fallback / clarify.answerStrategy /
+#   designReview.failAction / decisionPolicy / audit.recordAutoDecisions /
+#   stopConditions 的「连续 verify 失败次数」键
 # ============================================================================
 
 version: 1                      # 固定为 1，其他值解析失败
 
 enabled: true                   # 非 boolean → false（拒绝执行，fail-closed）
 
+# C-2 自主档位（唯一"不覆盖任何 json 键"的顶层语义开关）：
+#   rule     — 只跑规则化流程（不强制设计评审对照、不做全量比对）
+#   assisted — 强制 design-review 通过 + 全量比对（缺省；无人值守更安全）
+tier: assisted
+
 docs:
   list:
     - doc: docs/design/200_Feat.md     # 必须是项目内相对路径、以 .md 结尾、不含 ".."
-      startStage: clarify              # 可选；默认 clarify；仅接受可恢复阶段
+      startStage: clarify              # 可选；仅接受可恢复阶段；缺省取 defaults.startStage
     - doc: docs/design/201_Feat.md
   skipCompleted: true                  # 命中 NEW_COMMIT_RE（如 *_Develop_Commit.md）视为已完成并跳过
   onFailure: stop                      # stop | continue
                                        # 注意：HARD STOP（硬停，见 stopConditions）会
                                        # 无视该值直接终止整个 job —— onFailure 只管"软失败"。
 
-# v1 仅支持两个值：self-answer | orchestrated（prefilled → 解析报错）。
-# 未产出 `## 模型确认` 标记时插件自动降级 orchestrated（上限 maxRounds）；
-# 没有用户可配的 fallback 键（已从 v1 schema 移除，写入即报错）。
+# D5：job 级起点阶段。逐文档 startStage 优先于本键。
+#   clarify | plan | design-review | develop | review | fix | auto
+#   auto = 按磁盘证据（设计文档/计划确认/代码提交）推导起点，证据不足回落 clarify。
+defaults:
+  startStage: clarify
+
+# D6 轮次三键之一：clarify 轮次预算（不是"模式"）。
+# v1 只有 self-answer 一种策略；没有 fallback 键（写入即报错）。
 clarify:
-  mode: self-answer
-  maxRounds: 2
+  strategy: self-answer        # v1 唯一值
+  maxRounds: 5                 # 与 design-und「约 5 轮」一致；explicit 才覆盖
+  onExhausted: stop            # stop | self-confirm
+                               # stop = 预算耗尽即冻结（stopReason clarify_budget_exhausted）
+                               # self-confirm = 耗尽后强制自确认一次再进入下一阶段
 
 # 覆盖 pipeline_loop.json 的 stages.plan/review.confirm.mode（confirm.mode=auto 即无人工门）。
 confirm:
   plan: auto
   review: auto
 
-# v1 的 mode 仅接受 auto（manual → 解析报错）；FAIL 裁决走 auto-revise（不伪造人工裁决）。
+# v1 的 mode 仅接受 auto（manual → 解析报错）。
 designReview:
   mode: auto
   maxRounds: 3                 # 独立轮次预算：第 N 轮 PASS 照常推进，第 N+1 次派发才冻结
-  failAction: auto-revise      # auto-revise | stop
-                              # auto-revise = 依赖既有 auto 语义继续修订；
-                              # stop = 本次 FAIL 即终止本文档（走收尾事务，
-                              # stopReason budget_exhausted），再按 docs.onFailure 调度。
+  onFail: auto-revise          # auto-revise | stop（219 的 failAction 已移除）
+                               # auto-revise = 依赖既有 auto 语义继续修订；
+                               # stop = 本次 FAIL 即终止本文档（走收尾事务，
+                               # stopReason budget_exhausted），再按 docs.onFailure 调度。
 
 reviewFix:
   maxRounds: 6                 # → 覆盖 pipeline_loop.json 的 maxLoopCycles
   maxLoopsPerStage: 6          # → 覆盖 pipeline_loop.json 的 maxLoops
+                               # 澄清语义：同一阶段（develop/fix）的重试/校验上限，不是"文档级"上限；
+                               # 不新增 maxLoopsPerDoc（文档级预算由 stopConditions.maxTotalLoops 承担）。
+
+# Q15：verify 失败次数上限，达到即硬停（stopReason verify_failures）。
+# 【继承口径】本键未配置时不 overlay，沿用 pipeline_loop.json 的 maxVerifyAttempts。
+verify:
+  maxAttempts: 3
 
 # 逐键覆盖 pipeline_loop.json 的对应 protect 键；未声明的键回落（job 是"本任务的最终口径"，
 # whitelistMiss 还会清除既有阶段级 override）。
@@ -61,22 +86,26 @@ writePolicy:
   protectedPath: deny          # deny | ask     —— 受保护路径（auto 下 ask 也不弹窗，一律 block）
   destructiveCommand: deny     # deny | ask     —— 危险命令（系统路径安全网永不放宽）
   allowGlobs: []               # 映射到 protect.whitelistAllow（≠ protect.allow，仅豁免 whitelist_miss）
+  gitModify: block             # allow | block   —— 是否允许 agent 执行改变 git 状态的命令
+                               # 【继承口径】未配置时不 overlay，沿用 json 的 protect.gitModify；
+                               # 托管更保守，所以缺省是 block。
 
 # JOB-PRIVATE：只由冻结决策自动驾驶消费，【永不】写进 pipeline_loop.json 的
-# decisionPolicy（那是 210 provider 链的地盘，结构不兼容）。
-decisionPolicy:
+# decisionPolicy（那是 210 provider 链的地盘：FreezeAction 字符串 vs 规则对象，结构不兼容）。
+freezePolicy:
   onFreeze: resume             # resume | abort | stop-and-report（缺省优先级：byReason → onFreeze → stop-and-report）
   maxAutoResumes: 2            # 跨文档累计，耗尽即 stop-and-report
   byReason: {}                 # 键=冻结原因（如 verify_budget）；值只能是 resume|abort|stop-and-report
+                               # 与 stopConditions.stopOnBlockedReasons 同时命中 → 硬停优先。
 
 # 硬停 + 软循环闸双轨；所有数值均在 schema 层填满缺省（下游永不见 undefined）。
 stopConditions:
-  maxConsecutiveVerifyFailures: 3   # >= 1；连败达到即硬停（verify_failures）
   maxTotalFreezes: 0                # 历史冻结总次数上限；0 = 不限制
   maxTotalLoops: 20                 # >= 1；job 级循环软熔断（触发后当前文档仍有 finalLoopGrace 的完成机会）
   wallClockMs: 0                    # 0 = 不限制（墙钟上限；在循环内部也随时检查，硬停）
   stopOnBlockedReasons: []          # 命中即硬停（blocked_reason）
   finalLoopGrace: 1                 # 缺省 1、上限 3、0=关闭；软熔断触发后给当前文档的额外循环次数
+  # 220 B12/Q15：连续 verify 失败次数的键已移除，改用上方 verify.maxAttempts。
 
 # 文档链式续跑：完成一份后自动起新 session（newSession 失败 → 同 session 串行 → 再失败 → 停 job）。
 chain:
@@ -84,4 +113,4 @@ chain:
   onSessionFail: same-session   # same-session | stop
 
 audit:
-  recordAutoDecisions: true    # 只控制 pipeline_auto_decision 事件；生命周期/安全类审计恒写
+  autoDecisions: true          # 只控制 pipeline_auto_decision 事件；生命周期/安全类审计恒写
