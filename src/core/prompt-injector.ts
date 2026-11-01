@@ -26,7 +26,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX, DEFAULT_COMPLETION_MARKERS } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
 import {
   resolveClarifyPromptMarkers,
   substituteClarifyMarkerPlaceholders,
@@ -1512,22 +1512,18 @@ async function buildStageExecutor(
   // 221 Phase 1: the marker primaries are config-driven (job JSON → stage
   // `completionMarker` → defaults). PROMPT-ONLY: the precheck switch is the
   // stage `completionMarker` alone (see `mergeCompletionMarkers`).
-  const { completionMarker: completionPrimary, answerMarker: answerPrimary } =
-    resolveClarifyPromptMarkers(config);
+  const { completionMarker: completionPrimary } = resolveClarifyPromptMarkers(config);
 
   if (ymlTemplate && ymlTemplate.trim()) {
-    // Fill placeholders from yml template
-    return ymlTemplate
+    // Fill placeholders from yml template.
+    // 221 (INV-4): marker primaries AND alias lists resolve through the shared
+    // substituter, so a custom primary is never paired with default aliases.
+    const withContext = ymlTemplate
       .replaceAll("{subagent_type}", executor.subagent_type)
       .replaceAll("{context_arg}", `<document path filled by main thread, e.g. _Plan.md>`)
       .replaceAll("{active_spawn_note}", activeSpawnNote)
-      .replaceAll("{queued_spawn_note}", queuedSpawnNote)
-      .replaceAll("{completionMarker}", completionPrimary)
-      .replaceAll("{answerMarker}", answerPrimary)
-      // 221 legacy deployments: an already installed yml still carries the
-      // literal Chinese marker, so the configured primary must win WITHOUT
-      // re-running /pipeline-init (default config stays byte-identical).
-      .replaceAll(DEFAULT_COMPLETION_MARKERS[0], completionPrimary);
+      .replaceAll("{queued_spawn_note}", queuedSpawnNote);
+    return substituteClarifyMarkerPlaceholders(withContext, resolveClarifyPromptMarkers(config));
   }
 
   // Fallback: hardcoded English default text (when yml key is missing/empty)

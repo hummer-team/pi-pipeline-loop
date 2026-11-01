@@ -588,15 +588,37 @@ describe("221 Phase 1: clarify protocol assets", () => {
     expect(fs.existsSync(path.join(templateDir, "auto_job_example.yaml"))).toBe(false);
   });
 
-  it("keeps the clarify metadata rule bilingual", () => {
+  it("parameterises the clarify marker alias lists (INV-4)", () => {
     const yml = fs.readFileSync(
       path.join(__dirname, "../../template/references/pipeline-stage-prompt.yml"),
       "utf-8",
     );
-    // The deliverable is verify-generation input, so it keeps literal bilingual
-    // markers (no {completionMarker} placeholder that verify rules would treat
-    // as required content).
-    expect(yml).toContain("`## 模型确认` / `## Model Confirmation`");
-    expect(yml).toContain("`答：`/`答:`/`**答**`/`Answer:`");
+    // 221 review round 2: the accepted-alias lists are configuration-driven.
+    // A static list would tell a custom-primary project to write a marker the
+    // precheck rejects. The bilingual defaults now come from the resolver.
+    expect(yml).toContain("{completionAliases}");
+    expect(yml).toContain("{answerAliases}");
+    expect(yml).not.toContain("(accepted aliases: `## 模型确认` / `## Model Confirmation`)");
+    expect(yml).not.toContain("(accepted aliases: `答：`/`答:`/`**答**`/`Answer:`)");
+  });
+
+  it("parameterises the clarify marker placeholders in directly-read assets", () => {
+    const skill = fs.readFileSync(
+      path.join(__dirname, "../../template/skills/design/SKILL.md"),
+      "utf-8",
+    );
+    const clarifyTemplate = fs.readFileSync(
+      path.join(__dirname, "../../template/references/clarify_template.md"),
+      "utf-8",
+    );
+    // Agents read these files directly, so `/pipeline-init` resolves the
+    // placeholders at install time — a static `答：` / `## 模型确认` would
+    // contradict a custom primary (review round 2, issue 1).
+    expect(skill).toContain("{answerMarker}");
+    expect(skill).toContain("{completionMarker}");
+    expect(skill).toContain("{completionAliases}");
+    expect(clarifyTemplate).toContain("{answerMarker}");
+    expect(clarifyTemplate).toContain("{completionMarker}");
+    expect(clarifyTemplate).toContain("{completionAliases}");
   });
 });

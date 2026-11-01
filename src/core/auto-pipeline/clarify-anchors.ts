@@ -42,6 +42,8 @@ export interface ResolvedClarifyAnchors {
   questionPatterns: RegExp[];
   roundPatterns: RegExp[];
   answerPatterns: RegExp[];
+  /** Effective literal answer markers (job → defaults); first entry is the primary. */
+  answerMarkers: string[];
   answerPrimary: string;
   verdictReady: string[];
   verdictNeedsClarify: string[];
@@ -154,11 +156,19 @@ export function resolveClarifyAnchors(input: {
 
   const answerMarkers = pick(job?.answerMarkers, DEFAULT_CLARIFY_PROTOCOL.answerMarkers);
   // Plan Phase 0 order: job `patterns` → deployed verify.md patterns → patterns
-  // GENERATED from the markers (job markers first, defaults otherwise). A job
-  // that only declares `answers.markers` must not short-circuit verify.md.
+  // GENERATED from the markers. A job that only declares `answers.markers`
+  // must not short-circuit verify.md, BUT its marker patterns must be part of
+  // the accepted set: the prompt asks for `answers.markers` while the parser
+  // would otherwise only accept verify.md (INV-4, review 221-3b). The explicit
+  // job markers therefore come FIRST, followed by the verify.md patterns.
+  const jobMarkerPatterns = job?.answerMarkers?.length
+    ? job.answerMarkers.map(markerPattern)
+    : undefined;
   const answerSources =
     job?.answerPatterns ??
-    verify?.answerField?.patterns ??
+    (jobMarkerPatterns
+      ? [...new Set([...jobMarkerPatterns, ...(verify?.answerField?.patterns ?? [])])]
+      : verify?.answerField?.patterns) ??
     (job?.answerMarkers ?? DEFAULT_CLARIFY_PROTOCOL.answerMarkers).map(markerPattern);
   const answerPatterns =
     compileGroup(answerSources, "clarify.answers.patterns", issues) ??
@@ -183,6 +193,7 @@ export function resolveClarifyAnchors(input: {
     questionPatterns,
     roundPatterns,
     answerPatterns,
+    answerMarkers,
     answerPrimary: answerMarkers[0]!,
     verdictReady: pick(job?.verdictReady, DEFAULT_CLARIFY_PROTOCOL.verdictReady),
     verdictNeedsClarify: pick(job?.verdictNeedsClarify, DEFAULT_CLARIFY_PROTOCOL.verdictNeedsClarify),

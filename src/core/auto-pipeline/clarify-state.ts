@@ -15,17 +15,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PipelineConfig, SessionMeta } from "../../types";
-import { loadVerifyContractAnchors } from "../../utils/contract-loader";
-import type { VerifyContractAnchors, VerifyContractPatternSet } from "../../utils/contract-loader";
-import { escapeRegExp } from "../../utils/regex-utils";
 import { spawnStageSubagent } from "../../utils/subagent-rpc";
 import { freezeAndPrompt } from "../flow-state";
 import { auditAutoDecision } from "./auto-audit";
-import {
-  DEFAULT_CLARIFY_PROTOCOL,
-  resolveClarifyAnchors,
-  type ResolvedClarifyAnchors,
-} from "./clarify-anchors";
+import type { ResolvedClarifyAnchors } from "./clarify-anchors";
+import { loadClarifyRuntimeAnchors } from "./clarify-runtime-anchors";
 import { decideClarifyDispatch, type ClarifyDispatchDecision } from "./clarify-dispatch";
 import { parseRequirementAssessment } from "./clarify-protocol";
 import { DEFAULT_CLARIFY_STALL_LIMIT } from "./clarify-stall";
@@ -86,67 +80,6 @@ export interface ClarifyDocState {
 }
 
 /**
- * Build the `VerifyContractAnchors` handed to `deriveClarifyForwardArgs`.
- *
- * Precedence: an anchor the job JSON declares explicitly → deployed verify.md →
- * code defaults (INV-4). The EFFECTIVE round set (including the `轮`
- * compatibility alias) always wins, so the forward-arg round derivation and
- * `parseClarifyQuestionCount` agree.
- * Before overriding, the joined regex is compiled once: a half-valid set would
- * make `compileRoundHeading` fail and silently return `fresh`.
- */
-function buildForwardAnchors(
-  anchors: ResolvedClarifyAnchors,
-  config: PipelineConfig,
-  verify?: VerifyContractAnchors,
-): VerifyContractAnchors {
-  const roundSources = anchors.roundPatterns.map((pattern) => pattern.source);
-  let roundHeading: VerifyContractPatternSet | undefined;
-  try {
-    new RegExp(roundSources.join("|"), "gm");
-    roundHeading = { patterns: roundSources, mode: "or" };
-  } catch (err) {
-    console.warn(`[pi-pipeline] clarify round anchors unusable (${String(err)}); falling back to verify.md`);
-    roundHeading = verify?.roundHeading;
-  }
-  if (!roundHeading) {
-    roundHeading = { patterns: [...DEFAULT_CLARIFY_PROTOCOL.roundPatterns], mode: "or" };
-  }
-
-  // 221 Phase 1 (INV-4): an anchor the JOB declares explicitly (or the stage
-  // `completionMarker` that carries the job aliases) must win over the deployed
-  // verify.md, otherwise the hints and the forward-arg derivation disagree in
-  // a custom-primary project. Deployed verify.md stays authoritative when the
-  // job declares nothing.
-  const job = config.clarifyProtocol;
-  const stageCompletionMarker = config.stages.clarify?.verify?.completionMarker;
-  const jobDeclaresAnswer =
-    (job?.answerPatterns?.length ?? 0) > 0 || (job?.answerMarkers?.length ?? 0) > 0;
-  const jobDeclaresConfirm =
-    (job?.modelConfirm?.length ?? 0) > 0 || stageCompletionMarker !== undefined;
-
-  const answerField: VerifyContractPatternSet = jobDeclaresAnswer
-    ? { patterns: anchors.answerPatterns.map((pattern) => pattern.source), mode: "or" }
-    : verify?.answerField ?? {
-        patterns: anchors.answerPatterns.map((pattern) => pattern.source),
-        mode: "or",
-      };
-  const modelConfirm: VerifyContractPatternSet = jobDeclaresConfirm
-    ? { patterns: anchors.modelConfirm.map((marker) => `^\\s*${escapeRegExp(marker)}`), mode: "or" }
-    : verify?.modelConfirm ?? {
-        patterns: anchors.modelConfirm.map((marker) => `^\\s*${escapeRegExp(marker)}`),
-        mode: "or",
-      };
-
-  return {
-    ...(verify?.verdict ? { verdict: verify.verdict } : {}),
-    roundHeading,
-    answerField,
-    modelConfirm,
-  };
-}
-
-/**
  * Read the running document ONCE and derive the round decision.
  *
  * Shared by `clarify-entry.ts` (the settle-side entry) and
@@ -169,14 +102,10 @@ export async function buildClarifyDocState(input: {
   if (!progress || progress.doc !== doc) return null;
 
   const docText = await readRequirementText(config.projectRoot, doc);
-  const { anchors: verifyAnchors } = await loadVerifyContractAnchors(config, "clarify");
-  const anchors = resolveClarifyAnchors({
-    ...(config.clarifyProtocol ? { job: config.clarifyProtocol } : {}),
-    ...(verifyAnchors ? { verify: verifyAnchors } : {}),
-    ...(config.stages.clarify?.verify?.completionMarker !== undefined
-      ? { completionMarker: config.stages.clarify.verify.completionMarker }
-      : {}),
-  });
+  // 221 (INV-4): the SAME runtime anchor set the human chain uses (see
+  // `clarify-runtime-anchors`), so job-declared rounds/answers apply to both.
+  const runtime = await loadClarifyRuntimeAnchors(config);
+  const anchors = runtime.anchors;
   const assessment = docText === null ? null : parseRequirementAssessment(docText, anchors);
   const previousDocLength = progress.clarifyStallDocLength ?? 0;
 
@@ -184,7 +113,7 @@ export async function buildClarifyDocState(input: {
     autoActive: true,
     requirementDoc: doc,
     docText,
-    anchors: buildForwardAnchors(anchors, config, verifyAnchors),
+    anchors: runtime.forward,
     usedRounds: progress.clarifyRounds ?? 0,
     maxRounds: job.clarify.maxRounds,
     stalls: progress.clarifyStalls ?? 0,

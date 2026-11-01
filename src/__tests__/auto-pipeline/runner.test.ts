@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import type { PipelineConfig, PipelineJsonConfig, SessionMeta } from "../../types";
 import { resolvePipelineConfig } from "../../core/json-config-loader";
 import { startAutoJob } from "../../commands/pipeline-auto";
-import { isAutoJobActive, __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
+import { isAutoJobActive, __resetAutoJobLockForTests, acquireJobLock } from "../../core/auto-pipeline/config-overlay";
 import { readJobState, resolveJobStatePath, writeJobState, createJobState } from "../../core/auto-pipeline/job-state";
 import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
@@ -36,7 +36,13 @@ let errorSpy: ReturnType<typeof spyOn>;
 
 function jobYaml(
   docs: string[],
-  extra?: { enabled?: boolean; startStage?: string; onFailure?: string; newSession?: boolean },
+  extra?: {
+    enabled?: boolean;
+    startStage?: string;
+    onFailure?: string;
+    newSession?: boolean;
+    onSessionFail?: "same-session" | "stop";
+  },
 ): string {
   const lines = [
     `version: 1`,
@@ -59,6 +65,7 @@ function jobYaml(
   if (extra?.newSession !== undefined) {
     lines.push(`chain:`);
     lines.push(`  newSession: ${extra.newSession}`);
+    if (extra.onSessionFail !== undefined) lines.push(`  onSessionFail: ${extra.onSessionFail}`);
   }
   return lines.join("\n");
 }
@@ -373,5 +380,55 @@ describe("runner — lock guards", () => {
     const reloaded = readJobState(ROOT, JOB_ID)!;
     expect(reloaded.counters.totalLoops).toBe(7); // counters survive a restart
     expect(reloaded.status).toBe("running");
+  });
+});
+
+describe("runner — continuation failure phase (review round 2 issue 6)", () => {
+  it("chain.onSessionFail:'stop' reports post_lock (the job is already terminal)", async () => {
+    const yaml = jobYaml(["docs/design/a.md", "docs/design/b.md"], {
+      newSession: true,
+      onSessionFail: "stop",
+    });
+    writeJob(yaml);
+    writeDoc("docs/design/a.md");
+    writeDoc("docs/design/b.md");
+
+    // Previous session ran doc 0 and still holds the lock in this process.
+    const state = createJobState({
+      jobId: JOB_ID,
+      jobPath: `docs/jobs/${JOB_ID}.yaml`,
+      jobHash: hashJobBytes(yaml),
+      docs: [{ doc: "docs/design/a.md" }, { doc: "docs/design/b.md" }],
+    });
+    state.docs[0]!.status = "completed";
+    state.docs[0]!.finalizeKey = `${JOB_ID}:0:completed`;
+    state.status = "running";
+    await writeJobState(ROOT, state);
+    expect(acquireJobLock({ projectRoot: ROOT, jobId: JOB_ID }).ok).toBe(true);
+
+    const { ctx } = makeCtx();
+    const cancelledCtx = {
+      ...ctx,
+      session: {
+        getMeta: () => ({ currentStage: "completed" as const }),
+        updateMeta: () => undefined,
+      },
+      newSession: async () => ({ cancelled: true }),
+    };
+
+    const result = await startAutoJob({
+      config: config(),
+      ctx: cancelledCtx as never,
+      jobId: JOB_ID,
+      continuation: true,
+    });
+
+    expect(result.success).toBe(false);
+    // B3: a terminal transaction already ran, so this call must NOT be
+    // reported as a retryable pre-lock failure.
+    expect(result.failurePhase).toBe("post_lock");
+    const persisted = readJobState(ROOT, JOB_ID)!;
+    expect(persisted.status).toBe("failed");
+    expect(persisted.stopReason).toBe("session_fail");
   });
 });

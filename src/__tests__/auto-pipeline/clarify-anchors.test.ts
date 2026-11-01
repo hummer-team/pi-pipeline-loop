@@ -63,14 +63,19 @@ describe("resolveClarifyAnchors precedence", () => {
     expect(anchors.answerPatterns.map((p) => p.source)).toEqual(["^\\s*Reply\\s*:"]);
   });
 
-  it("verify.md wins over job MARKERS (plan Phase 0 order: patterns → verify → markers)", () => {
+  it("job MARKERS are accepted BEFORE verify.md patterns (INV-4: prompt ↔ parser same source)", () => {
     const anchors = resolveClarifyAnchors({
       job: { answerMarkers: ["Reply:"] },
       verify: { answerField: { patterns: ["Answer\\s*:"], mode: "or" } },
     });
-    expect(anchors.answerPatterns.map((p) => p.source)).toEqual(["Answer\\s*:"]);
-    // The PROMPT primary still follows the job marker.
+    // The prompt asks for `Reply:` (job primary), so the parser MUST accept it;
+    // verify.md patterns stay accepted for existing documents.
+    expect(anchors.answerPatterns.map((p) => p.source)).toEqual([
+      "^\\s*Reply:",
+      "Answer\\s*:",
+    ]);
     expect(anchors.answerPrimary).toBe("Reply:");
+    expect(anchors.answerMarkers).toEqual(["Reply:"]);
   });
 
   it("falls back to the bilingual defaults with no configuration at all", () => {

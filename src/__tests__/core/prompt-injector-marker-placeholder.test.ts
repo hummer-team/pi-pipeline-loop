@@ -129,6 +129,25 @@ describe("clarify marker placeholders (deliverables segment)", () => {
     expect(prompt).not.toContain("{completionMarker}");
     expect(prompt).not.toContain("{answerMarker}");
   });
+
+  it("renders the ACCEPTED alias set instead of the static default list", async () => {
+    deployYml();
+    const prompt = await invokeInjector(customMarkerConfig(), clarifyMeta());
+    // A custom primary must never be paired with default aliases: the agent
+    // would be told it may write a marker the precheck rejects.
+    expect(prompt).toContain("(accepted aliases: `## Custom Confirm`)");
+    expect(prompt).toContain("(accepted aliases: `Confirm:`)");
+    expect(prompt).not.toContain("(accepted aliases: `## 模型确认` / `## Model Confirmation`)");
+    expect(prompt).not.toContain("{completionAliases}");
+    expect(prompt).not.toContain("{answerAliases}");
+  });
+
+  it("keeps the bilingual default alias lists when nothing is configured", async () => {
+    deployYml();
+    const prompt = await invokeInjector(makeTestConfig({ projectRoot: TMP }), clarifyMeta());
+    expect(prompt).toContain("(accepted aliases: `## 模型确认` / `## Model Confirmation`)");
+    expect(prompt).toContain("(accepted aliases: `答：` / `Answer:`)");
+  });
 });
 
 describe("clarify marker placeholders (fallback path)", () => {

@@ -1678,6 +1678,60 @@ rules:
     expect(result.awaiting).toBe(true);
     expect(result.round).toBe(2);
   });
+
+  it("honors job JSON round/answer anchors (INV-4, review 221-3a)", async () => {
+    // No verify.md at all: the job JSON declares the round + answer format, so
+    // the human precheck must parse what the prompt asks the agent to write.
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      clarifyProtocol: {
+        roundPatterns: ["^#{1,2}\\s*Round\\s+(\\d+)"],
+        answerMarkers: ["Confirm:"],
+      },
+    });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
+
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "## Round 1\nQuestion\nConfirm: yes\n",
+      "utf-8",
+    );
+    expect(await precheckClarifyAwaitAnswer(config, meta)).toEqual({ awaiting: false });
+
+    // The default answer marker is NOT accepted by a job-declared format.
+    await fs.writeFile(path.join(tmpDir, "req.md"), "## Round 1\nQuestion\n答：yes\n", "utf-8");
+    expect(await precheckClarifyAwaitAnswer(config, meta)).toEqual({ awaiting: true, round: 1 });
+  });
+
+  it("accepts a job-declared completion marker in the human precheck", async () => {
+    const config = makeTestConfig({
+      projectRoot: tmpDir,
+      clarifyProtocol: {
+        roundPatterns: ["^#{1,2}\\s*Round\\s+(\\d+)"],
+        answerMarkers: ["Confirm:"],
+        modelConfirm: ["## Custom Confirm"],
+      },
+    });
+    config.stages.clarify = {
+      ...config.stages.clarify!,
+      verify: { require: true, verifyFile: "verify.md", completionMarker: ["## Custom Confirm"] },
+    };
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
+    await fs.writeFile(
+      path.join(tmpDir, "req.md"),
+      "## Round 1\nQuestion\nConfirm: yes\nThe requirement is settled.\n## Custom Confirm\n",
+      "utf-8",
+    );
+    expect(await precheckClarifyAwaitAnswer(config, meta)).toEqual({ awaiting: false });
+  });
+
+  it("keeps the fail-open when the project declares no clarify anchors", async () => {
+    // No verify.md and no job JSON: the legacy behavior (do not defer) stays.
+    const config = makeTestConfig({ projectRoot: tmpDir });
+    const meta = makeTestMeta({ currentStage: "clarify", requirementDoc: "req.md" });
+    await fs.writeFile(path.join(tmpDir, "req.md"), "# 第 1 轮澄清\n问题：xxx\n", "utf-8");
+    expect(await precheckClarifyAwaitAnswer(config, meta)).toEqual({ awaiting: false });
+  });
 });
 
 // ─── Phase 1 (141): resolvePlanDocPath / planDocHasConfirmMarker ──────────────

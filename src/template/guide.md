@@ -1987,7 +1987,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - 文档收尾 `finalizeCurrentDoc`：sidecar（含幂等凭据 `finalizeKey`）→ release → 审计 `pipeline_auto_cleanup` → notify。**不**回滚 overlay、**不**释放锁。
 - job 收尾 `finalizeJob`：sidecar 终态 → release → `pipeline_auto_cleanup` + `pipeline_auto_stop` → **回滚 overlay** → **释放锁** → 汇总。
 - 成功链：完成一份后仍有待跑文档 → `chain.newSession` 为真则起新 session（只派发一条 `/pipeline-auto --next`，**无 job/token 参数**；新 session 的 `session_start` 通过 sidecar 的 pending 记录自动启动下一份），被取消/抛错则**同 session 串行**，再失败才 `session_fail`；无待跑文档 → `job_completed`。
-- 冷启动（锁 pid 已死且残留 pending）**不会**被 `session_start` 自动回收：只提示人工执行 `/pipeline-auto --next`；`session_start` 只认「锁属于本进程」的 pending。
+- 冷启动（锁 pid 已死且残留 pending）**不会**被 `session_start` 自动回收：只提示人工执行 `/pipeline-auto --next`；`session_start` 只认「锁属于本进程」的 pending。`lock.json` 被删除或损坏（解析失败按「无锁」处理）且 sidecar 仍 `running` + pending 时同样**只提示、不动作**（`pending_lock_foreign`，`holder=none`，每个 job 只提示一次）。
 - 失败链（三段降级）：① 文档收尾 → ② 硬停直接 `finalizeJob` → ③ `onFailure:stop` 终止 → ④ `onFailure:continue` 起下一份（新 session → 同 session → `session_fail`）。
 - 幂等：进程内键集 + sidecar `finalizeKey` 两层，连续多次 settle 只收尾一次，且与 `docIndex` 无关。
 
@@ -2095,6 +2095,8 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 - **字面量键**（`heading` / `*Markers` / `verdicts` / `modelConfirm`）：按行/子串匹配；数组首项是注入提示使用的 **primary**。
 - **pattern 键**（`questions.patterns` / `rounds.patterns` / `answers.patterns`）：正则源码（`gm` 编译）；非法 pattern 整组丢弃并 warn，回落到下一来源。
+- **`answers.markers` 单独声明时同源生效**：只写 `answers.markers`（不写 `answers.patterns`）时，解析集合 = 由 markers 生成的 pattern（**在前**）+ 已部署 `verify.md` 的 `answerField`；因此提示要求写 `Confirm:` 时解析器一定接受 `Confirm:`，既有 `答：` 文档也不会失效。
+- **人机链路同样读取本文件**：`agent_settled` 的 await-answer 预检与 `/pipeline-start` 的轮次/参数派生都走与 auto 链路相同的锚点解析（`resolveClarifyAnchors`），不只认 `verify.md`。
 - `rounds.patterns` 会追加一条兼容 pattern `^#+\s+.*轮`（覆盖 h3 / 无“澄清” / 中文数字的既有文档），只参与匹配、不做 primary。
 - 未知键、`version !== 1`、非法值只 warn，不阻断（fail-open）。
 - `modelConfirm.markers` **不会**单独开启 completionMarker 预检；预检开关只看 `stages.clarify.verify.completionMarker`（缺省/空数组 = 不预检）。
@@ -2108,5 +2110,12 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 ```
 
 未修改时仍按原中文字符串运行（行为不变）。
+
+**自定义 primary 与直接读取的模板（review 221-1）**：`.pi/references/pipeline-stage-prompt.yml` 由插件在每次注入时渲染，`{completionMarker}` / `{answerMarker}` / `{completionAliases}` / `{answerAliases}` 会按当前配置解析，**无需重新 init**。但以下两份资产是 agent 直接 `read` 的，插件不会实时渲染：
+
+- `.pi/skills/design/SKILL.md`
+- `.pi/references/clarify_template.md`
+
+`/pipeline-init` 首次部署时会用当时的配置把占位符写成实际 marker；若之后修改了 `.pi/pipeline_loop_job.json` 的 marker，请重新执行 `/pipeline-init` 0（overwrite）或手工把这两份文件里的 `答：` / `## 模型确认` 改成你的 primary，否则 agent 可能仍按默认 marker 书写，导致 precheck 无法通过。已存在且未被覆盖的 SKILL.md（merge-only）与 skip 策略跳过的文件都适用此提醒。
 
 **模板与命名**：`/pipeline-init` 安装 `.pi/pipeline_loop_job.json` 与 `.pi/auto_job_loop_template.yaml`（旧 `.pi/auto_job_example.yaml` 不会被删除）；任务文件必须命名为 `docs/jobs/<name>_loop.yaml`。

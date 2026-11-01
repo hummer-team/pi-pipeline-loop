@@ -78,7 +78,30 @@ export function withCompatRound(patterns: RegExp[], issues: string[]): RegExp[] 
   }
 }
 
+/** Escape a literal fragment so it can be embedded in a regex source. */
+function escapeLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Escape one literal marker into a `^\s*<marker>` regex source. */
 export function markerPattern(marker: string): string {
-  return `^\\s*${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`;
+  return `^\\s*${escapeLiteral(marker)}`;
+}
+
+/**
+ * Compile a completion-marker literal into a HEADING-tolerant regex source.
+ *
+ * A deployed verify.md declares `modelConfirm` as `^##\s*模型确认`, i.e. it
+ * tolerates any amount of whitespace after the hashes. A job/config literal
+ * compiled with `markerPattern` would require EXACTLY one space, so a document
+ * the rules accept (`##  模型确认`) would be rejected by the forward-arg
+ * derivation (INV-4 edge). The tolerant form therefore:
+ * - accepts any heading level (`#{1,6}`) when the marker starts with hashes;
+ * - accepts leading whitespace and `\s*`/`\s+` between words.
+ */
+export function markerHeadingPattern(marker: string): string {
+  const heading = /^\s*(#{1,6})\s*(.+)$/.exec(marker);
+  const body = (heading?.[2] ?? marker).trim();
+  const escapedBody = body.split(/\s+/).map(escapeLiteral).join("\\s+");
+  return heading ? `^\\s*#{1,6}\\s*${escapedBody}` : `^\\s*${escapedBody}`;
 }

@@ -1311,7 +1311,9 @@ describe("verify-generator", () => {
 
       const items = await loadPluginDeliverables(TMP, "clarify", {
         completionMarker: "## Custom Confirm",
+        completionAliases: ["## Custom Confirm"],
         answerMarker: "Confirm:",
+        answerAliases: ["Confirm:"],
       });
       const targets = items.map((item) => item.target).join("\n");
       expect(targets).toContain("## Custom Confirm");

@@ -166,6 +166,29 @@ describe("session_start continuation", () => {
     expect(notified.filter((message) => message.includes("held by pid"))).toHaveLength(1);
   });
 
+  it("hints (and does not start) when the lock file is missing or corrupt", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    // A deleted/corrupt lock is still a "pending job nobody can auto-start".
+    fs.writeFileSync(
+      path.join(harness.root, ".pi", "auto_pipeline", "lock.json"),
+      "{ not json",
+      "utf8",
+    );
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+    expect(notified.some((message) => message.includes("lock file is missing"))).toBe(true);
+    expect(
+      audits.some((line) => line.includes("pending_lock_foreign") && line.includes('"holder":"none"')),
+    ).toBe(true);
+
+    // Throttled: the same hint is not repeated on every session start.
+    await resumePendingContinuationOnSessionStart(ctx as never, harness.config);
+    expect(notified.filter((message) => message.includes("lock file is missing"))).toHaveLength(1);
+  });
+
   it("never preempts an active pipeline in this session", async () => {
     await installPending();
     harness.writeDoc(HARNESS_DOCS[1]!);

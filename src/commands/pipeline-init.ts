@@ -32,6 +32,11 @@ import {
   clearResidueGateStatus,
 } from "../core/template-residue-check";
 import { maybeNotifySubagentsMentionMode } from "../utils/subagents-config-probe";
+import {
+  resolveClarifyPromptMarkers,
+  substituteClarifyMarkerPlaceholders,
+  type ClarifyPromptMarkers,
+} from "../core/auto-pipeline/clarify-prompt-markers";
 
 /**
  * Recursively collects all files in a directory, returning paths relative to the root.
@@ -58,6 +63,29 @@ const ANCHOR_CONFIG_FILES: ReadonlySet<string> = new Set([
   "pipeline_loop.json",
   "pipeline_loop_job.json",
 ]);
+
+/**
+ * 221 Phase 1 (INV-4): templates that agents read DIRECTLY (the plugin never
+ * re-renders them), so their `{completionMarker}` / `{answerMarker}` /
+ * `{completionAliases}` / `{answerAliases}` placeholders are resolved ONCE at
+ * install time from the live config. `*.yml` prompt templates are deliberately
+ * NOT listed: they are rendered live on every injection, so a later config
+ * change (or a re-init that skips the file) still resolves correctly.
+ */
+const INSTALL_TIME_MARKER_TEMPLATES: ReadonlySet<string> = new Set([
+  "skills/design/SKILL.md",
+  "references/clarify_template.md",
+]);
+
+/** Resolve the clarify marker placeholders of an installed template in place. */
+async function renderInstallTimeMarkers(
+  filePath: string,
+  markers: ClarifyPromptMarkers,
+): Promise<void> {
+  const content = await fsp.readFile(filePath, "utf8");
+  const resolved = substituteClarifyMarkerPlaceholders(content, markers);
+  if (resolved !== content) await fsp.writeFile(filePath, resolved, "utf8");
+}
 
 /**
  * Counts how many template files already exist in the target .pi/ directory.
@@ -290,6 +318,11 @@ async function copyTemplateFiles(
       // Ensure parent directory exists
       await fsp.mkdir(path.dirname(destPath), { recursive: true });
       await fsp.copyFile(srcPath, destPath);
+      // 221 (INV-4): resolve the clarify markers of templates agents read
+      // directly (SKILL.md / clarify_template.md) against the live config.
+      if (INSTALL_TIME_MARKER_TEMPLATES.has(relPath)) {
+        await renderInstallTimeMarkers(destPath, resolveClarifyPromptMarkers(config));
+      }
       copiedCount++;
       copiedFiles.push(displayPath(relPath, piWorkDir));
     }
@@ -341,6 +374,9 @@ async function copyTemplateFiles(
     };
     try {
       const ymlConfig = await loadPromptConfig(config.projectRoot);
+      // 221 (INV-4): the managed contract block is read by the agent from
+      // SKILL.md, so its clarify markers must be resolved at install time too.
+      const markers = resolveClarifyPromptMarkers(config);
       for (const stage of stages) {
         const deliverableKey = `stage_deliverable_${stage}`;
         const deliverableText = ymlConfig[deliverableKey];
@@ -353,7 +389,10 @@ async function copyTemplateFiles(
         if (!fs.existsSync(skillAbsPath)) continue;
 
         const existingContent = await fsp.readFile(skillAbsPath, "utf-8");
-        const block = renderContractBlock(stage, deliverableText);
+        const block = renderContractBlock(
+          stage,
+          substituteClarifyMarkerPlaceholders(deliverableText, markers),
+        );
         const merged = mergeManagedBlock(existingContent, block);
 
         if (merged !== existingContent) {

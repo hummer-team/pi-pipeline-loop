@@ -404,17 +404,20 @@ stage_executor_fix: |
 # develop/review/fix have code artifact deliverables (build, test, commit, review report).
 # Items use **MUST** markers so extractHardcodedItems can parse them.
 # 221 Phase 1 (INV-4): the clarify deliverable spells the completion/answer
-# markers as {completionMarker} / {answerMarker}; both the system-prompt
-# injection AND loadPluginDeliverables resolve them from the SAME config the
-# executor segment uses, so one clarify turn never asks for two different marks.
+# markers as placeholders; both the system-prompt injection AND
+# loadPluginDeliverables resolve them from the SAME config the executor segment
+# uses, so one clarify turn never asks for two different marks.
+# {completionMarker}/{answerMarker} = the configured PRIMARY;
+# {completionAliases}/{answerAliases} = the FULL accepted set (rendered as
+# `alias` / `alias`). A custom primary therefore never ships default aliases.
 # Trigger: /pipeline-init 1 verify generation (loadPluginDeliverables); {{stage_deliverables}} system-prompt injection
 # ═══════════════════════════════════════════════════════════════════════════════
 
 stage_deliverable_clarify: |
   - **MUST** produce clarification questions and record answers
-  - **MUST** write the `{completionMarker}` marker to the requirement document via write or edit tools upon full-und? confirmation (accepted aliases: `## 模型确认` / `## Model Confirmation`)
+  - **MUST** write the `{completionMarker}` marker to the requirement document via write or edit tools upon full-und? confirmation (accepted aliases: {completionAliases})
   - **MUST** use round heading format `# 第 N 轮澄清` (recommended) or `# Round N` (compatible) — `#{1,2}` only (h1/h2) to prevent h3+ false positives
-  - **MUST** include answer fields as `{answerMarker}<answer>` (accepted aliases: `答：`/`答:`/`**答**`/`Answer:`)
+  - **MUST** include answer fields as `{answerMarker}<answer>` (accepted aliases: {answerAliases})
   - **MUST** end every round (including the final/summary round) by outputting two complete, copy-pasteable next-step command lines containing the full document path and the real agent name: `@<agent> <doc> <round+1> 答` and `@<agent> <doc> full-und?` — never emit a `{file}` placeholder literal
   - **MUST** write every round (including decision-archive/summary rounds) in full Q/A structure: question + options A/B + pros/cons/recommendation + `{answerMarker}` — no exemption for summary rounds
 

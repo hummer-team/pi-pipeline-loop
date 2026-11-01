@@ -48,6 +48,7 @@ import { validateDesignReviewUpdate } from "./verifiers/design-review-update-ver
 import type { DesignReviewVerificationOutcome } from "../types";
 import { diagnoseVerifyConfig } from "./verify-config-diagnosis";
 import { resolveVerifyFilePath, loadVerifyContractAnchors } from "../utils/contract-loader";
+import { loadClarifyRuntimeAnchors } from "./auto-pipeline/clarify-runtime-anchors";
 import { escapeRegExp } from "../utils/regex-utils";
 import { normalizeMarkers } from "./auto-pipeline/clarify-anchors";
 
@@ -1132,31 +1133,32 @@ export async function precheckClarifyAwaitAnswer(
   try {
     const content = await fs.readFile(docPath, "utf-8");
 
-    // Phase 2 / 176: load runtime anchors from the deployed verify.md. When the
-    // roundHeading anchor is unavailable, fail-open (do not defer) and audit.
-    // Non-roundHeading issues are logged for audit but do NOT trigger fail-open.
-    const { anchors, issues } = await loadVerifyContractAnchors(config, "clarify");
-    if (!anchors.roundHeading) {
+    // Phase 2 / 176 + 221 (INV-4): the clarify anchors are resolved from the
+    // job JSON → deployed verify.md → defaults, exactly like the auto chain.
+    // A job that only declares custom rounds/answers used to be ignored here,
+    // so the injector asked for A while this precheck parsed B.
+    const runtime = await loadClarifyRuntimeAnchors(config);
+    if (!runtime.anchorsConfigured) {
       await safeWriteAuditLog("contract_anchor_unavailable", {
         pipelineId: meta.pipelineId,
         stage: "clarify",
         missingKeys: "roundHeading",
-        issues: issues.join("; "),
+        issues: runtime.issues.join("; "),
       }, "error");
       return { awaiting: false };
     }
     // Log non-roundHeading issues for audit without changing behavior
-    if (issues.length > 0) {
+    if (runtime.issues.length > 0) {
       await safeWriteAuditLog("contract_anchor_issues", {
         pipelineId: meta.pipelineId,
         stage: "clarify",
-        issues: issues.join("; "),
+        issues: runtime.issues.join("; "),
       }, "warn");
     }
 
     // Lazy import to avoid circular dependency at module level
     const { deriveClarifyForwardArgs } = await import("../utils/clarify-args");
-    const result = deriveClarifyForwardArgs(content, anchors);
+    const result = deriveClarifyForwardArgs(content, runtime.forward);
     if (result.kind === "await-answer") {
       return { awaiting: true, round: result.round };
     }

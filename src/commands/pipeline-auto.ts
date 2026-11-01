@@ -75,9 +75,12 @@ export interface AutoPipelineResult {
    *   record must stay retryable.
    * - `post_lock`: the lock was adopted/acquired → the terminal transaction is
    *   valid (`session_fail`).
+   * - `unknown`: the call THREW, so the runner cannot report the phase; the
+   *   caller must re-check actual ownership (`readActiveJobContext`) instead of
+   *   assuming a side.
    * Absent on success; never inferred from the process-wide lock flag.
    */
-  failurePhase?: "pre_lock" | "post_lock";
+  failurePhase?: "pre_lock" | "post_lock" | "unknown";
 }
 
 /**
@@ -471,7 +474,14 @@ async function rotateSessionForContinuation(input: {
   if (job.chain.onSessionFail === "stop") {
     await safeWriteAuditLog("pipeline_auto_chain", { jobId, result: "stopped" }, "warn");
     const done = await finalizeJob(ctx as never, config, { stopReason: "session_fail" });
-    return preLockFailure(done.summary ?? `Auto job "${jobId}" stopped: session_fail`);
+    // The lock is held and the job is terminal now: this is NOT a pre-lock
+    // failure. Report the phase honestly (B3) so a future caller cannot retry a
+    // job that already reached its terminal transaction.
+    return {
+      success: false,
+      error: done.summary ?? `Auto job "${jobId}" stopped: session_fail`,
+      failurePhase: "post_lock",
+    };
   }
   // Documented same-session fallback: start the next doc HERE.
   return null;

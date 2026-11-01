@@ -47,7 +47,7 @@ import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
 import { isSubagentsReady } from "../utils/subagent-availability";
 import { scanAuditFlows } from "../utils/doc-flow-index";
 import { deriveClarifyForwardArgs } from "../utils/clarify-args";
-import { loadVerifyContractAnchors } from "../utils/contract-loader";
+import { loadClarifyRuntimeAnchors } from "../core/auto-pipeline/clarify-runtime-anchors";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { resolveAuditDir, resolvePiWorkDir } from "../utils/work-dir";
 import { appendPipelineIdMarker } from "../utils/pipeline-id-marker";
@@ -1246,17 +1246,19 @@ async function maybeAutoLaunchClarify(
       const docPath = path.resolve(config.projectRoot, file);
       const docText = fs.readFileSync(docPath, "utf-8");
 
-      // Phase 2 / 176: load runtime anchors from the deployed verify.md.
-      // Missing roundHeading → fail-open fresh(1) + throttled notify + error audit.
-      // Non-roundHeading issues are logged for audit but do NOT trigger fresh fallback.
-      const { anchors, issues } = await loadVerifyContractAnchors(config, "clarify");
-      if (!anchors.roundHeading) {
+      // Phase 2 / 176 + 221 (INV-4): resolve the clarify anchors from the job
+      // JSON → deployed verify.md → defaults, exactly like the auto chain. A
+      // job that declares custom rounds/answers must drive this derivation too.
+      // Missing round anchors → fail-open fresh(1) + throttled notify + error audit.
+      // Non-round-anchor issues are logged for audit but do NOT trigger the fallback.
+      const runtime = await loadClarifyRuntimeAnchors(config);
+      if (!runtime.anchorsConfigured) {
         await safeWriteAuditLog("contract_anchor_unavailable", {
           requirementDoc: file,
           pipelineId: meta.pipelineId,
           stage: "clarify",
           missingKeys: "roundHeading",
-          issues: issues.join("; "),
+          issues: runtime.issues.join("; "),
         }, "error");
         if (shouldEmitWithinWindow(`contract_anchor_unavailable:clarify:${meta.pipelineId}`, AUDIT_THROTTLE_WINDOW_MS)) {
           ui.notify(ctx, "Clarify runtime contract anchor unavailable in verify.md. Falling back to fresh(1). Run /pipeline-init to restore the default declarations.");
@@ -1265,15 +1267,16 @@ async function maybeAutoLaunchClarify(
         argsSource = "derived";
       } else {
         // Log non-roundHeading issues for audit without changing behavior
-        if (issues.length > 0) {
+        if (runtime.issues.length > 0) {
           await safeWriteAuditLog("contract_anchor_issues", {
             requirementDoc: file,
             pipelineId: meta.pipelineId,
             stage: "clarify",
-            issues: issues.join("; "),
+            issues: runtime.issues.join("; "),
           }, "warn");
         }
-        const derived = deriveClarifyForwardArgs(docText, anchors);
+        const answerMarker = runtime.anchors.answerPrimary;
+        const derived = deriveClarifyForwardArgs(docText, runtime.forward);
         switch (derived.kind) {
         case "fresh":
           effectiveArgs = "1";
@@ -1284,7 +1287,7 @@ async function maybeAutoLaunchClarify(
           break;
         case "await-answer":
           skipSpawn = true;
-          skipMessage = `Round ${derived.round} has no answers yet. Answer in the clarification 答/Answer fields, then re-mention @agent ${file} ${derived.round} 答.`;
+          skipMessage = `Round ${derived.round} has no answers yet. Answer in the clarification ${answerMarker} fields, then re-mention @agent ${file} ${derived.round} 答.`;
           effectiveArgs = "";
           derivedRound = derived.round;
           break;
