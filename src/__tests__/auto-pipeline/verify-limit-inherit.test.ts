@@ -40,15 +40,15 @@ const JOB_YAML = [
 const NOW = 30_000_000;
 
 function job(): AutoJobConfig {
-  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha.yaml");
+  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha_loop.yaml");
   if (!parsed.ok) throw new Error(parsed.errors.join("; "));
   return parsed.job;
 }
 
 function state(): AutoJobState {
   return createJobState({
-    jobId: "alpha",
-    jobPath: "docs/jobs/alpha.yaml",
+    jobId: "alpha_loop",
+    jobPath: "docs/jobs/alpha_loop.yaml",
     jobHash: "h",
     docs: [{ doc: "docs/design/a.md" }],
   });

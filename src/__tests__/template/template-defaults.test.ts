@@ -582,6 +582,12 @@ describe("221 Phase 1: clarify protocol assets", () => {
     expect(config.clarify.questions.patterns.length).toBeGreaterThan(0);
   });
 
+  it("ships the renamed auto job template asset (221 Phase 3)", () => {
+    const templateDir = path.join(__dirname, "../../template");
+    expect(fs.existsSync(path.join(templateDir, "auto_job_loop_template.yaml"))).toBe(true);
+    expect(fs.existsSync(path.join(templateDir, "auto_job_example.yaml"))).toBe(false);
+  });
+
   it("keeps the clarify metadata rule bilingual", () => {
     const yml = fs.readFileSync(
       path.join(__dirname, "../../template/references/pipeline-stage-prompt.yml"),

@@ -35,7 +35,7 @@ import { createJobState, readJobState, writeJobState } from "../../core/auto-pip
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 
-const JOB_ID = "alpha";
+const JOB_ID = "alpha_loop";
 const REVIEW_OP_ID = "op-review-fail-action";
 
 function jobYaml(onFail: "auto-revise" | "stop"): string {

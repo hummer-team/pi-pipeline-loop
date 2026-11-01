@@ -15,8 +15,8 @@ import { createJobState, type AutoJobState } from "../../core/auto-pipeline/job-
 
 function state(overrides?: Partial<AutoJobState>): AutoJobState {
   const base = createJobState({
-    jobId: "alpha",
-    jobPath: "docs/jobs/alpha.yaml",
+    jobId: "alpha_loop",
+    jobPath: "docs/jobs/alpha_loop.yaml",
     jobHash: "h",
     docs: [{ doc: "docs/design/a.md" }, { doc: "docs/design/b.md" }],
   });

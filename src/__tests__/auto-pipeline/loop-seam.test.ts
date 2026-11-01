@@ -30,15 +30,15 @@ const JOB_YAML = [
 let errorSpy: ReturnType<typeof spyOn>;
 
 function job(): AutoJobConfig {
-  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha.yaml");
+  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha_loop.yaml");
   if (!parsed.ok) throw new Error(parsed.errors.join("; "));
   return parsed.job;
 }
 
 function stateWith(totalLoops: number): AutoJobState {
   const base = createJobState({
-    jobId: "alpha",
-    jobPath: "docs/jobs/alpha.yaml",
+    jobId: "alpha_loop",
+    jobPath: "docs/jobs/alpha_loop.yaml",
     jobHash: "h",
     docs: [{ doc: "docs/design/a.md" }],
   });

@@ -90,7 +90,7 @@ afterEach(() => {
 describe("design-review auto authorisation — auto channel", () => {
   it("authorises on a host without any TUI and audits authorised_auto", async () => {
     const result = await designReviewAuthorisationGate(makeCtx(), config, meta, {
-      autoPipeline: { jobId: "alpha" },
+      autoPipeline: { jobId: "alpha_loop" },
     });
 
     expect(result.ok).toBe(true);
@@ -100,7 +100,7 @@ describe("design-review auto authorisation — auto channel", () => {
     const row = audits.find((a) => a.stage === "design_review_authorisation_gate" && a.message.result === "authorised_auto");
     expect(row).toBeDefined();
     expect(row?.message.source).toBe("auto_pipeline");
-    expect(row?.message.jobId).toBe("alpha");
+    expect(row?.message.jobId).toBe("alpha_loop");
   });
 
   it("is opt-in: the same UI-less host still fails with tui_unavailable (B3)", async () => {
@@ -120,7 +120,7 @@ describe("design-review auto authorisation — auto channel", () => {
       }),
     });
     const result = await designReviewAuthorisationGate(ctx, config, meta, {
-      autoPipeline: { jobId: "alpha" },
+      autoPipeline: { jobId: "alpha_loop" },
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -131,7 +131,7 @@ describe("design-review auto authorisation — auto channel", () => {
   it("still rejects missing prerequisites (Step 2 is never skipped)", async () => {
     meta = { ...meta, requirementDoc: undefined } as unknown as SessionMeta;
     const noDoc = await designReviewAuthorisationGate(makeCtx(), config, meta, {
-      autoPipeline: { jobId: "alpha" },
+      autoPipeline: { jobId: "alpha_loop" },
     });
     expect(noDoc.ok).toBe(false);
     if (!noDoc.ok) expect(noDoc.reason).toBe("requirement_doc_missing");
@@ -139,7 +139,7 @@ describe("design-review auto authorisation — auto channel", () => {
     meta = { ...meta, requirementDoc: "requirements.md" } as unknown as SessionMeta;
     fs.rmSync(path.join(ROOT, "requirements_Plan.md"));
     const noPlan = await designReviewAuthorisationGate(makeCtx(), config, meta, {
-      autoPipeline: { jobId: "alpha" },
+      autoPipeline: { jobId: "alpha_loop" },
     });
     expect(noPlan.ok).toBe(false);
     if (!noPlan.ok) expect(noPlan.reason).toBe("plan_doc_missing");

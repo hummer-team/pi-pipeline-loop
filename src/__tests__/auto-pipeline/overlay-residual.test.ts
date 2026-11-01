@@ -46,8 +46,8 @@ const TEMPLATE_JSON: PipelineJsonConfig = JSON.parse(
   fs.readFileSync(path.join(SRC_ROOT, "src", "template", "pipeline_loop.json"), "utf8"),
 ) as PipelineJsonConfig;
 
-const JOB_ID = "alpha";
-const JOB_REL_PATH = "docs/jobs/alpha.yaml";
+const JOB_ID = "alpha_loop";
+const JOB_REL_PATH = "docs/jobs/alpha_loop.yaml";
 const JOB_YAML = [
   "version: 1",
   "enabled: true",

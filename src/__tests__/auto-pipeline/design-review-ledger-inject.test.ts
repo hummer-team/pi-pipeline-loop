@@ -35,8 +35,8 @@ const LEDGER = [
 ].join("\n");
 
 const AUTO_JOB = {
-  jobId: "alpha",
-  jobPath: "docs/jobs/alpha.yaml",
+  jobId: "alpha_loop",
+  jobPath: "docs/jobs/alpha_loop.yaml",
   docIndex: 0,
   totalDocs: 1,
 };
@@ -53,7 +53,7 @@ function writeFile(rel: string, text: string): void {
 }
 
 function appendJobYaml(extra: string): void {
-  const jobPath = path.join(harness.projectRoot, "docs", "jobs", "alpha.yaml");
+  const jobPath = path.join(harness.projectRoot, "docs", "jobs", "alpha_loop.yaml");
   // The extra block REPLACES any harness default on the same top-level key
   // (`tier:`), so the YAML never carries a duplicate key.
   const base = HARNESS_JOB_YAML.split("\n").filter((line) => !/^tier:/.test(line));

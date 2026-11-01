@@ -62,7 +62,7 @@ async function writeRunningSidecar(jobId: string): Promise<void> {
   await writeJobState(ROOT, { ...base, status: "running" });
 }
 
-function writeRawLock(pid: number, token: string, jobId = "alpha"): void {
+function writeRawLock(pid: number, token: string, jobId = "alpha_loop"): void {
   const lockPath = path.join(ROOT, ".pi", "auto_pipeline", "lock.json");
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   fs.writeFileSync(lockPath, JSON.stringify({ token, jobId, pid, startedAt: 1 }, null, 2), "utf8");
@@ -109,11 +109,11 @@ afterEach(() => {
 
 describe("pipeline-auto — argument parsing", () => {
   it("parses the internal continuation flags", () => {
-    expect(parseCommandArgs("pipeline-auto", "--next --job alpha --token tok-1")).toEqual({
+    expect(parseCommandArgs("pipeline-auto", "--next --job alpha_loop --token tok-1")).toEqual({
       next: true,
-      job: "alpha",
+      job: "alpha_loop",
       token: "tok-1",
-      raw: "--next --job alpha --token tok-1",
+      raw: "--next --job alpha_loop --token tok-1",
     });
   });
 
@@ -131,7 +131,7 @@ describe("pipeline-auto — argument parsing", () => {
 
 describe("pipeline-auto — --job only accepts a jobId", () => {
   it("a path separator is rejected", async () => {
-    const result = await runPipelineAuto(config(), { next: true, job: "docs/jobs/alpha.yaml" }, ctxStub());
+    const result = await runPipelineAuto(config(), { next: true, job: "docs/jobs/alpha_loop.yaml" }, ctxStub());
     expect(result.success).toBe(false);
     expect(result.error).toContain("never a path");
   });
@@ -143,7 +143,7 @@ describe("pipeline-auto — --job only accepts a jobId", () => {
   });
 
   it("a missing sidecar reports the job is unknown", async () => {
-    const result = await runPipelineAuto(config(), { next: true, job: "alpha" }, ctxStub());
+    const result = await runPipelineAuto(config(), { next: true, job: "alpha_loop" }, ctxStub());
     expect(result.success).toBe(false);
     expect(result.error).toContain("state not found");
   });
@@ -157,24 +157,24 @@ describe("pipeline-auto — scan fallback (no --job)", () => {
   });
 
   it("two running jobs → refuse and list them", async () => {
-    await writeRunningSidecar("alpha");
+    await writeRunningSidecar("alpha_loop");
     await writeRunningSidecar("beta");
     const result = await runPipelineAuto(config(), { next: true }, ctxStub());
     expect(result.success).toBe(false);
     expect(result.error).toContain("multiple running auto jobs");
-    expect(result.error).toContain("alpha");
+    expect(result.error).toContain("alpha_loop");
     expect(result.error).toContain("beta");
   });
 
   it("exactly one running job → it is selected", async () => {
-    writeJobFile("alpha");
-    await writeRunningSidecar("alpha");
+    writeJobFile("alpha_loop");
+    await writeRunningSidecar("alpha_loop");
     const result = await runPipelineAuto(config(), { next: true }, ctxStub());
     // The doc file is absent, so the start fails fast — proving alpha was
     // resolved by the scan and reached the runner. 220 D5: the requirement is
     // checked by the evidence gate BEFORE the pipeline starts.
     expect(result.success).toBe(false);
-    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain(
+    expect(readJobState(ROOT, "alpha_loop")?.docs[0]?.failReason).toContain(
       "start_stage_evidence_missing:requirement",
     );
   });
@@ -182,15 +182,15 @@ describe("pipeline-auto — scan fallback (no --job)", () => {
 
 describe("pipeline-auto — M8 token resolution", () => {
   it("crash restart: dead pid + no token → reclaimed and the job runs", async () => {
-    writeJobFile("alpha");
-    await writeRunningSidecar("alpha");
+    writeJobFile("alpha_loop");
+    await writeRunningSidecar("alpha_loop");
     writeRawLock(DEAD_PID, "dead-token");
 
-    const result = await runPipelineAuto(config(), { next: true, job: "alpha" }, ctxStub());
+    const result = await runPipelineAuto(config(), { next: true, job: "alpha_loop" }, ctxStub());
 
     // Reclaim happened (no stale_token/busy) and the run reached the dispatch
     // (220 D5: the evidence gate rejects the absent requirement first).
-    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain(
+    expect(readJobState(ROOT, "alpha_loop")?.docs[0]?.failReason).toContain(
       "start_stage_evidence_missing:requirement",
     );
     expect(audits).toContain("pipeline_auto_start");
@@ -200,13 +200,13 @@ describe("pipeline-auto — M8 token resolution", () => {
   });
 
   it("alive pid + mismatched token → refused, lock untouched", async () => {
-    writeJobFile("alpha");
-    await writeRunningSidecar("alpha");
+    writeJobFile("alpha_loop");
+    await writeRunningSidecar("alpha_loop");
     writeRawLock(1, "live-token");
 
     const result = await runPipelineAuto(
       config(),
-      { next: true, job: "alpha", token: "other-token" },
+      { next: true, job: "alpha_loop", token: "other-token" },
       ctxStub(),
     );
 
@@ -218,17 +218,17 @@ describe("pipeline-auto — M8 token resolution", () => {
   });
 
   it("alive pid + matching token → adopted", async () => {
-    writeJobFile("alpha");
-    await writeRunningSidecar("alpha");
+    writeJobFile("alpha_loop");
+    await writeRunningSidecar("alpha_loop");
     writeRawLock(1, "live-token");
 
     const result = await runPipelineAuto(
       config(),
-      { next: true, job: "alpha", token: "live-token" },
+      { next: true, job: "alpha_loop", token: "live-token" },
       ctxStub(),
     );
 
-    expect(readJobState(ROOT, "alpha")?.docs[0]?.failReason).toContain(
+    expect(readJobState(ROOT, "alpha_loop")?.docs[0]?.failReason).toContain(
       "start_stage_evidence_missing:requirement",
     );
   });

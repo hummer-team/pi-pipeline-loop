@@ -63,7 +63,7 @@ const JOB_YAML = [
 ].join("\n");
 
 function parseJob(yamlText = JOB_YAML): AutoJobConfig {
-  const parsed = parseAutoJob(yamlText, "docs/jobs/alpha.yaml");
+  const parsed = parseAutoJob(yamlText, "docs/jobs/alpha_loop.yaml");
   if (!parsed.ok) throw new Error(`fixture job invalid: ${parsed.errors.join("; ")}`);
   return parsed.job;
 }
@@ -306,11 +306,11 @@ describe("config-overlay — applyOverlay (in place, decision 3 ordering)", () =
     const snapshot = applyOverlay(live, json, {
       ...parseJob(),
       jobHash: hashJobBytes(JOB_YAML),
-      jobId: "alpha",
-      jobPath: "docs/jobs/alpha.yaml",
+      jobId: "alpha_loop",
+      jobPath: "docs/jobs/alpha_loop.yaml",
     });
-    expect(snapshot.jobId).toBe("alpha");
-    expect(snapshot.jobPath).toBe("docs/jobs/alpha.yaml");
+    expect(snapshot.jobId).toBe("alpha_loop");
+    expect(snapshot.jobPath).toBe("docs/jobs/alpha_loop.yaml");
   });
 });
 

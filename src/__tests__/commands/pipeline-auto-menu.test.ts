@@ -2,7 +2,8 @@
  * 219 Phase 4 (R5Q3-A + M2): the `/pipeline-auto` job menu.
  *
  * Key behaviors:
- * - Only `docs/jobs/*.yaml` (no recursion), ≤5 newest by mtime.
+ * - Only `docs/jobs/*_loop.yaml` (no recursion), ≤5 newest by mtime; other
+ *   `.yaml` files are reported as ignored (221 Phase 3).
  * - Row copy carries progress, the `续跑 i/N` marker for running jobs and the
  *   `（job 已变更）` drift marker.
  * - Empty directory / no UI / cancel are typed results (one user message).
@@ -112,91 +113,137 @@ afterEach(() => {
 describe("job-menu — discovery", () => {
   it("takes the 5 newest job files by mtime", () => {
     for (let i = 0; i < 7; i++) {
-      writeJobFile(`job${i}`, JOB_YAML, 1_700_000_000_000 + i * 1000);
+      writeJobFile(`job${i}_loop`, JOB_YAML, 1_700_000_000_000 + i * 1000);
     }
-    const rows = scanJobFiles(ROOT);
+    const { rows } = scanJobFiles(ROOT);
     expect(rows).toHaveLength(5);
-    expect(rows.map((r) => r.jobId)).toEqual(["job6", "job5", "job4", "job3", "job2"]);
+    expect(rows.map((r) => r.jobId)).toEqual([
+      "job6_loop",
+      "job5_loop",
+      "job4_loop",
+      "job3_loop",
+      "job2_loop",
+    ]);
   });
 
-  it("ignores non-yaml files and unsafe names", () => {
-    writeJobFile("alpha");
+  it("only discovers *_loop.yaml; other yaml files are reported as ignored", () => {
+    writeJobFile("alpha_loop");
     fs.writeFileSync(path.join(ROOT, "docs", "jobs", "notes.md"), "x", "utf8");
     fs.writeFileSync(path.join(ROOT, "docs", "jobs", "bad name.yaml"), JOB_YAML, "utf8");
-    const rows = scanJobFiles(ROOT);
-    expect(rows.map((r) => r.jobId)).toEqual(["alpha"]);
+    fs.writeFileSync(path.join(ROOT, "docs", "jobs", "zeta.yaml"), JOB_YAML, "utf8");
+    const { rows, ignored } = scanJobFiles(ROOT);
+    // jobId = the FULL stem (including `_loop`).
+    expect(rows.map((r) => r.jobId)).toEqual(["alpha_loop"]);
+    expect(ignored).toEqual(["bad name.yaml", "zeta.yaml"]);
   });
 
   it("missing directory → empty scan", () => {
-    expect(scanJobFiles(ROOT)).toEqual([]);
+    expect(scanJobFiles(ROOT)).toEqual({ rows: [], ignored: [] });
   });
 });
 
 describe("job-menu — literals", () => {
   it("progress copy with completed rows", async () => {
-    writeJobFile("alpha");
+    writeJobFile("alpha_loop");
     const base = createJobState({
-      jobId: "alpha",
-      jobPath: "docs/jobs/alpha.yaml",
+      jobId: "alpha_loop",
+      jobPath: "docs/jobs/alpha_loop.yaml",
       jobHash: hashJobBytes(JOB_YAML),
       docs: [{ doc: "docs/design/a.md" }, { doc: "docs/design/b.md" }],
     });
     base.docs[0]!.status = "completed";
     await writeJobState(ROOT, base);
 
-    const [row] = scanJobFiles(ROOT);
+    const [row] = scanJobFiles(ROOT).rows;
     expect(formatJobMenuLabel(row!)).toContain("(1/2 done)");
     expect(formatJobMenuLabel(row!)).not.toContain("resume");
   });
 
   it("running rows add the resume marker", async () => {
-    writeJobFile("alpha");
-    await writeSidecar("alpha", { status: "running", docIndex: 1 } as never);
-    const [row] = scanJobFiles(ROOT);
+    writeJobFile("alpha_loop");
+    await writeSidecar("alpha_loop", { status: "running", docIndex: 1 } as never);
+    const [row] = scanJobFiles(ROOT).rows;
     expect(formatJobMenuLabel(row!)).toContain("resume 2/2");
   });
 
   it("drifted rows add the drift marker", async () => {
-    writeJobFile("alpha");
-    await writeSidecar("alpha", { jobHash: "stale-hash" } as never);
-    const [row] = scanJobFiles(ROOT);
+    writeJobFile("alpha_loop");
+    await writeSidecar("alpha_loop", { jobHash: "stale-hash" } as never);
+    const [row] = scanJobFiles(ROOT).rows;
     expect(row?.drifted).toBe(true);
     expect(formatJobMenuLabel(row!)).toContain("(job changed)");
   });
 
   it("corrupt sidecars are flagged, never silently treated as fresh", () => {
-    writeJobFile("alpha");
-    const statePath = path.join(ROOT, ".pi", "auto_pipeline", "alpha", "state.json");
+    writeJobFile("alpha_loop");
+    const statePath = path.join(ROOT, ".pi", "auto_pipeline", "alpha_loop", "state.json");
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(statePath, "not json", "utf8");
-    const [row] = scanJobFiles(ROOT);
+    const [row] = scanJobFiles(ROOT).rows;
     expect(row?.corrupt).toBe(true);
     expect(formatJobMenuLabel(row!)).toContain("(progress state corrupt)");
   });
 });
 
 describe("job-menu — selection", () => {
-  it("empty directory → guidance error", async () => {
+  it("empty directory → guidance error naming the template", async () => {
     const { ctx } = ctxWithSelect([]);
     const result = await selectJobFromMenu(ctx, config());
     expect(result.kind).toBe("error");
-    if (result.kind === "error") expect(result.error).toContain("auto_job_example.yaml");
+    if (result.kind === "error") {
+      expect(result.error).toContain("*_loop.yaml");
+      expect(result.error).toContain("auto_job_loop_template.yaml");
+    }
+  });
+
+  it("ignored non-*_loop.yaml files are listed in the empty-state error", async () => {
+    fs.mkdirSync(path.join(ROOT, "docs", "jobs"), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, "docs", "jobs", "alpha.yaml"), JOB_YAML, "utf8");
+    fs.writeFileSync(path.join(ROOT, "docs", "jobs", "beta.yaml"), JOB_YAML, "utf8");
+
+    const result = await selectJobFromMenu(ctxWithSelect([]).ctx, config());
+
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.error).toContain("Ignored 2 non-*_loop.yaml file(s): alpha.yaml, beta.yaml");
+      expect(result.error).toContain("Rename them to <name>_loop.yaml");
+    }
+  });
+
+  it("the select title names the ignored count when rows also exist", async () => {
+    writeJobFile("alpha_loop");
+    fs.writeFileSync(path.join(ROOT, "docs", "jobs", "legacy.yaml"), JOB_YAML, "utf8");
+    const titles: string[] = [];
+    const ctx = {
+      ui: {
+        select: async (message: string) => {
+          titles.push(message);
+          return "Cancel";
+        },
+      },
+      session: { getMeta: () => undefined, updateMeta: () => undefined },
+    };
+
+    await selectJobFromMenu(ctx as never, config());
+
+    expect(titles).toHaveLength(1);
+    expect(titles[0]).toBe("Auto pipeline — choose a job (ignored 1 non-*_loop.yaml)");
   });
 
   it("no ui.select → error", async () => {
-    writeJobFile("alpha");
+    writeJobFile("alpha_loop");
     const result = await selectJobFromMenu({}, config());
     expect(result.kind).toBe("error");
   });
 
   it("cancel returns a cancelled result", async () => {
-    writeJobFile("alpha");
+    writeJobFile("alpha_loop");
     const { ctx } = ctxWithSelect(["Cancel"]);
     expect((await selectJobFromMenu(ctx, config())).kind).toBe("cancelled");
   });
 
   it("an unknown selection is treated as cancel", async () => {
-    writeJobFile("alpha");
+    writeJobFile("alpha_loop");
     const { ctx } = ctxWithSelect(["nonsense"]);
     expect((await selectJobFromMenu(ctx, config())).kind).toBe("cancelled");
   });
@@ -204,24 +251,24 @@ describe("job-menu — selection", () => {
 
 describe("job-menu — command guards", () => {
   it("a corrupt sidecar refuses to start", async () => {
-    writeJobFile("alpha");
-    const statePath = path.join(ROOT, ".pi", "auto_pipeline", "alpha", "state.json");
+    writeJobFile("alpha_loop");
+    const statePath = path.join(ROOT, ".pi", "auto_pipeline", "alpha_loop", "state.json");
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(statePath, "garbage", "utf8");
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!)]);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT).rows[0]!)]);
     const result = await runPipelineAuto(config(), {}, ctx);
     expect(result.success).toBe(false);
     expect(result.error).toContain("corrupt");
   });
 
   it("another active job refuses BEFORE the overlay is touched", async () => {
-    writeJobFile("alpha");
+    writeJobFile("alpha_loop");
     const cfg = config();
     const lock = acquireJobLock({ projectRoot: ROOT, jobId: "beta" });
     expect(lock.ok).toBe(true);
     const modeBefore = cfg.stages.plan?.confirm?.mode;
 
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!)]);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT).rows[0]!)]);
     const result = await runPipelineAuto(cfg, {}, ctx);
 
     expect(result.success).toBe(false);
@@ -230,24 +277,24 @@ describe("job-menu — command guards", () => {
   });
 
   it("drift + cancel leaves the sidecar untouched", async () => {
-    writeJobFile("alpha");
-    await writeSidecar("alpha", { jobHash: "stale-hash" } as never);
-    const before = readJobState(ROOT, "alpha");
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Cancel"]);
+    writeJobFile("alpha_loop");
+    await writeSidecar("alpha_loop", { jobHash: "stale-hash" } as never);
+    const before = readJobState(ROOT, "alpha_loop");
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT).rows[0]!), "Cancel"]);
     const result = await runPipelineAuto(config(), {}, ctx);
 
     expect(result.success).toBe(true);
     expect(result.message).toContain("cancelled");
-    expect(readJobState(ROOT, "alpha")?.jobHash).toBe(before?.jobHash);
+    expect(readJobState(ROOT, "alpha_loop")?.jobHash).toBe(before?.jobHash);
   });
 
   it("drift + restart rewrites the sidecar with the new hash", async () => {
-    writeJobFile("alpha");
-    await writeSidecar("alpha", { jobHash: "stale-hash" } as never);
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Restart job"]);
+    writeJobFile("alpha_loop");
+    await writeSidecar("alpha_loop", { jobHash: "stale-hash" } as never);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT).rows[0]!), "Restart job"]);
     await runPipelineAuto(config(), {}, ctx);
 
-    const refreshed = readJobState(ROOT, "alpha");
+    const refreshed = readJobState(ROOT, "alpha_loop");
     expect(refreshed?.jobHash).toBe(hashJobBytes(JOB_YAML));
     // The restart rebuilt the progress rows; the first doc then failed fast
     // (its file is absent) and the second one stayed untouched.
@@ -256,19 +303,19 @@ describe("job-menu — command guards", () => {
   });
 
   it("a completed sidecar asks restart/cancel and keeps the state on cancel", async () => {
-    writeJobFile("alpha");
-    await writeSidecar("alpha", { status: "completed" } as never);
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Cancel"]);
+    writeJobFile("alpha_loop");
+    await writeSidecar("alpha_loop", { status: "completed" } as never);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT).rows[0]!), "Cancel"]);
     const result = await runPipelineAuto(config(), {}, ctx);
     expect(result.message).toContain("cancelled");
-    expect(readJobState(ROOT, "alpha")?.status).toBe("completed");
+    expect(readJobState(ROOT, "alpha_loop")?.status).toBe("completed");
   });
 
   it("restart on a completed sidecar REBUILDS the progress (no 'already finished')", async () => {
-    writeJobFile("alpha");
+    writeJobFile("alpha_loop");
     // Every doc already completed: without a rebuild `pickNextDoc` finds
     // nothing and the job ends as `job_completed` ("already finished").
-    await writeSidecar("alpha", {
+    await writeSidecar("alpha_loop", {
       status: "completed",
       docs: [
         { doc: "docs/design/a.md", status: "completed", updatedAt: 0 },
@@ -276,24 +323,24 @@ describe("job-menu — command guards", () => {
       ],
       docIndex: 1,
     } as never);
-    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Restart job"]);
+    const { ctx } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT).rows[0]!), "Restart job"]);
     const result = await runPipelineAuto(config(), {}, ctx);
 
     // The rebuild restarted at doc 1; its file is absent, so the runner fails
     // fast — the point is that the job did NOT report "already finished".
     expect(result.message ?? "").not.toContain("already finished");
-    const state = readJobState(ROOT, "alpha")!;
+    const state = readJobState(ROOT, "alpha_loop")!;
     expect(state.docs[0]?.status).toBe("failed");
     expect(state.docs[1]?.status).toBe("pending");
     expect(state.docIndex).toBe(0);
   });
 
   it("selecting a job starts it (document missing → fail-fast but START was audited)", async () => {
-    writeJobFile("alpha");
-    await writeSidecar("alpha", { status: "completed" } as never);
+    writeJobFile("alpha_loop");
+    await writeSidecar("alpha_loop", { status: "completed" } as never);
     // Restart → then start; the doc file does not exist, so the runner fails
     // fast — the interesting part is that the selection reached the runner.
-    const { ctx, notified } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT)[0]!), "Restart job"]);
+    const { ctx, notified } = ctxWithSelect([formatJobMenuLabel(scanJobFiles(ROOT).rows[0]!), "Restart job"]);
     const result = await runPipelineAuto(config(), {}, ctx);
     expect(result.success).toBe(false);
     expect(notified.length).toBeGreaterThan(0);

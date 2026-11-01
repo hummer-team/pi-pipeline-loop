@@ -39,8 +39,8 @@ const DOCS: AutoJobDoc[] = [{ doc: "docs/design/a.md" }, { doc: "docs/design/b.m
 
 function makeState(overrides?: Partial<AutoJobState>): AutoJobState {
   const state = createJobState({
-    jobId: "alpha",
-    jobPath: path.join(ROOT, "docs", "jobs", "alpha.yaml"),
+    jobId: "alpha_loop",
+    jobPath: path.join(ROOT, "docs", "jobs", "alpha_loop.yaml"),
     jobHash: hashJobBytes("version: 1\n"),
     docs: DOCS,
     ...overrides,
@@ -79,7 +79,7 @@ describe("job-state — create + write + read", () => {
   it("legacy sidecar missing optional fields reads back without throw (no back-fill)", async () => {
     const legacy = {
       schemaVersion: 1,
-      jobId: "alpha",
+      jobId: "alpha_loop",
       jobPath: "/x",
       jobHash: "h",
       jobTotalDocs: 2,
@@ -90,10 +90,10 @@ describe("job-state — create + write + read", () => {
       counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {} },
       docs: [{ doc: "docs/a.md", status: "running", updatedAt: 1 }],
     };
-    const statePath = resolveJobStatePath(ROOT, "alpha");
+    const statePath = resolveJobStatePath(ROOT, "alpha_loop");
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(statePath, JSON.stringify(legacy), "utf8");
-    const loaded = readJobState(ROOT, "alpha");
+    const loaded = readJobState(ROOT, "alpha_loop");
     expect(loaded?.docs[0]?.lastStage).toBeUndefined();
     // Reading is read-only — no back-fill file rewrite.
     expect(fs.readFileSync(statePath, "utf8")).toBe(JSON.stringify(legacy));
@@ -122,14 +122,14 @@ describe("job-state — create + write + read", () => {
   });
 
   it("corrupt JSON → null + error log; foreign schemaVersion → null", async () => {
-    const statePath = resolveJobStatePath(ROOT, "alpha");
+    const statePath = resolveJobStatePath(ROOT, "alpha_loop");
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
 
     fs.writeFileSync(statePath, "{ not json", "utf8");
-    expect(readJobState(ROOT, "alpha")).toBeNull();
+    expect(readJobState(ROOT, "alpha_loop")).toBeNull();
 
     fs.writeFileSync(statePath, JSON.stringify({ ...makeState(), schemaVersion: 2 }), "utf8");
-    expect(readJobState(ROOT, "alpha")).toBeNull();
+    expect(readJobState(ROOT, "alpha_loop")).toBeNull();
     expect(diagnostics).toContain("sidecar_corrupt");
     expect(diagnostics).toContain("sidecar_schema_unknown");
   });
@@ -212,7 +212,7 @@ describe("job-state — listRunningJobs", () => {
     fs.writeFileSync(path.join(corruptDir, "state.json"), "garbage", "utf8");
 
     const runningJobs = listRunningJobs(ROOT);
-    expect(runningJobs.map((j) => j.jobId)).toEqual(["alpha"]);
+    expect(runningJobs.map((j) => j.jobId)).toEqual(["alpha_loop"]);
     expect(diagnostics).toEqual(["sidecar_unreadable"]); // the corrupt entry
   });
 

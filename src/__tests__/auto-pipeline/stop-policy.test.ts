@@ -32,7 +32,7 @@ const JOB_YAML = [
 ].join("\n");
 
 function job(overrides?: (j: AutoJobConfig) => void): AutoJobConfig {
-  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha.yaml");
+  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha_loop.yaml");
   if (!parsed.ok) throw new Error(parsed.errors.join("; "));
   overrides?.(parsed.job);
   return parsed.job;
@@ -40,8 +40,8 @@ function job(overrides?: (j: AutoJobConfig) => void): AutoJobConfig {
 
 function state(overrides?: Partial<AutoJobState>): AutoJobState {
   const base = createJobState({
-    jobId: "alpha",
-    jobPath: "docs/jobs/alpha.yaml",
+    jobId: "alpha_loop",
+    jobPath: "docs/jobs/alpha_loop.yaml",
     jobHash: "h",
     docs: [{ doc: "docs/design/a.md" }],
   });

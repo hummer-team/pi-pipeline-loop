@@ -26,8 +26,8 @@ import {
 
 const REVIEW_OP_ID = "op-review-round-budget";
 const AUTO_JOB = {
-  jobId: "alpha",
-  jobPath: "docs/jobs/alpha.yaml",
+  jobId: "alpha_loop",
+  jobPath: "docs/jobs/alpha_loop.yaml",
   docIndex: 0,
   totalDocs: 1,
 };

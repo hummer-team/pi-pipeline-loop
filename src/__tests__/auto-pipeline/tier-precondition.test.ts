@@ -28,7 +28,7 @@ const TEMPLATE_JSON: PipelineJsonConfig = JSON.parse(
   fs.readFileSync(path.join(SRC_ROOT, "src", "template", "pipeline_loop.json"), "utf8"),
 ) as PipelineJsonConfig;
 
-const JOB_ID = "alpha";
+const JOB_ID = "alpha_loop";
 const REQUIREMENT = "docs/design/200_Feat.md";
 
 let ROOT: string;

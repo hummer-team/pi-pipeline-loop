@@ -210,8 +210,8 @@ describe("auto run — three independent round budgets", () => {
   it("clarify exhaustion leaves the design-review round budget usable", () => {
     const meta = makeTestMeta({
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,
@@ -228,8 +228,8 @@ describe("auto run — three independent round budgets", () => {
   it("design-review exhaustion leaves the clarify round budget usable", () => {
     const meta = makeTestMeta({
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,
@@ -247,8 +247,8 @@ describe("auto run — three independent round budgets", () => {
       loopCycleCount: 99,
       maxLoopCycles: 1,
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,
@@ -298,8 +298,8 @@ describe("auto run — the four clarify stop reasons", () => {
       flowState: "running",
       requirementDoc: DOC,
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,

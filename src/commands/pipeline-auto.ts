@@ -446,14 +446,26 @@ export async function startAutoJob(input: {
   const { config, ctx, jobId, token } = input;
   const projectRoot = config.projectRoot;
 
-  if (!isValidJobId(jobId)) return { success: false, error: `invalid job id "${jobId}"` };
+  if (!isValidJobId(jobId)) {
+    return {
+      success: false,
+      error: `invalid job id "${jobId}" — job files must be named <name>_loop.yaml`,
+    };
+  }
   if (isAutoJobActive() && getActiveJobId() !== jobId) {
     return { success: false, error: `another auto job is active: ${getActiveJobId()}` };
   }
 
+  // 221 Phase 3: jobId is the FULL stem of `<name>_loop.yaml` — never normalized.
   const jobRelPath = pathMod.join(AUTO_PIPELINE_JOB_DIR, `${jobId}.yaml`);
   const jobFile = readJobFile(pathMod.join(projectRoot, jobRelPath));
-  if (!jobFile.ok) return { success: false, error: jobFile.error };
+  if (!jobFile.ok) {
+    // Missing OR unreadable: both mean "no such `<name>_loop.yaml` job".
+    return {
+      success: false,
+      error: `${jobFile.error} — job files must be named <name>_loop.yaml`,
+    };
+  }
 
   const parsed = parseAutoJob(jobFile.raw, jobRelPath);
   if (!parsed.ok) return { success: false, error: parsed.errors.join("\n") };

@@ -42,7 +42,7 @@ let deps: ClarifyEntryDeps;
 
 /** Append job YAML (the sidecar's job bytes hash is not re-checked on read). */
 function appendJobYaml(extra: string): void {
-  fs.writeFileSync(path.join(harness.projectRoot, "docs", "jobs", "alpha.yaml"), `${HARNESS_JOB_YAML}\n${extra}\n`, "utf8");
+  fs.writeFileSync(path.join(harness.projectRoot, "docs", "jobs", "alpha_loop.yaml"), `${HARNESS_JOB_YAML}\n${extra}\n`, "utf8");
 }
 
 function writeDoc(text = FRESH_DOC): void {

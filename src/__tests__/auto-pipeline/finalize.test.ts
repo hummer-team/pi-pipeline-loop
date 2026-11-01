@@ -182,8 +182,8 @@ describe("finalize — buildJobSummary", () => {
     void state;
     const fake = {
       schemaVersion: 1 as const,
-      jobId: "alpha",
-      jobPath: "docs/jobs/alpha.yaml",
+      jobId: "alpha_loop",
+      jobPath: "docs/jobs/alpha_loop.yaml",
       jobHash: "h",
       jobTotalDocs: 4,
       docIndex: 1,

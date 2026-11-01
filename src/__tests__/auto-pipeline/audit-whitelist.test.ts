@@ -24,7 +24,7 @@ import { createJobState, writeJobState } from "../../core/auto-pipeline/job-stat
 import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 
-const JOB_ID = "alpha";
+const JOB_ID = "alpha_loop";
 const JOB_YAML = [
   "version: 1",
   "enabled: true",
@@ -94,12 +94,12 @@ describe("audit-whitelist — auditAutoDecision", () => {
 describe("audit-whitelist — events that are ALWAYS written", () => {
   it("autoDecisions:false suppresses pipeline_auto_decision only (pipeline_auto_stop survives)", async () => {
     // Install a running job whose only freeze action is stop-and-report.
-    const jobPath = path.join(ROOT, "docs", "jobs", "alpha.yaml");
+    const jobPath = path.join(ROOT, "docs", "jobs", "alpha_loop.yaml");
     fs.mkdirSync(path.dirname(jobPath), { recursive: true });
     fs.writeFileSync(jobPath, JOB_YAML, "utf8");
     const base = createJobState({
       jobId: JOB_ID,
-      jobPath: "docs/jobs/alpha.yaml",
+      jobPath: "docs/jobs/alpha_loop.yaml",
       jobHash: hashJobBytes(JOB_YAML),
       docs: [{ doc: "docs/design/200_Feat.md" }],
     });

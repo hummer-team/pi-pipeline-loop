@@ -48,7 +48,7 @@ function evidence(stage: PipelineStage): Array<[string, string]> {
 
 /** Build one project-shaped root: job file, json config and the stage evidence. */
 function prepareCase(stage: PipelineStage, tier: "rule" | "assisted", root: string): PipelineConfig {
-  const jobPath = path.join(root, "docs", "jobs", "alpha.yaml");
+  const jobPath = path.join(root, "docs", "jobs", "alpha_loop.yaml");
   fs.mkdirSync(path.dirname(jobPath), { recursive: true });
   fs.writeFileSync(
     jobPath,
@@ -114,7 +114,7 @@ describe("auto run — start-stage × tier smoke matrix", () => {
             ui: { notify: () => {}, select: async () => undefined },
             pi: { sendUserMessage: () => {} },
           };
-          const result = await startAutoJob({ config: prepareCase(stage, tier, root), ctx: ctx as never, jobId: "alpha" });
+          const result = await startAutoJob({ config: prepareCase(stage, tier, root), ctx: ctx as never, jobId: "alpha_loop" });
           expect(result.success).toBe(true);
           expect(meta?.currentStage).toBe(stage);
           expect(isAutoJobActive()).toBe(true);

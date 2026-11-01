@@ -48,8 +48,8 @@ const CONFIRMED_DOC = [
 ].join("\n");
 
 const AUTO_JOB = {
-  jobId: "alpha",
-  jobPath: "docs/jobs/alpha.yaml",
+  jobId: "alpha_loop",
+  jobPath: "docs/jobs/alpha_loop.yaml",
   docIndex: 0,
   totalDocs: 1,
   designReviewMaxRounds: 3,

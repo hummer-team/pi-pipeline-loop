@@ -63,7 +63,7 @@ function writeDoc(text: string): void {
 }
 
 function appendJobYaml(extra: string): void {
-  const jobPath = path.join(harness.projectRoot, "docs", "jobs", "alpha.yaml");
+  const jobPath = path.join(harness.projectRoot, "docs", "jobs", "alpha_loop.yaml");
   fs.writeFileSync(jobPath, `${HARNESS_JOB_YAML}\n${extra}\n`, "utf8");
 }
 
@@ -173,8 +173,8 @@ describe("runAutoClarifyRound — freeze paths", () => {
 
 describe("agent_settled — awaiting_human seam", () => {
   const AUTO_JOB_META = {
-    jobId: "alpha",
-    jobPath: "docs/jobs/alpha.yaml",
+    jobId: "alpha_loop",
+    jobPath: "docs/jobs/alpha_loop.yaml",
     docIndex: 0,
     totalDocs: 1,
     designReviewMaxRounds: 3,

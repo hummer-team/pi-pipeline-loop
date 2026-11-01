@@ -39,15 +39,15 @@ const JOB_YAML = [
 ].join("\n");
 
 function job() {
-  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha.yaml");
+  const parsed = parseAutoJob(JOB_YAML, "docs/jobs/alpha_loop.yaml");
   if (!parsed.ok) throw new Error(parsed.errors.join("; "));
   return parsed.job;
 }
 
 function sidecar() {
   return createJobState({
-    jobId: "alpha",
-    jobPath: "docs/jobs/alpha.yaml",
+    jobId: "alpha_loop",
+    jobPath: "docs/jobs/alpha_loop.yaml",
     jobHash: "h",
     docs: [{ doc: "docs/design/200_Feat.md" }],
   });
@@ -60,8 +60,8 @@ describe("budget independence — design-review vs loop cycle", () => {
       loopCycleCount: 0,
       maxLoopCycles: 3,
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,
@@ -82,8 +82,8 @@ describe("budget independence — design-review vs loop cycle", () => {
     const meta = makeTestMeta({
       loopCycleCount: 1,
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,
@@ -101,8 +101,8 @@ describe("budget independence — design-review vs loop cycle", () => {
     state.counters.totalFreezes = 999;
     const meta = makeTestMeta({
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,
@@ -119,8 +119,8 @@ describe("budget independence — design-review vs loop cycle", () => {
       loopCycleCount: 2,
       maxLoopCycles: 5,
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 3,
@@ -143,8 +143,8 @@ describe("budget independence — freeze budget vs the others", () => {
     state.counters.totalFreezes = 2; // equals stopConditions.maxTotalFreezes
     const meta = makeTestMeta({
       autoJob: {
-        jobId: "alpha",
-        jobPath: "docs/jobs/alpha.yaml",
+        jobId: "alpha_loop",
+        jobPath: "docs/jobs/alpha_loop.yaml",
         docIndex: 0,
         totalDocs: 1,
         designReviewMaxRounds: 2,
@@ -164,8 +164,8 @@ describe("budget independence — freeze budget vs the others", () => {
     expect(noteDesignReviewDispatch(
       makeTestMeta({
         autoJob: {
-          jobId: "alpha",
-          jobPath: "docs/jobs/alpha.yaml",
+          jobId: "alpha_loop",
+          jobPath: "docs/jobs/alpha_loop.yaml",
           docIndex: 0,
           totalDocs: 1,
           designReviewMaxRounds: 2,

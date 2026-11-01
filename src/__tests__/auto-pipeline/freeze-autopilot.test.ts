@@ -37,8 +37,8 @@ import { hashJobBytes, parseAutoJob, type AutoJobConfig } from "../../core/auto-
 import { requestDecision } from "../../core/flow-state";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 
-const JOB_ID = "alpha";
-const JOB_REL_PATH = "docs/jobs/alpha.yaml";
+const JOB_ID = "alpha_loop";
+const JOB_REL_PATH = "docs/jobs/alpha_loop.yaml";
 
 const JOB_YAML = [
   "version: 1",

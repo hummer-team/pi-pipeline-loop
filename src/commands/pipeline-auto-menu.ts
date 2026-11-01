@@ -3,8 +3,8 @@
  * 219 Phase 4 (R5Q3-A + M2): discovery + menu rows for `/pipeline-auto`.
  *
  * Rules (frozen):
- * - Scan ONLY `{projectRoot}/docs/jobs/*.yaml` (no recursion), take the ≤5
- *   newest by mtime.
+ * - Scan ONLY `{projectRoot}/docs/jobs/*_loop.yaml` (no recursion), take the ≤5
+ *   newest by mtime; every other `*.yaml` is reported as IGNORED (221 Phase 3).
  * - Row copy is ENGLISH (project language rule): `{file} ({done}/{total} done)`,
  *   plus `resume {docIndex+1}/{total}` when the sidecar is running, plus
  *   `(job changed)` when the job file's hash no longer matches the sidecar
@@ -47,23 +47,40 @@ export interface JobMenuRow {
 
 const MAX_MENU_ROWS = 5;
 
+/** Job files must be named `<name>_loop.yaml`; the jobId is the full stem. */
+const LOOP_JOB_SUFFIX = "_loop.yaml";
+
+/** Result of one directory scan: the menu rows plus the ignored file names. */
+export interface JobScanResult {
+  /** Parsable `*_loop.yaml` rows (mtime desc, bounded to 5). */
+  rows: JobMenuRow[];
+  /** `.yaml` files that are NOT `*_loop.yaml` (sorted by name; never parsed). */
+  ignored: string[];
+}
+
 /**
  * Scan the job directory and build menu rows (mtime desc, bounded to 5).
- * Never throws: a missing directory yields `[]`, unreadable files are skipped
- * with an error log.
+ * Only `*_loop.yaml` files become rows; every other `.yaml` is reported as
+ * ignored so the menu can explain the naming rule. Never throws: a missing
+ * directory yields empty lists, unreadable files are skipped with an error log.
  */
-export function scanJobFiles(projectRoot: string): JobMenuRow[] {
+export function scanJobFiles(projectRoot: string): JobScanResult {
   const dir = pathMod.join(projectRoot, AUTO_PIPELINE_JOB_DIR);
-  let names: string[];
+  let yamlNames: string[];
   try {
-    names = fs.readdirSync(dir).filter((name) => name.endsWith(".yaml"));
+    yamlNames = fs.readdirSync(dir).filter((name) => name.endsWith(".yaml"));
   } catch {
-    return [];
+    return { rows: [], ignored: [] };
   }
+
+  const ignored = yamlNames.filter((name) => !name.endsWith(LOOP_JOB_SUFFIX)).sort();
+  const names = yamlNames.filter((name) => name.endsWith(LOOP_JOB_SUFFIX));
 
   const rows: JobMenuRow[] = [];
   for (const fileName of names) {
     const jobPath = pathMod.join(dir, fileName);
+    // jobId = FULL stem, so `foo_loop.yaml` → `foo_loop` and the sidecar lives
+    // at `.pi/auto_pipeline/foo_loop/state.json`.
     const jobId = fileName.slice(0, -".yaml".length);
     if (!isValidJobId(jobId)) {
       auditAutoDiagnostic("job_file_name_unsafe", `Auto-job file name is not a safe job id — skipped: ${fileName}`);
@@ -97,7 +114,7 @@ export function scanJobFiles(projectRoot: string): JobMenuRow[] {
     });
   }
 
-  return rows.sort((a, b) => b.mtime - a.mtime).slice(0, MAX_MENU_ROWS);
+  return { rows: rows.sort((a, b) => b.mtime - a.mtime).slice(0, MAX_MENU_ROWS), ignored };
 }
 
 /** Menu label for one row (R5Q3-A copy, English). */
@@ -126,12 +143,16 @@ export async function selectJobFromMenu(
   ctx: { ui?: { select?: (message: string, options: string[]) => Promise<string | undefined>; notify?: (message: string, level?: string) => void } },
   config: PipelineConfig,
 ): Promise<JobMenuSelection> {
-  const rows = scanJobFiles(config.projectRoot);
+  const { rows, ignored } = scanJobFiles(config.projectRoot);
+  const ignoredNote = ignored.length > 0
+    ? ` Ignored ${ignored.length} non-*_loop.yaml file(s): ${ignored.join(", ")}. Rename them to <name>_loop.yaml.`
+    : "";
   if (rows.length === 0) {
     return {
       kind: "error",
       error:
-        "No job files found in docs/jobs/*.yaml. Create one first (see the example installed by /pipeline-init: .pi/auto_job_example.yaml).",
+        "No job files found in docs/jobs/*_loop.yaml. Create one first (see the template installed by /pipeline-init: .pi/auto_job_loop_template.yaml)." +
+        ignoredNote,
     };
   }
   if (typeof ctx.ui?.select !== "function") {
@@ -140,7 +161,10 @@ export async function selectJobFromMenu(
 
   const labels = rows.map(formatJobMenuLabel);
   const cancelLabel = "Cancel";
-  const selection = await ctx.ui.select("Auto pipeline — choose a job", [...labels, cancelLabel]);
+  const title = ignored.length > 0
+    ? `Auto pipeline — choose a job (ignored ${ignored.length} non-*_loop.yaml)`
+    : "Auto pipeline — choose a job";
+  const selection = await ctx.ui.select(title, [...labels, cancelLabel]);
   if (!selection || selection === cancelLabel) return { kind: "cancelled" };
 
   const index = labels.indexOf(selection);

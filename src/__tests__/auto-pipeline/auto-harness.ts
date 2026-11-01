@@ -3,7 +3,7 @@
  *
  * Not a test file — imported by the Phase 5 suites. Builds a temp project with
  * a resolved `PipelineConfig` (so the overlay has meaningful pre-values), a
- * `docs/jobs/alpha.yaml`, a running sidecar and the process-level lock.
+ * `docs/jobs/alpha_loop.yaml`, a running sidecar and the process-level lock.
  */
 
 import * as fs from "node:fs";
@@ -25,7 +25,7 @@ const TEMPLATE_JSON: PipelineJsonConfig = JSON.parse(
   fs.readFileSync(path.join(SRC_ROOT, "src", "template", "pipeline_loop.json"), "utf8"),
 ) as PipelineJsonConfig;
 
-export const HARNESS_JOB_ID = "alpha";
+export const HARNESS_JOB_ID = "alpha_loop";
 export const HARNESS_DOCS = ["docs/design/a.md", "docs/design/b.md"];
 
 export const HARNESS_JOB_YAML = [

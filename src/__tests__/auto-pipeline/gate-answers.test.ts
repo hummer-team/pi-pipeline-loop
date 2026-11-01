@@ -47,7 +47,7 @@ function configWith(protect: Record<string, unknown>) {
 }
 
 function activateAutoJob(): string {
-  const acquired = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+  const acquired = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
   if (!acquired.ok) throw new Error("lock acquire failed");
   return acquired.token;
 }

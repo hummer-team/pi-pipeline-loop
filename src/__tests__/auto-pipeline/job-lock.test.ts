@@ -71,13 +71,13 @@ afterEach(() => {
 describe("job-lock — fresh acquire / release", () => {
   it("mints a token, installs the lock and flips isAutoJobActive", () => {
     expect(isAutoJobActive()).toBe(false);
-    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.adopted).toBe(false);
     expect(result.token.length).toBeGreaterThan(10);
     expect(isAutoJobActive()).toBe(true);
-    expect(getActiveJobId()).toBe("alpha");
+    expect(getActiveJobId()).toBe("alpha_loop");
 
     const onDisk = readJobLock(ROOT);
     expect(onDisk?.token).toBe(result.token);
@@ -85,7 +85,7 @@ describe("job-lock — fresh acquire / release", () => {
   });
 
   it("release removes the lock file and clears the in-process fact (idempotent)", () => {
-    const acquired = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    const acquired = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     if (!acquired.ok) throw new Error("acquire failed");
     releaseJobLock({ projectRoot: ROOT, token: acquired.token });
     expect(isAutoJobActive()).toBe(false);
@@ -97,7 +97,7 @@ describe("job-lock — fresh acquire / release", () => {
   });
 
   it("release with a mismatched token leaves the lock untouched", () => {
-    const acquired = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    const acquired = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     if (!acquired.ok) throw new Error("acquire failed");
     releaseJobLock({ projectRoot: ROOT, token: "someone-else" });
     expect(isAutoJobActive()).toBe(true);
@@ -107,22 +107,22 @@ describe("job-lock — fresh acquire / release", () => {
 
 describe("job-lock — B6: one active job per process", () => {
   it("a second acquire with a different jobId is busy and keeps the first lock", () => {
-    const first = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    const first = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     if (!first.ok) throw new Error("acquire failed");
     const second = acquireJobLock({ projectRoot: ROOT, jobId: "beta" });
     expect(second.ok).toBe(false);
     if (second.ok) return;
     expect(second.reason).toBe("busy");
     if (second.reason !== "busy") return;
-    expect(second.holder.jobId).toBe("alpha");
+    expect(second.holder.jobId).toBe("alpha_loop");
     expect(readJobLock(ROOT)?.token).toBe(first.token);
-    expect(getActiveJobId()).toBe("alpha");
+    expect(getActiveJobId()).toBe("alpha_loop");
   });
 
   it("same jobId in the same process adopts the recorded token (M8 chain continuation)", () => {
-    const first = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    const first = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     if (!first.ok) throw new Error("acquire failed");
-    const adopt = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    const adopt = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     expect(adopt.ok).toBe(true);
     if (!adopt.ok) return;
     expect(adopt.adopted).toBe(true);
@@ -138,8 +138,8 @@ describe("job-lock — B6: one active job per process", () => {
 
 describe("job-lock — stale holder reclaim (M8)", () => {
   it("dead pid + no token → takeover succeeds and audits stale_reclaimed", async () => {
-    writeRawLock({ token: "old-token", jobId: "alpha", pid: DEAD_PID, startedAt: 1 });
-    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha", takeover: true });
+    writeRawLock({ token: "old-token", jobId: "alpha_loop", pid: DEAD_PID, startedAt: 1 });
+    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop", takeover: true });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.token).not.toBe("old-token");
@@ -150,18 +150,18 @@ describe("job-lock — stale holder reclaim (M8)", () => {
   });
 
   it("dead pid without takeover also reclaims (no permanent busy state)", () => {
-    writeRawLock({ token: "old-token", jobId: "alpha", pid: DEAD_PID, startedAt: 1 });
-    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    writeRawLock({ token: "old-token", jobId: "alpha_loop", pid: DEAD_PID, startedAt: 1 });
+    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.adopted).toBe(true);
   });
 
   it("dead pid + matching token keeps the same token (crash-restart rule 1)", () => {
-    writeRawLock({ token: "crash-token", jobId: "alpha", pid: DEAD_PID, startedAt: 1 });
+    writeRawLock({ token: "crash-token", jobId: "alpha_loop", pid: DEAD_PID, startedAt: 1 });
     const result = acquireJobLock({
       projectRoot: ROOT,
-      jobId: "alpha",
+      jobId: "alpha_loop",
       token: "crash-token",
       takeover: true,
     });
@@ -173,8 +173,8 @@ describe("job-lock — stale holder reclaim (M8)", () => {
 
 describe("job-lock — live foreign holder (M8 rule 3)", () => {
   it("alive pid in another process → busy without takeover", () => {
-    writeRawLock({ token: "foreign", jobId: "alpha", pid: 1, startedAt: 1 });
-    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    writeRawLock({ token: "foreign", jobId: "alpha_loop", pid: 1, startedAt: 1 });
+    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("busy");
@@ -182,10 +182,10 @@ describe("job-lock — live foreign holder (M8 rule 3)", () => {
   });
 
   it("alive pid + wrong token + takeover → stale_token, lock untouched", () => {
-    writeRawLock({ token: "foreign", jobId: "alpha", pid: 1, startedAt: 1 });
+    writeRawLock({ token: "foreign", jobId: "alpha_loop", pid: 1, startedAt: 1 });
     const result = acquireJobLock({
       projectRoot: ROOT,
-      jobId: "alpha",
+      jobId: "alpha_loop",
       token: "not-the-holder",
       takeover: true,
     });
@@ -197,10 +197,10 @@ describe("job-lock — live foreign holder (M8 rule 3)", () => {
   });
 
   it("alive pid + matching token + takeover → adopted", () => {
-    writeRawLock({ token: "foreign", jobId: "alpha", pid: 1, startedAt: 1 });
+    writeRawLock({ token: "foreign", jobId: "alpha_loop", pid: 1, startedAt: 1 });
     const result = acquireJobLock({
       projectRoot: ROOT,
-      jobId: "alpha",
+      jobId: "alpha_loop",
       token: "foreign",
       takeover: true,
     });
@@ -217,7 +217,7 @@ describe("job-lock — corrupt lock file", () => {
     expect(readJobLock(ROOT)).toBeNull();
     expect(diagnosticActions.length).toBeGreaterThan(0);
     // And acquiring proceeds as if there were no lock.
-    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha" });
+    const result = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
     expect(result.ok).toBe(true);
   });
 
