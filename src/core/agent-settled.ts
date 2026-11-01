@@ -887,8 +887,9 @@ export function createAgentSettled(
           }
         } else {
           // Doc is bound but marker not yet written — silent skip (existing semantics)
-          // 219 Phase 3 (G1): unattended clarify never stalls silently — one
-          // degrade to orchestrated, then a doc failure.
+          // 220 Phase 0 (D1): unattended clarify never stalls silently —
+          // `onExhausted: "self-confirm"` forces ONE `full-und?` round, while
+          // `"stop"` fails the document with `clarify_marker_missing`.
           if (await handleAutoClarifyMarkerMiss(ctx, config, meta)) return;
           await writeAuditLog("verify_completion_marker_pending", {
             pipelineId: meta.pipelineId,

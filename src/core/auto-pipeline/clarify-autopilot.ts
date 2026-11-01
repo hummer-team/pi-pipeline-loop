@@ -35,6 +35,8 @@ import {
 export interface ClarifyAutoPlan {
   /** Args appended to the clarify mention (`<doc> <args>`). */
   args: string;
+  /** Round number that args refer to (charged to the per-doc budget). */
+  round: number;
   /** Instruction appended after the mention (the `extraArgs` channel). */
   instruction: string;
   /** Job-level round cap (`clarify.maxRounds`). */
@@ -69,6 +71,7 @@ export function buildClarifyAutoPlan(projectRoot: string): ClarifyAutoPlan | nul
   if (!active || active.state.status !== "running") return null;
   return {
     args: "1",
+    round: 1,
     instruction: buildClarifyInstruction(active.job),
     maxRounds: active.job.clarify.maxRounds,
   };

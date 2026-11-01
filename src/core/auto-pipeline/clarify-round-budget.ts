@@ -23,6 +23,13 @@ export interface ClarifyRoundStamp {
   lastDispatchedAt: number | undefined;
 }
 
+/** The sidecar fields one dispatch stamp writes (a subset of the doc progress). */
+export interface ClarifyRoundAccount {
+  clarifyRounds?: number;
+  clarifyLastRound?: number;
+  clarifyDispatchedAt?: number;
+}
+
 /**
  * TRUE when the document already consumed its whole clarify allowance.
  * `maxRounds <= 0` means "no budget configured" ⇒ never exhausted.
@@ -48,4 +55,26 @@ export function noteClarifyRoundDispatch(
     lastRound: round,
     lastDispatchedAt: now,
   };
+}
+
+/**
+ * Stamp ONE dispatched round onto the per-doc account (single write rule).
+ *
+ * Used by every dispatch path — the settle-side round
+ * (`clarify-round-dispatch.ts`) and the startup round of `/pipeline-start`
+ * (`clarify-entry.ts`) — so "which dispatch counts" can never diverge.
+ */
+export function stampClarifyRoundDispatch(account: ClarifyRoundAccount, round: number, now: number): void {
+  const stamp = noteClarifyRoundDispatch(
+    {
+      usedRounds: account.clarifyRounds ?? 0,
+      lastRound: account.clarifyLastRound,
+      lastDispatchedAt: account.clarifyDispatchedAt,
+    },
+    round,
+    now,
+  );
+  account.clarifyRounds = stamp.usedRounds;
+  account.clarifyLastRound = stamp.lastRound;
+  account.clarifyDispatchedAt = now;
 }

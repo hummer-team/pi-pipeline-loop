@@ -19,7 +19,7 @@ import type { RuntimeCtx } from "../runtime-ctx";
 import { detectSessionRole } from "../session-role";
 import { noteDocStage, writeJobState } from "./job-state";
 import { readActiveJobContext, readStateForActiveLock, isAutoJobActive } from "./config-overlay";
-import { evaluateHardStop } from "./stop-policy";
+import { evaluateHardStop, resolveVerifyMaxAttempts } from "./stop-policy";
 import {
   continueJobAfterCompleted,
   finalizeCurrentDoc,
@@ -29,12 +29,6 @@ import {
   syncAutoCountersFromMeta,
   type FinalizeCtx,
 } from "./finalize";
-import {
-  buildClarifyFinalisationInstruction,
-  noteClarifyFallbackUsed,
-} from "./clarify-autopilot";
-import { auditAutoDecision } from "./auto-audit";
-import { resolveAgentMention } from "../../utils/subagent-rpc";
 import { auditAutoDiagnostic, reportAutoFailure } from "./diagnostics";
 
 /** TRUE when the settle was consumed by the auto transaction. */
@@ -100,7 +94,15 @@ export async function handleAutoSettle(
   }
 
   // 3) Hard stop (wall clock / blocked reason / verify failures / freeze).
-  const hard = evaluateHardStop({ state, meta, job, now: Date.now() });
+  // The verify cap comes from the LIVE config so it is the exact value the
+  // verify chain freezes on (`verify.maxAttempts` is inherit-not-overlay).
+  const hard = evaluateHardStop({
+    state,
+    meta,
+    job,
+    now: Date.now(),
+    verifyMaxAttempts: resolveVerifyMaxAttempts(config, job),
+  });
   if (hard.kind === "hard") {
     await handleDocFailure(ctx, config, state, job, {
       outcome: "failed",
@@ -113,69 +115,8 @@ export async function handleAutoSettle(
 }
 
 /**
- * G1 degrade/fail for a missing clarify completion marker.
- *
- * 220 Phase 0 (D1): the autopilot no longer writes the marker and no longer
- * degrades to `orchestrated`. A missing marker is routed by
- * `clarify.onExhausted`:
- * - `stop` (default) → doc failure (`clarify_marker_missing`);
- * - `self-confirm` → ONE forced `full-und?` dispatch (recorded as
- *   `clarifyFallbackUsed`); a second miss is a doc failure.
- *
- * Called ONLY where the pipeline already knows the marker is missing (the
- * settle completion-marker precheck), so a legitimate in-flight clarify turn is
- * never mistaken for a failure.
- *
- * @returns TRUE when the caller must stop its normal settle handling.
+ * The clarify completion-marker seam lives in its own module (clarify decision
+ * + failure handling); re-exported here so the settle wiring keeps one import
+ * site for the settle-side auto handling.
  */
-export async function handleAutoClarifyMarkerMiss(
-  ctx: FinalizeCtx,
-  config: PipelineConfig,
-  meta: SessionMeta,
-): Promise<boolean> {
-  if (meta.currentStage !== "clarify") return false;
-  const active = readActiveJobContext(config.projectRoot);
-  if (!active || active.state.status !== "running") return false;
-  if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return false;
-
-  const { state, job } = active;
-  const canFallback =
-    job.clarify.onExhausted === "self-confirm" && noteClarifyFallbackUsed({ state, docIndex: state.docIndex });
-
-  await auditAutoDecision(config, {
-    gate: "clarify_completion_marker",
-    decision: canFallback ? "self_confirm" : "fail",
-    reason: canFallback ? "marker_missing_forced_full_und" : "marker_missing",
-  });
-
-  if (canFallback) {
-    try {
-      await writeJobState(config.projectRoot, state);
-    } catch (err) {
-      auditAutoDiagnostic("clarify_fallback_persist_failed", "Auto-job clarify fallback could not be persisted.", {
-        jobId: state.jobId,
-        error: String(err),
-      }, "error");
-    }
-    // Forced finalisation round — the only place where the plugin asks for the
-    // marker itself.
-    const agentName = resolveAgentMention(config, "clarify");
-    const doc = meta.requirementDoc;
-    if (agentName && doc) {
-      ctx.pi?.sendUserMessage?.(`@${agentName} ${doc} full-und?\n\n${buildClarifyFinalisationInstruction()}`, {
-        expandPromptTemplates: true,
-      });
-    }
-    ctx.ui?.notify?.(
-      `Auto job "${state.jobId}": clarify answers are missing — forcing one finalisation round for ${doc ?? "the requirement doc"}.`,
-    );
-    return true;
-  }
-
-  // Second miss (or `onExhausted: "stop"`) → doc failure (unified path).
-  await handleDocFailure(ctx, config, state, job, {
-    outcome: "failed",
-    reason: "clarify_marker_missing",
-  });
-  return true;
-}
+export { handleAutoClarifyMarkerMiss } from "./clarify-marker-miss";

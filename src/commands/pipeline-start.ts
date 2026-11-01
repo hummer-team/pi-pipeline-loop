@@ -37,6 +37,7 @@ import { spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resol
 import { buildNewPeriodResetFields } from "../core/meta-reset";
 // 219 Phase 3 (G1): auto clarify plan (self-answer instruction + args).
 import { buildClarifyAutoPlan, type ClarifyAutoPlan } from "../core/auto-pipeline/clarify-autopilot";
+import { noteClarifyStartupDispatch } from "../core/auto-pipeline/clarify-entry";
 // 210 Phase 7: restart/resume clears the in-process usage ledger.
 import { resetUsage } from "../core/usage-recorder";
 // Phase 0 (182): name-probe for out-of-band agent detection before dispatch
@@ -1349,6 +1350,11 @@ async function maybeAutoLaunchClarify(
     });
 
     if (spawnResult.ok) {
+      // 220 D6: the startup round consumes the SAME per-doc clarify budget, so
+      // `clarify.maxRounds` stays a total (never `maxRounds + 1`).
+      if (autoClarify) {
+        await noteClarifyStartupDispatch({ config, doc: file, round: autoClarify.round });
+      }
       // RPC success: audit + watch lifecycle, no manual @ hint needed
       await safeWriteAuditLog("pipeline_start_launch_rpc", {
         agentName,
@@ -1370,12 +1376,18 @@ async function maybeAutoLaunchClarify(
   }
 
   // Fallback: sendUserMessage + TUI notification + audit
+  let dispatched = false;
   if (typeof ctx?.pi?.sendUserMessage === "function") {
     try {
       ctx.pi.sendUserMessage(message, { expandPromptTemplates: true });
+      dispatched = true;
     } catch {
       // sendUserMessage failure is non-fatal; fall through to notify
     }
+  }
+  // 220 D6: charge the startup round only when the dispatch really happened.
+  if (dispatched && autoClarify) {
+    await noteClarifyStartupDispatch({ config, doc: file, round: autoClarify.round });
   }
 
   ui.notify(ctx, `Next: run ${message} manually if not auto-started.`);

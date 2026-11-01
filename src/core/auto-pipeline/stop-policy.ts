@@ -37,6 +37,22 @@ export type LoopBrakeVerdict =
   | { kind: "soft"; stopReason: AutoJobStopReason };
 
 /**
+ * The verify-failure cap the VERIFY CHAIN itself applies: the LIVE config value
+ * (`json.maxVerifyAttempts`, defaulted from `maxLoops`) wins, because
+ * `verify.maxAttempts` is inherit-not-overlay — an unconfigured job keeps the
+ * JSON value. The job value is the fallback for contexts that have no config.
+ *
+ * Hard stop #3 and `verify-advance` must share this single expression,
+ * otherwise one side freezes before the other can ever judge (220 D7/Q15).
+ */
+export function resolveVerifyMaxAttempts(
+  config: Pick<PipelineConfig, "maxVerifyAttempts" | "maxLoops">,
+  job: AutoJobConfig,
+): number {
+  return config.maxVerifyAttempts ?? config.maxLoops ?? job.verify.maxAttempts;
+}
+
+/**
  * Hard stop — callable from settle AND from freeze handling. Order matters:
  * the concrete/现场 cause (unresolvable freeze) is reported before the
  * historical budget (`maxTotalFreezes`).
@@ -46,6 +62,12 @@ export function evaluateHardStop(input: {
   meta: SessionMeta;
   job: AutoJobConfig;
   now: number;
+  /**
+   * Effective cap from the live config (`resolveVerifyMaxAttempts`). Omitted →
+   * `job.verify.maxAttempts` (the schema default), kept for callers without a
+   * config so the predicate stays total.
+   */
+  verifyMaxAttempts?: number;
 }): HardStopVerdict {
   const { state, meta, job, now } = input;
   const stop = job.stopConditions;
@@ -58,10 +80,12 @@ export function evaluateHardStop(input: {
     return { kind: "hard", stopReason: "blocked_reason" };
   }
   // 220 D7/Q15: the verify-failure streak is judged on the LIVE meta counter
-  // (`meta.verifyAttempts`, reset on stage advance) against the job threshold.
+  // (`meta.verifyAttempts`, reset on stage advance) against the EFFECTIVE cap
+  // (`verify.maxAttempts` inherits the JSON value when unconfigured).
   // The old cross-stage sidecar streak is gone — a stale sidecar number could
   // freeze a document that had already recovered.
-  if (meta.verifyAttempts !== undefined && meta.verifyAttempts >= job.verify.maxAttempts) {
+  const verifyMaxAttempts = input.verifyMaxAttempts ?? job.verify.maxAttempts;
+  if (meta.verifyAttempts !== undefined && meta.verifyAttempts >= verifyMaxAttempts) {
     return { kind: "hard", stopReason: "verify_failures" };
   }
   if (

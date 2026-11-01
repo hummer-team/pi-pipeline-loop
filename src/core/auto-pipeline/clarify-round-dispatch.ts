@@ -26,7 +26,7 @@ import {
   parseDecisionLedger,
   parseRequirementAssessment,
 } from "./clarify-protocol";
-import { noteClarifyRoundDispatch } from "./clarify-round-budget";
+import { stampClarifyRoundDispatch } from "./clarify-round-budget";
 import { nextClarifyStallState } from "./clarify-stall";
 import {
   FORCED_FULL_UND_ARGS,
@@ -103,18 +103,8 @@ export async function dispatchClarifyRound(
 
   // ③ Monotonic round stamp — written BEFORE the dispatch so a crash can never
   // refund a round. `clarifyDispatchedAt` follows every dispatch (dedupe ②).
-  const stamp = noteClarifyRoundDispatch(
-    {
-      usedRounds: progress.clarifyRounds ?? 0,
-      lastRound: progress.clarifyLastRound,
-      lastDispatchedAt: progress.clarifyDispatchedAt,
-    },
-    decision.round,
-    now,
-  );
-  progress.clarifyRounds = stamp.usedRounds;
-  progress.clarifyLastRound = stamp.lastRound;
-  progress.clarifyDispatchedAt = now;
+  stampClarifyRoundDispatch(progress, decision.round, now);
+  progress.updatedAt = now;
 
   // Stall observation (single write point): growth resets, no-growth counts.
   const previous = progress.clarifyStallSignature === undefined

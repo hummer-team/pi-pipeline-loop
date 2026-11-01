@@ -1972,7 +1972,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 | 函数 | 调用位置 | 判定 |
 |---|---|---|
-| `evaluateHardStop` | settle seam（`handleAutoSettle`）与冻结裁决 | 墙钟 `wallClockMs` / `stopOnBlockedReasons` / 连续验证失败 / 冻结不可解 / 历史冻结预算；命中即**文档失败**并走收尾 |
+| `evaluateHardStop` | settle seam（`handleAutoSettle`）与冻结裁决 | 墙钟 `wallClockMs` / `stopOnBlockedReasons` / 连续验证失败（`meta.verifyAttempts >= resolveVerifyMaxAttempts(config, job)`，job 未配置 `verify.maxAttempts` 时沿用 json 的 `maxVerifyAttempts`，与验证链同源） / 冻结不可解 / 历史冻结预算；命中即**文档失败**并走收尾 |
 | `evaluateLoopBrake` | 5 个「发起新 develop/fix 循环」位（`verify-advance`、`develop-transition`、`stage-advancer`×2、`pipeline-handoff`） | `totalLoops` 达限且当前文档未完成 → 先给 `finalLoopGrace`（默认 1，逐文档独立），再软停 |
 
 - **完成态优先**：已 `completed` 的文档永不会被硬停改判为失败。
@@ -1992,7 +1992,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 | 闸门 | 自动应答 |
 |---|---|
-| clarify 完成标记 | job 指令要求自答并写 `## 模型确认`；未产出 → 记 `clarifyFallbackUsed` 并降级 `orchestrated`，再次未产出 → 文档失败（`clarify_marker_missing`） |
+| clarify 完成标记 | job 指令只要求自答并写 `答：`（不写 marker）；完成标记只由派发 `full-und?` 的那一轮写入；未产出按 `clarify.onExhausted` 分流：`stop`（默认）→ 文档失败 `clarify_marker_missing`，`self-confirm` → 记 `clarifyFallbackUsed` 并经统一派发通道（`dispatchClarifyRound`）强制再派一次 `full-und?`，派发失败或再次未产出 → `clarify_marker_missing` |
 | plan/review confirm | 由 overlay 写 `confirm.mode: auto`，既有 confirm 守卫（先读 config 再决定是否弹窗）因此不再弹窗 |
 | design-review 入口授权 | 第 4 参 `{ autoPipeline: { jobId } }`：保留 child 拒绝与前置校验，跳过 TUI 检测与确认，审计 `authorised_auto` |
 | manual FAIL | v1 只允许 `designReview.mode: auto`，FAIL 走 `auto-revise`（不伪造人工裁决） |

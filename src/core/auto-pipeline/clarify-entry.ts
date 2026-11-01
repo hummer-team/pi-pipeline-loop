@@ -6,42 +6,34 @@
  * - `clarify-dispatch.ts` decides WHAT to do (pure);
  * - `clarify-round-budget.ts` / `clarify-stall.ts` own the two counters;
  * - `clarify-protocol.ts` owns the document protocol directive;
- * - `clarify-state.ts` owns the sidecar shape + the shared outcome helpers;
+ * - `clarify-state.ts` owns the sidecar shape, the shared doc-state builder and
+ *   the outcome helpers;
  * - `clarify-round-dispatch.ts` performs the accounting and the dispatch;
- * - THIS module routes one decision to its freeze/dispatch outcome.
+ * - THIS module routes one decision to its freeze/dispatch outcome and accounts
+ *   the STARTUP round `/pipeline-start` dispatches.
  *
  * Human track: every branch is gated by the caller (`meta.autoJob`) and by an
  * ACTIVE job lock, so a session without an auto job never reaches this module.
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
-import { loadVerifyContractAnchors } from "../../utils/contract-loader";
 import { auditAutoDecision } from "./auto-audit";
-import { decideClarifyDispatch } from "./clarify-dispatch";
-import { parseRequirementAssessment } from "./clarify-protocol";
+import { stampClarifyRoundDispatch } from "./clarify-round-budget";
 import {
+  buildClarifyDocState,
   DEFAULT_CLARIFY_DEPS,
   freezeClarify,
   persistClarifyState,
-  readRequirementText,
   resetClarifyCounters,
-  type ClarifyDocState,
   type ClarifyEntryCtx,
   type ClarifyEntryDeps,
 } from "./clarify-state";
 import { dispatchClarifyRound } from "./clarify-round-dispatch";
 import { handleClarifyBudgetExhausted } from "./clarify-autopilot";
-import { DEFAULT_CLARIFY_STALL_LIMIT } from "./clarify-stall";
 import { readActiveJobContext } from "./config-overlay";
 
 export type { ClarifyEntryCtx, ClarifyEntryDeps, ClarifyDocState } from "./clarify-state";
-
-/**
- * Consecutive `needs-clarify` rounds after which clarify is frozen as
- * "the requirement itself is unclear" (Q6/Q7: two failed assessments in a row
- * mean the document, not the round, is the problem).
- */
-export const CLARIFY_NEEDS_CLARIFY_LIMIT = 2;
+export { CLARIFY_NEEDS_CLARIFY_LIMIT } from "./clarify-state";
 
 /**
  * Run ONE unattended clarify round for the active auto job.
@@ -62,42 +54,11 @@ export async function runAutoClarifyRound(
   const { state, job } = active;
   const doc = meta.requirementDoc;
   if (!doc) return false;
-  const progress = state.docs[state.docIndex];
-  // The running doc must be the one this session is clarifying; otherwise the
-  // sidecar counters would be attributed to the wrong document.
-  if (!progress || progress.doc !== doc) return false;
 
   const now = Date.now();
-  const docText = await readRequirementText(config.projectRoot, doc);
-  const { anchors } = await loadVerifyContractAnchors(config, "clarify");
-  const assessment = docText === null ? null : parseRequirementAssessment(docText);
-  const previousDocLength = progress.clarifyStallDocLength ?? 0;
-
-  const decision = decideClarifyDispatch({
-    autoActive: true,
-    requirementDoc: doc,
-    docText,
-    ...(anchors ? { anchors } : {}),
-    usedRounds: progress.clarifyRounds ?? 0,
-    maxRounds: job.clarify.maxRounds,
-    stalls: progress.clarifyStalls ?? 0,
-    stallLimit: DEFAULT_CLARIFY_STALL_LIMIT,
-    needsClarifyStreak: progress.clarifyNeedsClarifyStreak ?? 0,
-    needsClarifyLimit: CLARIFY_NEEDS_CLARIFY_LIMIT,
-    assessment,
-    ...(progress.clarifyLastRound !== undefined ? { lastDispatchedRound: progress.clarifyLastRound } : {}),
-    ...(progress.clarifyDispatchedAt !== undefined ? { lastDispatchedAt: progress.clarifyDispatchedAt } : {}),
-    now,
-  });
-
-  const docState: ClarifyDocState = {
-    doc,
-    docText,
-    progress,
-    decision,
-    assessmentVerdict: assessment?.verdict ?? "unknown",
-    grew: (docText?.length ?? 0) > previousDocLength,
-  };
+  const docState = await buildClarifyDocState({ config, state, job, doc, now });
+  if (!docState) return false;
+  const { decision, progress } = docState;
 
   switch (decision.action) {
     case "not-auto":
@@ -139,4 +100,41 @@ export async function runAutoClarifyRound(
       return dispatchClarifyRound(ctx, config, meta, state, job, docState, deps);
     }
   }
+}
+
+/**
+ * 220 D6: account the STARTUP clarify round that `/pipeline-start` dispatched.
+ *
+ * `maxRounds` is the TOTAL allowance, so the round that opened the stage must
+ * be charged like every later round; otherwise the settle-side budget grants
+ * one extra dispatch (`maxRounds + 1`).
+ *
+ * Called only AFTER a startup dispatch really happened. A missing/foreign
+ * sidecar doc is never charged (counters are per document). A user-supplied
+ * `forwardArgs` override is a human intervention — the job does not own that
+ * round, so it is not charged either (the caller passes no plan).
+ */
+export async function noteClarifyStartupDispatch(input: {
+  config: PipelineConfig;
+  doc: string;
+  round: number;
+  now?: number;
+}): Promise<void> {
+  const active = readActiveJobContext(input.config.projectRoot);
+  if (!active || active.state.status !== "running") return;
+  const { state } = active;
+  const progress = state.docs[state.docIndex];
+  if (!progress || progress.doc !== input.doc) return;
+
+  const now = input.now ?? Date.now();
+  stampClarifyRoundDispatch(progress, input.round, now);
+  progress.updatedAt = now;
+  state.updatedAt = now;
+  await persistClarifyState(input.config, state);
+  await auditAutoDecision(input.config, {
+    gate: "clarify_dispatch",
+    decision: "fresh",
+    reason: "clarify_startup_round",
+    round: String(input.round),
+  });
 }
