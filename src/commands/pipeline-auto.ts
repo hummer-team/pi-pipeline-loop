@@ -68,6 +68,16 @@ export interface AutoPipelineResult {
   success: boolean;
   message?: string;
   error?: string;
+  /**
+   * B3 (chained continuation): which side of `acquireJobLock` a FAILED call
+   * stopped on.
+   * - `pre_lock`: no lock was acquired by THIS call → the pending continuation
+   *   record must stay retryable.
+   * - `post_lock`: the lock was adopted/acquired → the terminal transaction is
+   *   valid (`session_fail`).
+   * Absent on success; never inferred from the process-wide lock flag.
+   */
+  failurePhase?: "pre_lock" | "post_lock";
 }
 
 /**
@@ -188,9 +198,15 @@ async function closeAbandonedContinuation(
   await finalizeJob(ctx as never, config, { stopReason: "session_fail" });
 }
 
+/** B3: a failure before `acquireJobLock` leaves the pending record retryable. */
+function preLockFailure(error: string): AutoPipelineResult {
+  return { success: false, error, failurePhase: "pre_lock" };
+}
+
 /**
- * `--next` / `--job` target resolution (M1/M8):
- * 1. `--job <jobId>` → the sidecar must exist.
+ * `--next` / `--job` target resolution (M1/M8, F8):
+ * 1. `--job <jobId>` → the JOB FILE must exist (first start included; a
+ *    missing sidecar is normal and is created by `startAutoJob`).
  * 2. no `--job` → scan: exactly one running job starts it, zero/many refuse.
  */
 function resolveInternalTarget(
@@ -198,10 +214,12 @@ function resolveInternalTarget(
   jobId: string,
 ): { ok: true; jobId: string } | { ok: false; error: string } {
   if (jobId) {
-    if (!fs.existsSync(resolveJobStatePath(config.projectRoot, jobId))) {
+    const jobPath = pathMod.join(config.projectRoot, AUTO_PIPELINE_JOB_DIR, `${jobId}.yaml`);
+    if (!jobId.endsWith("_loop") || !fs.existsSync(jobPath)) {
+      // Phase 3 naming rule: only `<name>_loop.yaml` is a startable job file.
       return {
         ok: false,
-        error: `auto job state not found: ${jobId} — job files must be named <name>_loop.yaml`,
+        error: `auto job "${jobId}" not found — job files must be named <name>_loop.yaml`,
       };
     }
     return { ok: true, jobId };
@@ -341,29 +359,23 @@ async function resolveDrift(
 }
 
 /**
- * Phase 5 §6.1 — COMMAND-SIDE session rotation for a chained continuation.
+ * 221 Phase 4: rotate into a NEW session for the chained continuation.
  *
  * The settle seam runs on a hook ctx (`RuntimeCtx`/`ExtensionContext`) which
- * has no `newSession`, so it dispatches `/pipeline-auto --next …`; THIS handler
- * is the only place that can replace the session. Two guards keep it honest:
+ * has no `newSession`, so it dispatches the minimal `/pipeline-auto --next`;
+ * THIS handler is the only place that can replace the session. Guards:
  * - only a session that ALREADY ran a document rotates (`meta.autoJob` or a
- *   `completed` stage) — the fresh session created here must start the doc,
- *   otherwise the chain would rotate forever;
- * - `{ cancelled }` from the host is the documented same-session fallback
- *   (Phase 5 §6.2), never a terminal state; `chain.onSessionFail: "stop"`
- *   turns that fallback into `session_fail` instead.
+ *   `completed` stage) — the fresh session must start the doc, otherwise the
+ *   chain would rotate forever;
+ * - the new session starts the pending doc on `session_start` (sidecar pending
+ *   record + lock ownership), so this helper injects NO command: it only marks
+ *   the pending continuation, opens the session and audits;
+ * - a cancelled/failed hop clears the pending record and lets the caller fall
+ *   back to the same-session serial (or `session_fail` with
+ *   `onSessionFail: "stop"`).
  *
  * @returns the final result when the call is DONE (rotated, or stopped), or
  *   `null` when the caller must continue starting the doc in THIS session.
- */
-/**
- * 221 Phase 4: rotate into a NEW session for the chained continuation.
- *
- * The new session starts the pending doc on `session_start` (sidecar pending
- * record + lock ownership), so this helper injects NO command: it only marks
- * the pending continuation, opens the session and audits. A cancelled/failed
- * hop clears the pending record and lets the caller fall back to the
- * same-session serial (or to `session_fail` with `onSessionFail: "stop"`).
  */
 async function rotateSessionForContinuation(input: {
   config: PipelineConfig;
@@ -391,6 +403,17 @@ async function rotateSessionForContinuation(input: {
       jobId,
       error: String(err),
     }, "error");
+    // The sidecar is the ONLY hand-over channel to the new session: rotating
+    // without it strands the job `running` (no pending record ⇒ `session_start`
+    // does nothing and `reconcilePendingContinuation` is inert). Stay in THIS
+    // session instead — the documented same-session serial.
+    clearPendingContinuation(state);
+    notifyAuto(
+      ctx,
+      `Auto job "${jobId}": the continuation record could not be written — continuing in this session.`,
+      "warning",
+    );
+    return null;
   }
 
   const clearPending = async (): Promise<void> => {
@@ -448,10 +471,7 @@ async function rotateSessionForContinuation(input: {
   if (job.chain.onSessionFail === "stop") {
     await safeWriteAuditLog("pipeline_auto_chain", { jobId, result: "stopped" }, "warn");
     const done = await finalizeJob(ctx as never, config, { stopReason: "session_fail" });
-    return {
-      success: false,
-      error: done.summary ?? `Auto job "${jobId}" stopped: session_fail`,
-    };
+    return preLockFailure(done.summary ?? `Auto job "${jobId}" stopped: session_fail`);
   }
   // Documented same-session fallback: start the next doc HERE.
   return null;
@@ -483,13 +503,10 @@ export async function startAutoJob(input: {
   const projectRoot = config.projectRoot;
 
   if (!isValidJobId(jobId)) {
-    return {
-      success: false,
-      error: `invalid job id "${jobId}" — job files must be named <name>_loop.yaml`,
-    };
+    return preLockFailure(`invalid job id "${jobId}" — job files must be named <name>_loop.yaml`);
   }
   if (isAutoJobActive() && getActiveJobId() !== jobId) {
-    return { success: false, error: `another auto job is active: ${getActiveJobId()}` };
+    return preLockFailure(`another auto job is active: ${getActiveJobId()}`);
   }
 
   // 221 Phase 3: jobId is the FULL stem of `<name>_loop.yaml` — never normalized.
@@ -497,16 +514,15 @@ export async function startAutoJob(input: {
   const jobFile = readJobFile(pathMod.join(projectRoot, jobRelPath));
   if (!jobFile.ok) {
     // Missing OR unreadable: both mean "no such `<name>_loop.yaml` job".
-    return {
-      success: false,
-      error: `${jobFile.error} — job files must be named <name>_loop.yaml`,
-    };
+    return preLockFailure(`${jobFile.error} — job files must be named <name>_loop.yaml`);
   }
 
   const parsed = parseAutoJob(jobFile.raw, jobRelPath);
-  if (!parsed.ok) return { success: false, error: parsed.errors.join("\n") };
+  if (!parsed.ok) return preLockFailure(parsed.errors.join("\n"));
   const job = parsed.job;
-  if (!job.enabled) return { success: false, error: `auto job "${jobId}" is disabled (enabled: false)` };
+  if (!job.enabled) {
+    return preLockFailure(`auto job "${jobId}" is disabled (enabled: false)`);
+  }
 
   // 220 C-2/B15: `tier: "assisted"` promises the full comparison, which only the
   // design-review verification stage can enforce. Judged at the COMMAND layer
@@ -520,10 +536,9 @@ export async function startAutoJob(input: {
       tier: job.tier,
       reason: "design_review_stage_not_enabled",
     }, "warn");
-    return {
-      success: false,
-      error: `auto job "${jobId}" rejected: tier "assisted" requires the design-review stage to be enabled`,
-    };
+    return preLockFailure(
+      `auto job "${jobId}" rejected: tier "assisted" requires the design-review stage to be enabled`,
+    );
   }
 
   if (input.continuation === true) {
@@ -541,18 +556,14 @@ export async function startAutoJob(input: {
   if (!lock.ok) {
     // Error copy is split by CAUSE (F8): a live holder is actionable, a token/
     // lock mismatch points at the lock file. Neither mentions a token to paste.
+    // Either way no lock was acquired by THIS call → retryable (B3).
     if (lock.reason === "busy") {
-      return {
-        success: false,
-        error:
-          `auto job "${jobId}" is held by another process (pid ${lock.holder.pid}); ` +
+      return preLockFailure(
+        `auto job "${jobId}" is held by another process (pid ${lock.holder.pid}); ` +
           "wait or continue there",
-      };
+      );
     }
-    return {
-      success: false,
-      error: "auto job lock could not be acquired; check .pi/auto_pipeline/lock.json",
-    };
+    return preLockFailure("auto job lock could not be acquired; check .pi/auto_pipeline/lock.json");
   }
 
   const state = readJobState(projectRoot, jobId) ?? createJobState({
@@ -567,7 +578,7 @@ export async function startAutoJob(input: {
   state.updatedAt = Date.now();
   await writeJobState(projectRoot, state);
 
-  return startPendingDoc({
+  const started = await startPendingDoc({
     config,
     ctx,
     jobId,
@@ -577,6 +588,9 @@ export async function startAutoJob(input: {
     projectRoot,
     deferFailure: input.deferFailure === true,
   });
+  // The lock was acquired above: any failure from here on is a POST-lock
+  // failure (B3) — the continuation may run the terminal transaction.
+  return started.success ? started : { ...started, failurePhase: "post_lock" };
 }
 
 /** Pick the next doc (honouring `skipCompleted`) and start it. */

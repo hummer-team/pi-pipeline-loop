@@ -17,6 +17,12 @@ import type { PipelineConfig, PipelineStage } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath, CONFIG_DIR_NAME } from "../constants";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getVerifyExtractPrompt, loadPromptConfig } from "./prompt-config";
+import {
+  DEFAULT_CLARIFY_PROMPT_MARKERS,
+  resolveClarifyPromptMarkers,
+  substituteClarifyMarkerPlaceholders,
+  type ClarifyPromptMarkers,
+} from "./auto-pipeline/clarify-prompt-markers";
 import { detectTechStack } from "./tech-stack";
 import { parseFrontmatter, type VerifyRules } from "./auto-verifier";
 
@@ -97,6 +103,7 @@ export async function resolveExtractPrompt(projectRoot: string, stage?: string):
 export async function loadPluginDeliverables(
   projectRoot: string,
   stage: string,
+  markers?: ClarifyPromptMarkers,
 ): Promise<DeliveryItem[]> {
   const config = await loadPromptConfig(projectRoot);
   const key = `stage_deliverable_${stage}`;
@@ -105,7 +112,16 @@ export async function loadPluginDeliverables(
     return [];
   }
 
-  const rawItems = extractHardcodedItems(text);
+  // 221 Phase 1 (INV-4): the clarify deliverable spells its markers as
+  // `{completionMarker}` / `{answerMarker}`. Resolve them BEFORE item
+  // extraction so verify.md never receives a literal placeholder; callers
+  // without a resolved config fall back to the bilingual defaults.
+  const resolvedText = substituteClarifyMarkerPlaceholders(
+    text,
+    markers ?? DEFAULT_CLARIFY_PROMPT_MARKERS,
+  );
+
+  const rawItems = extractHardcodedItems(resolvedText);
 
   // Check for build/test command placeholders
   const buildTestItems = rawItems.filter(
@@ -736,7 +752,13 @@ export async function generateVerifyFiles(
           }
         }
         // Phase 0 (146): merge plugin default deliverables from yml
-        pluginItems = await loadPluginDeliverables(config.projectRoot, s);
+        // 221 Phase 1: resolve the clarify marker placeholders from the SAME
+        // config the prompt injector uses (INV-4).
+        pluginItems = await loadPluginDeliverables(
+          config.projectRoot,
+          s,
+          resolveClarifyPromptMarkers(config),
+        );
         expectedItems = mergeDeliveryItems(mergeDeliveryItems(hardcodedItems, llmItems), pluginItems);
       }
 
@@ -961,7 +983,12 @@ export async function generateVerifyFiles(
     }
 
     // Step 3: Merge and deduplicate (Phase 0 (146): include plugin default deliverables)
-    const pluginItems = await loadPluginDeliverables(config.projectRoot, s);
+    // 221 Phase 1: marker placeholders resolved from the live config (INV-4).
+    const pluginItems = await loadPluginDeliverables(
+      config.projectRoot,
+      s,
+      resolveClarifyPromptMarkers(config),
+    );
     const allItems = mergeDeliveryItems(mergeDeliveryItems(hardcodedItems, llmItems), pluginItems);
 
     // NOTE: previous defensive drop of command-type items for develop/fix has been

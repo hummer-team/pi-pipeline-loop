@@ -19,7 +19,11 @@
 
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { DEFAULT_COMPLETION_MARKERS } from "../../constants";
-import { DEFAULT_CLARIFY_PROTOCOL, primaryMarker } from "./clarify-anchors";
+import { DEFAULT_CLARIFY_PROTOCOL } from "./clarify-anchors";
+import {
+  resolveClarifyPromptMarkers,
+  type ClarifyPromptMarkers,
+} from "./clarify-prompt-markers";
 import type { AutoJobConfig } from "./job-schema";
 import type { AutoJobState } from "./job-state";
 import { readActiveJobContext } from "./config-overlay";
@@ -45,35 +49,11 @@ export interface ClarifyAutoPlan {
   maxRounds: number;
 }
 
-/** Marker primaries used by the clarify PROMPTS (never by the precheck switch). */
-export interface ClarifyPromptMarkers {
-  /** Answer-field literal the agent is asked to write (`答：` by default). */
-  answerMarker: string;
-  /** Completion-marker heading the finalisation round asks for. */
-  completionMarker: string;
-}
-
-/**
- * 221 Phase 1: resolve the marker primaries shown to the agent.
- *
- * Precedence for the completion marker mirrors the frozen protocol:
- * job JSON `modelConfirm` → stage `completionMarker` → code defaults. This is
- * PROMPT-ONLY: it never enables the `agent_settled` precheck (that switch is
- * `completionMarker` alone, see `mergeCompletionMarkers`).
- */
-export function resolveClarifyPromptMarkers(config: PipelineConfig): ClarifyPromptMarkers {
-  const completionPrimary = primaryMarker(
-    config.clarifyProtocol?.modelConfirm
-      ?? config.stages.clarify?.verify?.completionMarker
-      ?? DEFAULT_COMPLETION_MARKERS,
-  );
-  return {
-    answerMarker: primaryMarker(
-      config.clarifyProtocol?.answerMarkers ?? DEFAULT_CLARIFY_PROTOCOL.answerMarkers,
-    ),
-    completionMarker: completionPrimary || DEFAULT_COMPLETION_MARKERS[0],
-  };
-}
+// 221 Phase 1: the resolver lives in `clarify-prompt-markers.ts` (dependency
+// leaf shared with `prompt-injector` / `verify-generator`); re-exported here so
+// existing call sites and tests keep a single import site.
+export { resolveClarifyPromptMarkers };
+export type { ClarifyPromptMarkers };
 
 /**
  * Build the self-answer instruction.

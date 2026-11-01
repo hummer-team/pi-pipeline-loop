@@ -1299,6 +1299,28 @@ describe("verify-generator", () => {
       expect(fileItems).toEqual([]);
     });
 
+    it("loadPluginDeliverables resolves the clarify marker placeholders (INV-4)", async () => {
+      resetPromptConfigCache();
+      const ymlContent = [
+        "stage_deliverable_clarify: |",
+        "  - **MUST** produce clarification questions and record answers",
+        "  - **MUST** write the `{completionMarker}` marker to the requirement document via write or edit tools upon full-und? confirmation",
+        "  - **MUST** include answer fields as `{answerMarker}<answer>`",
+      ].join("\n");
+      await writePluginYmlAndStack(ymlContent);
+
+      const items = await loadPluginDeliverables(TMP, "clarify", {
+        completionMarker: "## Custom Confirm",
+        answerMarker: "Confirm:",
+      });
+      const targets = items.map((item) => item.target).join("\n");
+      expect(targets).toContain("## Custom Confirm");
+      expect(targets).toContain("Confirm:");
+      // No literal placeholder may leak into the generated verify rules.
+      expect(targets).not.toContain("{completionMarker}");
+      expect(targets).not.toContain("{answerMarker}");
+    });
+
     it("loadPluginDeliverables falls back to keyword when tech stack detection fails", async () => {
       resetPromptConfigCache();
       const ymlContent = [

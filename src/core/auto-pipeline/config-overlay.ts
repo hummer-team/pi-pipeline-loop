@@ -134,6 +134,17 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Public liveness probe for a lock holder.
+ *
+ * The `session_start` seam only needs to WORD its hint differently for a live
+ * holder (continue there) and a dead one (manual `/pipeline-auto --next`); the
+ * reclaim decision itself stays inside {@link acquireJobLock}.
+ */
+export function isProcessAlive(pid: number): boolean {
+  return pidAlive(pid);
+}
+
 function isStageName(value: string): value is PipelineStage {
   return typeof value === "string" && value.length > 0;
 }

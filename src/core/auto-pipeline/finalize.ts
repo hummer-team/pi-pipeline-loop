@@ -287,8 +287,10 @@ export async function finalizeJob(
  * - `new_session`: the ctx carries the command-only replacement API (the
  *   `--next` command path and test hosts);
  * - `dispatch`: the hook ctx has no replacement API, so the internal
- *   `/pipeline-auto --next …` command is dispatched and performs the rotation
- *   itself (`ExtensionAPI.sendUserMessage`, plan §6.1).
+ *   `/pipeline-auto --next` command is dispatched and performs the rotation
+ *   itself (`ExtensionAPI.sendUserMessage`, plan §6.1). The dispatched string
+ *   carries NO job id and NO token (221 Phase 4) — both travel via `lock.json`.
+ * - `none`: the ctx supports neither; no hop is attempted.
  */
 export interface ChainRotationResult {
   rotated: boolean;
@@ -337,17 +339,24 @@ export async function rotateSessionForChain(
 
   // 221 Phase 4: record the outstanding hop BEFORE any rotation. The new
   // session starts the pending doc on `session_start`; nothing is injected into
-  // it, so the sidecar is the ONLY hand-over channel.
-  const persistPending = async (channel: "dispatch" | "session_start"): Promise<void> => {
-    if (!opts.state || !opts.projectRoot) return;
+  // it, so the sidecar is the ONLY hand-over channel. A failed write therefore
+  // FORBIDS the rotation (see the caller below): rotating without the record
+  // strands the job `running` with no owner.
+  const persistPending = async (channel: "dispatch" | "session_start"): Promise<boolean> => {
+    if (!opts.state || !opts.projectRoot) return true;
     markPendingContinuation(opts.state, channel, Date.now());
     try {
       await writeJobState(opts.projectRoot, opts.state);
+      return true;
     } catch (err) {
+      // Undo the in-memory mark so a later write cannot publish a record whose
+      // hop never happened.
+      clearPendingContinuation(opts.state);
       auditAutoDiagnostic("chain_dispatch_persist_failed", `Auto job "${jobId}": continuation record could not be written.`, {
         jobId,
         error: String(err),
       }, "error");
+      return false;
     }
   };
   const clearPending = async (): Promise<void> => {
@@ -365,7 +374,21 @@ export async function rotateSessionForChain(
     );
   };
 
-  await persistPending(canRotate ? "session_start" : "dispatch");
+  const persisted = await persistPending(canRotate ? "session_start" : "dispatch");
+  if (!persisted) {
+    // No hand-over channel → do NOT rotate; the caller falls back to the
+    // documented same-session serial (audit keeps `chain_dispatch_persist_failed`).
+    notifyAuto(
+      ctx,
+      `Auto job "${jobId}": the continuation record could not be written — continuing in this session.`,
+      "warning",
+    );
+    return {
+      rotated: false,
+      channel: canRotate ? "new_session" : canDispatch ? "dispatch" : "none",
+      reason: "failed",
+    };
+  }
 
   // ① Command-capable host: rotate directly. `withSession` runs in the NEW
   // session — it only writes the audit; the fresh `session_start` starts the

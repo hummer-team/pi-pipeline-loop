@@ -10,6 +10,7 @@
  * - `session_fail` is written ONLY when the same-session serial also fails.
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { makeTestMeta } from "../helpers";
 import { createAutoHarness, createSessionStub, HARNESS_JOB_ID, HARNESS_DOCS } from "./auto-harness";
 import {
@@ -71,6 +72,48 @@ describe("chain — success path", () => {
     expect(harness.state()!.pendingContinuation?.channel).toBe("session_start");
     // The next doc does NOT start in this session (the new session owns it).
     expect(harness.state()!.docs[1]?.status).toBe("pending");
+  });
+
+  it("a FAILED pending persist does NOT rotate (same-session serial instead)", async () => {
+    await harness.install();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    let calls = 0;
+    stub.setNewSession(async ({ withSession }) => {
+      calls += 1;
+      await withSession({ sendUserMessage: () => undefined });
+    });
+
+    // Fail exactly ONE sidecar rename: the pending-record write. Everything
+    // afterwards (the same-session start) must work again.
+    const originalRename = fs.promises.rename;
+    let failures = 1;
+    (fs.promises as unknown as { rename: typeof originalRename }).rename = async (...args) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("disk full");
+      }
+      return originalRename.apply(fs.promises, args as Parameters<typeof originalRename>);
+    };
+    let result: Awaited<ReturnType<typeof continueJobAfterCompleted>>;
+    try {
+      result = await continueJobAfterCompleted(
+        { ...stub, ...stub.withNewSession() },
+        harness.config,
+        harness.job,
+      );
+    } finally {
+      (fs.promises as unknown as { rename: typeof originalRename }).rename = originalRename;
+    }
+
+    // No hand-over record ⇒ the new session would never find the job: the
+    // rotation must not happen, and the documented same-session serial takes over.
+    expect(calls).toBe(0);
+    expect(result!.skipped).toBe(false);
+    const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(state.pendingContinuation).toBeUndefined();
+    expect(state.docIndex).toBe(1);
+    expect(state.docs[1]?.status).toBe("running");
   });
 
   it("chain.newSession:false starts the next doc in the same session", async () => {

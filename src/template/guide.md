@@ -1943,7 +1943,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | 用法 | 面向 | 说明 |
 |---|---|---|
 | `/pipeline-auto` | 用户 | 打开 job 菜单（≤5 行，`{文件名}（{已完成}/{总数} 已完成）`；running 追加 `续跑 {i}/{N}`；hash 漂移追加 `（job 已变更）`；存在非 `*_loop.yaml` 时标题追加忽略数量） |
-| `/pipeline-auto --job <jobId>` | 用户/内部 | 直接启动（或续跑）指定 job；jobId 即 `<name>_loop.yaml` 的完整 stem，**不需要 token** |
+| `/pipeline-auto --job <jobId>` | 用户/内部 | 直接启动（或续跑）指定 job；jobId 即 `<name>_loop.yaml` 的完整 stem，**不需要 token**；job 文件必须存在（首次启动无需先跑过一次，sidecar 会自动创建） |
 | `/pipeline-auto --next` | 内部（链式续跑） | 一条极简命令：jobId 与锁 token 只在 `.pi/auto_pipeline/lock.json` 内流转，新 session 由 `session_start` 自动启动下一份文档 |
 
 - 菜单拒绝的情形：无 `docs/jobs/*_loop.yaml`（提示创建 + 模板位置 + 被忽略的 `*.yaml` 清单）、宿主无 `ui.select`、sidecar 损坏/`schemaVersion` 不识别（要求人工清理）、另一个 job 正持有进程级锁。

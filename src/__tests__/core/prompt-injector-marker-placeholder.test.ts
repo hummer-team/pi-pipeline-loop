@@ -107,6 +107,30 @@ describe("clarify marker placeholders (yml path)", () => {
   });
 });
 
+describe("clarify marker placeholders (deliverables segment)", () => {
+  it("uses the default primaries when no job config is installed", async () => {
+    deployYml();
+    const prompt = await invokeInjector(makeTestConfig({ projectRoot: TMP }), clarifyMeta());
+    expect(prompt).toContain("# STAGE DELIVERABLES (PLUGIN)");
+    expect(prompt).toContain("`## 模型确认` marker");
+    expect(prompt).toContain("`答：<answer>`");
+    expect(prompt).not.toContain("{completionMarker}");
+    expect(prompt).not.toContain("{answerMarker}");
+  });
+
+  it("uses the configured primaries in the deliverables segment too (INV-4)", async () => {
+    deployYml();
+    const prompt = await invokeInjector(customMarkerConfig(), clarifyMeta());
+    expect(prompt).toContain("# STAGE DELIVERABLES (PLUGIN)");
+    expect(prompt).toContain("`## Custom Confirm` marker");
+    expect(prompt).toContain("`Confirm:<answer>`");
+    // The executor and the deliverable segment must ask for the SAME marker.
+    expect(prompt.match(/`## Custom Confirm` marker/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(prompt).not.toContain("{completionMarker}");
+    expect(prompt).not.toContain("{answerMarker}");
+  });
+});
+
 describe("clarify marker placeholders (fallback path)", () => {
   it("uses the default primary without a yml template", async () => {
     // No .pi/references/pipeline-stage-prompt.yml → hardcoded executor text.

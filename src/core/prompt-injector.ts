@@ -27,7 +27,10 @@ import path from "node:path";
 import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX, DEFAULT_COMPLETION_MARKERS } from "../constants";
-import { DEFAULT_CLARIFY_PROTOCOL, primaryMarker } from "./auto-pipeline/clarify-anchors";
+import {
+  resolveClarifyPromptMarkers,
+  substituteClarifyMarkerPlaceholders,
+} from "./auto-pipeline/clarify-prompt-markers";
 import { planDocRelPathFromRequirementDoc } from "./naming/doc-naming";
 import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot, setAuditPipelineContext } from "../utils/auditLog";
@@ -1509,15 +1512,8 @@ async function buildStageExecutor(
   // 221 Phase 1: the marker primaries are config-driven (job JSON → stage
   // `completionMarker` → defaults). PROMPT-ONLY: the precheck switch is the
   // stage `completionMarker` alone (see `mergeCompletionMarkers`).
-  const completionPrimary =
-    primaryMarker(
-      config.clarifyProtocol?.modelConfirm
-        ?? config.stages.clarify?.verify?.completionMarker
-        ?? DEFAULT_COMPLETION_MARKERS,
-    ) || DEFAULT_COMPLETION_MARKERS[0];
-  const answerPrimary =
-    primaryMarker(config.clarifyProtocol?.answerMarkers ?? DEFAULT_CLARIFY_PROTOCOL.answerMarkers) ||
-    DEFAULT_CLARIFY_PROTOCOL.answerMarkers[0]!;
+  const { completionMarker: completionPrimary, answerMarker: answerPrimary } =
+    resolveClarifyPromptMarkers(config);
 
   if (ymlTemplate && ymlTemplate.trim()) {
     // Fill placeholders from yml template
@@ -1615,8 +1611,17 @@ async function buildStageDeliverables(
   }
 
   // 168 Phase 3: substitute {pipelineId} so the model sees real pipelineId
+  // 221 Phase 1 (INV-4): the clarify deliverables carry {completionMarker} /
+  // {answerMarker}; resolve them with the SAME config the executor segment
+  // uses so one clarify turn never asks for two different marks.
   const pipelineId = meta.pipelineId ?? "";
-  const rendered = hasYmlValue ? value.trim().replaceAll("{pipelineId}", pipelineId) : "";
+  const markers = resolveClarifyPromptMarkers(config);
+  const rendered = hasYmlValue
+    ? substituteClarifyMarkerPlaceholders(
+        value.trim().replaceAll("{pipelineId}", pipelineId),
+        markers,
+      )
+    : "";
 
   // Phase 3 (182) Task 3: append commit doc naming constraint for develop/fix
   // stages so the model sees the rule at the point of writing commit docs.

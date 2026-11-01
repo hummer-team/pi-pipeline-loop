@@ -142,10 +142,30 @@ describe("pipeline-auto — --job only accepts a jobId", () => {
     expect(result.error).toContain("invalid job id");
   });
 
-  it("a missing sidecar reports the job is unknown", async () => {
+  it("a missing job file reports the naming rule", async () => {
     const result = await runPipelineAuto(config(), { next: true, job: "alpha_loop" }, ctxStub());
     expect(result.success).toBe(false);
-    expect(result.error).toContain("state not found");
+    expect(result.error).toContain("not found");
+    expect(result.error).toContain("_loop.yaml");
+  });
+
+  it("a non-*_loop.yaml job id is rejected even when the file exists", async () => {
+    writeJobFile("alpha"); // docs/jobs/alpha.yaml — Phase 3 ignores it
+    const result = await runPipelineAuto(config(), { next: true, job: "alpha" }, ctxStub());
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("_loop.yaml");
+  });
+
+  it("first start: a job file WITHOUT a sidecar is accepted (no token, no prior run)", async () => {
+    writeJobFile("alpha_loop");
+    const result = await runPipelineAuto(config(), { job: "alpha_loop" }, ctxStub());
+    // The doc file is absent, so the start fails at the evidence gate — proving
+    // the request reached the runner instead of being refused for a sidecar.
+    expect(result.success).toBe(false);
+    expect(readJobState(ROOT, "alpha_loop")?.docs[0]?.failReason).toContain(
+      "start_stage_evidence_missing:requirement",
+    );
+    expect(audits).toContain("pipeline_auto_start_stage_rejected");
   });
 });
 

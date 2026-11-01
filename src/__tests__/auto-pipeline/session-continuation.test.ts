@@ -132,7 +132,7 @@ describe("session_start continuation", () => {
     expect(readJobState(harness.root, HARNESS_JOB_ID)!.docIndex).toBe(1);
   });
 
-  it("does not start when the lock belongs to another process", async () => {
+  it("does not start when the lock belongs to another process, and explains why", async () => {
     await installPending();
     harness.writeDoc(HARNESS_DOCS[1]!);
     writeLock(process.pid + 1);
@@ -140,6 +140,8 @@ describe("session_start continuation", () => {
 
     expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
     expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+    expect(notified.some((message) => message.includes("held by pid"))).toBe(true);
+    expect(audits.some((line) => line.includes("pending_lock_foreign"))).toBe(true);
   });
 
   it("does not reclaim a DEAD holder's lock (manual /pipeline-auto --next does)", async () => {
@@ -150,6 +152,18 @@ describe("session_start continuation", () => {
 
     expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
     expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+    expect(notified.some((message) => message.includes("/pipeline-auto --next"))).toBe(true);
+  });
+
+  it("throttles the foreign-lock hint to one notice per job", async () => {
+    await installPending();
+    harness.writeDoc(HARNESS_DOCS[1]!);
+    writeLock(process.pid + 1);
+    const { ctx } = sessionCtx();
+
+    await resumePendingContinuationOnSessionStart(ctx as never, harness.config);
+    await resumePendingContinuationOnSessionStart(ctx as never, harness.config);
+    expect(notified.filter((message) => message.includes("held by pid"))).toHaveLength(1);
   });
 
   it("never preempts an active pipeline in this session", async () => {
@@ -213,6 +227,30 @@ describe("session_start continuation", () => {
     expect(audits.some((line) => line.includes("pending_start_retryable"))).toBe(true);
     expect(notified.some((message) => message.includes("/pipeline-auto --next to retry"))).toBe(true);
     expect(isAutoJobActive()).toBe(false);
+  });
+
+  it("a lock already held by THIS process does not turn a pre-lock failure into session_fail", async () => {
+    const state = await installPending();
+    // Reproduce production: the previous session in the same process still owns
+    // the module-level lock (finalizeCurrentDoc never releases it). The B3 phase
+    // must come from `startAutoJob`, not from `isAutoJobActive()`.
+    expect(acquireJobLock({ projectRoot: harness.root, jobId: HARNESS_JOB_ID }).ok).toBe(true);
+    expect(isAutoJobActive()).toBe(true);
+
+    const invalid = "version: 1\nenabled: true\ndocs:\n  list: []\n";
+    fs.writeFileSync(path.join(harness.root, "docs", "jobs", `${HARNESS_JOB_ID}.yaml`), invalid, "utf8");
+    state.jobHash = hashJobBytes(invalid);
+    await writeJobState(harness.root, state);
+    const { ctx } = sessionCtx();
+
+    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(true);
+
+    const after = readJobState(harness.root, HARNESS_JOB_ID)!;
+    expect(after.status).toBe("running");
+    expect(after.stopReason).toBeUndefined();
+    expect(after.pendingContinuation).toBeDefined();
+    expect(audits.some((line) => line.includes("pending_start_retryable"))).toBe(true);
+    expect(audits.some((line) => line.includes("session_fail"))).toBe(false);
   });
 
   it("failure AFTER the lock runs the terminal transaction (session_fail)", async () => {

@@ -88,13 +88,16 @@ export interface ClarifyDocState {
 /**
  * Build the `VerifyContractAnchors` handed to `deriveClarifyForwardArgs`.
  *
- * The EFFECTIVE round set (including the `轮` compatibility alias) always wins,
- * so the forward-arg round derivation and `parseClarifyQuestionCount` agree.
+ * Precedence: an anchor the job JSON declares explicitly → deployed verify.md →
+ * code defaults (INV-4). The EFFECTIVE round set (including the `轮`
+ * compatibility alias) always wins, so the forward-arg round derivation and
+ * `parseClarifyQuestionCount` agree.
  * Before overriding, the joined regex is compiled once: a half-valid set would
  * make `compileRoundHeading` fail and silently return `fresh`.
  */
 function buildForwardAnchors(
   anchors: ResolvedClarifyAnchors,
+  config: PipelineConfig,
   verify?: VerifyContractAnchors,
 ): VerifyContractAnchors {
   const roundSources = anchors.roundPatterns.map((pattern) => pattern.source);
@@ -109,19 +112,37 @@ function buildForwardAnchors(
   if (!roundHeading) {
     roundHeading = { patterns: [...DEFAULT_CLARIFY_PROTOCOL.roundPatterns], mode: "or" };
   }
+
+  // 221 Phase 1 (INV-4): an anchor the JOB declares explicitly (or the stage
+  // `completionMarker` that carries the job aliases) must win over the deployed
+  // verify.md, otherwise the hints and the forward-arg derivation disagree in
+  // a custom-primary project. Deployed verify.md stays authoritative when the
+  // job declares nothing.
+  const job = config.clarifyProtocol;
+  const stageCompletionMarker = config.stages.clarify?.verify?.completionMarker;
+  const jobDeclaresAnswer =
+    (job?.answerPatterns?.length ?? 0) > 0 || (job?.answerMarkers?.length ?? 0) > 0;
+  const jobDeclaresConfirm =
+    (job?.modelConfirm?.length ?? 0) > 0 || stageCompletionMarker !== undefined;
+
+  const answerField: VerifyContractPatternSet = jobDeclaresAnswer
+    ? { patterns: anchors.answerPatterns.map((pattern) => pattern.source), mode: "or" }
+    : verify?.answerField ?? {
+        patterns: anchors.answerPatterns.map((pattern) => pattern.source),
+        mode: "or",
+      };
+  const modelConfirm: VerifyContractPatternSet = jobDeclaresConfirm
+    ? { patterns: anchors.modelConfirm.map((marker) => `^\\s*${escapeRegExp(marker)}`), mode: "or" }
+    : verify?.modelConfirm ?? {
+        patterns: anchors.modelConfirm.map((marker) => `^\\s*${escapeRegExp(marker)}`),
+        mode: "or",
+      };
+
   return {
     ...(verify?.verdict ? { verdict: verify.verdict } : {}),
     roundHeading,
-    // Only supply a literal fallback when the deployed verify.md declares no
-    // anchor at all — the verify.md patterns stay authoritative otherwise.
-    answerField: verify?.answerField ?? {
-      patterns: anchors.answerPatterns.map((pattern) => pattern.source),
-      mode: "or",
-    },
-    modelConfirm: verify?.modelConfirm ?? {
-      patterns: anchors.modelConfirm.map((marker) => `^\\s*${escapeRegExp(marker)}`),
-      mode: "or",
-    },
+    answerField,
+    modelConfirm,
   };
 }
 
@@ -163,7 +184,7 @@ export async function buildClarifyDocState(input: {
     autoActive: true,
     requirementDoc: doc,
     docText,
-    anchors: buildForwardAnchors(anchors, verifyAnchors),
+    anchors: buildForwardAnchors(anchors, config, verifyAnchors),
     usedRounds: progress.clarifyRounds ?? 0,
     maxRounds: job.clarify.maxRounds,
     stalls: progress.clarifyStalls ?? 0,

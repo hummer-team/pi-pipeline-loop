@@ -55,6 +55,24 @@ describe("resolveClarifyAnchors precedence", () => {
     expect(anchors.answerPatterns[0]!.source).toBe("Answer\\s*:");
   });
 
+  it("job answer PATTERNS win over verify.md", () => {
+    const anchors = resolveClarifyAnchors({
+      job: { answerPatterns: ["^\\s*Reply\\s*:"] },
+      verify: { answerField: { patterns: ["Answer\\s*:"], mode: "or" } },
+    });
+    expect(anchors.answerPatterns.map((p) => p.source)).toEqual(["^\\s*Reply\\s*:"]);
+  });
+
+  it("verify.md wins over job MARKERS (plan Phase 0 order: patterns → verify → markers)", () => {
+    const anchors = resolveClarifyAnchors({
+      job: { answerMarkers: ["Reply:"] },
+      verify: { answerField: { patterns: ["Answer\\s*:"], mode: "or" } },
+    });
+    expect(anchors.answerPatterns.map((p) => p.source)).toEqual(["Answer\\s*:"]);
+    // The PROMPT primary still follows the job marker.
+    expect(anchors.answerPrimary).toBe("Reply:");
+  });
+
   it("falls back to the bilingual defaults with no configuration at all", () => {
     const anchors = resolveClarifyAnchors({});
     expect(anchors.assessmentHeading).toEqual(DEFAULT_CLARIFY_PROTOCOL.assessmentHeading);
