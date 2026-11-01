@@ -108,7 +108,7 @@ bun add @earendil-works/pi-pipeline
   "stages": {
     "clarify":    { "agentPath": ".pi/agents/feat-design-plan-agent.md",
                     "skillPath": "design/SKILL.md", "nextStage": "plan",
-                    "verify": { "require": true, "completionMarker": "## 模型确认" } },
+                    "verify": { "require": true, "completionMarker": ["## 模型确认", "## Model Confirmation"] } },
     "plan":       { "agentPath": ".pi/agents/feat-design-plan-agent.md",
                     "skillPath": "plan/SKILL.md", "nextStage": "develop",
                     "verify": { "require": true } },
@@ -136,7 +136,7 @@ bun add @earendil-works/pi-pipeline
 - `stages.{stage}.require`：设为 `false` 则该阶段使用默认空配置（相当于从流水线中移除）
 - `stages.{stage}.nextStage`：下一阶段名称，`null` 为终端
 - `stages.{stage}.verify.require`：是否启用 hook 自动验证（agent_settled 后执行）
-- `stages.{stage}.verify.completionMarker`：交互式阶段完成标记文本。配置后 agent_settled 在 hook 验证前预检该标记是否已落盘到需求文档；未落盘则跳过验证、不推进、不计 verifyAttempts（防冻结）
+- `stages.{stage}.verify.completionMarker`：交互式阶段完成标记（**字符串或别名数组**）。配置后 agent_settled 在 hook 验证前预检其中一个标记是否已落盘到需求文档；未落盘则跳过验证、不推进、不计 verifyAttempts（防冻结）。数组首项是注入提示用的 **primary**；**空数组等价于未配置**（不预检），job 配置的 `modelConfirm` 别名只追加接受别名/primary，**不会**单独开启预检
 - `stages.{stage}.verify.selfVerifySkip`：当模型已在本 stage 工具调用中成功执行过相同 requiredCommand 时跳过重执行（仅 audit），write/edit 文件变更后失效；默认 false（develop/fix 建议开启）
 - `llmExtract`：是否启用 LLM 辅助提取交付项（推荐 true，结合技术栈检测生成项目相关命令）
 - `maxLoops`：单阶段最大测试失败重试次数（默认 3）
@@ -193,7 +193,7 @@ bun add @earendil-works/pi-pipeline
       "verify": {
         "require": true,               // 启用 hook 自动验证
         "verifyFile": "verify.md",     // 验证文件名（默认 verify.md）
-        "completionMarker": "## 模型确认"  // 交互完成标记（未落盘则跳过验证）
+        "completionMarker": ["## 模型确认", "## Model Confirmation"]  // 完成标记（字符串或别名数组；空数组=不预检）
         // mode 默认 "hook"（agent_settled 触发）
       }
     },
@@ -1467,23 +1467,24 @@ clarify → plan → develop → review ⇄ fix → review (loop) → completed 
 "clarify": {
   "verify": {
     "require": true,
-    "completionMarker": "## 模型确认"
+    "completionMarker": ["## 模型确认", "## Model Confirmation"]
   }
 }
 ```
 
 **工作机制**：
 
-1. Agent settled 触发时，若配置了 `completionMarker`，先预检需求文档（`meta.requirementDoc`）是否包含该标记文本
+1. Agent settled 触发时，若配置了 `completionMarker`，先预检需求文档（`meta.requirementDoc`）是否包含**任一**标记（字符串=单标记；数组=别名，首项为注入用的 primary）
 2. **标记已落盘** → 正常执行验证流程
 3. **标记未落盘** → 跳过验证、不推进阶段、**不计 verifyAttempts**（防止冻结循环）
 4. 审计记录 `verify_completion_marker_pending` 事件
 
 **设计原则**：
 
-- 纯配置驱动，不依赖 verify.md 规则
+- 纯配置驱动，不依赖 verify.md 规则（verify.md 的 `runtime: modelConfirm` 仍用于规则求值；`completionMarker` 是 precheck 的权威来源）
 - `requirementDoc` 未设置或文件读取失败 → 视为未落盘（返回 false）
-- 未配置 `completionMarker` 的 stage 行为完全不变（向后兼容）
+- 未配置 `completionMarker`（或配置为空数组）的 stage 行为完全不变（向后兼容）
+- 可选 `.pi/pipeline_loop_job.json` 可声明中英双语协议锚点；其 `modelConfirm.markers` 只在 precheck 已启用时追加接受别名，**不会**开启 precheck
 
 ---
 
@@ -1941,8 +1942,9 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 | 用法 | 面向 | 说明 |
 |---|---|---|
-| `/pipeline-auto` | 用户 | 打开 job 菜单（≤5 行，`{文件名}（{已完成}/{总数} 已完成）`；running 追加 `续跑 {i}/{N}`；hash 漂移追加 `（job 已变更）`） |
-| `/pipeline-auto --next --job <jobId> --token <uuid>` | 内部（链式续跑） | 续跑当前 job 的下一份文档；不接受文件路径 |
+| `/pipeline-auto` | 用户 | 打开 job 菜单（≤5 行，`{文件名}（{已完成}/{总数} 已完成）`；running 追加 `续跑 {i}/{N}`；hash 漂移追加 `（job 已变更）`；存在非 `*_loop.yaml` 时标题追加忽略数量） |
+| `/pipeline-auto --job <jobId>` | 用户/内部 | 直接启动（或续跑）指定 job；jobId 即 `<name>_loop.yaml` 的完整 stem，**不需要 token** |
+| `/pipeline-auto --next` | 内部（链式续跑） | 一条极简命令：jobId 与锁 token 只在 `.pi/auto_pipeline/lock.json` 内流转，新 session 由 `session_start` 自动启动下一份文档 |
 
 - 菜单拒绝的情形：无 `docs/jobs/*_loop.yaml`（提示创建 + 模板位置 + 被忽略的 `*.yaml` 清单）、宿主无 `ui.select`、sidecar 损坏/`schemaVersion` 不识别（要求人工清理）、另一个 job 正持有进程级锁。
 - `jobHash` 漂移三选一：`按新 job 续跑`（按 doc 路径重新对齐进度）/ `重新开始`（进度重置）/ `取消`。
@@ -1984,7 +1986,8 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - `releaseSessionResources`（`/pipeline-quit` 与自动任务共用）：使 design-review 授权与执行器绑定失效、清 `sessionAllowed*`/`verify*`/`stageExitRefusal`/`pendingOwnerApprovals`/`blockedReason`、清状态栏；不写 `flowState` / `terminateReason`。
 - 文档收尾 `finalizeCurrentDoc`：sidecar（含幂等凭据 `finalizeKey`）→ release → 审计 `pipeline_auto_cleanup` → notify。**不**回滚 overlay、**不**释放锁。
 - job 收尾 `finalizeJob`：sidecar 终态 → release → `pipeline_auto_cleanup` + `pipeline_auto_stop` → **回滚 overlay** → **释放锁** → 汇总。
-- 成功链：完成一份后仍有待跑文档 → `chain.newSession` 为真则起新 session（`/pipeline-auto --next --job … --token …`），被取消/抛错则**同 session 串行**，再失败才 `session_fail`；无待跑文档 → `job_completed`。
+- 成功链：完成一份后仍有待跑文档 → `chain.newSession` 为真则起新 session（只派发一条 `/pipeline-auto --next`，**无 job/token 参数**；新 session 的 `session_start` 通过 sidecar 的 pending 记录自动启动下一份），被取消/抛错则**同 session 串行**，再失败才 `session_fail`；无待跑文档 → `job_completed`。
+- 冷启动（锁 pid 已死且残留 pending）**不会**被 `session_start` 自动回收：只提示人工执行 `/pipeline-auto --next`；`session_start` 只认「锁属于本进程」的 pending。
 - 失败链（三段降级）：① 文档收尾 → ② 硬停直接 `finalizeJob` → ③ `onFailure:stop` 终止 → ④ `onFailure:continue` 起下一份（新 session → 同 session → `session_fail`）。
 - 幂等：进程内键集 + sidecar `finalizeKey` 两层，连续多次 settle 只收尾一次，且与 `docIndex` 无关。
 
@@ -2049,3 +2052,61 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 无判定（`none`）时不注入该 section，人机模式提示词与改动前逐字一致。
 
 **崩溃后重开（身份认领）**：提示词注入受 dormant 零注入守卫约束（无 `meta` / 无 `pipelineId` 时插件完全不注入），因此 `session_start` 在「本 session 无 `pipelineId` 与 `currentStage`，且 sidecar 恰好一个 `running` job」时，用该 job **当前文档**的 `pipelineId` / `doc` / `lastStage` 认领身份：写入 `meta`（`lastStage → currentStage`，`completed` 不认领）并置 `continuity: "resume"`，审计 `pipeline_auto_meta_seeded`（`reason=crash_adoption`）。这是认领而非新建——不生成新 `pipelineId`、不写 `stageStartTime`、不注册 session；本进程正在跑该 job（`/pipeline-auto` runner）或锁被存活的他进程持有时不认领。
+
+### 19.12 人机完成退出（221）
+
+- 人机流水线进入 `completed` 时，插件**自动执行一次**共享 `releaseSessionResources`（与 `/pipeline-quit`、自动任务收尾同一实现）：失效 design-review 授权与执行器绑定、清 `sessionAllowed*` / `verify*` / `stageExitRefusal` / `pendingOwnerApprovals` / `blockedReason`、清状态栏，并写入一次性标记 `meta.terminalCleanupAt`。
+- TUI 提示：`Pipeline completed. Run /pipeline-start <doc> to start a new round.`；审计 `pipeline_human_cleanup`。
+- `completed` 仍是终态（`/pipeline-status` 显示 `completed`），不写 `aborted` / `terminateReason`；重复 settle / tool advance 不会重复清理。
+- 自动任务的文档完成**不走**该路径（`finalizeCurrentDoc` 拥有它的收尾）。
+
+### 19.13 clarify 协议锚点配置（`.pi/pipeline_loop_job.json`，221）
+
+可选文件，用于让英文/自定义格式的需求文档端到端推进。缺失时行为与旧版逐字一致。解析顺序固定为：**job JSON → 已部署的 `verify.md` 运行时锚点 → 内置中英默认值**；解析器与注入文案使用同一份结果。
+
+```json
+{
+  "version": 1,
+  "clarify": {
+    "assessment": { "heading": ["## 需求评估", "## Requirement Assessment"] },
+    "sections": {
+      "goal": ["## 目标", "## Goal"],
+      "scope": ["## 范围", "## Scope"],
+      "acceptance": ["## 验收标准", "## Acceptance Criteria"]
+    },
+    "ledger": {
+      "heading": ["## 组合决策台账", "## Decision Ledger"],
+      "eliminationMarkers": ["淘汰理由", "elimination reason"],
+      "conflictMarkers": ["冲突矩阵", "conflict matrix"]
+    },
+    "questions": { "patterns": ["^##\\s*问题\\s+(\\d+)", "^##\\s*Question\\s+(\\d+)"] },
+    "rounds": { "patterns": ["^#{1,2}\\s*第\\s*(\\d+)\\s*轮", "^#{1,2}\\s*Round\\s+(\\d+)"] },
+    "answers": {
+      "markers": ["答：", "Answer:"],
+      "patterns": ["^\\s*答\\s*[:：]", "^\\s*Answer\\s*:"]
+    },
+    "verdicts": { "ready": ["ready", "已明确"], "needsClarify": ["needs-clarify", "需澄清"] },
+    "modelConfirm": { "markers": ["## 模型确认", "## Model Confirmation"] }
+  }
+}
+```
+
+语义：
+
+- **字面量键**（`heading` / `*Markers` / `verdicts` / `modelConfirm`）：按行/子串匹配；数组首项是注入提示使用的 **primary**。
+- **pattern 键**（`questions.patterns` / `rounds.patterns` / `answers.patterns`）：正则源码（`gm` 编译）；非法 pattern 整组丢弃并 warn，回落到下一来源。
+- `rounds.patterns` 会追加一条兼容 pattern `^#+\s+.*轮`（覆盖 h3 / 无“澄清” / 中文数字的既有文档），只参与匹配、不做 primary。
+- 未知键、`version !== 1`、非法值只 warn，不阻断（fail-open）。
+- `modelConfirm.markers` **不会**单独开启 completionMarker 预检；预检开关只看 `stages.clarify.verify.completionMarker`（缺省/空数组 = 不预检）。
+- `verify.md` 的 `runtime: modelConfirm` 仍用于**规则求值**；`completionMarker` 是 precheck 的权威来源（两者不要互相合并正则）。
+- design-review 报告锚点（`## Issues` / `## 问题`）本期**不在**配置范围（第 4 轮已降级为非目标）。
+
+**既有安装升级（英文文档）**：`/pipeline-init` 选择 skip 不会改已存在的 `pipeline_loop.json`；如需英文 marker 通过 precheck，请手工把 `.pi/pipeline_loop.json` 的 `stages.clarify.verify.completionMarker` 改为数组，例如：
+
+```jsonc
+"completionMarker": ["## 模型确认", "## Model Confirmation"]
+```
+
+未修改时仍按原中文字符串运行（行为不变）。
+
+**模板与命名**：`/pipeline-init` 安装 `.pi/pipeline_loop_job.json` 与 `.pi/auto_job_loop_template.yaml`（旧 `.pi/auto_job_example.yaml` 不会被删除）；任务文件必须命名为 `docs/jobs/<name>_loop.yaml`。
