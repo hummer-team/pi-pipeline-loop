@@ -24,7 +24,12 @@ import fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { PipelineConfig } from "../../types";
-import { resolveArchiveScope, collectArchiveTargets, isActivePipelineDoc } from "../../core/archive/scanner";
+import {
+  resolveArchiveScope,
+  collectArchiveTargets,
+  isActivePipelineDoc,
+  archiveScopeRoots,
+} from "../../core/archive/scanner";
 import {
   formatArchiveTimestamp,
   buildArchiveZipName,
@@ -90,6 +95,59 @@ describe("resolveArchiveScope (206 Phase 3)", () => {
     expect(scopes.map((s) => s.relDir)).toEqual([".pi/audit"]);
     expect(missingDirs).toEqual(["docs/missing"]);
   });
+
+  // ─── 222 review issue 5: nested scopes must not duplicate targets ─────────
+
+  it("prunes a scope already covered by a parent scope", async () => {
+    await fsp.mkdir(path.join(ROOT, "docs/review"), { recursive: true });
+    const config = makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs", "docs/review"],
+      auditDir: ".pi/audit",
+    });
+    const { scopes } = await resolveArchiveScope(config);
+    // docs/review is inside docs, so keeping both duplicated every target of
+    // the child scope (double totalBytes, double zip entry, second delete ENOENT).
+    expect(scopes.map((s) => s.relDir)).toEqual(["docs"]);
+  });
+
+  it("prunes regardless of the configured order", async () => {
+    await fsp.mkdir(path.join(ROOT, "docs/review"), { recursive: true });
+    const config = makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs/review", "docs"],
+      auditDir: ".pi/audit",
+    });
+    const { scopes } = await resolveArchiveScope(config);
+    expect(scopes.map((s) => s.relDir)).toEqual(["docs"]);
+  });
+
+  it("keeps sibling scopes that merely share a prefix", async () => {
+    await fsp.mkdir(path.join(ROOT, "docs/design"), { recursive: true });
+    await fsp.mkdir(path.join(ROOT, "docs/design-v2"), { recursive: true });
+    const config = makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs/design", "docs/design-v2"],
+      auditDir: ".pi/audit",
+    });
+    const { scopes } = await resolveArchiveScope(config);
+    // Prefix-only overlap is not containment — both must stay scanned.
+    expect(scopes.map((s) => s.relDir)).toEqual(["docs/design", "docs/design-v2"]);
+  });
+
+  // ─── 222 review issue 1: jobsDir is never a scan scope ───────────────────
+
+  it("never returns the resolved jobsDir as a scan scope", async () => {
+    await fsp.mkdir(path.join(ROOT, "docs/jobs"), { recursive: true });
+    const config = makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs/jobs", "docs"],
+      auditDir: ".pi/audit",
+      docsDirs: { designDir: "docs", reviewDir: "docs/review", jobsDir: "docs/jobs" },
+    });
+    const { scopes } = await resolveArchiveScope(config);
+    expect(scopes.map((s) => s.relDir)).toEqual(["docs"]);
+  });
 });
 
 describe("collectArchiveTargets (206 Phase 3)", () => {
@@ -146,6 +204,56 @@ describe("collectArchiveTargets (206 Phase 3)", () => {
     }
     const result = await collectArchiveTargets(defaultConfig(), 7, undefined, NOW);
     expect(result.targets).toHaveLength(1); // only the real file, not the link
+  });
+
+  // ─── 222 review issue 1: jobsDir is never collected ──────────────────────
+
+  /** Config with a NESTED jobs layout: designDir = "docs" contains jobsDir. */
+  function nestedJobsConfig(): PipelineConfig {
+    return makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs", "docs/review"],
+      auditDir: ".pi/audit",
+      docsDirs: { designDir: "docs", reviewDir: "docs/review", jobsDir: "docs/jobs" },
+    });
+  }
+
+  it("never collects job files when jobsDir nests under designDir", async () => {
+    await touch("docs/1_Plan.md", NOW - 20 * DAY);
+    await touch("docs/review/r.md", NOW - 20 * DAY);
+    await touch("docs/jobs/nightly_loop.yaml", NOW - 20 * DAY);
+    await touch("docs/jobs/nested/deep_loop.yaml", NOW - 20 * DAY);
+
+    const result = await collectArchiveTargets(nestedJobsConfig(), 7, undefined, NOW);
+    const relPaths = result.targets.map((t) => t.relPath).sort();
+    expect(relPaths).toEqual(["docs/1_Plan.md", "docs/review/r.md"]);
+    // The exclusion is reported, not silent.
+    expect(result.skippedJobs).toBe(2);
+    // Issue 5: the nested review scope was pruned → no duplicate target.
+    expect(relPaths).toHaveLength(new Set(relPaths).size);
+  });
+
+  it("does not count jobs files toward totalBytes", async () => {
+    await touch("docs/1_Plan.md", NOW - 20 * DAY, "abcd");     // 4 bytes
+    await touch("docs/jobs/nightly_loop.yaml", NOW - 20 * DAY, "0123456789"); // 10 bytes
+
+    const result = await collectArchiveTargets(nestedJobsConfig(), 7, undefined, NOW);
+    expect(result.totalBytes).toBe(4);
+  });
+
+  it("still collects docs siblings of an EXCLUDED jobsDir when jobsDir is elsewhere", async () => {
+    // Defaults: jobsDir = docs/jobs. A file in docs/ itself must still be
+    // collected when docs is the design directory (only the jobs subtree is out).
+    await touch("docs/other.md", NOW - 20 * DAY);
+    const config = makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs"],
+      auditDir: ".pi/audit",
+      docsDirs: { designDir: "docs", reviewDir: "docs/review", jobsDir: "docs/jobs" },
+    });
+    const result = await collectArchiveTargets(config, 7, undefined, NOW);
+    expect(result.targets.map((t) => t.relPath)).toEqual(["docs/other.md"]);
+    expect(result.skippedJobs).toBe(0);
   });
 });
 
@@ -393,5 +501,54 @@ describe("deleteArchiveTargets (206 Phase 3)", () => {
     expect(result.deleted).toBe(1);
     expect(result.errors).toHaveLength(1);
     expect(fsSync.existsSync(keep)).toBe(false);
+  });
+
+  // ─── 222 review issue 1: jobsDir is a hard delete boundary ───────────────
+
+  /** Config where docs/jobs nests inside the docs design directory. */
+  function nestedJobsConfig(): PipelineConfig {
+    return makeTestConfig({
+      projectRoot: ROOT,
+      archiveDirs: ["docs"],
+      auditDir: ".pi/audit",
+      docsDirs: { designDir: "docs", reviewDir: "docs/review", jobsDir: "docs/jobs" },
+    });
+  }
+
+  it("refuses to delete a target inside the resolved jobsDir", async () => {
+    const doc = await touch("docs/1_Plan.md", NOW - 20 * DAY);
+    const job = await touch("docs/jobs/nightly_loop.yaml", NOW - 20 * DAY);
+    const config = nestedJobsConfig();
+
+    // Even with a hand-built target list (i.e. bypassing the scanner), the
+    // delete step must not remove user-maintained job files.
+    const result = await deleteArchiveTargets(
+      config,
+      [{ absPath: doc }, { absPath: job }],
+      archiveScopeRoots(config),
+    );
+    expect(result.deleted).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("jobsDir");
+    expect(fsSync.existsSync(job)).toBe(true);
+    expect(fsSync.existsSync(doc)).toBe(false);
+  });
+
+  it("keeps the nested jobs directory when pruned around it", async () => {
+    const job = await touch("docs/jobs/nightly_loop.yaml", NOW - 20 * DAY);
+    const sibling = await touch("docs/review/r.md", NOW - 20 * DAY);
+    const config = nestedJobsConfig();
+
+    const result = await deleteArchiveTargets(
+      config,
+      [{ absPath: sibling }],
+      archiveScopeRoots(config),
+    );
+    expect(result.errors).toEqual([]);
+    // docs/review is pruned (it held only r.md), but the jobs subtree and the
+    // docs/ scope root survive.
+    expect(fsSync.existsSync(path.join(ROOT, "docs/review"))).toBe(false);
+    expect(fsSync.existsSync(job)).toBe(true);
+    expect(fsSync.existsSync(path.join(ROOT, "docs"))).toBe(true);
   });
 });

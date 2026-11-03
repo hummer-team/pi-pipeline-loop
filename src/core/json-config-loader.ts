@@ -40,6 +40,7 @@ import {
   buildStageTypeToolDefaults,
   deriveDocsDirs,
   normalizeDocsDir,
+  resolveStageDirOverride,
 } from "../docs-paths";
 import {
   CONFIG_DIR_NAME,
@@ -869,13 +870,19 @@ function parseCompactConfig(raw: unknown): { enabled?: boolean; tokenThreshold?:
  *   single warning from `deriveDocsDirs`. A value therefore warns exactly once
  *   on either path, never twice.
  *
- * Validation of `stageDirs` (unchanged):
+ * Validation of `stageDirs` (222 review issue 7):
  * - Non-object (including null / array / string) → warn + undefined.
  * - Each key must be a valid pipeline stage; unknown keys warn + are ignored.
- * - Each value must be a non-empty string; invalid values warn + are ignored.
- * - The derived-value validation (absolute / traversal `stageDirs` entries) is
- *   `deriveDocsDirs`' job — this parser keeps the raw string on purpose, so the
- *   single warning carries the derivation context.
+ * - EVERY valid stage key is validated with `normalizeDocsDir` (not just the
+ *   "is it a non-empty string" check), so a key that neither feeds the
+ *   derivation (`clarify` / `design-review`) nor the archive scope still
+ *   reports its absolute / traversal / root value instead of being dropped in
+ *   silence. The second validation inside `deriveDocsDirs` /
+ *   `resolveStageDocDir` is therefore pure defence in depth.
+ * - The boilerplate rule (value === `DEFAULT_STAGE_DOC_DIRS[stage]`) is NOT
+ *   applied here: it is a derivation concern, not a validation one, and a
+ *   boilerplate value is stored as-is so `docsStageDirs` keeps reporting what
+ *   the user actually pinned.
  * - No valid entries remain → undefined (treated as "not configured").
  */
 export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
@@ -899,8 +906,12 @@ export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
     if (parsed.value) {
       result[key] = parsed.value;
     } else {
+      // 222 review issue 4: this parser runs BEFORE `deriveDocsDirs`, so it
+      // cannot know the real fall-through value (it may be another explicit
+      // key or a directory derived from `docs.stageDirs`). Promise no specific
+      // target — the resolved layout decides, silently and correctly.
       console.warn(
-        `[pi-pipeline] docs.${key}: ${parsed.warning} — the built-in default applies`,
+        `[pi-pipeline] docs.${key}: ${parsed.warning} — ignored, the resolved default or derived directory applies`,
       );
     }
   }
@@ -920,13 +931,18 @@ export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
           );
           continue;
         }
-        if (typeof value !== "string" || value.trim().length === 0) {
+        // 222 review issue 7: EVERY valid stage key goes through the same
+        // validator, including `clarify` / `design-review` which feed neither
+        // the docs derivation nor the archive scope. Otherwise an absolute or
+        // traversal value there was silently inert.
+        const normalized = normalizeDocsDir(value);
+        if (normalized.value === undefined) {
           console.warn(
-            `[pi-pipeline] Invalid docs.stageDirs.${stage} "${String(value)}" — expected non-empty string, ignoring`,
+            `[pi-pipeline] docs.stageDirs.${stage}: ${normalized.warning} — ignoring`,
           );
           continue;
         }
-        parsed[stage as PipelineStage] = value;
+        parsed[stage as PipelineStage] = normalized.value;
       }
       if (Object.keys(parsed).length > 0) result.stageDirs = parsed;
     }
@@ -1238,18 +1254,41 @@ function normalizeWatchdogThresholds(watchdog: WatchdogConfig | undefined): Watc
 /**
  * 206 Phase 0: Derives the resolved archive scan directories.
  *
- * 222 Phase 3 priority chain (no extra conditions — see 222 review issue 2):
- * 1. `json.archive?.dirs` when non-empty (after parse-time cleanup).
- * 2. Deduped values of `json.docs?.stageDirs` (the doc-menu directories are a
- *    natural archive scope).
- * 3. `[designDir, reviewDir]` — the resolved 222 docs directories (deduped).
- *    This tier ALWAYS applies for a resolved layout, defaults included, so a
- *    fresh install scans exactly `["docs/design", "docs/review"]`.
- * 4. `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]) — only reachable when no resolved
- *    `dirs` are supplied at all (hand-constructed callers / defence in depth).
+ * 222 Phase 3 priority chain (see 222 review issue 2):
+ * 1. `json.archive?.dirs` when non-empty (after parse-time cleanup). An
+ *    EXPLICIT scan list is authoritative and is NOT widened.
+ * 2. Otherwise the UNION of
+ *    a. `[designDir, reviewDir]` — the resolved 222 docs directories, and
+ *    b. the validated, NON-BOILERPLATE `json.docs?.stageDirs` values.
+ *    Deduped; the resolved directories come first.
+ * 3. `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]) — only reachable when neither a
+ *    resolved layout nor any `stageDirs` value is available (hand-constructed
+ *    callers / defence in depth).
  *
- * `jobsDir` is never archived: tier 3 never contains it, and tier 4 (the broad
- * `["docs"]` scan) is not reachable from `resolvePipelineConfig`.
+ * 222 review issue 2 — two rules hold tier 2 together:
+ * - SAME BOILERPLATE PREDICATE as the derivation and doc-menu layers: a
+ *   `stageDirs` value equal to `DEFAULT_STAGE_DOC_DIRS[stage]` is the stale
+ *   template pin, not a customisation, so an upgraded project's six-key block
+ *   contributes NOTHING and the resolved layout decides. Without this the
+ *   documented migration path (legacy six-key `stageDirs` plus
+ *   `docs.designDir = "spec/design"`) kept scanning `docs/design` while the
+ *   deliverables had already moved to `spec/design`.
+ * - SUPERSET, never a replacement: the scan scope is the one place where being
+ *   too NARROW is the dangerous direction, so the resolved directories are
+ *   always included. `{designDir, reviewDir} ⊆ archiveDirs` therefore holds for
+ *   ANY `stageDirs` spelling — including a partial customisation such as
+ *   `stageDirs: { review: "legacy/review" }` with `designDir: "spec/design"`,
+ *   which used to leave the deliverable directory outside the scan range. The
+ *   non-boilerplate `stageDirs` directories stay in the list as well, so
+ *   documents already sitting in a legacy directory remain archivable and keep
+ *   being offered by the doc-menu channel-2 fallback.
+ *
+ * `jobsDir` is never archived. Neither branch of tier 2 contains it and tier 3
+ * is not reachable from `resolvePipelineConfig`; the scanner additionally
+ * excludes the resolved `jobsDir` subtree outright (222 review issue 1), so a
+ * layout where `jobsDir` nests under `designDir` / `reviewDir`
+ * (`docs.designDir = "docs"`) cannot slip task files into the archive or delete
+ * list either.
  *
  * NOTE: values are NOT passed through `rewritePiPrefix` — they are plain
  * project-relative doc paths that never start with ".pi/"; the constant
@@ -1262,22 +1301,20 @@ function deriveArchiveDirs(
 ): string[] {
   const configured = archive?.dirs;
   if (configured && configured.length > 0) return [...configured];
-  const stageValues = docs?.stageDirs
-    ? Object.values(docs.stageDirs).filter((v): v is string => typeof v === "string")
-    : [];
-  // 222 Phase 6: an invalid `stageDirs` value (absolute / traversal) must never
-  // become a scan scope either — the same validation as the docs directories.
-  const deduped = [...new Set(
-    stageValues
-      .map((value) => normalizeDocsDir(value).value)
-      .filter((value): value is string => value !== undefined),
-  )];
+  const stageValues: string[] = [];
+  for (const [stage, value] of Object.entries(docs?.stageDirs ?? {})) {
+    if (typeof value !== "string") continue;
+    // Review issue 2: ONE predicate for every consumer — invalid values are
+    // dropped (the parser already warned on the on-disk path), boilerplate
+    // values are not a scan scope.
+    const override = resolveStageDirOverride(stage as PipelineStage, value);
+    if (override.value !== undefined) stageValues.push(override.value);
+  }
+  // Review issue 2: the resolved layout is always part of the scope, so the
+  // deliverable directories can never fall outside the archive range.
+  const resolved = dirs ? [dirs.designDir, dirs.reviewDir] : [];
+  const deduped = [...new Set([...resolved, ...stageValues])];
   if (deduped.length > 0) return deduped;
-  // Review issue 2: the resolved layout is used UNCONDITIONALLY, so the default
-  // installs the same ["docs/design", "docs/review"] scope the pre-222 template
-  // pinned (a broad ["docs"] scan would pull `docs/jobs/*_loop.yaml` into the
-  // archive/delete list, violating "jobsDir is never archived").
-  if (dirs) return [...new Set([dirs.designDir, dirs.reviewDir])];
   return [...DEFAULT_DOCS_FALLBACK_DIRS];
 }
 

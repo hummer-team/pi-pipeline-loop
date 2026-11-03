@@ -31,7 +31,8 @@ import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-lo
 import { resolveStageDocDir } from "../../core/doc-discovery";
 import { resolveTrackedJobFile } from "../../core/auto-pipeline/job-state";
 import { scanJobFiles } from "../../commands/pipeline-auto-menu";
-import { collectArchiveTargets } from "../../core/archive/scanner";
+import { collectArchiveTargets, archiveScopeRoots } from "../../core/archive/scanner";
+import { deleteArchiveTargets } from "../../core/archive/runner";
 import {
   applyConcreteStageDocPaths,
   isCommitDocGlob,
@@ -41,6 +42,7 @@ import {
 } from "../../core/verify-path-resolver";
 import { checkDispatchConflicts } from "../../utils/guard-conflict-report";
 import { findLatestReviewReport } from "../../utils/review-conclusion";
+import { isPathAllowedWrite, isPathReadOnly } from "../../utils/protect";
 import { docsDirsOf } from "../../docs-paths";
 import {
   DEFAULT_DESIGN_DIR,
@@ -397,6 +399,52 @@ describe("222 Phase 6 — boundary configurations", () => {
     expect(resolveStageDocDir(config, "plan")).toEqual({ dir: "legacy/design", autoMatched: false });
     expect(warnings.some((w) => w.includes("overrides"))).toBe(true);
   });
+
+  // ─── 222 review issue 3: non-canonical inputs must still be enforced ──────
+
+  it("keeps the write whitelist and read-only protection effective for `spec//design`", () => {
+    // The consumers match LITERALLY, so an un-normalized value silently disabled
+    // both the deliverable write whitelist and the plan-doc protection.
+    const { config, warnings } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { designDir: "spec//design", reviewDir: "spec//review" },
+    });
+    expect(warnings).toEqual([]);
+    expect(docsDirsOf(config).designDir).toBe("spec/design");
+    for (const stage of READ_ONLY_STAGES) {
+      expect(isPathAllowedWrite("spec/design/222_Feat_Develop_Commit.md", config.stages[stage].allowedWritePaths))
+        .toBe(true);
+      expect(isPathAllowedWrite("spec/review/Code_Review_x.md", config.stages[stage].allowedWritePaths))
+        .toBe(true);
+    }
+    expect(isPathReadOnly("spec/design/222_Feat_Plan.md", config.stages.develop.allowedReadOnlyPaths))
+      .toBe(true);
+    expect(isPathReadOnly("spec/design/222_Feat_Plan.md", config.stages.fix.allowedReadOnlyPaths))
+      .toBe(true);
+  });
+
+  it("keeps the write whitelist and read-only protection effective for `./design`", () => {
+    const { config } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { designDir: "./design", reviewDir: "./review" },
+    });
+    expect(docsDirsOf(config).designDir).toBe("design");
+    expect(isPathAllowedWrite("design/222_Feat_Develop_Commit.md", config.stages.clarify.allowedWritePaths))
+      .toBe(true);
+    expect(isPathReadOnly("design/222_Feat_Plan.md", config.stages.develop.allowedReadOnlyPaths))
+      .toBe(true);
+  });
+
+  it("rejects '.' so the archive scope never becomes the project root", () => {
+    const { config, warnings } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { designDir: "." },
+    });
+    expect(docsDirsOf(config).designDir).toBe(DEFAULT_DESIGN_DIR);
+    expect(warnings.some((w) => w.includes("docs.designDir"))).toBe(true);
+    // The project root must never appear in the scan list / prune boundary.
+    expect(config.archiveDirs).toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
+  });
 });
 
 // ─── Invalid configuration falls back (fail-open) ───────────────────────────
@@ -599,5 +647,180 @@ describe("222 review issue 2 — default install archive scope", () => {
     const relPaths = scan.targets.map((t) => t.relPath).sort();
     // The broad ["docs"] scope used to pull in docs/jobs and docs/bug too.
     expect(relPaths).toEqual(["docs/design/1_Plan.md", "docs/review/r.md"]);
+  });
+});
+
+// ─── 222 review issue 1: jobsDir nesting under a resolved docs directory ────
+//
+// The default layout is safe only because the archive scope happens to exclude
+// jobsDir. `docs.designDir = "docs"` is a legal layout ("design documents live
+// directly under docs/") that puts `docs/jobs` INSIDE the scan root, so the
+// invariant must be enforced by the scanner/delete layer, not by disjointness.
+
+describe("222 review issue 1 — jobsDir nested in the archive scope", () => {
+  const createdRoots: string[] = [];
+
+  afterAll(async () => {
+    for (const root of createdRoots) {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /** Real loader: writes `.pi/pipeline_loop.json` with the given docs block. */
+  async function loadProject(
+    docs: Record<string, unknown>,
+    files: string[],
+  ): Promise<{ root: string; config: PipelineConfig }> {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-docs-jobs-nested-"));
+    createdRoots.push(root);
+    for (const rel of files) {
+      const abs = path.join(root, rel);
+      await fsp.mkdir(path.dirname(abs), { recursive: true });
+      await fsp.writeFile(abs, "# doc\n", "utf8");
+    }
+    const configPath = path.join(root, ".pi/pipeline_loop.json");
+    await fsp.mkdir(path.dirname(configPath), { recursive: true });
+    await fsp.writeFile(configPath, JSON.stringify({
+      stages: Object.fromEntries(ALL_STAGES.map((stage) => [stage, {}])),
+      docs,
+    }, null, 2), "utf8");
+    const json = loadJsonConfig(configPath);
+    json.projectRoot = root;
+    return { root, config: resolvePipelineConfig(json) };
+  }
+
+  it("resolves the legal nesting layout that used to delete job files", async () => {
+    const { config } = await loadProject({ designDir: "docs" }, []);
+    expect(docsDirsOf(config)).toEqual({
+      designDir: "docs",
+      reviewDir: DEFAULT_REVIEW_DIR,
+      jobsDir: DEFAULT_JOBS_DIR,
+    });
+    // The scan list itself still covers docs/ + docs/review (the parent wins in
+    // the scanner, which prunes the nested entry).
+    expect(config.archiveDirs).toEqual(["docs", DEFAULT_REVIEW_DIR]);
+  });
+
+  it("never collects the job file, and delete never removes it", async () => {
+    const { root, config } = await loadProject({ designDir: "docs" }, [
+      "docs/1_Plan.md",
+      "docs/jobs/nightly_loop.yaml",
+      "docs/review/r.md",
+    ]);
+
+    const scan = await collectArchiveTargets(config, 0, undefined, Date.now() + 86_400_000);
+    const relPaths = scan.targets.map((t) => t.relPath).sort();
+    expect(relPaths).toEqual(["docs/1_Plan.md", "docs/review/r.md"]);
+    expect(scan.skippedJobs).toBe(1);
+    expect(scan.targets.map((t) => t.relPath)).not.toContain("docs/jobs/nightly_loop.yaml");
+
+    const deletion = await deleteArchiveTargets(config, scan.targets, archiveScopeRoots(config));
+    expect(deletion.errors).toEqual([]);
+    expect(deletion.deleted).toBe(2);
+    // The invariant the plan states unconditionally: job files are user-maintained.
+    expect(fs.existsSync(path.join(root, "docs/jobs/nightly_loop.yaml"))).toBe(true);
+  });
+
+  it("honours a custom jobsDir nested inside a custom designDir", async () => {
+    const { root, config } = await loadProject(
+      { designDir: "spec", jobsDir: "spec/auto-jobs" },
+      ["spec/old_Plan.md", "spec/auto-jobs/nightly_loop.yaml"],
+    );
+    const scan = await collectArchiveTargets(config, 0, undefined, Date.now() + 86_400_000);
+    expect(scan.targets.map((t) => t.relPath)).toEqual(["spec/old_Plan.md"]);
+    const deletion = await deleteArchiveTargets(config, scan.targets, archiveScopeRoots(config));
+    expect(deletion.errors).toEqual([]);
+    expect(fs.existsSync(path.join(root, "spec/auto-jobs/nightly_loop.yaml"))).toBe(true);
+  });
+});
+
+// ─── 222 review issue 2: the archive scope follows a migrated layout ────────
+
+describe("222 review issue 2 — archive scope after migration", () => {
+  const createdRoots: string[] = [];
+
+  afterAll(async () => {
+    for (const root of createdRoots) {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /** Legacy six-key `stageDirs` block plus an explicit new key. */
+  const LEGACY_TEMPLATE_STAGE_DIRS = {
+    clarify: "docs/design",
+    plan: "docs/design",
+    "design-review": "docs/design",
+    develop: "docs/design",
+    review: "docs/design",
+    fix: "docs/review",
+  };
+
+  /** Loads a real project whose config is the given docs block. */
+  async function loadProject(
+    docs: Record<string, unknown>,
+    files: string[],
+  ): Promise<{ root: string; config: PipelineConfig }> {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-docs-migrated-"));
+    createdRoots.push(root);
+    for (const rel of files) {
+      const abs = path.join(root, rel);
+      await fsp.mkdir(path.dirname(abs), { recursive: true });
+      await fsp.writeFile(abs, "# doc\n", "utf8");
+    }
+    const configPath = path.join(root, ".pi/pipeline_loop.json");
+    await fsp.mkdir(path.dirname(configPath), { recursive: true });
+    await fsp.writeFile(configPath, JSON.stringify({
+      stages: Object.fromEntries(ALL_STAGES.map((stage) => [stage, {}])),
+      docs,
+    }, null, 2), "utf8");
+    const json = loadJsonConfig(configPath);
+    json.projectRoot = root;
+    return { root, config: resolvePipelineConfig(json) };
+  }
+
+  it("keeps the migrated deliverable directory INSIDE the archive scope", async () => {
+    // The documented migration path: an installed project still carries the
+    // six template `stageDirs` values and the user adds `designDir`.
+    const { root, config } = await loadProject(
+      { designDir: "spec/design", stageDirs: LEGACY_TEMPLATE_STAGE_DIRS },
+      [
+        "docs/design/old_Plan.md",
+        "spec/design/222_Feat_Plan.md",
+        "docs/review/old_r.md",
+      ],
+    );
+    expect(docsDirsOf(config).designDir).toBe("spec/design");
+    // Before the fix this was ["docs/design","docs/review"]: the boilerplate
+    // block won and `spec/design` was never scanned.
+    expect(config.archiveDirs).toEqual(["spec/design", "docs/review"]);
+
+    const scan = await collectArchiveTargets(config, 0, undefined, Date.now() + 86_400_000);
+    const relPaths = scan.targets.map((t) => t.relPath).sort();
+    expect(relPaths).toEqual(["docs/review/old_r.md", "spec/design/222_Feat_Plan.md"]);
+    expect(fs.existsSync(path.join(root, "spec/design/222_Feat_Plan.md"))).toBe(true);
+  });
+
+  it("keeps a reviewDir migration inside the archive scope as well", async () => {
+    const { config } = await loadProject(
+      { reviewDir: "spec/review", stageDirs: LEGACY_TEMPLATE_STAGE_DIRS },
+      ["spec/review/Code_Review_222_Feat_Develop_Commit_1.md"],
+    );
+    expect(docsDirsOf(config).reviewDir).toBe("spec/review");
+    expect(config.archiveDirs).toContain("spec/review");
+
+    const scan = await collectArchiveTargets(config, 0, undefined, Date.now() + 86_400_000);
+    expect(scan.targets.map((t) => t.relPath)).toContain(
+      "spec/review/Code_Review_222_Feat_Develop_Commit_1.md",
+    );
+  });
+
+  it("does not duplicate targets when the resolved dir nests in a stageDirs dir", async () => {
+    const { config } = await loadProject(
+      { designDir: "docs", stageDirs: { clarify: "docs/design" } },
+      ["docs/1_Plan.md", "docs/design/2_Plan.md"],
+    );
+    const scan = await collectArchiveTargets(config, 0, undefined, Date.now() + 86_400_000);
+    const relPaths = scan.targets.map((t) => t.relPath);
+    expect(new Set(relPaths).size).toBe(relPaths.length);
   });
 });

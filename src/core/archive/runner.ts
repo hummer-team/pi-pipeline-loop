@@ -28,6 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExecFn, PipelineConfig } from "../../types";
 import { DEFAULT_ARCHIVE_DEST } from "../../constants";
+import { isInsideDir, resolveJobsDirAbs } from "./scanner";
 
 /**
  * Formats a Date into the archive timestamp `yyyy_MM_dd_HHmmssSSS`.
@@ -297,6 +298,12 @@ export interface DeleteRunResult {
  * BUT NEVER past the corresponding scope root (an `archive.dirs` root or the
  * `.pi/audit` root itself is preserved even when emptied).
  *
+ * 222 review issue 1: the resolved `jobsDir` subtree is a hard boundary in BOTH
+ * directions — a target inside it is refused (counted as an error, never
+ * deleted) and pruning stops at it. The scanner already filters those files, so
+ * this is defence in depth against a hand-built target list or a config where
+ * `jobsDir` nests under `designDir`.
+ *
  * Individual failures are recorded and do not stop the remaining deletions.
  */
 export async function deleteArchiveTargets(
@@ -305,12 +312,21 @@ export async function deleteArchiveTargets(
   scopeRootsAbs: string[],
 ): Promise<DeleteRunResult> {
   const result: DeleteRunResult = { deleted: 0, removedDirs: 0, errors: [] };
+  // Protected roots: the caller's scope roots PLUS the resolved jobs directory.
+  const jobsAbs = resolveJobsDirAbs(config);
+  const protectedRoots = scopeRootsAbs.some((root) => path.resolve(root) === jobsAbs)
+    ? scopeRootsAbs
+    : [...scopeRootsAbs, jobsAbs];
 
   for (const target of targets) {
+    if (isInsideDir(target.absPath, jobsAbs)) {
+      result.errors.push(`${target.absPath}: inside jobsDir, which is never archived`);
+      continue;
+    }
     try {
       await fsp.rm(target.absPath, { force: false });
       result.deleted++;
-      result.removedDirs += await pruneEmptyDirs(target.absPath, scopeRootsAbs);
+      result.removedDirs += await pruneEmptyDirs(target.absPath, protectedRoots);
     } catch (err) {
       result.errors.push(
         `${target.absPath}: ${err instanceof Error ? err.message : String(err)}`,

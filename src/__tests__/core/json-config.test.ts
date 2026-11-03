@@ -1389,24 +1389,31 @@ describe("206 Phase 0: docs & archive config", () => {
     expect(resolved.archiveDest).toBe("pi-pipeline-archive");
   });
 
-  it("archive.dirs empty array → configured-but-empty → falls back to stageDirs derivation", async () => {
+  it("archive.dirs empty array → falls back to the resolved layout ∪ stageDirs", async () => {
     await writeJson({
       stages: { clarify: {} },
       docs: { stageDirs: { clarify: "docs/design", fix: "docs/review", plan: "docs/review" } },
       archive: { dirs: [] },
     });
     const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
-    // stageDirs values deduped in insertion order: clarify → fix → plan
-    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
+    // 222 review issue 2: `clarify`/`fix` are boilerplate (their built-in
+    // defaults) and are NOT a derivation input, so the design directory is
+    // derived from `plan` → docs/review, and both resolved dirs collapse to it.
+    expect(resolved.docsDirs).toBeUndefined();
+    expect(resolved.archiveDirs).toEqual(["docs/review"]);
   });
 
-  it("archive.dirs missing and docs.stageDirs present → derived deduped from stageDirs", async () => {
+  it("archive.dirs missing and docs.stageDirs present → resolved dirs ∪ custom stageDirs", async () => {
     await writeJson({
       stages: { clarify: {} },
-      docs: { stageDirs: { clarify: "docs/design", fix: "docs/design" } },
+      docs: { stageDirs: { clarify: "docs/design", review: "legacy/review" } },
     });
     const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
-    expect(resolved.archiveDirs).toEqual(["docs/design"]);
+    // 222 review issue 2: `clarify: "docs/design"` is boilerplate → no extra
+    // scope entry; `review: "legacy/review"` is a real customisation and unions
+    // with the resolved layout (design defaults to docs/design, review derives
+    // from the `review` key).
+    expect(resolved.archiveDirs).toEqual(["docs/design", "legacy/review"]);
   });
 
   it("both docs and archive missing → archiveDirs falls back to the resolved default dirs", async () => {

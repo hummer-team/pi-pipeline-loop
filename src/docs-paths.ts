@@ -62,44 +62,85 @@ const WIN_ABS_RE = /^[a-zA-Z]:[\\/]/;
 /**
  * Validate one project-relative docs directory value (fail-open contract).
  *
- * Accepted: a non-empty relative path; backslashes are normalized to `/` and
- * trailing slashes are stripped. Rejected (a `warning` is returned, no `value`):
- * non-strings, empty/blank strings, absolute paths (posix or Windows drive) and
- * any path containing a `..` segment.
+ * Accepted: a non-empty relative path; backslashes are normalized to `/`,
+ * trailing slashes are stripped and the result is collapsed with
+ * `path.posix.normalize` (`"spec//design"` / `"./design"` / `"spec/./design"` →
+ * `"spec/design"`). Rejected (a `warning` is returned, no `value`): non-strings,
+ * empty/blank strings, absolute paths (posix or Windows drive), any path
+ * containing a `..` segment, and any value that normalizes to the project root
+ * (`"."`).
+ *
+ * 222 review issue 3: canonical form is part of the contract, not cosmetic. The
+ * downstream consumers match the returned string LITERALLY — `isPathAllowedWrite`
+ * / `isPathReadOnly` prefix- and glob-match, the verify detector compares
+ * expanded globs, the archive scanner joins it onto `projectRoot`. A
+ * non-canonical but "legal" value (`"spec//design"`, `"./design"`) silently
+ * disabled the write whitelist, the plan-doc read-only protection and the
+ * verify narrowing at once, and `"."` turned the archive scope into the whole
+ * project root.
  */
 export function normalizeDocsDir(raw: unknown): { value?: string; warning?: string } {
   if (typeof raw !== "string") return { warning: `expected a non-empty string, got ${typeof raw}` };
   const trimmed = raw.trim();
   if (trimmed.length === 0) return { warning: "empty string ignored" };
-  const posix = trimTrailingSlashes(trimmed.replace(/\\/g, "/"));
   if (path.isAbsolute(trimmed) || WIN_ABS_RE.test(trimmed)) {
     return { warning: `absolute path "${trimmed}" ignored` };
   }
+  const posix = trimmed.replace(/\\/g, "/");
   if (posix.split("/").some((seg) => seg === "..")) {
     return { warning: `path traversal "${trimmed}" ignored` };
   }
-  return { value: posix };
+  const normalized = path.posix.normalize(trimTrailingSlashes(posix));
+  // `normalize` maps "" / "." / "./" to "." — the project root is never a docs
+  // directory (it would make the archive scope, and its prune boundary, the
+  // whole project).
+  if (normalized.length === 0 || normalized === ".") {
+    return { warning: `path "${trimmed}" resolves to the project root and is ignored` };
+  }
+  return { value: normalized };
 }
 
 // ─── Precedence resolution ──────────────────────────────────────────────────
 
 /**
- * First VALID, NON-BOILERPLATE configured stage directory among `keys`
- * (order = priority).
+ * Resolves ONE `docs.stageDirs.<stage>` entry to its usable override value.
  *
- * 222 review issue 1: a `docs.stageDirs[key]` value EQUAL to the built-in
- * default (`DEFAULT_STAGE_DOC_DIRS[key]`) is BOILERPLATE — it is what the
- * shipped template used to pin (`review: "docs/design"`, `fix: "docs/review"`,
- * …). Treating it as a real derivation made an upgraded project (legacy six-key
+ * Returns `undefined` when the entry is absent, invalid, or boilerplate — the
+ * three cases in which the stage directory must fall through to the resolved /
+ * built-in directory.
+ *
+ * 222 review issue 1: a value EQUAL to the built-in default
+ * (`DEFAULT_STAGE_DOC_DIRS[stage]`) is BOILERPLATE — it is what the shipped
+ * template used to pin (`review: "docs/design"`, `fix: "docs/review"`, …).
+ * Treating it as a real derivation made an upgraded project (legacy six-key
  * `stageDirs`, no `docs.*Dir` key) derive `reviewDir = docs/design` from the
  * `review` key, which broke review-report discovery, `fix` start evidence,
  * verify narrowing and the doc menu at once. Skipping boilerplate keeps the
  * "installed projects are unaffected" invariant and also silences the
  * misleading `disagree` warning they used to emit on every startup.
  *
- * The check runs on the NORMALIZED value, so `"docs/design/"` / `"docs\\design"`
- * count as boilerplate too (no phantom "custom" directory that only differs by
- * a separator).
+ * The comparison runs on the NORMALIZED value, so `"docs/design/"` /
+ * `"docs\\design"` count as boilerplate too (no phantom "custom" directory that
+ * only differs by a separator).
+ *
+ * 222 review issue 2: this is the SINGLE boilerplate predicate — the derivation
+ * layer ({@link deriveDocsDirs} / {@link docsDirsOf}), the doc-menu layer
+ * (`resolveStageDocDir`) and the archive layer (`deriveArchiveDirs`) all go
+ * through it, so the same `stageDirs` block cannot mean three different things.
+ */
+export function resolveStageDirOverride(
+  stage: PipelineStage,
+  raw: unknown,
+): { value?: string; warning?: string } {
+  const parsed = normalizeDocsDir(raw);
+  if (!parsed.value) return { warning: parsed.warning };
+  if (parsed.value === DEFAULT_STAGE_DOC_DIRS[stage]) return {};
+  return { value: parsed.value };
+}
+
+/**
+ * First VALID, NON-BOILERPLATE configured stage directory among `keys`
+ * (order = priority). See {@link resolveStageDirOverride} for both rules.
  */
 function pickStageDir(
   stageDirs: Partial<Record<PipelineStage, string>> | undefined,
@@ -114,14 +155,12 @@ function pickStageDir(
     // R1Q4-A symmetry: derived values are validated exactly like explicit keys,
     // so an absolute / traversal stageDirs entry never becomes a write-scope
     // prefix or a read-only glob.
-    const parsed = normalizeDocsDir(raw);
-    if (!parsed.value) {
+    const parsed = resolveStageDirOverride(key, raw);
+    if (parsed.warning !== undefined) {
       warnings.push(`docs.stageDirs.${key}: ${parsed.warning}; ignored for ${label}`);
       continue;
     }
-    // Review issue 1: template boilerplate (value === that stage's built-in
-    // default) is not a derivation input — see the function doc comment.
-    if (parsed.value === DEFAULT_STAGE_DOC_DIRS[key]) continue;
+    if (parsed.value === undefined) continue; // boilerplate — not a derivation input
     values.push(parsed.value);
   }
   const distinct = [...new Set(values)];
@@ -137,10 +176,20 @@ function pickStageDir(
  * Resolve the three docs directories from RAW config (single source of
  * precedence: explicit key → directory derived from `docs.stageDirs` → default).
  *
- * The returned `warnings` are the ONLY place these diagnostics are produced, so
- * the loader can emit each one exactly once. `configured` reports whether any
- * explicit `docs.<x>Dir` key was supplied (used to decide whether the resolved
- * block is attached to `PipelineConfig`).
+ * Diagnostics contract (222 review issue 6 — read this before moving any
+ * warning): this function is the single warning outlet of the IN-MEMORY path
+ * only. A `resolvePipelineConfig` call with a hand-built `PipelineJsonConfig`
+ * never passes through `parseDocsConfig`, so the invalid-value diagnostic can
+ * only be produced here.
+ *
+ * The ON-DISK path (`loadJsonConfig` → `parseDocsConfig`) is different: the
+ * parser drops an invalid `docs.<x>Dir` value before this function runs and
+ * emits its own warning at that point. A dropped value never reaches `read()`
+ * below, so the two paths never double-warn — and neither of them may be
+ * removed on the assumption that the other one covers it.
+ *
+ * `configured` reports whether any explicit `docs.<x>Dir` key was supplied
+ * (used to decide whether the resolved block is attached to `PipelineConfig`).
  */
 export function deriveDocsDirs(
   docs?: DocsJsonConfig,

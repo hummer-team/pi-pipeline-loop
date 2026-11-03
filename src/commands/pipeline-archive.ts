@@ -135,6 +135,7 @@ async function executeArchiveCommand(
     totalBytes: String(scan.totalBytes),
     missingDirs: scan.missingDirs.join(","),
     skippedActive: String(scan.skippedActive),
+    skippedJobs: String(scan.skippedJobs),
   });
   if (scan.targets.length === 0) {
     const msg = `No documents older than ${days} day(s).`;
@@ -379,9 +380,10 @@ async function reportExecutionError(
 
 /**
  * Derives the scope roots that bound empty-directory pruning: the union of
- * `archiveDirs` entries + the constant `.pi/audit` root (single source: the
- * scanner's {@link archiveScopeRoots}). Scope roots themselves are never
- * removed by `deleteArchiveTargets`.
+ * `archiveDirs` entries + the constant `.pi/audit` root + the resolved
+ * `jobsDir` (single source: the scanner's {@link archiveScopeRoots}). Scope
+ * roots themselves are never removed by `deleteArchiveTargets`, so a nested jobs
+ * directory survives pruning (222 review issue 1).
  */
 function collectScopeRoots(config: PipelineConfig): string[] {
   return archiveScopeRoots(config);

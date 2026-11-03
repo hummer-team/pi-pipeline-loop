@@ -98,15 +98,37 @@ describe("archiveDirs priority (222 Phase 3)", () => {
     expect(config.archiveDirs).toEqual(["keep/me"]);
   });
 
-  it("tier 2: docs.stageDirs values when archive.dirs is absent", () => {
+  it("tier 2: resolved dirs ∪ non-boilerplate docs.stageDirs values", () => {
     const config = resolvePipelineConfig({
       stages: { clarify: {} },
       docs: { ...CUSTOM_DOCS, stageDirs: { plan: "legacy/design", fix: "legacy/review" } },
     });
-    expect(config.archiveDirs).toEqual(["legacy/design", "legacy/review"]);
+    // 222 review issue 2: the resolved layout is always part of the scope (the
+    // deliverables can never fall outside the archive range), and a
+    // non-boilerplate stageDirs value stays in the list so pre-migration
+    // documents remain archivable.
+    expect(config.archiveDirs).toEqual([
+      "spec/design",
+      "spec/review",
+      "legacy/design",
+      "legacy/review",
+    ]);
   });
 
-  it("tier 3: [designDir, reviewDir] when neither archive.dirs nor stageDirs exist", () => {
+  it("tier 2 ignores boilerplate stageDirs values (same predicate as the derivation)", () => {
+    const config = resolvePipelineConfig({
+      stages: { clarify: {} },
+      docs: {
+        designDir: "spec/design",
+        reviewDir: "spec/review",
+        stageDirs: { plan: "docs/design", review: "docs/design", fix: "docs/review" },
+      },
+    });
+    // The stale template block contributes nothing → exactly the resolved dirs.
+    expect(config.archiveDirs).toEqual(["spec/design", "spec/review"]);
+  });
+
+  it("tier 3: the resolved [designDir, reviewDir] when nothing else is configured", () => {
     const config = resolvePipelineConfig({
       stages: { clarify: {} },
       docs: CUSTOM_DOCS,
@@ -122,14 +144,14 @@ describe("archiveDirs priority (222 Phase 3)", () => {
     expect(config.archiveDirs).toEqual(["spec/docs"]);
   });
 
-  it("tier 4: an unconfigured project scans the resolved default directories", () => {
+  it("fallback: an unconfigured project scans the resolved default directories", () => {
     // Review issue 2: the pre-222 template pinned ["docs/design","docs/review"];
     // the derived chain now reproduces exactly that instead of widening to ["docs"].
     expect(resolvePipelineConfig({ stages: { clarify: {} } }).archiveDirs)
       .toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
   });
 
-  it("tier 4 never collects docs/jobs job files (jobsDir is never archived)", () => {
+  it("never widens to a broad scope that would contain jobsDir", () => {
     const config = resolvePipelineConfig({ stages: { clarify: {} } });
     expect(config.archiveDirs).not.toContain(DEFAULT_JOBS_DIR);
     // A broad ["docs"] scope would make docs/jobs reachable by the scanner.
@@ -143,6 +165,17 @@ describe("archiveDirs priority (222 Phase 3)", () => {
       docs: CUSTOM_DOCS,
     });
     expect(config.archiveDirs).not.toContain("spec/jobs");
+  });
+
+  it("keeps the resolved dirs in the scope even under a partial stageDirs customisation", () => {
+    // Review issue 2: `stageDirs` alone used to REPLACE the scope, so the
+    // deliverable directory could fall outside it.
+    const config = resolvePipelineConfig({
+      stages: { clarify: {} },
+      docs: { designDir: "spec/design", stageDirs: { review: "legacy/review" } },
+    });
+    // reviewDir derives from the `review` key, so the union is exactly these.
+    expect(config.archiveDirs).toEqual(["spec/design", "legacy/review"]);
   });
 });
 

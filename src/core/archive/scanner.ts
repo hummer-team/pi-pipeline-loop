@@ -16,11 +16,20 @@
  *   behavior on links is platform-dependent; archiving must not mutate or
  *   duplicate link targets).
  * - Read-only: scanning never mutates the filesystem (writes live in runner.ts).
+ *
+ * 222 review issues 1/5 (added to the contract above):
+ * - The resolved `jobsDir` subtree is never scanned or deleted — job files are
+ *   user-maintained, even when the configured `designDir`/`reviewDir` contains
+ *   that directory.
+ * - A scope covered by another scope is pruned, so a file is collected once and
+ *   `totalBytes` matches the logical file set.
  */
 
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import type { PipelineConfig } from "../../types";
+import { DEFAULT_JOBS_DIR } from "../../constants";
+import { docsDirsOf, normalizeDocsDir } from "../../docs-paths";
 import { resolveAuditDir } from "../../utils/work-dir";
 import { reqBaseFromRequirementDoc } from "../naming/doc-naming";
 
@@ -36,6 +45,11 @@ export interface ArchiveScope {
  * Synchronous list of ALL scope roots as ABSOLUTE paths (no fs probing).
  * Used by the delete step to bound empty-directory pruning and mirrors the
  * deduped `archiveDirs + .pi/audit` union resolved by {@link resolveArchiveScope}.
+ *
+ * 222 review issue 1: the resolved `jobsDir` is appended as a PROTECTED root as
+ * well. Pruning walks upward and stops at any root, so a jobs directory that
+ * nests under an archive root (`docs.designDir = "docs"` → `docs/jobs`) is
+ * preserved even when every file inside it is gone.
  */
 export function archiveScopeRoots(config: PipelineConfig): string[] {
   const dirRels = [...(config.archiveDirs ?? []), resolveAuditDir({ auditDir: config.auditDir, piWorkDir: config.piWorkDir })];
@@ -47,7 +61,39 @@ export function archiveScopeRoots(config: PipelineConfig): string[] {
     seen.add(abs);
     roots.push(abs);
   }
+  const jobsAbs = resolveJobsDirAbs(config);
+  if (!seen.has(jobsAbs)) roots.push(jobsAbs);
   return roots;
+}
+
+/**
+ * Absolute path of the resolved `jobsDir` (222 review issue 1).
+ *
+ * `jobsDir` is user-maintained: `/pipeline-auto` job YAML files must never be
+ * archived, zipped or deleted. The archive scope already avoids it indirectly
+ * (tier 3 is `[designDir, reviewDir]`), but that guarantee collapses as soon as
+ * the resolved jobs directory nests under one of them — a legitimate layout
+ * such as `docs.designDir = "docs"` puts `docs/jobs` inside the scan root. Both
+ * the scanner and the prune boundary therefore exclude this path directly.
+ *
+ * Mirrors the docs-directory validation: an unusable configured value (absolute
+ * / traversal / root) falls back to the built-in default, so this guard can
+ * never widen the protected set unintentionally.
+ */
+export function resolveJobsDirAbs(config: PipelineConfig): string {
+  const raw = docsDirsOf(config).jobsDir;
+  const normalized = normalizeDocsDir(raw);
+  const jobsRel = normalized.value ?? DEFAULT_JOBS_DIR;
+  return path.isAbsolute(jobsRel) ? jobsRel : path.resolve(config.projectRoot, jobsRel);
+}
+
+/**
+ * True when `absPath` is `dirAbs` itself or lives inside it (path-segment safe).
+ * Shared with the delete step so scanning and deletion agree on the boundary.
+ */
+export function isInsideDir(absPath: string, dirAbs: string): boolean {
+  const rel = path.relative(dirAbs, absPath);
+  return rel.length === 0 || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 /**
@@ -56,6 +102,18 @@ export function archiveScopeRoots(config: PipelineConfig): string[] {
  * 206_Feat). Duplicated absolute paths are deduped; entries that do not
  * exist on disk are dropped (the result's missingDirs reports them to the
  * caller for audit) — scanning never throws on missing directories.
+ *
+ * 222 review issue 5: a scope that is ALREADY covered by another scope (a child
+ * of a kept root) is pruned. `archive.dirs` is user-written and 222's tier 3
+ * (`[designDir, reviewDir]`) makes nesting a one-line legal configuration
+ * (`docs.designDir = "docs"` + `docs.reviewDir = "docs/review"`); keeping both
+ * made every file under the child scope a DUPLICATE target — `totalBytes` was
+ * counted twice, `zip` received the same relPath twice, and the second delete
+ * reported ENOENT as a user-visible failure.
+ *
+ * 222 review issue 1: the resolved `jobsDir` subtree is removed from the scope
+ * as well (see {@link resolveJobsDirAbs}), so no walk can ever reach a
+ * `/pipeline-auto` job file.
  */
 export async function resolveArchiveScope(config: PipelineConfig): Promise<{
   scopes: ArchiveScope[];
@@ -63,14 +121,20 @@ export async function resolveArchiveScope(config: PipelineConfig): Promise<{
 }> {
   const configDirs = [...(config.archiveDirs ?? [])];
   configDirs.push(resolveAuditDir({ auditDir: config.auditDir, piWorkDir: config.piWorkDir }));
+  const jobsAbs = resolveJobsDirAbs(config);
 
   const scopes: ArchiveScope[] = [];
   const missingDirs: string[] = [];
   const seenAbs = new Set<string>();
   for (const dirRel of configDirs) {
-    const absDir = path.isAbsolute(dirRel) ? dirRel : path.join(config.projectRoot, dirRel);
+    const absDir = path.resolve(
+      path.isAbsolute(dirRel) ? dirRel : path.join(config.projectRoot, dirRel),
+    );
     if (seenAbs.has(absDir)) continue;
     seenAbs.add(absDir);
+    // A jobs directory is never a scan scope, and neither is one of its
+    // ancestors' leftovers: the subtree is excluded during the walk.
+    if (isInsideDir(absDir, jobsAbs)) continue;
     try {
       const stat = await fsp.stat(absDir);
       if (!stat.isDirectory()) continue;
@@ -83,7 +147,19 @@ export async function resolveArchiveScope(config: PipelineConfig): Promise<{
       missingDirs.push(dirRel);
     }
   }
-  return { scopes, missingDirs };
+
+  // Review issue 5: drop any scope whose files are already reachable from a
+  // kept scope. Iterating in configured order keeps the FIRST (most specific
+  // intent) entry, and a parent added later still prunes its earlier children.
+  const pruned = scopes.filter(
+    (scope) => !scopes.some((other) => other !== scope && isStrictParent(other.absDir, scope.absDir)),
+  );
+  return { scopes: pruned, missingDirs };
+}
+
+/** True when `childAbs` lives strictly INSIDE `parentAbs`. */
+function isStrictParent(parentAbs: string, childAbs: string): boolean {
+  return parentAbs !== childAbs && isInsideDir(childAbs, parentAbs);
 }
 
 /** One file collected for archiving. */
@@ -108,6 +184,13 @@ export interface ArchiveScanResult {
   missingDirs: string[];
   /** Count of files skipped by active-pipeline-document protection. */
   skippedActive: number;
+  /**
+   * 222 review issue 1: count of files skipped because they live in the
+   * resolved `jobsDir` subtree (user-maintained `/pipeline-auto` job files).
+   * Reported in the archive audit so an excluded subtree is visible, not
+   * silent.
+   */
+  skippedJobs: number;
 }
 
 /**
@@ -167,6 +250,12 @@ export const MS_PER_DAY = 86_400_000;
  * - Symlinks are skipped silently (see module header).
  * - Active-pipeline documents (see {@link isActivePipelineDoc}) are skipped
  *   and counted in `skippedActive`.
+ * - The resolved `jobsDir` subtree is never entered, and is counted in
+ *   `skippedJobs` when such a directory/file is encountered (222 review issue
+ *   1 — `/pipeline-auto` job files are user-maintained and must never be
+ *   archived or deleted, even when `designDir` / `reviewDir` contains them).
+ * - Nested scopes are pruned upstream ({@link resolveArchiveScope}), so a file
+ *   is collected at most once.
  * - Result is sorted by mtime ascending (oldest first — preview-friendly).
  */
 export async function collectArchiveTargets(
@@ -176,9 +265,11 @@ export async function collectArchiveTargets(
   now: number = Date.now(),
 ): Promise<ArchiveScanResult> {
   const { scopes, missingDirs } = await resolveArchiveScope(config);
+  const jobsAbs = resolveJobsDirAbs(config);
   const cutoffMs = thresholdDays * MS_PER_DAY;
   const targets: ArchiveTarget[] = [];
   let skippedActive = 0;
+  let skippedJobs = 0;
   let totalBytes = 0;
 
   for (const scope of scopes) {
@@ -196,6 +287,16 @@ export async function collectArchiveTargets(
       const childAbs = path.join(absDir, entry.name);
       if (entry.isSymbolicLink()) {
         continue; // defensive: never archive/follow symlinks (see module header)
+      }
+      // Review issue 1: the jobs subtree is excluded BEFORE any recursion, so a
+      // nested `docs/jobs` inside `docs/` (designDir="docs") is untouchable.
+      if (isInsideDir(childAbs, jobsAbs)) {
+        if (entry.isDirectory()) {
+          skippedJobs += await countFiles(childAbs);
+        } else if (entry.isFile()) {
+          skippedJobs++;
+        }
+        continue;
       }
       if (entry.isDirectory()) {
         await walk(childAbs, scope);
@@ -224,5 +325,29 @@ export async function collectArchiveTargets(
 
   // Oldest first (stable sort by mtime)
   targets.sort((a, b) => a.mtimeMs - b.mtimeMs);
-  return { targets, totalBytes, missingDirs, skippedActive };
+  return { targets, totalBytes, missingDirs, skippedActive, skippedJobs };
+}
+
+/**
+ * Counts regular files under `absDir` (recursively) for the `skippedJobs`
+ * statistic. Best-effort: unreadable directories and mid-scan races are
+ * ignored — the count feeds the audit only, it never gates archiving.
+ */
+async function countFiles(absDir: string): Promise<number> {
+  let entries;
+  try {
+    entries = await fsp.readdir(absDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let count = 0;
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      count += await countFiles(path.join(absDir, entry.name));
+    } else if (entry.isFile()) {
+      count++;
+    }
+  }
+  return count;
 }

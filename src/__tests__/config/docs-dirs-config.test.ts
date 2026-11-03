@@ -76,6 +76,57 @@ describe("parseDocsConfig (222 Phase 0 directory keys)", () => {
     }
   });
 
+  // ─── 222 review issue 4: the on-disk warning must not promise a fallback ──
+
+  it("does not claim the built-in default applies (the fallback may be derived)", () => {
+    // This parser runs BEFORE `deriveDocsDirs`, so it cannot know the real
+    // fall-through value: another explicit key or a `docs.stageDirs` derivation
+    // may win. The message must therefore stay non-committal.
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]): void => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      parseDocsConfig({ designDir: "/abs/design" });
+    } finally {
+      console.warn = original;
+    }
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).not.toContain("the built-in default applies");
+    expect(warnings[0]).toContain("resolved default or derived directory");
+  });
+
+  // ─── 222 review issue 7: every valid stage key is validated ──────────────
+
+  it("warns for an invalid value on a stage key that feeds no derivation", () => {
+    // `clarify` / `design-review` reach neither `pickStageDir` nor the archive
+    // scope, so without this validation their bad values were silently inert.
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]): void => {
+      warnings.push(args.map(String).join(" "));
+    };
+    let parsed: ReturnType<typeof parseDocsConfig>;
+    try {
+      parsed = parseDocsConfig({
+        stageDirs: { clarify: "../escape", "design-review": "/tmp/abs" },
+      });
+    } finally {
+      console.warn = original;
+    }
+    expect(parsed).toBeUndefined();
+    expect(warnings.filter((w) => w.includes("docs.stageDirs.clarify")).length).toBe(1);
+    expect(warnings.filter((w) => w.includes("docs.stageDirs.design-review")).length).toBe(1);
+  });
+
+  it("canonicalizes stageDirs values at parse time", () => {
+    // The same canonical-form contract as `docs.<x>Dir`: a downstream literal
+    // match (menu prefix, archive join) must never see `spec//design`.
+    expect(parseDocsConfig({ stageDirs: { plan: "spec//design/", fix: "./spec/review" } }))
+      .toEqual({ stageDirs: { plan: "spec/design", fix: "spec/review" } });
+  });
+
   it("does not warn for valid directory values", () => {
     const warnings: string[] = [];
     const original = console.warn;

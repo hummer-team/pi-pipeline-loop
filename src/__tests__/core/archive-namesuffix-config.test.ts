@@ -124,7 +124,9 @@ describe("207 Phase 0: archive.namesuffix config", () => {
     const json = loadJsonConfig(jsonPath);
     expect(json.archive).toBeUndefined();
     const resolved = resolvePipelineConfig(json);
-    expect(resolved.archiveDirs).toEqual(["docs/design"]);
+    // `plan: "docs/design"` is boilerplate, so the resolved layout decides:
+    // the design dir lands on docs/design and the review dir on its default.
+    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
     expect(resolved.archiveNameSuffix).toBeUndefined();
     expect(Object.keys(resolved).includes("archiveNameSuffix")).toBe(false);
   });

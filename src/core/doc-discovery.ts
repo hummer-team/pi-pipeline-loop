@@ -27,7 +27,7 @@ import {
   MAX_DOC_CANDIDATES,
 } from "../constants";
 // 222 Phase 2: the resolved docs directories drive the stage menu directory.
-import { docsDirsOf, normalizeDocsDir } from "../docs-paths";
+import { docsDirsOf, resolveStageDirOverride } from "../docs-paths";
 import {
   CODE_REVIEW_DOC_PREFIX,
   MD_FILE_EXTENSION_RE,
@@ -91,6 +91,10 @@ export interface StageDocDirResolution {
  * project root. Normalization also collapses `"docs/design/"` / `"docs\\design"`
  * to the boilerplate value, so a separator-only difference no longer produces a
  * second, phantom menu directory.
+ *
+ * 222 review issue 2: the boilerplate predicate itself lives in
+ * `resolveStageDirOverride` (`src/docs-paths.ts`) and is shared with the
+ * derivation and archive layers — do not re-implement it here.
  */
 export function resolveStageDocDir(
   config: PipelineConfig,
@@ -99,10 +103,13 @@ export function resolveStageDocDir(
   const configured = config.docsStageDirs?.[stage];
   const builtInDefault = DEFAULT_STAGE_DOC_DIRS[stage];
   if (configured !== undefined) {
-    const parsed = normalizeDocsDir(configured);
+    // 222 review issues 1/2: the boilerplate predicate is shared with the
+    // derivation and archive layers (`src/docs-paths.ts`), so the same
+    // `stageDirs` entry cannot mean different things per consumer.
+    const override = resolveStageDirOverride(stage, configured);
     // Only a valid, genuinely non-default value is a per-stage customisation.
-    if (parsed.value !== undefined && parsed.value !== builtInDefault) {
-      return { dir: parsed.value, autoMatched: false };
+    if (override.value !== undefined) {
+      return { dir: override.value, autoMatched: false };
     }
   }
   if (builtInDefault === undefined) {

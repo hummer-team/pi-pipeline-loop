@@ -67,6 +67,34 @@ describe("normalizeDocsDir", () => {
       expect(parsed.warning).toContain("path traversal");
     }
   });
+
+  // ─── 222 review issue 3: the output must be CANONICAL ─────────────────────
+
+  it("collapses redundant separators and ./ segments", () => {
+    // The consumers match the value literally (write whitelist prefixes,
+    // read-only globs, verify detector, archive joins), so a non-canonical
+    // string silently disabled every one of them.
+    expect(normalizeDocsDir("spec//design")).toEqual({ value: "spec/design" });
+    expect(normalizeDocsDir("./design")).toEqual({ value: "design" });
+    expect(normalizeDocsDir("spec/./design")).toEqual({ value: "spec/design" });
+    expect(normalizeDocsDir(".//spec//design//")).toEqual({ value: "spec/design" });
+  });
+
+  it("rejects a value that resolves to the project root", () => {
+    // "." would make the archive scope (and its prune boundary) the whole
+    // project, so `delete` could remove source files.
+    for (const raw of [".", "./", ".//", ".//."]) {
+      const parsed = normalizeDocsDir(raw);
+      expect(parsed.value).toBeUndefined();
+      expect(parsed.warning).toContain("project root");
+    }
+  });
+
+  it("keeps a dot-prefixed directory name intact", () => {
+    // ".design" is a legal directory; only the bare root segment is rejected.
+    expect(normalizeDocsDir(".design")).toEqual({ value: ".design" });
+    expect(normalizeDocsDir("spec/.design")).toEqual({ value: "spec/.design" });
+  });
 });
 
 describe("deriveDocsDirs", () => {
@@ -197,6 +225,21 @@ describe("deriveDocsDirs", () => {
     );
     expect(dirs.reviewDir).toBe("spec/review");
     expect(warnings.some((w) => w.includes("overrides"))).toBe(true);
+  });
+});
+
+// ─── 222 review issue 6: the shared diagnostics contract ───────────────────
+
+describe("deriveDocsDirs diagnostics contract (222 review issue 6)", () => {
+  it("warns with the REAL fall-through value on the in-memory path", () => {
+    // This is the only warning outlet for a hand-built `PipelineJsonConfig`;
+    // the on-disk path warns in `parseDocsConfig` instead and never reaches
+    // this branch. Losing either one reintroduces the silent-misconfiguration
+    // bug of review issue 3.
+    const { warnings } = deriveDocsDirs({ designDir: "/abs/design" });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("docs.designDir");
+    expect(warnings[0]).toContain(`using "${DEFAULT_DESIGN_DIR}"`);
   });
 });
 
