@@ -18,6 +18,7 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import { DEFAULT_COMPLETION_MARKERS } from "../../constants";
 import { DEFAULT_CLARIFY_PROTOCOL } from "./clarify-anchors";
 import {
@@ -84,7 +85,7 @@ export function buildClarifyInstruction(
  * is not an auto runner (human mode keeps its unchanged derivation).
  */
 export function buildClarifyAutoPlan(config: PipelineConfig): ClarifyAutoPlan | null {
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active || active.state.status !== "running") return null;
   return {
     args: "1",

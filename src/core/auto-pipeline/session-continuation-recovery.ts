@@ -16,22 +16,29 @@
  */
 
 import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import type { PipelineConfig } from "../../types";
+import { DEFAULT_JOBS_DIR } from "../../constants";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { hashJobBytes } from "./job-schema";
 import { acquireJobLock } from "./config-overlay";
 import { auditAutoDiagnostic, notifyAuto } from "./diagnostics";
 import { finalizeJob, type FinalizeCtx } from "./finalize";
-import type { AutoJobState } from "./job-state";
+import { resolveTrackedJobFile, type AutoJobState } from "./job-state";
 import type { AutoPipelineResult } from "../../commands/pipeline-auto";
 
-/** Compare the on-disk job file with the sidecar hash (unreadable ⇒ drift). */
+/**
+ * Compare the on-disk job file with the sidecar hash (unreadable ⇒ drift).
+ *
+ * 222 Phase 4: the tracked file is resolved from the configured `jobsDir`
+ * first (falling back to the persisted `state.jobPath`), so a job whose
+ * directory was moved is NOT misreported as drift.
+ */
 export async function jobFileMatchesSidecar(
   projectRoot: string,
-  state: Pick<AutoJobState, "jobPath" | "jobHash">,
+  state: Pick<AutoJobState, "jobId" | "jobPath" | "jobHash">,
+  jobsDir: string = DEFAULT_JOBS_DIR,
 ): Promise<boolean> {
-  const abs = path.isAbsolute(state.jobPath) ? state.jobPath : path.join(projectRoot, state.jobPath);
+  const abs = resolveTrackedJobFile(projectRoot, jobsDir, state.jobId, state.jobPath);
   try {
     const raw = await fs.readFile(abs, "utf8");
     return hashJobBytes(raw) === state.jobHash;

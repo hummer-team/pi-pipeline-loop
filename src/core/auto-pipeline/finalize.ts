@@ -22,6 +22,7 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import type { AutoJobConfig } from "./job-schema";
@@ -569,7 +570,7 @@ export async function reconcilePendingContinuation(
   config: PipelineConfig,
 ): Promise<boolean> {
   if (!isAutoJobActive()) return false;
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active) return false;
   const { state } = active;
 

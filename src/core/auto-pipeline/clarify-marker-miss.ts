@@ -23,6 +23,7 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { detectSessionRole } from "../session-role";
 import { writeJobState } from "./job-state";
@@ -56,7 +57,7 @@ export async function handleAutoClarifyMarkerMiss(
   deps: ClarifyEntryDeps = DEFAULT_CLARIFY_DEPS,
 ): Promise<boolean> {
   if (meta.currentStage !== "clarify") return false;
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active || active.state.status !== "running") return false;
   if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return false;
 

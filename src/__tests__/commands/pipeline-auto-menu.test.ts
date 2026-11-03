@@ -140,6 +140,24 @@ describe("job-menu — discovery", () => {
   it("missing directory → empty scan", () => {
     expect(scanJobFiles(ROOT)).toEqual({ rows: [], ignored: [] });
   });
+
+  // 222 Phase 4: the scan directory is configurable.
+  it("scans the configured jobsDir only", () => {
+    fs.mkdirSync(path.join(ROOT, "spec", "jobs"), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, "spec", "jobs", "beta_loop.yaml"), JOB_YAML, "utf8");
+    writeJobFile("alpha_loop");
+
+    expect(scanJobFiles(ROOT, "spec/jobs").rows.map((r) => r.jobId)).toEqual(["beta_loop"]);
+    // The default remains `docs/jobs`.
+    expect(scanJobFiles(ROOT).rows.map((r) => r.jobId)).toEqual(["alpha_loop"]);
+  });
+
+  it("records the configured directory in the persisted job path", () => {
+    fs.mkdirSync(path.join(ROOT, "spec", "jobs"), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, "spec", "jobs", "beta_loop.yaml"), JOB_YAML, "utf8");
+    // The sidecar hash is compared against the parsed bytes, not the path.
+    expect(scanJobFiles(ROOT, "spec/jobs").rows[0]?.totalDocs).toBe(2);
+  });
 });
 
 describe("job-menu — literals", () => {
@@ -194,6 +212,17 @@ describe("job-menu — selection", () => {
       expect(result.error).toContain("*_loop.yaml");
       expect(result.error).toContain("auto_job_loop_template.yaml");
     }
+  });
+
+  // 222 Phase 4: the empty-state copy names the CONFIGURED directory.
+  it("empty directory → guidance error naming the configured jobsDir", async () => {
+    fs.mkdirSync(path.join(ROOT, "spec", "jobs"), { recursive: true });
+    const result = await selectJobFromMenu(ctxWithSelect([]).ctx, makeTestConfig({
+      projectRoot: ROOT,
+      docsDirs: { designDir: "docs/design", reviewDir: "docs/review", jobsDir: "spec/jobs" },
+    }));
+    expect(result.kind).toBe("error");
+    expect(result.kind === "error" ? result.error : "").toContain("spec/jobs/*_loop.yaml");
   });
 
   it("ignored non-*_loop.yaml files are listed in the empty-state error", async () => {

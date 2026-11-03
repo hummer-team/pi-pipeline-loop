@@ -21,6 +21,7 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import type { EnsureDecisionMenuResult } from "../decision-menu-runtime";
 import { executeDecision } from "../flow-state";
 import type { FlowStateCtx } from "../flow-state";
@@ -92,7 +93,7 @@ export async function runFreezeAutopilot(
   reason: string,
   opts?: RequestDecisionOpts,
 ): Promise<EnsureDecisionMenuResult | null> {
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active) {
     // `isAutoJobActive()` is the caller's gate (an in-process fact); the null
     // above therefore means the DISK record disagrees with it. Phase 3 §6 /

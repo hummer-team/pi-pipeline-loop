@@ -24,6 +24,7 @@ import type {
   ConfirmMode,
   DesignReviewVerificationOutcome,
 } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import { extractReportIssues } from "./report";
 import { runVerification, type VerificationRunResult } from "../auto-verifier";
 import { stageMigrationResetCounters } from "../stage-exit/migration-reset";
@@ -1075,7 +1076,7 @@ async function maybeApplyAutoOnFailStop(
 ): Promise<CoordinatorResult | null> {
   if (!meta.autoJob) return null;
   const { readActiveJobContext } = await import("../auto-pipeline/config-overlay");
-  const active = readActiveJobContext(ctx.config.projectRoot);
+  const active = readActiveJobContext(ctx.config.projectRoot, docsDirsOf(ctx.config).jobsDir);
   if (!active || active.state.status !== "running") return null;
   if (active.job.designReview.onFail !== "stop") return null;
 

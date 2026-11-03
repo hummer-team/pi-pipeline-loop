@@ -17,6 +17,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { PipelineConfig } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import { loadVerifyContractAnchors } from "../../utils/contract-loader";
 import { readActiveJobContext } from "./config-overlay";
 import { resolveClarifyAnchors } from "./clarify-anchors";
@@ -44,7 +45,7 @@ export async function resolveAutoLedgerGuidance(input: {
   config: PipelineConfig;
   planDoc: string;
 }): Promise<string | null> {
-  const active = readActiveJobContext(input.config.projectRoot);
+  const active = readActiveJobContext(input.config.projectRoot, docsDirsOf(input.config).jobsDir);
   if (!active || active.state.status !== "running") return null;
   const doc = active.state.docs[active.state.docIndex]?.doc;
   if (!doc) return null;

@@ -3,8 +3,10 @@
  * 219 Phase 4 (R5Q3-A + M2): discovery + menu rows for `/pipeline-auto`.
  *
  * Rules (frozen):
- * - Scan ONLY `{projectRoot}/docs/jobs/*_loop.yaml` (no recursion), take the ≤5
- *   newest by mtime; every other `*.yaml` is reported as IGNORED (221 Phase 3).
+ * - Scan ONLY `{projectRoot}/{jobsDir}/*_loop.yaml` (no recursion; `jobsDir`
+ *   defaults to `docs/jobs`, configurable via `docs.jobsDir` — 222 Phase 4),
+ *   take the ≤5 newest by mtime; every other `*.yaml` is reported as IGNORED
+ *   (221 Phase 3).
  * - Row copy is ENGLISH (project language rule): `{file} ({done}/{total} done)`,
  *   plus `resume {docIndex+1}/{total}` when the sidecar is running, plus
  *   `(job changed)` when the job file's hash no longer matches the sidecar
@@ -16,7 +18,8 @@
 import * as fs from "node:fs";
 import * as pathMod from "node:path";
 import type { PipelineConfig, SessionMeta } from "../types";
-import { AUTO_PIPELINE_JOB_DIR } from "../constants";
+import { DEFAULT_JOBS_DIR } from "../constants";
+import { docsDirsOf } from "../docs-paths";
 import { hashJobBytes, parseAutoJob } from "../core/auto-pipeline/job-schema";
 import {
   isValidJobId,
@@ -26,7 +29,7 @@ import {
 } from "../core/auto-pipeline/job-state";
 import { auditAutoDiagnostic } from "../core/auto-pipeline/diagnostics";
 
-/** One menu row (one `docs/jobs/*.yaml` file). */
+/** One menu row (one `{jobsDir}/*.yaml` file). */
 export interface JobMenuRow {
   jobId: string;
   fileName: string;
@@ -63,9 +66,12 @@ export interface JobScanResult {
  * Only `*_loop.yaml` files become rows; every other `.yaml` is reported as
  * ignored so the menu can explain the naming rule. Never throws: a missing
  * directory yields empty lists, unreadable files are skipped with an error log.
+ *
+ * `jobsDir` is project-relative (or absolute) and defaults to the built-in
+ * `docs/jobs`; pass `docsDirsOf(config).jobsDir` to honour the configuration.
  */
-export function scanJobFiles(projectRoot: string): JobScanResult {
-  const dir = pathMod.join(projectRoot, AUTO_PIPELINE_JOB_DIR);
+export function scanJobFiles(projectRoot: string, jobsDir: string = DEFAULT_JOBS_DIR): JobScanResult {
+  const dir = pathMod.isAbsolute(jobsDir) ? jobsDir : pathMod.join(projectRoot, jobsDir);
   let yamlNames: string[];
   try {
     yamlNames = fs.readdirSync(dir).filter((name) => name.endsWith(".yaml"));
@@ -98,7 +104,9 @@ export function scanJobFiles(projectRoot: string): JobScanResult {
       continue;
     }
 
-    const parsed = parseAutoJob(raw, pathMod.join(AUTO_PIPELINE_JOB_DIR, fileName));
+    // The persisted job path mirrors the scan location (project-relative when
+    // the directory is relative — the on-disk contract is unchanged).
+    const parsed = parseAutoJob(raw, pathMod.join(jobsDir, fileName));
     const sidecarExisted = fs.existsSync(resolveJobStatePath(projectRoot, jobId));
     const state = readJobState(projectRoot, jobId);
     rows.push({
@@ -143,7 +151,8 @@ export async function selectJobFromMenu(
   ctx: { ui?: { select?: (message: string, options: string[]) => Promise<string | undefined>; notify?: (message: string, level?: string) => void } },
   config: PipelineConfig,
 ): Promise<JobMenuSelection> {
-  const { rows, ignored } = scanJobFiles(config.projectRoot);
+  const jobsDir = docsDirsOf(config).jobsDir;
+  const { rows, ignored } = scanJobFiles(config.projectRoot, jobsDir);
   const ignoredNote = ignored.length > 0
     ? ` Ignored ${ignored.length} non-*_loop.yaml file(s): ${ignored.join(", ")}. Rename them to <name>_loop.yaml.`
     : "";
@@ -151,7 +160,7 @@ export async function selectJobFromMenu(
     return {
       kind: "error",
       error:
-        "No job files found in docs/jobs/*_loop.yaml. Create one first (see the template installed by /pipeline-init: .pi/auto_job_loop_template.yaml)." +
+        `No job files found in ${jobsDir}/*_loop.yaml. Create one first (see the template installed by /pipeline-init: .pi/auto_job_loop_template.yaml).` +
         ignoredNote,
     };
   }

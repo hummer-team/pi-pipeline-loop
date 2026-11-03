@@ -20,7 +20,8 @@
 import * as fs from "node:fs";
 import * as pathMod from "node:path";
 import type { Command, PipelineConfig, PipelineJsonConfig, PipelineStage, SessionMeta } from "../types";
-import { AUTO_PIPELINE_JOB_DIR, CONFIG_DIR_NAME } from "../constants";
+import { docsDirsOf } from "../docs-paths";
+import { CONFIG_DIR_NAME } from "../constants";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { startNewPipeline } from "./pipeline-start";
 import { safeWriteAuditLog } from "../utils/auditLog";
@@ -36,6 +37,7 @@ import {
   noteDocStage,
   readJobState,
   resolveJobStatePath,
+  resolveTrackedJobFile,
   writeJobState,
   type AutoJobState,
 } from "../core/auto-pipeline/job-state";
@@ -120,7 +122,7 @@ export function createPipelineAutoCommand(config: PipelineConfig): Command {
   return {
     name: "pipeline-auto",
     description:
-      "Auto pipeline: pick a job from docs/jobs/*.yaml and run clarify → plan → develop → review unattended",
+      `Auto pipeline: pick a job from ${docsDirsOf(config).jobsDir}/*.yaml and run clarify → plan → develop → review unattended`,
     execute: async (args: Record<string, unknown>, ctx?: unknown): Promise<unknown> =>
       runPipelineAuto(config, args as PipelineAutoArgs, ctx as AutoPipelineCommandCtx),
   };
@@ -182,7 +184,7 @@ async function closeAbandonedContinuation(
   jobId: string,
   error: string | undefined,
 ): Promise<void> {
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active || active.jobId !== jobId || active.state.status !== "running") return;
   await safeWriteAuditLog(
     "pipeline_auto_chain",
@@ -217,7 +219,15 @@ function resolveInternalTarget(
   jobId: string,
 ): { ok: true; jobId: string } | { ok: false; error: string } {
   if (jobId) {
-    const jobPath = pathMod.join(config.projectRoot, AUTO_PIPELINE_JOB_DIR, `${jobId}.yaml`);
+    // 222 Phase 4: resolve through the SAME single resolver as the runtime
+    // seams, so a job whose directory was moved is still startable by id.
+    const jobsDir = docsDirsOf(config).jobsDir;
+    const jobPath = resolveTrackedJobFile(
+      config.projectRoot,
+      jobsDir,
+      jobId,
+      readJobState(config.projectRoot, jobId)?.jobPath,
+    );
     if (!jobId.endsWith("_loop") || !fs.existsSync(jobPath)) {
       // Phase 3 naming rule: only `<name>_loop.yaml` is a startable job file.
       return {
@@ -296,7 +306,8 @@ async function rebuildJobState(
   if (!parsed.ok) return { ok: false, error: parsed.errors.join("\n") };
   const fresh = createJobState({
     jobId: row.jobId,
-    jobPath: pathMod.join(AUTO_PIPELINE_JOB_DIR, row.fileName),
+    // The sidecar keeps the PROJECT-RELATIVE path (on-disk contract unchanged).
+    jobPath: pathMod.join(docsDirsOf(config).jobsDir, row.fileName),
     jobHash: hash,
     docs: parsed.job.docs.list,
   });
@@ -520,8 +531,22 @@ export async function startAutoJob(input: {
   }
 
   // 221 Phase 3: jobId is the FULL stem of `<name>_loop.yaml` — never normalized.
-  const jobRelPath = pathMod.join(AUTO_PIPELINE_JOB_DIR, `${jobId}.yaml`);
-  const jobFile = readJobFile(pathMod.join(projectRoot, jobRelPath));
+  // 222 Phase 4: the directory comes from `docs.jobsDir`. A job whose directory
+  // was moved still resolves through the persisted `state.jobPath`, and the
+  // sidecar then records the file that was ACTUALLY read (project-relative when
+  // it lives under the project root — the on-disk contract is unchanged).
+  const jobsDir = docsDirsOf(config).jobsDir;
+  const trackedJobPath = resolveTrackedJobFile(
+    projectRoot,
+    jobsDir,
+    jobId,
+    readJobState(projectRoot, jobId)?.jobPath,
+  );
+  const projectPrefix = projectRoot.endsWith(pathMod.sep) ? projectRoot : projectRoot + pathMod.sep;
+  const jobRelPath = trackedJobPath.startsWith(projectPrefix)
+    ? trackedJobPath.slice(projectPrefix.length)
+    : trackedJobPath;
+  const jobFile = readJobFile(trackedJobPath);
   if (!jobFile.ok) {
     // Missing OR unreadable: both mean "no such `<name>_loop.yaml` job".
     return preLockFailure(`${jobFile.error} — job files must be named <name>_loop.yaml`);

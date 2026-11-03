@@ -49,13 +49,14 @@ import * as fsPromises from "node:fs/promises";
 import * as pathMod from "node:path";
 import { randomUUID } from "node:crypto";
 import type { PipelineConfig, PipelineJsonConfig, PipelineStage } from "../../types";
-import { AUTO_PIPELINE_LOCK_FILE, CONFIG_DIR_NAME } from "../../constants";
+import { AUTO_PIPELINE_LOCK_FILE, CONFIG_DIR_NAME, DEFAULT_JOBS_DIR } from "../../constants";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { resolvePipelineConfig } from "../json-config-loader";
+import { docsDirsOf } from "../../docs-paths";
 import type { AutoJobConfig } from "./job-schema";
 import { parseAutoJob, hashJobBytes } from "./job-schema";
 import type { AutoJobState, OverlayEntry } from "./job-state";
-import { listRunningJobs, readJobState, writeJobState, isValidJobId } from "./job-state";
+import { listRunningJobs, readJobState, resolveTrackedJobFile, writeJobState, isValidJobId } from "./job-state";
 import { auditAutoDiagnostic } from "./diagnostics";
 
 export type { OverlayEntry };
@@ -655,7 +656,10 @@ export interface ActiveAutoJobContext {
   jobHash: string;
 }
 
-export function readActiveJobContext(projectRoot: string): ActiveAutoJobContext | null {
+export function readActiveJobContext(
+  projectRoot: string,
+  jobsDir: string = DEFAULT_JOBS_DIR,
+): ActiveAutoJobContext | null {
   if (!isAutoJobActive()) return null;
   const lock = readJobLock(projectRoot);
   // The lock file must still name THIS process; otherwise the in-process fact
@@ -665,9 +669,10 @@ export function readActiveJobContext(projectRoot: string): ActiveAutoJobContext 
   if (!state) return null;
   let raw: string;
   try {
-    const jobPathAbs = pathMod.isAbsolute(state.jobPath)
-      ? state.jobPath
-      : pathMod.join(projectRoot, state.jobPath);
+    // 222 Phase 4: the configured job directory is authoritative — a sidecar
+    // still naming the OLD `state.jobPath` (after the job directory was moved)
+    // resolves to the current file instead of reporting `job_drift`.
+    const jobPathAbs = resolveTrackedJobFile(projectRoot, jobsDir, lock.jobId, state.jobPath);
     raw = fs.readFileSync(jobPathAbs, "utf8");
   } catch (err) {
     auditAutoDiagnostic("job_file_unreadable", "Auto-job file unreadable — no auto seam acts.", {
@@ -794,12 +799,15 @@ export async function replayOverlayForSessionStart(
   }
 
   // State 1 / 4: lock absent or holder dead. Verify hash before replaying.
+  // 222 Phase 4: read through the configured jobs directory (same resolver as
+  // every other auto seam) so a moved job directory still replays.
+  const jobsDir = docsDirsOf(config).jobsDir;
   let raw: string;
   try {
-    const jobPathAbs = pathMod.isAbsolute(state.jobPath)
-      ? state.jobPath
-      : pathMod.join(projectRoot, state.jobPath);
-    raw = await fsPromises.readFile(jobPathAbs, "utf8");
+    raw = await fsPromises.readFile(
+      resolveTrackedJobFile(projectRoot, jobsDir, jobId, state.jobPath),
+      "utf8",
+    );
   } catch (err) {
     auditAutoDiagnostic("replay_job_file_unreadable", "Auto-job file unreadable at session start — no overlay replay.", {
       jobId,

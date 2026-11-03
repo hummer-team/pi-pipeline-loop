@@ -17,6 +17,7 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import { auditAutoDecision } from "./auto-audit";
 import { stampClarifyRoundDispatch } from "./clarify-round-budget";
 import {
@@ -49,7 +50,7 @@ export async function runAutoClarifyRound(
   deps: ClarifyEntryDeps = DEFAULT_CLARIFY_DEPS,
 ): Promise<boolean> {
   if (meta.currentStage !== "clarify") return false;
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active || active.state.status !== "running") return false;
   const { state, job } = active;
   const doc = meta.requirementDoc;
@@ -120,7 +121,7 @@ export async function noteClarifyStartupDispatch(input: {
   round: number;
   now?: number;
 }): Promise<void> {
-  const active = readActiveJobContext(input.config.projectRoot);
+  const active = readActiveJobContext(input.config.projectRoot, docsDirsOf(input.config).jobsDir);
   if (!active || active.state.status !== "running") return;
   const { state } = active;
   const progress = state.docs[state.docIndex];

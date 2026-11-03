@@ -18,6 +18,7 @@
  */
 
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import type { StageVisitResult } from "../../utils/stage-visit";
 import { recordStageVisit } from "../../utils/stage-visit";
 import type { AutoJobConfig } from "./job-schema";
@@ -160,7 +161,7 @@ export async function finalizeOnSoftStop(
 ): Promise<void> {
   const finalize = await import("./finalize");
   const stopReason = verdict.kind === "soft" ? verdict.stopReason : "budget_exhausted";
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (active) {
     await finalize.handleDocFailure(ctx as never, config, active.state, active.job, {
       outcome: "failed",
@@ -216,7 +217,9 @@ export function recordAutoAwareStageVisit(input: {
   const visit = recordStageVisit(input.meta, input.nextStage, input.maxCycles, input.config);
   if (!input.config) return { kind: "visit", visit };
   const config = input.config;
-  const context = input.resolveContext ? input.resolveContext() : readActiveJobContext(config.projectRoot);
+  const context = input.resolveContext
+    ? input.resolveContext()
+    : readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!context) return { kind: "visit", visit };
 
   const isLoopTarget = input.nextStage === "develop" || input.nextStage === "fix";

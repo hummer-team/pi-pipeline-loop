@@ -15,6 +15,7 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import { docsDirsOf } from "../../docs-paths";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { detectSessionRole } from "../session-role";
 import { noteDocStage, writeJobState } from "./job-state";
@@ -55,7 +56,7 @@ export async function handleAutoSettle(
   // reconcile falls back to the same-session serial or stops the job honestly.
   if (await reconcilePendingContinuation(ctx, config)) return true;
 
-  const active = readActiveJobContext(config.projectRoot);
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active) {
     // The job file is no longer readable/valid ⇒ no budget can be judged. Stop
     // and report instead of idling (Phase 5 §4: any termination runs the

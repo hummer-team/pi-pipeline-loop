@@ -181,6 +181,40 @@ export function resolveJobStatePath(projectRoot: string, jobId: string): string 
 }
 
 /**
+ * 222 Phase 4: resolve the ONE job file an auto seam must read.
+ *
+ * The configured `jobsDir` is the primary location (`docs.jobsDir`, when a run
+ * moves the job directory the sidecar written by an older run still names the
+ * OLD relative path). Resolution order:
+ *   1. `<jobsDir>/<jobId>.yaml` when it exists — the current configuration wins;
+ *   2. the persisted `state.jobPath` when THAT exists (a job whose directory was
+ *      moved before the config changed is still resumable);
+ *   3. the configured path as a last resort, so the caller's read fails with the
+ *      path the user actually configured instead of a stale one.
+ *
+ * `jobsDir` may be absolute or project-relative; `storedJobPath` follows the
+ * same rule (`AutoJobState.jobPath` stays PROJECT-RELATIVE on disk).
+ */
+export function resolveTrackedJobFile(
+  projectRoot: string,
+  jobsDir: string,
+  jobId: string,
+  storedJobPath?: string,
+): string {
+  const configured = pathMod.isAbsolute(jobsDir)
+    ? pathMod.join(jobsDir, `${jobId}.yaml`)
+    : pathMod.join(projectRoot, jobsDir, `${jobId}.yaml`);
+  if (fs.existsSync(configured)) return configured;
+  if (storedJobPath) {
+    const stored = pathMod.isAbsolute(storedJobPath)
+      ? storedJobPath
+      : pathMod.join(projectRoot, storedJobPath);
+    if (fs.existsSync(stored)) return stored;
+  }
+  return configured;
+}
+
+/**
  * jobId must be a safe on-disk segment (single path component, traversal-free).
  * Rejects empty strings, path separators, ".." and control characters.
  */

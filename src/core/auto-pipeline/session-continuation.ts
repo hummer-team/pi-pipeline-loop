@@ -18,6 +18,7 @@
 
 import type { PipelineConfig } from "../../types";
 import { safeWriteAuditLog } from "../../utils/auditLog";
+import { docsDirsOf } from "../../docs-paths";
 import { readJobState } from "./job-state";
 import {
   getActiveJobId,
@@ -51,9 +52,14 @@ export function __resetSessionContinuationForTests(): void {
   __resetSessionContinuationNoticesForTests();
 }
 
-/** TRUE when this process truly owns the job RIGHT NOW (in-memory + disk). */
-function thisProcessOwnsJob(projectRoot: string, jobId: string): boolean {
-  return readActiveJobContext(projectRoot)?.jobId === jobId;
+/**
+ * TRUE when this process truly owns the job RIGHT NOW (in-memory + disk).
+ *
+ * 222 Phase 4: `jobsDir` is resolved by the CALLER (this module has no config
+ * access by design) and forwarded to the single job-file resolver.
+ */
+function thisProcessOwnsJob(projectRoot: string, jobId: string, jobsDir: string): boolean {
+  return readActiveJobContext(projectRoot, jobsDir)?.jobId === jobId;
 }
 
 /**
@@ -89,12 +95,16 @@ export async function resumePendingContinuationOnSessionStart(
   if (isAutoJobActive() && getActiveJobId() !== state.jobId) return false;
   if (continuationClaims.has(state.jobId)) return false;
 
+  // 222 Phase 4: the job directory comes from the config this session runs on
+  // (a moved directory must still resolve both the drift gate and ownership).
+  const jobsDir = docsDirsOf(config).jobsDir;
+
   // Claim BEFORE the first await: two session_start handlers in one process
   // must never both pass the guard while the drift check is in flight.
   continuationClaims.add(state.jobId);
   try {
     // Drift gate: never start a document against a changed job file.
-    if (!(await jobFileMatchesSidecar(config.projectRoot, state))) {
+    if (!(await jobFileMatchesSidecar(config.projectRoot, state, jobsDir))) {
       await finalizeDriftedJob(ctx, config, state);
       return true;
     }
@@ -112,7 +122,7 @@ export async function resumePendingContinuationOnSessionStart(
     // this process actually holds (in-memory + lock file) may be finalized.
     const ownsLock =
       outcome.failurePhase === "post_lock" ||
-      (outcome.failurePhase === "unknown" && thisProcessOwnsJob(config.projectRoot, state.jobId));
+      (outcome.failurePhase === "unknown" && thisProcessOwnsJob(config.projectRoot, state.jobId, jobsDir));
 
     if (!ownsLock) {
       // Failure BEFORE lock acquisition (job file unreadable/invalid/tier
