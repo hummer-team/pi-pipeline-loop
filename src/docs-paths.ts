@@ -25,6 +25,7 @@ import {
   DEFAULT_JOBS_DIR,
   DEFAULT_READONLY_WRITE_PATHS,
   DEFAULT_REVIEW_DIR,
+  DEFAULT_STAGE_DOC_DIRS,
 } from "./constants";
 
 // ─── Glob constructors ──────────────────────────────────────────────────────
@@ -82,7 +83,24 @@ export function normalizeDocsDir(raw: unknown): { value?: string; warning?: stri
 
 // ─── Precedence resolution ──────────────────────────────────────────────────
 
-/** First VALID configured stage directory among `keys` (order = priority). */
+/**
+ * First VALID, NON-BOILERPLATE configured stage directory among `keys`
+ * (order = priority).
+ *
+ * 222 review issue 1: a `docs.stageDirs[key]` value EQUAL to the built-in
+ * default (`DEFAULT_STAGE_DOC_DIRS[key]`) is BOILERPLATE — it is what the
+ * shipped template used to pin (`review: "docs/design"`, `fix: "docs/review"`,
+ * …). Treating it as a real derivation made an upgraded project (legacy six-key
+ * `stageDirs`, no `docs.*Dir` key) derive `reviewDir = docs/design` from the
+ * `review` key, which broke review-report discovery, `fix` start evidence,
+ * verify narrowing and the doc menu at once. Skipping boilerplate keeps the
+ * "installed projects are unaffected" invariant and also silences the
+ * misleading `disagree` warning they used to emit on every startup.
+ *
+ * The check runs on the NORMALIZED value, so `"docs/design/"` / `"docs\\design"`
+ * count as boilerplate too (no phantom "custom" directory that only differs by
+ * a separator).
+ */
 function pickStageDir(
   stageDirs: Partial<Record<PipelineStage, string>> | undefined,
   keys: readonly PipelineStage[],
@@ -101,6 +119,9 @@ function pickStageDir(
       warnings.push(`docs.stageDirs.${key}: ${parsed.warning}; ignored for ${label}`);
       continue;
     }
+    // Review issue 1: template boilerplate (value === that stage's built-in
+    // default) is not a derivation input — see the function doc comment.
+    if (parsed.value === DEFAULT_STAGE_DOC_DIRS[key]) continue;
     values.push(parsed.value);
   }
   const distinct = [...new Set(values)];

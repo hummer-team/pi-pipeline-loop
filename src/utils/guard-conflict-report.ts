@@ -11,15 +11,14 @@
  * "单次拦截计 1 violation，同桶满 DEFAULT_MAX_VIOLATIONS (3) 即 violation_overflow 冻结"
  */
 
-import { DEFAULT_MAX_VIOLATIONS } from "../constants";
+import * as path from "node:path";
+import type { SessionMeta, PipelineStage } from "../types";
+// 222 Phase 2: the design directory is an ARGUMENT (this module never reads the
+// configuration object); callers pass `docsDirsOf(config).designDir`.
+import { DEFAULT_DESIGN_DIR, DEFAULT_MAX_VIOLATIONS } from "../constants";
 import { getFlowState, formatAbortedNotifyText, formatFrozenReason, formatDecisionMenuHint } from "../core/flow-state";
 import { isPathReadOnly } from "./protect";
 import { resolveCommitDocPath, getStageDeliverableExemptions } from "../core/verify-path-resolver";
-// 222 Phase 2: the design directory is an ARGUMENT (this module never reads the
-// configuration object); callers pass `docsDirsOf(config).designDir`.
-import { DEFAULT_DESIGN_DIR } from "../constants";
-import * as path from "node:path";
-import type { SessionMeta, PipelineStage } from "../types";
 
 /**
  * Describes a read-only ∩ writable path conflict.

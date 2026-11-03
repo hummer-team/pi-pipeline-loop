@@ -7,7 +7,9 @@
  *   (append-only) and in the develop/fix read-only protection glob;
  * - explicitly configured stage whitelists are never overridden;
  * - the archive scope priority is `archive.dirs` → `docs.stageDirs` →
- *   `[designDir, reviewDir]` → `["docs"]`, and `jobsDir` is never archived;
+ *   `[designDir, reviewDir]` → `["docs"]` (the last tier is not reachable from
+ *   `resolvePipelineConfig`, so a default project scans the two doc dirs), and
+ *   `jobsDir` is never archived;
  * - `/pipeline-init` creates design + review (but not jobs), idempotently.
  */
 import { describe, expect, it } from "bun:test";
@@ -17,6 +19,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { resolvePipelineConfig } from "../../core/json-config-loader";
 import { createPipelineInitCommand } from "../../commands/pipeline-init";
+import { DEFAULT_DESIGN_DIR, DEFAULT_JOBS_DIR, DEFAULT_REVIEW_DIR } from "../../constants";
 import { makeStageConfig, makeTestConfig } from "../helpers";
 import type { DocsDirs, PipelineConfig, PipelineJsonConfig, PipelineStage } from "../../types";
 
@@ -119,8 +122,19 @@ describe("archiveDirs priority (222 Phase 3)", () => {
     expect(config.archiveDirs).toEqual(["spec/docs"]);
   });
 
-  it("tier 4: the unconfigured project keeps the legacy ['docs'] scope", () => {
-    expect(resolvePipelineConfig({ stages: { clarify: {} } }).archiveDirs).toEqual(["docs"]);
+  it("tier 4: an unconfigured project scans the resolved default directories", () => {
+    // Review issue 2: the pre-222 template pinned ["docs/design","docs/review"];
+    // the derived chain now reproduces exactly that instead of widening to ["docs"].
+    expect(resolvePipelineConfig({ stages: { clarify: {} } }).archiveDirs)
+      .toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
+  });
+
+  it("tier 4 never collects docs/jobs job files (jobsDir is never archived)", () => {
+    const config = resolvePipelineConfig({ stages: { clarify: {} } });
+    expect(config.archiveDirs).not.toContain(DEFAULT_JOBS_DIR);
+    // A broad ["docs"] scope would make docs/jobs reachable by the scanner.
+    const archiveDirs = config.archiveDirs ?? [];
+    expect(archiveDirs.every((dir) => !DEFAULT_JOBS_DIR.startsWith(`${dir}/`))).toBe(true);
   });
 
   it("never archives jobsDir", () => {

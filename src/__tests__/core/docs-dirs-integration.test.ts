@@ -1,7 +1,7 @@
 /**
  * 222 Phase 6: end-to-end integration of the configurable docs layout.
  *
- * Two invariants are pinned here (no new feature code):
+ * Invariants pinned here:
  *
  * 1. ZERO IMPACT ON DEFAULTS — an unconfigured project resolves exactly like the
  *    pre-222 baseline: no `docsDirs` field, default commit-doc path, default glob
@@ -13,6 +13,10 @@
  *    consumer at once: write whitelist, read-only protection, verify narrowing,
  *    review scanning, job-file resolution, archive scope and the document menu
  *    (`resolveStageDocDir`), so no consumer silently keeps the old directory.
+ * 3. UPGRADE PATH — an installed project whose `.pi/pipeline_loop.json` still
+ *    carries the pre-222 template's six `docs.stageDirs` values (and no new key)
+ *    resolves EXACTLY like an unconfigured one, loaded through the real
+ *    `loadJsonConfig` (222 review issue 1).
  *
  * Boundary coverage: directory equal to the default, a directory containing
  * spaces, a Windows-separator input, and the `stageDirs` vs explicit-key
@@ -23,10 +27,11 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolvePipelineConfig } from "../../core/json-config-loader";
+import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-loader";
 import { resolveStageDocDir } from "../../core/doc-discovery";
 import { resolveTrackedJobFile } from "../../core/auto-pipeline/job-state";
 import { scanJobFiles } from "../../commands/pipeline-auto-menu";
+import { collectArchiveTargets } from "../../core/archive/scanner";
 import {
   applyConcreteStageDocPaths,
   isCommitDocGlob,
@@ -39,7 +44,6 @@ import { findLatestReviewReport } from "../../utils/review-conclusion";
 import { docsDirsOf } from "../../docs-paths";
 import {
   DEFAULT_DESIGN_DIR,
-  DEFAULT_DOCS_FALLBACK_DIRS,
   DEFAULT_JOBS_DIR,
   DEFAULT_READONLY_WRITE_PATHS,
   DEFAULT_REVIEW_DIR,
@@ -136,7 +140,10 @@ describe("222 Phase 6 — zero impact when nothing is configured", () => {
     expect(isPlanDocGlob("docs/design/*_Plan.md")).toBe(true);
     expect(isCommitDocGlob("docs/design/*_Develop_Commit.md")).toBe(true);
     expect(isReviewDocGlob("docs/review/Code_Review_*.md")).toBe(true);
-    expect(config.archiveDirs).toEqual([...DEFAULT_DOCS_FALLBACK_DIRS]);
+    // 222 review issue 2: an unconfigured project scans exactly the resolved
+    // design/review directories — never the broad ["docs"] fallback, which
+    // would put `docs/jobs/*_loop.yaml` in the archive/delete list.
+    expect(config.archiveDirs).toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
   });
 
   it("keeps the default stage write scopes, with the R3Q9-A exception frozen", () => {
@@ -356,7 +363,8 @@ describe("222 Phase 6 — boundary configurations", () => {
       jobsDir: DEFAULT_JOBS_DIR,
     });
     expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
-    expect(config.archiveDirs).toEqual([...DEFAULT_DOCS_FALLBACK_DIRS]);
+    // Review issue 2: the resolved layout always wins in tier 3, defaults included.
+    expect(config.archiveDirs).toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
   });
 
   it("supports a directory containing spaces", () => {
@@ -433,5 +441,163 @@ describe("222 Phase 6 — invalid directories warn and fall back", () => {
     // The invalid value never reaches a write scope or a read-only glob.
     expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
     expect(config.archiveDirs).not.toContain("../escape");
+  });
+});
+
+// ─── 222 review issue 1: the real upgrade path ─────────────────────────────
+//
+// Every test above builds its config in memory. The failure this block pins was
+// invisible from there: an INSTALLED project keeps the pre-222 template's six
+// `docs.stageDirs` values on disk, and `pickStageDir` used to read
+// `review: "docs/design"` as a genuine derivation → `reviewDir = docs/design`,
+// which broke review discovery, fix start evidence, verify narrowing and the doc
+// menu at once. The regression must therefore go through the real loader.
+
+describe("222 review issue 1 — legacy template stageDirs upgrade path", () => {
+  /** The `docs.stageDirs` block the pre-222 template shipped (verbatim). */
+  const LEGACY_TEMPLATE_STAGE_DIRS = {
+    clarify: "docs/design",
+    plan: "docs/design",
+    "design-review": "docs/design",
+    develop: "docs/design",
+    review: "docs/design",
+    fix: "docs/review",
+  };
+
+  /** Every throwaway project root created by this block (removed in `afterAll`). */
+  const createdRoots: string[] = [];
+
+  afterAll(async () => {
+    for (const root of createdRoots) {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Writes a pre-222-shaped `pipeline_loop.json` (legacy `docs.stageDirs` and
+   * `archive.dirs`, no `docs.*Dir` key) plus the given project files, then loads
+   * it through the production loader.
+   */
+  async function loadLegacyProject(
+    files: string[],
+  ): Promise<{ root: string; config: PipelineConfig; warnings: string[] }> {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-docs-upgrade-"));
+    createdRoots.push(root);
+    for (const rel of files) {
+      const abs = path.join(root, rel);
+      await fsp.mkdir(path.dirname(abs), { recursive: true });
+      await fsp.writeFile(abs, "# doc\n", "utf8");
+    }
+    const configPath = path.join(root, ".pi/pipeline_loop.json");
+    await fsp.mkdir(path.dirname(configPath), { recursive: true });
+    await fsp.writeFile(configPath, JSON.stringify({
+      stages: Object.fromEntries(ALL_STAGES.map((stage) => [stage, {}])),
+      docs: { stageDirs: LEGACY_TEMPLATE_STAGE_DIRS },
+    }, null, 2), "utf8");
+
+    const json = loadJsonConfig(configPath);
+    json.projectRoot = root;
+    const { config, warnings } = resolveCapturingWarnings(json);
+    return { root, config, warnings };
+  }
+
+  it("keeps reviewDir at docs/review (boilerplate review/fix values are skipped)", async () => {
+    const { config } = await loadLegacyProject([]);
+    expect(docsDirsOf(config)).toEqual({
+      designDir: DEFAULT_DESIGN_DIR,
+      reviewDir: DEFAULT_REVIEW_DIR,
+      jobsDir: DEFAULT_JOBS_DIR,
+    });
+    // The block is NOT attached — exactly the unconfigured shape.
+    expect("docsDirs" in config).toBe(false);
+  });
+
+  it("emits no misleading 'disagree' warning on every startup", async () => {
+    const { warnings } = await loadLegacyProject([]);
+    expect(warnings.filter((w) => w.includes("disagree"))).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("still finds the review report in docs/review", async () => {
+    const { root, config } = await loadLegacyProject([
+      "docs/design/222_Feat.md",
+      "docs/review/Code_Review_222_Feat_Develop_Commit_1.md",
+    ]);
+    expect(await findLatestReviewReport(root, docsDirsOf(config).reviewDir))
+      .toBe(path.join(root, "docs/review/Code_Review_222_Feat_Develop_Commit_1.md"));
+  });
+
+  it("narrows the review verify glob to docs/review, not docs/design", async () => {
+    const { config } = await loadLegacyProject([]);
+    const narrowed = await applyConcreteStageDocPaths(
+      rulesWith("docs/review/Code_Review_*.md"),
+      config,
+      makeTestMeta({
+        currentStage: "review",
+        requirementDoc: "docs/design/222_Feat.md",
+      }),
+    );
+    expect(narrowed.path).toBe("docs/review/Code_Review_222_Feat_Develop_Commit_*.md");
+  });
+
+  it("puts the review and fix doc menus on docs/review", async () => {
+    const { config } = await loadLegacyProject([]);
+    // `review`/`fix` are the two stages the legacy block pointed at mismatched
+    // directories; a boilerplate value must not leak into the menu either.
+    expect(resolveStageDocDir(config, "review")).toEqual({
+      dir: DEFAULT_DESIGN_DIR,
+      autoMatched: true,
+    });
+    expect(resolveStageDocDir(config, "fix")).toEqual({
+      dir: DEFAULT_REVIEW_DIR,
+      autoMatched: true,
+    });
+  });
+
+  it("keeps the archive scope on the two doc directories, never docs/jobs", async () => {
+    const { config } = await loadLegacyProject([
+      "docs/jobs/nightly_loop.yaml",
+      "docs/design/1_Plan.md",
+      "docs/review/r.md",
+    ]);
+    expect(config.archiveDirs).toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
+
+    // Real scan: every file is old enough, jobsDir must stay out of the result.
+    const scan = await collectArchiveTargets(config, 0, undefined, Date.now() + 86_400_000);
+    const relPaths = scan.targets.map((t) => t.relPath).sort();
+    expect(relPaths).toEqual(["docs/design/1_Plan.md", "docs/review/r.md"]);
+    expect(relPaths.some((p) => p.startsWith("docs/jobs/"))).toBe(false);
+  });
+});
+
+// ─── 222 review issue 2: the default install archive scope ─────────────────
+
+describe("222 review issue 2 — default install archive scope", () => {
+  let tmpRoot = "";
+
+  afterAll(async () => {
+    if (tmpRoot) await fsp.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("never collects docs/jobs/*_loop.yaml under the default layout", async () => {
+    tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-docs-archive-default-"));
+    for (const rel of [
+      "docs/design/1_Plan.md",
+      "docs/review/r.md",
+      "docs/jobs/nightly_loop.yaml",
+      "docs/bug/b.md",
+    ]) {
+      const abs = path.join(tmpRoot, rel);
+      await fsp.mkdir(path.dirname(abs), { recursive: true });
+      await fsp.writeFile(abs, "# doc\n", "utf8");
+    }
+
+    const config = resolvePipelineConfig({ projectRoot: tmpRoot, stages: stageMap() });
+    expect(config.archiveDirs).toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
+
+    const scan = await collectArchiveTargets(config, 0, undefined, Date.now() + 86_400_000);
+    const relPaths = scan.targets.map((t) => t.relPath).sort();
+    // The broad ["docs"] scope used to pull in docs/jobs and docs/bug too.
+    expect(relPaths).toEqual(["docs/design/1_Plan.md", "docs/review/r.md"]);
   });
 });

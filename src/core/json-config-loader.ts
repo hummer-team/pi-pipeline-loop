@@ -54,8 +54,6 @@ import {
   DEFAULT_STAGE_TIMEOUT_MS,
   DEFAULT_DOCS_FALLBACK_DIRS,
   DEFAULT_ARCHIVE_DEST,
-  DEFAULT_DESIGN_DIR,
-  DEFAULT_REVIEW_DIR,
   resolveStagePath,
 } from "../constants";
 
@@ -858,15 +856,26 @@ function parseCompactConfig(raw: unknown): { enabled?: boolean; tokenThreshold?:
  *
  * 222 Phase 0: also parses the three directory keys (`designDir` / `reviewDir`
  * / `jobsDir`). Any of them alone is enough to return a config block — the
- * `stageDirs` entry is no longer required. Individual values are validated by
- * `normalizeDocsDir` (non-empty relative path, no `..`); invalid values are
- * DROPPED silently here — `deriveDocsDirs` emits the single warning for them,
- * so a bad value is reported exactly once.
+ * `stageDirs` entry is no longer required.
+ *
+ * Validation contract (222 review issue 3):
+ * - Individual directory values are validated with `normalizeDocsDir`
+ *   (non-empty relative path, no `..`). An invalid value is DROPPED **and**
+ *   warned about right here, because this is the ONLY place a value read from
+ *   disk can be rejected — `deriveDocsDirs` never sees a dropped value, so
+ *   deferring the diagnostic there made every on-disk misconfiguration silent.
+ * - The in-memory path (`resolvePipelineConfig` called with a hand-built
+ *   `PipelineJsonConfig`, which never passes through this parser) still gets its
+ *   single warning from `deriveDocsDirs`. A value therefore warns exactly once
+ *   on either path, never twice.
  *
  * Validation of `stageDirs` (unchanged):
  * - Non-object (including null / array / string) → warn + undefined.
  * - Each key must be a valid pipeline stage; unknown keys warn + are ignored.
  * - Each value must be a non-empty string; invalid values warn + are ignored.
+ * - The derived-value validation (absolute / traversal `stageDirs` entries) is
+ *   `deriveDocsDirs`' job — this parser keeps the raw string on purpose, so the
+ *   single warning carries the derivation context.
  * - No valid entries remain → undefined (treated as "not configured").
  */
 export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
@@ -880,13 +889,20 @@ export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
   const obj = raw as Record<string, unknown>;
   const result: DocsJsonConfig = {};
 
-  // 222 Phase 0: the three resolved-directory keys (validation is deferred to
-  // deriveDocsDirs so each invalid value warns exactly once).
+  // 222 Phase 0 + review issue 3: the three resolved-directory keys. Invalid
+  // values are dropped HERE (the only on-disk entry point) with their own
+  // warning, so a user who writes a bad directory key is told it had no effect.
   for (const key of ["designDir", "reviewDir", "jobsDir"] as const) {
     const rawValue = obj[key];
     if (rawValue === undefined) continue;
     const parsed = normalizeDocsDir(rawValue);
-    if (parsed.value) result[key] = parsed.value;
+    if (parsed.value) {
+      result[key] = parsed.value;
+    } else {
+      console.warn(
+        `[pi-pipeline] docs.${key}: ${parsed.warning} — the built-in default applies`,
+      );
+    }
   }
 
   const stageDirs = obj.stageDirs;
@@ -1222,16 +1238,18 @@ function normalizeWatchdogThresholds(watchdog: WatchdogConfig | undefined): Watc
 /**
  * 206 Phase 0: Derives the resolved archive scan directories.
  *
- * Priority:
+ * 222 Phase 3 priority chain (no extra conditions — see 222 review issue 2):
  * 1. `json.archive?.dirs` when non-empty (after parse-time cleanup).
  * 2. Deduped values of `json.docs?.stageDirs` (the doc-menu directories are a
  *    natural archive scope).
  * 3. `[designDir, reviewDir]` — the resolved 222 docs directories (deduped).
- *    Applied ONLY when the resolved layout differs from the built-in defaults,
- *    so an unconfigured project keeps the ["docs"] baseline scan scope.
- * 4. `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]).
+ *    This tier ALWAYS applies for a resolved layout, defaults included, so a
+ *    fresh install scans exactly `["docs/design", "docs/review"]`.
+ * 4. `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]) — only reachable when no resolved
+ *    `dirs` are supplied at all (hand-constructed callers / defence in depth).
  *
- * `jobsDir` is never archived.
+ * `jobsDir` is never archived: tier 3 never contains it, and tier 4 (the broad
+ * `["docs"]` scan) is not reachable from `resolvePipelineConfig`.
  *
  * NOTE: values are NOT passed through `rewritePiPrefix` — they are plain
  * project-relative doc paths that never start with ".pi/"; the constant
@@ -1255,9 +1273,11 @@ function deriveArchiveDirs(
       .filter((value): value is string => value !== undefined),
   )];
   if (deduped.length > 0) return deduped;
-  if (dirs && (dirs.designDir !== DEFAULT_DESIGN_DIR || dirs.reviewDir !== DEFAULT_REVIEW_DIR)) {
-    return [...new Set([dirs.designDir, dirs.reviewDir])];
-  }
+  // Review issue 2: the resolved layout is used UNCONDITIONALLY, so the default
+  // installs the same ["docs/design", "docs/review"] scope the pre-222 template
+  // pinned (a broad ["docs"] scan would pull `docs/jobs/*_loop.yaml` into the
+  // archive/delete list, violating "jobsDir is never archived").
+  if (dirs) return [...new Set([dirs.designDir, dirs.reviewDir])];
   return [...DEFAULT_DOCS_FALLBACK_DIRS];
 }
 

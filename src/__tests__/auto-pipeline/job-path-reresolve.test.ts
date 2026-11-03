@@ -319,4 +319,40 @@ describe("/pipeline-auto honours docs.jobsDir (222 Phase 4)", () => {
     expect(result.error ?? "").not.toContain("not found");
     expect(result.error ?? "").not.toContain("unreadable");
   });
+
+  // ─── 222 review issue 6: the sidecar never records an ABSOLUTE job path ────
+
+  it("writes a '..'-relative jobPath when the tracked file sits outside the root", async () => {
+    writeConfigJson();
+    __resetFinalizeStateForTests();
+    // A job file that lives OUTSIDE the project root: only reachable through an
+    // absolute `docsDirs.jobsDir` (a hand-built config, like an embedder's).
+    const outside = fs.mkdtempSync(path.join(tmpdir(), "pi-222-outside-job-"));
+    try {
+      const outsideJob = path.join(outside, `${JOB_ID}.yaml`);
+      fs.writeFileSync(outsideJob, JOB_YAML, "utf8");
+      const config = makeTestConfig({
+        projectRoot: ROOT,
+        docsDirs: { designDir: "docs/design", reviewDir: "docs/review", jobsDir: outside },
+      });
+
+      const result = (await createPipelineAutoCommand(config).execute(
+        { job: JOB_ID },
+        ctxStub() as never,
+      )) as { success: boolean; error?: string };
+      expect(result.error ?? "").not.toContain("not found");
+
+      // The on-disk contract: PROJECT-RELATIVE, never the absolute path.
+      const relPath = path.relative(ROOT, outsideJob).split(path.sep).join("/");
+      const state = JSON.parse(
+        fs.readFileSync(path.join(ROOT, ".pi/auto_pipeline", JOB_ID, "state.json"), "utf8"),
+      ) as { jobPath: string };
+      expect(path.isAbsolute(state.jobPath)).toBe(false);
+      expect(state.jobPath).toBe(relPath);
+      // The recorded path still resolves back to the very same file.
+      expect(path.resolve(ROOT, state.jobPath)).toBe(outsideJob);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
 });

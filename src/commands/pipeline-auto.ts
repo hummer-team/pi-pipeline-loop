@@ -542,9 +542,14 @@ export async function startAutoJob(input: {
     jobId,
     readJobState(projectRoot, jobId)?.jobPath,
   );
-  const projectPrefix = projectRoot.endsWith(pathMod.sep) ? projectRoot : projectRoot + pathMod.sep;
-  const jobRelPath = trackedJobPath.startsWith(projectPrefix)
-    ? trackedJobPath.slice(projectPrefix.length)
+  // 222 review issue 6: `state.jobPath` stays PROJECT-RELATIVE on disk. A
+  // tracked file outside the project root is expressed with a `..`-prefixed
+  // relative path (the same convention `listDocCandidates` uses) rather than
+  // writing its absolute path back — an absolute sidecar value would silently
+  // pin the job to one machine, and a bare absolute path is not the documented
+  // on-disk contract.
+  const jobRelPath = pathMod.isAbsolute(trackedJobPath)
+    ? pathMod.relative(projectRoot, trackedJobPath).split(pathMod.sep).join("/")
     : trackedJobPath;
   const jobFile = readJobFile(trackedJobPath);
   if (!jobFile.ok) {

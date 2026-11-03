@@ -1949,11 +1949,15 @@ export interface PipelineConfig {
   // ─── Phase 3 / 175: Config staleness tracking (internal fields) ───────────
 
   /**
-   * 206 Phase 0: RESOLVED stage → candidate-document directory map.
+   * 222 Phase 0: RESOLVED stage → candidate-document directory map.
    * Present only when `docs.stageDirs` in pipeline_loop.json is configured
    * and contains at least one valid entry; `undefined` when unconfigured
    * (runtime auto-matches `DEFAULT_STAGE_DOC_DIRS` per stage).
    * Consumed by the `/pipeline-start` doc menu and archive-scope derivation.
+   *
+   * Note: entries EQUAL to `DEFAULT_STAGE_DOC_DIRS[stage]` are template
+   * boilerplate — the menu treats them as if unset, so an upgraded project keeps
+   * following the resolved `docs.*Dir` layout.
    */
   docsStageDirs?: Partial<Record<PipelineStage, string>>;
 
@@ -1971,7 +1975,11 @@ export interface PipelineConfig {
   /**
    * 206 Phase 0: RESOLVED archive scan directories (project-relative).
    * Priority: `archive.dirs` (non-empty) → deduped values of
-   * `docs.stageDirs` → `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]).
+   * `docs.stageDirs` → `[designDir, reviewDir]` (the resolved 222 layout,
+   * applied unconditionally so a default install scans the two doc
+   * directories) → `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"], unreachable from
+   * `resolvePipelineConfig`).
+   * The `jobsDir` is NEVER part of the scan scope.
    * The scanner ALSO always adds the constant `.pi/audit` directory.
    * Always filled by resolvePipelineConfig; optional so handcrafted configs stay valid.
    */
@@ -2047,6 +2055,10 @@ export interface PipelineConfig {
  * Keys are pipeline stages (`clarify` / `plan` / `design-review` / `develop` /
  * `review` / `fix`). Values are project-relative directory paths scanned by
  * the `/pipeline-start` document-candidate menu.
+ *
+ * 222: a value EQUAL to `DEFAULT_STAGE_DOC_DIRS[stage]` is treated as template
+ * boilerplate and ignored (it must not mask the resolved `docs.*Dir` layout);
+ * an invalid value (absolute / `..` traversal) is ignored the same way.
  *
  * This mapping is used ONLY for menu candidate discovery and archive-scope
  * derivation — it does NOT interact with `protect` in any way.

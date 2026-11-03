@@ -85,7 +85,9 @@ describe("Template docs/archive key assertion (206 Phase 5 / 222 Phase 0)", () =
     const config = resolvePipelineConfig(json);
     expect(config.docsStageDirs).toBeUndefined();
     expect(config.docsDirs).toBeUndefined(); // no explicit docs.<x>Dir key
-    expect(config.archiveDirs).toEqual(["docs"]);
+    // 222 review issue 2: the default layout keeps the pre-222 archive scope
+    // (the resolved design/review directories, NOT a broad ["docs"] scan).
+    expect(config.archiveDirs).toEqual(["docs/design", "docs/review"]);
     expect(config.archiveDest).toBe("pi-pipeline-archive");
 
     // R3Q9-A is an INTENTIONAL widening of the design-review write whitelist

@@ -146,6 +146,58 @@ describe("deriveDocsDirs", () => {
     expect(dirs.designDir).toBe(DEFAULT_DESIGN_DIR);
     expect(warnings.some((w) => w.includes("docs.designDir"))).toBe(true);
   });
+
+  // ─── 222 review issue 1: the real upgrade path ─────────────────────────────
+
+  /** The six `docs.stageDirs` values the pre-222 template shipped. */
+  const LEGACY_TEMPLATE_STAGE_DIRS = {
+    clarify: "docs/design",
+    plan: "docs/design",
+    "design-review": "docs/design",
+    develop: "docs/design",
+    review: "docs/design",
+    fix: "docs/review",
+  } as const;
+
+  it("treats the legacy template six-key stageDirs as boilerplate (upgrade path)", () => {
+    // An installed project whose pipeline_loop.json still pins the old values
+    // must resolve EXACTLY like an unconfigured one — no migration required.
+    const { dirs, configured, warnings } = deriveDocsDirs(undefined, LEGACY_TEMPLATE_STAGE_DIRS);
+    expect(dirs).toEqual({
+      designDir: DEFAULT_DESIGN_DIR,
+      reviewDir: DEFAULT_REVIEW_DIR,
+      jobsDir: DEFAULT_JOBS_DIR,
+    });
+    expect(configured).toBe(false);
+    // No misleading "disagree" warning on every startup.
+    expect(warnings).toEqual([]);
+  });
+
+  it("keeps a NON-DEFAULT value from the legacy set as a real derivation", () => {
+    const { dirs } = deriveDocsDirs(undefined, {
+      ...LEGACY_TEMPLATE_STAGE_DIRS,
+      review: "spec/review",
+    });
+    expect(dirs.reviewDir).toBe("spec/review");
+  });
+
+  it("treats separator/trailing-slash variants of the default as boilerplate too", () => {
+    const { dirs, warnings } = deriveDocsDirs(undefined, {
+      review: "docs/design/",
+      fix: "docs\\review",
+    });
+    expect(dirs.reviewDir).toBe(DEFAULT_REVIEW_DIR);
+    expect(warnings).toEqual([]);
+  });
+
+  it("an explicit reviewDir still wins over a non-default review stageDirs entry", () => {
+    const { dirs, warnings } = deriveDocsDirs(
+      { reviewDir: "spec/review" },
+      { review: "legacy/review" },
+    );
+    expect(dirs.reviewDir).toBe("spec/review");
+    expect(warnings.some((w) => w.includes("overrides"))).toBe(true);
+  });
 });
 
 describe("docsDirsOf", () => {
@@ -183,6 +235,23 @@ describe("docsDirsOf", () => {
       docsStageDirs: { plan: "../escape" },
     } as PipelineConfig);
     expect(dirs.designDir).toBe(DEFAULT_DESIGN_DIR);
+  });
+
+  // 222 review issue 1: the runtime path must apply the SAME boilerplate rule.
+  it("ignores boilerplate stageDirs values on the runtime path too", () => {
+    const dirs = docsDirsOf({
+      ...base,
+      docsStageDirs: { review: "docs/design", fix: "docs/review" },
+    } as PipelineConfig);
+    expect(dirs.reviewDir).toBe(DEFAULT_REVIEW_DIR);
+  });
+
+  it("still honours a non-default stageDirs value on the runtime path", () => {
+    const dirs = docsDirsOf({
+      ...base,
+      docsStageDirs: { review: "spec/review" },
+    } as PipelineConfig);
+    expect(dirs.reviewDir).toBe("spec/review");
   });
 });
 

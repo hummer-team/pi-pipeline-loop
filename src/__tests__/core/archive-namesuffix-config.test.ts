@@ -53,8 +53,8 @@ describe("207 Phase 0: archive.namesuffix config", () => {
     const json = loadJsonConfig(jsonPath);
     const resolved = resolvePipelineConfig(json);
     expect(resolved.archiveNameSuffix).toBe("my-project");
-    // dirs falls back to the 206 chain (no docs.stageDirs → ["docs"])
-    expect(resolved.archiveDirs).toEqual(["docs"]);
+    // dirs falls back to the 222 tier-3 chain (no docs.stageDirs → resolved dirs)
+    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
     // dest takes the default
     expect(resolved.archiveDest).toBe("pi-pipeline-archive");
   });

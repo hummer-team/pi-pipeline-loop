@@ -1355,7 +1355,8 @@ describe("206 Phase 0: docs & archive config", () => {
     expect(json.archive).toBeUndefined();
     // Fallback defaults still applied
     const resolved = resolvePipelineConfig(json);
-    expect(resolved.archiveDirs).toEqual(["docs"]);
+    // Review issue 2: tier 3 (the resolved layout) always applies.
+    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
     expect(resolved.archiveDest).toBe("pi-pipeline-archive");
   });
 
@@ -1408,10 +1409,11 @@ describe("206 Phase 0: docs & archive config", () => {
     expect(resolved.archiveDirs).toEqual(["docs/design"]);
   });
 
-  it("both docs and archive missing → archiveDirs defaults to ['docs']", async () => {
+  it("both docs and archive missing → archiveDirs falls back to the resolved default dirs", async () => {
     await writeJson({ stages: { clarify: {} } });
     const resolved = resolvePipelineConfig(loadJsonConfig(jsonPath));
-    expect(resolved.archiveDirs).toEqual(["docs"]);
+    // 222 review issue 2: the resolved layout (tier 3) replaces the broad ["docs"].
+    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
   });
 
   it("protect.allow default behavior unchanged with docs/archive present", async () => {
@@ -1438,7 +1440,8 @@ describe("206 Phase 0: docs & archive config", () => {
     expect(json.archive?.dest).toBe("pi-pipeline-archive");
     const resolved = resolvePipelineConfig(json);
     expect(resolved.docsStageDirs).toBeUndefined();
-    expect(resolved.archiveDirs).toEqual(["docs"]);
+    // 222 review issue 2: the fresh install scans the resolved default dirs.
+    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
     expect(resolved.archiveDest).toBe("pi-pipeline-archive");
   });
 });

@@ -5,14 +5,19 @@
  * Contract:
  * - `parseDocsConfig` accepts ANY of the four keys (`designDir` / `reviewDir` /
  *   `jobsDir` / `stageDirs`); `stageDirs` alone is no longer required;
- * - invalid directory values are dropped at parse time (the single warning is
- *   emitted later by `deriveDocsDirs`);
+ * - invalid directory values are dropped at parse time WITH their own warning
+ *   (222 review issue 3: this is the only on-disk entry point, so deferring the
+ *   diagnostic to `deriveDocsDirs` — which never sees a dropped value — left
+ *   every real misconfiguration silent);
  * - `resolvePipelineConfig` attaches `docsDirs` ONLY when an explicit key exists
  *   (baseline shape preserved for unconfigured projects).
  */
-import { describe, expect, it } from "bun:test";
-import { parseDocsConfig, resolvePipelineConfig } from "../../core/json-config-loader";
-import type { PipelineJsonConfig } from "../../types";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fsp from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { loadJsonConfig, parseDocsConfig, resolvePipelineConfig } from "../../core/json-config-loader";
+import type { PipelineConfig, PipelineJsonConfig } from "../../types";
 
 describe("parseDocsConfig (222 Phase 0 directory keys)", () => {
   it("returns a block when only jobsDir is configured", () => {
@@ -48,6 +53,42 @@ describe("parseDocsConfig (222 Phase 0 directory keys)", () => {
     expect(parseDocsConfig({})).toBeUndefined();
     expect(parseDocsConfig(undefined)).toBeUndefined();
     expect(parseDocsConfig("nope")).toBeUndefined();
+  });
+
+  // ─── 222 review issue 3: the on-disk path must WARN, not drop silently ────
+
+  it("warns for every invalid directory value it drops", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]): void => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      expect(parseDocsConfig({ designDir: "/abs", reviewDir: "../escape", jobsDir: "" }))
+        .toBeUndefined();
+    } finally {
+      console.warn = original;
+    }
+    // Exactly one warning per rejected key, each naming the offending key.
+    expect(warnings.length).toBe(3);
+    for (const key of ["designDir", "reviewDir", "jobsDir"]) {
+      expect(warnings.filter((w) => w.includes(`docs.${key}`)).length).toBe(1);
+    }
+  });
+
+  it("does not warn for valid directory values", () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]): void => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      expect(parseDocsConfig({ designDir: "spec/design", reviewDir: "spec\\review//" }))
+        .toEqual({ designDir: "spec/design", reviewDir: "spec/review" });
+    } finally {
+      console.warn = original;
+    }
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -89,5 +130,77 @@ describe("resolvePipelineConfig docsDirs shape (222 Phase 0)", () => {
       reviewDir: "spec/review",
       jobsDir: "spec/jobs",
     });
+  });
+});
+
+// ─── 222 review issue 3: the warning survives the real on-disk path ─────────
+
+describe("invalid docs keys warn on the loadJsonConfig path (222 review issue 3)", () => {
+  let dir = "";
+  let configPath = "";
+
+  beforeEach(async () => {
+    dir = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-docs-warn-"));
+    configPath = path.join(dir, ".pi/pipeline_loop.json");
+    await fsp.mkdir(path.dirname(configPath), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  /** Loads the on-disk config, capturing both `console.warn` phases. */
+  function loadCapturingWarnings(): { config: PipelineConfig; warnings: string[] } {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]): void => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      return { config: resolvePipelineConfig(loadJsonConfig(configPath)), warnings };
+    } finally {
+      console.warn = original;
+    }
+  }
+
+  it("warns once per invalid docs.<x>Dir key read from disk", async () => {
+    await fsp.writeFile(configPath, JSON.stringify({
+      stages: { clarify: {} },
+      docs: { designDir: "/abs/dir", reviewDir: "../escape" },
+    }), "utf8");
+    const { config, warnings } = loadCapturingWarnings();
+    // The values are dropped (fail-open) but the user is TOLD.
+    expect("docsDirs" in config).toBe(false);
+    expect(warnings.filter((w) => w.includes("docs.designDir")).length).toBe(1);
+    expect(warnings.filter((w) => w.includes("docs.reviewDir")).length).toBe(1);
+  });
+
+  it("keeps valid keys and still resolves them", async () => {
+    await fsp.writeFile(configPath, JSON.stringify({
+      stages: { clarify: {} },
+      docs: { designDir: "spec/design", reviewDir: "/abs/dir" },
+    }), "utf8");
+    const { config, warnings } = loadCapturingWarnings();
+    expect(config.docsDirs?.designDir).toBe("spec/design");
+    expect(warnings.some((w) => w.includes("docs.reviewDir"))).toBe(true);
+  });
+
+  it("warns exactly once for an in-memory config that bypasses the parser", () => {
+    // The other entry point: a hand-built PipelineJsonConfig never passes
+    // through `parseDocsConfig`, so `deriveDocsDirs` supplies the single warning.
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]): void => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      resolvePipelineConfig({
+        stages: { clarify: {} },
+        docs: { designDir: "/abs/dir" },
+      });
+    } finally {
+      console.warn = original;
+    }
+    expect(warnings.filter((w) => w.includes("docs.designDir")).length).toBe(1);
   });
 });

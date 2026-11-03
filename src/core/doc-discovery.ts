@@ -27,7 +27,7 @@ import {
   MAX_DOC_CANDIDATES,
 } from "../constants";
 // 222 Phase 2: the resolved docs directories drive the stage menu directory.
-import { docsDirsOf } from "../docs-paths";
+import { docsDirsOf, normalizeDocsDir } from "../docs-paths";
 import {
   CODE_REVIEW_DOC_PREFIX,
   MD_FILE_EXTENSION_RE,
@@ -55,14 +55,15 @@ export interface DocCandidate {
 
 /**
  * Result of resolving the stage's candidate-doc directory.
- * - `autoMatched=true`: no NON-DEFAULT `docs.stageDirs` entry applies; the
- *   resolved docs directory (or the built-in default) was used.
- * - `autoMatched=false`: explicit user configuration took precedence.
+ * - `autoMatched=true`: no NON-DEFAULT, VALID `docs.stageDirs` entry applies;
+ *   the resolved docs directory (or the built-in default) was used.
+ * - `autoMatched=false`: a real (non-default) explicit user configuration took
+ *   precedence.
  */
 export interface StageDocDirResolution {
   /** Project-relative directory path. */
   dir: string;
-  /** Whether the directory came from the built-in default (not user config). */
+  /** Whether the directory came from the resolved layout, not a per-stage customisation. */
   autoMatched: boolean;
 }
 
@@ -70,7 +71,7 @@ export interface StageDocDirResolution {
  * Resolves the candidate-document directory for a stage.
  *
  * 222 Phase 2 priority (single source with the deliverable directories):
- * 1. a NON-DEFAULT `config.docsStageDirs[stage]` value — a real per-stage
+ * 1. a NON-DEFAULT, VALID `config.docsStageDirs[stage]` value — a real per-stage
  *    customisation always wins;
  * 2. the resolved docs directory (`docsDirsOf(config)`): `reviewDir` for `fix`,
  *    `designDir` for every other doc-bearing stage;
@@ -81,6 +82,15 @@ export interface StageDocDirResolution {
  * `designDir`. This avoids the silent mismatch where the menu scanned the old
  * directory while deliverables already went to the new one — without adding a
  * new `PipelineConfig` field to tell "explicit" from "derived".
+ *
+ * 222 review issue 4: `docsStageDirs` values reach this menu layer straight from
+ * the loader, which only checks "non-empty string". The configured value is
+ * therefore validated with `normalizeDocsDir` here too (R1Q4-A symmetry): an
+ * absolute / traversal value is NOT a customisation — it falls through to the
+ * resolved directory, so `listDocCandidates` can never `readdir` outside the
+ * project root. Normalization also collapses `"docs/design/"` / `"docs\\design"`
+ * to the boilerplate value, so a separator-only difference no longer produces a
+ * second, phantom menu directory.
  */
 export function resolveStageDocDir(
   config: PipelineConfig,
@@ -88,12 +98,12 @@ export function resolveStageDocDir(
 ): StageDocDirResolution {
   const configured = config.docsStageDirs?.[stage];
   const builtInDefault = DEFAULT_STAGE_DOC_DIRS[stage];
-  if (
-    typeof configured === "string"
-    && configured.length > 0
-    && configured !== builtInDefault
-  ) {
-    return { dir: configured, autoMatched: false };
+  if (configured !== undefined) {
+    const parsed = normalizeDocsDir(configured);
+    // Only a valid, genuinely non-default value is a per-stage customisation.
+    if (parsed.value !== undefined && parsed.value !== builtInDefault) {
+      return { dir: parsed.value, autoMatched: false };
+    }
   }
   if (builtInDefault === undefined) {
     // Terminal stages have no document kind.
@@ -103,7 +113,7 @@ export function resolveStageDocDir(
   const resolved = docsDirsOf(config);
   return {
     dir: stage === "fix" ? resolved.reviewDir : resolved.designDir,
-    autoMatched: configured === undefined,
+    autoMatched: true,
   };
 }
 

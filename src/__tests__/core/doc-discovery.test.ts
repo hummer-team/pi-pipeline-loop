@@ -133,6 +133,58 @@ describe("resolveStageDocDir", () => {
     expect(resolveStageDocDir(cfg, "awaiting_human")).toEqual({ dir: "docs", autoMatched: true });
     expect(resolveStageDocDir(cfg, "completed")).toEqual({ dir: "docs", autoMatched: true });
   });
+
+  // ─── 222 review issue 4: derived values get the same validation ────────────
+
+  it("ignores an absolute or traversal docsStageDirs value (never leaves the root)", () => {
+    for (const bad of ["../escape", "/tmp/abs-design", "C:\\abs\\design"]) {
+      const cfg = makeTestConfig({ projectRoot: ROOT, docsStageDirs: { plan: bad } });
+      // Not a customisation → falls through to the resolved directory, and the
+      // menu keeps claiming auto-match.
+      expect(resolveStageDocDir(cfg, "plan")).toEqual({
+        dir: "docs/design",
+        autoMatched: true,
+      });
+    }
+  });
+
+  it("never lets listDocCandidates readdir outside the project root", async () => {
+    const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-doc-discovery-outside-"));
+    try {
+      await fsp.writeFile(path.join(outside, "999_Leak.md"), "x", "utf8");
+      const cfg = makeTestConfig({
+        projectRoot: ROOT,
+        docsStageDirs: { clarify: outside },
+      });
+      expect(resolveStageDocDir(cfg, "clarify").dir).toBe("docs/design");
+      const candidates = await listDocCandidates(cfg, "clarify");
+      expect(candidates.every((c) => c.absPath.startsWith(ROOT))).toBe(true);
+      expect(candidates.map((c) => c.relPath)).not.toContain("999_Leak.md");
+    } finally {
+      await fsp.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("collapses separator/trailing-slash variants so no phantom menu dir appears", () => {
+    const cfg = makeTestConfig({
+      projectRoot: ROOT,
+      // Same directory as the default, only written differently.
+      docsStageDirs: { plan: "docs/design/", develop: "docs\\design" },
+    });
+    expect(resolveStageDocDir(cfg, "plan")).toEqual({ dir: "docs/design", autoMatched: true });
+    expect(resolveStageDocDir(cfg, "develop")).toEqual({ dir: "docs/design", autoMatched: true });
+  });
+
+  it("still returns a NORMALIZED value for a genuine customisation", () => {
+    const cfg = makeTestConfig({
+      projectRoot: ROOT,
+      docsStageDirs: { review: "custom\\review//" },
+    });
+    expect(resolveStageDocDir(cfg, "review")).toEqual({
+      dir: "custom/review",
+      autoMatched: false,
+    });
+  });
 });
 
 describe("stageDocCandidateFilter", () => {
