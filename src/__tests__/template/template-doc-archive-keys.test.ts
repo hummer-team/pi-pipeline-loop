@@ -1,39 +1,36 @@
 /**
- * 206 Phase 5: template sync assertions for the new `docs` / `archive`
- * top-level config blocks introduced in Phase 0.
+ * 206 Phase 5: template sync assertions for the `docs` / `archive` top-level
+ * config blocks introduced in Phase 0.
  *
- * Plan boundary: the template JSON must be syntactically valid AND parseable
- * by the production loader (`loadJsonConfig`), so the keys survive the
- * `/pipeline-init` template copy onto a real project disk unchanged.
+ * 222 Phase 0 changed the contract: the template no longer pins any value that
+ * equals a built-in default (`docs.stageDirs`, `archive.dirs`,
+ * `stages.*.allowedWritePaths` / `allowedReadOnlyPaths`), because such a static
+ * value would silently swallow the new `docs.<x>Dir` keys. The tests below
+ * assert BOTH sides: the keys are gone from the template AND the production
+ * loader still resolves the legacy behaviour from its own defaults.
  */
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { loadJsonConfig } from "../../core/json-config-loader";
+import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-loader";
 
 const TEMPLATE_PATH = path.join(__dirname, "../../template/pipeline_loop.json");
 
-describe("Template docs/archive key assertion (206 Phase 5)", () => {
-  it("docs and archive blocks exist with correct shapes", () => {
+describe("Template docs/archive key assertion (206 Phase 5 / 222 Phase 0)", () => {
+  it("template declares no value that pins a derived default", () => {
     const template = JSON.parse(fs.readFileSync(TEMPLATE_PATH, "utf-8"));
 
-    // docs.stageDirs: stage → project-relative directory
-    expect(template).toHaveProperty("docs.stageDirs");
-    expect(template.docs.stageDirs).toEqual({
-      clarify: "docs/design",
-      plan: "docs/design",
-      "design-review": "docs/design",
-      develop: "docs/design",
-      review: "docs/design",
-      fix: "docs/review",
-    });
+    // 222 Phase 0: the four static values that used to equal the built-in
+    // defaults are removed so the new docs.*Dir keys can take effect.
+    expect(template.docs).not.toHaveProperty("stageDirs");
+    expect(template.archive).not.toHaveProperty("dirs");
+    expect(template.stages["design-review"]).not.toHaveProperty("allowedWritePaths");
+    expect(template.stages.develop).not.toHaveProperty("allowedReadOnlyPaths");
+    expect(template.stages.fix).not.toHaveProperty("allowedReadOnlyPaths");
 
-    // archive.dirs / archive.dest (207: the template has NO default namesuffix
-    // — legacy `{timestamp}_pipeline.zip` naming stays the default behavior)
-    expect(template).toHaveProperty("archive.dirs");
-    expect(template.archive.dirs).toEqual(["docs/design", "docs/review"]);
+    // archive keeps its non-derived key only.
     expect(template.archive.dest).toBe("pi-pipeline-archive");
-    expect(Object.keys(template.archive).sort()).toEqual(["dest", "dirs"]);
+    expect(Object.keys(template.archive).sort()).toEqual(["dest"]);
   });
 
   it("comment annotation keys exist for discoverability", () => {
@@ -46,6 +43,11 @@ describe("Template docs/archive key assertion (206 Phase 5)", () => {
     // 207: millisecond naming format + namesuffix discoverability
     expect(templateContent).toContain("yyyy_MM_dd_HHmmssSSS_pipeline");
     expect(templateContent).toContain("namesuffix");
+    // 222 Phase 0: the three directory keys and their re-init requirement.
+    expect(templateContent).toContain("designDir");
+    expect(templateContent).toContain("reviewDir");
+    expect(templateContent).toContain("jobsDir");
+    expect(templateContent).toContain("/pipeline-init");
   });
 
   it("guide key wording is kept in sync between src/template and .pi overlays", () => {
@@ -76,14 +78,26 @@ describe("Template docs/archive key assertion (206 Phase 5)", () => {
     // This mirrors the /pipeline-init copy path: the file lands on disk as-is
     // and must be loadable by the real config parser without errors.
     const json = loadJsonConfig(TEMPLATE_PATH);
-    expect(json.docs?.stageDirs).toEqual({
-      clarify: "docs/design",
-      plan: "docs/design",
-      "design-review": "docs/design",
-      develop: "docs/design",
-      review: "docs/design",
-      fix: "docs/review",
-    });
-    expect(json.archive).toEqual({ dirs: ["docs/design", "docs/review"], dest: "pi-pipeline-archive" });
+    expect(json.docs).toBeUndefined();
+    expect(json.archive).toEqual({ dest: "pi-pipeline-archive" });
+
+    // 222 Phase 0: a fresh install resolves the SAME directories from defaults.
+    const config = resolvePipelineConfig(json);
+    expect(config.docsStageDirs).toBeUndefined();
+    expect(config.docsDirs).toBeUndefined(); // no explicit docs.<x>Dir key
+    expect(config.archiveDirs).toEqual(["docs"]);
+    expect(config.archiveDest).toBe("pi-pipeline-archive");
+
+    // R3Q9-A is an INTENTIONAL widening of the design-review write whitelist
+    // (1 → 5 entries). Frozen here so it is an accepted change, not a silent one.
+    expect(config.stages["design-review"].allowedWritePaths).toEqual([
+      "docs/",
+      "doc/",
+      "documentation/",
+      "docs/design/",
+      "docs/review/",
+    ]);
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
+    expect(config.stages.fix.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
   });
 });

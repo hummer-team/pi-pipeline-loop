@@ -55,10 +55,23 @@ export const AUTO_PIPELINE_DIR = ".pi/auto_pipeline";
 export const AUTO_PIPELINE_LOCK_FILE = ".pi/auto_pipeline/lock.json";
 
 /**
+ * 222 Phase 0: default deliverable / review / job directories
+ * (project-root-relative). Single source of the built-in layout — runtime
+ * consumers resolve through `docsDirsOf(config)` in `src/docs-paths.ts`, never
+ * by re-typing these literals.
+ */
+export const DEFAULT_DESIGN_DIR = "docs/design";
+export const DEFAULT_REVIEW_DIR = "docs/review";
+export const DEFAULT_JOBS_DIR = "docs/jobs";
+
+/**
  * 219 Phase 4: directory the `/pipeline-auto` job menu scans (project-root
  * relative, non-recursive).
+ *
+ * @deprecated 222 Phase 0: kept only for existing imports; the value now comes
+ * from {@link DEFAULT_JOBS_DIR}. Read `docsDirsOf(config).jobsDir` instead.
  */
-export const AUTO_PIPELINE_JOB_DIR = "docs/jobs";
+export const AUTO_PIPELINE_JOB_DIR = DEFAULT_JOBS_DIR;
 
 /**
  * 221 Phase 0: OPTIONAL per-project clarify protocol anchors. The file is an
@@ -590,7 +603,16 @@ export const PLAN_DOC_NAMING_CONSTRAINT =
   "Unit Tests Core / Commit Specification, and MUST end with a `## 用户确认` (or `## User Confirmation`) " +
   "section — never invent an alternative file name or heading layout.";
 
-/** Default write scope by stage type (tools and bash prefixes no longer restricted) */
+/**
+ * Default write scope by stage type (tools and bash prefixes no longer restricted).
+ *
+ * 222 Phase 0: this constant is the BASELINE (pre-222) default — it does not
+ * carry the configured `docs` directories. The runtime defaults are built by
+ * `buildStageTypeToolDefaults(docsDirsOf(config))` in `src/docs-paths.ts`
+ * (R3Q9-A: `${designDir}/` + `${reviewDir}/` are APPENDED to the read-only
+ * stage lists). Kept exported as the stage-type baseline for callers/tests that
+ * need the directory-agnostic shape.
+ */
 export const STAGE_TYPE_TOOL_DEFAULTS: Record<
   string,
   { allowedWritePaths: string[]; allowedReadOnlyPaths?: string[] }

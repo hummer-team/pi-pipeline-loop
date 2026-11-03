@@ -19,6 +19,7 @@ import type {
   ConfirmMode,
   DecisionPolicyConfig,
   DecisionPolicyRule,
+  DocsDirs,
   DocsJsonConfig,
   PipelineConfig,
   PipelineJsonConfig,
@@ -36,6 +37,11 @@ import { validateDecisionPolicy } from "./decision-policy/policy-config";
 import { loadClarifyProtocolConfig } from "./auto-pipeline/clarify-protocol-config";
 import { mergeCompletionMarkers, normalizeMarkerConfig } from "./auto-pipeline/clarify-anchors";
 import {
+  buildStageTypeToolDefaults,
+  deriveDocsDirs,
+  normalizeDocsDir,
+} from "../docs-paths";
+import {
   CONFIG_DIR_NAME,
   PI_PREFIX,
   DEFAULT_SKILL_PATH,
@@ -48,7 +54,8 @@ import {
   DEFAULT_STAGE_TIMEOUT_MS,
   DEFAULT_DOCS_FALLBACK_DIRS,
   DEFAULT_ARCHIVE_DEST,
-  STAGE_TYPE_TOOL_DEFAULTS,
+  DEFAULT_DESIGN_DIR,
+  DEFAULT_REVIEW_DIR,
   resolveStagePath,
 } from "../constants";
 
@@ -849,7 +856,14 @@ function parseCompactConfig(raw: unknown): { enabled?: boolean; tokenThreshold?:
 /**
  * 206 Phase 0: Parses the docs.stageDirs mapping from JSON config.
  *
- * Validation:
+ * 222 Phase 0: also parses the three directory keys (`designDir` / `reviewDir`
+ * / `jobsDir`). Any of them alone is enough to return a config block — the
+ * `stageDirs` entry is no longer required. Individual values are validated by
+ * `normalizeDocsDir` (non-empty relative path, no `..`); invalid values are
+ * DROPPED silently here — `deriveDocsDirs` emits the single warning for them,
+ * so a bad value is reported exactly once.
+ *
+ * Validation of `stageDirs` (unchanged):
  * - Non-object (including null / array / string) → warn + undefined.
  * - Each key must be a valid pipeline stage; unknown keys warn + are ignored.
  * - Each value must be a non-empty string; invalid values warn + are ignored.
@@ -864,32 +878,46 @@ export function parseDocsConfig(raw: unknown): DocsJsonConfig | undefined {
     return undefined;
   }
   const obj = raw as Record<string, unknown>;
+  const result: DocsJsonConfig = {};
+
+  // 222 Phase 0: the three resolved-directory keys (validation is deferred to
+  // deriveDocsDirs so each invalid value warns exactly once).
+  for (const key of ["designDir", "reviewDir", "jobsDir"] as const) {
+    const rawValue = obj[key];
+    if (rawValue === undefined) continue;
+    const parsed = normalizeDocsDir(rawValue);
+    if (parsed.value) result[key] = parsed.value;
+  }
+
   const stageDirs = obj.stageDirs;
-  if (stageDirs === undefined) return undefined;
-  if (typeof stageDirs !== "object" || stageDirs === null || Array.isArray(stageDirs)) {
-    console.warn(
-      `[pi-pipeline] Invalid docs.stageDirs — expected object, got ${Array.isArray(stageDirs) ? "array" : typeof stageDirs}`,
-    );
-    return undefined;
-  }
-  const parsed: Partial<Record<PipelineStage, string>> = {};
-  for (const [stage, value] of Object.entries(stageDirs as Record<string, unknown>)) {
-    if (!VALID_STAGES.has(stage as PipelineStage)) {
+  if (stageDirs !== undefined) {
+    if (typeof stageDirs !== "object" || stageDirs === null || Array.isArray(stageDirs)) {
       console.warn(
-        `[pi-pipeline] Unknown docs.stageDirs stage "${stage}" in pipeline_loop.json — ignoring`,
+        `[pi-pipeline] Invalid docs.stageDirs — expected object, got ${Array.isArray(stageDirs) ? "array" : typeof stageDirs}`,
       );
-      continue;
+    } else {
+      const parsed: Partial<Record<PipelineStage, string>> = {};
+      for (const [stage, value] of Object.entries(stageDirs as Record<string, unknown>)) {
+        if (!VALID_STAGES.has(stage as PipelineStage)) {
+          console.warn(
+            `[pi-pipeline] Unknown docs.stageDirs stage "${stage}" in pipeline_loop.json — ignoring`,
+          );
+          continue;
+        }
+        if (typeof value !== "string" || value.trim().length === 0) {
+          console.warn(
+            `[pi-pipeline] Invalid docs.stageDirs.${stage} "${String(value)}" — expected non-empty string, ignoring`,
+          );
+          continue;
+        }
+        parsed[stage as PipelineStage] = value;
+      }
+      if (Object.keys(parsed).length > 0) result.stageDirs = parsed;
     }
-    if (typeof value !== "string" || value.trim().length === 0) {
-      console.warn(
-        `[pi-pipeline] Invalid docs.stageDirs.${stage} "${String(value)}" — expected non-empty string, ignoring`,
-      );
-      continue;
-    }
-    parsed[stage as PipelineStage] = value;
   }
-  if (Object.keys(parsed).length === 0) return undefined;
-  return { stageDirs: parsed };
+
+  if (Object.keys(result).length === 0) return undefined;
+  return result;
 }
 
 /**
@@ -1198,7 +1226,12 @@ function normalizeWatchdogThresholds(watchdog: WatchdogConfig | undefined): Watc
  * 1. `json.archive?.dirs` when non-empty (after parse-time cleanup).
  * 2. Deduped values of `json.docs?.stageDirs` (the doc-menu directories are a
  *    natural archive scope).
- * 3. `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]).
+ * 3. `[designDir, reviewDir]` — the resolved 222 docs directories (deduped).
+ *    Applied ONLY when the resolved layout differs from the built-in defaults,
+ *    so an unconfigured project keeps the ["docs"] baseline scan scope.
+ * 4. `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]).
+ *
+ * `jobsDir` is never archived.
  *
  * NOTE: values are NOT passed through `rewritePiPrefix` — they are plain
  * project-relative doc paths that never start with ".pi/"; the constant
@@ -1207,6 +1240,7 @@ function normalizeWatchdogThresholds(watchdog: WatchdogConfig | undefined): Watc
 function deriveArchiveDirs(
   archive?: ArchiveJsonConfig,
   docs?: DocsJsonConfig,
+  dirs?: DocsDirs,
 ): string[] {
   const configured = archive?.dirs;
   if (configured && configured.length > 0) return [...configured];
@@ -1215,6 +1249,9 @@ function deriveArchiveDirs(
     : [];
   const deduped = [...new Set(stageValues)];
   if (deduped.length > 0) return deduped;
+  if (dirs && (dirs.designDir !== DEFAULT_DESIGN_DIR || dirs.reviewDir !== DEFAULT_REVIEW_DIR)) {
+    return [...new Set([dirs.designDir, dirs.reviewDir])];
+  }
   return [...DEFAULT_DOCS_FALLBACK_DIRS];
 }
 
@@ -1315,6 +1352,15 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
   // 221 Phase 0: OPTIONAL clarify protocol anchors (absent ⇒ undefined, so the
   // human path and every existing config-shape assertion stay untouched).
   const clarifyProtocol = loadClarifyProtocolConfig(projectRoot);
+  // 222 Phase 0: resolve the docs directories ONCE (single source of the
+  // explicit-key → stageDirs-derived → default precedence). Warnings are emitted
+  // here and ONLY here — this module runs before the audit log exists, so
+  // console.warn is the established channel (see the module header).
+  const docsResolution = deriveDocsDirs(json.docs, json.docs?.stageDirs);
+  for (const warning of docsResolution.warnings) {
+    console.warn(`[pi-pipeline] ${warning}`);
+  }
+  const stageDefaults = buildStageTypeToolDefaults(docsResolution.dirs);
   // Validate piWorkDir once (dual insurance with loadJsonConfig — handles the
   // case where callers construct PipelineJsonConfig directly, bypassing loadJsonConfig).
   const piWorkDir = parsePiWorkDir(json.piWorkDir);
@@ -1348,9 +1394,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       continue;
     }
 
-    const defaults =
-      STAGE_TYPE_TOOL_DEFAULTS[stageName] ||
-      STAGE_TYPE_TOOL_DEFAULTS.clarify;
+    const defaults = stageDefaults[stageName] ?? stageDefaults.clarify!;
 
     stages[stageName] = {
       // Rewrite ".pi/" prefix on configured agentPath when piWorkDir differs.
@@ -1542,10 +1586,11 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
       json.docs?.stageDirs && Object.keys(json.docs.stageDirs).length > 0
         ? json.docs.stageDirs
         : undefined,
-    archiveDirs: deriveArchiveDirs(
-      archiveConfig,
-      json.docs && Object.keys(json.docs).length > 0 ? json.docs : undefined,
-    ),
+    // 222 Phase 0: attach the resolved docs directories ONLY when at least one
+    // explicit key was configured (optional-block convention — unconfigured
+    // projects keep the baseline config shape).
+    ...(docsResolution.configured ? { docsDirs: docsResolution.dirs } : {}),
+    archiveDirs: deriveArchiveDirs(archiveConfig, json.docs, docsResolution.dirs),
     archiveDest: archiveConfig?.dest ?? DEFAULT_ARCHIVE_DEST,
     // 207: attach the resolved archive filename suffix ONLY when configured,
     // matching the designReviewOriginalTargets optional-field pattern so

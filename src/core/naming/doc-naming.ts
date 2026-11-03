@@ -18,7 +18,22 @@
  * Requirement/design-und docs (`docs/design/{index}_{xxx}.md`) stay untouched.
  *
  * Pure string functions — no file system I/O, no dependencies.
+ *
+ * 222 Phase 0: the directory-bearing glob literals below are now CONSTRUCTED by
+ * the layer-neutral `src/docs-paths.ts` from `DEFAULT_DESIGN_DIR` /
+ * `DEFAULT_REVIEW_DIR`; this module re-exports the constructors so existing
+ * imports keep working.
  */
+
+import { DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR } from "../../constants";
+import {
+  buildCommitDocGlob,
+  buildPlanDocGlob,
+  buildReviewDocGlob,
+  winGlobVariant,
+} from "../../docs-paths";
+
+export { buildCommitDocGlob, buildPlanDocGlob, buildReviewDocGlob, winGlobVariant };
 
 /**
  * Strip a trailing `_Plan` / `_plan` marker from a plan document stem to get
@@ -155,24 +170,19 @@ export const MD_FILE_EXTENSION_RE = /\.md$/i;
 // re-typed at call sites).
 
 /** Plan-doc verify glob (201 Phase 1 hard switch — legacy `*_plan.md` no longer matches). */
-export const PLAN_DOC_GLOB = "docs/design/*_Plan.md";
+export const PLAN_DOC_GLOB = buildPlanDocGlob(DEFAULT_DESIGN_DIR);
 
 /** New develop/fix commit-doc verify glob (201 Phase 2). */
-export const NEW_COMMIT_DOC_GLOB = "docs/design/*_Develop_Commit.md";
+export const NEW_COMMIT_DOC_GLOB = buildCommitDocGlob(DEFAULT_DESIGN_DIR);
 
 /** Legacy develop/fix commit-doc verify glob (dual read). */
-export const LEGACY_COMMIT_DOC_GLOB = "docs/design/*_commit.md";
+export const LEGACY_COMMIT_DOC_GLOB = buildCommitDocGlob(DEFAULT_DESIGN_DIR, true);
 
 /** New code-review report verify glob (201 Phase 3). */
-export const NEW_REVIEW_DOC_GLOB = "docs/review/Code_Review_*.md";
+export const NEW_REVIEW_DOC_GLOB = buildReviewDocGlob(DEFAULT_REVIEW_DIR);
 
 /** Legacy code-review report verify glob (dual read). */
-export const LEGACY_REVIEW_DOC_GLOB = "docs/review/code_review_*.md";
-
-/** Windows path-separator variant of a verify glob (verbatim match on separators). */
-function winGlobVariant(glob: string): string {
-  return glob.replace(/\//g, "\\");
-}
+export const LEGACY_REVIEW_DOC_GLOB = buildReviewDocGlob(DEFAULT_REVIEW_DIR, true);
 
 /** Windows variants of the verify globs above. */
 export const PLAN_DOC_GLOB_WIN = winGlobVariant(PLAN_DOC_GLOB);

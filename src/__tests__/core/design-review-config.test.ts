@@ -17,6 +17,7 @@ import {
   STAGE_TYPE_TOOL_DEFAULTS,
   DEFAULT_READONLY_WRITE_PATHS,
 } from "../../constants";
+import { buildStageTypeToolDefaults, DEFAULT_DOCS_DIRS } from "../../docs-paths";
 import type { PipelineStage, PipelineJsonConfig, PipelineConfig } from "../../types";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -95,9 +96,16 @@ describe("design-review stage configuration — constants", () => {
       expect(drDefaults.allowedWritePaths).not.toContain("**");
     });
 
-    test("design-review allowedWritePaths matches DEFAULT_READONLY_WRITE_PATHS", () => {
-      const drDefaults = STAGE_TYPE_TOOL_DEFAULTS["design-review"];
-      expect(drDefaults.allowedWritePaths).toEqual(DEFAULT_READONLY_WRITE_PATHS);
+    test("design-review allowedWritePaths appends the resolved docs directories", () => {
+      // 222 Phase 0 (R3Q9-A): the runtime default appends `${designDir}/` and
+      // `${reviewDir}/` to the legacy read-only list. The exported
+      // STAGE_TYPE_TOOL_DEFAULTS constant stays the directory-agnostic baseline.
+      const drDefaults = buildStageTypeToolDefaults(DEFAULT_DOCS_DIRS)["design-review"]!;
+      expect(drDefaults.allowedWritePaths).toEqual([
+        ...DEFAULT_READONLY_WRITE_PATHS,
+        "docs/design/",
+        "docs/review/",
+      ]);
     });
 
     test("all expected stages have defaults", () => {
@@ -172,7 +180,12 @@ describe("design-review stage — JSON config loader", () => {
       };
       const config = resolvePipelineConfig(json);
       const drStage = config.stages["design-review"];
-      expect(drStage.allowedWritePaths).toEqual(DEFAULT_READONLY_WRITE_PATHS);
+      // 222 Phase 0 (R3Q9-A): resolved design/review directories are appended.
+      expect(drStage.allowedWritePaths).toEqual([
+        ...DEFAULT_READONLY_WRITE_PATHS,
+        "docs/design/",
+        "docs/review/",
+      ]);
     });
 
     test("design-review defaults to doc-only skillPath and verifyFile", () => {

@@ -1958,6 +1958,17 @@ export interface PipelineConfig {
   docsStageDirs?: Partial<Record<PipelineStage, string>>;
 
   /**
+   * 222 Phase 0: RESOLVED docs directories (`designDir` / `reviewDir` /
+   * `jobsDir`, project-relative). Attached ONLY when at least one of the three
+   * `docs.*Dir` keys is explicitly configured — unconfigured projects keep the
+   * baseline config shape (deep-equality assertions stay untouched).
+   *
+   * Read it through `docsDirsOf(config)` (`src/docs-paths.ts`), which falls back
+   * to `docs.stageDirs` derivation and then to the built-in defaults.
+   */
+  docsDirs?: DocsDirs;
+
+  /**
    * 206 Phase 0: RESOLVED archive scan directories (project-relative).
    * Priority: `archive.dirs` (non-empty) → deduped values of
    * `docs.stageDirs` → `DEFAULT_DOCS_FALLBACK_DIRS` (["docs"]).
@@ -2043,6 +2054,48 @@ export interface PipelineConfig {
 export interface DocsJsonConfig {
   /** Stage → project-relative doc directory (partial by design). */
   stageDirs?: Partial<Record<PipelineStage, string>>;
+
+  /**
+   * 222 Phase 0: project-relative directory holding design deliverables
+   * (requirement / plan / develop-commit / design-review documents).
+   *
+   * Priority: this key → the directory derived from `docs.stageDirs`
+   * (`plan`, then `develop`) → {@link DEFAULT_DESIGN_DIR} (`"docs/design"`).
+   * Must be a non-empty relative path without `..` segments; invalid values
+   * warn once and fall back to the derived/default directory.
+   */
+  designDir?: string;
+
+  /**
+   * 222 Phase 0: project-relative directory holding code-review reports.
+   *
+   * Priority: this key → the directory derived from `docs.stageDirs`
+   * (`review`, then `fix`) → {@link DEFAULT_REVIEW_DIR} (`"docs/review"`).
+   * Validation and fallback mirror {@link DocsJsonConfig.designDir}.
+   */
+  reviewDir?: string;
+
+  /**
+   * 222 Phase 0: project-relative directory holding `/pipeline-auto` job files.
+   *
+   * Priority: this key → {@link DEFAULT_JOBS_DIR} (`"docs/jobs"`). The job
+   * directory is never derived from `docs.stageDirs` and is never archived.
+   * Validation and fallback mirror {@link DocsJsonConfig.designDir}.
+   */
+  jobsDir?: string;
+}
+
+/**
+ * 222 Phase 0: RESOLVED docs directories (project-relative, single source for
+ * every runtime path consumer). Produced by `docsDirsOf(config)`.
+ */
+export interface DocsDirs {
+  /** Design deliverables directory (default `"docs/design"`). */
+  designDir: string;
+  /** Code-review report directory (default `"docs/review"`). */
+  reviewDir: string;
+  /** `/pipeline-auto` job-file directory (default `"docs/jobs"`). */
+  jobsDir: string;
 }
 
 /**

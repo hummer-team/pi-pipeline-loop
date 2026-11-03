@@ -96,11 +96,15 @@ describe("resolvePipelineConfig", () => {
   it("uses clarify/plan defaults for read-only stages", () => {
     const json: PipelineJsonConfig = { stages: { clarify: {} } };
     const result = resolvePipelineConfig(json);
-    // Read-only stages: allowedWritePaths defaults to doc directories
+    // Read-only stages: allowedWritePaths defaults to doc directories.
+    // 222 Phase 0 (R3Q9-A): the resolved design/review directories are APPENDED
+    // to the legacy list, so a customised docs layout stays writable.
     expect(result.stages.clarify.allowedWritePaths).toEqual([
       "docs/",
       "doc/",
       "documentation/",
+      "docs/design/",
+      "docs/review/",
     ]);
     expect(result.stages.clarify.requireDomain).toBe(false);
   });
@@ -749,6 +753,8 @@ describe("stage allowedWritePaths config", () => {
       "docs/",
       "doc/",
       "documentation/",
+      "docs/design/",
+      "docs/review/",
     ]);
   });
 
@@ -771,6 +777,8 @@ describe("stage allowedWritePaths config", () => {
       "docs/",
       "doc/",
       "documentation/",
+      "docs/design/",
+      "docs/review/",
     ]);
   });
 
@@ -809,6 +817,8 @@ describe("stage allowedWritePaths config", () => {
       "docs/",
       "doc/",
       "documentation/",
+      "docs/design/",
+      "docs/review/",
     ]);
   });
 
@@ -823,6 +833,8 @@ describe("stage allowedWritePaths config", () => {
       "docs/",
       "doc/",
       "documentation/",
+      "docs/design/",
+      "docs/review/",
     ]);
   });
 
@@ -1416,13 +1428,17 @@ describe("206 Phase 0: docs & archive config", () => {
   });
 
   it("template pipeline_loop.json parses with docs/archive keys", async () => {
+    // 222 Phase 0: the template no longer pins `docs.stageDirs` /
+    // `archive.dirs` (static defaults would swallow the new docs.*Dir keys).
+    // The loader therefore resolves the legacy directories from its own
+    // defaults — the resulting behaviour is unchanged.
     const json = loadJsonConfig("src/template/pipeline_loop.json");
-    expect(json.docs?.stageDirs?.clarify).toBe("docs/design");
-    expect(json.archive?.dirs).toEqual(["docs/design", "docs/review"]);
+    expect(json.docs).toBeUndefined();
+    expect(json.archive?.dirs).toBeUndefined();
     expect(json.archive?.dest).toBe("pi-pipeline-archive");
     const resolved = resolvePipelineConfig(json);
-    expect(resolved.docsStageDirs?.fix).toBe("docs/review");
-    expect(resolved.archiveDirs).toEqual(["docs/design", "docs/review"]);
+    expect(resolved.docsStageDirs).toBeUndefined();
+    expect(resolved.archiveDirs).toEqual(["docs"]);
     expect(resolved.archiveDest).toBe("pi-pipeline-archive");
   });
 });
