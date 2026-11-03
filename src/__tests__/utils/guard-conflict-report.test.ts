@@ -170,5 +170,58 @@ describe("guard-conflict-report", () => {
       );
       expect(result).toBeNull();
     });
+
+    // ─── 222 Phase 2: custom design directory ──────────────────────────────
+
+    test("custom designDir: the deliverable is exempted, so no readonly_write conflict", async () => {
+      const meta = {
+        currentStage: "develop",
+        requirementDoc: "spec/design/222_Feat.md",
+      } as SessionMeta;
+      const result = await checkDispatchConflicts(
+        "develop",
+        meta,
+        ["spec/design/*_Plan*.md", "spec/design/*_Commit.md"],
+        ["**"],
+        () => ({ mode: "ordinary" }),
+        () => "full write",
+        "spec/design",
+      );
+      expect(result).toBeNull();
+    });
+
+    test("custom designDir: a read-only set covering the deliverable still blocks", async () => {
+      const meta = {
+        currentStage: "develop",
+      } as SessionMeta; // no requirementDoc → no exemption
+      const result = await checkDispatchConflicts(
+        "develop",
+        meta,
+        ["spec/design/*.md"],
+        ["**"],
+        () => ({ mode: "ordinary" }),
+        () => "full write",
+        "spec/design",
+      );
+      expect(result?.conflictType).toBe("readonly_write");
+    });
+
+    test("custom designDir: the default-directory probe no longer triggers", async () => {
+      const meta = {
+        currentStage: "fix",
+      } as SessionMeta;
+      // read-only covers only the DEFAULT design directory; the configured one
+      // is spec/design, so the contract-required probe does not intersect.
+      const result = await checkDispatchConflicts(
+        "fix",
+        meta,
+        ["docs/design/*.md"],
+        ["**"],
+        () => ({ mode: "ordinary" }),
+        () => "full write",
+        "spec/design",
+      );
+      expect(result).toBeNull();
+    });
   });
 });

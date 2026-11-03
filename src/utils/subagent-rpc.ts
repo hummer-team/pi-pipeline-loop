@@ -690,6 +690,8 @@ export async function spawnStageSubagent(
     config.stages?.[stage]?.allowedWritePaths,
     () => writePolicyModule.resolveDesignReviewWritePolicy(meta),
     (policy) => writePolicyModule.describeWriteScope(policy as DesignReviewWritePolicy),
+    // 222 Phase 2: the probed deliverable path follows the configured layout.
+    docsDirsOf(config).designDir,
   );
   
   if (conflictResult) {

@@ -64,6 +64,8 @@ import { isFrozen, getFlowState, formatFrozenReason, formatAbortedNotifyText, fo
 import { safeWriteAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { getStageDeliverableExemptions } from "./verify-path-resolver";
+// 222 Phase 2: resolved docs directories (design-dir deliverable exemptions).
+import { docsDirsOf } from "../docs-paths";
 import { describeReadOnlyWriteConflict } from "../utils/guard-conflict-report";
 import { checkGitAdd, checkGitCommit, isGitWriteCommand, isGitForbidden } from "../utils/git-protect";
 import { resolveGitModifyPolicy, describeGitModifySource } from "../utils/protect";
@@ -649,8 +651,13 @@ async function checkBashFileTargets(
       // Session allowance early bypass
       if (sessionPaths.includes(relPath)) continue;
 
-      // 195 Phase 1: Get stage deliverable exemptions for read-only path checks
-      const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
+      // 195 Phase 1: Get stage deliverable exemptions for read-only path checks.
+      // 222 Phase 2: the exemption path follows the CONFIGURED design directory.
+      const exemptedPaths = getStageDeliverableExemptions(
+        meta,
+        meta.currentStage,
+        docsDirsOf(config).designDir,
+      );
       
       // Stage-level write whitelist check (with read-only path priority)
       const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs);
@@ -1677,8 +1684,13 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const sessionAllowed = sessionPaths.includes(relPath);
 
           if (!sessionAllowed) {
-            // 195 Phase 1: Get stage deliverable exemptions for read-only path checks
-            const exemptedPaths = getStageDeliverableExemptions(meta, meta.currentStage);
+            // 195 Phase 1: Get stage deliverable exemptions for read-only path checks.
+            // 222 Phase 2: the exemption path follows the CONFIGURED design directory.
+            const exemptedPaths = getStageDeliverableExemptions(
+              meta,
+              meta.currentStage,
+              docsDirsOf(config).designDir,
+            );
             
             // Stage-level write whitelist check (with read-only path priority)
             const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs);

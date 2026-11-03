@@ -26,6 +26,8 @@ import {
   DEFAULT_STAGE_DOC_DIRS,
   MAX_DOC_CANDIDATES,
 } from "../constants";
+// 222 Phase 2: the resolved docs directories drive the stage menu directory.
+import { docsDirsOf } from "../docs-paths";
 import {
   CODE_REVIEW_DOC_PREFIX,
   MD_FILE_EXTENSION_RE,
@@ -53,8 +55,8 @@ export interface DocCandidate {
 
 /**
  * Result of resolving the stage's candidate-doc directory.
- * - `autoMatched=true`: `docs.stageDirs` not configured for this stage;
- *   the built-in default directory was used.
+ * - `autoMatched=true`: no NON-DEFAULT `docs.stageDirs` entry applies; the
+ *   resolved docs directory (or the built-in default) was used.
  * - `autoMatched=false`: explicit user configuration took precedence.
  */
 export interface StageDocDirResolution {
@@ -65,21 +67,44 @@ export interface StageDocDirResolution {
 }
 
 /**
- * Resolves the candidate-document directory for a stage (206 Phase 1 / 206_Feat
- * Round 2): explicit `config.docsStageDirs[stage]` wins; otherwise the
- * built-in `DEFAULT_STAGE_DOC_DIRS` map applies (falling back to `"docs"` for
- * stages without a default entry).
+ * Resolves the candidate-document directory for a stage.
+ *
+ * 222 Phase 2 priority (single source with the deliverable directories):
+ * 1. a NON-DEFAULT `config.docsStageDirs[stage]` value — a real per-stage
+ *    customisation always wins;
+ * 2. the resolved docs directory (`docsDirsOf(config)`): `reviewDir` for `fix`,
+ *    `designDir` for every other doc-bearing stage;
+ * 3. `"docs"` for stages without a document kind (terminal stages).
+ *
+ * A `docsStageDirs` value that EQUALS the built-in default is treated as
+ * boilerplate (it is what the shipped template used to pin) and no longer masks
+ * `designDir`. This avoids the silent mismatch where the menu scanned the old
+ * directory while deliverables already went to the new one — without adding a
+ * new `PipelineConfig` field to tell "explicit" from "derived".
  */
 export function resolveStageDocDir(
   config: PipelineConfig,
   stage: PipelineStage,
 ): StageDocDirResolution {
   const configured = config.docsStageDirs?.[stage];
-  if (typeof configured === "string" && configured.length > 0) {
+  const builtInDefault = DEFAULT_STAGE_DOC_DIRS[stage];
+  if (
+    typeof configured === "string"
+    && configured.length > 0
+    && configured !== builtInDefault
+  ) {
     return { dir: configured, autoMatched: false };
   }
-  const fallback = DEFAULT_STAGE_DOC_DIRS[stage] ?? "docs";
-  return { dir: fallback, autoMatched: true };
+  if (builtInDefault === undefined) {
+    // Terminal stages have no document kind.
+    return { dir: "docs", autoMatched: true };
+  }
+  // Otherwise the resolved docs directory decides (fix reads reviewDir).
+  const resolved = docsDirsOf(config);
+  return {
+    dir: stage === "fix" ? resolved.reviewDir : resolved.designDir,
+    autoMatched: configured === undefined,
+  };
 }
 
 /**

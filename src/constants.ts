@@ -663,11 +663,16 @@ export const DEFAULT_DOCS_FALLBACK_DIRS: readonly string[] = ["docs"];
 
 /**
  * 206 Phase 0: built-in stage → candidate-document directory map used when
- * `docs.stageDirs` is NOT configured (auto-match mode). Values are
- * project-relative directory paths.
+ * `docs.stageDirs` does NOT declare a NON-DEFAULT value for the stage.
  *
  * - clarify/plan/design-review/develop/review → "docs/design"
  * - fix → "docs/review" (code-review reports live there)
+ *
+ * 222 Phase 2: this map now only carries the "which stage belongs to which KIND
+ * of directory" semantics. The actual directory is
+ * `docsDirsOf(config).designDir` / `.reviewDir`, so a customised docs layout
+ * moves the menu with the deliverables. A `docs.stageDirs` entry EQUAL to a
+ * value here is boilerplate and does not override the resolved directory.
  */
 export const DEFAULT_STAGE_DOC_DIRS: Readonly<Partial<Record<PipelineStage, string>>> = {
   clarify: "docs/design",

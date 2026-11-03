@@ -15,6 +15,10 @@ import { DEFAULT_MAX_VIOLATIONS } from "../constants";
 import { getFlowState, formatAbortedNotifyText, formatFrozenReason, formatDecisionMenuHint } from "../core/flow-state";
 import { isPathReadOnly } from "./protect";
 import { resolveCommitDocPath, getStageDeliverableExemptions } from "../core/verify-path-resolver";
+// 222 Phase 2: the design directory is an ARGUMENT (this module never reads the
+// configuration object); callers pass `docsDirsOf(config).designDir`.
+import { DEFAULT_DESIGN_DIR } from "../constants";
+import * as path from "node:path";
 import type { SessionMeta, PipelineStage } from "../types";
 
 /**
@@ -135,6 +139,9 @@ export interface DispatchConflictResult {
  *
  * Conflict ii: For design-review stage, check if the dynamic write scope is
  *   empty but the stage contract requires output (allowedWritePaths is configured).
+ *
+ * 222 Phase 2: `designDir` (default `docs/design`) determines the deliverable
+ * path probed here; callers pass the resolved `docsDirsOf(config).designDir`.
  */
 export async function checkDispatchConflicts(
   stage: PipelineStage,
@@ -143,20 +150,23 @@ export async function checkDispatchConflicts(
   allowedWritePaths: string[] | undefined,
   resolveWritePolicy: () => Promise<{ mode: string; writable?: readonly string[]; reason?: string }> | { mode: string; writable?: readonly string[]; reason?: string },
   describeScope: (policy: { mode: string; writable?: readonly string[]; reason?: string }) => Promise<string> | string,
+  designDir: string = DEFAULT_DESIGN_DIR,
 ): Promise<DispatchConflictResult | null> {
   // Conflict i: Check if contract-required write target hits read-only AND exemption does NOT apply.
   // When requirementDoc exists: check exact deliverable path against read-only + exemption.
   // When requirementDoc is MISSING: exemption does not apply (getStageDeliverableExemptions returns []),
-  // and the contract-required write target pattern is `docs/design/*_Develop_Commit.md` (201 Phase 2, narrowed by resolveCommitDocPath).
+  // and the contract-required write target pattern is `{designDir}/*_Develop_Commit.md` (201 Phase 2, narrowed by resolveCommitDocPath).
   // Use a representative instance of that pattern to probe for pattern-level intersection.
   if (stage === "develop" || stage === "fix") {
     if (meta.requirementDoc) {
-      // Exact path: resolveCommitDocPath(requirementDoc base)
-      const reqBase = meta.requirementDoc.replace(/\.md$/, "");
+      // Exact path: resolveCommitDocPath(requirementDoc base).
+      // 222 Phase 2: the base is derived with the production helper so an
+      // absolute requirement path never leaks a directory into the file name.
+      const reqBase = path.basename(meta.requirementDoc, ".md");
       if (reqBase) {
-        const deliverablePath = resolveCommitDocPath(reqBase);
+        const deliverablePath = resolveCommitDocPath(reqBase, designDir);
         if (allowedReadOnlyPaths?.length) {
-          const exemptions = getStageDeliverableExemptions(meta, stage);
+          const exemptions = getStageDeliverableExemptions(meta, stage, designDir);
           const isExempted = exemptions.includes(deliverablePath);
           if (!isExempted && isPathReadOnly(deliverablePath, allowedReadOnlyPaths)) {
             const report = describeReadOnlyWriteConflict(
@@ -170,9 +180,9 @@ export async function checkDispatchConflicts(
       }
     } else if (allowedReadOnlyPaths?.length) {
       // requirementDoc missing: exemption does NOT apply.
-      // Contract-required write target pattern: docs/design/*_Develop_Commit.md.
+      // Contract-required write target pattern: {designDir}/*_Develop_Commit.md.
       // Probe with a representative instance — if it hits read-only, the pattern is blocked.
-      const contractPatternProbe = resolveCommitDocPath("plan");
+      const contractPatternProbe = resolveCommitDocPath("plan", designDir);
       if (isPathReadOnly(contractPatternProbe, allowedReadOnlyPaths)) {
         const report = describeReadOnlyWriteConflict(
           stage,

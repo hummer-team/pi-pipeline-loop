@@ -295,4 +295,51 @@ describe("195 Phase 1: deliverable exemption from read-only paths", () => {
 
     await rm(TMP, { recursive: true, force: true });
   });
+
+  // ── 222 Phase 2: custom design directory ────────────────────────────────
+
+  it("exempts the commit doc of a CONFIGURED designDir (write tool)", async () => {
+    const reqBase = "222_Feat";
+    const TMP = join(tmpdir(), "pi-exempt222-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    await mkdir(TMP, { recursive: true });
+    await mkdir(join(TMP, ".pi", "audit"), { recursive: true });
+    await mkdir(join(TMP, "spec", "design"), { recursive: true });
+
+    const commitDoc = join(TMP, "spec", "design", `${reqBase}_Develop_Commit.md`);
+    await writeFile(join(TMP, "spec", "design", `${reqBase}_Plan.md`), "plan");
+    await writeFile(commitDoc, "commit content");
+
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      auditDir: ".pi/audit",
+      docsDirs: { designDir: "spec/design", reviewDir: "docs/review", jobsDir: "docs/jobs" },
+      stages: {
+        ...makeTestConfig().stages,
+        develop: {
+          agentPath: "a.md",
+          skillPath: "s.md",
+          nextStage: "review",
+          requireDomain: false,
+          allowedWritePaths: ["**"],
+          allowedReadOnlyPaths: ["spec/design/*_Plan*.md", "spec/design/*_Commit.md"],
+        },
+      },
+    } as any);
+    await initAuditLog(config);
+
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: `spec/design/${reqBase}.md`,
+    });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = {
+      name: "write",
+      arguments: { path: commitDoc, content: "updated commit doc" },
+    };
+
+    const hook = createToolGuard(config);
+    expect(await hook.handler(ctx as any)).toBeUndefined();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
 });

@@ -68,6 +68,71 @@ describe("resolveStageDocDir", () => {
     expect(resolveStageDocDir(config, "fix")).toEqual({ dir: "docs/review", autoMatched: true });
     expect(resolveStageDocDir(config, "develop")).toEqual({ dir: "docs/design", autoMatched: true });
   });
+
+  // ─── 222 Phase 2: menu directory follows the configured docs layout ────────
+
+  it("follows an explicitly configured designDir (fix follows reviewDir)", () => {
+    const cfg = makeTestConfig({
+      projectRoot: ROOT,
+      docsDirs: { designDir: "spec/design", reviewDir: "spec/review", jobsDir: "spec/jobs" },
+    });
+    expect(resolveStageDocDir(cfg, "clarify")).toEqual({ dir: "spec/design", autoMatched: true });
+    expect(resolveStageDocDir(cfg, "plan")).toEqual({ dir: "spec/design", autoMatched: true });
+    expect(resolveStageDocDir(cfg, "review")).toEqual({ dir: "spec/design", autoMatched: true });
+    expect(resolveStageDocDir(cfg, "fix")).toEqual({ dir: "spec/review", autoMatched: true });
+  });
+
+  it("existing project: template-pinned DEFAULT stageDirs + designDir → designDir wins", () => {
+    // This is the real migration scenario: an installed pipeline_loop.json still
+    // carries the six legacy stageDirs values, all EQUAL to the built-in
+    // defaults. They are boilerplate and must not mask the new key.
+    const cfg = makeTestConfig({
+      projectRoot: ROOT,
+      docsStageDirs: {
+        clarify: "docs/design",
+        plan: "docs/design",
+        "design-review": "docs/design",
+        develop: "docs/design",
+        review: "docs/design",
+        fix: "docs/review",
+      },
+      docsDirs: { designDir: "spec/design", reviewDir: "spec/review", jobsDir: "spec/jobs" },
+    });
+    for (const stage of ["clarify", "plan", "design-review", "develop", "review"] as const) {
+      expect(resolveStageDocDir(cfg, stage).dir).toBe("spec/design");
+    }
+    expect(resolveStageDocDir(cfg, "fix").dir).toBe("spec/review");
+  });
+
+  it("a NON-DEFAULT per-stage stageDirs entry still wins over designDir", () => {
+    const cfg = makeTestConfig({
+      projectRoot: ROOT,
+      docsStageDirs: { review: "custom/review" },
+      docsDirs: { designDir: "spec/design", reviewDir: "spec/review", jobsDir: "spec/jobs" },
+    });
+    expect(resolveStageDocDir(cfg, "review")).toEqual({ dir: "custom/review", autoMatched: false });
+    // Other stages keep following the resolved directories.
+    expect(resolveStageDocDir(cfg, "plan").dir).toBe("spec/design");
+  });
+
+  it("derives the menu directory from docsStageDirs when no explicit block exists", () => {
+    const cfg = makeTestConfig({
+      projectRoot: ROOT,
+      docsStageDirs: { plan: "spec/design", fix: "spec/review" },
+    });
+    expect(resolveStageDocDir(cfg, "plan").dir).toBe("spec/design");
+    expect(resolveStageDocDir(cfg, "develop").dir).toBe("spec/design");
+    expect(resolveStageDocDir(cfg, "fix").dir).toBe("spec/review");
+  });
+
+  it("stages without a document kind still fall back to 'docs'", () => {
+    const cfg = makeTestConfig({
+      projectRoot: ROOT,
+      docsDirs: { designDir: "spec/design", reviewDir: "spec/review", jobsDir: "spec/jobs" },
+    });
+    expect(resolveStageDocDir(cfg, "awaiting_human")).toEqual({ dir: "docs", autoMatched: true });
+    expect(resolveStageDocDir(cfg, "completed")).toEqual({ dir: "docs", autoMatched: true });
+  });
 });
 
 describe("stageDocCandidateFilter", () => {
