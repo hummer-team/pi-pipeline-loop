@@ -22,6 +22,7 @@ import { resolveConfirmMaxRejections } from "../core/stage-advancer";
 import { effectiveMax, remainingRoundsOf } from "../utils/stage-visit";
 import { auditLogDirForPipeline } from "../utils/auditLog";
 import { DEFAULT_CONFIRM_MAX_REJECTIONS, CONFIRM_GATE_REASK_MAX } from "../constants";
+import { docsDirsOf } from "../docs-paths";
 // 211 Phase 2: reask cap rendered as `reprompt N/CONFIRM_GATE_REASK_MAX` in the
 // merged confirm-pending line below.
 // 193 Phase 3 (task 8): read-only pending-decision display (shared view).
@@ -256,7 +257,12 @@ export function renderTerminalStatus(
 async function computeDriftLine(config: PipelineConfig): Promise<string> {
   let driftLine = "- Template drift: 0 file(s)";
   try {
-    const drifts = await checkTemplateDrift(config.projectRoot, resolvePiWorkDir(config));
+    // 222 Phase 5: same docs layout as the deployment (no phantom drift).
+    const drifts = await checkTemplateDrift(
+      config.projectRoot,
+      resolvePiWorkDir(config),
+      docsDirsOf(config),
+    );
     if (drifts.length > 0) {
       const names = drifts.map((d) => d.asset).join(", ");
       driftLine = `- Template drift: ${drifts.length} file(s) [${names}]`;

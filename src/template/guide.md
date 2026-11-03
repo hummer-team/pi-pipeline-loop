@@ -469,7 +469,50 @@ bun add @earendil-works/pi-pipeline
 - 目录不存在或无匹配文件 → 静默跳过该目录（不报错）
 - `docs.stageDirs` **不参与** `protect` 保护链（不豁免也不额外拦截）
 
-### 3.6 归档配置（archive.namesuffix / archive.dirs / archive.dest）与 /pipeline-archive 命令
+### 3.6 交付物 / 评审 / 任务目录（docs.designDir / docs.reviewDir / docs.jobsDir）
+
+三个**可选**键决定插件运行期使用的目录（项目相对路径）。不配置时内置默认值与历史行为完全一致。
+
+```jsonc
+{
+  "docs": {
+    "designDir": "docs/design",   // 默认；需求 / 计划 / commit / 设计评审文档
+    "reviewDir": "docs/review",   // 默认；code review 报告
+    "jobsDir": "docs/jobs"        // 默认；/pipeline-auto 任务 YAML
+  }
+}
+```
+
+**默认布局**（未配置即内置生效）：
+
+| 键 | 默认值 | 覆盖内容 |
+| --- | --- | --- |
+| `docs.designDir` | `docs/design` | 需求文档目录、plan doc、commit doc、design-review 报告；clarify/plan/design-review/review 阶段的写白名单；develop/fix 的 `*_Plan.md` 只读保护 |
+| `docs.reviewDir` | `docs/review` | code review 报告 glob、`/pipeline-start` 的 `fix` 候选菜单 |
+| `docs.jobsDir` | `docs/jobs` | `/pipeline-auto` 扫描目录、`--job <id>` 校验、命令文案；**不建目录、不归档** |
+
+**优先级（单一解析器）**：
+
+1. 显式 `docs.designDir` / `docs.reviewDir` / `docs.jobsDir`
+2. 由 `docs.stageDirs` 派生（`designDir` ← `plan`、`develop`；`reviewDir` ← `review`、`fix`；`jobsDir` **不**派生）
+3. 内置默认值
+
+> `docs.stageDirs` 里**等于默认值**的条目不再“压住”显式目录键；只有**非默认**的 `stageDirs` 值才在文档候选菜单中优先。显式键与派生值不一致时会 warn 一次并说明以哪个为准。
+
+**校验（fail-open）**：值必须是**非空相对路径**且不含 `..` 段。绝对路径（含 Windows 盘符）、空串、越界路径 → `console.warn` 一次并**回落**到派生值/默认值，不阻塞初始化。
+
+**联动影响**：
+
+- **阶段写白名单**：`clarify` / `plan` / `design-review` / `review` 的 `allowedWritePaths` 会在原有条目后**追加**解析出的 design / review 目录（形如 `<designDir>/`、`<reviewDir>/`，追加式，不删除历史条目）；`develop` / `fix` 的 `allowedReadOnlyPaths` 改为 `<designDir>/*_Plan.md`。显式配置的 `allowedWritePaths` / `allowedReadOnlyPaths` 永远优先，不被覆盖。
+- **verify 识别层**：verify 规则解析同时接受“配置目录”与“默认目录”两种 glob，改目录后既有 `verify.md` 不会因 glob 不匹配而失效。
+- **归档范围**：优先级 `archive.dirs` → `docs.stageDirs` 去重值 → `[designDir, reviewDir]` → `["docs"]`。`jobsDir` **永不**归档。
+- **`/pipeline-init` 建目录**：创建 `designDir` + `reviewDir`（幂等、去重），**不创建** `jobsDir`（任务文件由用户维护）。
+
+**⚠️ 修改目录后必须重跑 `/pipeline-init`**：已安装的 `.pi/references/*_spec/verify.md`、`.pi/skills/*/SKILL.md`（含 managed block）与 `.pi/auto_job_loop_template.yaml` 里的目录是**安装期**渲染的。改配置但不重跑，已装 `verify.md` 里的旧目录字面量既不是“当前配置目录”也不是“默认目录”，判定层会保留原 glob（不做收窄）——这是**已知退化**，重跑 `/pipeline-init` 即可消除。
+
+---
+
+### 3.7 归档配置（archive.namesuffix / archive.dirs / archive.dest）与 /pipeline-archive 命令
 
 ```jsonc
 {

@@ -45,7 +45,7 @@ disable-model-invocation: true
 
 ### Path Convention
 <!-- Phase 5 (173) C17: Path convention clarification -->
-**Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
+**Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `{designDir}/`.
 <!-- Template-TODO: 补充项目特有的业务交付项（例如：生成 API 文档、更新 CHANGELOG 等） -->
 <!-- Template-TODO: 配置项目技术栈 stack（如 frontend_ts / java），develop 按 .pi/references/{stack}_code_spec.md 读取对应规范 -->
 

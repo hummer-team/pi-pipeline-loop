@@ -28,6 +28,7 @@ import { formatAbortedNotifyText } from "./flow-state";
 import { staleConfigNotice } from "../utils/config-staleness";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { docsDirsOf } from "../docs-paths";
 import { probeAgentState } from "../utils/subagents-introspect";
 // 218 P0 (T0.5): one-shot ledger reconciliation on owner resume/reload.
 import { reconcileActiveSpawns } from "../utils/spawn-ledger";
@@ -591,7 +592,13 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
       if (!_driftCheckDone) {
         _driftCheckDone = true;
         try {
-          const drifts = await checkTemplateDrift(projectRoot, resolvePiWorkDir(config));
+          // 222 Phase 5: pass the resolved docs layout so the SKILL managed-block
+          // expectation is rendered from the SAME directories as the deployment.
+          const drifts = await checkTemplateDrift(
+            projectRoot,
+            resolvePiWorkDir(config),
+            docsDirsOf(config),
+          );
           for (const d of drifts) {
             await safeWriteAuditLog("template_drift", {
               asset: d.asset,

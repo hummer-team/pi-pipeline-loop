@@ -22,6 +22,7 @@ import { evaluateGroups } from "../../core/verifiers/group-verifier";
 import { resolvePlaceholders } from "../../core/verify-path-resolver";
 import { parseFrontmatter, type VerifyRules } from "../../core/verify-frontmatter";
 import { COMMIT_DOC_NAMING_CONSTRAINT } from "../../constants";
+import { DEFAULT_DOCS_DIRS, renderDocsPathTokens } from "../../docs-paths";
 
 // ─── C13: Template default fields ────────────────────────────────────────────
 
@@ -178,12 +179,15 @@ describe("Phase 5 (173) C15: spawnTrigger inference", () => {
 // ─── C17: SKILL path convention ──────────────────────────────────────────────
 
 describe("Phase 5 (173) C17: SKILL path convention", () => {
+  // 222 Phase 5: the shipped skills carry the `{designDir}` token; `/pipeline-init`
+  // renders it to the resolved directory, so the source template must not pin the path.
   it("develop/SKILL.md contains path convention note", () => {
     const skillPath = path.join(__dirname, "../../template/skills/develop/SKILL.md");
     const content = fs.readFileSync(skillPath, "utf-8");
     expect(content).toContain("Never write business deliverables under");
     expect(content).toContain("{auditDir}");
-    expect(content).toContain("docs/design/");
+    expect(content).toContain("such as `{designDir}/`");
+    expect(content).not.toContain("such as `docs/design/`");
   });
 
   it("review/SKILL.md contains path convention note", () => {
@@ -191,7 +195,8 @@ describe("Phase 5 (173) C17: SKILL path convention", () => {
     const content = fs.readFileSync(skillPath, "utf-8");
     expect(content).toContain("Never write business deliverables under");
     expect(content).toContain("{auditDir}");
-    expect(content).toContain("docs/design/");
+    expect(content).toContain("such as `{designDir}/`");
+    expect(content).not.toContain("such as `docs/design/`");
   });
 });
 
@@ -236,7 +241,8 @@ describe("D2 (174): stage SKILL frontmatter regression guard", () => {
 /** Parses a deployed stage template's frontmatter into VerifyRules. */
 async function loadTemplateRules(stage: string): Promise<VerifyRules> {
   const verifyMdPath = path.join(__dirname, `../../template/references/${stage}_spec/verify.md`);
-  const raw = fs.readFileSync(verifyMdPath, "utf-8");
+  // 222 Phase 5: shipped specs carry docs-path tokens; `/pipeline-init` renders them.
+  const raw = renderDocsPathTokens(fs.readFileSync(verifyMdPath, "utf-8"), DEFAULT_DOCS_DIRS);
   const parts = raw.split(/^---\s*$/m);
   const rules = await parseFrontmatter(parts[1].trim());
   if (!rules) throw new Error(`Failed to parse ${stage} verify.md`);

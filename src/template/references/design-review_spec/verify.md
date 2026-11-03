@@ -1,6 +1,6 @@
 ---
 rules:
-  path: "docs/design/Design_Review_*_*.md"
+  path: "{designDir}/Design_Review_*_*.md"
   groups:
     - name: design-review-report-ready
       ruleMode: and

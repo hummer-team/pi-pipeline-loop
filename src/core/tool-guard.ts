@@ -55,7 +55,7 @@ import {
   isFinishedReleaseProtectedPath,
   type LifecycleWriteAccess,
 } from "./stage-executor/lifecycle-access";
-import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, FROZEN_ABORT_EXEMPT_TOOLS, FROZEN_BLOCKED_READONLY_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
+import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, DEFAULT_DESIGN_DIR, FROZEN_ABORT_EXEMPT_TOOLS, FROZEN_BLOCKED_READONLY_TOOLS, SPAWN_TOOL_NAMES } from "../constants";
 import { resolveGitignoreSkipDirs } from "../utils/work-dir";
 import { loadGitignoreInfo, isGitignored, type GitignoreInfo } from "../utils/gitignore";
 import { splitShellSegments, extractBashFileTargets } from "../utils/bash-parse";
@@ -240,13 +240,18 @@ function warnReadOnlyWriteIntersection(
  * When the path is under .pi/audit/, append guidance directing the model to use
  * generate_stage_summary tool instead of writing directly.
  */
-function buildHardcodedForbiddenReason(relPath: string, _hardcoded: string[]): string {
+function buildHardcodedForbiddenReason(
+  relPath: string,
+  _hardcoded: string[],
+  designDir: string = DEFAULT_DESIGN_DIR,
+): string {
   const base = `FORBIDDEN: Cannot modify protected path '${relPath}' (hardcoded protected).`;
   if (relPath.startsWith(".pi/audit/")) {
+    // 222 Phase 5: the guidance names the CONFIGURED design directory.
     return (
       base +
       " To record commit IDs: call `generate_stage_summary(commitIds: [\"<hash>\", ...])` — the tool writes to .pi/audit/ internally." +
-      " To create a human-readable commit record: write to docs/design/ (e.g. {reqBase}_Develop_Commit.md)."
+      ` To create a human-readable commit record: write to ${designDir}/ (e.g. {reqBase}_Develop_Commit.md).`
     );
   }
   return base;
@@ -276,11 +281,13 @@ async function childHardBlockForProtectedPath(
   trackViolation: (item: Omit<ViolationItem, "timestamp">, guardSource?: GuardSource) => void | Promise<void>,
   ui: ReturnType<typeof createPipelineUI>,
   ctx: RuntimeCtx,
+  /** 222 Phase 5: resolved design directory used in the guidance copy. */
+  designDir: string = DEFAULT_DESIGN_DIR,
 ): Promise<{ block: true; reason: string } | undefined> {
   if (!isChild) return undefined;
 
   const reason = protectionType === "hardcoded"
-    ? buildHardcodedForbiddenReason(relPath, state.hardcoded)
+    ? buildHardcodedForbiddenReason(relPath, state.hardcoded, designDir)
     : `FORBIDDEN: Cannot modify protected path '${relPath}' (gitignore protected).`;
 
   const suggestion = protectionType === "hardcoded"
@@ -324,7 +331,9 @@ function checkStageWriteBlock(
   exemptedPaths?: string[],
   whitelistMissMode?: WhitelistMissMode,
   /** 219 Phase 0 (H1): `protect.whitelistAllow` globs — pre-resolved by the caller. */
-  whitelistAllowGlobs?: string[]
+  whitelistAllowGlobs?: string[],
+  /** 222 Phase 5: resolved design directory used in the guidance copy. */
+  designDir: string = DEFAULT_DESIGN_DIR,
 ): StageWriteCheckResult {
   // 195 Phase 1: Check if path is in exempted list before read-only check.
   // Exempted paths skip read-only interception and return exempted: true.
@@ -384,7 +393,7 @@ function checkStageWriteBlock(
   if (isHardcodedProtected(relPath, state.hardcoded)) {
     return {
       status: "block",
-      reason: buildHardcodedForbiddenReason(relPath, state.hardcoded),
+      reason: buildHardcodedForbiddenReason(relPath, state.hardcoded, designDir),
       kind: "protected",
     };
   }
@@ -483,6 +492,8 @@ async function checkBashFileTargets(
   opts?: { skipGitDirTargets?: boolean; allowGitLockFiles?: boolean },
 ): Promise<{ block: true; reason: string } | undefined> {
   const targets = extractBashFileTargets(segment);
+  // 222 Phase 5: resolved design directory for the user-facing guidance copy.
+  const designDir = docsDirsOf(config).designDir;
 
   // 193 Phase 3 (task 8): a PENDING design-review human decision puts the
   // session in READ-ONLY mode. The check runs right after the EXISTING bash
@@ -660,7 +671,7 @@ async function checkBashFileTargets(
       );
       
       // Stage-level write whitelist check (with read-only path priority)
-      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs);
+      const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs, designDir);
       // 219 Phase 0 (H1): throttled audit when `whitelistAllow` exempted this target
       if (stageCheck.status === "allow-whitelist" && stageCheck.whitelistAllowExempt) {
         await auditWhitelistAllowExempt(relPath, meta.currentStage, meta.pipelineId);
@@ -696,7 +707,7 @@ async function checkBashFileTargets(
           // Child + protected is never delegated (D3/R9b): immediate hard
           // block for ANY protect.ask value (190 Fix-A extended per F.2).
           const childBlock = await childHardBlockForProtectedPath(
-            isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx
+            isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx, designDir,
           );
           if (childBlock) return childBlock;
           // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
@@ -736,7 +747,7 @@ async function checkBashFileTargets(
           // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
           const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
           const childBlock = await childHardBlockForProtectedPath(
-            isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx
+            isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx, designDir,
           );
           if (childBlock) return childBlock;
           
@@ -770,7 +781,7 @@ async function checkBashFileTargets(
             // Phase 1 (190) Fix-A extension: child sessions hard-block immediately
             const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
             const childBlock = await childHardBlockForProtectedPath(
-              isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx
+              isChild, relPath, protectionType, state, "bash", trackViolation, ui, ctx, designDir,
             );
             if (childBlock) return childBlock;
             
@@ -934,6 +945,9 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
       const stageConfig = dormantKeepProtection
         ? { ...config.stages[meta.currentStage], allowedWritePaths: undefined }
         : config.stages[meta.currentStage];
+      // 222 Phase 5: the resolved design directory is needed by the user-facing
+      // guidance copy (commit-record hint) at every block site.
+      const designDir = docsDirsOf(config).designDir;
       // tool_call events always populate toolCall (buildRuntimeCtx guarantees it)
       const { name: toolName, arguments: args } = ctx.toolCall!;
 
@@ -1693,7 +1707,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
             );
             
             // Stage-level write whitelist check (with read-only path priority)
-            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs);
+            const stageCheck = checkStageWriteBlock(relPath, stageConfig.allowedWritePaths, meta.currentStage, state, stageConfig.allowedReadOnlyPaths, exemptedPaths, whitelistMissMode, whitelistAllowGlobs, designDir);
             // 219 Phase 0 (H1): throttled audit when `whitelistAllow` exempted this target
             if (stageCheck.status === "allow-whitelist" && stageCheck.whitelistAllowExempt) {
               await auditWhitelistAllowExempt(relPath, meta.currentStage, meta.pipelineId);
@@ -1731,7 +1745,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 // Child + protected is never delegated (D3/R9b): immediate
                 // hard block for ANY protect.ask value.
                 const childBlock = await childHardBlockForProtectedPath(
-                  isChild, relPath, protectionType, state, toolName, trackViolation, ui, ctx
+                  isChild, relPath, protectionType, state, toolName, trackViolation, ui, ctx, designDir,
                 );
                 if (childBlock) return childBlock;
                 // 219 Phase 0 (B1): policy from the fine-grained key, falling back to protect.ask
@@ -1778,7 +1792,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 // Determine protection type for appropriate error message
                 const protectionType = isHardcodedProtected(relPath, state.hardcoded) ? "hardcoded" : "gitignore";
                 const childBlock = await childHardBlockForProtectedPath(
-                  isChild, relPath, protectionType, state, toolName, trackViolation, ui, ctx
+                  isChild, relPath, protectionType, state, toolName, trackViolation, ui, ctx, designDir,
                 );
                 if (childBlock) return childBlock;
                 
@@ -1817,13 +1831,13 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   // Phase 1 (190) Fix-A: child sessions hard-block immediately
                   // without entering askProtectDecision (prevents dismissCount accumulation on child)
                   const childBlock = await childHardBlockForProtectedPath(
-                    isChild, relPath, "hardcoded", state, toolName, trackViolation, ui, ctx
+                    isChild, relPath, "hardcoded", state, toolName, trackViolation, ui, ctx, designDir,
                   );
                   if (childBlock) return childBlock;
                   
                   const outcome = await askProtectDecision(ctx, meta, relPath, config);
                   if (outcome.decision === "block") {
-                    const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
+                    const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded, designDir);
                     // Phase 4 (173) C11: dismissed action does NOT count as violation
                     if (outcome.action !== "dismissed") {
                       await trackViolation({
@@ -1838,7 +1852,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                   }
                   // "allow" → proceed with hash recording
                 } else {
-                  const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded);
+                  const reason = buildHardcodedForbiddenReason(relPath, state.hardcoded, designDir);
                   await trackViolation({
                     type: "write_protected",
                     tool: toolName,
@@ -1859,7 +1873,7 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                     if (resolveProtectedPathPolicy(config) === "ask") {
                       // Phase 1 (190) Fix-A extension: child sessions hard-block on gitignore paths
                       const childBlock = await childHardBlockForProtectedPath(
-                        isChild, relPath, "gitignore", state, toolName, trackViolation, ui, ctx
+                        isChild, relPath, "gitignore", state, toolName, trackViolation, ui, ctx, designDir,
                       );
                       if (childBlock) return childBlock;
                       

@@ -75,12 +75,12 @@ disable-model-invocation: true
      - Format, naming, style, readability concerns only
 2. Mark **Blocker**, **High**, **Medium** items as `To‑Fix` or `待修复`; LOW items require no fixes.
 
-### 8.1 Review Output Directory: `docs/review`
-0. **Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `docs/design/`.
+### 8.1 Review Output Directory: `{reviewDir}`
+0. **Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `{designDir}/`.
 1. File naming rule: `Code_Review_{file}_Develop_Commit_{index}.md`
    - `{file}`: Plan file name
    - `{index}`: Review round number, starting from 1
-   - Example: `docs/review/Code_Review_xx_Plan_Develop_Commit_1.md`
+   - Example: `{reviewDir}/Code_Review_xx_Plan_Develop_Commit_1.md`
 2. Strictly follow the content template. Output type‑safety, regression‑side‑effect detection issues via template if found. If no issues exist, briefly summarize review scope inside `Summary`.
 3. use `read` tool report format flow [review_report_template.md](.pi/references/review_report_template.md)
 

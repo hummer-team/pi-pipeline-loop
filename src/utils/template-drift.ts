@@ -20,6 +20,8 @@ import crypto from "node:crypto";
 import { safeWriteAuditLog } from "./auditLog";
 import { renderContractBlock, MANAGED_BLOCK_BEGIN, MANAGED_BLOCK_END } from "./skill-managed-block";
 import { loadPromptConfig } from "../core/prompt-config";
+import { DEFAULT_DOCS_DIRS, renderDocsPathTokens } from "../docs-paths";
+import type { DocsDirs } from "../types";
 
 /**
  * A single drift entry comparing a deployed asset to its repo source.
@@ -143,13 +145,23 @@ function normalizeBlock(text: string): string {
  * treated as "pending injection" (not drift). guide.md / clarify_template.md /
  * the yml keep whole-file hashing (always-overwrite assets).
  *
+ * 222 Phase 5: `dirs` is the resolved docs layout. `/pipeline-init` renders the
+ * docs-path tokens of the deployed SKILL managed block from the SAME value, so
+ * the expectation must be rendered identically — otherwise every customised
+ * project would report a phantom drift. The default applies only to
+ * unconfigured projects (the template is rendered with the defaults too), and
+ * the value is NEVER re-derived from `projectRoot` here: this module must not
+ * perform implicit config IO.
+ *
  * @param projectRoot - Project root (deployed `.pi/` lookup)
  * @param piWorkDir - Optional piWorkDir (defaults to ".pi" when omitted)
+ * @param dirs - Resolved docs directories (defaults to the built-in layout)
  * @returns Array of DriftEntry for each asset that genuinely drifted
  */
 export async function checkTemplateDrift(
   projectRoot: string,
   piWorkDir: string = ".pi",
+  dirs: DocsDirs = DEFAULT_DOCS_DIRS,
 ): Promise<DriftEntry[]> {
   const repoTemplateDir = resolveRepoTemplateDir();
   if (!repoTemplateDir) {
@@ -182,7 +194,8 @@ export async function checkTemplateDrift(
         if (deployedBlock === null) continue; // pending injection → not drift
         const deliverable = promptConfig[`stage_deliverable_${stage}`];
         if (!deliverable) continue;
-        const expectedBlock = renderContractBlock(stage, deliverable);
+        // 222 Phase 5: render the docs-path tokens exactly like the deploy path.
+        const expectedBlock = renderContractBlock(stage, renderDocsPathTokens(deliverable, dirs));
         if (normalizeBlock(deployedBlock) !== normalizeBlock(expectedBlock)) {
           drifts.push({
             asset,

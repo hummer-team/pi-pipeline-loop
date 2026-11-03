@@ -27,6 +27,7 @@ import path from "node:path";
 import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
+import { docsDirsOf, renderDocsPathTokens } from "../docs-paths";
 import {
   resolveClarifyPromptMarkers,
   substituteClarifyMarkerPlaceholders,
@@ -1594,9 +1595,10 @@ async function buildStageDeliverables(
   // injected even when the yml key is missing — the early return therefore
   // depends on BOTH sources being empty.
   const isPlanStage = meta.currentStage === "plan";
+  // 222 Phase 5: the fallback names the RESOLVED design directory.
   const targetFile = meta.requirementDoc
     ? `\`${planDocRelPathFromRequirementDoc(meta.requirementDoc)}\``
-    : "`docs/design/{reqBase}_Plan.md` (same directory as the requirement doc)";
+    : `\`${docsDirsOf(config).designDir}/{reqBase}_Plan.md\` (same directory as the requirement doc)`;
   const planSuffix = isPlanStage
     ? `\n\n**Naming**: ${PLAN_DOC_NAMING_CONSTRAINT}\n**Target file**: ${targetFile}`
     : "";
@@ -1614,7 +1616,9 @@ async function buildStageDeliverables(
   const markers = resolveClarifyPromptMarkers(config);
   const rendered = hasYmlValue
     ? substituteClarifyMarkerPlaceholders(
-        value.trim().replaceAll("{pipelineId}", pipelineId),
+        // 222 Phase 5: the yml ships docs-path tokens; resolve them here so the
+        // injected deliverables carry the configured directories.
+        renderDocsPathTokens(value.trim(), docsDirsOf(config)).replaceAll("{pipelineId}", pipelineId),
         markers,
       )
     : "";

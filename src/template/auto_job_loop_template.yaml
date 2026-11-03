@@ -2,7 +2,7 @@
 # pi-pipeline — Auto Pipeline 任务文件模板 (221)
 # ============================================================================
 # 本文件随模板分发（构建后位于 dist/template/，`/pipeline-init` 安装到
-# `.pi/auto_job_loop_template.yaml`）。用法：复制/改写为 `docs/jobs/<name>_loop.yaml`
+# `.pi/auto_job_loop_template.yaml`）。用法：复制/改写为 `{jobsDir}/<name>_loop.yaml`
 # （插件只扫描该目录下 `*_loop.yaml`，不递归、最多取 mtime 新的 5 份；其余 `.yaml`
 # 会被忽略并在菜单中提示改名）。运行期产物在 `.pi/auto_pipeline/`，不会写回本文件）。
 # 插件对 job 文件【只读】：进度状态一律写在 sidecar（.pi/auto_pipeline），
@@ -13,7 +13,7 @@
 #   enabled: true
 #   docs:
 #     list:
-#       - doc: docs/design/200_Feat.md
+#       - doc: {designDir}/200_Feat.md
 #
 # 已移除的键（写入即报错，绝不静默降级）：
 #   clarify.mode / clarify.fallback / clarify.answerStrategy /
@@ -32,9 +32,9 @@ tier: assisted
 
 docs:
   list:
-    - doc: docs/design/200_Feat.md     # 必须是项目内相对路径、以 .md 结尾、不含 ".."
+    - doc: "{designDir}/200_Feat.md"   # 必须是项目内相对路径、以 .md 结尾、不含 ".."
       startStage: clarify              # 可选；仅接受可恢复阶段；缺省取 defaults.startStage
-    - doc: docs/design/201_Feat.md
+    - doc: "{designDir}/201_Feat.md"
   skipCompleted: true                  # 命中 NEW_COMMIT_RE（如 *_Develop_Commit.md）视为已完成并跳过
   onFailure: stop                      # stop | continue
                                        # 注意：HARD STOP（硬停，见 stopConditions）会

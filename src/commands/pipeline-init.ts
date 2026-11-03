@@ -15,10 +15,10 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { PipelineConfig, Command } from "../types";
+import type { DocsDirs, PipelineConfig, Command } from "../types";
 import { CONFIG_DIR_NAME, TEMPLATE_DIR } from "../constants";
-// 222 Phase 3: resolved docs directories drive the created design/review dirs.
-import { docsDirsOf } from "../docs-paths";
+// 222 Phase 3/5: resolved docs directories + install-time token rendering.
+import { docsDirsOf, renderDocsPathTokens } from "../docs-paths";
 import { generateVerifyFiles, loadPluginDeliverables } from "../core/verify-generator";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
@@ -86,6 +86,48 @@ async function renderInstallTimeMarkers(
 ): Promise<void> {
   const content = await fsp.readFile(filePath, "utf8");
   const resolved = substituteClarifyMarkerPlaceholders(content, markers);
+  if (resolved !== content) await fsp.writeFile(filePath, resolved, "utf8");
+}
+
+/**
+ * 222 Phase 5: templates whose docs-path tokens are resolved ONCE at install
+ * time. These assets are read DIRECTLY by agents / are part of the deployed
+ * contract, so a runtime render would be too late.
+ *
+ * NOT listed on purpose:
+ * - `guide.md` / `references/clarify_template.md` — compared whole-file by the
+ *   drift check and free of docs paths (rendering them would create drift noise).
+ * - `references/pipeline-stage-prompt.yml` — legitimately keeps the tokens: it is
+ *   rendered at runtime (deliverables injection) and at install time through the
+ *   managed-block / conflict-check paths, and is also whole-file drift-checked.
+ */
+const INSTALL_TIME_DOCS_PATH_TEMPLATES: ReadonlySet<string> = new Set([
+  "references/plan_spec/verify.md",
+  "references/develop_spec/verify.md",
+  "references/fix_spec/verify.md",
+  "references/review_spec/verify.md",
+  "references/design-review_spec/verify.md",
+  "references/develop_commit_template.md",
+  "auto_job_loop_template.yaml",
+  "skills/design/SKILL.md",
+  "skills/plan/SKILL.md",
+  "skills/develop/SKILL.md",
+  "skills/review/SKILL.md",
+]);
+
+/**
+ * 222 Phase 5: resolve the docs-path tokens (`{designDir}` / `{reviewDir}` /
+ * `{jobsDir}`) of an installed template in place.
+ *
+ * Composed AFTER {@link renderInstallTimeMarkers}: the two token families are
+ * disjoint, so a SKILL.md that carries both is fully resolved by running both.
+ */
+async function renderInstallTimeDocsPaths(
+  filePath: string,
+  dirs: DocsDirs,
+): Promise<void> {
+  const content = await fsp.readFile(filePath, "utf8");
+  const resolved = renderDocsPathTokens(content, dirs);
   if (resolved !== content) await fsp.writeFile(filePath, resolved, "utf8");
 }
 
@@ -325,6 +367,11 @@ async function copyTemplateFiles(
       if (INSTALL_TIME_MARKER_TEMPLATES.has(relPath)) {
         await renderInstallTimeMarkers(destPath, resolveClarifyPromptMarkers(config));
       }
+      // 222 Phase 5: resolve the docs-path tokens of assets agents read directly.
+      // Ordered AFTER the marker pass (disjoint token families, both must run).
+      if (INSTALL_TIME_DOCS_PATH_TEMPLATES.has(relPath)) {
+        await renderInstallTimeDocsPaths(destPath, docsDirsOf(config));
+      }
       copiedCount++;
       copiedFiles.push(displayPath(relPath, piWorkDir));
     }
@@ -395,9 +442,15 @@ async function copyTemplateFiles(
         if (!fs.existsSync(skillAbsPath)) continue;
 
         const existingContent = await fsp.readFile(skillAbsPath, "utf-8");
+        // 222 Phase 5: render the docs-path tokens BEFORE writing the block.
+        // This pass runs AFTER the copy loop, so skipping it would overwrite the
+        // install-time render with the raw token text.
         const block = renderContractBlock(
           stage,
-          substituteClarifyMarkerPlaceholders(deliverableText, markers),
+          substituteClarifyMarkerPlaceholders(
+            renderDocsPathTokens(deliverableText, docsDirs),
+            markers,
+          ),
         );
         const merged = mergeManagedBlock(existingContent, block);
 
@@ -1004,8 +1057,14 @@ async function runConflictCheck(
     const executorKey = `stage_executor_${stage}`;
     const deliverableKey = `stage_deliverable_${stage}`;
     const pluginSegments: string[] = [];
+    // 222 Phase 5: the model must see the RESOLVED directories, not the tokens.
+    const docsDirs = docsDirsOf(config);
     if (promptConfig[executorKey]) pluginSegments.push(`[stage_executor_${stage}]\n${promptConfig[executorKey]}`);
-    if (promptConfig[deliverableKey]) pluginSegments.push(`[stage_deliverable_${stage}]\n${promptConfig[deliverableKey]}`);
+    if (promptConfig[deliverableKey]) {
+      pluginSegments.push(
+        `[stage_deliverable_${stage}]\n${renderDocsPathTokens(promptConfig[deliverableKey], docsDirs)}`,
+      );
+    }
 
     if (pluginSegments.length === 0) continue;
 

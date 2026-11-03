@@ -20,7 +20,7 @@ disable-model-invocation: true
 
 ### Input
 - **Requirement Understanding Result**: Must contain clear solution‑decision information (requirement goals, scope, solution selection). No ambiguous or undecided solutions may enter the plan phase.
-- **Source File**: Requirement and clarification document read in the `design` phase (e.g. `docs/design/{index}_{xxx}.md`)
+- **Source File**: Requirement and clarification document read in the `design` phase (e.g. `{designDir}/{index}_{xxx}.md`)
   - Note: `{index}` and `{xxx}` are placeholders, example: 15_command_flow_skip.md
 
 ### Plan Must satisfy
@@ -47,7 +47,7 @@ disable-model-invocation: true
 
 #### Generate the complete plan referencing template [plan_template](.pi/references/plan_template.md).
 #### **Plan File Path**: User‑specified output path for `_Plan.md`
-  - Example：`docs/design/01_e2e_flow_v1_Plan.md`
+  - Example：`{designDir}/01_e2e_flow_v1_Plan.md`
 
 ### Output Requirements
 1. Keep content concise, highlight key points and boundaries; avoid redundant or irrelevant content.

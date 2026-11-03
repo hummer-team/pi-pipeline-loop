@@ -15,6 +15,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import type { PipelineConfig, PipelineStage } from "../types";
 import { DEFAULT_VERIFY_FILE, resolveStagePath, CONFIG_DIR_NAME } from "../constants";
+import { docsDirsOf, renderDocsPathTokens } from "../docs-paths";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { getVerifyExtractPrompt, loadPromptConfig } from "./prompt-config";
 import {
@@ -866,7 +867,14 @@ export async function generateVerifyFiles(
           toAdd,
           s,
         );
-        await fs.writeFile(absVerifyPath, mergedContent, "utf-8");
+        // 222 Phase 5: a token-ised source spec can yield token paths — resolve
+        // them before writing so the installed verify.md names real directories
+        // (covers BOTH the merge and the generate branch below).
+        await fs.writeFile(
+          absVerifyPath,
+          renderDocsPathTokens(mergedContent, docsDirsOf(config)),
+          "utf-8",
+        );
         const addedDescs = toAdd.map(i => i.target);
         await safeWriteAuditLog("verify_md_generate", {
           stage: s,
@@ -1026,7 +1034,12 @@ export async function generateVerifyFiles(
 
     try {
       await fs.mkdir(path.dirname(absVerifyPath), { recursive: true });
-      await fs.writeFile(absVerifyPath, verifyContent, "utf-8");
+      // 222 Phase 5: resolve docs-path tokens before writing (see the merge branch).
+      await fs.writeFile(
+        absVerifyPath,
+        renderDocsPathTokens(verifyContent, docsDirsOf(config)),
+        "utf-8",
+      );
 
       await safeWriteAuditLog("verify_md_generate", {
         stage: s,

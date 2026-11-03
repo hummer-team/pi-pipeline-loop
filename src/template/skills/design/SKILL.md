@@ -18,7 +18,7 @@ disable-model-invocation: true
 2. Only issue clarification, sorting‑out and optimal‑solution analysis are allowed.
 
 ## Input
-- **Document**: Requirement description file specified by user (e.g. `docs/design/{index}_{xxx}.md`)
+- **Document**: Requirement description file specified by user (e.g. `{designDir}/{index}_{xxx}.md`)
 - **Round**: Current clarification round (initial round set by user, tracked automatically afterwards)
 
 ### 1. Requirement Understanding & Clarification
@@ -30,15 +30,15 @@ disable-model-invocation: true
 6. Every round (including decision‑archive / summary rounds) must be written in the full Q/A structure: question + options A/B + pros / cons / recommendation + `{answerMarker}`; summary rounds follow the same Q/A form with no exemption.
 
 **Examples**:
-- `@feat-design-plan-agent docs/design/{index}_{xxx}.md 1` → Enter Round 1 clarification, append questions and solutions.
-- After user replies: `docs/design/{index}_{xxx}.md 1 Answer`, automatically enter Round 2 clarification.
+- `@feat-design-plan-agent {designDir}/{index}_{xxx}.md 1` → Enter Round 1 clarification, append questions and solutions.
+- After user replies: `{designDir}/{index}_{xxx}.md 1 Answer`, automatically enter Round 2 clarification.
 
 ### 2. Processing After User Response
 #### 2.1 User added reply content
 1. User appended **Answer** or **Supplement** in the clarification document
 2. Read the content and proceed to the next clarification round. **Note**: round number increments automatically.
 
-#### 2.2 Command `docs/design/{index}_{xxx}.md full-und?` or `docs/design/{index}_{xxx}.md <Additional Questions or 补充问题>` 
+#### 2.2 Command `{designDir}/{index}_{xxx}.md full-und?` or `{designDir}/{index}_{xxx}.md <Additional Questions or 补充问题>` 
 1. **Mandatory**: Perform full analysis on the latest‑added **Answer**, **Supplement** or **Additional Questions** or **补充问题** from the user.
 2. **Judgment Criteria**
    - Full understanding of requirement context (goals, boundaries).
