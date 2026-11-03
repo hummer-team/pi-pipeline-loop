@@ -1323,24 +1323,28 @@ describe("createPipelineInitCommand", () => {
     });
   });
 
-  describe("Phase 4 — docs/ directory creation", () => {
-    it("dir branch creates docs/ directory when it does not exist", async () => {
+  describe("Phase 4 — docs/ directory creation (222 Phase 3: design + review dirs)", () => {
+    it("dir branch creates the resolved design and review directories", async () => {
       const config = makeInitConfig();
-      const docsDir = path.join(TMP, "docs");
-      expect(fsSync.existsSync(docsDir)).toBe(false);
+      const designDir = path.join(TMP, "docs", "design");
+      const reviewDir = path.join(TMP, "docs", "review");
+      expect(fsSync.existsSync(designDir)).toBe(false);
+      expect(fsSync.existsSync(reviewDir)).toBe(false);
 
       const cmd = createPipelineInitCommand(config);
       const result: any = await cmd.execute({ sub: "0" });
 
       expect(result.success).toBe(true);
-      expect(fsSync.existsSync(docsDir)).toBe(true);
-      expect(result.content).toContain("docs/: created");
+      expect(fsSync.existsSync(designDir)).toBe(true);
+      expect(fsSync.existsSync(reviewDir)).toBe(true);
+      expect(result.content).toContain("docs/design/: created");
+      expect(result.content).toContain("docs/review/: created");
     });
 
-    it("dir branch does not fail when docs/ already exists", async () => {
+    it("dir branch does not fail when the directories already exist", async () => {
       const config = makeInitConfig();
       const docsDir = path.join(TMP, "docs");
-      await fs.mkdir(docsDir, { recursive: true });
+      await fs.mkdir(path.join(docsDir, "design"), { recursive: true });
       // Put a file in docs/ to verify it's not overwritten
       await fs.writeFile(path.join(docsDir, "existing.md"), "preserve me", "utf-8");
 
@@ -1349,18 +1353,19 @@ describe("createPipelineInitCommand", () => {
 
       expect(result.success).toBe(true);
       expect(fsSync.existsSync(docsDir)).toBe(true);
-      expect(result.content).toContain("docs/: already exists");
+      expect(result.content).toContain("docs/design/: already exists");
       // Existing file preserved
       const content = await fs.readFile(path.join(docsDir, "existing.md"), "utf-8");
       expect(content).toBe("preserve me");
     });
 
-    it("summary reflects docs/ creation", async () => {
+    it("summary reflects the created directories", async () => {
       const config = makeInitConfig();
       const cmd = createPipelineInitCommand(config);
       const result: any = await cmd.execute({ sub: "0" });
 
-      expect(result.summary).toContain("docs/");
+      expect(result.summary).toContain("docs/design/");
+      expect(result.summary).toContain("docs/review/");
     });
   });
 

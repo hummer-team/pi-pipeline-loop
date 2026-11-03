@@ -17,6 +17,8 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import type { PipelineConfig, Command } from "../types";
 import { CONFIG_DIR_NAME, TEMPLATE_DIR } from "../constants";
+// 222 Phase 3: resolved docs directories drive the created design/review dirs.
+import { docsDirsOf } from "../docs-paths";
 import { generateVerifyFiles, loadPluginDeliverables } from "../core/verify-generator";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { safeWriteAuditLog } from "../utils/auditLog";
@@ -349,14 +351,18 @@ async function copyTemplateFiles(
       }
     }
 
-    // Ensure docs/ directory exists for stage write whitelist (Phase 4)
-    // Default write scope for clarify/plan/review is docs/; creating it avoids
-    // first-write friction. Already-exists case is silently ignored (recursive: true).
-    const docsDir = path.join(config.projectRoot, "docs");
-    let docsCreated = false;
-    if (!fs.existsSync(docsDir)) {
-      await fsp.mkdir(docsDir, { recursive: true });
-      docsCreated = true;
+    // 222 Phase 3: ensure the resolved DESIGN and REVIEW directories exist for the
+    // stage write whitelist. Default write scope for clarify/plan/review is the
+    // docs directories; creating them avoids first-write friction. `jobsDir` is
+    // deliberately NOT created (job files are user-maintained). Already-exists
+    // case is silently ignored (recursive: true); duplicates are collapsed.
+    const docsDirs = docsDirsOf(config);
+    const createdDirs: Record<string, "created" | "exists"> = {};
+    for (const relDir of new Set([docsDirs.designDir, docsDirs.reviewDir])) {
+      const absDir = path.isAbsolute(relDir) ? relDir : path.join(config.projectRoot, relDir);
+      const existed = fs.existsSync(absDir);
+      if (!existed) await fsp.mkdir(absDir, { recursive: true });
+      createdDirs[relDir] = existed ? "exists" : "created";
     }
 
     // Phase 5 / 175: merge managed contract blocks into SKILL.md files.
@@ -417,7 +423,11 @@ async function copyTemplateFiles(
       files: String(copiedCount),
       skipped: String(skippedCount),
       target: targetDir,
-      docsDir: docsCreated ? "created" : "exists",
+      // 222 Phase 3: report BOTH resolved directories instead of a bare "docs".
+      // The audit record is a flat `key=value` line, so the two results are
+      // written as separate fields (a nested object would be stringified).
+      designDir: `${docsDirs.designDir} (${createdDirs[docsDirs.designDir] ?? "exists"})`,
+      reviewDir: `${docsDirs.reviewDir} (${createdDirs[docsDirs.reviewDir] ?? "exists"})`,
     });
 
     // 147 Phase 5: (Re-)distribution invalidates any cached residue-gate pass.
@@ -431,7 +441,9 @@ async function copyTemplateFiles(
       `- copied: ${copiedCount}`,
       `- skipped: ${skippedCount}`,
       `- target: ${piWorkDir}/`,
-      `- docs/: ${docsCreated ? "created" : "already exists"}`,
+      ...Object.entries(createdDirs).map(
+        ([relDir, state]) => `- ${relDir}/: ${state === "created" ? "created" : "already exists"}`,
+      ),
       `- hint: run /pipeline-init 2 to check template placeholders`,
     ];
     if (copiedFiles.length > 0) {
@@ -452,7 +464,7 @@ async function copyTemplateFiles(
 
     return {
       success: true,
-      summary: `Copied ${copiedCount} file(s) to ${piWorkDir}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}; docs/ ${docsCreated ? "created" : "ensured"}`,
+      summary: `Copied ${copiedCount} file(s) to ${piWorkDir}/${strategy === "skip" ? ` (skipped ${skippedCount})` : ""}; ${Object.entries(createdDirs).map(([relDir, state]) => `${relDir}/ ${state}`).join(", ")}`,
       content: lines.join("\n"),
       ...(managedBlockError ? { managedBlockError } : {}),
     };
