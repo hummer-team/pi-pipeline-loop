@@ -12,7 +12,8 @@ import { applyVerifyPass, applyVerifyFail } from "../core/verify-advance";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { extractAssistantMessages } from "../core/session-state";
 import { safeWriteAuditLog } from "../utils/auditLog";
-import { PLAN_CONFIRM_MARKER_RULE, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
+import { buildPlanConfirmMarkerRule, shouldDeferPlanMarkerRule } from "../core/stage-advancer";
+import { docsDirsOf } from "../docs-paths";
 import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 import { coordinateDesignReview } from "../core/design-review/coordinator";
 // 194 Phase 3 (C5): shared caller gate for the stage-side tools
@@ -174,7 +175,10 @@ export function createPipelineVerify(
       }
 
       // Phase 4 (162): defer plan marker rule when confirm mode is non-auto (C2 fix).
-      const deferPatterns = shouldDeferPlanMarkerRule(stageName, stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+      // 222 Phase 1: the rule targets the CONFIGURED design directory.
+      const deferPatterns = shouldDeferPlanMarkerRule(stageName, stageConfig)
+        ? [buildPlanConfirmMarkerRule(docsDirsOf(config).designDir)]
+        : [];
       if (deferPatterns.length > 0) {
         verifyOptions.deferContentPatterns = deferPatterns;
       }

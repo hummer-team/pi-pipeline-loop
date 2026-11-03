@@ -48,7 +48,8 @@ import {
   commitBoundStageExit,
 } from "./stage-executor/transition-commit";
 import { checkStageSummaryHash } from "../utils/summary-hash";
-import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS } from "../constants";
+import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS, DEFAULT_DESIGN_DIR } from "../constants";
+import { buildPlanDocGlob, docsDirsOf } from "../docs-paths";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
@@ -92,13 +93,30 @@ export type ConfirmGateResult =
   | { result: "handled"; action: "advanced" | "routed" | "pending" | "aborted"; toStage?: PipelineStage; deferred?: true };
 
 /**
- * The plan-stage content-pattern rule used for the bilingual confirm marker.
- * Exported for use by agent-settled.ts when constructing deferContentPatterns.
+ * Build the plan-stage content-pattern rule used for the bilingual confirm
+ * marker, for a given design directory (222 Phase 1).
+ *
+ * The rule must point at the CONFIGURED deliverables directory, otherwise a
+ * customised `docs.designDir` leaves the real plan document un-guarded.
+ *
+ * @param designDir - Resolved design directory (project-relative)
  */
-export const PLAN_CONFIRM_MARKER_RULE = {
-  path: "docs/design/*_Plan.md",
-  pattern: "^## (用户确认|User Confirmation)",
-};
+export function buildPlanConfirmMarkerRule(
+  designDir: string = DEFAULT_DESIGN_DIR,
+): { path: string; pattern: string } {
+  return { path: buildPlanDocGlob(designDir), pattern: "^## (用户确认|User Confirmation)" };
+}
+
+/**
+ * The plan-stage content-pattern rule used for the bilingual confirm marker
+ * (default design directory).
+ *
+ * Exported for use by agent-settled.ts when constructing deferContentPatterns.
+ *
+ * @deprecated 222 Phase 1: kept for back-compat / default-directory callers.
+ * Use `buildPlanConfirmMarkerRule(docsDirsOf(config).designDir)` instead.
+ */
+export const PLAN_CONFIRM_MARKER_RULE = buildPlanConfirmMarkerRule();
 
 /**
  * Regex matching the plugin-written plan confirm marker (bilingual).
@@ -151,7 +169,8 @@ async function resolveStageDocPath(
   }
   if (stage === "review") {
     // Delegate to shared review report finder (DRY with review-conclusion.ts)
-    return findLatestReviewReport(config.projectRoot);
+    // 222 Phase 1: the resolved review directory drives the scan.
+    return findLatestReviewReport(config.projectRoot, docsDirsOf(config).reviewDir);
   }
   return null;
 }
@@ -1954,7 +1973,10 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         const toolCallRecords = extractToolCallRecords(ctx._ctx);
 
         // Phase 4 (162): defer plan marker rule when confirm mode is manual/smart (C2 fix).
-        const deferPatterns = shouldDeferPlanMarkerRule(currentStage, stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+        // 222 Phase 1: the rule targets the CONFIGURED design directory.
+        const deferPatterns = shouldDeferPlanMarkerRule(currentStage, stageConfig)
+          ? [buildPlanConfirmMarkerRule(docsDirsOf(config).designDir)]
+          : [];
 
         const vr = await runVerification(config, meta, messages, {
           execFn: deps?.execFn,

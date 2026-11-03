@@ -20,6 +20,9 @@ import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
 import { appendPipelineIdMarker } from "./pipeline-id-marker";
 import { findLatestReviewReport } from "./review-conclusion";
+// 222 Phase 1: resolved docs directories — the layer-neutral `src/docs-paths.ts`
+// module (never `../core/`, which the static guard below forbids).
+import { docsDirsOf } from "../docs-paths";
 import { probeAgentState, anyTopLevelRunning } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { checkDispatchConflicts } from "./guard-conflict-report";
@@ -801,7 +804,10 @@ export async function spawnStageSubagent(
   // Phase 7 (188) G8 / 192 Phase 1: description override support.
   let description = opts?.description ?? `${stage}: ${meta.requirementDoc ?? ""}`;
   if (opts?.description === undefined && stage === "fix") {
-    const reviewReport = await findLatestReviewReport(config.projectRoot);
+    const reviewReport = await findLatestReviewReport(
+      config.projectRoot,
+      docsDirsOf(config).reviewDir,
+    );
     if (reviewReport) {
       description = reviewReport;
     }

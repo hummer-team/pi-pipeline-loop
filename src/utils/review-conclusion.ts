@@ -42,20 +42,31 @@ export interface ReviewVerdict {
 }
 
 import { NEW_CODE_REVIEW_RE, LEGACY_CODE_REVIEW_RE } from "../core/naming/doc-naming";
+import { DEFAULT_REVIEW_DIR } from "../constants";
 
 /**
- * Finds the latest review report file in `docs/review/` by mtime (201 Phase 3
- * dual read): the new `Code_Review_{reqBase}_Develop_Commit_{index}.md` family
- * and the legacy `code_review_{...}.md` family are both recognized; the newest
- * file wins regardless of which family it belongs to.
+ * Finds the latest review report file in the resolved review directory by mtime
+ * (201 Phase 3 dual read): the new
+ * `Code_Review_{reqBase}_Develop_Commit_{index}.md` family and the legacy
+ * `code_review_{...}.md` family are both recognized; the newest file wins
+ * regardless of which family it belongs to.
+ *
+ * 222 Phase 1: the directory is a PARAMETER (utils must not import `core/`, so
+ * the caller passes `docsDirsOf(config).reviewDir`).
  *
  * @param projectRoot - Absolute path to the project root
+ * @param reviewDir - Project-relative review directory (default `docs/review`)
  * @returns Absolute path to the latest review report, or null if none exists
  */
-export async function findLatestReviewReport(projectRoot: string): Promise<string | null> {
-  const reviewDir = path.join(projectRoot, "docs", "review");
+export async function findLatestReviewReport(
+  projectRoot: string,
+  reviewDir: string = DEFAULT_REVIEW_DIR,
+): Promise<string | null> {
+  const absReviewDir = path.isAbsolute(reviewDir)
+    ? reviewDir
+    : path.join(projectRoot, reviewDir);
   try {
-    const entries = await fs.readdir(reviewDir);
+    const entries = await fs.readdir(absReviewDir);
     // 201 Phase 3: family recognition via the doc-naming dual patterns
     const reviewFiles = entries.filter(
       (e) => NEW_CODE_REVIEW_RE.test(e) || LEGACY_CODE_REVIEW_RE.test(e),
@@ -66,7 +77,7 @@ export async function findLatestReviewReport(projectRoot: string): Promise<strin
     let bestMtime = 0;
     for (const file of reviewFiles) {
       try {
-        const stat = await fs.stat(path.join(reviewDir, file));
+        const stat = await fs.stat(path.join(absReviewDir, file));
         if (stat.mtimeMs > bestMtime) {
           bestMtime = stat.mtimeMs;
           bestFile = file;
@@ -75,7 +86,7 @@ export async function findLatestReviewReport(projectRoot: string): Promise<strin
         // stat failure — skip
       }
     }
-    return bestFile ? path.join(reviewDir, bestFile) : null;
+    return bestFile ? path.join(absReviewDir, bestFile) : null;
   } catch {
     // Directory doesn't exist
     return null;
@@ -154,13 +165,16 @@ function parseConclusionLine(
  * @param anchors - Runtime contract anchors loaded from the deployed verify.md.
  *   When the `verdict` anchor is unavailable, the `contract-unavailable` state
  *   is returned so the caller can fall back to the undeclared branch (fail-open).
+ * @param reviewDir - Project-relative review directory (222 Phase 1; default
+ *   `docs/review`). Callers pass `docsDirsOf(config).reviewDir`.
  * @returns ReviewVerdict with verdict + source, or null if no report exists
  */
 export async function parseReviewConclusion(
   projectRoot: string,
   anchors?: VerifyContractAnchors,
+  reviewDir?: string,
 ): Promise<ReviewVerdict | null> {
-  const reportPath = await findLatestReviewReport(projectRoot);
+  const reportPath = await findLatestReviewReport(projectRoot, reviewDir);
   if (!reportPath) return null;
 
   let content: string;

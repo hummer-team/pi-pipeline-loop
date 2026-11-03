@@ -23,7 +23,7 @@ import { armStageWatchdog, touchStageProgress } from "./stage-watchdog";
 import { isDecisionPolicyEnabled } from "./decision-policy/policy-config";
 import type { RuntimeCtx } from "./runtime-ctx";
 import {
-  PLAN_CONFIRM_MARKER_RULE,
+  buildPlanConfirmMarkerRule,
   shouldDeferPlanMarkerRule,
   autoWriteConfirmMarker,
   maybeHandleConfirmGate,
@@ -34,6 +34,8 @@ import {
 // 211 Phase 0: owner-side re-presentation entry for a child-suppressed confirm gate
 import { maybeRepromptOwnerConfirmGate } from "./confirm-gate-owner-reprompt";
 import { parseReviewConclusion } from "../utils/review-conclusion";
+// 222 Phase 1: resolved docs directories (layer-neutral pure resolver).
+import { docsDirsOf } from "../docs-paths";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
 import { shouldNotifyAndStamp, shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { loadVerifyContractAnchors } from "../utils/contract-loader";
@@ -710,7 +712,11 @@ export function createAgentSettled(
           // Phase 2 / 176: load verdict anchors from the deployed verify.md.
           const { anchors: reviewAnchors, issues: reviewAnchorIssues } =
             await loadVerifyContractAnchors(config, "review");
-          const reviewVerdict = await parseReviewConclusion(config.projectRoot, reviewAnchors);
+          const reviewVerdict = await parseReviewConclusion(
+            config.projectRoot,
+            reviewAnchors,
+            docsDirsOf(config).reviewDir,
+          );
 
           if (reviewVerdict?.source === "contract-unavailable") {
             // Fail-open: verdict anchor unavailable → fall back to the undeclared
@@ -931,7 +937,9 @@ export function createAgentSettled(
 
       // Phase 4 (162): defer plan marker rule when confirm mode is manual (C2 fix).
       // Smart mode is already handled above (returns early).
-      const deferPatterns = shouldDeferPlanMarkerRule(meta.currentStage, stageConfig) ? [PLAN_CONFIRM_MARKER_RULE] : [];
+      const deferPatterns = shouldDeferPlanMarkerRule(meta.currentStage, stageConfig)
+        ? [buildPlanConfirmMarkerRule(docsDirsOf(config).designDir)]
+        : [];
 
       const vr = await runVerification(
         config,

@@ -80,6 +80,33 @@ describe("findLatestReviewReport", () => {
     expect(result).toBeNull();
     await rm(TMP, { recursive: true, force: true });
   });
+
+  // 222 Phase 1: the review directory became a parameter.
+  it("scans the CONFIGURED review directory when one is passed", async () => {
+    const TMP = join(tmpdir(), "pi-rc-custom-" + Date.now());
+    await mkdir(join(TMP, "docs", "review"), { recursive: true });
+    await writeFile(join(TMP, "docs", "review", "Code_Review_1_Feat_Develop_Commit_1.md"), "default dir");
+    const customDir = join(TMP, "spec", "review");
+    await mkdir(customDir, { recursive: true });
+    const custom = join(customDir, "Code_Review_2_Feat_Develop_Commit_1.md");
+    await writeFile(custom, "custom dir");
+
+    expect(await findLatestReviewReport(TMP, "spec/review")).toBe(custom);
+    // Absent custom directory → null (no silent fallback to docs/review)
+    expect(await findLatestReviewReport(TMP, "spec/absent")).toBeNull();
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("defaults to docs/review when the argument is omitted (back-compat)", async () => {
+    const TMP = join(tmpdir(), "pi-rc-default-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    const expected = join(reviewDir, "Code_Review_3_Feat_Develop_Commit_1.md");
+    await writeFile(expected, "default");
+    expect(await findLatestReviewReport(TMP)).toBe(expected);
+    expect(await findLatestReviewReport(TMP, "docs/review")).toBe(expected);
+    await rm(TMP, { recursive: true, force: true });
+  });
 });
 
 describe("parseReviewConclusion", () => {

@@ -21,19 +21,15 @@ import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
 import type { VerifyRules, VerifyGroupRuleNode } from "./verify-frontmatter";
 import { globMatchFiles } from "./verifiers/file-verifier";
 import { escapeRegExp } from "../utils/regex-utils";
+import { DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR } from "../constants";
 import {
-  commitDocFileName,
-  PLAN_DOC_GLOB,
-  PLAN_DOC_GLOB_WIN,
-  NEW_COMMIT_DOC_GLOB,
-  NEW_COMMIT_DOC_GLOB_WIN,
-  LEGACY_COMMIT_DOC_GLOB,
-  LEGACY_COMMIT_DOC_GLOB_WIN,
-  NEW_REVIEW_DOC_GLOB,
-  NEW_REVIEW_DOC_GLOB_WIN,
-  LEGACY_REVIEW_DOC_GLOB,
-  LEGACY_REVIEW_DOC_GLOB_WIN,
-} from "./naming/doc-naming";
+  buildCommitDocGlob,
+  buildPlanDocGlob,
+  buildReviewDocGlob,
+  docsDirsOf,
+  winGlobVariant,
+} from "../docs-paths";
+import { commitDocFileName } from "./naming/doc-naming";
 // 192 Phase 3: canonical report path derivation for the design-review stage
 /**
  * Resolve the commit document path for a given requirement base name.
@@ -44,11 +40,18 @@ import {
  * remains READ-compatible via the dual-mode glob detectors but is never
  * generated any more.
  *
+ * 222 Phase 1: the directory comes from the resolved docs directory
+ * (`docsDirsOf(config).designDir`), defaulting to `DEFAULT_DESIGN_DIR`.
+ *
  * @param reqBase - Requirement document base name (without .md extension)
+ * @param designDir - Resolved design directory (project-relative)
  * @returns Relative path to the commit document
  */
-export function resolveCommitDocPath(reqBase: string): string {
-  return `docs/design/${commitDocFileName(reqBase)}`;
+export function resolveCommitDocPath(
+  reqBase: string,
+  designDir: string = DEFAULT_DESIGN_DIR,
+): string {
+  return `${designDir.replace(/\/+$/, "")}/${commitDocFileName(reqBase)}`;
 }
 
 /**
@@ -58,16 +61,18 @@ export function resolveCommitDocPath(reqBase: string): string {
  *
  * @param meta - Session metadata
  * @param stage - Current pipeline stage
+ * @param designDir - Resolved design directory (222 Phase 1)
  * @returns Array of relative paths that are exempt from read-only checks
  */
 export function getStageDeliverableExemptions(
   meta: SessionMeta,
-  stage: PipelineStage
+  stage: PipelineStage,
+  designDir: string = DEFAULT_DESIGN_DIR,
 ): string[] {
   if ((stage === "develop" || stage === "fix") && meta.requirementDoc) {
     const reqBase = path.basename(meta.requirementDoc, ".md");
     if (reqBase) {
-      return [resolveCommitDocPath(reqBase)];
+      return [resolveCommitDocPath(reqBase, designDir)];
     }
   }
   return [];
@@ -147,7 +152,8 @@ export function resolvePlaceholders(rules: VerifyRules, meta: SessionMeta): Veri
  *
  * Derivation: `{dirname}/{basename_without_.md}_Plan.md` (201 Phase 1 hard switch)
  * - Prevents `_Plan` duplication: if already `xxx_Plan.md`, returns as-is
- * - Falls back to glob `docs/design/*_Plan.md` (latest mtime) when derivation is unavailable
+ * - Falls back to the configured design-directory glob (latest mtime) when
+ *   derivation is unavailable (222 Phase 1: `docsDirsOf(config).designDir`)
  * - Returns null if no plan doc can be found
  *
  * @param config - Pipeline configuration (for projectRoot)
@@ -169,9 +175,10 @@ export async function resolvePlanDocPath(
     return path.isAbsolute(derived) ? derived : path.join(config.projectRoot, derived);
   }
 
-  // 201 Phase 1: fallback glob docs/design/*_Plan.md, return latest by mtime
+  // 201 Phase 1 / 222 Phase 1: fallback glob in the configured design directory.
   try {
-    const matches = await globMatchFiles("docs/design/*_Plan.md", config.projectRoot);
+    const fallbackGlob = buildPlanDocGlob(docsDirsOf(config).designDir);
+    const matches = await globMatchFiles(fallbackGlob, config.projectRoot);
     if (matches.length === 0) return null;
 
     // Resolve to absolute paths and get mtime
@@ -245,16 +252,21 @@ export async function applyConcreteStageDocPaths(
 
   const stage = meta.currentStage;
   const result: VerifyRules = { ...rules };
+  // 222 Phase 1: the resolved directories drive both the concrete path and the
+  // detector union (configured directory + legacy default directory).
+  const dirs = docsDirsOf(config);
 
   // Determine the concrete glob pattern for the current stage
   let concreteGlob: string | null = null;
 
   if (stage === "plan") {
-    // Plan stage: resolve to concrete plan doc path via mtime fallback
+    // Plan stage: resolve to concrete plan doc path via mtime fallback.
+    // 222 Phase 1: the detector must be a CLOSURE over the resolved directory —
+    // passing the bare function reference would silently always use the default.
     const planDocPath = await resolvePlanDocPath(config, meta);
     if (planDocPath) {
       const relPlanDoc = path.relative(config.projectRoot, planDocPath);
-      return replaceGlobInRules(result, isPlanDocGlob, relPlanDoc);
+      return replaceGlobInRules(result, (p) => isPlanDocGlob(p, dirs.designDir), relPlanDoc);
     }
     return rules; // fallback: preserve original globs
   }
@@ -264,16 +276,17 @@ export async function applyConcreteStageDocPaths(
     // (no wildcard infix). Any commit doc MUST be named
     // `{reqBase}_Develop_Commit.md` — legacy `{reqBase}_plan_commit.md` globs
     // are still DETECTED (dual read) but always narrowed to the new name.
-    concreteGlob = resolveCommitDocPath(reqBase);
-    return replaceGlobInRules(result, isCommitDocGlob, concreteGlob);
+    concreteGlob = resolveCommitDocPath(reqBase, dirs.designDir);
+    return replaceGlobInRules(result, (p) => isCommitDocGlob(p, dirs.designDir), concreteGlob);
   }
 
   if (stage === "review") {
     // 201 Phase 3: Narrow review doc glob to requirementDoc basename with the
     // NEW naming prefix; legacy authored `code_review_*` globs count too and
     // are narrowed to the same new concrete glob (dual read).
-    concreteGlob = `docs/review/Code_Review_${reqBase}_Develop_Commit_*.md`;
-    return replaceGlobInRules(result, isReviewDocGlob, concreteGlob);
+    concreteGlob =
+      `${dirs.reviewDir.replace(/\/+$/, "")}/Code_Review_${reqBase}_Develop_Commit_*.md`;
+    return replaceGlobInRules(result, (p) => isReviewDocGlob(p, dirs.reviewDir), concreteGlob);
   }
 
   if (stage === "design-review") {
@@ -345,46 +358,66 @@ function replaceGlobInRules(
 }
 
 /**
- * Checks whether a path pattern matches the plan doc glob `docs/design/*_Plan.md`
- * (201 Phase 1 hard switch — legacy `_plan.md` no longer matches).
- * The glob literals are the doc-naming single-source constants (201 review issue 3).
+ * Match a verify glob against one or more directories: the CONFIGURED directory
+ * glob and the legacy DEFAULT-directory glob both count (dual read, 222 Phase 1).
+ *
+ * This keeps an already-installed `verify.md` authored against the default
+ * layout working after `docs.designDir` / `docs.reviewDir` is customised.
  */
-export function isPlanDocGlob(pattern: string): boolean {
-  return pattern === PLAN_DOC_GLOB || pattern === PLAN_DOC_GLOB_WIN;
+function globMatches(
+  pattern: string,
+  dirs: readonly string[],
+  build: (dir: string) => readonly string[],
+): boolean {
+  return dirs.some((dir) =>
+    build(dir).some((canonical) => (
+      pattern === canonical || pattern === winGlobVariant(canonical)
+    )),
+  );
+}
+
+/**
+ * Checks whether a path pattern matches a plan-doc glob (201 Phase 1 hard switch
+ * — legacy `_plan.md` no longer matches).
+ *
+ * 222 Phase 1: accepts BOTH the configured-directory glob and the legacy
+ * default-directory glob, so a `verify.md` installed before the layout change
+ * still narrows to the concrete plan document.
+ */
+export function isPlanDocGlob(pattern: string, designDir: string = DEFAULT_DESIGN_DIR): boolean {
+  return globMatches(pattern, [designDir, DEFAULT_DESIGN_DIR], (dir) => [buildPlanDocGlob(dir)]);
 }
 
 /**
  * Checks whether a path pattern matches a commit-doc glob (dual read, 201
- * Phase 2): the new `docs/design/*_Develop_Commit.md` and the legacy
- * `docs/design/*_commit.md` form both count, so naming drift in authored
- * verify rule sets still narrows to the single concrete deliverable path.
+ * Phase 2): the new `*_Develop_Commit.md` and the legacy `*_commit.md` form both
+ * count, so naming drift in authored verify rule sets still narrows to the
+ * single concrete deliverable path.
+ *
+ * 222 Phase 1: directory dual read applies as for {@link isPlanDocGlob}.
  * Used by applyConcreteStageDocPaths to narrow develop/fix globs.
- * Glob literals come from the doc-naming single source (201 review issue 3).
  */
-export function isCommitDocGlob(pattern: string): boolean {
-  return (
-    pattern === NEW_COMMIT_DOC_GLOB ||
-    pattern === NEW_COMMIT_DOC_GLOB_WIN ||
-    pattern === LEGACY_COMMIT_DOC_GLOB ||
-    pattern === LEGACY_COMMIT_DOC_GLOB_WIN
-  );
+export function isCommitDocGlob(pattern: string, designDir: string = DEFAULT_DESIGN_DIR): boolean {
+  return globMatches(pattern, [designDir, DEFAULT_DESIGN_DIR], (dir) => [
+    buildCommitDocGlob(dir),
+    buildCommitDocGlob(dir, true),
+  ]);
 }
 
 /**
  * Checks whether a path pattern matches a review-report glob (dual read, 201
- * Phase 3): the new `docs/review/Code_Review_*.md` and the legacy
- * `docs/review/code_review_*.md` forms both count, so authored verify rule
- * sets still narrow to the current review deliverable.
+ * Phase 3): the new `Code_Review_*.md` and the legacy `code_review_*.md` forms
+ * both count, so authored verify rule sets still narrow to the current review
+ * deliverable.
+ *
+ * 222 Phase 1: directory dual read applies as for {@link isPlanDocGlob}.
  * Used by applyConcreteStageDocPaths to narrow review globs.
- * Glob literals come from the doc-naming single source (201 review issue 3).
  */
-export function isReviewDocGlob(pattern: string): boolean {
-  return (
-    pattern === NEW_REVIEW_DOC_GLOB ||
-    pattern === NEW_REVIEW_DOC_GLOB_WIN ||
-    pattern === LEGACY_REVIEW_DOC_GLOB ||
-    pattern === LEGACY_REVIEW_DOC_GLOB_WIN
-  );
+export function isReviewDocGlob(pattern: string, reviewDir: string = DEFAULT_REVIEW_DIR): boolean {
+  return globMatches(pattern, [reviewDir, DEFAULT_REVIEW_DIR], (dir) => [
+    buildReviewDocGlob(dir),
+    buildReviewDocGlob(dir, true),
+  ]);
 }
 
 /**

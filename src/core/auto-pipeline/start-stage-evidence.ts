@@ -17,6 +17,7 @@ import * as path from "node:path";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
 import { planDocHasConfirmMarker, resolveCommitDocPath } from "../verify-path-resolver";
 import { loadVerifyContractAnchors } from "../../utils/contract-loader";
+import { docsDirsOf } from "../../docs-paths";
 
 /** What the start stage was verified against. */
 export type StartStageBasis = "requirement" | "plan" | "plan-confirmed" | "commit" | "review-report";
@@ -26,8 +27,6 @@ export type StartStageEvidence =
   | { ok: true; basis: StartStageBasis }
   | { ok: false; missing: "requirement" | "plan" | "plan-confirmed" | "commit" | "review-verdict" };
 
-/** Directory holding review reports (`docs/review`). */
-const REVIEW_DIR = path.join("docs", "review");
 /** Upper bound of the review-report directory scan. */
 const MAX_REVIEW_FILES = 200;
 
@@ -58,8 +57,12 @@ export function derivePlanDocPath(requirementDoc: string): string {
 }
 
 /** Latest review report of one requirement document, or `null`. */
-async function findLatestReviewReport(projectRoot: string, reqBase: string): Promise<string | null> {
-  const dir = path.join(projectRoot, REVIEW_DIR);
+async function findLatestReviewReport(
+  projectRoot: string,
+  reviewDir: string,
+  reqBase: string,
+): Promise<string | null> {
+  const dir = path.isAbsolute(reviewDir) ? reviewDir : path.join(projectRoot, reviewDir);
   const prefix = `Code_Review_${reqBase}_Develop_Commit_`;
   let entries: string[];
   try {
@@ -146,11 +149,19 @@ export async function checkStartStageEvidence(input: {
         : { ok: false, missing: "plan-confirmed" };
     }
     case "review": {
-      const commitAbs = path.resolve(projectRoot, resolveCommitDocPath(requirementBase(requirementDoc)));
+      const dirs = docsDirsOf(config);
+      const commitAbs = path.resolve(
+        projectRoot,
+        resolveCommitDocPath(requirementBase(requirementDoc), dirs.designDir),
+      );
       return (await isFile(commitAbs)) ? { ok: true, basis: "commit" } : { ok: false, missing: "commit" };
     }
     case "fix": {
-      const reportAbs = await findLatestReviewReport(projectRoot, requirementBase(requirementDoc));
+      const reportAbs = await findLatestReviewReport(
+        projectRoot,
+        docsDirsOf(config).reviewDir,
+        requirementBase(requirementDoc),
+      );
       if (!reportAbs) return { ok: false, missing: "review-verdict" };
       let body: string;
       try {
