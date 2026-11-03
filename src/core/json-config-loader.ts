@@ -1247,7 +1247,13 @@ function deriveArchiveDirs(
   const stageValues = docs?.stageDirs
     ? Object.values(docs.stageDirs).filter((v): v is string => typeof v === "string")
     : [];
-  const deduped = [...new Set(stageValues)];
+  // 222 Phase 6: an invalid `stageDirs` value (absolute / traversal) must never
+  // become a scan scope either — the same validation as the docs directories.
+  const deduped = [...new Set(
+    stageValues
+      .map((value) => normalizeDocsDir(value).value)
+      .filter((value): value is string => value !== undefined),
+  )];
   if (deduped.length > 0) return deduped;
   if (dirs && (dirs.designDir !== DEFAULT_DESIGN_DIR || dirs.reviewDir !== DEFAULT_REVIEW_DIR)) {
     return [...new Set([dirs.designDir, dirs.reviewDir])];

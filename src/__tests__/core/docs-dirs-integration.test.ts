@@ -1,0 +1,437 @@
+/**
+ * 222 Phase 6: end-to-end integration of the configurable docs layout.
+ *
+ * Two invariants are pinned here (no new feature code):
+ *
+ * 1. ZERO IMPACT ON DEFAULTS — an unconfigured project resolves exactly like the
+ *    pre-222 baseline: no `docsDirs` field, default commit-doc path, default glob
+ *    detection, default archive scope, `docsStageDirs` still `undefined` for the
+ *    shipped template. The ONE intended baseline difference (R3Q9-A: the
+ *    read-only stages gain `docs/design/` + `docs/review/` in their write
+ *    whitelist) is asserted explicitly as a known, frozen exception.
+ * 2. FULL-CHAIN CUSTOMISATION — a configured layout follows through every
+ *    consumer at once: write whitelist, read-only protection, verify narrowing,
+ *    review scanning, job-file resolution, archive scope and the document menu
+ *    (`resolveStageDocDir`), so no consumer silently keeps the old directory.
+ *
+ * Boundary coverage: directory equal to the default, a directory containing
+ * spaces, a Windows-separator input, and the `stageDirs` vs explicit-key
+ * conflict.
+ */
+import { afterAll, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { resolvePipelineConfig } from "../../core/json-config-loader";
+import { resolveStageDocDir } from "../../core/doc-discovery";
+import { resolveTrackedJobFile } from "../../core/auto-pipeline/job-state";
+import { scanJobFiles } from "../../commands/pipeline-auto-menu";
+import {
+  applyConcreteStageDocPaths,
+  isCommitDocGlob,
+  isPlanDocGlob,
+  isReviewDocGlob,
+  resolveCommitDocPath,
+} from "../../core/verify-path-resolver";
+import { checkDispatchConflicts } from "../../utils/guard-conflict-report";
+import { findLatestReviewReport } from "../../utils/review-conclusion";
+import { docsDirsOf } from "../../docs-paths";
+import {
+  DEFAULT_DESIGN_DIR,
+  DEFAULT_DOCS_FALLBACK_DIRS,
+  DEFAULT_JOBS_DIR,
+  DEFAULT_READONLY_WRITE_PATHS,
+  DEFAULT_REVIEW_DIR,
+} from "../../constants";
+import type { PipelineConfig, PipelineJsonConfig, PipelineStage } from "../../types";
+import type { VerifyRules } from "../../core/verify-frontmatter";
+import { makeTestMeta } from "../helpers";
+
+/** Stages whose write scope is restricted to the docs directories. */
+const READ_ONLY_STAGES: PipelineStage[] = ["clarify", "plan", "design-review", "review"];
+
+/** Every stage of the 7-stage pipeline (plus terminals), in order. */
+const ALL_STAGES: PipelineStage[] = [
+  "clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed",
+];
+
+/** Stage map accepted by `resolvePipelineConfig` (empty config per stage). */
+function stageMap(stages: PipelineStage[] = ALL_STAGES): PipelineJsonConfig["stages"] {
+  return Object.fromEntries(stages.map((stage) => [stage, {}])) as PipelineJsonConfig["stages"];
+}
+
+/**
+ * Runs `resolvePipelineConfig` while capturing `console.warn`.
+ * The loader is the ONLY place docs-resolution diagnostics are emitted.
+ */
+function resolveCapturingWarnings(json: PipelineJsonConfig): {
+  config: PipelineConfig;
+  warnings: string[];
+} {
+  const original = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]): void => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    return { config: resolvePipelineConfig(json), warnings };
+  } finally {
+    console.warn = original;
+  }
+}
+
+/** Verifies rules carrying one path in every field that `replaceGlobInRules` touches. */
+function rulesWith(relPath: string): VerifyRules {
+  return {
+    keywords: [],
+    mode: "and",
+    path: relPath,
+    requiredFiles: [relPath],
+    fileContentPattern: [{ path: relPath, pattern: "^x$" }],
+  };
+}
+
+const CUSTOM_DOCS = {
+  designDir: "spec/design",
+  reviewDir: "spec/review",
+  jobsDir: "spec/jobs",
+};
+
+// ─── Invariant 1: an unconfigured project keeps the baseline ────────────────
+
+describe("222 Phase 6 — zero impact when nothing is configured", () => {
+  /** Baseline top-level keys of a resolved config (pre-222 shape). */
+  const BASELINE_KEYS = [
+    "archiveDest", "archiveDirs", "audit", "auditDir", "compact", "confirmOverflow",
+    "docsStageDirs", "domainDir", "init", "llmExtract", "maxConfirmRejections",
+    "maxLoopCycles", "maxLoops", "maxVerifyAttempts", "output", "piWorkDir",
+    "projectRoot", "protect", "spawnWaitTimeoutMs", "stages", "startStageMode",
+  ];
+
+  it("keeps the pre-222 config shape (no docsDirs field)", () => {
+    const config = resolvePipelineConfig({ stages: stageMap() });
+    expect(Object.keys(config).sort()).toEqual(BASELINE_KEYS);
+    expect("docsDirs" in config).toBe(false);
+    expect(config.docsDirs).toBeUndefined();
+    expect(config.docsStageDirs).toBeUndefined();
+  });
+
+  it("emits no docs warning for an unconfigured project", () => {
+    expect(resolveCapturingWarnings({ stages: stageMap() }).warnings).toEqual([]);
+  });
+
+  it("resolves the default docs directories", () => {
+    const config = resolvePipelineConfig({ stages: stageMap() });
+    expect(docsDirsOf(config)).toEqual({
+      designDir: DEFAULT_DESIGN_DIR,
+      reviewDir: DEFAULT_REVIEW_DIR,
+      jobsDir: DEFAULT_JOBS_DIR,
+    });
+  });
+
+  it("keeps the default deliverable path, glob detection and archive scope", () => {
+    const config = resolvePipelineConfig({ stages: stageMap() });
+    expect(resolveCommitDocPath("222_Feat")).toBe("docs/design/222_Feat_Develop_Commit.md");
+    expect(isPlanDocGlob("docs/design/*_Plan.md")).toBe(true);
+    expect(isCommitDocGlob("docs/design/*_Develop_Commit.md")).toBe(true);
+    expect(isReviewDocGlob("docs/review/Code_Review_*.md")).toBe(true);
+    expect(config.archiveDirs).toEqual([...DEFAULT_DOCS_FALLBACK_DIRS]);
+  });
+
+  it("keeps the default stage write scopes, with the R3Q9-A exception frozen", () => {
+    const config = resolvePipelineConfig({ stages: stageMap() });
+    for (const stage of READ_ONLY_STAGES) {
+      expect(config.stages[stage].allowedWritePaths).toEqual([
+        ...DEFAULT_READONLY_WRITE_PATHS,
+        // Known baseline difference (R3Q9-A, 222 Phase 0): append-only widening.
+        `${DEFAULT_DESIGN_DIR}/`,
+        `${DEFAULT_REVIEW_DIR}/`,
+      ]);
+    }
+    expect(config.stages.develop.allowedWritePaths).toEqual(["**"]);
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
+    expect(config.stages.fix.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
+  });
+
+  it("keeps the shipped template free of the removed static values", () => {
+    const template = JSON.parse(
+      fs.readFileSync(path.join(__dirname, "../../template/pipeline_loop.json"), "utf-8"),
+    ) as { docs?: Record<string, unknown>; archive?: { dirs?: unknown } };
+    // Baseline difference (222 Phase 0): the block is empty → `docsStageDirs`
+    // is `undefined` for a freshly initialised project.
+    expect(template.docs).toEqual({});
+    expect(template.archive?.dirs).toBeUndefined();
+  });
+});
+
+// ─── Invariant 2a: stageDirs-only configuration stays self-consistent ───────
+
+describe("222 Phase 6 — docs.stageDirs alone stays consistent", () => {
+  const STAGE_DIRS = {
+    plan: "spec/design",
+    develop: "spec/design",
+    review: "spec/review",
+    fix: "spec/review",
+  };
+
+  it("keeps menu, deliverables and archive scope on the same directories", () => {
+    const { config, warnings } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { stageDirs: STAGE_DIRS },
+    });
+    // No explicit key → the resolved block is NOT attached (baseline shape).
+    expect(warnings).toEqual([]);
+    expect("docsDirs" in config).toBe(false);
+
+    // Menu (same source as the deliverables, so the two cannot diverge).
+    expect(resolveStageDocDir(config, "plan").dir).toBe("spec/design");
+    expect(resolveStageDocDir(config, "clarify").dir).toBe("spec/design");
+    expect(resolveStageDocDir(config, "design-review").dir).toBe("spec/design");
+    // A NON-DEFAULT `stageDirs.review` keeps its per-stage granularity here —
+    // it is a real customisation, not the stale boilerplate value.
+    expect(resolveStageDocDir(config, "review")).toEqual({ dir: "spec/review", autoMatched: false });
+    expect(resolveStageDocDir(config, "fix").dir).toBe("spec/review");
+    // Terminal stages have no document kind.
+    expect(resolveStageDocDir(config, "completed").dir).toBe("docs");
+
+    // Deliverables.
+    const dirs = docsDirsOf(config);
+    expect(dirs).toEqual({
+      designDir: "spec/design",
+      reviewDir: "spec/review",
+      jobsDir: DEFAULT_JOBS_DIR,
+    });
+    expect(resolveCommitDocPath("222_Feat", dirs.designDir))
+      .toBe("spec/design/222_Feat_Develop_Commit.md");
+    expect(config.stages.clarify.allowedWritePaths).toContain("spec/design/");
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["spec/design/*_Plan.md"]);
+
+    // Archive scope = the deduped stage directories.
+    expect(config.archiveDirs).toEqual(["spec/design", "spec/review"]);
+  });
+
+  it("treats a stageDirs value equal to the built-in default as boilerplate", () => {
+    const config = resolvePipelineConfig({
+      stages: stageMap(),
+      docs: { stageDirs: { plan: DEFAULT_DESIGN_DIR, review: DEFAULT_REVIEW_DIR } },
+    });
+    // A stale template pinning the defaults must not mask a resolved directory.
+    expect(resolveStageDocDir(config, "plan").dir).toBe(DEFAULT_DESIGN_DIR);
+    expect(config.archiveDirs).toEqual([DEFAULT_DESIGN_DIR, DEFAULT_REVIEW_DIR]);
+  });
+});
+
+// ─── Invariant 2b: full-chain customisation ─────────────────────────────────
+
+describe("222 Phase 6 — a configured layout follows every consumer", () => {
+  let tmpRoot = "";
+
+  /** Creates a throwaway project root with the given relative files. */
+  async function makeProject(files: string[]): Promise<string> {
+    tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-docs-integration-"));
+    for (const rel of files) {
+      const abs = path.join(tmpRoot, rel);
+      await fsp.mkdir(path.dirname(abs), { recursive: true });
+      await fsp.writeFile(abs, "# doc\n", "utf8");
+    }
+    return tmpRoot;
+  }
+
+  afterAll(async () => {
+    if (tmpRoot) await fsp.rm(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("follows the configured layout in one pass: scope, verify, menu, review, jobs, archive", async () => {
+    const root = await makeProject([
+      "spec/design/222_Feat.md",
+      "spec/design/222_Feat_Plan.md",
+      "spec/review/Code_Review_222_Feat_Develop_Commit_1.md",
+      "spec/jobs/nightly_loop.yaml",
+    ]);
+
+    const config = resolvePipelineConfig({
+      projectRoot: root,
+      stages: stageMap(),
+      docs: CUSTOM_DOCS,
+    });
+
+    // 1. Resolved directories (single source).
+    const dirs = docsDirsOf(config);
+    expect(dirs).toEqual(CUSTOM_DOCS);
+
+    // 2. Stage write scope: append-only widening + configured read-only glob.
+    for (const stage of READ_ONLY_STAGES) {
+      expect(config.stages[stage].allowedWritePaths).toContain("spec/design/");
+      expect(config.stages[stage].allowedWritePaths).toContain("spec/review/");
+      expect(config.stages[stage].allowedWritePaths).toContain("docs/");
+    }
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["spec/design/*_Plan.md"]);
+    expect(config.stages.fix.allowedReadOnlyPaths).toEqual(["spec/design/*_Plan.md"]);
+
+    // 3. Deliverable path + verify narrowing (dev/fix, review, plan).
+    expect(resolveCommitDocPath("222_Feat", dirs.designDir))
+      .toBe("spec/design/222_Feat_Develop_Commit.md");
+
+    const developNarrowed = await applyConcreteStageDocPaths(
+      rulesWith("spec/design/*_Develop_Commit.md"),
+      config,
+      makeTestMeta({ currentStage: "develop", requirementDoc: "spec/design/222_Feat.md" }),
+    );
+    expect(developNarrowed.path).toBe("spec/design/222_Feat_Develop_Commit.md");
+
+    const reviewNarrowed = await applyConcreteStageDocPaths(
+      rulesWith("spec/review/Code_Review_*.md"),
+      config,
+      makeTestMeta({ currentStage: "review", requirementDoc: "spec/design/222_Feat.md" }),
+    );
+    expect(reviewNarrowed.path)
+      .toBe("spec/review/Code_Review_222_Feat_Develop_Commit_*.md");
+
+    const planNarrowed = await applyConcreteStageDocPaths(
+      rulesWith("spec/design/*_Plan.md"),
+      config,
+      makeTestMeta({ currentStage: "plan", requirementDoc: "spec/design/222_Feat.md" }),
+    );
+    expect(planNarrowed.path).toBe("spec/design/222_Feat_Plan.md");
+
+    // 4. Document menu uses the SAME directory as the deliverables.
+    expect(resolveStageDocDir(config, "plan")).toEqual({ dir: "spec/design", autoMatched: true });
+    expect(resolveStageDocDir(config, "develop").dir).toBe("spec/design");
+    expect(resolveStageDocDir(config, "review").dir).toBe("spec/design");
+    expect(resolveStageDocDir(config, "fix").dir).toBe("spec/review");
+
+    // 5. Review scanning.
+    expect(await findLatestReviewReport(root, dirs.reviewDir)).toBe(
+      path.join(root, "spec/review/Code_Review_222_Feat_Develop_Commit_1.md"),
+    );
+    expect(await findLatestReviewReport(root)).toBeNull(); // default dir is empty
+
+    // 6. Job files: menu scan + tracked-path resolution.
+    const scan = scanJobFiles(root, dirs.jobsDir);
+    expect(scan.rows.map((row) => row.jobId)).toEqual(["nightly_loop"]);
+    expect(scanJobFiles(root).rows).toEqual([]); // default dir is empty
+    expect(resolveTrackedJobFile(root, dirs.jobsDir, "nightly_loop"))
+      .toBe(path.join(root, "spec/jobs/nightly_loop.yaml"));
+
+    // 7. Archive scope follows the resolved directories (design first, then review).
+    expect(config.archiveDirs).toEqual(["spec/design", "spec/review"]);
+  });
+
+  it("keeps the dispatch conflict check happy with the configured deliverable path", async () => {
+    const config = resolvePipelineConfig({
+      projectRoot: "/tmp/pi-docs-integration-conflict",
+      stages: stageMap(),
+      docs: CUSTOM_DOCS,
+    });
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      requirementDoc: "spec/design/222_Feat.md",
+    });
+    const conflict = await checkDispatchConflicts(
+      "develop",
+      meta,
+      config.stages.develop.allowedReadOnlyPaths,
+      config.stages.develop.allowedWritePaths,
+      () => ({ mode: "all" }),
+      () => "scope",
+      docsDirsOf(config).designDir,
+    );
+    expect(conflict).toBeNull();
+  });
+});
+
+// ─── Boundary behaviour ─────────────────────────────────────────────────────
+
+describe("222 Phase 6 — boundary configurations", () => {
+  it("accepts a configured directory that equals the default (no behaviour change)", () => {
+    const config = resolvePipelineConfig({
+      stages: stageMap(),
+      docs: { designDir: DEFAULT_DESIGN_DIR, reviewDir: DEFAULT_REVIEW_DIR },
+    });
+    // The block IS attached (an explicit key exists) but resolves to the defaults.
+    expect(config.docsDirs).toEqual({
+      designDir: DEFAULT_DESIGN_DIR,
+      reviewDir: DEFAULT_REVIEW_DIR,
+      jobsDir: DEFAULT_JOBS_DIR,
+    });
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
+    expect(config.archiveDirs).toEqual([...DEFAULT_DOCS_FALLBACK_DIRS]);
+  });
+
+  it("supports a directory containing spaces", () => {
+    const config = resolvePipelineConfig({
+      stages: stageMap(),
+      docs: { designDir: "my docs/design", reviewDir: "my docs/review" },
+    });
+    expect(docsDirsOf(config).designDir).toBe("my docs/design");
+    expect(config.stages.clarify.allowedWritePaths).toContain("my docs/design/");
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["my docs/design/*_Plan.md"]);
+  });
+
+  it("normalizes a Windows-separator input to posix", () => {
+    const { config, warnings } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { designDir: "spec\\design", reviewDir: "spec\\review" },
+    });
+    expect(warnings).toEqual([]);
+    expect(docsDirsOf(config).designDir).toBe("spec/design");
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["spec/design/*_Plan.md"]);
+  });
+
+  it("resolves a stageDirs vs explicit-key conflict in favour of the explicit key", () => {
+    const { config, warnings } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { designDir: "spec/design", stageDirs: { plan: "legacy/design" } },
+    });
+    expect(docsDirsOf(config).designDir).toBe("spec/design");
+    // A NON-DEFAULT stageDirs entry still customises ONLY the doc menu.
+    expect(resolveStageDocDir(config, "plan")).toEqual({ dir: "legacy/design", autoMatched: false });
+    expect(warnings.some((w) => w.includes("overrides"))).toBe(true);
+  });
+});
+
+// ─── Invalid configuration falls back (fail-open) ───────────────────────────
+
+describe("222 Phase 6 — invalid directories warn and fall back", () => {
+  const INVALID = ["/abs/design", "C:\\abs\\design", "../escape", "a/../b", "", "   "];
+
+  it("never throws and always resolves a usable layout", () => {
+    for (const value of INVALID) {
+      const { config, warnings } = resolveCapturingWarnings({
+        stages: stageMap(),
+        docs: { designDir: value, reviewDir: value, jobsDir: value },
+      });
+      expect(docsDirsOf(config)).toEqual({
+        designDir: DEFAULT_DESIGN_DIR,
+        reviewDir: DEFAULT_REVIEW_DIR,
+        jobsDir: DEFAULT_JOBS_DIR,
+      });
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings.every((w) => w.startsWith("[pi-pipeline] "))).toBe(true);
+    }
+  });
+
+  it("warns once per invalid key without dropping the valid ones", () => {
+    const { config, warnings } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { designDir: "../escape", reviewDir: "spec/review" },
+    });
+    expect(docsDirsOf(config).designDir).toBe(DEFAULT_DESIGN_DIR);
+    expect(docsDirsOf(config).reviewDir).toBe("spec/review");
+    expect(warnings.filter((w) => w.includes("docs.designDir")).length).toBe(1);
+  });
+
+  it("applies the same validation to values DERIVED from docs.stageDirs", () => {
+    const { config, warnings } = resolveCapturingWarnings({
+      stages: stageMap(),
+      docs: { stageDirs: { plan: "../escape", review: "spec/review" } },
+    });
+    expect(docsDirsOf(config).designDir).toBe(DEFAULT_DESIGN_DIR);
+    expect(docsDirsOf(config).reviewDir).toBe("spec/review");
+    expect(warnings.some((w) => w.includes("docs.stageDirs.plan"))).toBe(true);
+    // The invalid value never reaches a write scope or a read-only glob.
+    expect(config.stages.develop.allowedReadOnlyPaths).toEqual(["docs/design/*_Plan.md"]);
+    expect(config.archiveDirs).not.toContain("../escape");
+  });
+});
