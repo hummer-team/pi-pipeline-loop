@@ -48,8 +48,12 @@ import {
  * (`buildClarifyDocState` / `decideClarifyDispatch`)
  * the settle side uses, so re-starting the pipeline derives the round from the
  * document state and respects `clarify.maxRounds`.
+ *
+ * 223 review issue 13: only the UNION is exported — the individual variants are
+ * an implementation detail of `buildClarifyAutoPlan`, so their export surface
+ * cannot drift into a second source of truth.
  */
-export interface ClarifyAutoPlanBase {
+interface ClarifyAutoPlanBase {
   /** Round number that args refer to (charged to the per-doc budget). */
   round: number;
   /** Job-level round cap (`clarify.maxRounds`). */
@@ -57,7 +61,7 @@ export interface ClarifyAutoPlanBase {
 }
 
 /** A real dispatch of the clarify mention with the given args/instruction. */
-export interface ClarifyAutoDispatchPlan extends ClarifyAutoPlanBase {
+interface ClarifyAutoDispatchPlan extends ClarifyAutoPlanBase {
   kind: "dispatch";
   action: "fresh" | "await-answer" | "spawn-full-und";
   /**
@@ -71,12 +75,12 @@ export interface ClarifyAutoDispatchPlan extends ClarifyAutoPlanBase {
 }
 
 /** The document already carries `## 模型确认`; nothing needs to be spawned. */
-export interface ClarifyAutoConfirmedPlan extends ClarifyAutoPlanBase {
+interface ClarifyAutoConfirmedPlan extends ClarifyAutoPlanBase {
   kind: "confirmed";
 }
 
 /** A gate stopped the startup dispatch (budget/stall/unclear requirement). */
-export interface ClarifyAutoBlockedPlan extends ClarifyAutoPlanBase {
+interface ClarifyAutoBlockedPlan extends ClarifyAutoPlanBase {
   kind: "blocked";
   action: "budget-exhausted" | "stalled" | "requirement-unclear";
 }
