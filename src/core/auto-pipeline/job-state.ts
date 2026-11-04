@@ -232,8 +232,11 @@ export function findJobFileCandidates(projectRoot: string, jobsDir: string, jobI
 
 /**
  * Matches a supported job-file extension at the end of a file name.
+ *
+ * 223 review issue 9 (L5): module-private — `stripJobFileExtension` below is the
+ * only consumer inside this repo, so the export was needless public surface.
  */
-export const JOB_FILE_EXTENSION_RE = /\.(yaml|yml)$/;
+const JOB_FILE_EXTENSION_RE = /\.(yaml|yml)$/;
 
 /**
  * 223 Phase 3: strip a trailing `.yaml`/`.yml` from a job file name or a
