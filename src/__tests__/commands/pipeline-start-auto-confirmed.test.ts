@@ -465,3 +465,29 @@ describe("dispatchAfterResume with the autoJob contract already stamped (branch 
     expect(harness.state().docs[0]!.lastStage).toBe<PipelineStage>(expectedTarget);
   });
 });
+
+/**
+ * 223 review issue 7 (L3): the four-state derivation can dispatch a LATER round
+ * (`<n> 答`) or a forced `full-und?`. The "derived from document state" notify
+ * and the launch audit used to claim "fresh" for every auto plan; they now carry
+ * the round the plan really dispatches.
+ */
+describe("/pipeline-start with an auto plan on a later clarify round", () => {
+  it("reports the derived round in the notify and the launch audit", async () => {
+    writeDoc(UNCONFIRMED_DOC);
+    const state = harness.state();
+    // One round already spent → the derivation continues with round 2.
+    state.docs[0]!.clarifyRounds = 1;
+    await writeJobState(harness.projectRoot, state);
+
+    const { stub, ctx } = makeCommandCtx();
+    await createPipelineStartCommand(harness.config).execute({ file: DOC }, ctx as never);
+
+    expect(stub.notified).toContain(
+      "Clarify args derived from document state (round 2). Prompt/description reflect document status, not user-supplied parameters.",
+    );
+    const launch = safeEvents("pipeline_start_launch");
+    expect(launch).toHaveLength(1);
+    expect(launch[0]).toContain('"derivedRound":"2"');
+  });
+});

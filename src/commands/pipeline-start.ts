@@ -1432,6 +1432,12 @@ async function maybeAutoLaunchClarify(
     if (autoClarify.kind === "dispatch") {
       effectiveArgs = autoClarify.args;
       argsSource = "derived";
+      // 223 review issue 7 (L3): the four-state derivation can dispatch round 3
+      // (`<n> 答`) or a forced `full-und?`, so the "derived from document state"
+      // notify and the `pipeline_start_launch*` audit must carry the REAL round.
+      // Without this the notify always claimed "fresh" while a later round was
+      // dispatched.
+      derivedRound = autoClarify.round;
     } else {
       return applyAutoClarifyPlan(ctx, config, ui, meta, file, activeJob, autoClarify);
     }
