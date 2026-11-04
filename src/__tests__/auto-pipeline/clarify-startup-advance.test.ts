@@ -331,3 +331,39 @@ describe("sidecar truth on a host without the autoJob contract", () => {
     expect(harness.state().docs[0]!.lastStage).toBe<PipelineStage>("plan");
   });
 });
+
+/**
+ * 223 review issue 8 (L4): the gate accepted only the CONFIGURED marker while
+ * the derivation that produced the `confirmed` plan also accepts the protocol
+ * defaults — a custom marker + a default-marker document used to be "confirmed
+ * but neither spawned nor advanced". The gate now uses the derivation's set,
+ * while the "nothing configured ⇒ no gate" switch is unchanged.
+ */
+describe("marker gate mirrors the derivation's accepted set", () => {
+  it("custom marker configured + default marker on disk: advances instead of marker_missing", async () => {
+    writeDoc(CONFIRMED_DOC);
+    const config = withMarkers(["## 自定义确认"]);
+    const meta = makeMeta();
+    const { ctx } = makeCtx(meta);
+
+    const outcome = await advanceConfirmedClarifyOnStartup(ctx, config, meta, createPipelineUI(config));
+
+    expect(outcome).toEqual({ advanced: true, toStage: "plan" });
+    expect(ctx.session.getMeta()?.currentStage).toBe<PipelineStage>("plan");
+    expect(gateEvents("clarify_startup_advance_blocked")).toHaveLength(0);
+  });
+
+  it("custom marker configured + no marker at all: still a marker_missing refusal", async () => {
+    writeDoc(UNCONFIRMED_DOC);
+    const config = withMarkers(["## 自定义确认"]);
+    const meta = makeMeta();
+    const { ctx } = makeCtx(meta);
+
+    const outcome = await advanceConfirmedClarifyOnStartup(ctx, config, meta, createPipelineUI(config));
+
+    expect(outcome).toEqual({ advanced: false, reason: "marker_missing" });
+    const blocked = gateEvents("clarify_startup_advance_blocked");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toContain('"reason":"marker_missing"');
+  });
+});
