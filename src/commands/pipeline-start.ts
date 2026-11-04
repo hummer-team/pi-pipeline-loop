@@ -71,6 +71,8 @@ import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-
 import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/design-review/entry-result";
 // 194 Phase 3 (task 7, review issue 3): a new pipeline start invalidates a stale executor binding
 import { invalidateExecutorRunOnBoundary } from "../core/stage-executor/recovery";
+// 224 Phase 1: the start-stage dispatch OUTCOME is reported back to the auto runner
+import { mapSpawnResultToOutcome, type StartDispatchOutcome } from "../core/auto-pipeline/start-stage-dispatch";
 
 /**
  * Checks that all 5 active stages have agentPath configured.
@@ -617,6 +619,13 @@ export function buildOnStageChangedCallback(
 }
 
 /**
+ * 224 Phase 1 (problem 13): the caller declares WHO started the pipeline — the
+ * human keep their manual hints; the auto runner prints one honest dispatch
+ * outcome instead (see `dispatchAfterResume`.
+ */
+export type PipelineStartedBy = "human" | "auto_job";
+
+/**
  * Phase 3 (171): stage-aware dispatch after pipeline resume.
  *
  * For the resumed stage, spawn the appropriate subagent:
@@ -624,6 +633,20 @@ export function buildOnStageChangedCallback(
  * - plan/develop/review/fix: spawn the stage subagent directly
  *
  * User forwardArgs are transparently passed through when non-empty.
+ *
+ * 224 Phase 1: returns the dispatch outcome (F1, evidence-driven) so the auto
+ * runner can distinguish "dispatched" from "provably not sent". Human callers
+ * may ignore the value; the `startedBy` flag only suppresses the manual-run
+ * hint that the auto track must never print (judge: criterion 3).
+ *
+ * @param ctx - FlowStateCtx (session + ui + _ctx)
+ * @param config - Pipeline config
+ * @param ui - PipelineUI instance
+ * @param meta - Fresh session meta the dispatch works against
+ * @param doc - Requirement document path of the ongoing run
+ * @param forwardArgs - User forward args (transparent passthrough, may be empty)
+ * @param opts - Optional caller context (`startedBy`} — defaults to "human"
+ * @returns the dispatch outcome of the stage executor
  */
 export async function dispatchAfterResume(
   ctx: any,
@@ -632,7 +655,8 @@ export async function dispatchAfterResume(
   meta: SessionMeta,
   doc: string,
   forwardArgs?: string,
-): Promise<void> {
+  opts?: { startedBy?: PipelineStartedBy },
+): Promise<StartDispatchOutcome> {
   const stage = meta.currentStage;
 
   // 210 review issue 2 (plan Phase 2 task 3): this helper is the shared "a new
@@ -666,7 +690,8 @@ export async function dispatchAfterResume(
         ui,
       );
     }
-    return;
+    // 224 Phase 1: the clarify executor belongs to 223 / maybeAutoLaunchClarify.
+    return "not_applicable";
   }
 
   // 192 Phase 4 (DR192-01): resume of an UNFINISHED develop-handoff stays under
@@ -724,7 +749,9 @@ export async function dispatchAfterResume(
           error: err instanceof Error ? err.message : String(err),
         }, "error");
       }
-      return;
+      // 224 Phase 1: the design-review chain owns this develop handoff — the
+      // takeover resolved it (or recorded the failure); no generic re-dispatch.
+      return "handled_elsewhere";
     }
   }
 
@@ -739,7 +766,8 @@ export async function dispatchAfterResume(
         pipelineId: meta.pipelineId,
         reason: "no_meta_available",
       });
-      return;
+      // 224 Phase 1: a missing meta is a known ambiguity → non-fatal "verify".
+      return "unknown";
     }
 
     // Build coordinator context — 193 Phase 3 (task 1): shared safe builder
@@ -769,6 +797,8 @@ export async function dispatchAfterResume(
           trigger: "dispatch_after_resume",
           action: coordinatorResult.action,
         });
+        // 224 Phase 1: the coordinator dispatched the review executor.
+        return "spawned";
       } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "pending") {
         ui.notify(ctx, `Design review dispatch pending: ${coordinatorResult.reason}`);
         await safeWriteAuditLog("design_review_coordinator_dispatch", {
@@ -778,6 +808,9 @@ export async function dispatchAfterResume(
           action: "pending",
           reason: coordinatorResult.reason,
         });
+        // 224 Phase 1: a pending coordinator plan is a legal compensation state
+        // — queued work exists, never fatal (review fix #2).
+        return "queued";
       } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "frozen") {
         // 192 Phase 4 (task 8): real freeze on budget exhaustion at resume
         const { freezeAndPrompt } = await import("../core/flow-state");
@@ -797,6 +830,8 @@ export async function dispatchAfterResume(
           trigger: "dispatch_after_resume",
           action: "frozen",
         });
+        // 224 Phase 1: the frozen chain has taken over — NEVER fail the doc.
+        return "handled_elsewhere";
       } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "verify_failed") {
         // 193 Phase 3 (task 2): dispatchAfterResume consumes the obtained
         // `verify_failed` through the ONE shared honest consumer (tool
@@ -823,7 +858,8 @@ export async function dispatchAfterResume(
           action: "verify_failed",
           failureRecorded: String(outcome.failureRecorded),
         });
-        return;
+        // 224 Phase 1: consumeDesignReviewResult owns the result now.
+        return "handled_elsewhere";
       } else if (coordinatorResult.status === "handled") {
         // Other handled actions: advanced
         await safeWriteAuditLog("design_review_coordinator_dispatch", {
@@ -833,6 +869,8 @@ export async function dispatchAfterResume(
           action: coordinatorResult.action,
           status: coordinatorResult.status,
         });
+        // 224 Phase 1: the coordinator resolved the visit itself (advanced).
+        return "handled_elsewhere";
       } else {
         // not-applicable
         await safeWriteAuditLog("design_review_coordinator_dispatch", {
@@ -841,6 +879,9 @@ export async function dispatchAfterResume(
           trigger: "dispatch_after_resume",
           status: coordinatorResult.status,
         });
+        // 224 Phase 1: the coordinator declined without proof of dispatch —
+        // ambiguous, report "verify before re-running" (non-fatal).
+        return "unknown";
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -850,8 +891,9 @@ export async function dispatchAfterResume(
         trigger: "dispatch_after_resume",
         error: errMsg,
       }, "error");
+      // 224 Phase 1: a coordinator error is an ambiguous window, not proof.
+      return "unknown";
     }
-    return;
   }
 
   // plan/develop/review/fix: spawn stage subagent via existing helper
@@ -871,7 +913,8 @@ export async function dispatchAfterResume(
         agentId: ledgerHit.agentId ?? "",
         evidenceStage: ledgerHit.stage,
       });
-      return;
+      // 224 Phase 1: the executor already exists — non-fatal (review fix #2).
+      return "already_running";
     }
   }
 
@@ -902,7 +945,12 @@ export async function dispatchAfterResume(
       pipelineId: meta.pipelineId,
       reason: "configuration_conflict",
     });
-  } else if (result.spawned) {
+    // 224 Phase 1: a proven conflict blocks the executor — fatal for the auto runner.
+    return "conflict_blocked";
+  }
+  // 224 Phase 1: map the EXISTING result (no new spawn semantics, F1).
+  const outcome = mapSpawnResultToOutcome(result);
+  if (result.spawned) {
     await safeWriteAuditLog("pipeline_resume_dispatch", {
       stage,
       requirementDoc: doc,
@@ -922,9 +970,14 @@ export async function dispatchAfterResume(
       reason: "subagent_deferred",
     });
   } else if (!result.fallback) {
-    // Not spawned, not deferred, and no fallback (e.g. non-spawnable stage) → notify
-    ui.notify(ctx, `Pipeline resumed at "${stage}". Run the ${stage} agent to continue.`);
+    // Not spawned, not deferred, and no fallback (e.g. non-spawnable stage).
+    // 224 Phase 1 (judge 3): the manual-run hint is a HUMAN-track sentence —
+    // the auto runner reports the honest outcome suffix instead.
+    if (opts?.startedBy !== "auto_job") {
+      ui.notify(ctx, `Pipeline resumed at "${stage}". Run the ${stage} agent to continue.`);
+    }
   }
+  return outcome;
 }
 
 /**
@@ -1085,6 +1138,9 @@ export async function promptDocSelection(
  * @param file - Requirement doc file path (relative to projectRoot)
  * @param startStage - Starting stage (default "clarify")
  * @param existingMeta - Existing meta (may be undefined for fresh start)
+ * @param forwardArgs - User forward args (passthrough, optional)
+ * @param startedBy - 224 Phase 1 (problem 13): who started the pipeline — the
+ *   auto runner suppresses the manual `@agent` hint it can never satisfy
  */
 export async function startNewPipeline(
   ctx: any,
@@ -1094,6 +1150,7 @@ export async function startNewPipeline(
   startStage: PipelineStage = "clarify",
   existingMeta?: SessionMeta,
   forwardArgs?: string,
+  startedBy: PipelineStartedBy = "human",
 ): Promise<{
   success: boolean;
   message?: string;
@@ -1242,7 +1299,9 @@ export async function startNewPipeline(
 
   // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
   // but still emit a notify hint so the user knows the next step (Medium #3).
-  if (startStage === "plan") {
+  // 224 Phase 1 (judge 3): the auto track dispatches the plan executor itself —
+  // this manual instruction must NOT be printed there.
+  if (startStage === "plan" && startedBy !== "auto_job") {
     ui.notify(ctx, `Pipeline started at stage "plan". Run the plan agent to continue.`);
   }
 

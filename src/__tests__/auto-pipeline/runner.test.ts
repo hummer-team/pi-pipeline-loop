@@ -131,6 +131,28 @@ function makeCtx() {
   };
 }
 
+/**
+ * 224 Phase 1: the auto track dispatches the start-stage executor, so the
+ * harness must satisfy the P-A pre-check (`resolveAgentMention`) — copy the
+ * template agent files into the project root.
+ */
+function writeAgentFixtures(): void {
+  const dir = path.join(ROOT, ".pi", "agents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of [
+    "feat-design-plan-agent",
+    "design-review-agent",
+    "develop-agent",
+    "code-review-agent",
+    "code-review-withfix-agent",
+  ]) {
+    fs.copyFileSync(
+      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
+      path.join(dir, `${name}.md`),
+    );
+  }
+}
+
 beforeEach(() => {
   ROOT = fs.mkdtempSync(path.join(tmpdir(), "pi-219-runner-"));
   __resetAutoJobLockForTests();
@@ -291,6 +313,7 @@ describe("runner — startup metadata", () => {
   it("startStage is honoured and recorded as docs[i].lastStage (H4)", async () => {
     writeJob(jobYaml(["docs/design/a.md"], { startStage: "plan" }));
     writeDoc("docs/design/a.md");
+    writeAgentFixtures(); // the auto track dispatches the plan executor (P-A pre-check)
     const { ctx, meta } = makeCtx();
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
 

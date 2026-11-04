@@ -140,6 +140,28 @@ function writeEvidence(stage: PipelineStage): void {
   }
 }
 
+/**
+ * 224 Phase 1: the auto track dispatches the start-stage executor, so the
+ * harness must satisfy the P-A pre-check (`resolveAgentMention`) — copy the
+ * template agent files into the project root.
+ */
+function writeAgentFixtures(): void {
+  const dir = path.join(ROOT, ".pi", "agents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of [
+    "feat-design-plan-agent",
+    "design-review-agent",
+    "develop-agent",
+    "code-review-agent",
+    "code-review-withfix-agent",
+  ]) {
+    fs.copyFileSync(
+      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
+      path.join(dir, `${name}.md`),
+    );
+  }
+}
+
 beforeEach(() => {
   ROOT = fs.mkdtempSync(path.join(tmpdir(), "pi-220-start-stage-"));
   __resetAutoJobLockForTests();
@@ -163,6 +185,7 @@ describe("start-stage runner — every start stage is startable with its evidenc
     it(`${stage}: starts, records lastStage + evidence stamps`, async () => {
       writeJob(jobYaml({ startStage: stage }));
       writeEvidence(stage);
+      writeAgentFixtures(); // the auto track dispatches the executor (P-A pre-check)
       const { ctx, meta } = makeCtx();
 
       const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
@@ -289,6 +312,7 @@ describe("start-stage runner — job-wide auto derivation", () => {
   it("auto + confirmed plan → develop, stamped derivation:auto", async () => {
     writeFile(REQUIREMENT, "# requirement\n");
     writeFile(PLAN, "# plan\n## User Confirmation\nconfirmed\n");
+    writeAgentFixtures();
     writeJob(jobYaml({ defaultStartStage: "auto" }));
     const { ctx, meta } = makeCtx();
 
@@ -305,6 +329,7 @@ describe("start-stage runner — job-wide auto derivation", () => {
   it("auto + plan without confirmation → plan, stamped derivation:auto", async () => {
     writeFile(REQUIREMENT, "# requirement\n");
     writeFile(PLAN, "# plan\n## 目的\npending\n");
+    writeAgentFixtures();
     writeJob(jobYaml({ defaultStartStage: "auto" }));
     const { ctx, meta } = makeCtx();
 

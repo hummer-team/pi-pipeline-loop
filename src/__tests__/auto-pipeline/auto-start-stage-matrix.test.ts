@@ -93,6 +93,28 @@ function prepareCase(stage: PipelineStage, tier: "rule" | "assisted", root: stri
   return { ...resolved, configSourcePath: jsonPath };
 }
 
+/**
+ * 224 Phase 1: the auto track dispatches the start-stage executor, so the
+ * harness must satisfy the P-A pre-check (`resolveAgentMention`) — copy the
+ * template agent files into the project root.
+ */
+function writeAgentFixtures(root: string): void {
+  const dir = path.join(root, ".pi", "agents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of [
+    "feat-design-plan-agent",
+    "design-review-agent",
+    "develop-agent",
+    "code-review-agent",
+    "code-review-withfix-agent",
+  ]) {
+    fs.copyFileSync(
+      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
+      path.join(dir, `${name}.md`),
+    );
+  }
+}
+
 describe("auto run — start-stage × tier smoke matrix", () => {
   for (const tier of ["rule", "assisted"] as const) {
     for (const stage of RESUMABLE_STAGES) {
@@ -101,6 +123,7 @@ describe("auto run — start-stage × tier smoke matrix", () => {
         __resetAutoJobLockForTests();
         __resetFinalizeStateForTests();
         __setSafeWriteAuditLogOverride(async () => {});
+        writeAgentFixtures(root);
         try {
           let meta: SessionMeta | undefined;
           const ctx = {

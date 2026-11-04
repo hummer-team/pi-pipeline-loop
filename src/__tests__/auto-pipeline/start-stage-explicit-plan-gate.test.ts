@@ -63,6 +63,28 @@ function writeJob(yaml: string): void {
   fs.writeFileSync(jobPath, yaml, "utf8");
 }
 
+/**
+ * 224 Phase 1: the auto track dispatches the start-stage executor, so the
+ * harness must satisfy the P-A pre-check (`resolveAgentMention`) — copy the
+ * template agent files into the project root.
+ */
+function writeAgentFixtures(): void {
+  const dir = path.join(ROOT, ".pi", "agents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of [
+    "feat-design-plan-agent",
+    "design-review-agent",
+    "develop-agent",
+    "code-review-agent",
+    "code-review-withfix-agent",
+  ]) {
+    fs.copyFileSync(
+      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
+      path.join(dir, `${name}.md`),
+    );
+  }
+}
+
 function writeFile(rel: string, content: string): void {
   const abs = path.join(ROOT, rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -129,6 +151,7 @@ describe("explicit plan start — the clarify marker gate (224 Phase 0)", () => 
   it("no marker configured → no gate: the doc starts with basis clarify-confirmation", async () => {
     // Boundary: an UNCONFIGURED marker must NOT invent a gate (223 parity).
     writeJob(jobYaml({ perDocStartStage: "plan" }));
+    writeAgentFixtures();
     writeFile(REQUIREMENT, "# requirement\nno confirmation marker here\n");
     const { ctx, meta } = makeCtx();
 
@@ -145,6 +168,7 @@ describe("explicit plan start — the clarify marker gate (224 Phase 0)", () => 
 
   it("default marker present on the requirement → starts with basis clarify-confirmation", async () => {
     writeJob(jobYaml({ perDocStartStage: "plan" }));
+    writeAgentFixtures();
     writeFile(REQUIREMENT, `# requirement\n${DEFAULT_MARKER}\nok\n`);
     const { ctx, meta } = makeCtx();
 
@@ -161,6 +185,7 @@ describe("explicit plan start — the clarify marker gate (224 Phase 0)", () => 
 
   it("custom marker alias on the requirement → starts with basis clarify-confirmation", async () => {
     writeJob(jobYaml({ perDocStartStage: "plan" }));
+    writeAgentFixtures();
     writeFile(REQUIREMENT, `# requirement\n${CUSTOM_MARKER}\nok\n`);
     const { ctx, meta } = makeCtx();
 
@@ -177,6 +202,7 @@ describe("explicit plan start — the clarify marker gate (224 Phase 0)", () => 
 
   it("marker configured but missing on the requirement → failed doc, one audit, hint notify", async () => {
     writeJob(jobYaml({ perDocStartStage: "plan" }));
+    writeAgentFixtures();
     writeFile(REQUIREMENT, "# requirement\nno confirmation marker here\n");
     const { ctx, notified } = makeCtx();
 
@@ -204,6 +230,7 @@ describe("explicit plan start — the clarify marker gate (224 Phase 0)", () => 
 
   it("plan document already confirmed → missing:plan-confirmed with a redirect hint", async () => {
     writeJob(jobYaml({ perDocStartStage: "plan" }));
+    writeAgentFixtures();
     writeFile(REQUIREMENT, `# requirement\n${DEFAULT_MARKER}\nok\n`);
     writeFile(PLAN, "# plan\n## User Confirmation\nconfirmed\n");
     const { ctx, notified } = makeCtx();
@@ -228,6 +255,7 @@ describe("explicit plan start — the clarify marker gate (224 Phase 0)", () => 
   it("missing requirement document wins over the marker gate (requirement reported first)", async () => {
     // Boundary: the evidence gate reports `requirement` BEFORE any marker check.
     writeJob(jobYaml({ perDocStartStage: "plan" }));
+    writeAgentFixtures();
     const { ctx, notified } = makeCtx();
 
     const result = await startAutoJob({
@@ -255,6 +283,7 @@ describe("explicit plan start — the clarify marker gate (224 Phase 0)", () => 
     writeFile(REQUIREMENT, "# requirement\nno confirmation marker here\n");
     writeFile(PLAN, "# plan\n## 目的\nnot confirmed\n");
     writeJob(jobYaml({ defaultStartStage: "auto" }));
+    writeAgentFixtures();
     const { ctx, meta } = makeCtx();
 
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });

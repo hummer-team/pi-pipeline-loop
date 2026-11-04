@@ -58,6 +58,17 @@ import { NEW_COMMIT_RE } from "../core/naming/doc-naming";
 import { derivePlanDocPath, checkStartStageEvidence } from "../core/auto-pipeline/start-stage-evidence";
 import { resolveStartStage } from "../core/auto-pipeline/resolve-start-stage";
 import { planDocHasConfirmMarker } from "../core/verify-path-resolver";
+// 224 Phase 1: the auto track dispatches the start-stage executor itself (F1).
+import { dispatchAfterResume } from "./pipeline-start";
+import { resolveAgentMention } from "../utils/subagent-rpc";
+import {
+  checkStartDispatchable,
+  describeStartDispatch,
+  isFatalStartDispatchOutcome,
+  isStartStageAlreadyDispatched,
+  shouldDispatchStartStage,
+  type StartDispatchOutcome,
+} from "../core/auto-pipeline/start-stage-dispatch";
 // 219 Phase 5: the ONE terminal transaction (release + audit + rollback + unlock).
 import { finalizeJob, handleDocFailure } from "../core/auto-pipeline/finalize";
 import { auditAutoDiagnostic, notifyAuto } from "../core/auto-pipeline/diagnostics";
@@ -761,7 +772,26 @@ async function startPendingDoc(input: {
     return failDoc(input, target.index, `start_stage_evidence_missing:${evidence.missing}`);
   }
 
-  const started = await startNewPipeline(ctx, config, ui, target.doc.doc, stage);
+  // 224 Phase 1 (P-A): prove the start stage CAN be dispatched BEFORE the
+  // pipeline is created — a failure here never writes meta/sidecar stage
+  // fields (no half-started job). The "no live twin" half of the pre-check is
+  // an empty set by construction: `buildStartMeta` resets
+  // `activeSpawns`/`pendingSpawns`/`spawnedStages`, so the twin judgment is
+  // deliberately YAGNI here (the post-start branch still re-checks).
+  const dispatchable = shouldDispatchStartStage({ stage, clarifyAdvanceHandled: false })
+    ? checkStartDispatchable({ config, stage, pi: (ctx as { pi?: unknown }).pi })
+    : ({ ok: true as const });
+  if (!dispatchable.ok) {
+    await safeWriteAuditLog("pipeline_auto_start_stage_unexecutable", {
+      jobId,
+      doc: target.doc.doc,
+      stage,
+      reason: dispatchable.reason,
+    }, "warn");
+    return failDoc(input, target.index, "start_stage_unexecutable");
+  }
+
+  const started = await startNewPipeline(ctx, config, ui, target.doc.doc, stage, undefined, undefined, "auto_job");
   if (!started.success) {
     return failDoc(input, target.index, started.error ?? "start_failed");
   }
@@ -824,9 +854,41 @@ async function startPendingDoc(input: {
     }
   }
 
+  // 224 Phase 1 (F1): the auto job must dispatch THIS start stage's executor
+  // in the same command round. The judgment basis is the START stage (never a
+  // re-read of `meta.currentStage` — the 223 clarify→plan advance would then be
+  // dispatched twice). A stage the startup advance already dispatched is skipped.
+  let dispatchSuffix = "";
+  if (started.clarifyAdvancePending !== true && shouldDispatchStartStage({ stage, clarifyAdvanceHandled: false })) {
+    const freshMeta = ctx.session?.getMeta?.();
+    if (freshMeta) {
+      // Defensive pre-check (pure): a visit stamp for THIS stage/visit time
+      // means the executor was already dispatched in this visit (unreachable
+      // right after buildStartMeta's reset) — never a twin.
+      const outcome: StartDispatchOutcome =
+        isStartStageAlreadyDispatched(freshMeta, stage)
+          ? "already_running"
+          : await dispatchAfterResume(
+              ctx, config, ui, freshMeta, target.doc.doc, undefined, { startedBy: "auto_job" },
+            );
+      if (isFatalStartDispatchOutcome(outcome)) {
+        await safeWriteAuditLog("pipeline_auto_start_stage_unexecutable", {
+          jobId,
+          doc: target.doc.doc,
+          stage,
+          outcome,
+          pipelineId: started.pipelineId ?? "unknown",
+        }, "warn");
+        return failDoc(input, target.index, "start_stage_unexecutable");
+      }
+      const agentName = resolveAgentMention(config, stage) ?? "(unconfigured agent)";
+      dispatchSuffix = `; ${describeStartDispatch(outcome, { stage, agentName })}`;
+    }
+  }
+
   return {
     success: true,
-    message: `Auto pipeline started: job ${jobId}, doc ${target.index + 1}/${state.jobTotalDocs} (${target.doc.doc})${advanceSuffix}`,
+    message: `Auto pipeline started: job ${jobId}, doc ${target.index + 1}/${state.jobTotalDocs} (${target.doc.doc})${advanceSuffix}${dispatchSuffix}`,
   };
 }
 
