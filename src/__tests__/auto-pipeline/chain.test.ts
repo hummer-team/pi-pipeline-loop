@@ -30,6 +30,22 @@ let harness: ReturnType<typeof createAutoHarness>;
 let audits: string[];
 let errorSpy: ReturnType<typeof spyOn>;
 
+/**
+ * 224 Phase 2: the running-doc guard refuses to start another doc while one
+ * is `running`. In production the settle seam marks the finished doc terminal
+ * BEFORE `continueJobAfterCompleted` runs — these chain tests skipped that
+ * step, so the guard would refuse them. Simulate the real order instead of
+ * bypassing the guard.
+ */
+async function markRunningDocSettled(): Promise<void> {
+  const state = readJobState(harness.root, HARNESS_JOB_ID)!;
+  if (state.docs[0]?.status === "running") {
+    state.docs[0]!.status = "completed";
+    state.docs[0]!.finalizeKey = `${HARNESS_JOB_ID}:0:completed`;
+    await writeJobState(harness.root, state);
+  }
+}
+
 beforeEach(() => {
   __resetAutoJobLockForTests();
   __resetFinalizeStateForTests();
@@ -76,6 +92,7 @@ describe("chain — success path", () => {
 
   it("a FAILED pending persist does NOT rotate (same-session serial instead)", async () => {
     await harness.install();
+    await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
     const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
     let calls = 0;
@@ -118,6 +135,7 @@ describe("chain — success path", () => {
 
   it("chain.newSession:false starts the next doc in the same session", async () => {
     await harness.install();
+    await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
     const stub = createSessionStub();
     const noNewSession = { ...harness.job, chain: { ...harness.job.chain, newSession: false } };
@@ -155,6 +173,7 @@ describe("chain — success path", () => {
 
   it("a CANCELLED newSession falls back to the same-session serial", async () => {
     await harness.install();
+    await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
     const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
     stub.setNewSession(async ({ withSession }) => {
@@ -248,6 +267,7 @@ describe("chain — dispatch channel bookkeeping (review round 2 issue 3)", () =
 
   it("an OVERDUE record falls back to the same-session serial", async () => {
     await harness.install();
+    await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
     await agePendingContinuation();
     const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
@@ -265,6 +285,7 @@ describe("chain — dispatch channel bookkeeping (review round 2 issue 3)", () =
 
   it("an OVERDUE record whose next doc cannot start ends as session_fail", async () => {
     await harness.install();
+    await markRunningDocSettled();
     await agePendingContinuation();
     const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
 

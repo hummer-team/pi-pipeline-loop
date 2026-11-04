@@ -69,6 +69,13 @@ import {
   shouldDispatchStartStage,
   type StartDispatchOutcome,
 } from "../core/auto-pipeline/start-stage-dispatch";
+// 224 Phase 2: a running doc is never mistaken for "no work left".
+import {
+  classifyRunningDoc,
+  describeAlreadyRunning,
+  findRunningDoc,
+} from "../core/auto-pipeline/running-doc-guard";
+import { probeAgentState } from "../utils/subagents-introspect";
 // 219 Phase 5: the ONE terminal transaction (release + audit + rollback + unlock).
 import { finalizeJob, handleDocFailure } from "../core/auto-pipeline/finalize";
 import { auditAutoDiagnostic, notifyAuto } from "../core/auto-pipeline/diagnostics";
@@ -673,6 +680,32 @@ async function startPendingDoc(input: {
   deferFailure?: boolean;
 }): Promise<AutoPipelineResult> {
   const { config, ctx, jobId, job, state, token, projectRoot } = input;
+
+  // 224 Phase 2 (G2): the FIRST segment — a doc already `running` is never
+  // treated as "no work left" (no fake `job_completed`) and no SECOND doc may
+  // start either. The guard precedes `pickNextDoc` AND `applyOverlay`, so a
+  // refused invocation performs ZERO writes (sidecar baseline: the `updatedAt`
+  // ramp `startAutoJob` made before it, nothing else).
+  const running = findRunningDoc(state);
+  if (running) {
+    const meta = ctx.session?.getMeta?.();
+    const stage = running.stage;
+    const outcome = describeAlreadyRunning({
+      jobId,
+      totalDocs: state.jobTotalDocs,
+      hit: running,
+      mode: classifyRunningDoc(running, {
+        metaPipelineId: meta?.pipelineId,
+        metaStage: meta?.currentStage,
+        activeSpawn: stage ? meta?.activeSpawns?.[stage] : undefined,
+        hasPendingSpawn: Boolean(stage && meta?.pendingSpawns?.[stage]),
+        probeAgent: probeAgentState,
+        now: Date.now(),
+      }),
+    });
+    await safeWriteAuditLog("pipeline_auto_already_running", outcome.audit);
+    return { success: true, message: outcome.message };
+  }
 
   const target = pickNextDoc(state, job);
   if (!target) {
