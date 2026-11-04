@@ -23,7 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { readFile } from "node:fs/promises";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
-import { createPipelineStartCommand } from "../../commands/pipeline-start";
+import { createPipelineStartCommand, resumePipeline } from "../../commands/pipeline-start";
 import { advanceConfirmedClarifyOnStartup } from "../../core/clarify-startup-advance";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import { startAutoJob } from "../../commands/pipeline-auto";
@@ -37,7 +37,7 @@ import {
   HARNESS_JOB_ID,
   type AutoHarness,
 } from "../auto-pipeline/auto-harness";
-import { auditLogFileFor } from "../helpers";
+import { auditLogFileFor, makeTestMeta } from "../helpers";
 
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
 const DOC = HARNESS_DOCS[0]!;
@@ -269,5 +269,81 @@ describe("the auto runner consumes the pending advance itself", () => {
     expect(sent[0]!.msg.startsWith("[plugin auto-handoff]")).toBe(true);
     // Truth ④: the sidecar follows the stage it is really on.
     expect(harness.state().docs[0]!.lastStage).toBe<PipelineStage>(expectedTarget);
+  });
+});
+
+/**
+ * 223 review issue 1 (High) regression net: the RESUME host advances the
+ * confirmed clarify stage in place, so its return value / message must report
+ * the stage the session really reached — not the landing stage it resumed from.
+ */
+describe("/pipeline-resume on a confirmed document — advance truth", () => {
+  const PIPELINE_ID = "pipe-223-resume";
+
+  function makeResumeCtx() {
+    const meta = makeTestMeta({
+      currentStage: "clarify",
+      flowState: "running",
+      requirementDoc: DOC,
+      pipelineId: PIPELINE_ID,
+    });
+    const stub = createSessionStub(meta);
+    const ctx = {
+      session: stub.session,
+      ui: stub.ui,
+      pi: { sendUserMessage: (msg: string, opts?: unknown) => { sent.push({ msg, opts }); } },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+    };
+    return { meta, stub, ctx };
+  }
+
+  it("reports the stage the session reached, matching the persisted meta and the audit", async () => {
+    const state = harness.state();
+    state.docs[0]!.pipelineId = PIPELINE_ID;
+    await writeJobState(harness.projectRoot, state);
+
+    const { meta, stub, ctx } = makeResumeCtx();
+    const result = await resumePipeline(
+      ctx,
+      meta,
+      harness.config,
+      createPipelineUI(harness.config),
+      DOC,
+      "resume_menu_restore",
+    );
+    const expectedTarget = harness.config.stages.clarify?.nextStage as PipelineStage;
+
+    // Persisted truth first: the advance really happened.
+    expect(stub.meta()?.currentStage).toBe(expectedTarget);
+    // Return truth: no stale "clarify" claim (invariant 5).
+    expect(result.success).toBe(true);
+    expect(result.currentStage).toBe(expectedTarget);
+    expect(result.message).toBe(
+      `Pipeline resumed at stage "clarify" and advanced to "${expectedTarget}".`,
+    );
+    // Audit truth: exactly one advance row naming the same stage.
+    const advanced = safeEvents("clarify_startup_advanced");
+    expect(advanced).toHaveLength(1);
+    expect(advanced[0]).toContain(`"toStage":"${expectedTarget}"`);
+  });
+
+  it("keeps the plain resume message when nothing was advanced", async () => {
+    // No active auto job → the startup round dispatches normally and the stage
+    // stays put; the message must stay the historical one.
+    await harness.install({ status: "completed" });
+    __resetAutoJobLockForTests();
+    const { meta, stub, ctx } = makeResumeCtx();
+    const result = await resumePipeline(
+      ctx,
+      meta,
+      harness.config,
+      createPipelineUI(harness.config),
+      DOC,
+      "resume_menu_restore",
+    );
+
+    expect(stub.meta()?.currentStage).toBe<PipelineStage>("clarify");
+    expect(result.currentStage).toBe<PipelineStage>("clarify");
+    expect(result.message).toBe(`Pipeline resumed at stage "clarify".`);
   });
 });

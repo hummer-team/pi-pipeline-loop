@@ -576,11 +576,21 @@ export async function resumePipeline(
     await dispatchAfterResume(ctx, config, ui, newMeta, doc, forwardArgs);
   }
 
+  // 223 review issue 1 (High): `dispatchAfterResume` can ADVANCE the resumed
+  // stage in place (a confirmed clarify document → `nextStage`) and persists
+  // that through `ctx.session.updateMeta` — `newMeta` is only the local snapshot
+  // this function built, so reporting `newMeta.currentStage` here would contradict
+  // the persisted state (`223_Bug.md` §3 invariant 5: a path that advanced must
+  // never report the old stage). Re-read the session truth and report THAT.
+  const finalMeta = (ctx?.session?.getMeta?.() as SessionMeta | undefined) ?? newMeta;
+  const finalStage = finalMeta.currentStage;
   return {
     success: true,
-    message: `Pipeline resumed at stage "${newMeta.currentStage}".`,
-    pipelineId: newMeta.pipelineId,
-    currentStage: newMeta.currentStage,
+    message: finalStage === newMeta.currentStage
+      ? `Pipeline resumed at stage "${finalStage}".`
+      : `Pipeline resumed at stage "${newMeta.currentStage}" and advanced to "${finalStage}".`,
+    pipelineId: finalMeta.pipelineId ?? newMeta.pipelineId,
+    currentStage: finalStage,
   };
 }
 
