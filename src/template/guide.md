@@ -2029,7 +2029,9 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - 菜单拒绝的情形：无 `docs/jobs/*_loop.yaml` 或 `*_loop.yml`（提示创建 + 模板位置 + 被忽略的 `*.yaml`/`*.yml` 清单）、宿主无 `ui.select`、sidecar 损坏/`schemaVersion` 不识别（要求人工清理）、另一个 job 正持有进程级锁。
 - `jobHash` 漂移三选一：`按新 job 续跑`（按 doc 路径重新对齐进度）/ `重新开始`（进度重置）/ `取消`。
 - 已完成（`status=completed`）的 job 选中后二次确认 `重新开始 / 取消`。
-- **起点派发（224）**：非 `clarify` 起点（plan/design-review/develop/review/fix）在起跑的同一命令回合内由插件把该阶段的执行者派发出去（agent 映射与派发通道不可用时文档失败 `start_stage_unexecutable`，绝不半启动）；派发结果写入启动消息后缀（含 agent 名），auto 轨不再提示"手动 `@agent`"。
+- **起点派发（224）**：非 `clarify` 起点（plan/design-review/develop/review/fix）在起跑的同一命令回合内由插件把该阶段的执行者派发出去；派发结果写入启动消息后缀（含 agent 名），auto 轨不再提示"手动 `@agent`"。两种不可执行形态的处置**不同**：
+  - **起跑前预检失败**（agent 映射缺失 `no_agent` / 派发通道不可用 `no_channel`）：**文档失败** `start_stage_unexecutable`，绝不半启动；
+  - **起跑后会话 meta 不可读**（`no_meta`）：**fail-open，不失败文档**——文档保持 `running`，只写 1 条审计 `start_stage_unexecutable` 并在启动消息后缀说明；用 `/pipeline-resume` 继续（此时再次 `/pipeline-auto` 只会命中 running 守卫）。
 - **running 守卫（224）**：sidecar 已有 `running` 文档时再次运行 `/pipeline-auto` 是 no-op——既不把它收尾成假 `job_completed`，也不在同一 session 里启动第二份文档；写 `pipeline_auto_already_running` 并提示等待或 `/pipeline-resume`。
 - `docIndex` 语义 = **正在执行的文档**序号；它只在「启动下一份文档」时推进，收尾（`finalizeCurrentDoc`）**不**推进。
 
@@ -2112,7 +2114,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | `pipeline_auto_start` / `pipeline_auto_job_overlay` / `pipeline_auto_overlay_replay` / `pipeline_auto_overlay_restore` / `pipeline_auto_overlay_kept` / `pipeline_auto_cleanup` / `pipeline_auto_stop` / `pipeline_auto_chain` / `pipeline_auto_continuity` / `pipeline_auto_meta_seeded` / `pipeline_auto_meta_seed_rejected` / `pipeline_auto_lock` / `whitelist_allow_exempt` | 否（**恒写**，生命周期与安全相关） |
 | `pipeline_auto_start_stage_rejected`（`missing` 取值：`requirement` / `clarify-confirmation` / `plan` / `plan-confirmed` / `commit` / `review-verdict`） | 否 |
 | `pipeline_auto_already_running`（224：running 守卫拒绝启动；固定含 `jobId`/`doc`/`stage`/`mode`，`mode` 为证据分类 `running`/`stalled`） | 否 |
-| `pipeline_auto_start_stage_unexecutable`（224：agent 映射/派发通道缺失或最终派发结果证实无人执行，`reason` 为 `no_agent`/`no_channel`，后置失败附 `outcome`） | 否 |
+| `pipeline_auto_start_stage_unexecutable`（224：agent 映射/派发通道缺失、会话 meta 不可读或最终派发结果证实无人执行。`reason` 取 `no_agent`/`no_channel`/`no_meta`：前两者为起跑前失败，**文档失败**；`no_meta` 为 fail-open，文档保持 `running`、仅写 1 条审计，靠 `/pipeline-resume` 恢复。后置失败另附 `outcome`） | 否 |
 
 ### 19.10 `designReview.mode` / `onFail` / 模板 `confirm.mode` 真值表
 
