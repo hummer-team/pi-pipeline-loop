@@ -75,6 +75,15 @@ export async function advanceConfirmedClarifyOnStartup(
 ): Promise<ClarifyStartupAdvanceOutcome> {
   // ── ⓪ only a clarify stage may be advanced by this seam ──
   if (meta.currentStage !== "clarify") {
+    // 223 review issue 4 (L1): this is a CALLER defect, not a document state —
+    // but the gate order is total ("every refusal is audited"), so a stray call
+    // must not disappear silently.
+    await safeWriteAuditLog("clarify_startup_advance_blocked", {
+      pipelineId: meta.pipelineId,
+      requirementDoc: meta.requirementDoc ?? "",
+      reason: "stage_mismatch",
+      advanced: "false",
+    }, "warn");
     return { advanced: false, reason: "stage_mismatch" };
   }
 

@@ -301,5 +301,12 @@ describe("not advanced — every refusal is honest and side-effect free", () => 
     expect(outcome).toEqual({ advanced: false, reason: "stage_mismatch" });
     expect(sent).toHaveLength(0);
     expect(gateEvents("clarify_startup_advanced")).toHaveLength(0);
+    // 223 review issue 4 (L1): the gate order is TOTAL — even the caller-defect
+    // refusal leaves exactly one blocked row (`advanced:"false"`), so the module
+    // header and the implementation now agree.
+    const blocked = gateEvents("clarify_startup_advance_blocked");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toContain('"reason":"stage_mismatch"');
+    expect(blocked[0]).toContain('"advanced":"false"');
   });
 });
