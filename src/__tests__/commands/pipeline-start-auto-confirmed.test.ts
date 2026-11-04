@@ -23,7 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { readFile } from "node:fs/promises";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
-import { createPipelineStartCommand, resumePipeline } from "../../commands/pipeline-start";
+import { createPipelineStartCommand, dispatchAfterResume, resumePipeline } from "../../commands/pipeline-start";
 import { advanceConfirmedClarifyOnStartup } from "../../core/clarify-startup-advance";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import { startAutoJob } from "../../commands/pipeline-auto";
@@ -64,6 +64,9 @@ const CONFIRMED_DOC = [
   "## 模型确认",
   "是",
 ].join("\n");
+
+/** The same document WITHOUT the confirmation marker → a normal clarify round. */
+const UNCONFIRMED_DOC = ["# 223_Bug", ...MANDATORY, ""].join("\n");
 
 let harness: AutoHarness;
 let sent: Array<{ msg: string; opts?: unknown }>;
@@ -382,5 +385,83 @@ describe("/pipeline-start on a confirmed document — the deferred advance is ho
     expect(pending[0]).toContain('"reason":"autojob_contract_pending"');
     // … and nothing advanced in this host.
     expect(safeEvents("clarify_startup_advanced")).toHaveLength(0);
+  });
+});
+
+/**
+ * 223 review issue 2/3 (M2): the BLOCKED startup outcome (a gate froze the
+ * document) must also report itself honestly instead of falling through to the
+ * clarify-run hint. Drives the real production wiring down to the freeze audit.
+ */
+describe("/pipeline-start on a gate-blocked document — the message names the gate", () => {
+  it("reports clarify dispatch blocked with the gate reason", async () => {
+    // An UNCONFIRMED document whose clarify budget is already exhausted: the
+    // shared decision layer derives `budget-exhausted` (not `confirmed`), which
+    // is the blocked startup branch.
+    writeDoc(UNCONFIRMED_DOC);
+    const state = harness.state();
+    state.docs[0]!.clarifyRounds = harness.job.clarify.maxRounds;
+    await writeJobState(harness.projectRoot, state);
+
+    const { ctx } = makeCommandCtx();
+    const result = (await createPipelineStartCommand(harness.config).execute({ file: DOC }, ctx as never)) as {
+      success: boolean;
+      message?: string;
+    };
+
+    expect(result.success).toBe(true);
+    expect(result.message ?? "").toContain("clarify dispatch blocked (budget-exhausted)");
+    // The gate handler really ran (the freeze decision audit is the proof) and
+    // the defensive "unhandled" fallback stayed unused.
+    expect(
+      safeEvents("pipeline_auto_decision").some((line) => line.includes('"gate":"clarify_freeze"')),
+    ).toBe(true);
+    expect(safeEvents("clarify_startup_blocked_unhandled")).toHaveLength(0);
+  });
+});
+
+/**
+ * 223 review issue 3 (M2): `applyAutoClarifyPlan` branch A — `meta.autoJob`
+ * already stamped — advances IN PLACE and tells the user. This is the shape a
+ * choose_stage / re-dispatch host reaches `dispatchAfterResume` with; the
+ * existing suites only replayed the deferred (branch B) hand-off.
+ */
+describe("dispatchAfterResume with the autoJob contract already stamped (branch A)", () => {
+  it("advances in place, notifies, and follows the sidecar to the next stage", async () => {
+    const state = harness.state();
+    state.docs[0]!.pipelineId = "pipe-223-branch-a";
+    await writeJobState(harness.projectRoot, state);
+
+    const stub = createSessionStub(makeTestMeta({
+      currentStage: "clarify",
+      flowState: "running",
+      requirementDoc: DOC,
+      pipelineId: "pipe-223-branch-a",
+      autoJob: autoJobBlock(),
+    }));
+    const ctx = {
+      session: stub.session,
+      ui: stub.ui,
+      pi: { sendUserMessage: (msg: string, opts?: unknown) => { sent.push({ msg, opts }); } },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+    };
+
+    await dispatchAfterResume(
+      ctx,
+      harness.config,
+      createPipelineUI(harness.config),
+      stub.meta() as SessionMeta,
+      DOC,
+    );
+
+    const expectedTarget = harness.config.stages.clarify?.nextStage as PipelineStage;
+    expect(stub.meta()?.currentStage).toBe(expectedTarget);
+    expect(stub.notified).toContain(
+      `Clarify confirmed; advanced to ${expectedTarget} and dispatched its executor.`,
+    );
+    const advanced = safeEvents("clarify_startup_advanced");
+    expect(advanced).toHaveLength(1);
+    expect(advanced[0]).toContain(`"toStage":"${expectedTarget}"`);
+    expect(harness.state().docs[0]!.lastStage).toBe<PipelineStage>(expectedTarget);
   });
 });
