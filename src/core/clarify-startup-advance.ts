@@ -172,9 +172,15 @@ export async function advanceConfirmedClarifyOnStartup(
       });
 
       // ── ⑥ sidecar truth (single write point) ──
-      // Only THIS job's doc: the next settle rewrites the same value via
-      // `meta.currentStage` (settle-seam), so the write is idempotent.
-      if (active.jobId === passingMeta.autoJob?.jobId) {
+      // Only THIS job's / THIS pipeline's doc: the next settle rewrites the same
+      // value via `meta.currentStage` (settle-seam), so the write is idempotent.
+      // 223 review issue 6 (L2): the resume host clears `meta.autoJob`
+      // (`buildResumeMeta`), so the jobId comparison alone left the sidecar on
+      // the OLD stage until the next settle. The doc's recorded `pipelineId` is
+      // the second ownership proof — a resume keeps the pipelineId.
+      const ownsDoc = active.jobId === passingMeta.autoJob?.jobId
+        || state.docs[index]?.pipelineId === meta.pipelineId;
+      if (ownsDoc) {
         noteDocStage(state, index, toStage, now);
         await writeJobState(config.projectRoot, state);
       }

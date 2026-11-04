@@ -310,3 +310,24 @@ describe("not advanced — every refusal is honest and side-effect free", () => 
     expect(blocked[0]).toContain('"advanced":"false"');
   });
 });
+
+/**
+ * 223 review issue 6 (L2): the sidecar truth must follow the advance on the
+ * RESUME host too, where `buildResumeMeta` has already cleared `meta.autoJob`.
+ * Ownership is then proven by the doc's recorded `pipelineId`.
+ */
+describe("sidecar truth on a host without the autoJob contract", () => {
+  it("writes lastStage when the sidecar doc belongs to the same pipelineId", async () => {
+    const state = harness.state();
+    state.docs[0]!.pipelineId = "pipe-223-sidecar";
+    await writeJobState(harness.projectRoot, state);
+
+    const meta = makeMeta({ pipelineId: "pipe-223-sidecar", autoJob: undefined });
+    const { ctx } = makeCtx(meta);
+
+    const outcome = await advanceConfirmedClarifyOnStartup(ctx, harness.config, meta, createPipelineUI(harness.config));
+
+    expect(outcome).toEqual({ advanced: true, toStage: "plan" });
+    expect(harness.state().docs[0]!.lastStage).toBe<PipelineStage>("plan");
+  });
+});
