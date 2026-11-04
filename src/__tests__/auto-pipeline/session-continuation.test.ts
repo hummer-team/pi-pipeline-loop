@@ -103,6 +103,33 @@ function writeLock(pid: number, jobId = HARNESS_JOB_ID): void {
   fs.writeFileSync(lockPath, JSON.stringify({ token: "t", jobId, pid, startedAt: 1 }, null, 2), "utf8");
 }
 
+/**
+ * Deterministic lock-holder liveness.
+ *
+ * The production hint distinguishes a LIVE foreign holder ("held by pid N")
+ * from a DEAD one ("belongs to a dead process") through `kill(pid, 0)`. A
+ * fabricated pid (`process.pid + 1`) is therefore only "live" when the OS
+ * happens to have allocated it — and the full-suite runner continuously
+ * spawns and reaps workers, so the same pid can be dead on the next run.
+ * Stub the probe for the fabricated pid only and delegate every other pid to
+ * the real `process.kill`, so the case no longer depends on the OS process
+ * table at all.
+ */
+function stubLockHolderLiveness(pid: number, alive: boolean): () => void {
+  const realKill = process.kill.bind(process);
+  const spy = spyOn(process, "kill").mockImplementation(((
+    target: number,
+    signal?: number | NodeJS.Signals,
+  ) => {
+    if (target !== pid) return realKill(target, signal as never);
+    if (alive) return true;
+    const err = new Error(`kill ESRCH (pid ${pid})`) as NodeJS.ErrnoException;
+    err.code = "ESRCH";
+    throw err;
+  }) as typeof process.kill);
+  return () => spy.mockRestore();
+}
+
 describe("session_start continuation", () => {
   it("starts the pending doc once and clears the pending record", async () => {
     await installPending();
@@ -135,35 +162,58 @@ describe("session_start continuation", () => {
   it("does not start when the lock belongs to another process, and explains why", async () => {
     await installPending();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    writeLock(process.pid + 1);
+    const foreignPid = process.pid + 1;
+    writeLock(foreignPid);
+    const restoreLiveness = stubLockHolderLiveness(foreignPid, true);
     const { ctx } = sessionCtx();
 
-    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
-    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
-    expect(notified.some((message) => message.includes("held by pid"))).toBe(true);
-    expect(audits.some((line) => line.includes("pending_lock_foreign"))).toBe(true);
+    try {
+      expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+      expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+      expect(notified.some((message) => message.includes("held by pid"))).toBe(true);
+      expect(
+        audits.some((line) => line.includes("pending_lock_foreign") && line.includes('"holder":"alive"')),
+      ).toBe(true);
+    } finally {
+      restoreLiveness();
+    }
   });
 
   it("does not reclaim a DEAD holder's lock (manual /pipeline-auto --next does)", async () => {
     await installPending();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    writeLock(4_194_303);
+    const deadPid = 4_194_303;
+    writeLock(deadPid);
+    const restoreLiveness = stubLockHolderLiveness(deadPid, false);
     const { ctx } = sessionCtx();
 
-    expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
-    expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
-    expect(notified.some((message) => message.includes("/pipeline-auto --next"))).toBe(true);
+    try {
+      expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(false);
+      expect(readJobState(harness.root, HARNESS_JOB_ID)!.docs[1]?.status).toBe("pending");
+      expect(notified.some((message) => message.includes("/pipeline-auto --next"))).toBe(true);
+      expect(
+        audits.some((line) => line.includes("pending_lock_foreign") && line.includes('"holder":"stale"')),
+      ).toBe(true);
+    } finally {
+      restoreLiveness();
+    }
   });
 
   it("throttles the foreign-lock hint to one notice per job", async () => {
     await installPending();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    writeLock(process.pid + 1);
+    const foreignPid = process.pid + 1;
+    writeLock(foreignPid);
+    const restoreLiveness = stubLockHolderLiveness(foreignPid, true);
     const { ctx } = sessionCtx();
 
-    await resumePendingContinuationOnSessionStart(ctx as never, harness.config);
-    await resumePendingContinuationOnSessionStart(ctx as never, harness.config);
-    expect(notified.filter((message) => message.includes("held by pid"))).toHaveLength(1);
+    try {
+      await resumePendingContinuationOnSessionStart(ctx as never, harness.config);
+      await resumePendingContinuationOnSessionStart(ctx as never, harness.config);
+      expect(notified.filter((message) => message.includes("held by pid"))).toHaveLength(1);
+    } finally {
+      restoreLiveness();
+    }
   });
 
   it("hints (and does not start) when the lock file is missing or corrupt", async () => {
