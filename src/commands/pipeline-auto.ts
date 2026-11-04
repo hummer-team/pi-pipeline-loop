@@ -4,7 +4,7 @@
  * automatic pipelines.
  *
  * Frozen decisions (219_Feat.md 6.5 #1/#2/#11/#13):
- * - No user-supplied path is ever accepted: the menu scans `docs/jobs/*_loop.yaml`
+ * - No user-supplied path is ever accepted: the menu scans `docs/jobs/*_loop.(yaml|yml)`
  *   and `--job` takes a jobId only (a separator is rejected).
  * - 221 Phase 4: the chained continuation is ONE minimal `/pipeline-auto --next`
  *   (no `--job`, no `--token`); the job id + lock token live in `lock.json` only.
@@ -40,6 +40,7 @@ import {
   readJobState,
   resolveJobStatePath,
   resolveTrackedJobFile,
+  stripJobFileExtension,
   writeJobState,
   type AutoJobState,
 } from "../core/auto-pipeline/job-state";
@@ -128,19 +129,6 @@ export function createPipelineAutoCommand(config: PipelineConfig): Command {
     execute: async (args: Record<string, unknown>, ctx?: unknown): Promise<unknown> =>
       runPipelineAuto(config, args as PipelineAutoArgs, ctx as AutoPipelineCommandCtx),
   };
-}
-
-/**
- * 223 Phase 3: `--job` tolerates a trailing job-file extension.
- *
- * `--job foo_loop`, `--job foo_loop.yaml` and `--job foo_loop.yml` all name the
- * same job: the extension is stripped before validation and the stem stays the
- * jobId (which also owns the sidecar directory). Stripping happens FIRST so a
- * path-like argument (`docs/foo_loop.yaml`) is still rejected by
- * `isValidJobId` instead of slipping through as a valid stem.
- */
-export function stripJobFileExtension(raw: string): string {
-  return raw.replace(/\.(yaml|yml)$/, "");
 }
 
 /**

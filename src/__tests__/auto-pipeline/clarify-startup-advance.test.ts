@@ -117,6 +117,22 @@ function makeCtx(meta: SessionMeta) {
   };
 }
 
+/**
+ * The harness DELETES every stage's `verify` block. The advance only prechecks
+ * completion markers when the clarify stage DECLARES them (settle-side parity:
+ * "not configured / empty array" means "do not precheck"), so a case that needs
+ * the marker gate must supply it explicitly.
+ */
+function withMarkers(markers: string[]): PipelineConfig {
+  return {
+    ...harness.config,
+    stages: {
+      ...harness.config.stages,
+      clarify: { ...harness.config.stages.clarify!, verify: { require: true, completionMarker: markers } },
+    },
+  } as PipelineConfig;
+}
+
 /** Seed the per-doc clarify counters the way an exhausted round would leave them. */
 async function seedExhaustedCounters(): Promise<void> {
   const state = harness.state();
@@ -206,10 +222,11 @@ describe("confirmed document — advance inside the start round", () => {
 describe("not advanced — every refusal is honest and side-effect free", () => {
   it("marker missing: reason marker_missing, zero spawn, zero freeze", async () => {
     writeDoc(UNCONFIRMED_DOC);
+    const config = withMarkers(["## 模型确认"]);
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    const outcome = await advanceConfirmedClarifyOnStartup(ctx, harness.config, meta, createPipelineUI(harness.config));
+    const outcome = await advanceConfirmedClarifyOnStartup(ctx, config, meta, createPipelineUI(config));
 
     expect(outcome).toEqual({ advanced: false, reason: "marker_missing" });
     expect(ctx.session.getMeta()?.currentStage).toBe<PipelineStage>("clarify");
@@ -246,14 +263,43 @@ describe("not advanced — every refusal is honest and side-effect free", () => 
   });
 
   it("requirementDoc unbound: same marker_missing refusal (no crash, no spawn)", async () => {
+    const config = withMarkers(["## 模型确认"]);
     const meta = makeMeta({ requirementDoc: undefined });
     const { ctx } = makeCtx(meta);
 
-    const outcome = await advanceConfirmedClarifyOnStartup(ctx, harness.config, meta, createPipelineUI(harness.config));
+    const outcome = await advanceConfirmedClarifyOnStartup(ctx, config, meta, createPipelineUI(config));
 
     expect(outcome).toEqual({ advanced: false, reason: "marker_missing" });
     expect(sent).toHaveLength(0);
     expect(gateEvents("clarify_startup_advance_blocked")).toHaveLength(1);
+    expect(gateEvents("clarify_startup_advanced")).toHaveLength(0);
+  });
+
+  // 223 review issue 6 (M5): "no completionMarker configured" is NOT "no marker
+  // on disk" — the settle side treats it as "do not precheck", and the startup
+  // seam must agree or a project with a custom/absent marker could never escape
+  // clarify again.
+  it("no completionMarker configured: the gate is skipped (settle-side parity)", async () => {
+    writeDoc(UNCONFIRMED_DOC);
+    const meta = makeMeta();
+    const { ctx } = makeCtx(meta);
+
+    const outcome = await advanceConfirmedClarifyOnStartup(ctx, harness.config, meta, createPipelineUI(harness.config));
+
+    expect(outcome).toEqual({ advanced: true, toStage: "plan" });
+    expect(gateEvents("clarify_startup_advance_blocked")).toHaveLength(0);
+  });
+
+  // 223 review issue 17 (L8): the module is only meaningful in clarify. A stray
+  // call from another stage must refuse for a REASON instead of advancing.
+  it("currentStage is not clarify: reason stage_mismatch", async () => {
+    const meta = makeMeta({ currentStage: "develop" });
+    const { ctx } = makeCtx(meta);
+
+    const outcome = await advanceConfirmedClarifyOnStartup(ctx, harness.config, meta, createPipelineUI(harness.config));
+
+    expect(outcome).toEqual({ advanced: false, reason: "stage_mismatch" });
+    expect(sent).toHaveLength(0);
     expect(gateEvents("clarify_startup_advanced")).toHaveLength(0);
   });
 });

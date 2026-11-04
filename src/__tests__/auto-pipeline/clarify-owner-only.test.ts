@@ -1,5 +1,6 @@
 /**
- * 223 Phase 4 (223_Bug.md「附带发现」): the clarify auto round is OWNER-ONLY.
+ * 223 Phase 4 (223_Bug.md, "incidental finding"): the clarify auto round is
+ * OWNER-ONLY.
  *
  * Background: `runAutoClarifyRound` used to rely on the round id never matching
  * a child session name (`/^\d+$/` vs `^[a-z0-9-]+#[0-9a-f]{8}$`) — an accident,

@@ -231,6 +231,22 @@ export function findJobFileCandidates(projectRoot: string, jobsDir: string, jobI
 }
 
 /**
+ * Matches a supported job-file extension at the end of a file name.
+ */
+export const JOB_FILE_EXTENSION_RE = /\.(yaml|yml)$/;
+
+/**
+ * 223 Phase 3: strip a trailing `.yaml`/`.yml` from a job file name or a
+ * `--job` argument. Case-sensitive by design (`.YAML` is not supported), so
+ * `alpha_loop.yml` and `alpha_loop` resolve to the SAME jobId, while a
+ * path-like argument keeps its separator and is still rejected by
+ * `isValidJobId`.
+ */
+export function stripJobFileExtension(raw: string): string {
+  return raw.replace(JOB_FILE_EXTENSION_RE, "");
+}
+
+/**
  * jobId must be a safe on-disk segment (single path component, traversal-free).
  * Rejects empty strings, path separators, ".." and control characters.
  */

@@ -104,7 +104,7 @@ describe("223 Phase 0: owner wake summary gating (auto vs human)", () => {
 
     expect(text.startsWith(AUTO_WAKE_PREFIX)).toBe(true);
 
-    // Bound the "文案 ↔ 签名" contract: the delivered text MUST match the
+    // Bound the "wording <-> signature" contract: the delivered text MUST match the
     // same signature list the settle gate consults.
     const matched = PIPELINE_TURN_SIGNATURES.some((sig) =>
       typeof sig === "string" ? text.startsWith(sig) : sig.test(text),

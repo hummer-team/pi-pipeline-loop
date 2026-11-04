@@ -1227,14 +1227,19 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 
 **现象**：需求文档末尾已写入 `## 模型确认`（full-und? 已确认），但 `/pipeline-start` / `/pipeline-auto` 重启后仍停在 clarify。
 
-**机制**：clarify 的「已确认」是一个**文档态**判定，不是一次性事件。启动回合会把「模型确认已落盘」识别为可推进条件：`/pipeline-start` 直接推进 clarify；`/pipeline-auto` 在自动任务契约（`meta.autoJob` + 活跃 job 锁）成立后，于**同一个命令回合内**推进，不再等待一次多余的 settle。审计记录 `clarify_startup_advanced`（含 `toStage`）。
+**机制**：clarify 的「已确认」是一个**文档态**判定，不是一次性事件。启动回合按宿主分流：
 
-**边界**：该推进仅限自动推进链路（`/pipeline-start` 的自动拉起与 `/pipeline-auto`）；人机协同模式下由人决定何时推进，行为不变。若推进未发生，先确认文档中 `## 模型确认` 是独立一节的原始文本（不是引用块/代码块内），且未被裁掉。
+- `/pipeline-auto`（自动任务）：启动先把 `meta.autoJob` 契约落盘，随后在**同一个命令回合内**调用推进，不再等待一次多余的 settle。审计记录 `clarify_startup_advanced`（含 `toStage`）；推迟期间会先留一条 `clarify_startup_advance_pending`。
+- `/pipeline-resume`（自动任务续跑）：恢复期不携带 `meta.autoJob`，续跑分支自己在 clarify 停靠点完成同一次推进。
+- 人机协同的 `/pipeline-start`：**不推进**。它只是不派发 clarify 执行器并提示「已确认」，何时推进由人决定（与人机协同模式既有的冻结/决策语义一致）。
+
+**边界**：自动推进仅发生在存在活跃 auto 任务锁时；人机协同模式行为逐字节不变。若推进未发生，先确认文档中 `## 模型确认` 是独立一节的原始文本（不是引用块/代码块内），且未被裁掉。
 
 **解决**：
 
-- 保持文档中的 `## 模型确认` 节存在，重新执行 `/pipeline-start <doc>` 或 `/pipeline-auto --next`
-- 查审计 `.pi/audit/{pipelineId}/log/`：出现 `clarify_startup_advanced` 说明推进已生效；出现 `clarify_startup_advance_blocked` 则按记录中的 reason 处理
+- 自动任务：保持文档中的 `## 模型确认` 节存在，重新执行 `/pipeline-auto --job <jobId>` 或 `/pipeline-auto --next`
+- 人机协同：用 `stage_advance` 工具推进（与其它阶段一致），不要指望重跑 `/pipeline-start`
+- 查审计 `.pi/audit/{pipelineId}/log/`：出现 `clarify_startup_advanced` 说明推进已生效；出现 `clarify_startup_advance_blocked` 则按记录中的 reason 处理（`marker_missing` / `no_next_stage` / bound-exit 拒绝）
 
 ### 8.7 clarify 卡死的脱困命令与 auto 唤醒标记（223）
 

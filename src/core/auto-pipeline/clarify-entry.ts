@@ -54,7 +54,8 @@ export async function runAutoClarifyRound(
   if (meta.currentStage !== "clarify") return false;
   // Owner-only contract: a CHILD session never dispatches clarify rounds. The
   // same guard already exists in clarify-marker-miss.ts — this one removes the
-  // "relies on `\d+$` not matching" accident (223_Bug.md「附带发现」).
+  // "the round id happens to never match a child name" accident (223_Bug.md,
+  // "incidental finding").
   if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return false;
   const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active || active.state.status !== "running") return false;

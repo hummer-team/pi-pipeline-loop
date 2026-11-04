@@ -45,7 +45,7 @@ import {
  *
  * 223 Phase 1: a discriminated union. The startup seam no longer hard-codes
  * `fresh(1)` — it reuses the SAME shared decision layer
- * (`buildClarifyDocState` / `decideClaifyDispatch` → `decideClarifyDispatch`)
+ * (`buildClarifyDocState` / `decideClarifyDispatch`)
  * the settle side uses, so re-starting the pipeline derives the round from the
  * document state and respects `clarify.maxRounds`.
  */
@@ -155,7 +155,7 @@ export async function buildClarifyAutoPlan(
   if (!target?.doc) {
     // Not this job's document → fall back to the HUMAN derivation (null) and
     // leave an explicit diagnostic so the unmatched startup is observable.
-    await auditAutoDiagnostic("clarify_startup_doc_unmatched", "Startup clarify derivation skipped: the document is not part of the active auto job.", {
+    auditAutoDiagnostic("clarify_startup_doc_unmatched", "Startup clarify derivation skipped: the document is not part of the active auto job.", {
       jobId: active.state.jobId,
       requirementDoc: doc,
     }, "warn");

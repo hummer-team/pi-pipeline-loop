@@ -26,6 +26,8 @@ import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
 import { createPipelineStartCommand } from "../../commands/pipeline-start";
 import { advanceConfirmedClarifyOnStartup } from "../../core/clarify-startup-advance";
 import { createPipelineUI } from "../../core/pipeline-ui";
+import { startAutoJob } from "../../commands/pipeline-auto";
+import { writeJobState } from "../../core/auto-pipeline/job-state";
 import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
 import { initAuditLog, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import {
@@ -233,5 +235,39 @@ describe("/pipeline-start on a confirmed document — deferred advance", () => {
     // The startup-stage audit is unchanged by the advance.
     const log = await readPipelineAudit(result.pipelineId);
     expect(log).toMatch(/pipeline_start \| pipelineId=.* \| .*startStage=clarify/);
+  });
+});
+
+// 223 review issue 7 (M6): the PRODUCTION consumer of `clarifyAdvancePending`
+// is the auto runner (`startPendingDoc`), not a hand-written replay. This case
+// drives the real `startAutoJob` so the wiring, the message truth and the
+// sidecar/stage bookkeeping are all pinned together.
+describe("the auto runner consumes the pending advance itself", () => {
+  it("startAutoJob advances the confirmed document and reports it in the message", async () => {
+    // Hand the document back to the runner: the harness pre-installs a RUNNING
+    // sidecar, which would look like a continuation rather than a first start.
+    const state = harness.state();
+    state.docs[0]!.status = "pending";
+    await writeJobState(harness.projectRoot, state);
+    __resetAutoJobLockForTests();
+
+    const { ctx } = makeCommandCtx();
+    const result = await startAutoJob({ config: harness.config, ctx: ctx as never, jobId: HARNESS_JOB_ID });
+
+    expect(result.success).toBe(true);
+    const expectedTarget = harness.config.stages.clarify?.nextStage as PipelineStage;
+    // Truth ①: the message states the advance it really performed.
+    expect(result.message ?? "").toContain(`clarify confirmed → advanced to ${expectedTarget}`);
+    // Truth ②: the advance audit names exactly that stage, once.
+    const advanced = safeEvents("clarify_startup_advanced");
+    expect(advanced).toHaveLength(1);
+    expect(advanced[0]).toContain(`"toStage":"${expectedTarget}"`);
+    // Truth ③: no CLARIFY executor was dispatched for an already-confirmed doc
+    // — the only handoff is the NEXT stage's executor.
+    expect(safeEvents("stage_spawn_fallback").some((line) => line.includes('"stage":"clarify"'))).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg.startsWith("[plugin auto-handoff]")).toBe(true);
+    // Truth ④: the sidecar follows the stage it is really on.
+    expect(harness.state().docs[0]!.lastStage).toBe<PipelineStage>(expectedTarget);
   });
 });

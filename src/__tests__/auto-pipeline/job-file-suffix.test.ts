@@ -18,8 +18,8 @@ import { tmpdir } from "node:os";
 import {
   findJobFileCandidates,
   resolveTrackedJobFile,
+  stripJobFileExtension,
 } from "../../core/auto-pipeline/job-state";
-import { stripJobFileExtension } from "../../commands/pipeline-auto";
 import { scanJobFiles } from "../../commands/pipeline-auto-menu";
 
 const JOB_ID = "alpha_loop";

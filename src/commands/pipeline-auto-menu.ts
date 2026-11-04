@@ -28,6 +28,7 @@ import {
   isValidJobId,
   readJobState,
   resolveJobStatePath,
+  stripJobFileExtension,
   type AutoJobState,
 } from "../core/auto-pipeline/job-state";
 import { auditAutoDiagnostic } from "../core/auto-pipeline/diagnostics";
@@ -84,11 +85,11 @@ export function scanJobFiles(projectRoot: string, jobsDir: string = DEFAULT_JOBS
   }
 
   const ignored = jobNames.filter((name) => {
-    const stem = name.replace(/\.(yaml|yml)$/, "");
+    const stem = stripJobFileExtension(name);
     return !stem.endsWith(LOOP_JOB_STEM_SUFFIX);
   }).sort();
   const names = jobNames.filter((name) => {
-    const stem = name.replace(/\.(yaml|yml)$/, "");
+    const stem = stripJobFileExtension(name);
     return stem.endsWith(LOOP_JOB_STEM_SUFFIX);
   });
 
@@ -96,7 +97,7 @@ export function scanJobFiles(projectRoot: string, jobsDir: string = DEFAULT_JOBS
   const preferred = new Map<string, string>();
   const ambiguous = new Set<string>();
   for (const fileName of names) {
-    const stem = fileName.replace(/\.(yaml|yml)$/, "");
+    const stem = stripJobFileExtension(fileName);
     const existing = preferred.get(stem);
     if (!existing) {
       preferred.set(stem, fileName);
@@ -112,7 +113,7 @@ export function scanJobFiles(projectRoot: string, jobsDir: string = DEFAULT_JOBS
     const jobPath = pathMod.join(dir, fileName);
     // jobId = FULL stem, so `foo_loop.yaml` → `foo_loop` and the sidecar lives
     // at `.pi/auto_pipeline/foo_loop/state.json`.
-    const jobId = fileName.replace(/\.(yaml|yml)$/, "");
+    const jobId = stripJobFileExtension(fileName);
     if (!isValidJobId(jobId)) {
       auditAutoDiagnostic("job_file_name_unsafe", `Auto-job file name is not a safe job id — skipped: ${fileName}`);
       continue;

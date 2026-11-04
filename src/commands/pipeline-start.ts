@@ -636,7 +636,26 @@ export async function dispatchAfterResume(
   armStageWatchdog(ctx, config, { progressSource: "spawn" });
 
   if (stage === "clarify") {
-    await maybeAutoLaunchClarify(ctx, config, ui, meta, doc, forwardArgs);
+    const resumed = await maybeAutoLaunchClarify(ctx, config, ui, meta, doc, forwardArgs);
+    // 223 review issue 2 (M1): `/pipeline-resume` clears `autoJob` (like every
+    // new period), so a confirmed document resolves to `confirmAdvancePending`
+    // instead of an in-place advance. The auto runner's first start is consumed
+    // by `startPendingDoc`; resume has no such consumer, so it advances HERE —
+    // the module is idempotent and only reached while an auto job is active.
+    if (resumed?.confirmAdvancePending === true) {
+      await advanceConfirmedClarifyOnStartup(
+        {
+          session: ctx.session,
+          ...(ctx.pi !== undefined ? { pi: ctx.pi } : {}),
+          ...(ctx._ctx !== undefined ? { _ctx: ctx._ctx } : {}),
+          ...(ctx.hasUI !== undefined ? { hasUI: ctx.hasUI } : {}),
+          ui: typeof ctx.ui?.notify === "function" ? { notify: (msg: string) => ctx.ui.notify(msg) } : undefined,
+        },
+        config,
+        meta,
+        ui,
+      );
+    }
     return;
   }
 
@@ -1235,6 +1254,107 @@ export async function startNewPipeline(
  * @param file - The requirement doc file path
  * @param forwardArgs - User-supplied forward args (overrides derivation when non-empty)
  */
+/**
+ * 223 review issue 4 (M3): route a non-dispatch auto clarify plan to its single
+ * outcome — `blocked` through the settle-side gate handlers, `confirmed` through
+ * the startup advance. Extracted from `maybeAutoLaunchClarify` so that
+ * dispatcher stays a flat three-branch decision instead of a 275-line nest, and
+ * every route consumes the job context it was handed (one read per startup).
+ */
+async function applyAutoClarifyPlan(
+  ctx: any,
+  config: PipelineConfig,
+  ui: ReturnType<typeof createPipelineUI>,
+  meta: SessionMeta,
+  file: string,
+  activeJob: ReturnType<typeof readActiveJobContext>,
+  plan: ClarifyAutoPlan,
+): Promise<{
+  /** 223 Phase 2 (branch A): the confirmed clarify advanced to this stage in-round. */
+  advancedTo?: PipelineStage;
+  /** 223 Phase 2 (branch B): `startPendingDoc` must advance after autoJob is stamped. */
+  confirmAdvancePending?: boolean;
+  /** 223 review issue 5: the gate that froze or forced a finalisation round. */
+  blockedReason?: string;
+}> {
+  if (plan.kind === "blocked") {
+    // 223 Phase 1: a gate fired (budget/stall/unclear) — route through the
+    // SAME handlers the settle side uses; never spawn the derived round.
+    if (activeJob && activeJob.state.status === "running") {
+      const targetIndex = activeJob.state.docs.findIndex((d) => d.doc === file);
+      if (targetIndex >= 0) {
+        const docState = await buildClarifyDocState({
+          config, state: activeJob.state, job: activeJob.job, doc: file,
+          docIndex: targetIndex, now: Date.now(),
+        });
+        if (docState) {
+          const handled = await runBlockedClarifyStartup(
+            ctx, config, meta, activeJob.state, activeJob.job, docState,
+            targetIndex, DEFAULT_CLARIFY_DEPS,
+          );
+          if (!handled) {
+            await safeWriteAuditLog("clarify_startup_blocked_unhandled", {
+              requirementDoc: file,
+              pipelineId: meta.pipelineId,
+              stage: "clarify",
+              reason: plan.action,
+            }, "warn");
+          }
+        }
+      }
+    }
+    return { blockedReason: plan.action };
+  }
+
+  if (plan.kind === "confirmed") {
+    // 223 Phase 2: the document already carries `## 模型确认` — no clarify
+    // executor is spawned. The advance happens in the SAME start round:
+    // - meta.autoJob present (resume/re-dispatch) → advance in place;
+    // - meta.autoJob absent (auto runner first start) → defer: the autoJob
+    //   contract is written only AFTER `startNewPipeline` returns, so an
+    //   advance here would leak it. `startPendingDoc` calls
+    //   `advanceConfirmedClarifyOnStartup` after stamping autoJob.
+    if (meta.autoJob !== undefined) {
+      const advanceOutcome = await advanceConfirmedClarifyOnStartup(
+        {
+          session: ctx.session,
+          ...(ctx.pi !== undefined ? { pi: ctx.pi } : {}),
+          ...(ctx._ctx !== undefined ? { _ctx: ctx._ctx } : {}),
+          ...(ctx.hasUI !== undefined ? { hasUI: ctx.hasUI } : {}),
+          ui: typeof ctx.ui?.notify === "function" ? { notify: (msg: string) => ctx.ui.notify(msg) } : undefined,
+        },
+        config,
+        meta,
+        ui,
+      );
+      if (advanceOutcome.advanced && advanceOutcome.toStage) {
+        ui.notify(ctx, `Clarify confirmed; advanced to ${advanceOutcome.toStage} and dispatched its executor.`);
+        return { advancedTo: advanceOutcome.toStage };
+      }
+      // The audit row is written by `advanceConfirmedClarifyOnStartup` itself
+      // (`clarify_startup_advance_blocked`, exactly one per refusal) — the
+      // caller only surfaces the outcome to the user.
+      ui.notify(ctx, `Clarify startup advance skipped (${advanceOutcome.reason ?? "not_advanced"}).`);
+      // Advance refused (marker precheck failed / bound exit) → hand the
+      // document back to the existing settle semantics; never a retry spawn.
+      return {};
+    }
+    // 223 review issue 2 (M1): the deferred advance is observable. The auto
+    // runner consumes the flag in `startPendingDoc`; a host without that
+    // consumer still leaves this row, so "confirmed but nobody advanced"
+    // can never be silent again.
+    await safeWriteAuditLog("clarify_startup_advance_pending", {
+      requirementDoc: file,
+      pipelineId: meta.pipelineId,
+      stage: "clarify",
+      reason: "autojob_contract_pending",
+    });
+    return { confirmAdvancePending: true };
+  }
+
+  return {};
+}
+
 async function maybeAutoLaunchClarify(
   ctx: any,
   config: PipelineConfig,
@@ -1268,86 +1388,26 @@ async function maybeAutoLaunchClarify(
   // being started is passed in so the derivation reads the right sidecar entry.
   const autoClarify: ClarifyAutoPlan | null =
     !forwardArgs || !forwardArgs.trim() ? await buildClarifyAutoPlan(config, file) : null;
+  // 223 review issue 10 (L2): ONE job read per startup. Both the dispatch
+  // attribution below and the blocked route need the same active context.
+  const activeJob = autoClarify ? readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir) : null;
   // 223 Phase 1: the instruction only exists on a real dispatch plan.
   const autoInstruction = autoClarify?.kind === "dispatch" ? autoClarify.instruction : undefined;
   // 223 Phase 1: the sidecar index of the doc being started, used to attribute
   // the startup-round accounting (docIndex lags one doc behind during startup).
   const autoDocIndex =
     autoClarify && autoInstruction !== undefined
-      ? readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir)?.state.docs.findIndex((d) => d.doc === file)
+      ? activeJob?.state.docs.findIndex((d) => d.doc === file)
       : undefined;
 
   if (autoClarify) {
-    if (autoClarify.kind === "blocked") {
-      // 223 Phase 1: a gate fired (budget/stall/unclear) — route through the
-      // SAME handlers the settle side uses; never spawn the derived round.
-      const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
-      if (active && active.state.status === "running") {
-        const targetIndex = active.state.docs.findIndex((d) => d.doc === file);
-        if (targetIndex >= 0) {
-          const docState = await buildClarifyDocState({
-            config, state: active.state, job: active.job, doc: file,
-            docIndex: targetIndex, now: Date.now(),
-          });
-          if (docState) {
-            const handled = await runBlockedClarifyStartup(
-              ctx, config, meta, active.state, active.job, docState,
-              targetIndex, DEFAULT_CLARIFY_DEPS,
-            );
-            if (!handled) {
-              await safeWriteAuditLog("clarify_startup_blocked_unhandled", {
-                requirementDoc: file,
-                pipelineId: meta.pipelineId,
-                stage: "clarify",
-                reason: autoClarify.action,
-              }, "warn");
-            }
-          }
-        }
-      }
-      return { blockedReason: autoClarify.action };
-    }
-    if (autoClarify.kind === "confirmed") {
-      // 223 Phase 2: the document already carries `## 模型确认` — no clarify
-      // executor is spawned. The advance happens in the SAME start round:
-      // - meta.autoJob present (resume/re-dispatch) → advance in place;
-      // - meta.autoJob absent (auto runner first start) → defer: the autoJob
-      //   contract is written only AFTER `startNewPipeline` returns, so an
-      //   advance here would leak it. `startPendingDoc` calls
-      //   `advanceConfirmedClarifyOnStartup` after stamping autoJob.
-      if (meta.autoJob !== undefined) {
-        const advanceOutcome = await advanceConfirmedClarifyOnStartup(
-          {
-            session: ctx.session,
-            ...(ctx.pi !== undefined ? { pi: ctx.pi } : {}),
-            ...(ctx._ctx !== undefined ? { _ctx: ctx._ctx } : {}),
-            ...(ctx.hasUI !== undefined ? { hasUI: ctx.hasUI } : {}),
-            ui: typeof ctx.ui?.notify === "function" ? { notify: (msg: string) => ctx.ui.notify(msg) } : undefined,
-          },
-          config,
-          meta,
-          ui,
-        );
-        if (advanceOutcome.advanced && advanceOutcome.toStage) {
-          ui.notify(ctx, `Clarify confirmed; advanced to ${advanceOutcome.toStage} and dispatched its executor.`);
-          return { advancedTo: advanceOutcome.toStage };
-        }
-        await safeWriteAuditLog("clarify_startup_advance_blocked", {
-          requirementDoc: file,
-          pipelineId: meta.pipelineId,
-          stage: "clarify",
-          reason: advanceOutcome.reason ?? "not_advanced",
-          advanced: "false",
-        }, "warn");
-        ui.notify(ctx, `Clarify startup advance skipped (${advanceOutcome.reason ?? "not_advanced"}).`);
-        // Advance refused (marker precheck failed / bound exit) → hand the
-        // document back to the existing settle semantics; never a retry spawn.
-        return {};
-      }
-      return { confirmAdvancePending: true };
-    } else {
+    // 223 review issue 4 (M3): the three plans are routed by ONE helper so the
+    // dispatcher below stays flat; a dispatch plan only contributes args.
+    if (autoClarify.kind === "dispatch") {
       effectiveArgs = autoClarify.args;
       argsSource = "derived";
+    } else {
+      return applyAutoClarifyPlan(ctx, config, ui, meta, file, activeJob, autoClarify);
     }
   } else if (forwardArgs && forwardArgs.trim()) {
     // Explicit user args → transparent passthrough (Q3-A)

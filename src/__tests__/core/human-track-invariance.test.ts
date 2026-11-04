@@ -201,9 +201,12 @@ describe("T2 — the human track is unchanged", () => {
     expect(after.activeSpawns ?? {}).toEqual({});
   });
 
-  it("human wake text from a session carrying a stale autoJob block: still the human trace", async () => {
+  it("stale autoJob block without an active lock: the seam stays inert", async () => {
     // A human session in another terminal may still carry the meta block; with
-    // no ACTIVE job the seam must not fire (220 INV-1).
+    // no ACTIVE job the seam must not fire (220 INV-1). Note the text here is
+    // the PREFIX-FREE literal: what this case pins is the LOCK gate, not the
+    // marker gate — a production stale block would additionally carry the
+    // `[plugin auto-settle] ` prefix (223_Bug.md §2, convergence 1).
     const baseline = await settleWith(pipelineConfig(), HUMAN_WAKE, {});
     const baselineStage = baseline.currentStage;
     const baselineLog = await lastAudits();

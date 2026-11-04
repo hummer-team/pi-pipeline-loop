@@ -21,10 +21,13 @@
  * - Human track: the module is reached ONLY from the auto-plan `confirmed`
  *   branch of `maybeAutoLaunchClarify`; a session without an active auto job
  *   never gets a confirmed plan (the derivation returns null → human path).
+ * - Gate order is total and cheap-first: `stage_mismatch` → `marker_missing` →
+ *   `no_next_stage` → the shared `autoAdvanceAfterVerify` pass. Every refusal
+ *   returns `{ advanced: false, reason }` AND writes exactly one
+ *   `clarify_startup_advance_blocked` row, so a stalled startup is observable.
  */
 
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
-import { DEFAULT_COMPLETION_MARKERS } from "../constants";
 import { normalizeMarkers } from "./auto-pipeline/clarify-anchors";
 import { precheckCompletionMarker } from "./auto-verifier";
 import { autoAdvanceAfterVerify } from "./verify-advance";
@@ -70,15 +73,26 @@ export async function advanceConfirmedClarifyOnStartup(
   meta: SessionMeta,
   pipelineUI: Parameters<typeof autoAdvanceAfterVerify>[6],
 ): Promise<ClarifyStartupAdvanceOutcome> {
+  // ── ⓪ only a clarify stage may be advanced by this seam ──
+  if (meta.currentStage !== "clarify") {
+    return { advanced: false, reason: "stage_mismatch" };
+  }
+
   // ── ① marker double gate: configured aliases + on-disk precheck ──
-  const markers = normalizeMarkers(
-    config.stages.clarify?.verify?.completionMarker ?? DEFAULT_COMPLETION_MARKERS,
-  );
-  if (!await precheckCompletionMarker(meta, markers, config.projectRoot)) {
+  // The settle side treats an ABSENT/EMPTY `completionMarker` as "no marker
+  // gate" (the verify contract owns the decision). Mirroring that here keeps
+  // one semantics: falling back to `DEFAULT_COMPLETION_MARKERS` would invent a
+  // gate the project never configured and re-create the "confirmed but stuck"
+  // stall this phase fixes.
+  const markers = normalizeMarkers(config.stages.clarify?.verify?.completionMarker);
+  const markerGate = markers.length === 0
+    || await precheckCompletionMarker(meta, markers, config.projectRoot);
+  if (!markerGate) {
     await safeWriteAuditLog("clarify_startup_advance_blocked", {
       pipelineId: meta.pipelineId,
       requirementDoc: meta.requirementDoc ?? "",
       reason: "marker_missing",
+      advanced: "false",
     }, "warn");
     return { advanced: false, reason: "marker_missing" };
   }
@@ -90,6 +104,7 @@ export async function advanceConfirmedClarifyOnStartup(
       pipelineId: meta.pipelineId,
       requirementDoc: meta.requirementDoc ?? "",
       reason: "no_next_stage",
+      advanced: "false",
     }, "warn");
     return { advanced: false, reason: "no_next_stage" };
   }
@@ -106,13 +121,18 @@ export async function advanceConfirmedClarifyOnStartup(
     pipelineUI,
     { skipPassAudit: true, caller: "auto_advance" },
   );
-  if (!outcome.advanced || !toStage) {
+  if (!outcome.advanced) {
     // No retry-spawn: the existing freeze/decision chain owns a refused exit.
-    return {
-      advanced: false,
-      toStage,
-      ...(outcome.blockReason !== undefined ? { reason: outcome.blockReason } : {}),
-    };
+    // The refusal is still REPORTED (issue: a silent refusal made the stalled
+    // startup indistinguishable from a successful one).
+    const reason = outcome.blockReason ?? "not_advanced";
+    await safeWriteAuditLog("clarify_startup_advance_blocked", {
+      pipelineId: meta.pipelineId,
+      requirementDoc: meta.requirementDoc ?? "",
+      reason,
+      advanced: "false",
+    }, "warn");
+    return { advanced: false, toStage, reason };
   }
 
   const now = Date.now();
