@@ -21,6 +21,7 @@
 
 import * as fs from "node:fs";
 import * as pathMod from "node:path";
+import { JOB_FILE_EXTENSIONS } from "../../constants";
 import type { PipelineStage } from "../../types";
 import { AUTO_PIPELINE_DIR } from "../../constants";
 import type { AutoJobDoc } from "./job-schema";
@@ -187,10 +188,12 @@ export function resolveJobStatePath(projectRoot: string, jobId: string): string 
  * moves the job directory the sidecar written by an older run still names the
  * OLD relative path). Resolution order:
  *   1. `<jobsDir>/<jobId>.yaml` when it exists — the current configuration wins;
- *   2. the persisted `state.jobPath` when THAT exists (a job whose directory was
+ *   2. `<jobsDir>/<jobId>.yml` when it exists (223 Phase 3: the two extensions
+ *      are peers, `.yaml` wins on a tie);
+ *   3. the persisted `state.jobPath` when THAT exists (a job whose directory was
  *      moved before the config changed is still resumable);
- *   3. the configured path as a last resort, so the caller's read fails with the
- *      path the user actually configured instead of a stale one.
+ *   4. the configured `.yaml` path as a last resort, so the caller's read fails
+ *      with the path the user actually configured instead of a stale one.
  *
  * `jobsDir` may be absolute or project-relative; `storedJobPath` follows the
  * same rule (`AutoJobState.jobPath` stays PROJECT-RELATIVE on disk).
@@ -201,17 +204,30 @@ export function resolveTrackedJobFile(
   jobId: string,
   storedJobPath?: string,
 ): string {
-  const configured = pathMod.isAbsolute(jobsDir)
-    ? pathMod.join(jobsDir, `${jobId}.yaml`)
-    : pathMod.join(projectRoot, jobsDir, `${jobId}.yaml`);
-  if (fs.existsSync(configured)) return configured;
+  const configuredBase = pathMod.isAbsolute(jobsDir)
+    ? pathMod.join(jobsDir, jobId)
+    : pathMod.join(projectRoot, jobsDir, jobId);
+  const configuredYaml = `${configuredBase}.yaml`;
+  const configuredYml = `${configuredBase}.yml`;
+  if (fs.existsSync(configuredYaml)) return configuredYaml;
+  if (fs.existsSync(configuredYml)) return configuredYml;
   if (storedJobPath) {
     const stored = pathMod.isAbsolute(storedJobPath)
       ? storedJobPath
       : pathMod.join(projectRoot, storedJobPath);
     if (fs.existsSync(stored)) return stored;
   }
-  return configured;
+  return configuredYaml;
+}
+
+/** Existing job-file candidates in configured order (.yaml first, then .yml). */
+export function findJobFileCandidates(projectRoot: string, jobsDir: string, jobId: string): string[] {
+  const base = pathMod.isAbsolute(jobsDir)
+    ? pathMod.join(jobsDir, jobId)
+    : pathMod.join(projectRoot, jobsDir, jobId);
+  return JOB_FILE_EXTENSIONS
+    .map((ext) => `${base}${ext}`)
+    .filter((candidate) => fs.existsSync(candidate));
 }
 
 /**

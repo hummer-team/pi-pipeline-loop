@@ -1967,11 +1967,11 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 自动托管让插件在**无人值守**下跑完 `clarify → plan → design-review → develop → review → fix`：用户只维护任务文件，插件按文档队列逐份执行、每份完成后清理会话级资源并按配置起新 session，全部结束后产出汇总。
 
-### 19.1 任务文件 `docs/jobs/*_loop.yaml`
+### 19.1 任务文件 `docs/jobs/*_loop.yaml` / `docs/jobs/*_loop.yml`
 
-- 位置：只扫描 `docs/jobs/`（**不递归**），且只认 `*_loop.yaml`；按 mtime 取最新的 ≤5 份。其他 `*.yaml` 不会被读取，菜单会给出忽略清单（改名提示）。该目录**不在** `archive.dirs` 的默认归档范围，任务文件不会随设计文档被归档移动。
+- 位置：只扫描 `docs/jobs/`（**不递归**），且只认 `*_loop.yaml` 与 `*_loop.yml`（两者等价）；按 mtime 取最新的 ≤5 份。其他 `*.yaml`/`*.yml` 不会被读取，菜单会给出忽略清单（改名提示）。该目录**不在** `archive.dirs` 的默认归档范围，任务文件不会随设计文档被归档移动。若同名 `.yaml` 与 `.yml` 并存，按 `.yaml` 启动并给出歧义告警（菜单行追加 `both .yaml and .yml present`），不阻断。
 - 只读：插件**永不**回写 job 文件；进度状态写入 `.pi/auto_pipeline/{jobId}/state.json`（sidecar）。`.pi/auto_pipeline/` 与 `.pi/audit/` 同级，属于运行期产物，**不随任务归档**。
-- `jobId` = 文件名去掉 `.yaml`（**含 `_loop` 后缀**，如 `demo_loop.yaml` → `demo_loop`），只允许 `[A-Za-z0-9._-]`；含路径分隔符/`..` 一律拒绝。`--job` 不做后缀归一化。
+- `jobId` = 文件名去掉 `.yaml`/`.yml`（**含 `_loop` 后缀**，如 `demo_loop.yaml` → `demo_loop`），只允许 `[A-Za-z0-9._-]`；含路径分隔符/`..` 一律拒绝。`--job` 收 `<name>_loop`，并容忍尾部 `.yaml`/`.yml`（`--job demo_loop`、`--job demo_loop.yaml`、`--job demo_loop.yml` 等价）；`.YAML`/`.YML` 大写不支持。
 - 缺省值在解析期填满（下游永远看不到 `undefined`）：`tier: assisted`、`clarify.maxRounds: 5`、`clarify.onExhausted: stop`、`verify.maxAttempts: 3`、`writePolicy.gitModify: block`、`defaults.startStage: clarify`、`finalLoopGrace: 1`（上限 3，`0` 关闭）、`maxTotalLoops: 20`、`designReview.maxRounds: 3`、`reviewFix.maxRounds: 6`、`reviewFix.maxLoopsPerStage: 6`、`maxAutoResumes: 2`、`wallClockMs: 0`、`maxTotalFreezes: 0`（不限制）。
 - fail-fast（**不接受**静默降级）：`tier` 只允许 `rule` / `assisted`；`clarify.strategy` 只允许 `self-answer`；`clarify.onExhausted` 只允许 `stop` / `self-confirm`；`designReview.mode` 只允许 `auto`（`manual` 报错）；`designReview.onFail` 只允许 `auto-revise` / `stop`；`writePolicy.gitModify` 只允许 `allow` / `block`；`defaults.startStage` 只允许可恢复阶段或 `auto`；`freezePolicy.byReason` 的值只能是 `resume` / `abort` / `stop-and-report`。未知键只告警。
 - **已移除的键（写入即报错，绝不静默降级）**：`clarify.mode`、`clarify.fallback`、`clarify.answerStrategy`、`designReview.failAction`（改名 `onFail`）、`decisionPolicy`（改名 `freezePolicy`）、`audit.recordAutoDecisions`（改名 `autoDecisions`）、`stopConditions.maxConsecutiveVerifyFailures`（改用 `verify.maxAttempts`）。
@@ -1979,17 +1979,17 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - `writePolicy.allowGlobs` 映射到 `protect.whitelistAllow`，与 `protect.allow` **不同**：前者只豁免 `whitelist_miss`，后者只豁免 gitignore 动态保护。
 - `freezePolicy` 是 **job 私有**：只由冻结自动驾驶消费，**不会**写进 `pipeline_loop.json`（那里是 210 provider 链的 `decisionPolicy`，语义不同：`FreezeAction` 字符串 vs 规则对象）。
 - `onFailure`：`stop`（默认，出错的文档记失败后终止 job）/ `continue`（跳过继续下一份）。**硬停无视该值**。
-- 示例见模板 `auto_job_loop_template.yaml`（`/pipeline-init` 安装到 `.pi/auto_job_loop_template.yaml`；复制到 `docs/jobs/` 并改名为 `<name>_loop.yaml` 即可被扫描到）。
+- 示例见模板 `auto_job_loop_template.yaml`（`/pipeline-init` 安装到 `.pi/auto_job_loop_template.yaml`；复制到 `docs/jobs/` 并改名为 `<name>_loop.yaml` 或 `<name>_loop.yml` 即可被扫描到）。
 
 ### 19.2 `/pipeline-auto` 用法
 
 | 用法 | 面向 | 说明 |
 |---|---|---|
-| `/pipeline-auto` | 用户 | 打开 job 菜单（≤5 行，`{文件名}（{已完成}/{总数} 已完成）`；running 追加 `续跑 {i}/{N}`；hash 漂移追加 `（job 已变更）`；存在非 `*_loop.yaml` 时标题追加忽略数量） |
-| `/pipeline-auto --job <jobId>` | 用户/内部 | 直接启动（或续跑）指定 job；jobId 即 `<name>_loop.yaml` 的完整 stem，**不需要 token**；job 文件必须存在（首次启动无需先跑过一次，sidecar 会自动创建） |
+| `/pipeline-auto` | 用户 | 打开 job 菜单（≤5 行，`{文件名}（{已完成}/{总数} 已完成）`；running 追加 `续跑 {i}/{N}`；hash 漂移追加 `（job 已变更）`；存在非 `*_loop.yaml`/`*_loop.yml` 时标题追加忽略数量） |
+| `/pipeline-auto --job <jobId>` | 用户/内部 | 直接启动（或续跑）指定 job；jobId 即 `<name>_loop.yaml` / `<name>_loop.yml` 的完整 stem（`--job` 亦容忍尾部 `.yaml`/`.yml`），**不需要 token**；job 文件必须存在（首次启动无需先跑过一次，sidecar 会自动创建） |
 | `/pipeline-auto --next` | 内部（链式续跑） | 一条极简命令：jobId 与锁 token 只在 `.pi/auto_pipeline/lock.json` 内流转，新 session 由 `session_start` 自动启动下一份文档 |
 
-- 菜单拒绝的情形：无 `docs/jobs/*_loop.yaml`（提示创建 + 模板位置 + 被忽略的 `*.yaml` 清单）、宿主无 `ui.select`、sidecar 损坏/`schemaVersion` 不识别（要求人工清理）、另一个 job 正持有进程级锁。
+- 菜单拒绝的情形：无 `docs/jobs/*_loop.yaml` 或 `*_loop.yml`（提示创建 + 模板位置 + 被忽略的 `*.yaml`/`*.yml` 清单）、宿主无 `ui.select`、sidecar 损坏/`schemaVersion` 不识别（要求人工清理）、另一个 job 正持有进程级锁。
 - `jobHash` 漂移三选一：`按新 job 续跑`（按 doc 路径重新对齐进度）/ `重新开始`（进度重置）/ `取消`。
 - 已完成（`status=completed`）的 job 选中后二次确认 `重新开始 / 取消`。
 - `docIndex` 语义 = **正在执行的文档**序号；它只在「启动下一份文档」时推进，收尾（`finalizeCurrentDoc`）**不**推进。
@@ -2161,4 +2161,4 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 `/pipeline-init` 首次部署时会用当时的配置把占位符写成实际 marker；若之后修改了 `.pi/pipeline_loop_job.json` 的 marker，请重新执行 `/pipeline-init` 0（overwrite）或手工把这两份文件里的 `答：` / `## 模型确认` 改成你的 primary，否则 agent 可能仍按默认 marker 书写，导致 precheck 无法通过。已存在且未被覆盖的 SKILL.md（merge-only）与 skip 策略跳过的文件都适用此提醒。
 
-**模板与命名**：`/pipeline-init` 安装 `.pi/pipeline_loop_job.json` 与 `.pi/auto_job_loop_template.yaml`（旧 `.pi/auto_job_example.yaml` 不会被删除）；任务文件必须命名为 `docs/jobs/<name>_loop.yaml`。
+**模板与命名**：`/pipeline-init` 安装 `.pi/pipeline_loop_job.json` 与 `.pi/auto_job_loop_template.yaml`（旧 `.pi/auto_job_example.yaml` 不会被删除）；任务文件必须命名为 `docs/jobs/<name>_loop.yaml` 或 `docs/jobs/<name>_loop.yml`。

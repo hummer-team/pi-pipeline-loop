@@ -218,6 +218,26 @@ describe("scanJobFiles / selectJobFromMenu with a configured jobsDir (222 Phase 
     expect(scanJobFiles(ROOT, "spec/jobs").ignored).toEqual(["notes.yaml"]);
   });
 
+  // 223 Phase 3: `.yml` is a peer extension for the scan and the empty-state copy.
+  it("scans *_loop.yml and keeps the same jobId", () => {
+    const abs = path.join(ROOT, "spec/jobs");
+    fs.mkdirSync(abs, { recursive: true });
+    fs.writeFileSync(path.join(abs, `${JOB_ID}.yml`), JOB_YAML, "utf8");
+    const result = scanJobFiles(ROOT, "spec/jobs");
+    expect(result.rows.map((r) => r.jobId)).toEqual([JOB_ID]);
+    expect(result.rows[0]?.fileName).toBe(`${JOB_ID}.yml`);
+  });
+
+  it("names both suffixes in the empty-directory message", async () => {
+    fs.mkdirSync(path.join(ROOT, "spec/jobs"), { recursive: true });
+    const selection = await selectJobFromMenu({}, makeTestConfig({ projectRoot: ROOT, docsDirs: {
+      designDir: "docs/design",
+      reviewDir: "docs/review",
+      jobsDir: "spec/jobs",
+    } }));
+    expect(selection.kind === "error" ? selection.error : "").toContain("spec/jobs/*_loop.yaml|yml");
+  });
+
   it("names the configured directory in the empty-directory message", async () => {
     fs.mkdirSync(path.join(ROOT, "spec/jobs"), { recursive: true });
     const selection = await selectJobFromMenu({}, makeTestConfig({ projectRoot: ROOT, docsDirs: {

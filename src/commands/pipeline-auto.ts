@@ -31,6 +31,7 @@ import { parseAutoJob, hashJobBytes, type AutoJobConfig } from "../core/auto-pip
 import {
   clearPendingContinuation,
   createJobState,
+  findJobFileCandidates,
   isValidJobId,
   listRunningJobs,
   markPendingContinuation,
@@ -123,10 +124,23 @@ export function createPipelineAutoCommand(config: PipelineConfig): Command {
   return {
     name: "pipeline-auto",
     description:
-      `Auto pipeline: pick a job from ${docsDirsOf(config).jobsDir}/*.yaml and run clarify → plan → develop → review unattended`,
+      `Auto pipeline: pick a job from ${docsDirsOf(config).jobsDir}/*.yaml|*.yml and run clarify → plan → develop → review unattended`,
     execute: async (args: Record<string, unknown>, ctx?: unknown): Promise<unknown> =>
       runPipelineAuto(config, args as PipelineAutoArgs, ctx as AutoPipelineCommandCtx),
   };
+}
+
+/**
+ * 223 Phase 3: `--job` tolerates a trailing job-file extension.
+ *
+ * `--job foo_loop`, `--job foo_loop.yaml` and `--job foo_loop.yml` all name the
+ * same job: the extension is stripped before validation and the stem stays the
+ * jobId (which also owns the sidecar directory). Stripping happens FIRST so a
+ * path-like argument (`docs/foo_loop.yaml`) is still rejected by
+ * `isValidJobId` instead of slipping through as a valid stem.
+ */
+export function stripJobFileExtension(raw: string): string {
+  return raw.replace(/\.(yaml|yml)$/, "");
 }
 
 /**
@@ -137,9 +151,10 @@ export async function runPipelineAuto(
   args: PipelineAutoArgs,
   ctx: AutoPipelineCommandCtx,
 ): Promise<AutoPipelineResult> {
-  const jobArg = typeof args.job === "string" ? args.job.trim() : "";
+  const jobArgRaw = typeof args.job === "string" ? args.job.trim() : "";
+  const jobArg = stripJobFileExtension(jobArgRaw);
   if (jobArg && !isValidJobId(jobArg)) {
-    return { success: false, error: `invalid job id "${jobArg}" — pass a jobId, never a path` };
+    return { success: false, error: `invalid job id "${jobArgRaw}" — pass a jobId, never a path` };
   }
   if (!args.next && !jobArg) {
     return runMenu(config, ctx);
@@ -230,10 +245,11 @@ function resolveInternalTarget(
       readJobState(config.projectRoot, jobId)?.jobPath,
     );
     if (!jobId.endsWith("_loop") || !fs.existsSync(jobPath)) {
-      // Phase 3 naming rule: only `<name>_loop.yaml` is a startable job file.
+      // Phase 3 naming rule: only `<name>_loop.yaml` / `<name>_loop.yml` is a
+      // startable job file.
       return {
         ok: false,
-        error: `auto job "${jobId}" not found — job files must be named <name>_loop.yaml`,
+        error: `auto job "${jobId}" not found — job files must be named <name>_loop.yaml or <name>_loop.yml`,
       };
     }
     return { ok: true, jobId };
@@ -525,18 +541,30 @@ export async function startAutoJob(input: {
   const projectRoot = config.projectRoot;
 
   if (!isValidJobId(jobId)) {
-    return preLockFailure(`invalid job id "${jobId}" — job files must be named <name>_loop.yaml`);
+    return preLockFailure(`invalid job id "${jobId}" — job files must be named <name>_loop.yaml or <name>_loop.yml`);
   }
   if (isAutoJobActive() && getActiveJobId() !== jobId) {
     return preLockFailure(`another auto job is active: ${getActiveJobId()}`);
   }
 
-  // 221 Phase 3: jobId is the FULL stem of `<name>_loop.yaml` — never normalized.
+  // 221 Phase 3: jobId is the FULL stem of `<name>_loop.(yaml|yml)` — never
+  // normalized. 223 Phase 3: `.yaml` and `.yml` are peers with `.yaml` winning.
   // 222 Phase 4: the directory comes from `docs.jobsDir`. A job whose directory
   // was moved still resolves through the persisted `state.jobPath`, and the
   // sidecar then records the file that was ACTUALLY read (project-relative when
   // it lives under the project root — the on-disk contract is unchanged).
   const jobsDir = docsDirsOf(config).jobsDir;
+  const jobFileCandidates = findJobFileCandidates(projectRoot, jobsDir, jobId);
+  if (jobFileCandidates.length > 1) {
+    // Both suffixes exist: start the `.yaml` one (resolver order) but leave a
+    // visible, non-blocking warning so the duplicate can be cleaned up.
+    auditAutoDiagnostic(
+      "job_file_suffix_ambiguous",
+      `Auto-job "${jobId}" exists as both .yaml and .yml; using ${pathMod.basename(jobFileCandidates[0]!)}.`,
+      { jobId },
+      "warn",
+    );
+  }
   const trackedJobPath = resolveTrackedJobFile(
     projectRoot,
     jobsDir,
@@ -554,8 +582,8 @@ export async function startAutoJob(input: {
     : trackedJobPath;
   const jobFile = readJobFile(trackedJobPath);
   if (!jobFile.ok) {
-    // Missing OR unreadable: both mean "no such `<name>_loop.yaml` job".
-    return preLockFailure(`${jobFile.error} — job files must be named <name>_loop.yaml`);
+    // Missing OR unreadable: both mean "no such `<name>_loop.(yaml|yml)` job".
+    return preLockFailure(`${jobFile.error} — job files must be named <name>_loop.yaml or <name>_loop.yml`);
   }
 
   const parsed = parseAutoJob(jobFile.raw, jobRelPath);

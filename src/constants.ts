@@ -407,6 +407,12 @@ export const PIPELINE_TURN_SIGNATURES: ReadonlyArray<string | RegExp> = [
   /^@\S+\s+\S+.*(\d+\s*答|full-und\?|\s\d+$)/,
 ] as const;
 
+/** Supported auto-job file extensions (case-sensitive). */
+export const JOB_FILE_EXTENSIONS = [".yaml", ".yml"] as const;
+
+/** Required suffix in the stem part of auto-job file names. */
+export const LOOP_JOB_STEM_SUFFIX = "_loop";
+
 // ─── Spawn Tool Names (Phase 4 / 171) ────────────────────────────────────────
 
 /**

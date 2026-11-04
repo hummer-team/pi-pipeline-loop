@@ -137,6 +137,41 @@ describe("job-menu — discovery", () => {
     expect(ignored).toEqual(["bad name.yaml", "zeta.yaml"]);
   });
 
+  // 223 Phase 3: `.yml` is a peer extension, not a second-class citizen.
+  it("discovers *_loop.yml with the same jobId stem", () => {
+    const dir = path.join(ROOT, "docs", "jobs");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "gamma_loop.yml"), JOB_YAML, "utf8");
+
+    const { rows, ignored } = scanJobFiles(ROOT);
+    expect(rows.map((r) => r.jobId)).toEqual(["gamma_loop"]);
+    expect(rows[0]?.fileName).toBe("gamma_loop.yml");
+    expect(rows[0]?.suffixAmbiguous).toBeUndefined();
+    expect(ignored).toEqual([]);
+  });
+
+  it("flags a stem that exists as both .yaml and .yml, preferring .yaml", () => {
+    const dir = path.join(ROOT, "docs", "jobs");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "alpha_loop.yml"), JOB_YAML, "utf8");
+    fs.writeFileSync(path.join(dir, "alpha_loop.yaml"), JOB_YAML, "utf8");
+
+    const { rows } = scanJobFiles(ROOT);
+    expect(rows).toHaveLength(1);
+    // `fileName` stays the REAL file name; the ambiguity is a separate flag.
+    expect(rows[0]?.fileName).toBe("alpha_loop.yaml");
+    expect(rows[0]?.suffixAmbiguous).toBe(true);
+    expect(formatJobMenuLabel(rows[0]!)).toContain("(both .yaml and .yml present)");
+  });
+
+  it("reports non-*_loop .yml files as ignored too", () => {
+    const dir = path.join(ROOT, "docs", "jobs");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "draft.yml"), JOB_YAML, "utf8");
+
+    expect(scanJobFiles(ROOT).ignored).toEqual(["draft.yml"]);
+  });
+
   it("missing directory → empty scan", () => {
     expect(scanJobFiles(ROOT)).toEqual({ rows: [], ignored: [] });
   });
@@ -234,8 +269,8 @@ describe("job-menu — selection", () => {
 
     expect(result.kind).toBe("error");
     if (result.kind === "error") {
-      expect(result.error).toContain("Ignored 2 non-*_loop.yaml file(s): alpha.yaml, beta.yaml");
-      expect(result.error).toContain("Rename them to <name>_loop.yaml");
+      expect(result.error).toContain("Ignored 2 non-*_loop.yaml|yml file(s): alpha.yaml, beta.yaml");
+      expect(result.error).toContain("Rename them to <name>_loop.yaml or <name>_loop.yml");
     }
   });
 
@@ -256,7 +291,7 @@ describe("job-menu — selection", () => {
     await selectJobFromMenu(ctx as never, config());
 
     expect(titles).toHaveLength(1);
-    expect(titles[0]).toBe("Auto pipeline — choose a job (ignored 1 non-*_loop.yaml)");
+    expect(titles[0]).toBe("Auto pipeline — choose a job (ignored 1 non-*_loop.yaml|yml)");
   });
 
   it("no ui.select → error", async () => {
