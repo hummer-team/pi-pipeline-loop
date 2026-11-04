@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dispatchAfterResume } from "../../commands/pipeline-start";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
-import { createInitialState, computeHash } from "../../core/design-review/state";
+import { createInitialState, computeHash, createOperation } from "../../core/design-review/state";
 import type { SessionMeta } from "../../types";
 
 let tmpDir: string;
@@ -74,7 +74,9 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
     };
     
     // Call dispatchAfterResume (simulating choose_stage → onStageChanged callback)
-    await dispatchAfterResume(ctx, config, ui as any, meta, planPath);
+    const outcome = await dispatchAfterResume(ctx, config, ui as any, meta, planPath);
+    // 224 Phase 1: `routed` reports as a real dispatch (non-fatal).
+    expect(outcome).toBe("spawned");
     
     // Verify coordinator was called and dispatched exactly once
     expect(spawnCallCount).toBe(1);
@@ -114,9 +116,49 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
       notify: () => {},
     };
     
-    await dispatchAfterResume(ctx, config, ui as any, meta, planPath);
+    const outcome = await dispatchAfterResume(ctx, config, ui as any, meta, planPath);
+    // 224 Phase 1: `not-applicable` is ambiguous, never "provably not sent".
+    expect(outcome).toBe("unknown");
     
     // Should not dispatch when authorization is invalid (finished phase)
+    expect(spawnCallCount).toBe(0);
+  });
+
+  it("reports a legal queued outcome when the review operation was already dispatched", async () => {
+    const planPath = await createPlanDoc();
+    const config = makeDesignReviewConfig(tmpDir);
+    const planHash = computeHash(await fs.readFile(planPath, "utf-8"));
+
+    // Keep the operation dispatched, so `canDispatch` refuses a twin spawn and
+    // the coordinator answers "pending" (legal compensation, not a failure).
+    const drState = createInitialState(planPath, "menu", planHash);
+    drState.phase = "review_ready";
+    drState.operation = {
+      ...createOperation("review", Date.now(), 1, planHash, drState.round),
+      dispatchState: "dispatched",
+      dispatchEvidence: "trusted_id",
+      agentId: "test-agent-pending-001",
+    };
+    const meta = makeTestMeta({
+      currentStage: "design-review",
+      requirementDoc: "docs/design/77_Config_Plan.md",
+      pipelineId: "test-n3-pending",
+      designReview: drState,
+    });
+
+    let spawnCallCount = 0;
+    const spawnOverride = async () => {
+      spawnCallCount++;
+      return { spawned: true, fallback: false, deferred: false, agentId: "test-agent-pending-001", dispatchOutcome: "spawned_id" as const };
+    };
+    const ctx = createMockCtx(meta);
+    (ctx as any).spawnOverride = spawnOverride;
+    const ui = { notify: () => {} };
+
+    const outcome = await dispatchAfterResume(ctx, config, ui as any, meta, planPath);
+
+    // 224 Phase 1: `pending` → "queued" (never fatal, never a second spawn).
+    expect(outcome).toBe("queued");
     expect(spawnCallCount).toBe(0);
   });
 
@@ -144,7 +186,9 @@ describe("Round 5 Issue N-3: choose_stage → design-review dispatch via coordin
       notify: () => {},
     };
     
-    await dispatchAfterResume(ctx, config, ui as any, meta, planPath);
+    const outcome = await dispatchAfterResume(ctx, config, ui as any, meta, planPath);
+    // 224 Phase 1: no authorization ⇒ not-applicable ⇒ ambiguous "unknown".
+    expect(outcome).toBe("unknown");
     
     // Should not dispatch when no authorization exists
     expect(spawnCallCount).toBe(0);

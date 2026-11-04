@@ -72,7 +72,11 @@ import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "../core/
 // 194 Phase 3 (task 7, review issue 3): a new pipeline start invalidates a stale executor binding
 import { invalidateExecutorRunOnBoundary } from "../core/stage-executor/recovery";
 // 224 Phase 1: the start-stage dispatch OUTCOME is reported back to the auto runner
-import { mapSpawnResultToOutcome, type StartDispatchOutcome } from "../core/auto-pipeline/start-stage-dispatch";
+import {
+  mapDesignReviewCoordinatorOutcome,
+  mapSpawnResultToOutcome,
+  type StartDispatchOutcome,
+} from "../core/auto-pipeline/start-stage-dispatch";
 
 /**
  * Checks that all 5 active stages have agentPath configured.
@@ -798,7 +802,7 @@ export async function dispatchAfterResume(
           action: coordinatorResult.action,
         });
         // 224 Phase 1: the coordinator dispatched the review executor.
-        return "spawned";
+        return mapDesignReviewCoordinatorOutcome(coordinatorResult);
       } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "pending") {
         ui.notify(ctx, `Design review dispatch pending: ${coordinatorResult.reason}`);
         await safeWriteAuditLog("design_review_coordinator_dispatch", {
@@ -810,7 +814,7 @@ export async function dispatchAfterResume(
         });
         // 224 Phase 1: a pending coordinator plan is a legal compensation state
         // — queued work exists, never fatal (review fix #2).
-        return "queued";
+        return mapDesignReviewCoordinatorOutcome(coordinatorResult);
       } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "frozen") {
         // 192 Phase 4 (task 8): real freeze on budget exhaustion at resume
         const { freezeAndPrompt } = await import("../core/flow-state");
@@ -831,7 +835,7 @@ export async function dispatchAfterResume(
           action: "frozen",
         });
         // 224 Phase 1: the frozen chain has taken over — NEVER fail the doc.
-        return "handled_elsewhere";
+        return mapDesignReviewCoordinatorOutcome(coordinatorResult);
       } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "verify_failed") {
         // 193 Phase 3 (task 2): dispatchAfterResume consumes the obtained
         // `verify_failed` through the ONE shared honest consumer (tool
@@ -859,7 +863,7 @@ export async function dispatchAfterResume(
           failureRecorded: String(outcome.failureRecorded),
         });
         // 224 Phase 1: consumeDesignReviewResult owns the result now.
-        return "handled_elsewhere";
+        return mapDesignReviewCoordinatorOutcome(coordinatorResult);
       } else if (coordinatorResult.status === "handled") {
         // Other handled actions: advanced
         await safeWriteAuditLog("design_review_coordinator_dispatch", {
@@ -870,7 +874,7 @@ export async function dispatchAfterResume(
           status: coordinatorResult.status,
         });
         // 224 Phase 1: the coordinator resolved the visit itself (advanced).
-        return "handled_elsewhere";
+        return mapDesignReviewCoordinatorOutcome(coordinatorResult);
       } else {
         // not-applicable
         await safeWriteAuditLog("design_review_coordinator_dispatch", {
@@ -881,7 +885,7 @@ export async function dispatchAfterResume(
         });
         // 224 Phase 1: the coordinator declined without proof of dispatch —
         // ambiguous, report "verify before re-running" (non-fatal).
-        return "unknown";
+        return mapDesignReviewCoordinatorOutcome(coordinatorResult);
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);

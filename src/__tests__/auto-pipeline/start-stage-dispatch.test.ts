@@ -23,6 +23,7 @@ import {
   hasStartDispatchChannel,
   isFatalStartDispatchOutcome,
   isStartStageAlreadyDispatched,
+  mapDesignReviewCoordinatorOutcome,
   mapSpawnResultToOutcome,
   shouldDispatchStartStage,
 } from "../../core/auto-pipeline/start-stage-dispatch";
@@ -220,6 +221,24 @@ describe("224 phase 1 — pure start-stage dispatch matrix", () => {
     );
   });
 
+  it("maps every design-review coordinator result (routed/pending/frozen/verify_failed)", () => {
+    // A routed coordinator DID dispatch the review executor.
+    expect(mapDesignReviewCoordinatorOutcome({ status: "handled", action: "routed" })).toBe("spawned");
+    // A pending coordinator plan is legal queued compensation, never fatal.
+    expect(mapDesignReviewCoordinatorOutcome({ status: "handled", action: "pending" })).toBe("queued");
+    // The freeze chain and the shared verify-fail consumer own the visit.
+    expect(mapDesignReviewCoordinatorOutcome({ status: "handled", action: "frozen" })).toBe("handled_elsewhere");
+    expect(mapDesignReviewCoordinatorOutcome({ status: "handled", action: "verify_failed" })).toBe("handled_elsewhere");
+    // Any other handled action (e.g. advanced) also resolved the visit itself.
+    expect(mapDesignReviewCoordinatorOutcome({ status: "handled", action: "advanced" })).toBe("handled_elsewhere");
+    // No proof of dispatch ⇒ ambiguous, never "not_sent".
+    expect(mapDesignReviewCoordinatorOutcome({ status: "not-applicable" })).toBe("unknown");
+    // None of the design-review outcomes may fail the doc.
+    for (const outcome of ["spawned", "queued", "handled_elsewhere", "unknown"] as const) {
+      expect(isFatalStartDispatchOutcome(outcome)).toBe(false);
+    }
+  });
+
   it("hasStartDispatchChannel accepts the RPC channel too", () => {
     expect(hasStartDispatchChannel(undefined)).toBe(false);
     expect(hasStartDispatchChannel({})).toBe(false);
@@ -305,10 +324,16 @@ describe("224 phase 1 — auto runner dispatch wiring", () => {
     expect(audits).not.toContain("pipeline_start");
   });
 
-  it("unreadable session meta at the dispatch seam does not throw (fail-open)", async () => {
+  it("unreadable session meta at the dispatch seam does not throw (fail-open, audited)", async () => {
     writeJob(jobYaml("plan"));
     writeFile(REQUIREMENT, "# requirement\n");
     writeAgentFixtures();
+    // Capture the audit payloads for this case only (the shared collector keeps
+    // just the event names).
+    const rows: { stage: string; message?: Record<string, string | boolean> }[] = [];
+    __setSafeWriteAuditLogOverride(async (stage, message) => {
+      rows.push({ stage, ...(message !== undefined ? { message } : {}) });
+    });
     let meta: SessionMeta | undefined;
     const ctx = {
       session: {
@@ -326,8 +351,15 @@ describe("224 phase 1 — auto runner dispatch wiring", () => {
     const result = await startAutoJob({ config: config(), ctx: ctx as never, jobId: JOB_ID });
     expect(result.success).toBe(true);
     expect(readJobState(ROOT, JOB_ID)?.docs[0]?.status).toBe("running");
-    // No dispatch was attempted (no fallback audit), nothing fatal was reported.
+    // No dispatch was attempted, and the fail-open is NOT silent: exactly one
+    // `no_meta` audit + an honest message suffix (224: no false success).
     expect(audits).not.toContain(FALLBACK_AUDIT);
-    expect(audits).not.toContain(UNEXECUTABLE_AUDIT);
+    const unexecutable = rows.filter((row) => row.stage === UNEXECUTABLE_AUDIT);
+    expect(unexecutable).toHaveLength(1);
+    expect(unexecutable[0]?.message?.reason).toBe("no_meta");
+    expect(unexecutable[0]?.message?.stage).toBe("plan");
+    expect(result.message).toContain("; start-stage dispatch skipped (session_meta_unavailable)");
+    // Fail-open never fails the doc: resume remains the recovery path.
+    expect(readJobState(ROOT, JOB_ID)?.docs[0]?.failReason).toBeUndefined();
   });
 });

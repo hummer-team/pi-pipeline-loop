@@ -916,6 +916,20 @@ async function startPendingDoc(input: {
       }
       const agentName = resolveAgentMention(config, stage) ?? "(unconfigured agent)";
       dispatchSuffix = `; ${describeStartDispatch(outcome, { stage, agentName })}`;
+    } else {
+      // Fail-open (224 F1, code_spec §3): the session truth vanished between
+      // start and dispatch, so no executor can be proven dispatched. Record ONE
+      // audit and say so in the message — a silent "Auto pipeline started"
+      // would be exactly the false success this bug is about. Never fatal: the
+      // pipeline already exists and `/pipeline-resume` can recover it.
+      await safeWriteAuditLog("pipeline_auto_start_stage_unexecutable", {
+        jobId,
+        doc: target.doc.doc,
+        stage,
+        reason: "no_meta",
+        pipelineId: started.pipelineId ?? "unknown",
+      }, "warn");
+      dispatchSuffix = "; start-stage dispatch skipped (session_meta_unavailable)";
     }
   }
 

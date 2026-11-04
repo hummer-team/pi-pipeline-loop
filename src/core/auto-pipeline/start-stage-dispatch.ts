@@ -122,6 +122,45 @@ export function mapSpawnResultToOutcome(result: SpawnResultLike): StartDispatchO
   return "not_sent";
 }
 
+/**
+ * Minimal structural view of the design-review coordinator result — the four
+ * actions `dispatchAfterResume` must distinguish (`routed` / `pending` /
+ * `frozen` / `verify_failed`), the generic "handled" case and the
+ * "not-applicable" fallback.
+ */
+export type DesignReviewCoordinatorLike =
+  | { status: "handled"; action: "routed" }
+  | { status: "handled"; action: "pending" }
+  | { status: "handled"; action: "frozen" }
+  | { status: "handled"; action: "verify_failed" }
+  | { status: "handled"; action: "advanced" }
+  | { status: "handled"; action: string }
+  | { status: "not-applicable" };
+
+/**
+ * Exhaustive mapping of the design-review coordinator result onto the SAME
+ * dispatch-outcome vocabulary (224 Phase 1, review fix #2):
+ * - `routed` → the review executor was dispatched;
+ * - `pending` → a legal compensation state (queued work exists), NOT fatal;
+ * - `frozen` / `verify_failed` / any other handled action → the existing
+ *   decision chain owns the visit, so the auto runner must never fail the doc;
+ * - `not-applicable` → the coordinator proved nothing about a dispatch, so the
+ *   outcome is deliberately ambiguous ("verify before re-running").
+ */
+export function mapDesignReviewCoordinatorOutcome(
+  result: DesignReviewCoordinatorLike,
+): StartDispatchOutcome {
+  if (result.status === "not-applicable") return "unknown";
+  switch (result.action) {
+    case "routed":
+      return "spawned";
+    case "pending":
+      return "queued";
+    default:
+      return "handled_elsewhere";
+  }
+}
+
 /** Outcome → ONE user-visible sentence (no internal enum leaks). */
 export function describeStartDispatch(
   outcome: StartDispatchOutcome,
