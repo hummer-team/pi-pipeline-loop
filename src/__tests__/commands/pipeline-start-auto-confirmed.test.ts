@@ -1,0 +1,237 @@
+/**
+ * 223 Phase 2: `/pipeline-start` on an already-confirmed document — the
+ * deferred-advance contract, observed end to end.
+ *
+ * Why the advance is DEFERRED here (and not done in the command round):
+ * `buildStartMeta` deliberately clears `autoJob` (`buildNewPeriodResetFields`),
+ * so when `maybeAutoLaunchClarify` runs the auto contract is not established
+ * yet. The command therefore reports `clarifyAdvancePending: true` and the auto
+ * runner (`startPendingDoc`) stamps `meta.autoJob` and THEN calls
+ * `advanceConfirmedClarifyOnStartup`. This suite pins that hand-off:
+ *
+ * - the command result stays `currentStage: "clarify"` with the pending flag —
+ *   no half-truth about a stage the session is not on yet, and NO
+ *   `clarify_startup_advanced` audit in that round;
+ * - the `pipeline_start` audit still records `startStage: "clarify"` (the
+ *   startup stage is not rewritten by the advance — convergence item 3);
+ * - after the runner-style `autoJob` stamp the advance happens in the SAME
+ *   round: the session meta reaches the next stage, `clarify_startup_advanced`
+ *   names exactly that stage, and the target is the configured `nextStage`.
+ */
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { readFile } from "node:fs/promises";
+import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
+import { createPipelineStartCommand } from "../../commands/pipeline-start";
+import { advanceConfirmedClarifyOnStartup } from "../../core/clarify-startup-advance";
+import { createPipelineUI } from "../../core/pipeline-ui";
+import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
+import { initAuditLog, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
+import {
+  createAutoHarness,
+  createSessionStub,
+  HARNESS_DOCS,
+  HARNESS_JOB_ID,
+  type AutoHarness,
+} from "../auto-pipeline/auto-harness";
+import { auditLogFileFor } from "../helpers";
+
+const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
+const DOC = HARNESS_DOCS[0]!;
+
+const MANDATORY = [
+  "## 目标",
+  "Advance the confirmed clarify round at startup.",
+  "## 范围",
+  "The start round only.",
+  "## 验收标准",
+  "The session reaches the next stage.",
+];
+
+/** A document the SHARED decision layer derives as `confirmed`. */
+const CONFIRMED_DOC = [
+  "# 223_Bug",
+  ...MANDATORY,
+  "",
+  "# 第 1 轮澄清",
+  "- **方案 A** self-answer",
+  "答：方案 A",
+  "full-und? 理解确认：是",
+  "",
+  "## 模型确认",
+  "是",
+].join("\n");
+
+let harness: AutoHarness;
+let sent: Array<{ msg: string; opts?: unknown }>;
+let safeAudits: string[];
+let errorSpy: ReturnType<typeof spyOn>;
+
+function writeDoc(text: string): void {
+  const abs = path.join(harness.projectRoot, DOC);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, text, "utf8");
+}
+
+/** Stage agent definitions (the command refuses to start without them). */
+function writeStageAgents(): void {
+  const dir = path.join(harness.projectRoot, ".pi", "agents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of [
+    "feat-design-plan-agent",
+    "design-review-agent",
+    "develop-agent",
+    "code-review-agent",
+    "code-review-withfix-agent",
+  ]) {
+    fs.writeFileSync(path.join(dir, `${name}.md`), "---\nname: test-agent\ntools: read\n---\nagent body\n", "utf8");
+  }
+}
+
+/** The production clarify contract the derivation parses (`deployClarifySpec`). */
+function deployClarifySpec(): void {
+  const target = path.join(harness.projectRoot, ".pi", "references", "clarify_spec", "verify.md");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(path.join(SRC_ROOT, "src", "template", "references", "clarify_spec", "verify.md"), target);
+}
+
+/** The real audit log of one pipeline (written by `writeStageAudit`). */
+async function readPipelineAudit(pipelineId: string | undefined): Promise<string> {
+  if (!pipelineId) return "";
+  try {
+    return await readFile(auditLogFileFor(path.join(harness.projectRoot, ".pi", "audit"), pipelineId), "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+function safeEvents(stage: string): string[] {
+  return safeAudits.filter((line) => line.startsWith(`${stage} `));
+}
+
+/** A fresh (no pipeline yet) session context for the command. */
+function makeCommandCtx() {
+  const stub = createSessionStub(undefined);
+  return {
+    stub,
+    ctx: {
+      session: stub.session,
+      ui: stub.ui,
+      pi: { sendUserMessage: (msg: string, opts?: unknown) => { sent.push({ msg, opts }); } },
+      _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
+    },
+  };
+}
+
+/** What the auto runner stamps after `startNewPipeline` returns (M2). */
+function autoJobBlock(): NonNullable<SessionMeta["autoJob"]> {
+  return {
+    jobId: HARNESS_JOB_ID,
+    jobPath: `docs/jobs/${HARNESS_JOB_ID}.yaml`,
+    docIndex: 0,
+    totalDocs: HARNESS_DOCS.length,
+  };
+}
+
+beforeEach(async () => {
+  __resetAutoJobLockForTests();
+  harness = createAutoHarness();
+  await harness.install();
+  writeDoc(CONFIRMED_DOC);
+  writeStageAgents();
+  deployClarifySpec();
+  await initAuditLog(harness.config);
+  sent = [];
+  safeAudits = [];
+  errorSpy = spyOn(console, "error").mockImplementation(() => undefined);
+  __setSafeWriteAuditLogOverride(async (stage, message) => {
+    safeAudits.push(`${stage} ${JSON.stringify(message ?? {})}`);
+  });
+});
+
+afterEach(() => {
+  __setSafeWriteAuditLogOverride(null);
+  errorSpy.mockRestore();
+  __resetAutoJobLockForTests();
+  harness.dispose();
+});
+
+describe("/pipeline-start on a confirmed document — deferred advance", () => {
+  it("reports the pending advance instead of a stage the session is not on yet", async () => {
+    const { ctx } = makeCommandCtx();
+
+    const result = (await createPipelineStartCommand(harness.config).execute({ file: DOC }, ctx as never)) as {
+      success: boolean;
+      error?: string;
+      currentStage?: PipelineStage;
+      pipelineId?: string;
+      clarifyAdvancePending?: boolean;
+    };
+
+    expect(result.success).toBe(true);
+    // Truth ①: the session really is still on clarify at this instant.
+    expect(result.currentStage).toBe<PipelineStage>("clarify");
+    expect(ctx.session.getMeta()?.currentStage).toBe<PipelineStage>("clarify");
+    // Truth ②: the advance is explicitly owed, not silently dropped.
+    expect(result.clarifyAdvancePending).toBe(true);
+    // Nothing advanced in this round → no advance audit yet.
+    expect(safeEvents("clarify_startup_advanced")).toHaveLength(0);
+  });
+
+  it("keeps the startup stage in the pipeline_start audit", async () => {
+    const { ctx } = makeCommandCtx();
+
+    const result = (await createPipelineStartCommand(harness.config).execute({ file: DOC }, ctx as never)) as {
+      success: boolean;
+      pipelineId?: string;
+    };
+
+    expect(result.success).toBe(true);
+    const log = await readPipelineAudit(result.pipelineId);
+    expect(log).toContain("pipeline_start");
+    // The advance (when it happens) must never rewrite the recorded startup
+    // stage — the audit says how the run STARTED, the advance audit says where
+    // it went.
+    expect(log).toMatch(/pipeline_start \| pipelineId=.* \| .*startStage=clarify/);
+  });
+
+  it("the runner-side advance lands on the SAME stage the audit names", async () => {
+    const { ctx } = makeCommandCtx();
+    const result = (await createPipelineStartCommand(harness.config).execute({ file: DOC }, ctx as never)) as {
+      success: boolean;
+      pipelineId?: string;
+      clarifyAdvancePending?: boolean;
+    };
+    expect(result.success).toBe(true);
+    expect(result.clarifyAdvancePending).toBe(true);
+
+    // The auto runner stamps the contract AFTER the start (M2) …
+    ctx.session.updateMeta({ autoJob: autoJobBlock() });
+    const freshMeta = ctx.session.getMeta() as SessionMeta;
+
+    // … and only then performs the deferred advance, in the same round.
+    const outcome = await advanceConfirmedClarifyOnStartup(
+      { session: ctx.session, pi: ctx.pi },
+      harness.config,
+      freshMeta,
+      createPipelineUI(harness.config),
+    );
+
+    const expectedTarget = harness.config.stages.clarify?.nextStage as PipelineStage;
+    expect(outcome).toEqual({ advanced: true, toStage: expectedTarget });
+    expect(ctx.session.getMeta()?.currentStage).toBe(expectedTarget);
+
+    // Return truth, session meta and audit agree on the target stage.
+    const advanced = safeEvents("clarify_startup_advanced");
+    expect(advanced).toHaveLength(1);
+    expect(advanced[0]).toContain(`"toStage":"${expectedTarget}"`);
+    expect(advanced[0]).toContain(`"requirementDoc":"${DOC}"`);
+
+    // The sidecar follows the same target (single write point).
+    expect(harness.state().docs[0]!.lastStage).toBe<PipelineStage>(expectedTarget);
+    // The startup-stage audit is unchanged by the advance.
+    const log = await readPipelineAudit(result.pipelineId);
+    expect(log).toMatch(/pipeline_start \| pipelineId=.* \| .*startStage=clarify/);
+  });
+});
