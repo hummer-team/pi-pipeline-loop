@@ -37,7 +37,10 @@ import { createSessionState, __resetSharedStateDir } from "../../core/session-st
 import { createAgentSettled } from "../../core/agent-settled";
 import { deriveReportPath } from "../../core/design-review/state";
 import { handleDesignReviewOperationTerminal } from "../../core/design-review/coordinator";
-import { setDesignReviewTerminalHandler } from "../../utils/subagent-rpc";
+import {
+  setDesignReviewTerminalHandler,
+  type DesignReviewTerminalHandler,
+} from "../../utils/subagent-rpc";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
 import {
@@ -375,7 +378,25 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
   const session = composition.ownerSession;
 
   // The composition root registers exactly this handler (index.ts:114).
-  setDesignReviewTerminalHandler(handleDesignReviewOperationTerminal);
+  //
+  // The bus watcher invokes the handler from a fire-and-forget async callback
+  // (`watchSubagentLifecycle` never awaits `onEvent`), so the transaction's end
+  // is otherwise unobservable. Track the promise here so `flush()` can wait for
+  // the DURABLE result (terminal commit + failure park + wake persist) instead
+  // of guessing a quiescence window — the terminal path awaits real audit file
+  // I/O, which under full-suite load can outlive any fixed grace and let a
+  // later assertion race the wake commit.
+  const inFlightTerminals = new Set<Promise<void>>();
+  const trackingTerminalHandler: DesignReviewTerminalHandler = (pi, config, session, evt) => {
+    const task = handleDesignReviewOperationTerminal(pi, config, session, evt);
+    inFlightTerminals.add(task);
+    void task.then(
+      () => inFlightTerminals.delete(task),
+      () => inFlightTerminals.delete(task),
+    );
+    return task;
+  };
+  setDesignReviewTerminalHandler(trackingTerminalHandler);
   markSubagentsReady();
 
   // Registry probe: the executor session file is PROVEN, exactly like the
@@ -431,11 +452,15 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
   const hook = createAgentSettled(config);
 
   // ── child session (the bound develop executor, from the composition) ─────
-  // Async lifecycle/wake observers run through promise chains whose length
-  // varies with scheduler load, so a fixed timer is a flake. Poll until the
-  // observable state (run record + wake queue) repeats across two
-  // consecutive ticks before declaring the chain settled.
+  // First wait for every in-flight terminal transaction to reach its real
+  // end (awaitable by construction, so this is not a timing guess). Then poll
+  // the remaining async observers (scripted RPC replies, wake echoes) until
+  // the observable state (run record + wake queue) repeats across two
+  // consecutive ticks.
   const flush = async (): Promise<void> => {
+    while (inFlightTerminals.size > 0) {
+      await Promise.allSettled([...inFlightTerminals]);
+    }
     let lastSnapshot = "";
     for (let tick = 0; tick < 100; tick++) {
       await new Promise((r) => setTimeout(r, 10));
