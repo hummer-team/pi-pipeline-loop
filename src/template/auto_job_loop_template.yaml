@@ -35,6 +35,11 @@ docs:
   list:
     - doc: "{designDir}/200_Feat.md"   # 必须是项目内相对路径、以 .md 结尾、不含 ".."
       startStage: clarify              # 可选；仅接受可恢复阶段；缺省取 defaults.startStage
+                                       # 224：显式 plan 起点要求需求文档已有「## 模型确认」
+                                       # （缺 → 文档失败 clarify-confirmation；_Plan.md 已
+                                       # 确认时 → Plan 已确认，请改用 develop/auto）。
+                                       # 非 clarify 起点在跑起来的同回合内由插件自动派发
+                                       # 该阶段执行者，无需手动 @agent。
     - doc: "{designDir}/201_Feat.md"
   skipCompleted: true                  # 命中 NEW_COMMIT_RE（如 *_Develop_Commit.md）视为已完成并跳过
   onFailure: stop                      # stop | continue
@@ -44,6 +49,8 @@ docs:
 # D5：job 级起点阶段。逐文档 startStage 优先于本键。
 #   clarify | plan | design-review | develop | review | fix | auto
 #   auto = 按磁盘证据（设计文档/计划确认/代码提交）推导起点，证据不足回落 clarify。
+#   224：显式 plan 起点才需要需求文档已有「## 模型确认」；auto 派生到 plan 不受
+#   该闸门否决（未确认的计划照常从 plan 起跑）。
 defaults:
   startStage: clarify
 
