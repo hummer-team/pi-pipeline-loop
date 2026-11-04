@@ -731,13 +731,24 @@ async function startPendingDoc(input: {
   };
   const requestedStage = target.doc.startStage ?? job.defaults.startStage;
   const { stage, derivation } = resolveStartStage(requestedStage, facts);
+  const ui = createPipelineUI(config);
   const evidence = await checkStartStageEvidence({
     config,
     meta: { requirementDoc: target.doc.doc },
     startStage: stage,
     projectRoot,
+    derivation,
   });
   if (!evidence.ok) {
+    const hint =
+      evidence.missing === "plan-confirmed"
+        ? "the plan is already confirmed — start from \"develop\" or \"auto\" instead of \"plan\"."
+        : evidence.missing === "clarify-confirmation"
+          ? "the requirement document has no clarification confirmation yet — start from \"clarify\" (or add the marker) before starting at \"plan\"."
+          : null;
+    if (hint) {
+      ui.notify(ctx as never, `Doc ${target.doc.doc}: ${hint}`);
+    }
     await safeWriteAuditLog("pipeline_auto_start_stage_rejected", {
       jobId,
       doc: target.doc.doc,
@@ -750,7 +761,6 @@ async function startPendingDoc(input: {
     return failDoc(input, target.index, `start_stage_evidence_missing:${evidence.missing}`);
   }
 
-  const ui = createPipelineUI(config);
   const started = await startNewPipeline(ctx, config, ui, target.doc.doc, stage);
   if (!started.success) {
     return failDoc(input, target.index, started.error ?? "start_failed");

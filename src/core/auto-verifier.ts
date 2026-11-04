@@ -1080,7 +1080,7 @@ function hasMarkerAtLineStart(content: string, marker: string): boolean {
  * @param projectRoot - Project root for resolving relative requirementDoc paths
  */
 export async function precheckCompletionMarker(
-  meta: SessionMeta,
+  meta: Pick<SessionMeta, "requirementDoc">,
   marker: string | string[],
   projectRoot: string,
 ): Promise<boolean> {

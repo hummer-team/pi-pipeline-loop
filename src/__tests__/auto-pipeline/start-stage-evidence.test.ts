@@ -49,18 +49,18 @@ describe("checkStartStageEvidence", () => {
 
   it("clarify / plan need the requirement document", async () => {
     const meta = makeTestMeta({ requirementDoc: REQUIREMENT });
-    expect(await checkStartStageEvidence({ config, meta, startStage: "clarify", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "clarify", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: false,
       missing: "requirement",
     });
     await write(REQUIREMENT);
-    expect(await checkStartStageEvidence({ config, meta, startStage: "clarify", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "clarify", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: true,
       basis: "requirement",
     });
-    expect(await checkStartStageEvidence({ config, meta, startStage: "plan", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "plan", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: true,
-      basis: "requirement",
+      basis: "clarify-confirmation",
     });
   });
 
@@ -68,11 +68,11 @@ describe("checkStartStageEvidence", () => {
     await write(REQUIREMENT);
     const meta = makeTestMeta({ requirementDoc: REQUIREMENT });
     expect(
-      await checkStartStageEvidence({ config, meta, startStage: "design-review", projectRoot: root }),
+      await checkStartStageEvidence({ config, meta, startStage: "design-review", projectRoot: root, derivation: "explicit" }),
     ).toEqual({ ok: false, missing: "plan" });
     await write("docs/design/200_Feat_Plan.md");
     expect(
-      await checkStartStageEvidence({ config, meta, startStage: "design-review", projectRoot: root }),
+      await checkStartStageEvidence({ config, meta, startStage: "design-review", projectRoot: root, derivation: "explicit" }),
     ).toEqual({ ok: true, basis: "plan" });
   });
 
@@ -80,17 +80,17 @@ describe("checkStartStageEvidence", () => {
     const meta = makeTestMeta({ requirementDoc: REQUIREMENT });
     // No plan on disk → `plan`, NOT `plan-confirmed` (D5: the failure kind must
     // say whether the plan is missing or merely unconfirmed).
-    expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: false,
       missing: "plan",
     });
     await write("docs/design/200_Feat_Plan.md", "## 目的\nno marker");
-    expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: false,
       missing: "plan-confirmed",
     });
     await write("docs/design/200_Feat_Plan.md", "## 目的\n## User Confirmation\nok");
-    expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "develop", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: true,
       basis: "plan-confirmed",
     });
@@ -98,12 +98,12 @@ describe("checkStartStageEvidence", () => {
 
   it("review needs the commit document", async () => {
     const meta = makeTestMeta({ requirementDoc: REQUIREMENT });
-    expect(await checkStartStageEvidence({ config, meta, startStage: "review", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "review", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: false,
       missing: "commit",
     });
     await write("docs/design/200_Feat_Develop_Commit.md");
-    expect(await checkStartStageEvidence({ config, meta, startStage: "review", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "review", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: true,
       basis: "commit",
     });
@@ -111,17 +111,17 @@ describe("checkStartStageEvidence", () => {
 
   it("fix needs a review report with a fixable verdict", async () => {
     const meta = makeTestMeta({ requirementDoc: REQUIREMENT });
-    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: false,
       missing: "review-verdict",
     });
     await write("docs/review/Code_Review_200_Feat_Develop_Commit_1.md", "Verdict: PASS\nall good");
-    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: false,
       missing: "review-verdict",
     });
     await write("docs/review/Code_Review_200_Feat_Develop_Commit_2.md", "## To-Fix\n- one issue");
-    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: true,
       basis: "review-report",
     });
@@ -132,7 +132,7 @@ describe("checkStartStageEvidence", () => {
     await write("docs/review/Code_Review_999_Other_Develop_Commit_9.md", "## To-Fix\n- other doc");
     const meta = makeTestMeta({ requirementDoc: REQUIREMENT });
     // Only the own-document report counts even though another doc's report exists.
-    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root })).toEqual({
+    expect(await checkStartStageEvidence({ config, meta, startStage: "fix", projectRoot: root, derivation: "explicit" })).toEqual({
       ok: true,
       basis: "review-report",
     });
@@ -141,7 +141,7 @@ describe("checkStartStageEvidence", () => {
   it("unbound requirement document → missing requirement", async () => {
     const meta = makeTestMeta();
     expect(
-      await checkStartStageEvidence({ config, meta, startStage: "design-review", projectRoot: root }),
+      await checkStartStageEvidence({ config, meta, startStage: "design-review", projectRoot: root, derivation: "explicit" }),
     ).toEqual({ ok: false, missing: "requirement" });
   });
 
@@ -162,6 +162,7 @@ describe("checkStartStageEvidence", () => {
       meta: makeTestMeta({ requirementDoc: REQUIREMENT }),
       startStage: "design-review",
       projectRoot: root,
+      derivation: "explicit",
     });
     expect(await fs.readdir(join(root, "docs", "design"))).toEqual(before);
   });

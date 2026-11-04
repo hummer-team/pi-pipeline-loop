@@ -28,8 +28,7 @@
  */
 
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../types";
-import { DEFAULT_CLARIFY_PROTOCOL, normalizeMarkers } from "./auto-pipeline/clarify-anchors";
-import { precheckCompletionMarker } from "./auto-verifier";
+import { passesClarifyMarkerGate } from "./auto-pipeline/clarify-marker-gate";
 import { autoAdvanceAfterVerify } from "./verify-advance";
 import { docsDirsOf } from "../docs-paths";
 import { readActiveJobContext } from "./auto-pipeline/config-overlay";
@@ -56,28 +55,6 @@ export interface ClarifyStartupAdvanceOutcome {
   advanced: boolean;
   toStage?: PipelineStage;
   reason?: string;
-}
-
-/**
- * 223 review issue 8 (L4): the precheck must accept the SAME marker set the
- * derivation used to produce the `confirmed` plan (`resolveClarifyAnchors`:
- * job aliases ∪ configured `completionMarker` ∪ protocol defaults). Gating on
- * the configured marker alone created a narrow "confirmed but neither spawned
- * nor advanced" stall for a project with a CUSTOM marker whose document carries
- * the default one.
- *
- * The switch stays `completionMarker`: when nothing is configured the set is
- * EMPTY (= no precheck), which is the settle-side parity rule — merging the
- * defaults unconditionally would invent a gate the project never configured.
- */
-function resolveStartupGateMarkers(config: PipelineConfig): string[] {
-  const configured = normalizeMarkers(config.stages.clarify?.verify?.completionMarker);
-  if (configured.length === 0) return [];
-  return normalizeMarkers([
-    ...normalizeMarkers(config.clarifyProtocol?.modelConfirm),
-    ...configured,
-    ...DEFAULT_CLARIFY_PROTOCOL.modelConfirm,
-  ]);
 }
 
 /**
@@ -115,9 +92,7 @@ export async function advanceConfirmedClarifyOnStartup(
   // one semantics: falling back to `DEFAULT_COMPLETION_MARKERS` would invent a
   // gate the project never configured and re-create the "confirmed but stuck"
   // stall this phase fixes.
-  const markers = resolveStartupGateMarkers(config);
-  const markerGate = markers.length === 0
-    || await precheckCompletionMarker(meta, markers, config.projectRoot);
+  const markerGate = await passesClarifyMarkerGate(config, meta, config.projectRoot);
   if (!markerGate) {
     await safeWriteAuditLog("clarify_startup_advance_blocked", {
       pipelineId: meta.pipelineId,

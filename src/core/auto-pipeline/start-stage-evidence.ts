@@ -18,14 +18,18 @@ import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
 import { planDocHasConfirmMarker, resolveCommitDocPath } from "../verify-path-resolver";
 import { loadVerifyContractAnchors } from "../../utils/contract-loader";
 import { docsDirsOf } from "../../docs-paths";
+import { passesClarifyMarkerGate } from "./clarify-marker-gate";
 
 /** What the start stage was verified against. */
-export type StartStageBasis = "requirement" | "plan" | "plan-confirmed" | "commit" | "review-report";
+export type StartStageBasis = "requirement" | "clarify-confirmation" | "plan" | "plan-confirmed" | "commit" | "review-report";
+
+/** Missing evidence kind for a failed start-stage gate. */
+export type MissingEvidence = "requirement" | "clarify-confirmation" | "plan" | "plan-confirmed" | "commit" | "review-verdict";
 
 /** Result of the evidence gate. */
 export type StartStageEvidence =
   | { ok: true; basis: StartStageBasis }
-  | { ok: false; missing: "requirement" | "plan" | "plan-confirmed" | "commit" | "review-verdict" };
+  | { ok: false; missing: MissingEvidence };
 
 /** Upper bound of the review-report directory scan. */
 const MAX_REVIEW_FILES = 200;
@@ -122,8 +126,9 @@ export async function checkStartStageEvidence(input: {
   meta: Pick<SessionMeta, "requirementDoc">;
   startStage: PipelineStage;
   projectRoot: string;
+  derivation: "explicit" | "auto";
 }): Promise<StartStageEvidence> {
-  const { config, meta, startStage, projectRoot } = input;
+  const { config, meta, startStage, projectRoot, derivation } = input;
   const requirementDoc = meta.requirementDoc;
   if (!requirementDoc) return { ok: false, missing: "requirement" };
 
@@ -132,10 +137,21 @@ export async function checkStartStageEvidence(input: {
 
   switch (startStage) {
     case "clarify":
-    case "plan": {
+      {
       return (await isFile(requirementAbs))
         ? { ok: true, basis: "requirement" }
         : { ok: false, missing: "requirement" };
+    }
+    case "plan": {
+      if (!(await isFile(requirementAbs))) return { ok: false, missing: "requirement" };
+      if (derivation === "auto") return { ok: true, basis: "requirement" };
+      if ((await isFile(planAbs)) && (await planDocHasConfirmMarker(planAbs))) {
+        return { ok: false, missing: "plan-confirmed" };
+      }
+      if (!(await passesClarifyMarkerGate(config, meta, projectRoot))) {
+        return { ok: false, missing: "clarify-confirmation" };
+      }
+      return { ok: true, basis: "clarify-confirmation" };
     }
     case "design-review": {
       return (await isFile(planAbs)) ? { ok: true, basis: "plan" } : { ok: false, missing: "plan" };
