@@ -27,6 +27,21 @@ import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { AUDIT_THROTTLE_WINDOW_MS } from "../constants";
 
 /**
+ * 223 Phase 0: prefix prepended to the wake summary when the terminal event
+ * belongs to an auto-pipeline job (`meta.autoJob` is set). The prefixed text
+ * starts with a registered `PIPELINE_TURN_SIGNATURES` entry, so the wake turn
+ * is recognized as a pipeline turn by the settle gate instead of being
+ * classified as ordinary chat (`agent_settled_non_pipeline_turn`), which used
+ * to make the clarify auto-round seam unreachable and stall the auto pipeline.
+ *
+ * MUST stay identical to the "[plugin auto-settle] " entry registered in
+ * `PIPELINE_TURN_SIGNATURES` (src/constants.ts) — that registration is what
+ * makes this prefix trusted. Modify both together (see the maintenance note
+ * on the signature list).
+ */
+const AUTO_WAKE_PREFIX = "[plugin auto-settle] ";
+
+/**
  * 203_Bug Phase 0: Terminal-reason normalization switched from whitelist to
  * blacklist. Only `stopped` (plus explicit empty/unknown) are exempt from
  * waking. Any other observed reason (including the previously unchecked
@@ -213,7 +228,12 @@ function evaluateWake(
   // (`pipe-1792915432897-hxekq4`) stamped `terminalWake` before delivering to
   // the wrong session, so every later terminal event hit the dedup guard
   // (`owner_wake_skipped reason=dedup` × 10) and the owner was never woken.
-  const summary = buildWakeSummary(agentId, matchingStage, pipelineId, hasPendingSpawns);
+  const summary = buildWakeSummary(
+    agentId, matchingStage, pipelineId, hasPendingSpawns,
+    // 223 Phase 0: auto-pipeline jobs mark their wake turn with the trusted
+    // prefix; human-track sessions keep the legacy wording byte-for-byte.
+    meta.autoJob !== undefined,
+  );
   const outcome: DeliveryOutcome = deps.deliver
     ? deps.deliver(summary, meta)
     : (() => { deps.sendFollowUp(summary); return { delivered: true, via: "deps_fallback" as const }; })();
@@ -246,15 +266,21 @@ function evaluateWake(
 
 /**
  * Builds the wake summary message for the owner.
+ *
+ * 223 Phase 0: `autoWake` is true only for auto-pipeline jobs. When true, the
+ * FIRST part gets the `AUTO_WAKE_PREFIX` marker (making the turn a pipeline
+ * turn for the settle gate); when false the wording is unchanged byte-for-byte
+ * so the human track behaves exactly as before.
  */
 function buildWakeSummary(
   agentId: string,
   stage: PipelineStage,
   pipelineId: string | undefined,
   hasPendingSpawns: boolean,
+  autoWake: boolean,
 ): string {
   const parts = [
-    `Subagent "${agentId}" (stage: ${stage}) has reached terminal state.`,
+    `${autoWake ? AUTO_WAKE_PREFIX : ""}Subagent "${agentId}" (stage: ${stage}) has reached terminal state.`,
   ];
 
   if (hasPendingSpawns) {

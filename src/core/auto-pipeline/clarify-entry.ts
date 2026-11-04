@@ -17,6 +17,8 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
+import type { RuntimeCtx } from "../runtime-ctx";
+import { detectSessionRole } from "../session-role";
 import { docsDirsOf } from "../../docs-paths";
 import { auditAutoDecision } from "./auto-audit";
 import { stampClarifyRoundDispatch } from "./clarify-round-budget";
@@ -50,6 +52,10 @@ export async function runAutoClarifyRound(
   deps: ClarifyEntryDeps = DEFAULT_CLARIFY_DEPS,
 ): Promise<boolean> {
   if (meta.currentStage !== "clarify") return false;
+  // Owner-only contract: a CHILD session never dispatches clarify rounds. The
+  // same guard already exists in clarify-marker-miss.ts — this one removes the
+  // "relies on `\d+$` not matching" accident (223_Bug.md「附带发现」).
+  if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return false;
   const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active || active.state.status !== "running") return false;
   const { state, job } = active;

@@ -394,6 +394,11 @@ export const PIPELINE_TURN_SIGNATURES: ReadonlyArray<string | RegExp> = [
   // 194 Phase 3 (task 3): registers the PREVIOUSLY UNRECOGNISED legacy wake
   // prefix (a production wake turn used to fall into the ordinary-chat gate)
   // so review/update terminal wakes are pipeline turns on the text path too.
+  // 223 Phase 0: this entry now has a SECOND producer — core/owner-wake.ts
+  // prepends the same prefix to the auto-pipeline wake summary (AUTO_WAKE_PREFIX,
+  // only when meta.autoJob is set). Keep both in sync when editing this text
+  // (see the maintenance note above): the owner-wake marker is trusted only
+  // because it is registered here.
   "[plugin auto-settle] ",
 
   // @mention pattern: "@agent-name file [args]" where args include round indicators
