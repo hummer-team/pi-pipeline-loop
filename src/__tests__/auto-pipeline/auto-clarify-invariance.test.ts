@@ -298,6 +298,11 @@ describe("INV-2 / INV-3 — source guards", () => {
   }
 
   it("the auto layer never starts or advances a pipeline itself", () => {
+    // 223 Phase 2 kept this guard valid WITHOUT whitelisting: the confirmed-
+    // clarify advance lives in `src/core/clarify-startup-advance.ts` and is
+    // invoked explicitly by the COMMAND round (`pipeline-start.ts` /
+    // `pipeline-auto.ts`), so no module under `auto-pipeline/` gains a
+    // start/advance call. See 223_Bug_Plan.md Phase 2 (INV-2 note).
     const offenders = moduleSources()
       .filter(({ source }) => source.includes("startNewPipeline(") || source.includes("advanceStage("))
       .map(({ file }) => file);

@@ -1223,6 +1223,38 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 - `git add -f` 不能绕过保护——force 暂存 gitignore-protected 路径会被拦截
 - 内置硬编码路径（`.pi/`、`AGENTS.md`、`.git/`）始终不可提交
 
+### 8.6 clarify 已确认后重启会直接推进（223）
+
+**现象**：需求文档末尾已写入 `## 模型确认`（full-und? 已确认），但 `/pipeline-start` / `/pipeline-auto` 重启后仍停在 clarify。
+
+**机制**：clarify 的「已确认」是一个**文档态**判定，不是一次性事件。启动回合会把「模型确认已落盘」识别为可推进条件：`/pipeline-start` 直接推进 clarify；`/pipeline-auto` 在自动任务契约（`meta.autoJob` + 活跃 job 锁）成立后，于**同一个命令回合内**推进，不再等待一次多余的 settle。审计记录 `clarify_startup_advanced`（含 `toStage`）。
+
+**边界**：该推进仅限自动推进链路（`/pipeline-start` 的自动拉起与 `/pipeline-auto`）；人机协同模式下由人决定何时推进，行为不变。若推进未发生，先确认文档中 `## 模型确认` 是独立一节的原始文本（不是引用块/代码块内），且未被裁掉。
+
+**解决**：
+
+- 保持文档中的 `## 模型确认` 节存在，重新执行 `/pipeline-start <doc>` 或 `/pipeline-auto --next`
+- 查审计 `.pi/audit/{pipelineId}/log/`：出现 `clarify_startup_advanced` 说明推进已生效；出现 `clarify_startup_advance_blocked` 则按记录中的 reason 处理
+
+### 8.7 clarify 卡死的脱困命令与 auto 唤醒标记（223）
+
+**现象**：自动任务在 clarify 反复停顿、把澄清轮次耗光（`clarify-stalled` / `clarify_budget_exhausted`），或 settle 后流水线不动。
+
+**脱困命令**：直接对 clarify 执行者补一次「完全理解确认」派发，让模型把最终确认写入文档：
+
+```
+@<clarify agent> <doc_path> full-und?
+```
+
+该命令等价于流水线内部派发最后一轮 `full-und?`：模型会在文档末尾写入 `## 模型确认`，随后由 `agent_settled` 的 clarify 验证推进；自动任务里同一条通道由插件自行派发，无需人工输入。
+
+**唤醒标记**：自动任务结束时插件发给主会话的唤醒文案带固定前缀 `[plugin auto-settle] `，该前缀是「这一轮属于流水线回合」的可信标记。缺少前缀的唤醒文案会被当作普通聊天（不验证、不推进），这是 clarify 曾被误判为纯聊天并卡死的根因，已在 223 修复：前缀只在 `meta.autoJob` 存在时添加，人机协同模式的唤醒文案逐字节保持不变。
+
+**解决**：
+
+- 手工脱困用上面的 `full-und?` 命令；若模型仍不写确认标记，检查 `.pi/skills/design/SKILL.md` 与 `.pi/references/clarify_template.md` 的确认标记是否被改过（见 §19.7）
+- 自动任务中若审计出现 `agent_settled_non_pipeline_turn` 而 stage 未动，说明唤醒文案没带前缀：确认 `meta.autoJob` 存在且 job 锁属于本进程
+
 ---
 
 ## 9. 验证机制（verify）完整说明
