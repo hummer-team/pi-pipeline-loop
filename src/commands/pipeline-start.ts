@@ -1203,7 +1203,6 @@ export async function startNewPipeline(
     : "";
   // 223 Phase 2: this result is consumed both by startup message text and by
   // return truth (`currentStage` / deferred startup-advance contract).
-  let clarifyAdvancedTo: PipelineStage | undefined;
   let clarifyAdvancePending = false;
   let clarifyBlockedReason: string | undefined;
 
@@ -1211,8 +1210,12 @@ export async function startNewPipeline(
   // 223 Phase 2: the result feeds the return truth (currentStage/message) and
   // the deferred-advance contract for the auto runner's first start.
   if (startStage === "clarify") {
+    // 223 review issue 5 (L1): the result carries NO `advancedTo` — this host
+    // always starts from `buildStartMeta`, whose `buildNewPeriodResetFields`
+    // resets `meta.autoJob`, so the in-place advance branch of
+    // `applyAutoClarifyPlan` can never fire here. The only host that advances is
+    // `dispatchAfterResume`, which reads the fresh session meta itself.
     const launched = await maybeAutoLaunchClarify(ctx, config, ui, newMeta, docFile, forwardArgs);
-    clarifyAdvancedTo = launched?.advancedTo;
     clarifyAdvancePending = launched?.confirmAdvancePending === true;
     clarifyBlockedReason = launched?.blockedReason;
   }
@@ -1225,11 +1228,9 @@ export async function startNewPipeline(
   const messageSuffix = startStage === "clarify"
     ? clarifyAdvancePending
       ? ` clarify confirmed; the advance to "${deferredTarget}" is deferred to the auto runner's first start`
-      : clarifyAdvancedTo
-        ? ` clarify confirmed; advanced to ${clarifyAdvancedTo} and dispatched its executor`
-        : clarifyBlockedReason
-          ? ` clarify dispatch blocked (${clarifyBlockedReason}); see pipeline_freeze/clarify_fallback audit`
-          : ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
+      : clarifyBlockedReason
+        ? ` clarify dispatch blocked (${clarifyBlockedReason}); see pipeline_freeze/clarify_fallback audit`
+        : ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
     : "";
 
   // 223 review issue 2 (M2): hosts WITHOUT the auto runner's consumer (the human
@@ -1252,7 +1253,9 @@ export async function startNewPipeline(
     // 223 Phase 2 truth consistency: the START audit still records the launch
     // fact (`startStage: "clarify"`); the ADVANCE fact lives in the
     // `clarify_startup_advanced` audit. The RESULT reports where the run is.
-    currentStage: clarifyAdvancedTo ?? startStage,
+    // 223 review issue 5 (L1): this host never advances in-round, so the honest
+    // `currentStage` is the stage the run really started on.
+    currentStage: startStage,
     ...(clarifyAdvancePending ? { clarifyAdvancePending: true as const } : {}),
     requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),
   };
@@ -1294,8 +1297,6 @@ async function applyAutoClarifyPlan(
   activeJob: ReturnType<typeof readActiveJobContext>,
   plan: ClarifyAutoPlan,
 ): Promise<{
-  /** 223 Phase 2 (branch A): the confirmed clarify advanced to this stage in-round. */
-  advancedTo?: PipelineStage;
   /** 223 Phase 2 (branch B): `startPendingDoc` must advance after autoJob is stamped. */
   confirmAdvancePending?: boolean;
   /** 223 review issue 5: the gate that froze or forced a finalisation round. */
@@ -1353,7 +1354,10 @@ async function applyAutoClarifyPlan(
       );
       if (advanceOutcome.advanced && advanceOutcome.toStage) {
         ui.notify(ctx, `Clarify confirmed; advanced to ${advanceOutcome.toStage} and dispatched its executor.`);
-        return { advancedTo: advanceOutcome.toStage };
+        // 223 review issue 5 (L1): the outcome is NOT returned as a stage truth —
+        // this branch is only reachable from `dispatchAfterResume` (a host whose
+        // caller re-reads the session meta), never from `startNewPipeline`.
+        return {};
       }
       // The audit row is written by `advanceConfirmedClarifyOnStartup` itself
       // (`clarify_startup_advance_blocked`, exactly one per refusal) — the
@@ -1387,8 +1391,6 @@ async function maybeAutoLaunchClarify(
   file: string,
   forwardArgs?: string,
 ): Promise<{
-  /** 223 Phase 2 (branch A): the confirmed clarify advanced to this stage in-round. */
-  advancedTo?: PipelineStage;
   /** 223 Phase 2 (branch B): `startPendingDoc` must advance after autoJob is stamped. */
   confirmAdvancePending?: boolean;
   /** Startup clarify dispatch was intentionally blocked by gate handlers. */
