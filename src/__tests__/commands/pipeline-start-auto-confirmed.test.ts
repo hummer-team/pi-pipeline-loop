@@ -347,3 +347,40 @@ describe("/pipeline-resume on a confirmed document — advance truth", () => {
     expect(result.message).toBe(`Pipeline resumed at stage "clarify".`);
   });
 });
+
+/**
+ * 223 review issue 2 (Medium) regression net: a host WITHOUT the auto runner's
+ * consumer must not hand the user "Next: run @feat-design-plan-agent …" for an
+ * already-confirmed document — that instruction can neither spawn nor advance.
+ */
+describe("/pipeline-start on a confirmed document — the deferred advance is honest", () => {
+  it("states the deferral in the message instead of the clarify-run hint", async () => {
+    const { ctx } = makeCommandCtx();
+    const result = (await createPipelineStartCommand(harness.config).execute({ file: DOC }, ctx as never)) as {
+      success: boolean;
+      message?: string;
+    };
+    const expectedTarget = harness.config.stages.clarify?.nextStage as PipelineStage;
+
+    expect(result.success).toBe(true);
+    expect(result.message ?? "").toContain(`clarify confirmed; the advance to "${expectedTarget}" is deferred`);
+    expect(result.message ?? "").not.toContain("@feat-design-plan-agent");
+  });
+
+  it("notifies once and leaves the pending audit row as the observable trace", async () => {
+    const { stub, ctx } = makeCommandCtx();
+    await createPipelineStartCommand(harness.config).execute({ file: DOC }, ctx as never);
+
+    // The pending state is user-visible exactly once …
+    const deferred = stub.notified.filter((m) => m.includes("deferred to the auto runner"));
+    expect(deferred).toHaveLength(1);
+    const expectedTarget = harness.config.stages.clarify?.nextStage as PipelineStage;
+    expect(deferred[0]).toContain(`"${expectedTarget}"`);
+    // … the plan router writes the audit row (never a silent "nobody advanced") …
+    const pending = safeEvents("clarify_startup_advance_pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toContain('"reason":"autojob_contract_pending"');
+    // … and nothing advanced in this host.
+    expect(safeEvents("clarify_startup_advanced")).toHaveLength(0);
+  });
+});

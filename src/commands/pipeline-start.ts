@@ -1217,13 +1217,27 @@ export async function startNewPipeline(
     clarifyBlockedReason = launched?.blockedReason;
   }
 
+  // 223 review issue 2 (M2): a deferred advance used to fall through to the
+  // "Next: run @feat-design-plan-agent …" hint — an instruction that can never
+  // dispatch (the document is already confirmed) and never advances. The
+  // pending state now has its own honest branch.
+  const deferredTarget = config.stages.clarify?.nextStage ?? "the next stage";
   const messageSuffix = startStage === "clarify"
-    ? clarifyAdvancedTo
-      ? ` clarify confirmed; advanced to ${clarifyAdvancedTo} and dispatched its executor`
-      : clarifyBlockedReason
-        ? ` clarify dispatch blocked (${clarifyBlockedReason}); see pipeline_freeze/clarify_fallback audit`
-        : ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
+    ? clarifyAdvancePending
+      ? ` clarify confirmed; the advance to "${deferredTarget}" is deferred to the auto runner's first start`
+      : clarifyAdvancedTo
+        ? ` clarify confirmed; advanced to ${clarifyAdvancedTo} and dispatched its executor`
+        : clarifyBlockedReason
+          ? ` clarify dispatch blocked (${clarifyBlockedReason}); see pipeline_freeze/clarify_fallback audit`
+          : ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
     : "";
+
+  // 223 review issue 2 (M2): hosts WITHOUT the auto runner's consumer (the human
+  // `/pipeline-start`) must be told what will (not) happen, exactly once. The
+  // audit row (`clarify_startup_advance_pending`) is written by the plan router.
+  if (startStage === "clarify" && clarifyAdvancePending) {
+    ui.notify(ctx, `Clarify confirmed; the advance to "${deferredTarget}" is deferred to the auto runner's first start. No clarify round will be dispatched for this document.`);
+  }
 
   // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
   // but still emit a notify hint so the user knows the next step (Medium #3).
