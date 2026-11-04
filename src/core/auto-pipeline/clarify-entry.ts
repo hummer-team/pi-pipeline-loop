@@ -124,13 +124,20 @@ export async function runAutoClarifyRound(
 export async function noteClarifyStartupDispatch(input: {
   config: PipelineConfig;
   doc: string;
+  /**
+   * 223 Phase 1: index of `doc` in `state.docs` (defaults to
+   * `state.docIndex`). Launching the NEXT document still has `docIndex`
+   * pointing at the previous one; without the explicit index this round's
+   * budget accounting would silently land on the wrong document.
+   */
+  docIndex?: number;
   round: number;
   now?: number;
 }): Promise<void> {
   const active = readActiveJobContext(input.config.projectRoot, docsDirsOf(input.config).jobsDir);
   if (!active || active.state.status !== "running") return;
   const { state } = active;
-  const progress = state.docs[state.docIndex];
+  const progress = state.docs[input.docIndex ?? state.docIndex];
   if (!progress || progress.doc !== input.doc) return;
 
   const now = input.now ?? Date.now();

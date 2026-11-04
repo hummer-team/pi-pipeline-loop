@@ -37,6 +37,10 @@ import { spawnClarifySubagent, spawnStageSubagent, watchSubagentLifecycle, resol
 import { buildNewPeriodResetFields } from "../core/meta-reset";
 // 219 Phase 3 (G1): auto clarify plan (self-answer instruction + args).
 import { buildClarifyAutoPlan, type ClarifyAutoPlan } from "../core/auto-pipeline/clarify-autopilot";
+import { runBlockedClarifyStartup } from "../core/auto-pipeline/clarify-startup";
+import { buildClarifyDocState, DEFAULT_CLARIFY_DEPS } from "../core/auto-pipeline/clarify-state";
+import { readActiveJobContext } from "../core/auto-pipeline/config-overlay";
+import { docsDirsOf } from "../docs-paths";
 import { noteClarifyStartupDispatch } from "../core/auto-pipeline/clarify-entry";
 // 210 Phase 7: restart/resume clears the in-process usage ledger.
 import { resetUsage } from "../core/usage-recorder";
@@ -1230,12 +1234,56 @@ async function maybeAutoLaunchClarify(
 
   // 219 Phase 3 (G1): an active auto job self-answers clarify. Its plan replaces
   // the human-derived args and contributes the instruction appended below.
+  // 223 Phase 1: the plan comes from the SHARED decision layer (four document
+  // states + budget gate) instead of a constant `fresh(1)`, and the document
+  // being started is passed in so the derivation reads the right sidecar entry.
   const autoClarify: ClarifyAutoPlan | null =
-    !forwardArgs || !forwardArgs.trim() ? buildClarifyAutoPlan(config) : null;
+    !forwardArgs || !forwardArgs.trim() ? await buildClarifyAutoPlan(config, file) : null;
+  // 223 Phase 1: the instruction only exists on a real dispatch plan.
+  const autoInstruction = autoClarify?.kind === "dispatch" ? autoClarify.instruction : undefined;
+  // 223 Phase 1: the sidecar index of the doc being started, used to attribute
+  // the startup-round accounting (docIndex lags one doc behind during startup).
+  const autoDocIndex =
+    autoClarify && autoInstruction !== undefined
+      ? readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir)?.state.docs.findIndex((d) => d.doc === file)
+      : undefined;
 
   if (autoClarify) {
-    effectiveArgs = autoClarify.args;
-    argsSource = "derived";
+    if (autoClarify.kind === "blocked") {
+      // 223 Phase 1: a gate fired (budget/stall/unclear) — route through the
+      // SAME handlers the settle side uses; never spawn the derived round.
+      const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
+      if (active && active.state.status === "running") {
+        const targetIndex = active.state.docs.findIndex((d) => d.doc === file);
+        if (targetIndex >= 0) {
+          const docState = await buildClarifyDocState({
+            config, state: active.state, job: active.job, doc: file,
+            docIndex: targetIndex, now: Date.now(),
+          });
+          if (docState) {
+            await runBlockedClarifyStartup(
+              ctx, config, meta, active.state, active.job, docState,
+              targetIndex, DEFAULT_CLARIFY_DEPS,
+            );
+          }
+        }
+      }
+      return;
+    }
+    if (autoClarify.kind === "confirmed") {
+      // 223 Phase 1: TEMPORARY behavior pinned to the human derivation branch
+      // verbatim (`Round ... confirmed. Awaiting marker verification.`) — no
+      // budget charge, no spawn, no advance. Phase 2 replaces this with the
+      // in-round advance.
+      skipSpawn = true;
+      skipMessage = `Round ${autoClarify.round} clarification confirmed. Awaiting marker verification.`;
+      effectiveArgs = "";
+      derivedRound = autoClarify.round;
+      argsSource = "derived";
+    } else {
+      effectiveArgs = autoClarify.args;
+      argsSource = "derived";
+    }
   } else if (forwardArgs && forwardArgs.trim()) {
     // Explicit user args → transparent passthrough (Q3-A)
     effectiveArgs = forwardArgs.trim();
@@ -1326,7 +1374,7 @@ async function maybeAutoLaunchClarify(
   // can JOIN back even when it is in-memory (no `parentSession` header).
   // 219 Phase 3 (G1): the auto instruction rides the existing extraArgs channel
   // (appended after the mention), so no new dispatch parameter is introduced.
-  const autoSuffix = autoClarify ? `\n\n${autoClarify.instruction}` : "";
+  const autoSuffix = autoInstruction ? `\n\n${autoInstruction}` : "";
   const prompt = appendPipelineIdMarker(`${file} ${effectiveArgs}${autoSuffix}`.trim(), meta.pipelineId);
   const message = `@${agentName} ${prompt}`;
 
@@ -1356,7 +1404,11 @@ async function maybeAutoLaunchClarify(
       // 220 D6: the startup round consumes the SAME per-doc clarify budget, so
       // `clarify.maxRounds` stays a total (never `maxRounds + 1`).
       if (autoClarify) {
-        await noteClarifyStartupDispatch({ config, doc: file, round: autoClarify.round });
+        await noteClarifyStartupDispatch({
+          config, doc: file,
+          ...(autoDocIndex !== undefined && autoDocIndex >= 0 ? { docIndex: autoDocIndex } : {}),
+          round: autoClarify.round,
+        });
       }
       // RPC success: audit + watch lifecycle, no manual @ hint needed
       await safeWriteAuditLog("pipeline_start_launch_rpc", {
@@ -1390,7 +1442,11 @@ async function maybeAutoLaunchClarify(
   }
   // 220 D6: charge the startup round only when the dispatch really happened.
   if (dispatched && autoClarify) {
-    await noteClarifyStartupDispatch({ config, doc: file, round: autoClarify.round });
+    await noteClarifyStartupDispatch({
+      config, doc: file,
+      ...(autoDocIndex !== undefined && autoDocIndex >= 0 ? { docIndex: autoDocIndex } : {}),
+      round: autoClarify.round,
+    });
   }
 
   ui.notify(ctx, `Next: run ${message} manually if not auto-started.`);

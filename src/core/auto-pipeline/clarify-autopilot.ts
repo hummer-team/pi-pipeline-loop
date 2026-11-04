@@ -29,26 +29,62 @@ import type { AutoJobConfig } from "./job-schema";
 import type { AutoJobState } from "./job-state";
 import { readActiveJobContext } from "./config-overlay";
 import { auditAutoDecision } from "./auto-audit";
+import { auditAutoDiagnostic } from "./diagnostics";
 import { dispatchClarifyRound } from "./clarify-round-dispatch";
 import {
   FORCED_FULL_UND_ARGS,
+  buildClarifyDocState,
   persistClarifyState,
   type ClarifyDocState,
   type ClarifyEntryCtx,
   type ClarifyEntryDeps,
 } from "./clarify-state";
 
-/** The clarify plan for the currently executing doc. */
-export interface ClarifyAutoPlan {
-  /** Args appended to the clarify mention (`<doc> <args>`). */
-  args: string;
+/**
+ * The clarify plan for the currently executing doc.
+ *
+ * 223 Phase 1: a discriminated union. The startup seam no longer hard-codes
+ * `fresh(1)` — it reuses the SAME shared decision layer
+ * (`buildClarifyDocState` / `decideClaifyDispatch` → `decideClarifyDispatch`)
+ * the settle side uses, so re-starting the pipeline derives the round from the
+ * document state and respects `clarify.maxRounds`.
+ */
+export interface ClarifyAutoPlanBase {
   /** Round number that args refer to (charged to the per-doc budget). */
   round: number;
-  /** Instruction appended after the mention (the `extraArgs` channel). */
-  instruction: string;
   /** Job-level round cap (`clarify.maxRounds`). */
   maxRounds: number;
 }
+
+/** A real dispatch of the clarify mention with the given args/instruction. */
+export interface ClarifyAutoDispatchPlan extends ClarifyAutoPlanBase {
+  kind: "dispatch";
+  action: "fresh" | "await-answer" | "spawn-full-und";
+  /**
+   * Args appended to the clarify mention. NO leading space: the launch path
+   * joins `` `${file} ${effectiveArgs}` `` and provides the separator itself
+   * (only the settle-side `subagentRpc` concatenation needs a leading space).
+   */
+  args: string;
+  /** Instruction appended after the mention (the `extraArgs` channel). */
+  instruction: string;
+}
+
+/** The document already carries `## 模型确认`; nothing needs to be spawned. */
+export interface ClarifyAutoConfirmedPlan extends ClarifyAutoPlanBase {
+  kind: "confirmed";
+}
+
+/** A gate stopped the startup dispatch (budget/stall/unclear requirement). */
+export interface ClarifyAutoBlockedPlan extends ClarifyAutoPlanBase {
+  kind: "blocked";
+  action: "budget-exhausted" | "stalled" | "requirement-unclear";
+}
+
+export type ClarifyAutoPlan =
+  | ClarifyAutoDispatchPlan
+  | ClarifyAutoConfirmedPlan
+  | ClarifyAutoBlockedPlan;
 
 // 221 Phase 1: the resolver lives in `clarify-prompt-markers.ts` (dependency
 // leaf shared with `prompt-injector` / `verify-generator`); re-exported here so
@@ -83,16 +119,87 @@ export function buildClarifyInstruction(
 /**
  * Build the clarify plan for the active auto job, or `null` when this process
  * is not an auto runner (human mode keeps its unchanged derivation).
+ *
+ * 223 Phase 1: derives the plan from the SHARED decision layer
+ * (`buildClarifyDocState` → `decideClarifyDispatch`) instead of returning a
+ * constant `fresh(1)`, so a re-started pipeline reads the document's four
+ * states and stays under `clarify.maxRounds`.
+ *
+ * Document attribution lives HERE: while a doc is being (re-)started,
+ * `state.docIndex` still points at the PREVIOUS (completed) doc — it only
+ * advances after `startNewPipeline` returns (`pipeline-auto.ts` M2). The
+ * explicit `docIndex` is handed down so the inner guard resolves the right
+ * progress entry. `null` (an unknown/foreign doc) falls back to the
+ * fresh(1) plan, which is equivalent to the pre-223 behavior.
  */
-export function buildClarifyAutoPlan(config: PipelineConfig): ClarifyAutoPlan | null {
+export async function buildClarifyAutoPlan(
+  config: PipelineConfig,
+  doc: string,
+): Promise<ClarifyAutoPlan | null> {
   const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
   if (!active || active.state.status !== "running") return null;
-  return {
+
+  const markers = resolveClarifyPromptMarkers(config);
+  const maxRounds = active.job.clarify.maxRounds;
+  const freshPlan = (round: number): ClarifyAutoDispatchPlan => ({
+    kind: "dispatch",
+    action: "fresh",
     args: "1",
-    round: 1,
-    instruction: buildClarifyInstruction(active.job, resolveClarifyPromptMarkers(config)),
-    maxRounds: active.job.clarify.maxRounds,
-  };
+    round,
+    instruction: buildClarifyInstruction(active.job, markers),
+    maxRounds,
+  });
+
+  const index = active.state.docs.findIndex((d) => d.doc === doc);
+  const target = index >= 0 ? active.state.docs[index] : undefined;
+  if (!target?.doc) {
+    // Not this job's document → fall back to the HUMAN derivation (null) and
+    // leave an explicit diagnostic so the unmatched startup is observable.
+    await auditAutoDiagnostic("clarify_startup_doc_unmatched", "Startup clarify derivation skipped: the document is not part of the active auto job.", {
+      jobId: active.state.jobId,
+      requirementDoc: doc,
+    }, "warn");
+    return null;
+  }
+
+  const docState = await buildClarifyDocState({
+    config, state: active.state, job: active.job, doc: target.doc,
+    docIndex: index, now: Date.now(),
+  });
+  if (!docState) return freshPlan(1);
+
+  const { decision } = docState;
+  switch (decision.action) {
+    case "fresh":
+      return freshPlan(decision.round);
+    case "await-answer":
+      return {
+        kind: "dispatch",
+        action: "await-answer",
+        args: `${decision.round} 答`,
+        round: decision.round,
+        instruction: buildClarifyInstruction(active.job, markers),
+        maxRounds,
+      };
+    case "spawn-full-und":
+      return {
+        kind: "dispatch",
+        action: "spawn-full-und",
+        args: FORCED_FULL_UND_ARGS.trim(),
+        round: decision.round,
+        instruction: buildClarifyFinalisationInstruction(markers),
+        maxRounds,
+      };
+    case "confirmed":
+      return { kind: "confirmed", round: decision.round, maxRounds };
+    case "budget-exhausted":
+    case "stalled":
+    case "requirement-unclear":
+      return { kind: "blocked", action: decision.action, round: decision.round, maxRounds };
+    default:
+      // not-auto: not this job's doc / auto contract inactive → human derivation.
+      return null;
+  }
 }
 
 /**
@@ -142,6 +249,11 @@ export function buildClarifyFinalisationInstruction(
  *
  * `finalize` is imported lazily: `finalize.ts` imports THIS module, so a static
  * import would create a load-time cycle (same precedent as `freeze-autopilot`).
+ *
+ * 223 Phase 1 (optional `docIndex`, default `state.docIndex`): while the NEXT
+ * document is being started, `state.docIndex` still points at the previous one;
+ * the startup path passes the explicit index so fallback accounting and doc
+ * failures land on the document that actually exhausted the budget.
  */
 export async function handleClarifyBudgetExhausted(
   ctx: ClarifyEntryCtx,
@@ -151,8 +263,10 @@ export async function handleClarifyBudgetExhausted(
   job: AutoJobConfig,
   docState: ClarifyDocState,
   deps: ClarifyEntryDeps,
+  docIndex?: number,
 ): Promise<boolean> {
   const { decision } = docState;
+  const targetIndex = docIndex ?? state.docIndex;
   if (job.clarify.onExhausted !== "self-confirm") {
     await auditAutoDecision(config, {
       gate: "clarify_freeze",
@@ -164,7 +278,7 @@ export async function handleClarifyBudgetExhausted(
     return true;
   }
 
-  const allowed = noteClarifyFallbackUsed({ state, docIndex: state.docIndex });
+  const allowed = noteClarifyFallbackUsed({ state, docIndex: targetIndex });
   await auditAutoDecision(config, {
     gate: "clarify_fallback",
     decision: allowed ? "self_confirm" : "fail",
@@ -178,6 +292,7 @@ export async function handleClarifyBudgetExhausted(
     await handleDocFailure(ctx as never, config, state, job, {
       outcome: "failed",
       reason: "clarify_marker_missing",
+      docIndex: targetIndex,
     });
     return true;
   }
@@ -197,6 +312,7 @@ export async function handleClarifyBudgetExhausted(
     await handleDocFailure(ctx as never, config, state, job, {
       outcome: "failed",
       reason: "clarify_marker_missing",
+      docIndex: targetIndex,
     });
   }
   return true;

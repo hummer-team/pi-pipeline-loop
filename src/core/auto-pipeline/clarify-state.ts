@@ -95,10 +95,19 @@ export async function buildClarifyDocState(input: {
   state: AutoJobState;
   job: AutoJobConfig;
   doc: string;
+  /**
+   * 223 Phase 1: index of `doc` in `state.docs`. Defaults to
+   * `state.docIndex` for the settle-side callers, which is correct there
+   * (`docIndex` only advances AFTER `startNewPipeline` returns). The startup
+   * path (`buildClarifyAutoPlan`) passes the explicit index so that launching
+   * the NEXT document resolves the right progress entry.
+   */
+  docIndex?: number;
   now: number;
 }): Promise<ClarifyDocState | null> {
   const { config, state, job, doc, now } = input;
-  const progress = state.docs[state.docIndex];
+  const index = input.docIndex ?? state.docIndex;
+  const progress = state.docs[index];
   if (!progress || progress.doc !== doc) return null;
 
   const docText = await readRequirementText(config.projectRoot, doc);
