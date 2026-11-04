@@ -23,6 +23,7 @@ import type { Command, PipelineConfig, PipelineJsonConfig, PipelineStage, Sessio
 import { docsDirsOf } from "../docs-paths";
 import { CONFIG_DIR_NAME } from "../constants";
 import { createPipelineUI } from "../core/pipeline-ui";
+import { advanceConfirmedClarifyOnStartup } from "../core/clarify-startup-advance";
 import { startNewPipeline } from "./pipeline-start";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldRecordAutoDecision } from "../core/auto-pipeline/auto-audit";
@@ -768,9 +769,38 @@ async function startPendingDoc(input: {
   clearPendingContinuation(state);
   await writeJobState(projectRoot, state);
 
+  // 223 Phase 2: the document already carried `## 模型确认`, so the clarify
+  // executor was NOT spawned — the advance was deferred until the autoJob
+  // contract (above) holds. Now run it in this same command round.
+  let advanceSuffix = "";
+  if (started.clarifyAdvancePending === true) {
+    const freshMeta = ctx.session?.getMeta?.();
+    if (freshMeta) {
+      const advanceOutcome = await advanceConfirmedClarifyOnStartup(
+        {
+          session: {
+            getMeta: () => ctx.session?.getMeta?.(),
+            updateMeta: (patch) => ctx.session?.updateMeta?.(patch),
+          },
+          ...(ctx.pi !== undefined ? { pi: ctx.pi } : {}),
+        },
+        config,
+        freshMeta,
+        createPipelineUI(config),
+      );
+      advanceSuffix = advanceOutcome.advanced && advanceOutcome.toStage
+        ? `; clarify confirmed → advanced to ${advanceOutcome.toStage}`
+        // A refused advance never rolls the started doc back: the existing
+        // settle semantics own the refusal.
+        : `; clarify advance skipped (${advanceOutcome.reason ?? "not_advanced"})`;
+    } else {
+      advanceSuffix = "; clarify advance skipped (session_meta_unavailable)";
+    }
+  }
+
   return {
     success: true,
-    message: `Auto pipeline started: job ${jobId}, doc ${target.index + 1}/${state.jobTotalDocs} (${target.doc.doc})`,
+    message: `Auto pipeline started: job ${jobId}, doc ${target.index + 1}/${state.jobTotalDocs} (${target.doc.doc})${advanceSuffix}`,
   };
 }
 

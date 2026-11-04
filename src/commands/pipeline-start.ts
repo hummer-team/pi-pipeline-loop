@@ -40,6 +40,7 @@ import { buildClarifyAutoPlan, type ClarifyAutoPlan } from "../core/auto-pipelin
 import { runBlockedClarifyStartup } from "../core/auto-pipeline/clarify-startup";
 import { buildClarifyDocState, DEFAULT_CLARIFY_DEPS } from "../core/auto-pipeline/clarify-state";
 import { readActiveJobContext } from "../core/auto-pipeline/config-overlay";
+import { advanceConfirmedClarifyOnStartup } from "../core/clarify-startup-advance";
 import { docsDirsOf } from "../docs-paths";
 import { noteClarifyStartupDispatch } from "../core/auto-pipeline/clarify-entry";
 // 210 Phase 7: restart/resume clears the in-process usage ledger.
@@ -1070,6 +1071,8 @@ export async function startNewPipeline(
   error?: string;
   pipelineId?: string;
   currentStage?: PipelineStage;
+  /** 223 Phase 2 (branch B): auto runner stamps autoJob THEN advances (startPendingDoc). */
+  clarifyAdvancePending?: boolean;
   requirementContent?: string;
   missingStages?: PipelineStage[];
   suggestion?: string;
@@ -1169,13 +1172,25 @@ export async function startNewPipeline(
   const supersededSuffix = isCompletedWake
     ? ` Previous pipeline at "completed" superseded by new run.`
     : "";
+  // 223 Phase 2: this result is consumed both by startup message text and by
+  // return truth (`currentStage` / deferred startup-advance contract).
+  let clarifyAdvancedTo: PipelineStage | undefined;
+  let clarifyAdvancePending = false;
   const messageSuffix = startStage === "clarify"
-    ? ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
+    ? clarifyAdvancedTo
+      // 223 Phase 2: a confirmed document advanced IN this round — the hint
+      // states the facts instead of asking for a manual clarify mention.
+      ? ` clarify confirmed; advanced to ${clarifyAdvancedTo} and dispatched its executor`
+      : ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
     : "";
 
   // Phase 2 (144) + Phase 3 (171): Auto-launch clarify subagent with forwardArgs passthrough
+  // 223 Phase 2: the result feeds the return truth (currentStage/message) and
+  // the deferred-advance contract for the auto runner's first start.
   if (startStage === "clarify") {
-    await maybeAutoLaunchClarify(ctx, config, ui, newMeta, docFile, forwardArgs);
+    const launched = await maybeAutoLaunchClarify(ctx, config, ui, newMeta, docFile, forwardArgs);
+    clarifyAdvancedTo = launched?.advancedTo;
+    clarifyAdvancePending = launched?.confirmAdvancePending === true;
   }
 
   // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
@@ -1188,7 +1203,11 @@ export async function startNewPipeline(
     success: true,
     message: messagePrefix + supersededSuffix + messageSuffix,
     pipelineId,
-    currentStage: startStage,
+    // 223 Phase 2 truth consistency: the START audit still records the launch
+    // fact (`startStage: "clarify"`); the ADVANCE fact lives in the
+    // `clarify_startup_advanced` audit. The RESULT reports where the run is.
+    currentStage: clarifyAdvancedTo ?? startStage,
+    ...(clarifyAdvancePending ? { clarifyAdvancePending: true as const } : {}),
     requirementContent: content.slice(0, 500) + (content.length > 500 ? "..." : ""),
   };
 }
@@ -1220,7 +1239,12 @@ async function maybeAutoLaunchClarify(
   meta: SessionMeta,
   file: string,
   forwardArgs?: string,
-): Promise<void> {
+): Promise<{
+  /** 223 Phase 2 (branch A): the confirmed clarify advanced to this stage in-round. */
+  advancedTo?: PipelineStage;
+  /** 223 Phase 2 (branch B): `startPendingDoc` must advance after autoJob is stamped. */
+  confirmAdvancePending?: boolean;
+}> {
   const agentName = resolveAgentMention(config, "clarify");
 
   // Phase 3 (171) + Phase 1 (175): determine effective args (explicit > derived)
@@ -1268,18 +1292,39 @@ async function maybeAutoLaunchClarify(
           }
         }
       }
-      return;
+      return {};
     }
     if (autoClarify.kind === "confirmed") {
-      // 223 Phase 1: TEMPORARY behavior pinned to the human derivation branch
-      // verbatim (`Round ... confirmed. Awaiting marker verification.`) — no
-      // budget charge, no spawn, no advance. Phase 2 replaces this with the
-      // in-round advance.
-      skipSpawn = true;
-      skipMessage = `Round ${autoClarify.round} clarification confirmed. Awaiting marker verification.`;
-      effectiveArgs = "";
+      // 223 Phase 2: the document already carries `## 模型确认` — no clarify
+      // executor is spawned. The advance happens in the SAME start round:
+      // - meta.autoJob present (resume/re-dispatch) → advance in place;
+      // - meta.autoJob absent (auto runner first start) → defer: the autoJob
+      //   contract is written only AFTER `startNewPipeline` returns, so an
+      //   advance here would leak it. `startPendingDoc` calls
+      //   `advanceConfirmedClarifyOnStartup` after stamping autoJob.
+      if (meta.autoJob !== undefined) {
+        const advanceOutcome = await advanceConfirmedClarifyOnStartup(
+          {
+            session: ctx.session,
+            ...(ctx.pi !== undefined ? { pi: ctx.pi } : {}),
+            ...(ctx._ctx !== undefined ? { _ctx: ctx._ctx } : {}),
+            ...(ctx.hasUI !== undefined ? { hasUI: ctx.hasUI } : {}),
+            ui: typeof ctx.ui?.notify === "function" ? { notify: (msg: string) => ctx.ui.notify(msg) } : undefined,
+          },
+          config,
+          meta,
+          ui,
+        );
+        if (advanceOutcome.advanced && advanceOutcome.toStage) {
+          derivedRound = autoClarify.round;
+          return { advancedTo: advanceOutcome.toStage };
+        }
+        // Advance refused (marker precheck failed / bound exit) → hand the
+        // document back to the existing settle semantics; never a retry spawn.
+        return {};
+      }
       derivedRound = autoClarify.round;
-      argsSource = "derived";
+      return { confirmAdvancePending: true };
     } else {
       effectiveArgs = autoClarify.args;
       argsSource = "derived";
@@ -1361,13 +1406,13 @@ async function maybeAutoLaunchClarify(
       stage: "clarify",
       reason: skipMessage.substring(0, 80),
     });
-    return;
+    return {};
   }
 
   if (!agentName) {
     // No agentPath configured → notify fallback
     ui.notify(ctx, `Next: run @feat-design-plan-agent ${file} ${effectiveArgs}`);
-    return;
+    return {};
   }
 
   // 204 Phase 0: carry the `Pipeline: {id}` marker so the spawned clarify session
@@ -1425,7 +1470,7 @@ async function maybeAutoLaunchClarify(
       const cleanup = watchSubagentLifecycle(ctx.pi, spawnResult.id, () => {
         cleanup();
       });
-      return;
+      return {};
     }
     // Spawn failed → fall through to sendUserMessage fallback
   }
@@ -1459,6 +1504,7 @@ async function maybeAutoLaunchClarify(
     argsSource,
     ...(derivedRound !== undefined ? { derivedRound: String(derivedRound) } : {}),
   });
+  return {};
 }
 
 /**
