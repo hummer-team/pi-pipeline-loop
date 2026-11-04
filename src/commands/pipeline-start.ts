@@ -1176,13 +1176,7 @@ export async function startNewPipeline(
   // return truth (`currentStage` / deferred startup-advance contract).
   let clarifyAdvancedTo: PipelineStage | undefined;
   let clarifyAdvancePending = false;
-  const messageSuffix = startStage === "clarify"
-    ? clarifyAdvancedTo
-      // 223 Phase 2: a confirmed document advanced IN this round — the hint
-      // states the facts instead of asking for a manual clarify mention.
-      ? ` clarify confirmed; advanced to ${clarifyAdvancedTo} and dispatched its executor`
-      : ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
-    : "";
+  let clarifyBlockedReason: string | undefined;
 
   // Phase 2 (144) + Phase 3 (171): Auto-launch clarify subagent with forwardArgs passthrough
   // 223 Phase 2: the result feeds the return truth (currentStage/message) and
@@ -1191,7 +1185,16 @@ export async function startNewPipeline(
     const launched = await maybeAutoLaunchClarify(ctx, config, ui, newMeta, docFile, forwardArgs);
     clarifyAdvancedTo = launched?.advancedTo;
     clarifyAdvancePending = launched?.confirmAdvancePending === true;
+    clarifyBlockedReason = launched?.blockedReason;
   }
+
+  const messageSuffix = startStage === "clarify"
+    ? clarifyAdvancedTo
+      ? ` clarify confirmed; advanced to ${clarifyAdvancedTo} and dispatched its executor`
+      : clarifyBlockedReason
+        ? ` clarify dispatch blocked (${clarifyBlockedReason}); see pipeline_freeze/clarify_fallback audit`
+        : ` Next: run @feat-design-plan-agent ${docFile} ${forwardArgs || "1"} to start requirement clarification`
+    : "";
 
   // spec→plan: no subagent injection (plan agent is task-invoked by main agent),
   // but still emit a notify hint so the user knows the next step (Medium #3).
@@ -1244,6 +1247,8 @@ async function maybeAutoLaunchClarify(
   advancedTo?: PipelineStage;
   /** 223 Phase 2 (branch B): `startPendingDoc` must advance after autoJob is stamped. */
   confirmAdvancePending?: boolean;
+  /** Startup clarify dispatch was intentionally blocked by gate handlers. */
+  blockedReason?: string;
 }> {
   const agentName = resolveAgentMention(config, "clarify");
 
@@ -1285,14 +1290,22 @@ async function maybeAutoLaunchClarify(
             docIndex: targetIndex, now: Date.now(),
           });
           if (docState) {
-            await runBlockedClarifyStartup(
+            const handled = await runBlockedClarifyStartup(
               ctx, config, meta, active.state, active.job, docState,
               targetIndex, DEFAULT_CLARIFY_DEPS,
             );
+            if (!handled) {
+              await safeWriteAuditLog("clarify_startup_blocked_unhandled", {
+                requirementDoc: file,
+                pipelineId: meta.pipelineId,
+                stage: "clarify",
+                reason: autoClarify.action,
+              }, "warn");
+            }
           }
         }
       }
-      return {};
+      return { blockedReason: autoClarify.action };
     }
     if (autoClarify.kind === "confirmed") {
       // 223 Phase 2: the document already carries `## 模型确认` — no clarify
@@ -1316,14 +1329,21 @@ async function maybeAutoLaunchClarify(
           ui,
         );
         if (advanceOutcome.advanced && advanceOutcome.toStage) {
-          derivedRound = autoClarify.round;
+          ui.notify(ctx, `Clarify confirmed; advanced to ${advanceOutcome.toStage} and dispatched its executor.`);
           return { advancedTo: advanceOutcome.toStage };
         }
+        await safeWriteAuditLog("clarify_startup_advance_blocked", {
+          requirementDoc: file,
+          pipelineId: meta.pipelineId,
+          stage: "clarify",
+          reason: advanceOutcome.reason ?? "not_advanced",
+          advanced: "false",
+        }, "warn");
+        ui.notify(ctx, `Clarify startup advance skipped (${advanceOutcome.reason ?? "not_advanced"}).`);
         // Advance refused (marker precheck failed / bound exit) → hand the
         // document back to the existing settle semantics; never a retry spawn.
         return {};
       }
-      derivedRound = autoClarify.round;
       return { confirmAdvancePending: true };
     } else {
       effectiveArgs = autoClarify.args;
