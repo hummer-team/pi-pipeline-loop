@@ -1553,10 +1553,14 @@ async function buildStageExecutor(
     lines.push(`**Return protocol**: Sub-agent returns \`nextStage: <stage>\` suggestion; main thread calls stage_advance.`);
     lines.push(`**Context**: context_arg filled by main thread from document artifacts (e.g. \`_Plan.md\`, \`_Develop_Commit.md\`)`);
   } else {
-    // lightweight-advance: plan stage — receive @feat-design-plan-agent return then advance
+    // lightweight-advance: plan stage — the plugin owns dispatch on stage
+    // transitions and auto-job start stages; the HUMAN track starting a new
+    // pipeline AT this stage is the one exception that must @ the agent itself.
+    // 224 Phase 3: verbatim twins of the yml `stage_executor_plan` Scheduling
+    // line — three copies (yml / fallback / business project) must not drift.
     lines.push(`This stage uses \`${executor.subagent_type}\` (lightweight advance mode).`);
     lines.push("");
-    lines.push(`**Scheduling**: User @\`${executor.subagent_type}\` in chat; main thread receives \`nextStage: develop\` and calls stage_advance.`);
+    lines.push(`**Scheduling**: The plugin owns dispatch on every stage entry it controls — a stage transition, or an auto job's start stage — and spawns \`${executor.subagent_type}\` automatically; do NOT invoke the agent yourself while a plugin spawn is active or queued. The ONE exception is the human track starting a new pipeline AT this stage (\`/pipeline-start\` with this stage as start stage): nothing is spawned there, so invoke @\`${executor.subagent_type}\` with the plan document path yourself. The agent returns \`nextStage: develop\`; the main thread calls stage_advance.`);
     lines.push(`**Context**: context_arg filled by main thread from document artifacts`);
   }
 

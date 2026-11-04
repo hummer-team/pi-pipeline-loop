@@ -351,7 +351,7 @@ design_review_smart_decision_prompt: |
 stage_executor_plan: |
   ## Stage Executor Scheduling
   This stage uses `{subagent_type}` (lightweight advance mode).
-  **Scheduling**: User @`{subagent_type}` in chat; main thread receives `nextStage: develop` and calls stage_advance.
+  **Scheduling**: The plugin owns dispatch on every stage entry it controls — a stage transition, or an auto job's start stage — and spawns `{subagent_type}` automatically; do NOT invoke the agent yourself while a plugin spawn is active or queued. The ONE exception is the human track starting a new pipeline AT this stage (`/pipeline-start` with this stage as start stage): nothing is spawned there, so invoke @`{subagent_type}` with the plan document path yourself. The agent returns `nextStage: develop`; the main thread calls stage_advance.
   **Context**: {context_arg}
   **Checkpoint**: Do NOT call `stage_advance` until the plan document is complete and user-confirmed. This checkpoint applies to ORDINARY plan mode ONLY: in authorized design-review update mode (the `design_review_update_prompt` section governs), do NOT wait for or fabricate user confirmation — the plugin re-reviews the updated plan automatically.
   {active_spawn_note}
