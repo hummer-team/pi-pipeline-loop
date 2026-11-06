@@ -73,6 +73,8 @@ import { staleConfigNotice } from "../utils/config-staleness";
 import { recordViolation, checkViolationBreaker } from "./violation-tracker";
 import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils/destructive-command";
 import { askCommandDecision } from "../utils/protect-ask";
+// 225 Phase 0: positive audit for ALLOWED git writes (never intercepts).
+import { recordAllowedGitWrite } from "./git-write-observability";
 // 218 Phase 2 (T2.3): whitelist-miss mode resolution + merged write decision.
 import { resolveWhitelistMissMode } from "./write-scope/mode";
 import { applyCollectedWrites } from "./write-scope/decision";
@@ -1162,6 +1164,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 return { block: true, reason: result.reason! };
               }
               if (result.warn) warnings.push(result.warn);
+              // 225 Phase 0 (T6a): positive audit for the allowed write.
+              await recordAllowedGitWrite(meta, ctx.session, segment, currentStage);
               continue; // Skip the checkBashFileTargets for git add segments
             }
 
@@ -1179,6 +1183,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 return { block: true, reason: result.reason! };
               }
               if (result.warn) warnings.push(result.warn);
+              // 225 Phase 0 (T6b): positive audit for the allowed write.
+              await recordAllowedGitWrite(meta, ctx.session, segment, currentStage);
               continue; // Skip the checkBashFileTargets for git commit segments
             }
 
@@ -1194,6 +1200,8 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 { skipGitDirTargets: true },
               );
               if (blockResult) return blockResult;
+              // 225 Phase 0 (T6c): positive audit for the allowed git write.
+              await recordAllowedGitWrite(meta, ctx.session, segment, currentStage);
               continue;
             }
 

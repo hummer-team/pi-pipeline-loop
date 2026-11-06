@@ -24,7 +24,7 @@
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig } from "../types";
+import type { ExecFn, PipelineConfig, Hook, SessionMeta, StageConfig, PipelineStage } from "../types";
 import type { BeforeAgentStartEventResult } from "@earendil-works/pi-coding-agent";
 import { ALLOWED_WRITE_ALL, AUDIT_THROTTLE_WINDOW_MS, ACTIVE_SPAWN_TTL_MS, COMMIT_DOC_NAMING_CONSTRAINT, PLAN_DOC_NAMING_CONSTRAINT, DEFAULT_BASH_DESTRUCTIVE_PROMPT_MAX } from "../constants";
 import { docsDirsOf, renderDocsPathTokens } from "../docs-paths";
@@ -37,7 +37,7 @@ import { loadGitignoreInfo } from "../utils/gitignore";
 import { safeWriteAuditLog, safeWritePromptSnapshot, setAuditPipelineContext } from "../utils/auditLog";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { computeStringHash } from "../utils/hash";
-import { isFrozen, getFlowState, formatFrozenReason, formatDecisionMenuHint } from "./flow-state";
+import { isFrozen, getFlowState, formatFrozenReason, formatDecisionMenuHint, freezeAndPrompt } from "./flow-state";
 import { isDormant } from "./dormancy";
 import { probeAgentState } from "../utils/subagents-introspect";
 import { detectLastRunHealth, extractLastUserMessageText } from "./session-state";
@@ -61,7 +61,10 @@ import {
   DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION,
 } from "./design-review/decision-display";
 import { resolvePiWorkDir, resolveDomainSkillCandidates, resolveGitignoreSkipDirs } from "../utils/work-dir";
-import { buildProtectedPaths } from "../utils/protect";
+import { buildProtectedPaths, resolveGitModifyPolicy } from "../utils/protect";
+// 225 Phase 0: commit-contract elevation (idempotent per config object) +
+// the frozen gate when the contract stage explicitly opted out.
+import { ensureCommitContractElevation } from "./commit-contract";
 // 194 Phase 2 (task 4 / C4): plugin-owned prompt boundary shared by the yml,
 // fallback, and default rendering paths.
 import {
@@ -561,16 +564,18 @@ function buildVerifyToolGuidance(stageConfig: StageConfig): string | null {
 }
 
 /**
- * Determines if git is read-only for a stage.
- * Develop and fix stages can perform git write operations (add/commit/push).
- * All other stages (clarify, plan, review, awaiting_human, completed) are git read-only.
+ * 225 Phase 0 (T4): resolves the EFFECTIVE git capability for a stage using
+ * the same 3-tier chain tool-guard uses (`resolveGitModifyPolicy`), so the
+ * prompt layer and the guard layer can never disagree. Three states:
+ * allow / ask / block — an `ask` stage is NOT reported read-only because the
+ * guard will ask and may allow each write.
  *
+ * @param config - Pipeline configuration (global protect.gitModify)
  * @param stageName - Current pipeline stage name
- * @returns true if git operations are read-only for this stage
+ * @returns "allow" | "ask" | "block"
  */
-function isGitReadOnly(stageName: string): boolean {
-  // develop and fix stages can write to git; all others are read-only
-  return stageName !== "develop" && stageName !== "fix";
+function resolveGitCapability(config: PipelineConfig, stageName: PipelineStage): "allow" | "ask" | "block" {
+  return resolveGitModifyPolicy(config, null, stageName); // same source as tool-guard
 }
 
 /**
@@ -606,23 +611,37 @@ function buildWriteScopeLine(stageConfig: StageConfig, meta: SessionMeta): strin
  * and appended to Loop Status for develop/fix.
  *
  * @param stageConfig - Current stage configuration
- * @param includeGitHint - Whether to append git read-only hint
- * @param stageName - Current stage name for git read-only check
+ * @param config - Pipeline configuration (git capability resolution, 225 Phase 0)
+ * @param includeGitHint - Whether to append the git capability line
+ * @param stageName - Current stage name for git capability resolution
  * @param meta - Current session metadata (design-review scope sharing)
  * @returns Prompt section string
  */
 function buildStageWriteScope(
   stageConfig: StageConfig,
+  config: PipelineConfig,
   includeGitHint: boolean,
-  stageName: string,
+  stageName: PipelineStage,
   meta: SessionMeta
 ): string {
   const lines = [
     `# STAGE WRITE SCOPE`,
     `- Write Scope: ${buildWriteScopeLine(stageConfig, meta)}`,
   ];
-  if (includeGitHint && isGitReadOnly(stageName)) {
-    lines.push(`- Git: read-only (add/commit/push forbidden)`);
+  if (includeGitHint) {
+    // 225 Phase 0 (T4): three-state output, same effective policy as the guard.
+    const capability = resolveGitCapability(config, stageName);
+    if (capability === "allow") {
+      lines.push(
+        `- Git: writable (commit contract active) — \`git add <paths> && git commit\`; NEVER \`add -f/--force/--ignore-removal\`; gitignored files must never be committed.`,
+      );
+    } else if (capability === "ask") {
+      lines.push(
+        `- Git: gated (each git write is asked; a denied/dismissed ask blocks it) — treat git as unavailable until approved.`,
+      );
+    } else {
+      lines.push(`- Git: read-only (add/commit/push forbidden)`);
+    }
   }
   return lines.join("\n");
 }
@@ -942,6 +961,41 @@ export function createPromptInjector(
       if (!rawMeta || isDormant(rawMeta)) return undefined;
       const meta: SessionMeta = rawMeta;
       const stageConfig = config.stages[meta.currentStage];
+
+      // 225 Phase 0 (T3): elevate the commit contract BEFORE the prompt is
+      // composed, so the injected Git capability line and tool-guard give the
+      // SAME answer. Idempotent per config object (cache + audit-once).
+      try {
+        const elevation = await ensureCommitContractElevation(config, meta.currentStage);
+        if (elevation.disabled) {
+          // Explicit opt-out on a contract stage → freeze through the shared
+          // freeze entry (pipeline_blocked audit + decision menu), no injection.
+          await freezeAndPrompt(
+            ctx as unknown as Parameters<typeof freezeAndPrompt>[0],
+            meta,
+            "commit_contract_capability_disabled",
+            config,
+            { ui: ctx.ui },
+          );
+          try {
+            ctx.ui.notify(
+              `Commit contract unsatisfied at stage '${meta.currentStage}': enable the stage commit capability ` +
+                `(remove the requireCommitContract opt-out) or drop requiredGit from ${elevation.contract.verifySpecPath}.`,
+            );
+          } catch {
+            // Fail-open: the freeze entry already recorded the fact.
+          }
+          return undefined;
+        }
+      } catch (err) {
+        // Fail-open: elevation must never block prompt injection.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await safeWriteAuditLog(
+          "commit_contract_elevation_error",
+          { stage: meta.currentStage, error: errMsg },
+          "error",
+        );
+      }
 
       // Phase 4 / 177 (D7③): persist the user's current-round clarify args so the
       // plugin-owned takeover spawn can use them verbatim in the subagent title.
@@ -1339,7 +1393,7 @@ async function buildDefaultPrompt(
   const part7 = buildVerifyToolGuidance(stageConfig);
   // Part 8: Stage Write Scope (standalone for non-loop stages; loop stages get it in Part 4)
   const part8 = (meta.currentStage !== "develop" && meta.currentStage !== "fix")
-    ? buildStageWriteScope(stageConfig, true, meta.currentStage, meta)
+    ? buildStageWriteScope(stageConfig, config, true, meta.currentStage, meta)
     : null;
   // Part 9: Stage Executor Scheduling (Phase 4: 139)
   const part9 = await buildStageExecutor(config, stageConfig, meta);
@@ -1401,7 +1455,7 @@ async function buildDynamicValues(
     violations: buildViolationPrompt(meta),
     verify_tool_guidance: buildVerifyToolGuidance(stageConfig),
     // Write scope: null for loop stages (embedded in loop_status), built for non-loop
-    stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, true, meta.currentStage, meta),
+    stage_write_scope: isLoopStage ? null : buildStageWriteScope(stageConfig, config, true, meta.currentStage, meta),
     // Phase 4 (139): Stage executor scheduling segment (reads from yml)
     stage_executor: await buildStageExecutor(config, stageConfig, meta),
     // Phase 0 (146): Plugin default deliverables (reads from yml stage_deliverable_{stage})

@@ -1049,6 +1049,25 @@ function parseDecisionPolicyRule(raw: unknown): DecisionPolicyRule | undefined {
 }
 
 /**
+ * 225 Phase 0 (T2a): parses a verify-level boolean switch entry generically.
+ * Valid boolean → `{ [key]: v }`; missing/undefined → `{}`; non-boolean →
+ * warn + `{}` (option key omitted, never leaks a truthy non-boolean).
+ */
+function parseVerifyBooleanSwitchEntry(
+  raw: unknown,
+  key: string,
+): Record<string, boolean> {
+  if (raw === undefined) return {};
+  if (typeof raw !== "boolean") {
+    console.warn(
+      `[pi-pipeline] Invalid verify.${key} "${String(raw)}" — expected boolean, ignoring`,
+    );
+    return {};
+  }
+  return { [key]: raw };
+}
+
+/**
  * 210 Phase 0: Parses the stage-level `verify.requireCommitProof` entry.
  * Valid boolean → `{ requireCommitProof: v }`; missing/undefined → `{}`;
  * non-boolean → warn + `{}` (option key omitted).
@@ -1056,14 +1075,7 @@ function parseDecisionPolicyRule(raw: unknown): DecisionPolicyRule | undefined {
 function parseRequireCommitProofEntry(
   raw: unknown,
 ): { requireCommitProof?: boolean } {
-  if (raw === undefined) return {};
-  if (typeof raw !== "boolean") {
-    console.warn(
-      `[pi-pipeline] Invalid verify.requireCommitProof "${String(raw)}" — expected boolean, ignoring`,
-    );
-    return {};
-  }
-  return { requireCommitProof: raw };
+  return parseVerifyBooleanSwitchEntry(raw, "requireCommitProof") as { requireCommitProof?: boolean };
 }
 
 /**
@@ -1088,8 +1100,14 @@ function parseTopLevelVerifyConfig(raw: unknown): VerifyJsonConfig | undefined {
     );
     return undefined;
   }
-  const entry = parseRequireCommitProofEntry((raw as Record<string, unknown>).requireCommitProof);
-  return entry.requireCommitProof !== undefined ? { ...entry } : undefined;
+  // 225 Phase 0 (T2b): consume BOTH switches at this level; either present
+  // makes the block reach `resolvePipelineConfig`.
+  const rawObj = raw as Record<string, unknown>;
+  const entry = {
+    ...parseVerifyBooleanSwitchEntry(rawObj.requireCommitProof, "requireCommitProof"),
+    ...parseVerifyBooleanSwitchEntry(rawObj.requireCommitContract, "requireCommitContract"),
+  };
+  return Object.keys(entry).length > 0 ? (entry as VerifyJsonConfig) : undefined;
 }
 
 /**
@@ -1501,6 +1519,9 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
             // 210 Phase 0: commit-proof switch; attached ONLY when configured
             // so unconfigured deep-equality assertions stay untouched.
             ...parseRequireCommitProofEntry(jsonStage.verify.requireCommitProof),
+            // 225 Phase 0 (T2c): commit-contract opt-out switch (same
+            // attach-only-when-configured convention).
+            ...parseVerifyBooleanSwitchEntry(jsonStage.verify.requireCommitContract, "requireCommitContract"),
           }
         : undefined,
       confirm: parseConfirmConfig(jsonStage.confirm),
@@ -1664,11 +1685,21 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     // (diagnostic only). Attached ONLY when non-empty so existing deep-equality
     // assertions on the config shape stay untouched.
     ...(Object.keys(drOriginalTargets).length > 0 ? { designReviewOriginalTargets: drOriginalTargets } : {}),
-    // 210 Phase 6: global commit-proof switch; attached ONLY when configured
+    // 210 Phase 6: global verify switches; attached ONLY when configured
     // (same optional-field convention as the blocks above — deep-equality
-    // config-shape assertions must not see an empty object).
-    ...(json.verify?.requireCommitProof !== undefined
-      ? { verify: { requireCommitProof: json.verify.requireCommitProof } }
+    // config-shape assertions must not see an empty object). 225 Phase 0
+    // (T2d): `requireCommitContract` rides the same block.
+    ...(json.verify && (json.verify.requireCommitProof !== undefined || json.verify.requireCommitContract !== undefined)
+      ? {
+          verify: {
+            ...(json.verify.requireCommitProof !== undefined
+              ? { requireCommitProof: json.verify.requireCommitProof }
+              : {}),
+            ...(json.verify.requireCommitContract !== undefined
+              ? { requireCommitContract: json.verify.requireCommitContract }
+              : {}),
+          },
+        }
       : {}),
     // 210 Phase 0: auto-configuration blocks; attached ONLY when configured.
     ...(decisionPolicyConfig ? { decisionPolicy: decisionPolicyConfig } : {}),

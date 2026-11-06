@@ -53,7 +53,7 @@
 
 **模型职责**（你必须做这些）：
 1. 调用 `stage_advance` 工具声明阶段完成（尤其是 review 阶段的 `reviewConclusion`）
-2. 在 develop/fix 阶段完成前运行 `git add && git commit`
+2. 在阶段的提交契约激活时（插件注入生效能力）于阶段完成前运行 `git add && git commit`；当 Git 为只读时不要尝试 git 写操作
 3. 提交后调用 `generate_stage_summary` 并传入 `commitIds` 参数
 4. 严格遵循 SKILL 输出格式要求
 5. 不要对通过验证自动推进的阶段调用 `stage_advance`

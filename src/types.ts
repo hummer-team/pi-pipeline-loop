@@ -186,6 +186,16 @@ export interface VerifyConfig {
    * wins over the global `config.verify.requireCommitProof`.
    */
   requireCommitProof?: boolean;
+
+  /**
+   * 225 Phase 0 (T2): commit-contract opt-out switch (stage-level > global-level,
+   * default true). When a stage's deployed verify spec carries `requiredGit`, the
+   * plugin elevates the stage git capability UNLESS this switch explicitly turns
+   * the contract off — in which case the prompt-injector entry gate freezes the
+   * pipeline as `commit_contract_capability_disabled` instead of failing silently
+   * at every git write.
+   */
+  requireCommitContract?: boolean;
 }
 
 /**
@@ -1020,6 +1030,15 @@ export interface SessionMeta {
    * "task continuity" section; `undefined` means "no interruption context".
    */
   continuity?: "resume" | "restart-stage" | "none";
+
+  /**
+   * 225 Phase 0 (T6): cumulative count of ALLOWED git write commands in the
+   * current period (recorded by git-write-observability on each allowed
+   * write). Consumed by Phase 5's `git_write_unobserved` warning; cleared
+   * with the new-period meta reset (declared ONCE here — later phases only
+   * consume/clear it).
+   */
+  gitAllowedWrites?: number;
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
@@ -1806,8 +1825,8 @@ export interface PipelineConfig {
   /**
    * 210 Phase 6: global (cross-stage) verification defaults from the JSON
    * `verify` block. Attached ONLY when configured, so existing config-shape
-   * assertions stay untouched. Currently only `requireCommitProof` is consumed
-   * at this level; stage-level `stages[x].verify.requireCommitProof` wins.
+   * assertions stay untouched. 225 Phase 0 adds `requireCommitContract` to
+   * this level; the stage-level `stages[x].verify.*` values win.
    */
   verify?: VerifyJsonConfig;
 
@@ -2166,6 +2185,13 @@ export interface VerifyJsonConfig {
    * Default: undefined (= false).
    */
   requireCommitProof?: boolean;
+
+  /**
+   * 225 Phase 0: global commit-contract opt-out switch (verify level).
+   * Stage-level `stages[stage].verify.requireCommitContract` overrides this
+   * value; default true (contract stages elevate their git capability).
+   */
+  requireCommitContract?: boolean;
 }
 
 /**

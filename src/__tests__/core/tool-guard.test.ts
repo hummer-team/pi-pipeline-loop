@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createToolGuard } from "../../core/tool-guard";
 import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { writeFile, mkdir, rm } from "node:fs/promises";
@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetGitignoreCache } from "../../utils/gitignore";
 import type { ExecFn } from "../../types";
+import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 describe("createToolGuard", () => {
   beforeEach(() => {
     resetGitignoreCache();
@@ -687,6 +688,110 @@ describe("createToolGuard", () => {
 
       await rm(TMP, { recursive: true, force: true });
     });
+  });
+});
+
+// ─── 225 Phase 0 (T6): allowed-git-write observability ───────────────────────
+//
+// Every ALLOWED git write must leave a positive audit fact (`git_write_allowed`),
+// remote writes add `git_remote_write` (R3: accepted + auditable, never
+// intercepted), and `meta.gitAllowedWrites` accumulates for Phase 5's
+// unobserved-write warning. A content-validation block must NOT record.
+describe("225 Phase 0: allowed git write audit", () => {
+  const audits: { event: string; payload?: Record<string, unknown> }[] = [];
+
+  afterEach(() => {
+    __setSafeWriteAuditLogOverride(null);
+    audits.length = 0;
+  });
+
+  function installAuditCapture(): void {
+    audits.length = 0;
+    __setSafeWriteAuditLogOverride((stage: string, payload?: Record<string, string | boolean>) => {
+      audits.push({ event: stage, payload });
+      return Promise.resolve();
+    });
+  }
+
+  it("allowed git add writes git_write_allowed and increments meta.gitAllowedWrites", async () => {
+    installAuditCapture();
+    const TMP = join(tmpdir(), "pi-tg-allowed-add-" + Date.now());
+    await mkdir(join(TMP, "src"), { recursive: true });
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "bash", arguments: { command: "git add src/index.ts" } };
+
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
+        return { stdout: "add 'src/index.ts'\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 1 };
+    };
+
+    const hook = createToolGuard(config, { execFn: mockExecFn });
+    const result = await hook.handler(ctx as any);
+
+    expect(result).toBeUndefined();
+    const allowedEvents = audits.filter((a) => a.event === "git_write_allowed");
+    expect(allowedEvents.length).toBeGreaterThan(0);
+    expect(audits.some((a) => a.event === "git_remote_write")).toBe(false);
+    expect((meta.gitAllowedWrites ?? 0)).toBeGreaterThan(0);
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("blocked git add does NOT write git_write_allowed", async () => {
+    installAuditCapture();
+    const TMP = join(tmpdir(), "pi-tg-allowed-add-block-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+    await writeFile(join(TMP, ".gitignore"), "pi-pipeline\n");
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "bash", arguments: { command: "git add .pi/config.json" } };
+
+    const mockExecFn: ExecFn = async (cmd, args) => {
+      if (cmd === "git" && args[0] === "add" && args[1] === "--dry-run") {
+        return { stdout: "add '.pi/config.json'\n", stderr: "", code: 0 };
+      }
+      return { stdout: "", stderr: "", code: 1 };
+    };
+
+    const hook = createToolGuard(config, { execFn: mockExecFn });
+    const result = (await hook.handler(ctx as any)) as { block?: boolean };
+
+    expect(result.block).toBe(true);
+    expect(audits.some((a) => a.event === "git_write_allowed")).toBe(false);
+    expect(meta.gitAllowedWrites).toBeUndefined();
+
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("allowed git push additionally writes git_remote_write (R3 audit)", async () => {
+    installAuditCapture();
+    const TMP = join(tmpdir(), "pi-tg-allowed-push-" + Date.now());
+    await mkdir(TMP, { recursive: true });
+
+    const config = makeTestConfig({ projectRoot: TMP });
+    const meta = makeTestMeta({ currentStage: "develop" });
+    const ctx = createMockCtx(meta);
+    ctx.toolCall = { name: "bash", arguments: { command: "git push origin main" } };
+
+    const hook = createToolGuard(config);
+    const result = await hook.handler(ctx as any);
+
+    expect(result).toBeUndefined();
+    const allowed = audits.filter((a) => a.event === "git_write_allowed");
+    expect(allowed.length).toBe(1);
+    const remote = audits.filter((a) => a.event === "git_remote_write");
+    expect(remote.length).toBe(1);
+    expect(remote[0].payload?.subcommand).toBe("push");
+    expect(remote[0].payload?.policy).toBe("allow");
+
+    await rm(TMP, { recursive: true, force: true });
   });
 });
 
