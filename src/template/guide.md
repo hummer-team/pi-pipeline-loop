@@ -2206,3 +2206,18 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 `/pipeline-init` 首次部署时会用当时的配置把占位符写成实际 marker；若之后修改了 `.pi/pipeline_loop_job.json` 的 marker，请重新执行 `/pipeline-init` 0（overwrite）或手工把这两份文件里的 `答：` / `## 模型确认` 改成你的 primary，否则 agent 可能仍按默认 marker 书写，导致 precheck 无法通过。已存在且未被覆盖的 SKILL.md（merge-only）与 skip 策略跳过的文件都适用此提醒。
 
 **模板与命名**：`/pipeline-init` 安装 `.pi/pipeline_loop_job.json` 与 `.pi/auto_job_loop_template.yaml`（旧 `.pi/auto_job_example.yaml` 不会被删除）；任务文件必须命名为 `docs/jobs/<name>_loop.yaml` 或 `docs/jobs/<name>_loop.yml`。
+
+## 20. 提交契约与 git 策略（225）
+
+**提交契约判定**：部署的 `{stage}_spec/verify.md`（`.pi/references/…`）里存在 `requiredGit` 规则的阶段即"提交契约阶段"（develop / fix 默认模板已内置，Q8-A：不限于 `cleanWorkingTree`，只有 `branch` 也算）。插件为此在**内存中**为该阶段写入 `stages[stage].protect.gitModify: "allow"`（加载期注入，不改项目文件），每次提升写一条 `git_policy_contract_elevated` 审计（stage / verifySpec / from / to / globalValue / matrixDefault，同 config 同 stage 只写一次）。
+
+**语义变化（发布说明）**：全局 `protect.gitModify: block`（或 auto job 的 `writePolicy.gitModify`）**不再约束提交契约阶段**——被要求"必须提交"的阶段必须真正具备提交能力；plan / review / clarify 等非契约阶段完全不受影响（仍为 block）。job 覆盖生效时被拦截的 git 写命令会明确提示 "Policy comes from the active auto job (writePolicy.gitModify)"。
+
+**显式关闭**：`verify.requireCommitContract: false`（顶层全局或 `stages.<stage>.verify` 级，阶段级优先；非 boolean 会 warn 并丢弃）。契约阶段被显式关闭后，插件在下一次 prompt 注入时冻结流水线（blockedReason 精确 token `commit_contract_capability_disabled`、`pipeline_blocked` 审计、决策菜单弹出），提示解除方式：移除该开关，或从 verify 规格中删掉 `requiredGit`。
+
+**审计事件**：`git_policy_contract_elevated` / `commit_contract_capability_disabled` / `git_write_allowed`（放行的 git 写命令）/ `git_remote_write`（放行的 push/fetch/pull，R3 处置 = 接受 + 可审计）/ `git_write_unobserved`（HEAD 变化但无放行记录，仅告警）。
+
+**R1/R2 提交不变量（Q9-A）**：提交契约阶段的**每次 visit 首次 git 写**时采样基线（branch / HEAD / stash 数量），verify 时断言：
+- `branch_drift`：阶段中途切分支 ⇒ verify 失败，纠偏文案"切回 `<branch>` 并重新提交"；
+- `stash_hidden`：阶段中途 stash 导致树被"藏干净" ⇒ verify 失败，纠偏文案"`git stash pop` 后提交恢复"。
+开关 `verify.requireGitInvariants`（阶段级 > 全局级 > 契约默认开）。采样 fail-open：命令失败/无 exec 不产生基线也不误判。manual 模式与 auto 同一契约判定，R1/R2 同样生效。
