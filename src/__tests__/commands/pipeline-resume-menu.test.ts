@@ -269,10 +269,7 @@ describe("208 Phase 3: /pipeline-resume menu semantics", () => {
 
   // ─── 226 Phase 0: clarify is never dispatched by the non-resume decided branch ──
   it("test 8: 226 Phase 0 — restart lands on clarify and the decided branch does NOT dispatch clarify", async () => {
-    const meta = freshMeta({
-      // Required by the decision-wait deadline; keeps the standard 6-item menu.
-      pipelineDeadlineAt: Date.now() + 60_000,
-    });
+    const meta = freshMeta();
     const ctx = makeMenuCtx(meta);
     q("Restart & New"); // non-resume decision → idempotentStageDispatch path
     const config = makeTestConfig();

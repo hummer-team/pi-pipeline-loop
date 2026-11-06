@@ -42,6 +42,9 @@ function baseInput(overrides: Partial<ClarifyDispatchInput> = {}): ClarifyDispat
     stallLimit: 3,
     needsClarifyStreak: 0,
     needsClarifyLimit: 2,
+    // 226 Phase 1 (review B-#8h): every matrix row carries the fact; the
+    // finalisation-pending rows override it to true.
+    finalisationDispatched: false,
     assessment: NO_PROBLEM,
     now: 1_000,
     ...overrides,
@@ -71,11 +74,70 @@ describe("decideClarifyDispatch — forwarding states", () => {
     expect(decision.round).toBe(2);
   });
 
-  it("answered but unconfirmed → spawn full-und?", () => {
+  it("answered but not converged (needs-clarify) → continue round", () => {
+    const docText = ["## 第 1 轮", "## 问题 1", "答：选项 A"].join("\n");
+    const decision = decideClarifyDispatch(
+      baseInput({ docText, usedRounds: 1, assessment: { ...NO_PROBLEM, verdict: "needs-clarify" } }),
+    );
+    expect(decision.action).toBe("continue");
+    expect(decision.extraArgs).toBe(" 1 答");
+    expect(decision.round).toBe(1);
+  });
+
+  it("answered but `unknown` (no declared assessment) → continue round", () => {
+    const docText = ["## 第 2 轮", "## 问题 1", "答：选项 A"].join("\n");
+    const decision = decideClarifyDispatch(
+      baseInput({ docText, usedRounds: 1, assessment: { ...NO_PROBLEM, verdict: "unknown" } }),
+    );
+    expect(decision.action).toBe("continue");
+    expect(decision.extraArgs).toBe(" 2 答");
+    expect(decision.round).toBe(2);
+  });
+
+  it("answered and converged (ready) → spawn the finalisation round", () => {
     const docText = ["## 第 3 轮", "## 问题 1", "答：选项 A"].join("\n");
     const decision = decideClarifyDispatch(baseInput({ docText, usedRounds: 2 }));
     expect(decision.action).toBe("spawn-full-und");
     expect(decision.extraArgs).toBe(" full-und?");
+    expect(decision.round).toBe(3);
+  });
+
+  it("no answer takes priority over convergence → await-answer even when ready", () => {
+    const docText = ["## 第 2 轮", "## 问题 1", "未回答的题目"].join("\n");
+    const decision = decideClarifyDispatch(baseInput({ docText, usedRounds: 1 }));
+    expect(decision.action).toBe("await-answer");
+    expect(decision.extraArgs).toBe(" 2 答");
+    expect(decision.round).toBe(2);
+  });
+
+  it("no answer + needs-clarify → await-answer (never a finalisation)", () => {
+    const docText = ["## 第 2 轮", "## 问题 1", "未回答的题目"].join("\n");
+    const decision = decideClarifyDispatch(
+      baseInput({ docText, usedRounds: 1, assessment: { ...NO_PROBLEM, verdict: "needs-clarify" } }),
+    );
+    expect(decision.action).toBe("await-answer");
+  });
+
+  it("finalisation already dispatched + marker still missing → await-finalisation (skips the budget gate)", () => {
+    const docText = ["## 第 3 轮", "## 问题 1", "答：选项 A"].join("\n");
+    const decision = decideClarifyDispatch(
+      baseInput({ docText, usedRounds: 3, maxRounds: 3, finalisationDispatched: true }),
+    );
+    // The finalisation round consumed round 3 of 3 — the budget gate MUST be
+    // evaluated after this check (226 review #1).
+    expect(decision.action).toBe("await-finalisation");
+    expect(decision.round).toBe(3);
+    expect(decision.extraArgs).toBeUndefined();
+    expect(decision.reason).toBe("clarify_finalisation_pending");
+  });
+
+  it("finalisation already dispatched + no round heading (fresh) → await-finalisation on the derived round", () => {
+    const decision = decideClarifyDispatch(
+      baseInput({ docText: "## 目标\n做点什么", usedRounds: 2, finalisationDispatched: true }),
+    );
+    // Review B-#2: `derived.kind === "fresh"` has no `.round` — the already
+    // computed `derivedRound` must be used, never an out-of-bounds access.
+    expect(decision.action).toBe("await-finalisation");
     expect(decision.round).toBe(3);
   });
 
@@ -98,6 +160,12 @@ describe("decideClarifyDispatch — discipline gates", () => {
     const decision = decideClarifyDispatch(
       baseInput({ usedRounds: 5, maxRounds: 5, stalls: 9, needsClarifyStreak: 9 }),
     );
+    expect(decision.action).toBe("budget-exhausted");
+  });
+
+  it("answered + converged but budget exhausted → budget-exhausted (freeze, no finalisation dispatch)", () => {
+    const docText = ["## 第 5 轮", "## 问题 1", "答：选项 A"].join("\n");
+    const decision = decideClarifyDispatch(baseInput({ docText, usedRounds: 5, maxRounds: 5 }));
     expect(decision.action).toBe("budget-exhausted");
   });
 

@@ -1394,6 +1394,20 @@ async function applyAutoClarifyPlan(
     return { blockedReason: plan.action };
   }
 
+  if (plan.kind === "marker-pending") {
+    // 226 Phase 1: the finalisation round was already dispatched; the document
+    // owns the marker now. NO dispatch, NO freeze — the settle-time marker
+    // gate verifies it; the startup only records the fact.
+    ui.notify(ctx, `Clarify finalisation round ${plan.round} already dispatched; awaiting the completion marker.`);
+    await safeWriteAuditLog("clarify_finalisation_pending", {
+      requirementDoc: file,
+      pipelineId: meta.pipelineId,
+      stage: "clarify",
+      round: String(plan.round),
+    });
+    return {};
+  }
+
   if (plan.kind === "confirmed") {
     // 223 Phase 2: the document already carries `## 模型确认` — no clarify
     // executor is spawned. The advance happens in the SAME start round:

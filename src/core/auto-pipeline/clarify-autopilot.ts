@@ -63,7 +63,7 @@ interface ClarifyAutoPlanBase {
 /** A real dispatch of the clarify mention with the given args/instruction. */
 interface ClarifyAutoDispatchPlan extends ClarifyAutoPlanBase {
   kind: "dispatch";
-  action: "fresh" | "await-answer" | "spawn-full-und";
+  action: "fresh" | "await-answer" | "continue" | "spawn-full-und";
   /**
    * Args appended to the clarify mention. NO leading space: the launch path
    * joins `` `${file} ${effectiveArgs}` `` and provides the separator itself
@@ -85,10 +85,16 @@ interface ClarifyAutoBlockedPlan extends ClarifyAutoPlanBase {
   action: "budget-exhausted" | "stalled" | "requirement-unclear";
 }
 
+/** 226 Phase 1: the finalisation round is already dispatched; the document now owns the marker. */
+interface ClarifyAutoMarkerPendingPlan extends ClarifyAutoPlanBase {
+  kind: "marker-pending";
+}
+
 export type ClarifyAutoPlan =
   | ClarifyAutoDispatchPlan
   | ClarifyAutoConfirmedPlan
-  | ClarifyAutoBlockedPlan;
+  | ClarifyAutoBlockedPlan
+  | ClarifyAutoMarkerPendingPlan;
 
 // 221 Phase 1: the resolver lives in `clarify-prompt-markers.ts` (dependency
 // leaf shared with `prompt-injector` / `verify-generator`); re-exported here so
@@ -185,6 +191,21 @@ export async function buildClarifyAutoPlan(
         instruction: buildClarifyInstruction(active.job, markers),
         maxRounds,
       };
+    case "continue":
+      // 226 Phase 1: answers are on disk but the requirement is NOT `ready`
+      // — keep the round loop going with the next ordinary round.
+      return {
+        kind: "dispatch",
+        action: "continue",
+        args: `${decision.round} 答`,
+        round: decision.round,
+        instruction: buildClarifyInstruction(active.job, markers),
+        maxRounds,
+      };
+    case "await-finalisation":
+      // 226 Phase 1: the finalisation round was already dispatched and the
+      // marker is still pending — the document owns it now; nothing to spawn.
+      return { kind: "marker-pending", round: decision.round, maxRounds };
     case "spawn-full-und":
       return {
         kind: "dispatch",

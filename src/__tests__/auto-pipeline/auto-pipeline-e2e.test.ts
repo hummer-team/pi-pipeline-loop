@@ -155,20 +155,25 @@ describe("auto run — one unattended chain from clarify to completed", () => {
     const h = makeSession(makeTestMeta({ currentStage: "clarify", flowState: "running", requirementDoc: DOC }));
 
     // clarify 1/3: a fresh document dispatches the first round (" 1").
-    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe(true);
+    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe("consumed");
     expect(dispatches[0]?.extraArgs?.startsWith(" 1")).toBe(true);
 
-    // clarify 2/3: the self-answered round requests the finalisation (" full-und?").
-    fs.appendFileSync(docAbs, "\n# 第 1 轮澄清\n- **方案 A** self-answer\n答：方案 A\n", "utf8");
+    // clarify 2/3: the self-answered round requires a `ready` assessment
+    // (226 convergence) before requesting the finalisation (" full-und?").
+    fs.appendFileSync(
+      docAbs,
+      "\n## 需求评估\nready\n\n# 第 1 轮澄清\n- **方案 A** self-answer\n答：方案 A\n",
+      "utf8",
+    );
     nextBurst(31);
-    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe(true);
+    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe("consumed");
     expect(dispatches[1]?.extraArgs?.startsWith(" full-und?")).toBe(true);
 
     // clarify 3/3: the marker ends clarify without a third dispatch and refunds
     // the per-doc counters; the decision is audited.
     fs.appendFileSync(docAbs, `\nfull-und? 理解确认：是\n\n## 模型确认\n是\n\n${LEDGER}\n`, "utf8");
     nextBurst(62);
-    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe(false);
+    expect(await runAutoClarifyRound(h.ctx, harness.config, h.meta(), deps)).toBe("pass-through");
     expect(dispatches).toHaveLength(2);
     expect(audits.some((line) => line.includes('"gate":"clarify_confirmed"'))).toBe(true);
 
@@ -322,21 +327,21 @@ describe("auto run — the four clarify stop reasons", () => {
   it("stall → clarify_stalled", async () => {
     await patchDoc({ clarifyStalls: 3 });
     const m = meta();
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("consumed");
     expect(freezeReasons).toEqual(["clarify_stalled"]);
   });
 
   it("unclear requirement → clarify_requirement_unclear", async () => {
     await patchDoc({ clarifyNeedsClarifyStreak: 2 });
     const m = meta();
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("consumed");
     expect(freezeReasons).toEqual(["clarify_requirement_unclear"]);
   });
 
   it("budget exhausted → clarify_budget_exhausted", async () => {
     await patchDoc({ clarifyRounds: harness.job.clarify.maxRounds });
     const m = meta();
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("consumed");
     expect(freezeReasons).toEqual(["clarify_budget_exhausted"]);
   });
 

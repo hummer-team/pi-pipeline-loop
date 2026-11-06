@@ -121,7 +121,7 @@ describe("runAutoClarifyRound — freeze paths", () => {
     await patchDoc({ clarifyStalls: 3 });
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
     expect(freezeReasons).toEqual(["clarify_stalled"]);
   });
 
@@ -129,7 +129,7 @@ describe("runAutoClarifyRound — freeze paths", () => {
     await patchDoc({ clarifyNeedsClarifyStreak: 2 });
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
     expect(freezeReasons).toEqual(["clarify_requirement_unclear"]);
   });
 
@@ -137,7 +137,7 @@ describe("runAutoClarifyRound — freeze paths", () => {
     await patchDoc({ clarifyRounds: harness.job.clarify.maxRounds });
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
     expect(freezeReasons).toEqual(["clarify_budget_exhausted"]);
   });
 
@@ -146,7 +146,7 @@ describe("runAutoClarifyRound — freeze paths", () => {
     await patchDoc({ clarifyRounds: harness.job.clarify.maxRounds });
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
 
     expect(freezeReasons).toEqual([]);
     expect(spawnCalls).toHaveLength(1);

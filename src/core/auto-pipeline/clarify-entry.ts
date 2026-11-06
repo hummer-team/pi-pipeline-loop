@@ -39,38 +39,49 @@ export type { ClarifyEntryCtx, ClarifyEntryDeps, ClarifyDocState } from "./clari
 export { CLARIFY_NEEDS_CLARIFY_LIMIT } from "./clarify-state";
 
 /**
+ * Outcome of one unattended clarify round (226 Phase 1, three-state contract).
+ *
+ * - `consumed`: the settle is DONE — the round dispatched (or coalesced), froze
+ *   or failed the document; the caller must stop its normal settle handling.
+ * - `defer-to-marker`: the finalisation round was already dispatched and the
+ *   completion marker is still missing; the caller SKIPS its await-answer
+ *   precheck and hands the settle to the marker gate (`await-finalisation`).
+ * - `pass-through`: nothing was routed (`not-auto`, unbound/foreign doc) or the
+ *   document is `confirmed` — the caller continues its normal settle handling.
+ */
+export type AutoClarifyRoundOutcome = "consumed" | "defer-to-marker" | "pass-through";
+
+/**
  * Run ONE unattended clarify round for the active auto job.
  *
- * @returns TRUE when the caller must stop its normal settle handling (the round
- *   was dispatched, coalesced or froze); FALSE when it may continue (a completed
- *   clarify, an unbound/foreign doc, or a dispatch that never happened).
+ * @returns the three-state round outcome (see `AutoClarifyRoundOutcome`).
  */
 export async function runAutoClarifyRound(
   ctx: ClarifyEntryCtx,
   config: PipelineConfig,
   meta: SessionMeta,
   deps: ClarifyEntryDeps = DEFAULT_CLARIFY_DEPS,
-): Promise<boolean> {
-  if (meta.currentStage !== "clarify") return false;
+): Promise<AutoClarifyRoundOutcome> {
+  if (meta.currentStage !== "clarify") return "pass-through";
   // Owner-only contract: a CHILD session never dispatches clarify rounds. The
   // same guard already exists in clarify-marker-miss.ts — this one removes the
   // "the round id happens to never match a child name" accident (223_Bug.md,
   // "incidental finding").
-  if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return false;
+  if (detectSessionRole(ctx as unknown as RuntimeCtx).isChild) return "pass-through";
   const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
-  if (!active || active.state.status !== "running") return false;
+  if (!active || active.state.status !== "running") return "pass-through";
   const { state, job } = active;
   const doc = meta.requirementDoc;
-  if (!doc) return false;
+  if (!doc) return "pass-through";
 
   const now = Date.now();
   const docState = await buildClarifyDocState({ config, state, job, doc, now });
-  if (!docState) return false;
+  if (!docState) return "pass-through";
   const { decision, progress } = docState;
 
   switch (decision.action) {
     case "not-auto":
-      return false;
+      return "pass-through";
     case "confirmed":
       // Clarify is finished: refund the per-doc counters and let the normal
       // settle flow verify/advance (the marker is on disk).
@@ -82,15 +93,26 @@ export async function runAutoClarifyRound(
         decision: "confirmed",
         round: String(decision.round),
       });
-      return false;
+      return "pass-through";
+    case "await-finalisation":
+      // 226 Phase 1: the finalisation round was already dispatched but the
+      // marker is not on disk — do NOT dispatch again; the caller skips its
+      // await-answer precheck and the marker gate owns this settle.
+      return "defer-to-marker";
     case "stalled":
-      return freezeClarify(ctx, config, meta, "clarify_stalled", decision, deps);
+      return (await freezeClarify(ctx, config, meta, "clarify_stalled", decision, deps))
+        ? "consumed"
+        : "pass-through";
     case "requirement-unclear":
-      return freezeClarify(ctx, config, meta, "clarify_requirement_unclear", decision, deps);
+      return (await freezeClarify(ctx, config, meta, "clarify_requirement_unclear", decision, deps))
+        ? "consumed"
+        : "pass-through";
     case "budget-exhausted":
-      return handleClarifyBudgetExhausted(ctx, config, meta, state, job, docState, deps);
+      return (await handleClarifyBudgetExhausted(ctx, config, meta, state, job, docState, deps))
+        ? "consumed"
+        : "pass-through";
     default: {
-      // fresh / await-answer / spawn-full-und
+      // fresh / await-answer / continue / spawn-full-und
       if (decision.coalesced) {
         // ② Same round inside the dedupe window: one visit produces many
         // settles, one dispatch. Consumed — never a human-facing hint.
@@ -101,11 +123,12 @@ export async function runAutoClarifyRound(
           round: String(decision.round),
           coalesced: true,
         });
-        return true;
+        return "consumed";
       }
       // A real dispatch consumes the settle; a FAILED one re-counted the stall
-      // and returns FALSE so the ordinary settle flow still runs (B1).
-      return dispatchClarifyRound(ctx, config, meta, state, job, docState, deps);
+      // and returns "pass-through" so the ordinary settle flow still runs (B1).
+      const dispatched = await dispatchClarifyRound(ctx, config, meta, state, job, docState, deps);
+      return dispatched ? "consumed" : "pass-through";
     }
   }
 }

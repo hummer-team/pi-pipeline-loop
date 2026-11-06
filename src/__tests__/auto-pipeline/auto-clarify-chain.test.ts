@@ -115,7 +115,7 @@ describe("clarify chain — self answer to confirmation", () => {
     const m = meta();
 
     // 1) fresh document → the first round is dispatched with " 1".
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("consumed");
     expect(spawnCalls[0]?.extraArgs?.startsWith(" 1")).toBe(true);
     // D3: the protocol directive rides along (no `## 需求评估` yet).
     expect(spawnCalls[0]?.extraArgs).toContain("Add a `## 需求评估`");
@@ -123,19 +123,21 @@ describe("clarify chain — self answer to confirmation", () => {
     // 2) the model answered the round → the answer is forwarded.
     appendDoc("\n# 第 1 轮澄清\n- **方案 A** self-answer\n");
     nextBurst(31);
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("consumed");
     expect(spawnCalls[1]?.extraArgs?.startsWith(" 1 答")).toBe(true);
 
-    // 3) still unanswered by the user → the finalisation round is requested.
+    // 3) the document declares the requirement ready → the finalisation round
+    //    is requested (226 convergence: `ready` ⇒ `full-und?`).
+    appendDoc("\n## 需求评估\nready\n");
     appendDoc("答：方案 A\n");
     nextBurst(62);
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("consumed");
     expect(spawnCalls[2]?.extraArgs?.startsWith(" full-und?")).toBe(true);
 
     // 4) the marker lands → clarify is confirmed, counters are refunded.
     appendDoc("\nfull-und? 理解确认：是\n\n## 模型确认\n是\n");
     nextBurst(93);
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("pass-through");
 
     expect(spawnCalls).toHaveLength(3);
     expect(harness.state().docs[0]?.clarifyRounds).toBeUndefined();
@@ -166,7 +168,7 @@ describe("clarify chain — English anchors (221 Phase 1)", () => {
     writeDoc(["# 221 Feat", "TBD", "", "# Round 1", "- **Option A**"].join("\n"));
     const m = meta();
 
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("consumed");
     expect(spawnCalls[0]?.extraArgs).toContain("Add a `## Requirement Assessment`");
     expect(spawnCalls[0]?.extraArgs).toContain("## Acceptance Criteria");
 
@@ -193,7 +195,7 @@ describe("clarify chain — English anchors (221 Phase 1)", () => {
       ].join("\n"),
     );
     nextBurst(31);
-    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx(m), harness.config, m, deps)).toBe("pass-through");
     expect(spawnCalls).toHaveLength(1);
     expect(audits.some((line) => line.includes('"gate":"clarify_confirmed"'))).toBe(true);
   });

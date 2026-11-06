@@ -148,11 +148,13 @@ describe("clarify protocol injection", () => {
     writeDoc(INCOMPLETE_DOC);
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
 
     const args = dispatchedArgs();
-    expect(args.startsWith(" full-und?")).toBe(true);
-    const argsIndex = args.indexOf(" full-und?");
+    // 226 Phase 1: the INCOMPLETE doc is NOT converged (`needs-clarify`) — the
+    // keep-looping round args, with the protocol directive appended after them.
+    expect(args.startsWith(" 1 答")).toBe(true);
+    const argsIndex = args.indexOf(" 1 答");
     const directiveIndex = args.indexOf("[auto-pipeline] Complete the requirement protocol");
     expect(directiveIndex).toBeGreaterThan(argsIndex);
     expect(args).toContain("Add a `## 需求评估` section");
@@ -162,7 +164,7 @@ describe("clarify protocol injection", () => {
     writeDoc(COMPLETE_DOC);
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
 
     const args = dispatchedArgs();
     expect(args).toBe(" full-und?");
@@ -195,7 +197,7 @@ describe("clarify protocol injection — English anchors (221 Phase 1)", () => {
     writeDoc(ENGLISH_INCOMPLETE_DOC);
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
 
     const args = dispatchedArgs();
     expect(args).toContain("Add a `## Requirement Assessment` section");
@@ -226,7 +228,7 @@ describe("clarify protocol injection — English anchors (221 Phase 1)", () => {
     );
     const meta = makeMeta();
 
-    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(makeCtx(meta), harness.config, meta, deps)).toBe("consumed");
 
     expect(dispatchedArgs()).toBe(" full-und?");
     expect(audits.some((line) => line.includes("clarify_protocol"))).toBe(false);

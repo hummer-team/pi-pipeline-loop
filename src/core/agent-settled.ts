@@ -910,37 +910,48 @@ export function createAgentSettled(
       // where the model settles before the user has written the answer, triggering
       // auto_verify_fail cascading to verify_attempt_overflow freeze.
       if (meta.currentStage === "clarify") {
-        // 220 D1/D2: auto job owns clarify rounds (job-gated; human track untouched).
-        if (meta.autoJob && (await runAutoClarifyRound(ctx, config, meta))) return;
-        try {
-          const awaitCheck = await precheckClarifyAwaitAnswer(config, meta);
-          if (awaitCheck.awaiting) {
-            await writeAuditLog("verify_await_answer_deferred", {
-              pipelineId: meta.pipelineId,
-              stage: meta.currentStage,
-              round: String(awaitCheck.round ?? 0),
-            });
-            // Phase 1 / 179 (G2 layer ②): interpolate the real document path and
-            // agent name so the hint is a copy-pasteable command line (the old text
-            // emitted the literal "{file}" placeholder and a generic "@agent").
-            const clarifyAgent = resolveAgentMention(config, "clarify") ?? "agent";
-            const clarifyDoc = meta.requirementDoc ?? "<requirement-doc>";
-            // 221 Phase 1: the answer-field literal follows the resolved protocol
-            // anchors (default stays `答：`, so the human text is unchanged).
-            const answerMarker = primaryMarker(
-              config.clarifyProtocol?.answerMarkers ?? ["答："],
-            );
-            ui.notify(
-              ctx,
-              `Clarify round ${awaitCheck.round} is awaiting your answer. ` +
-                `Please write your answer in the requirement document (${answerMarker}...) then re-mention ` +
-                `@${clarifyAgent} ${clarifyDoc} ${awaitCheck.round} 答 ` +
-                `(or @${clarifyAgent} ${clarifyDoc} full-und? to finalize).`,
-            );
-            return;
+        // 220 D1/D2: auto job owns clarify rounds (job-gated; human track
+        // untouched). 226 Phase 1: the round outcome is three-state —
+        // `defer-to-marker` must reach the marker gate, so the await-answer
+        // precheck below is skipped only in that case (the human path and
+        // every other outcome keep the precheck, 226 review B-#3).
+        let deferToMarker = false;
+        if (meta.autoJob) {
+          const round = await runAutoClarifyRound(ctx, config, meta);
+          if (round === "consumed") return;
+          deferToMarker = round === "defer-to-marker";
+        }
+        if (!deferToMarker) {
+          try {
+            const awaitCheck = await precheckClarifyAwaitAnswer(config, meta);
+            if (awaitCheck.awaiting) {
+              await writeAuditLog("verify_await_answer_deferred", {
+                pipelineId: meta.pipelineId,
+                stage: meta.currentStage,
+                round: String(awaitCheck.round ?? 0),
+              });
+              // Phase 1 / 179 (G2 layer ②): interpolate the real document path and
+              // agent name so the hint is a copy-pasteable command line (the old text
+              // emitted the literal "{file}" placeholder and a generic "@agent").
+              const clarifyAgent = resolveAgentMention(config, "clarify") ?? "agent";
+              const clarifyDoc = meta.requirementDoc ?? "<requirement-doc>";
+              // 221 Phase 1: the answer-field literal follows the resolved protocol
+              // anchors (default stays `答：`, so the human text is unchanged).
+              const answerMarker = primaryMarker(
+                config.clarifyProtocol?.answerMarkers ?? ["答："],
+              );
+              ui.notify(
+                ctx,
+                `Clarify round ${awaitCheck.round} is awaiting your answer. ` +
+                  `Please write your answer in the requirement document (${answerMarker}...) then re-mention ` +
+                  `@${clarifyAgent} ${clarifyDoc} ${awaitCheck.round} 答 ` +
+                  `(or @${clarifyAgent} ${clarifyDoc} full-und? to finalize).`,
+              );
+              return;
+            }
+          } catch {
+            // Fail-open: defer check failure must not block the settle flow
           }
-        } catch {
-          // Fail-open: defer check failure must not block the settle flow
         }
       }
 

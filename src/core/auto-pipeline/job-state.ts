@@ -84,6 +84,13 @@ export interface AutoJobDocProgress {
   clarifyStallDocLength?: number;
   /** Consecutive rounds assessed as `needs-clarify`. */
   clarifyNeedsClarifyStreak?: number;
+  /**
+   * 226 Phase 1: round whose finalisation (`full-und?`) was already dispatched.
+   * Set on a SUCCESSFUL `spawn-full-und` dispatch and cleared by
+   * `resetClarifyCounters`; while it is set the settle seam must NOT dispatch
+   * again — it hands the document to the marker gate (`await-finalisation`).
+   */
+  clarifyFinalisationRound?: number;
   // ─── 220 Phase 5: start-stage evidence (B7) ────────────────────────────────
   /** What the doc's start stage was verified against. */
   startStageBasis?: StartStageBasis;

@@ -9,8 +9,10 @@
  *   `deriveClarifyForwardArgs` (`src/utils/clarify-args.ts`) — no second
  *   round/answer/marker parser lives here.
  * - Decision order is fixed and total (every branch returns exactly one
- *   action): `not-auto` → `confirmed` → `budget-exhausted` → `stalled` →
- *   `requirement-unclear` → forwarding state.
+ *   action): `not-auto` → `confirmed` → `await-finalisation` →
+ *   `budget-exhausted` → `stalled` → `requirement-unclear` → forwarding state
+ *   (`continue` / `spawn-full-und` split by the `ready` convergence criterion,
+ *   226 Phase 1).
  * - `fresh` dispatches `" 1"` (the same literal the human path uses), never
  *   `"1"` without the leading space: `subagent-rpc` concatenates
  *   `prompt += extraArgs`, so the separator is part of the contract.
@@ -31,6 +33,8 @@ export type ClarifyDispatchAction =
   | "fresh"
   | "await-answer"
   | "confirmed"
+  | "continue"
+  | "await-finalisation"
   | "spawn-full-und"
   | "budget-exhausted"
   | "stalled"
@@ -58,6 +62,12 @@ export interface ClarifyDispatchInput {
   needsClarifyStreak: number;
   /** Limit of that streak. */
   needsClarifyLimit: number;
+  /**
+   * 226 Phase 1: TRUE when the finalisation round (`full-und?`) was already
+   * dispatched for THIS document (sidecar fact). Decision order:
+   * `confirmed` → `await-finalisation` → budget → stall → unclear → forward.
+   */
+  finalisationDispatched: boolean;
   /** Last requirement assessment (null = not parsed yet). */
   assessment: RequirementAssessment | null;
   /** Last dispatched round (dedupe source). */
@@ -95,6 +105,7 @@ function isCoalesced(input: ClarifyDispatchInput, round: number): boolean {
 const DISPATCH_ACTIONS: ReadonlySet<ClarifyDispatchAction> = new Set<ClarifyDispatchAction>([
   "fresh",
   "await-answer",
+  "continue",
   "spawn-full-und",
 ]);
 
@@ -116,6 +127,14 @@ function dispatchDecision(
 }
 
 /**
+ * Clarify converged ⟺ the document declares the requirement ready.
+ * `unknown` is NOT convergence (226 D: a declared criterion, not a guess).
+ */
+function isClarifyConverged(assessment: RequirementAssessment | null): boolean {
+  return assessment?.verdict === "ready";
+}
+
+/**
  * Decide the clarify action for the current document.
  *
  * Pure: no fs, no clock, no side effects — the seam supplies every fact.
@@ -132,6 +151,18 @@ export function decideClarifyDispatch(input: ClarifyDispatchInput): ClarifyDispa
   if (derived.kind === "confirmed") {
     return dispatchDecision(input, "confirmed", derived.round, "clarify_confirmed");
   }
+
+  // ① 226 Phase 1: the finalisation round was already dispatched but the
+  //    completion marker is still missing ⇒ dispatch NOTHING and hand the
+  //    settle back to the marker gate. It sits BEFORE the budget gate on
+  //    purpose: the finalisation round consumed the last budgeted round, so
+  //    the marker must still be verifiable without a second dispatch.
+  //    `derived.kind === "fresh"` has no round property — `derivedRound` is
+  //    the already-computed replacement (226 review B-#2).
+  if (input.finalisationDispatched) {
+    return dispatchDecision(input, "await-finalisation", derivedRound, "clarify_finalisation_pending");
+  }
+
   // The two gate rules live in their owning modules: a second inline copy would
   // drift the moment either module changes (e.g. the `maxRounds <= 0` bound).
   if (isClarifyRoundBudgetExhausted(input.usedRounds, input.maxRounds)) {
@@ -144,9 +175,16 @@ export function decideClarifyDispatch(input: ClarifyDispatchInput): ClarifyDispa
     return dispatchDecision(input, "requirement-unclear", derivedRound, "clarify_requirement_unclear");
   }
 
-  if (derived.kind === "fresh") {
-    return dispatchDecision(input, "fresh", derivedRound, "clarify_fresh_round", " 1");
+  // ② 226 Phase 1: the latest round HAS an answer. Converged (`ready`) ⇒
+  //    dispatch the finalisation round; NOT converged (`needs-clarify` or
+  //    `unknown`) ⇒ keep looping with the next ordinary round (`<n> 答`).
+  if (derived.kind === "full-und?") {
+    return isClarifyConverged(input.assessment)
+      ? dispatchDecision(input, "spawn-full-und", derived.round, "clarify_full_und", " full-und?")
+      : dispatchDecision(input, "continue", derived.round, "clarify_continue_round", ` ${derived.round} 答`);
   }
+  // ③ 226 Phase 1: the latest round has NO answer — awaiting the answer takes
+  //    priority over convergence (a finalisation must never run without one).
   if (derived.kind === "await-answer") {
     return dispatchDecision(
       input,
@@ -156,5 +194,5 @@ export function decideClarifyDispatch(input: ClarifyDispatchInput): ClarifyDispa
       ` ${derived.round} 答`,
     );
   }
-  return dispatchDecision(input, "spawn-full-und", derived.round, "clarify_full_und", " full-und?");
+  return dispatchDecision(input, "fresh", derivedRound, "clarify_fresh_round", " 1");
 }

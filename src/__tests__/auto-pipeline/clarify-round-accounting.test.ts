@@ -127,7 +127,7 @@ describe("noteClarifyStartupDispatch — the startup round is charged", () => {
 
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
     expect(freezeReasons).toEqual(["clarify_budget_exhausted"]);
     expect(spawnCalls).toHaveLength(0);
   });

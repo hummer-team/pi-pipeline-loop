@@ -129,6 +129,8 @@ export async function buildClarifyDocState(input: {
     stallLimit: DEFAULT_CLARIFY_STALL_LIMIT,
     needsClarifyStreak: progress.clarifyNeedsClarifyStreak ?? 0,
     needsClarifyLimit: CLARIFY_NEEDS_CLARIFY_LIMIT,
+    // 226 Phase 1: the finalisation round already dispatched (sidecar fact).
+    finalisationDispatched: progress.clarifyFinalisationRound !== undefined,
     assessment,
     ...(progress.clarifyLastRound !== undefined ? { lastDispatchedRound: progress.clarifyLastRound } : {}),
     ...(progress.clarifyDispatchedAt !== undefined ? { lastDispatchedAt: progress.clarifyDispatchedAt } : {}),
@@ -167,6 +169,9 @@ export function resetClarifyCounters(progress: AutoJobDocProgress, now: number):
   progress.clarifyStallSignature = undefined;
   progress.clarifyStallDocLength = undefined;
   progress.clarifyNeedsClarifyStreak = undefined;
+  // 226 Phase 1: the finalisation fact dies with the counters — a confirmed
+  // document starts its next round (or the next doc) without marker debt.
+  progress.clarifyFinalisationRound = undefined;
   progress.updatedAt = now;
 }
 

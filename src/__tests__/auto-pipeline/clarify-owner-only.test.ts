@@ -150,7 +150,7 @@ describe("runAutoClarifyRound — child sessions are inert", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta, "owner");
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
     expect(spawnCalls).toHaveLength(1);
     expect(gateEvents().some((line) => line.includes("clarify_dispatch"))).toBe(true);
   });
@@ -159,7 +159,7 @@ describe("runAutoClarifyRound — child sessions are inert", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta, "child-parent");
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
 
     expect(spawnCalls).toHaveLength(0);
     expect(freezeCalls).toBe(0);
@@ -175,7 +175,7 @@ describe("runAutoClarifyRound — child sessions are inert", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta, "child-name");
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
 
     expect(spawnCalls).toHaveLength(0);
     expect(freezeCalls).toBe(0);
@@ -187,7 +187,7 @@ describe("runAutoClarifyRound — child sessions are inert", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta, "child-fork");
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
 
     expect(spawnCalls).toHaveLength(0);
     expect(freezeCalls).toBe(0);
@@ -200,11 +200,11 @@ describe("runAutoClarifyRound — child sessions are inert", () => {
     // following owner settle still dispatches round 1.
     const meta = makeMeta();
     const child = makeCtx(meta, "child-parent");
-    expect(await runAutoClarifyRound(child.ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(child.ctx, harness.config, meta, deps)).toBe("pass-through");
     expect(spawnCalls).toHaveLength(0);
 
     const owner = makeCtx(meta, "owner");
-    expect(await runAutoClarifyRound(owner.ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(owner.ctx, harness.config, meta, deps)).toBe("consumed");
     expect(spawnCalls).toHaveLength(1);
   });
 });

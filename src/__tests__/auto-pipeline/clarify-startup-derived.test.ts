@@ -50,7 +50,17 @@ const FRESH_DOC = ["# 223_Bug", ...MANDATORY].join("\n");
 /** Latest round without an answer marker → `await-answer`. */
 const AWAIT_R3_DOC = ["# 223_Bug", ...MANDATORY, "", "# 第 3 轮澄清", "- **方案 A** self-answer"].join("\n");
 /** Latest round with an answer but no confirmation → `full-und?`. */
-const FULL_UND_R3_DOC = ["# 223_Bug", ...MANDATORY, "", "# 第 3 轮澄清", "- **方案 A** self-answer", "答：方案 A"].join("\n");
+/** Answered + declared `ready` (226 convergence) → the finalisation round is planned. */
+const FULL_UND_R3_DOC = [
+  "# 223_Bug",
+  ...MANDATORY,
+  "## 需求评估",
+  "ready",
+  "",
+  "# 第 3 轮澄清",
+  "- **方案 A** self-answer",
+  "答：方案 A",
+].join("\n");
 /** Answer + completion marker → `confirmed`. */
 const CONFIRMED_DOC = ["# 223_Bug", ...MANDATORY, "", "# 第 1 轮澄清", "- **方案 A** self-answer", "答：方案 A", "full-und? 理解确认：是", "", "## 模型确认", "是"].join("\n");
 
@@ -196,6 +206,27 @@ describe("buildClarifyAutoPlan — four-state derivation", () => {
     const plan = await buildClarifyAutoPlan(harness.config, DOC_A);
 
     expect(plan!.kind).toBe("confirmed");
+  });
+
+  it("226 Phase 1: answered but NOT converged → continue plan with the self-answer instruction", async () => {
+    // Answered doc WITHOUT the ready assessment — the loop keeps going.
+    writeDoc(DOC_A, ["# 223_Bug", ...MANDATORY, "", "# 第 3 轮澄清", "- **方案 A** self-answer", "答：方案 A"].join("\n"));
+    const p = expectDispatch(await buildClarifyAutoPlan(harness.config, DOC_A));
+
+    expect(p.action).toBe("continue");
+    expect(p.args).toBe("3 答");
+    expect(p.instruction).toContain("unattended");
+    // The continue round carries the SELF-ANSWER instruction, not the
+    // finalisation instruction (that one owns the marker wording).
+    expect(p.instruction).not.toContain("Finalise the clarification");
+  });
+
+  it("226 Phase 1: finalisation round already dispatched → marker-pending plan (no dispatch)", async () => {
+    writeDoc(DOC_A, FULL_UND_R3_DOC);
+    await patchDoc(0, { clarifyFinalisationRound: 3 });
+    const plan = await buildClarifyAutoPlan(harness.config, DOC_A);
+
+    expect(plan!.kind).toBe("marker-pending");
   });
 
   it("sidecar lacks the doc entry → null (human derivation) + clarify_startup_doc_unmatched diagnostic", async () => {

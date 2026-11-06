@@ -41,8 +41,17 @@ const MANDATORY = ["## 目标", "Ship the clarify dispatch seam.", "## 范围", 
 const FRESH_DOC = ["# 200_Feat", ...MANDATORY].join("\n");
 /** Latest round without an answer marker → `await-answer`. */
 const AWAIT_DOC = ["# 200_Feat", ...MANDATORY, "", "# 第 1 轮澄清", "- **方案 A** self-answer"].join("\n");
-/** Latest round with an answer but no confirmation → `full-und?`. */
-const FULL_UND_DOC = ["# 200_Feat", ...MANDATORY, "", "# 第 1 轮澄清", "- **方案 A** self-answer", "答：方案 A"].join("\n");
+/** Latest round with an answer and a declared `ready` assessment → `full-und?` (226 convergence). */
+const FULL_UND_DOC = [
+  "# 200_Feat",
+  ...MANDATORY,
+  "## 需求评估",
+  "ready",
+  "",
+  "# 第 1 轮澄清",
+  "- **方案 A** self-answer",
+  "答：方案 A",
+].join("\n");
 
 type SpawnArgs = Parameters<ClarifyEntryDeps["spawn"]>;
 type SpawnResult = Awaited<ReturnType<ClarifyEntryDeps["spawn"]>>;
@@ -122,7 +131,7 @@ describe("runAutoClarifyRound — forwarding states", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
 
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0]![2]).toBe("clarify");
@@ -136,7 +145,7 @@ describe("runAutoClarifyRound — forwarding states", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
 
     const opts = spawnCalls[0]![4] as { extraArgs?: string };
     expect(opts.extraArgs?.startsWith(" 1 答")).toBe(true);
@@ -147,7 +156,7 @@ describe("runAutoClarifyRound — forwarding states", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
 
     const opts = spawnCalls[0]![4] as { extraArgs?: string };
     expect(opts.extraArgs?.startsWith(" full-und?")).toBe(true);
@@ -171,9 +180,9 @@ describe("runAutoClarifyRound — forwarding states", () => {
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
     setSystemTime(new Date("2026-11-01T00:00:31.000Z"));
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
 
     expect(spawnCalls).toHaveLength(2);
   });
@@ -185,21 +194,59 @@ describe("runAutoClarifyRound — forwarding states", () => {
 
     await runAutoClarifyRound(ctx, harness.config, meta, deps);
     setSystemTime(new Date("2026-11-01T00:00:05.000Z"));
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(true);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("consumed");
 
     expect(spawnCalls).toHaveLength(1);
     expect(audits.some((line) => line.includes('"decision":"coalesced"'))).toBe(true);
   });
 });
 
+describe("220 Phase 1: 226 Phase 1 — finalisation fact + three-state boundary", () => {
+  it("clarifyFinalisationRound is read into the decision: answered doc → defer-to-marker, no dispatch", async () => {
+    writeDoc(FULL_UND_DOC); // answered, not confirmed, NOT ready → looping doc
+    const meta = makeMeta();
+    const { ctx } = makeCtx(meta);
+
+    // Seed the sidecar fact: the finalisation round was already dispatched.
+    const state = harness.state();
+    state.docs[0]!.clarifyFinalisationRound = 1;
+    await writeJobState(harness.projectRoot, state);
+
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("defer-to-marker");
+    expect(spawnCalls).toHaveLength(0);
+    // `await-finalisation` is not a dispatch action → never coalesced.
+    expect(gateEvents().some((line) => line.includes('"decision":"coalesced"'))).toBe(false);
+  });
+
+  it("resetClarifyCounters clears the finalisation fact together with the counters", async () => {
+    writeDoc(`${FULL_UND_DOC}\n\n## 模型确认\nfull-und? 理解确认：是\n`);
+    const meta = makeMeta();
+    const { ctx } = makeCtx(meta);
+
+    const state = harness.state();
+    state.docs[0]!.clarifyFinalisationRound = 1;
+    state.docs[0]!.clarifyRounds = 1;
+    await writeJobState(harness.projectRoot, state);
+
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
+
+    const after = harness.state().docs[0]!;
+    expect(after.clarifyFinalisationRound).toBeUndefined();
+    expect(after.clarifyRounds).toBeUndefined();
+  });
+});
+
 describe("runAutoClarifyRound — dispatch failure is visible", () => {
-  it("spawned:false → not consumed, stall +1 and clarify_dispatch_failed audited", async () => {
+  it("spawned:false → NOT consumed (settle continues), stall +1 and clarify_dispatch_failed audited", async () => {
+    // 226 Phase 1 mapping: a failed dispatch still hands control back to the
+    // ordinary settle flow ("pass-through"); Phase 2 routes the failure
+    // itself through `noteClarifyDispatchFailure` (it becomes `"consumed"`).
     writeDoc(FRESH_DOC);
     spawnResult = { spawned: false, fallback: false };
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
 
     expect(harness.state().docs[0]!.clarifyStalls).toBe(1);
     expect(gateEvents().some((line) => line.includes("clarify_dispatch_failed"))).toBe(true);
@@ -207,13 +254,13 @@ describe("runAutoClarifyRound — dispatch failure is visible", () => {
 });
 
 describe("runAutoClarifyRound — gates", () => {
-  it("no active job → inert (returns false, no dispatch)", async () => {
+  it("no active job → pass-through (no dispatch)", async () => {
     writeDoc(FRESH_DOC);
     __resetAutoJobLockForTests();
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
     expect(spawnCalls).toHaveLength(0);
   });
 
@@ -222,7 +269,7 @@ describe("runAutoClarifyRound — gates", () => {
     const meta = { ...makeMeta(), currentStage: "plan" } as SessionMeta;
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
     expect(spawnCalls).toHaveLength(0);
   });
 
@@ -237,7 +284,7 @@ describe("runAutoClarifyRound — gates", () => {
     state.docs[0]!.clarifyNeedsClarifyStreak = 1;
     await writeJobState(harness.projectRoot, state);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe(false);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
 
     expect(spawnCalls).toHaveLength(0);
     expect(harness.state().docs[0]!.clarifyRounds).toBeUndefined();
