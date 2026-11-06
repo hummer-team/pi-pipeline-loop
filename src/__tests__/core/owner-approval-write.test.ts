@@ -114,7 +114,6 @@ describe("writeFingerprint / enqueueWriteApproval (case 1)", () => {
     expect(menus.length).toBe(1);
     expect(menus[0]!.title).toContain("…+2");
     expect(menus[0]!.options).toEqual(["Deny (block)", "Allow for this session"]);
-    void meta;
   });
 });
 

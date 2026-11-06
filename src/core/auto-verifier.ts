@@ -28,11 +28,19 @@ import { safeWriteAuditLog } from "../utils/auditLog";
 // `stage-watchdog` does not import this module, so the edge stays one-directional.
 import { touchStageProgress } from "./stage-watchdog";
 import { parseFrontmatter, type VerifyRules, type VerifyGroupRuleNode } from "./verify-frontmatter";
+// 225 code-review fix (issue 5): verify.md file parsing lives in the
+// verify-file-parser LEAF so commit-contract can consume it without a
+// runtime edge back into this module (cycle-free by construction).
+import { parseVerifyFile } from "./verify-file-parser";
 import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, isPlanDocGlob } from "./verify-path-resolver";
 // 210 Phase 6: commit-proof reconciliation. `commit-proof` imports auto-verifier
 // only via `import type` (erased at compile), so this runtime edge stays acyclic.
 import { reconcileCommitProof } from "./commit-proof";
 // 225 Phase 1: contract-default judgement shared with Phase 0 (groups+flat).
+// 225 code-review fix (issue 5): this edge used to CLOSE a runtime cycle
+// (commit-contract ← auto-verifier ← commit-contract) via parseVerifyFile;
+// the parser now lives in the `verify-file-parser` leaf and BOTH sides import
+// from there — the chain stays acyclic: auto-verifier → verify-file-parser ← commit-contract.
 import { hasCommitRequirement } from "./commit-contract";
 // 225 Phase 5: branch/stash invariant assertion (same failure set as proof).
 import { reconcileGitInvariants } from "./git-invariants";
@@ -120,51 +128,19 @@ export interface VerifyResult {
 }
 
 /**
- * Result of parsing a verify.md file.
- *
- * Phase 6 / 177 (D8): the Markdown body is a human-readable contract only —
- * the plugin reads frontmatter rules and `runtime:` anchors. The legacy `prompt`
- * (body) field was removed as a dead "write-only" field.
+ * Result of parsing a verify.md file — SUNK to `verify-file-parser.ts`
+ * (225 code-review fix, issue 5): re-exported here for backward compatibility
+ * only. The full contract lives in the leaf module.
  */
-export interface ParsedVerifyFile {
-  /** Verification rules (null if no YAML frontmatter with keywords) */
-  rules: VerifyRules | null;
-  /** Phase 9: parse failure reason (present when rules is null due to parse error) */
-  parseError?: string;
-}
+export type { ParsedVerifyFile } from "./verify-file-parser";
 
 /**
- * Parses a verify.md file into rules.
- * Expects YAML frontmatter (between --- delimiters) for keyword rules.
- * The Markdown body is intentionally not returned (human-readable only).
+ * Parses a verify.md file into rules — SUNK to `verify-file-parser.ts`
+ * (225 code-review fix, issue 5). Re-exported so existing consumers
+ * (verify-integration / auto-verifier tests) and callers keep importing from
+ * this module with zero changes; the implementation is the leaf's.
  */
-export async function parseVerifyFile(
-  verifyPath: string,
-): Promise<ParsedVerifyFile> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(verifyPath, "utf-8");
-  } catch {
-    return { rules: null, parseError: "file read failed" };
-  }
-
-  const parts = raw.split(/^---\s*$/m);
-  if (parts.length < 2) {
-    return { rules: null, parseError: "no frontmatter delimiter" };
-  }
-
-  // parts[0] is before first --- (should be empty/whitespace)
-  // parts[1] is the YAML frontmatter content
-  const frontmatter = parts[1].trim();
-
-  const rules = await parseFrontmatter(frontmatter);
-  
-  if (!rules) {
-    return { rules: null, parseError: "frontmatter parse failed" };
-  }
-
-  return { rules };
-}
+export { parseVerifyFile };
 
 /**
  * Runs rule-based verification against the aggregated assistant messages.

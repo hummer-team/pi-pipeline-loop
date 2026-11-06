@@ -190,16 +190,14 @@ describe("200 Bug Phase 5 chain A: routed fix spawn wakes the idle owner once, r
     // The declaration is DEFERRED (`reviewPendingFail`) and routed at the
     // next owner settle (after the executor's terminal), which this chain
     // exercises right after the G1 wake assertions below.
-    const statusTexts: string[] = [];
+    // 225 code-review fix (issue 2): the dead `statusTexts` collector that
+    // hung on the child ctx is GONE — under the T4 deferral contract the
+    // routing (and therefore the status-bar refresh, G1-3) happens at owner
+    // settle, asserted below on the harness's own captured setStatus calls.
     const childCtx = {
       ...(h.childToolCtx() as Record<string, unknown>),
       ui: {
         notify: () => {},
-        // Real Pi setStatus is (key, detail): capture both so the routed
-        // stage label in the detail can be asserted.
-        setStatus: (key?: unknown, detail?: unknown) => {
-          statusTexts.push(`${String(key)}|${String(detail)}`);
-        },
       },
     };
     const routed = await exec(createStageAdvancer(h.config), { reviewConclusion: "fail" }, childCtx);
@@ -271,7 +269,17 @@ describe("200 Bug Phase 5 chain A: routed fix spawn wakes the idle owner once, r
     expect(fixed.reviewPendingFail).toBeUndefined();
     expect(fixed.activeSpawns?.fix?.agentId).toBeDefined();
     expect(Object.keys(fixed.pendingSpawns ?? {})).toHaveLength(0);
-    void statusTexts;
+
+    // ── G1-3 (restored per issue 2): the ROUTING POINT refreshes the status
+    // bar to the new stage. routeReviewFailAuto ends with
+    // syncStageStatusBar(createPipelineUI(config), ctx) → ctx.ui.setStatus
+    // ("pipeline-stage", message); the settle route into `fix` must have
+    // produced a `… • fix …` status line (config.output.pipelineStage=true).
+    const stageStatus = h.statusCalls.filter((c) => c.key === "pipeline-stage");
+    expect(stageStatus.length).toBeGreaterThan(0);
+    expect(
+      stageStatus.some((c) => String(c.detail ?? "").includes("• fix")),
+    ).toBe(true);
   });
 });
 

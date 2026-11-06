@@ -176,7 +176,6 @@ describe("form ① — same-turn dispatch + stale report must not route", () => 
     expect(finalText.split("review_auto_route_fix").length - 1).toBe(1);
 
     fs.rmSync(env.projectRoot, { recursive: true, force: true });
-    void stale;
   });
 });
 

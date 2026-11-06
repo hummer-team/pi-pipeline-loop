@@ -75,7 +75,6 @@ const FAIL_REPORT =
 
 describe("review exit gate — four exit states", () => {
   it("no ledger round + legacy report on disk → audited fallback, conclusion from mtime-latest", async () => {
-    void writeReport;
     const m = meta();
     const legacyPath = "docs/review/code_review_old.md";
     writeReport(legacyPath, PASS_REPORT);
@@ -150,33 +149,63 @@ describe("review exit gate — four exit states", () => {
 describe("review exit gate — liveness evidence", () => {
   const enteredFuture = 1760000000010;
 
+  beforeEach(() => {
+    // 225 code-review fix (issue 6): liveness scans through the shared
+    // scanner by AGENT MENTION — resolveAgentMention(config, "review") reads
+    // the deployed review agent file, so the fixture deploys one.
+    const agentRel = ".pi/agents/review-agent.md";
+    fs.mkdirSync(join(projectRoot, ".pi", "agents"), { recursive: true });
+    fs.writeFileSync(join(projectRoot, agentRel), "---\nname: review-agent\n---\nbody\n", "utf-8");
+    config.stages.review.agentPath = agentRel;
+  });
+
   it("probe_live: registry-driven liveness (executor present → live)", () => {
     const m = meta({ activeSpawns: { review: { agentName: "review-agent", agentId: "live-1", startedAt: 1 } } });
-    expect(isReviewExecutorLive(m)).toBe(false); // no manager installed → settled
+    expect(isReviewExecutorLive(config, m)).toBe(false); // no manager installed → settled
     (globalThis as Record<symbol, unknown>)[MANAGER_KEY] = makeRealisticManagerRegistry({ "live-1": "running" });
-    expect(isReviewExecutorLive(m)).toBe(true);
+    expect(isReviewExecutorLive(config, m)).toBe(true);
+  });
+
+  it("evidence registered under a NON-review stage key still counts as live (cross-key scan)", () => {
+    // The point of reusing scanActiveSpawnEvidence (issue 6): the single-key
+    // reimplementation was blind to evidence hanging on any other stage key —
+    // exactly the shape a late ledger cleanup or a borrowed executor leaves.
+    const m = meta({
+      activeSpawns: { develop: { agentName: "review-agent", agentId: "live-9", startedAt: 1 } },
+    });
+    expect(isReviewExecutorLive(config, m)).toBe(false);
+    (globalThis as Record<symbol, unknown>)[MANAGER_KEY] = makeRealisticManagerRegistry({ "live-9": "running" });
+    expect(isReviewExecutorLive(config, m)).toBe(true);
+  });
+
+  it("a FOREIGN agent name on another stage key is NOT liveness evidence", () => {
+    const m = meta({
+      activeSpawns: { develop: { agentName: "develop-agent", agentId: "live-x", startedAt: 1 } },
+    });
+    (globalThis as Record<symbol, unknown>)[MANAGER_KEY] = makeRealisticManagerRegistry({ "live-x": "running" });
+    expect(isReviewExecutorLive(config, m)).toBe(false);
   });
 
   it("reserved evidence: 59s inside the window is live", () => {
     const m = meta({
       activeSpawns: { review: { agentName: "review-agent", startedAt: Date.now() - 59_000, reserved: true } },
     });
-    expect(isReviewExecutorLive(m)).toBe(true);
+    expect(isReviewExecutorLive(config, m)).toBe(true);
   });
 
   it("reserved evidence: 61s outside the window is NOT live", () => {
     const m = meta({
       activeSpawns: { review: { agentName: "review-agent", startedAt: Date.now() - 61_000, reserved: true } },
     });
-    expect(isReviewExecutorLive(m)).toBe(false);
+    expect(isReviewExecutorLive(config, m)).toBe(false);
   });
 
   it("same-turn dispatch marker hits only the matching stageStartTime", () => {
     const m = meta({ reviewDispatchedAt: { stageStartTime: 1760000000000, at: Date.now() } });
-    expect(isReviewExecutorLive(m)).toBe(true);
+    expect(isReviewExecutorLive(config, m)).toBe(true);
     // A foreign visit's marker never revives this one.
     const foreign = meta({ stageStartTime: 9999999999, reviewDispatchedAt: { stageStartTime: 1760000000000, at: Date.now() } });
-    expect(isReviewExecutorLive(foreign)).toBe(false);
+    expect(isReviewExecutorLive(config, foreign)).toBe(false);
   });
 
   it("live executor + missing fresh report → live-executor (keep waiting)", async () => {

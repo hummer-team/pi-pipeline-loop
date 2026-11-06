@@ -709,20 +709,37 @@ export function createAgentSettled(
         // 225 Phase 3 (T4a): explicit fail declaration deferred by the
         // stage-advancer (executor was still live). Route ONCE, only after the
         // review executor is gone — never concurrently with it.
+        // 225 code-review fix (issue 7): the debt is OWNED by the visit it was
+        // declared in (`reviewPendingFail.stageStartTime`). A debt from an
+        // earlier visit (same period) must not override THIS visit's fresher
+        // outcome — it is invalidated (audited `stale-debt`) and the ordinary
+        // exit gate below decides.
         if (meta.reviewPendingFail) {
-          if (isReviewExecutorLive(meta)) {
+          if (meta.reviewPendingFail.stageStartTime !== meta.stageStartTime) {
+            const debtStageStartTime = meta.reviewPendingFail.stageStartTime;
+            ctx.session.updateMeta({ reviewPendingFail: undefined });
+            await writeAuditLog("review_pending_fail_stale", {
+              pipelineId: meta.pipelineId,
+              stage: "review",
+              reason: "stale-debt",
+              debtStageStartTime: String(debtStageStartTime),
+              currentStageStartTime: String(meta.stageStartTime),
+            });
+            // fall through to the normal exit-gate chain below
+          } else if (isReviewExecutorLive(config, meta)) {
             await writeAuditLog("review_verdict_deferred_live_executor", {
               pipelineId: meta.pipelineId,
               stage: "review",
               reason: "pending-fail",
             });
             return; // keep waiting for the executor to settle
+          } else {
+            ctx.session.updateMeta({ reviewPendingFail: undefined, reviewConclusionDeclared: undefined });
+            await routeReviewFailAuto(config, ctx, meta, ui, {
+              reason: "reviewConclusion declared fail (deferred, routed at settle)",
+            });
+            return;
           }
-          ctx.session.updateMeta({ reviewPendingFail: undefined, reviewConclusionDeclared: undefined });
-          await routeReviewFailAuto(config, ctx, meta, ui, {
-            reason: "reviewConclusion declared fail (deferred, routed at settle)",
-          });
-          return;
         }
 
         if (meta.reviewConclusionDeclared === true) {
@@ -755,17 +772,18 @@ export function createAgentSettled(
             await writeAuditLog("review_verdict_no_fresh_report", {
               pipelineId: meta.pipelineId,
               stage: "review",
-              reason: gate.reason,
+              // state "no-conclusion" always carries a defined reason.
+              reason: gate.reason as "live" | "missing" | "stale",
               expectedPath: gate.expectedPath ?? "",
             });
             if (gate.reason === "missing") {
               // No return: fall through to precheckRequiredFiles below (225
               // Phase 2 T6 narrowed the review requiredFiles to the exact
               // `_N.md`), whose verify_precheck_deferred names that path.
-              const confirmModeManual = confirmMode === "manual";
-              if (confirmModeManual) reviewDefaultReject = true;
-              // Manual keeps its conservative preselect but stops here for the
-              // report-gate: the flow continues into verify (same as auto).
+              // Manual keeps its conservative preselect (missing ⇒ reject)
+              // for when the precheck does NOT pin the missing report and
+              // the flow reaches the confirm gate.
+              if (confirmMode === "manual") reviewDefaultReject = true;
             } else {
               // stale: expected file exists but is older than this round's
               // entry clock — continuing would advance on a stale report. Use
@@ -779,7 +797,6 @@ export function createAgentSettled(
               }
               return;
             }
-            reviewDefaultReject = reviewDefaultReject; // keep manual preselect
           } else {
             // conclusion ⇒ gate.verdict drives the existing auto/manual routing
             const reviewVerdict = gate.verdict;

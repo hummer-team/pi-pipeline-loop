@@ -16,6 +16,7 @@ import { describe, it, expect, afterEach } from "bun:test";
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { createPromptInjector } from "../../core/prompt-injector";
 import { makeTestConfig, makeTestMeta } from "../helpers";
+import { resolveGitModifyPolicy } from "../../utils/protect";
 import {
   __setSafeWriteAuditLogOverride,
 } from "../../utils/auditLog";
@@ -122,6 +123,35 @@ describe("stage write scope: tri-state Git line (same source as tool-guard)", ()
     const hook = createPromptInjector(config);
     const result = (await hook.handler(ctx))!;
     expect(result.systemPrompt!).toContain("Git: writable (commit contract active)");
+  });
+
+  // 225 code-review fix (issue 3): LOOP stages (develop/fix) previously never
+  // carried the Git line — buildLoopStatus rendered only Write Scope. These
+  // cases pin the line on the two stages where the commit contract is real.
+  it("loop stage fix with contract elevation → Git: writable reaches the Loop Status", async () => {
+    const config = makeTestConfig();
+    (config.protect as Record<string, unknown>).gitModify = "block";
+    commitContractVerifySpec(config, "fix");
+    const meta = makeTestMeta({ currentStage: "fix" });
+    const { ctx } = makeGateCtx(meta);
+    // The handler elevates the contract BEFORE composing (production path):
+    // after injection the effective policy must read allow.
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx))!;
+    expect(resolveGitModifyPolicy(config, null, "fix")).toBe("allow");
+    expect(result.systemPrompt!).toContain("Git: writable (commit contract active)");
+  });
+
+  it("loop stage fix without a commit contract under a global block → Git: read-only", async () => {
+    const config = makeTestConfig();
+    (config.protect as Record<string, unknown>).gitModify = "block";
+    // No verify spec deployed → no commit contract → the block stays.
+    const meta = makeTestMeta({ currentStage: "fix" });
+    const { ctx } = makeGateCtx(meta);
+    const hook = createPromptInjector(config);
+    const result = (await hook.handler(ctx))!;
+    expect(resolveGitModifyPolicy(config, null, "fix")).toBe("block");
+    expect(result.systemPrompt!).toContain("Git: read-only (add/commit/push forbidden)");
   });
 });
 

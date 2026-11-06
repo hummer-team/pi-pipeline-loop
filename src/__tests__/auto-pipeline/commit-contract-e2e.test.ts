@@ -73,11 +73,10 @@ function jobOverlaidConfig(): PipelineConfig {
   const snapshot = applyOverlay(config, baseJson, job);
   expect(config.protect?.gitModify).toBe("block"); // the job owns it
   releaseJobLock({ projectRoot: ROOT, token: acquired.token });
-  void snapshot;
   return config;
 }
 
-function guardHarness(stage: "develop" | "fix" | "plan" | "review", command: string, opts?: { execFn?: ExecFn }) {
+function guardHarness(stage: "develop" | "fix" | "plan" | "review", command: string) {
   const meta: SessionMeta = makeTestMeta({ currentStage: stage });
   const ctx = createMockCtx(meta);
   ctx.toolCall = { name: "bash", arguments: { command } };
@@ -132,6 +131,34 @@ describe("225 Phase 6 T2 — commit contract e2e", () => {
     expect(result.reason).toContain("force-stage gitignore-protected path");
   });
 
+  // 225 code-review fix (issue 9 / D7′): a PLAIN `git add` of a gitignored
+  // path (the repo's own docs/ shape) neither enters a commit nor counts as
+  // an allowed write — the guard only warns (checkGitAdd's ignore degrade),
+  // and the WARN path must not record `git_write_allowed`.
+  it("plain add of a gitignored `docs/` path: warn only, never recorded as an allowed write", async () => {
+    const config = jobOverlaidConfig();
+    const { ensureCommitContractElevation } = await import("../../core/commit-contract");
+    await ensureCommitContractElevation(config, "fix");
+    fs.writeFileSync(join(ROOT, ".gitignore"), "docs\n", "utf-8");
+    const execFn: ExecFn = async (_cmd, args) => {
+      if (args[0] === "add" && args[1] === "--dry-run") {
+        return {
+          stdout: "",
+          stderr: "The following paths are ignored:\n  docs/review/Code_Review_77_Config_Develop_Commit_2.md\nUse -f if you really want to add them.\n",
+          code: 1,
+        };
+      }
+      return { stdout: "", stderr: "", code: 0 };
+    };
+    const harness = guardHarness("fix", "git add docs/review/Code_Review_77_Config_Develop_Commit_2.md");
+    const result = (await createToolGuard(config, { execFn }).handler(harness.ctx as never)) as { block?: boolean; reason?: string };
+    // The ignore downgrade is a warn (non-blocking), not a block.
+    expect(result?.block).toBeUndefined();
+    // Nothing entered the index: no allowed-write audit and no counter bump.
+    expect(audits.some((a) => a.event === "git_write_allowed")).toBe(false);
+    expect(harness.meta.gitAllowedWrites ?? 0).toBe(0);
+  });
+
   it("plan / review stages remain git-blocked (elevation branch 1 untouched)", async () => {
     const config = jobOverlaidConfig();
     // Non-contract verify specs on the two stages (or absent → branch 1).
@@ -170,7 +197,6 @@ describe("225 Phase 6 T2 — commit contract e2e", () => {
     expect(resolveGitModifyPolicy(config, null, "develop")).toBe("allow");
     if (!acquired.ok) throw new Error("lock acquire failed");
     releaseJobLock({ projectRoot: ROOT, token: acquired.token });
-    void snapshot;
   });
 
   it("gitRemoteWrite: an allowed `git push` writes git_remote_write with subcommand+args", async () => {

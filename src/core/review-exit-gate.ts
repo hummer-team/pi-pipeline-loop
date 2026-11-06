@@ -24,13 +24,16 @@ import {
   docsDirsOf,
   reqBaseFromRequirementDoc,
 } from "../docs-paths";
-import { DEFAULT_REVIEW_DIR } from "../constants";
 import type { PipelineStage, ReviewRoundState, SessionMeta } from "../types";
 import type { PipelineConfig } from "../types";
-import { probeAgentState } from "../utils/subagents-introspect";
 import { findLatestReviewReport, parseReviewConclusion, type ReviewVerdict } from "../utils/review-conclusion";
 import { loadVerifyContractAnchors, type VerifyContractAnchors } from "../utils/contract-loader";
-import { RESERVED_SPAWN_EVIDENCE_MS } from "../utils/spawn-evidence";
+// 225 code-review fix (issue 6): liveness evidence is the SHARED scan
+// (`scanActiveSpawnEvidence` — the same take agent-settled's settle
+// pre-check uses) instead of a local single-key reimplementation that
+// re-introduced the cross-stage blind spot the scanner was built to close.
+import { scanActiveSpawnEvidence } from "../utils/spawn-evidence";
+import { resolveAgentMention } from "../utils/subagent-rpc";
 import { safeWriteAuditLog } from "../utils/auditLog";
 
 /** Outcome of one settle-time review exit evaluation. */
@@ -42,23 +45,27 @@ export interface ReviewExitGate {
   verdict?: ReviewVerdict;
   /** The exact report path this gate evaluated (null when unresolvable). */
   expectedPath: string | null;
-  /** Why the gate returned a non-conclusion: live / missing / stale. */
-  reason: "live" | "missing" | "stale";
+  /**
+   * Why the gate returned a non-conclusion: live / missing / stale.
+   * 225 code-review fix (issue 12): absent for `state: "conclusion"` — a
+   * conclusion has no "why not" and consumers must not branch on a bogus value.
+   */
+  reason?: "live" | "missing" | "stale";
 }
 
 /**
  * Liveness judgement shared by the exit gate (fresh report absent) and the
- * stage-advancer explicit-fail declaration path. Config-free: reads the
- * `review` stage slot of the spawn ledger + the same-turn marker.
+ * stage-advancer explicit-fail declaration path. Reads the FULL spawn ledger
+ * through the shared `scanActiveSpawnEvidence` scanner (any stage key holding
+ * evidence for the review agent's mention — NOT just the `review` slot, which
+ * had a cross-stage blind spot) plus the same-turn dispatch marker.
  */
-export function isReviewExecutorLive(meta: SessionMeta, now: number = Date.now()): boolean {
-  const entry = meta.activeSpawns?.["review"];
-  if (entry) {
-    // probe_live: the executor's termination makes the probe fail by itself.
-    if (entry.agentId && probeAgentState(entry.agentId) === "live") return true;
-    // reserved: dispatch still in flight (no probeable id yet).
-    if (entry.reserved && now - entry.startedAt < RESERVED_SPAWN_EVIDENCE_MS) return true;
-  }
+export function isReviewExecutorLive(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): boolean {
+  const hit = scanActiveSpawnEvidence(meta.activeSpawns, resolveAgentMention(config, "review") ?? "");
+  if (hit) return true;
   // Same-turn dispatch marker covers the fallback channel without an agentId.
   return meta.reviewDispatchedAt?.stageStartTime === meta.stageStartTime;
 }
@@ -95,7 +102,7 @@ async function resolveExpectedReport(
     return { expectedPath: path.relative(config.projectRoot, latest), enteredAt: meta.stageStartTime };
   }
   return {
-    expectedPath: `${DEFAULT_REVIEW_DIR.replace(/\/+$/, "")}/Code_Review_${reqBaseFromRequirementDoc(meta.requirementDoc ?? "")}_Develop_Commit_*.md`,
+    expectedPath: `${docsDirsOf(config).reviewDir.replace(/\/+$/, "")}/Code_Review_${reqBaseFromRequirementDoc(meta.requirementDoc ?? "")}_Develop_Commit_*.md`,
     enteredAt: meta.stageStartTime,
   };
 }
@@ -130,9 +137,7 @@ function statExists(absPath: string): Promise<boolean> {
 export async function evaluateReviewExitGate(
   config: PipelineConfig,
   meta: SessionMeta,
-  opts?: { now?: number },
 ): Promise<ReviewExitGate> {
-  const now = opts?.now ?? Date.now();
   const { expectedPath, enteredAt } = await resolveExpectedReport(config, meta);
 
   let hasFreshReport = false;
@@ -147,13 +152,13 @@ export async function evaluateReviewExitGate(
       expectedPath,
     });
     if (verdict && verdict.source !== "missing-expected") {
-      return { state: "conclusion", verdict, expectedPath, reason: "stale" };
+      return { state: "conclusion", verdict, expectedPath };
     }
     // Fresh file on disk but unparseable → fall through to liveness/missing.
   }
 
   // Liveness gate (evaluated ONLY without a fresh conclusion).
-  if (isReviewExecutorLive(meta, now)) {
+  if (isReviewExecutorLive(config, meta)) {
     return { state: "live-executor", expectedPath, reason: "live" };
   }
 

@@ -25,8 +25,11 @@ import type { PipelineConfig, PipelineStage } from "../types";
 import { resolveVerifyFilePath } from "../utils/contract-loader";
 import { GIT_MODIFY_DEFAULT_MATRIX, resolveGitModifyPolicy } from "../utils/protect";
 import { safeWriteAuditLog } from "../utils/auditLog";
+// 225 code-review fix (issue 5): verify.md parsing comes from the verify-file-parser
+// LEAF (never from auto-verifier — that edge closed a runtime cycle: this module
+// must stay a leaf consumer of the verify pipeline).
+import { parseVerifyFile } from "./verify-file-parser";
 import type { VerifyRules } from "./verify-frontmatter";
-import { parseVerifyFile } from "./auto-verifier";
 
 /** A stage's resolved commit contract. */
 export interface CommitContract {

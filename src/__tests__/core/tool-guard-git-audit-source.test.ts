@@ -32,7 +32,6 @@ function developCtx(config: PipelineConfig, command: string) {
   } as PipelineConfig["stages"]["develop"];
   const meta: SessionMeta = makeTestMeta({ currentStage: "develop" });
   const ctx = createMockCtx(meta);
-  void auditAutoDecision;
   ctx.toolCall = { name: "bash", arguments: { command } };
   return { ctx, meta };
 }

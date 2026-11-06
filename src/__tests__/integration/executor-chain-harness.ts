@@ -245,6 +245,13 @@ export interface ChainHarness {
   ownerEntries: unknown[];
   childEntries: BindingEntryLike[];
   wakeMessages: string[];
+  /**
+   * 225 code-review fix (issue 2): every (key, detail) `ctx.ui.setStatus`
+   * call observed during the hook ctx's lifetime — the settle-side status
+   * bar surface (200-G1-3) is asserted from here since the routing point
+   * lives at owner settle, not at the child's stage_advance.
+   */
+  statusCalls: Array<{ key?: string; detail?: string }>;
   rpcCount(): number;
   lastPrompt(): string;
   /** Full agent ids returned by the fake bus, in dispatch order. */
@@ -416,6 +423,9 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
 
   let branchUserMessage = "docs/design/191_Feat.md 1 答";
   const menuCalls: { options: string[]; chosen?: string }[] = [];
+  // 225 code-review fix (issue 2): the hook ctx CAPTURES its setStatus calls
+  // (previously discarded) — the routed-stage-labell refresh asserted below.
+  const statusCalls: Array<{ key?: string; detail?: string }> = [];
   const ownerHookManager = {
     getEntries: () => ownerEntries,
     getBranch: () => [
@@ -431,7 +441,9 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
     pi: ownerPi,
     ui: {
       notify: () => {},
-      setStatus: () => {},
+      setStatus: (key?: string, detail?: string) => {
+        statusCalls.push({ key, detail });
+      },
       select: async (titleOrOpts: unknown, maybeOptions?: unknown) => {
         const options = Array.isArray(maybeOptions)
           ? (maybeOptions as string[])
@@ -486,6 +498,7 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
     ownerEntries,
     childEntries,
     wakeMessages,
+    statusCalls,
     rpcCount: () => rpcCount,
     lastPrompt: () => rpcPrompts[rpcPrompts.length - 1] ?? "",
     spawnIds: () => [...spawnIds],

@@ -54,34 +54,11 @@ export {
 
 export { buildCommitDocGlob, buildPlanDocGlob, buildReviewDocGlob, winGlobVariant };
 
-/**
- * Strip a trailing `_Plan` / `_plan` marker from a plan document stem to get
- * the requirement base name (`{reqBase}`).
- *
- * `195_Bug_Plan` / `195_Bug_plan` → `195_Bug`. Any other stem is returned
- * verbatim (including empty string and stems without either suffix).
- *
- * 225 Phase 2: the implementation body SUNK to the layer-neutral
- * `src/docs-paths.ts` (utils may import it without a `core/` runtime dep);
- * re-exported above so every existing caller keeps importing from this module.
- *
- * @param stem - Plan document file name without extension
- * @returns The requirement base name
- */
-
-/**
- * 204 Phase 2: derives the requirement base from a requirement DOC path.
- * `docs/design/204_Bug.md` → `204_Bug`; tolerates `.MD`, `\` separators and
- * an already-`_Plan`-suffixed stem. Returns "" for empty / extension-less input.
- * 225 Phase 2: implementation in `src/docs-paths.ts` (re-export above).
- */
-
-/**
- * 204 Phase 2: plan doc path relative to the requirement doc's directory.
- * `docs/design/204_Bug.md` → `docs/design/204_Bug_Plan.md`;
- * a bare `204_Bug.md` yields the bare file name.
- * 225 Phase 2: implementation in `src/docs-paths.ts` (re-export above).
- */
+// NOTE (225 Phase 2 / issue-14 doc hygiene): the three JSDoc blocks for
+// `reqBaseFromPlanStem` / `reqBaseFromRequirementDoc` /
+// `planDocRelPathFromRequirementDoc` were DELETED together with their local
+// implementations — the real bodies (and their contracts) live in
+// `src/docs-paths.ts`; this module only re-exports the six constructors above.
 
 /** Design review report file name: `Design_Review_{round}_{reqBase}_Design.md`. */
 export function designReviewDocFileName(reqBase: string, round: number): string {

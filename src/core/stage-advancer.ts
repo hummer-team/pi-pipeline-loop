@@ -1887,8 +1887,14 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       const argReviewConclusion = typeof args.reviewConclusion === "string" ? args.reviewConclusion.trim() : "";
       // Track declaration so agent-settled can distinguish "declared but not advanced"
       // (verify fail / confirm gate pending / overflow pending) from "not declared".
+      //
+      // 225 code-review fix (issue 7): a NEW declaration invalidates any
+      // pending fail-route debt of THIS visit — "declared fail then declared
+      // pass in the same visit" (or any other path) leaves no routing debt to
+      // be consumed at settle. The fail branch below re-writes the debt after
+      // this clear, so an actual fail declaration keeps its deferral semantics.
       if (currentStage === "review" && argReviewConclusion) {
-        ctx.session.updateMeta({ reviewConclusionDeclared: true });
+        ctx.session.updateMeta({ reviewConclusionDeclared: true, reviewPendingFail: undefined });
       }
       if (argReviewConclusion && currentStage !== "review") {
         // reviewConclusion passed in non-review stage — ignore and audit
@@ -1916,7 +1922,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             ? { reviewDispatchedAt: undefined }
             : {}),
         });
-        if (isReviewExecutorLive(meta)) {
+        if (isReviewExecutorLive(config, meta)) {
           await safeWriteStageAudit(config, "review_verdict_deferred_live_executor", meta, {
             reason: "explicit-declaration",
           });

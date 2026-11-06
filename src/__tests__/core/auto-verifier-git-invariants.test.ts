@@ -77,6 +77,7 @@ describe("runVerification folds git invariant failures", () => {
       branch: "fix/original",
       headSha: "aaaaaaaaaaaa",
       stashCount: 0,
+      allowedWritesAtBaseline: 0,
       stage: "fix",
       stageStartTime: meta.stageStartTime,
       recordedAt: 1,
@@ -93,7 +94,6 @@ describe("runVerification folds git invariant failures", () => {
     expect(result.structuredResult!.passed).toBe(false);
     const drift = result.structuredResult!.failures.find((f) => f.ruleType === "branch_drift");
     expect(drift?.group).toBe(GIT_INVARIANT_GROUP);
-    void projectRoot;
   });
 
   it("no baseline recorded (no git writes) → invariant layer stays silent, verify proceeds normally", async () => {

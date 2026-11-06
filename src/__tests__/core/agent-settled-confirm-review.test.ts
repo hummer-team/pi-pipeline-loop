@@ -600,8 +600,6 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
 
 // ─── 225 Phase 3: gate wiring in the settle review chain ─────────────────────
 
-import { spawnSync } from "node:child_process";
-
 describe("225 Phase 3: review gate manual preselect & no-conclusion fall-through", () => {
   /** Manual confirm review config (same shape as the manual fixtures above). */
   function localManualConfig(stageTmp: string) {
@@ -655,7 +653,6 @@ describe("225 Phase 3: review gate manual preselect & no-conclusion fall-through
     // only the round-1 report exists on disk → the exact `_2.md` is missing.
     const config = localManualConfig(stageTmp);
     await plantArtifacts(stageTmp, "# Review\n- 结论：通过\n");
-    void spawnSync; // kept for parity with plan's tooling note (unused)
 
     const T = Date.now() - 1000;
     const meta = makeTestMeta({
@@ -670,15 +667,20 @@ describe("225 Phase 3: review gate manual preselect & no-conclusion fall-through
 
     await createAgentSettled(config).handler(ctx as any);
 
-    // Gate missing → audited; flow fell through to the verify precheck (which
-    // names the exact `_2.md`), NOT a premature return.
+    // Gate missing → audited with the EXACT reason (not any no-conclusion
+    // reason); flow fell through to the verify precheck (which names the
+    // exact `_2.md`), NOT a premature return.
     const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("review_verdict_no_fresh_report");
-    expect(logContent).toContain("reason=");
+    // 225 code-review fix (issue 10): the missing backstop is only locked in
+    // when BOTH the reason and the named deliverable are asserted.
+    expect(logContent).toContain("reason=missing");
+    expect(logContent).toContain("Code_Review_77_Config_Develop_Commit_2.md");
     // Precheck ran inside the same settle (deferred / naming the exact file).
     expect(logContent).toContain("verify_precheck_deferred");
-    void meta;
+    const notifications = ((ctx as unknown as { notifications: string[] }).notifications) ?? [];
+    expect(notifications.some((n: string) => n.includes("Code_Review_77_Config_Develop_Commit_2.md"))).toBe(true);
     await rm(stageTmp, { recursive: true, force: true });
   });
 
@@ -720,5 +722,111 @@ describe("225 Phase 3: review gate manual preselect & no-conclusion fall-through
     expect(logContent).toContain("review_verdict_no_fresh_report");
     expect(logContent).toContain("reason=stale");
     await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  // 225 code-review fix (issue 8 / D6 evidence #2): the manual PRESELECT
+  // exactly mirrors the verdict in three states, observed through the real
+  // gate's `ui.select` option order (the confirm-gate.test.ts idiom):
+  // fresh pass → Approve first; fresh fail → Reject first; missing report →
+  // conservative Reject (and the audit carries the waiting copy with the
+  // exact expected report path). Without this lock, a regression could
+  // silently hardcode `reject` as the only manual preselect.
+  describe("manual preselect mirrors the verdict (fresh pass / fresh fail / missing)", () => {
+    async function plantPreselectReady(stageTmp: string): Promise<void> {
+      await mkdir(join(stageTmp, "references", "review_spec"), { recursive: true });
+      // requiredFiles do NOT pin the report itself (exists.md passes the
+      // precheck), so the flow may REACH the confirm gate; the verdict
+      // runtime anchor lets the gate parse a real verdict.
+      await writeFile(
+        join(stageTmp, "references", "review_spec", "verify.md"),
+        "---\nrules:\n  path: \"docs/review/Code_Review_77_Config_Develop_Commit_*.md\"\n  requiredFiles:\n    - \"exists.md\"\n  groups:\n    - name: conclusion\n      ruleMode: and\n      rules:\n        - type: fileContentPattern\n          runtime: verdict\n          patterns:\n            - \"Verdict\\\\s*[:：]\\\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}\"\n---\nBody\n",
+      );
+      await writeFile(join(stageTmp, "exists.md"), "content");
+      await mkdir(join(stageTmp, "docs", "review"), { recursive: true });
+      await mkdir(join(stageTmp, "docs", "design"), { recursive: true });
+      await writeFile(join(stageTmp, "docs", "design", "77_Config.md"), "# requirement\n", "utf-8");
+    }
+
+    async function settleReview(stageTmp: string, reportContent: string | undefined): Promise<{ options: string[]; audit: string }> {
+      const config = localManualConfig(stageTmp);
+      if (reportContent !== undefined) {
+        await writeFile(join(stageTmp, "docs", "review", "Code_Review_77_Config_Develop_Commit_2.md"), reportContent, "utf-8");
+      }
+
+      const T = Date.now() - 1000;
+      const meta = makeTestMeta({
+        currentStage: "review",
+        pipelineId: "pipe-manual",
+        requirementDoc: "docs/design/77_Config.md",
+        confirmRejections: 0,
+        stageStartTime: T,
+        reviewRound: { index: 2, stageStartTime: T, enteredAt: T + 1, pipelineId: "pipe-manual" },
+      });
+      const ctx = createMockCtx(meta);
+      let capturedOptions: string[] = [];
+      (ctx.ui as unknown as { select: (message: string, options: string[]) => Promise<string> }).select = async (
+        _message: string,
+        options: string[],
+      ) => {
+        capturedOptions = [...options];
+        return "Reject & Send to Fix";
+      };
+
+      await createAgentSettled(config).handler(ctx as any);
+
+      const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
+      return { options: capturedOptions, audit: await readFile(logPath, "utf-8") };
+    }
+
+    it("fresh pass → Approve & Complete offered FIRST (default accept)", async () => {
+      const stageTmp = join(tmpdir(), "pi-manual-pass-" + Date.now());
+      await mkdir(stageTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+      await plantPreselectReady(stageTmp);
+      const { options } = await settleReview(stageTmp, "# Code Review\n\n## Verdict\n\n**Verdict: PASS**\n");
+      expect(options.length).toBe(2);
+      expect(options[0]).toContain("Approve");
+      expect(options[1]).toContain("Reject");
+      await rm(stageTmp, { recursive: true, force: true });
+    });
+
+    it("fresh fail → Reject & Send to Fix FIRST (default reject)", async () => {
+      const stageTmp = join(tmpdir(), "pi-manual-fail-" + Date.now());
+      await mkdir(stageTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+      await plantPreselectReady(stageTmp);
+      const { options } = await settleReview(stageTmp, "# Code Review\n\n## Verdict\n\n**Verdict: FAIL**\n");
+      expect(options.length).toBe(2);
+      expect(options[0]).toContain("Reject");
+      expect(options[1]).toContain("Approve");
+      await rm(stageTmp, { recursive: true, force: true });
+    });
+
+    it("missing report → conservative Reject + the exact expected path is the waiting copy", async () => {
+      const stageTmp = join(tmpdir(), "pi-manual-missing-preselect-" + Date.now());
+      await mkdir(stageTmp, { recursive: true });
+      await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+      // Plain verify spec (no report-pinning rule / no verdict anchor needed —
+      // NOTHING is missing's report to parse): the gate itself decides the
+      // preselect from `no-conclusion/missing`.
+      await mkdir(join(stageTmp, "references", "review_spec"), { recursive: true });
+      await writeFile(
+        join(stageTmp, "references", "review_spec", "verify.md"),
+        "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nBody\n",
+      );
+      await writeFile(join(stageTmp, "exists.md"), "content");
+      await mkdir(join(stageTmp, "docs", "review"), { recursive: true });
+      await mkdir(join(stageTmp, "docs", "design"), { recursive: true });
+      await writeFile(join(stageTmp, "docs", "design", "77_Config.md"), "# requirement\n", "utf-8");
+      const { options, audit } = await settleReview(stageTmp, undefined);
+      // Conservative preselect: the gate opens with Reject first…
+      expect(options.length).toBe(2);
+      expect(options[0]).toContain("Reject");
+      expect(options[1]).toContain("Approve");
+      // …and the waiting copy (audit) names the EXACT missing round-2 report.
+      expect(audit).toContain("reason=missing");
+      expect(audit).toContain("Code_Review_77_Config_Develop_Commit_2.md");
+      await rm(stageTmp, { recursive: true, force: true });
+    });
   });
 });

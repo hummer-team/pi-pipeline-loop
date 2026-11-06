@@ -1088,9 +1088,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           if (isGitCmd) {
             // 225 Phase 5 (T3): sample the branch/stash baseline BEFORE any
             // policy verdict — allowed writes need the entry watermark.
+            // 225 code-review fix (issue 15-③): only WRITE segments sample —
+            // the plan's `isGitCmd && isWrite` branch; every read no longer
+            // pays an extra await for the idempotent no-op.
             // Contract + off-switch resolution live inside the module;
             // failures are fail-open there and never affect the guard.
-            await ensureGitInvariantBaseline(config, meta, ctx.session, currentStage, execFn);
+            const isWrite = isGitWriteCommand(segment);
+            if (isWrite) {
+              await ensureGitInvariantBaseline(config, meta, ctx.session, currentStage, execFn);
+            }
             // Hard blacklist: ALWAYS reject, even in allow stages
             if (isGitForbidden(segment)) {
               const reason = `FORBIDDEN: git command matches forbidden pattern in stage '${currentStage}' (stage git policy=${gitPolicy}).`;
@@ -1103,8 +1109,6 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               ui.notify(ctx, reason);
               return { block: true, reason };
             }
-
-            const isWrite = isGitWriteCommand(segment);
 
             // 194 Phase 3 (C4, task 1): the lifecycle refusal covers git
             // mutations as well. A blocked/readonly/scoped decision is never
@@ -1185,8 +1189,15 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 return { block: true, reason: result.reason! };
               }
               if (result.warn) warnings.push(result.warn);
-              // 225 Phase 0 (T6a): positive audit for the allowed write.
-              await recordAllowedGitWrite(meta, ctx.session, segment, currentStage);
+              else {
+                // 225 Phase 0 (T6a): positive audit for the allowed write.
+                // 225 code-review fix (issue 9): a DEGRADED verdict (git
+                // rejected the add — ignored paths / diff failure / no execFn)
+                // is a WARN, not a recorded allowed write: nothing reached the
+                // index, so `git_write_allowed` / `meta.gitAllowedWrites` must
+                // stay untouched.
+                await recordAllowedGitWrite(meta, ctx.session, segment, currentStage);
+              }
               continue; // Skip the checkBashFileTargets for git add segments
             }
 
@@ -1204,8 +1215,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
                 return { block: true, reason: result.reason! };
               }
               if (result.warn) warnings.push(result.warn);
-              // 225 Phase 0 (T6b): positive audit for the allowed write.
-              await recordAllowedGitWrite(meta, ctx.session, segment, currentStage);
+              else {
+                // 225 Phase 0 (T6b): positive audit for the allowed write
+                // (degraded verdicts stay WARN-only — see the add branch).
+                await recordAllowedGitWrite(meta, ctx.session, segment, currentStage);
+              }
               continue; // Skip the checkBashFileTargets for git commit segments
             }
 

@@ -170,7 +170,6 @@ describe("225 Phase 6 T1 — interleaving replays (integration)", () => {
     expect(text2.split("review_auto_route_fix").length - 1).toBe(1);
 
     fs.rmSync(env.projectRoot, { recursive: true, force: true });
-    void stale;
   });
 
   it("form ② (22:18:04): explicit fail while the executor is live defers; post-terminal settle routes once", async () => {
@@ -178,7 +177,6 @@ describe("225 Phase 6 T1 — interleaving replays (integration)", () => {
     await initAuditLog(env.config);
 
     // Dispatch the review executor via the REAL primitive (withSpawnReplies).
-    withSpawnRepliesPatched(env.bus);
     await spawnStageSubagent({ events: env.bus } as never, env.config, "review", env.meta, {
       ui: { notify: () => {} },
       session: env.session,
@@ -217,8 +215,8 @@ describe("225 Phase 6 T1 — interleaving replays (integration)", () => {
   });
 });
 
-function withSpawnRepliesPatched(bus: ReturnType<typeof spawnReplyBus>): void {
-  // emit override already routes replies inside spawnReplyBus; noop kept for symmetry.
-  void bus;
-}
+// (225 code-review fix, issue 12): the empty `withSpawnRepliesPatched()`
+// scaffolding was deleted — the emit override already routes replies inside
+// `spawnReplyBus`, so there was nothing to patch. The dispatch above uses the
+// bus directly.
 

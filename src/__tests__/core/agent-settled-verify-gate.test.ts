@@ -332,17 +332,16 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
     // Create a review report so parseReviewConclusion finds it but verdict anchor is missing
     const reviewDir = join(stageTmp, "docs", "review");
     await mkdir(reviewDir, { recursive: true });
+
+    const meta = makeTestMeta({ currentStage: "review" });
+    // 225 code-review fix (issue 11): production timing honored WITHOUT magic
+    // backdating — the meta (visit clock) exists FIRST, then the report is
+    // written, so its mtime is naturally after stageStartTime.
+    const ctx = createMockCtx(meta);
     await writeFile(
       join(reviewDir, "code_review_test.md"),
       "# Review\n结论：通过\n",
     );
-
-    const meta = makeTestMeta({ currentStage: "review" });
-    // 225 Phase 3: the report must be FRESH for the gate to parse it — backdate
-    // the visit clock BEFORE the report's mtime (production always satisfies
-    // this: the executor writes the report after the stage starts).
-    meta.stageStartTime = Date.now() - 1_000_000;
-    const ctx = createMockCtx(meta);
 
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);
@@ -404,17 +403,15 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
 
     const reviewDir = join(stageTmp, "docs", "review");
     await mkdir(reviewDir, { recursive: true });
+
+    const meta = makeTestMeta({ currentStage: "review" });
+    // 225 code-review fix (issue 11): meta-first, report second — the mtime is
+    // naturally after the visit clock (the 1e6 ms clock backdating is gone).
+    const ctx = createMockCtx(meta);
     await writeFile(
       join(reviewDir, "code_review_test.md"),
       "# Review\n结论：通过\n",
     );
-
-    const meta = makeTestMeta({ currentStage: "review" });
-    // 225 Phase 3: the report must be FRESH for the gate to parse it — backdate
-    // the visit clock BEFORE the report's mtime (production always satisfies
-    // this: the executor writes the report after the stage starts).
-    meta.stageStartTime = Date.now() - 1_000_000;
-    const ctx = createMockCtx(meta);
 
     const hook = createAgentSettled(config);
     await hook.handler(ctx as any);

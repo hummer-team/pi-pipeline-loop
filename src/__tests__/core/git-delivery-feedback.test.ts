@@ -99,6 +99,20 @@ describe("buildGitDeliveryFeedback", () => {
     expect(result).not.toBeNull();
     expect(result!.message).toContain('declared id "dead0001"');
   });
+
+  // 225 code-review fix (issue 15-②): an unresolvable requirementDoc must NOT
+  // fabricate a `{designDir}/_Develop_Commit.md` path — the marker is explicit.
+  it("missing requirementDoc → expectedDoc is the explicit (unresolvable) marker", () => {
+    const result = buildGitDeliveryFeedback({
+      config: makeTestConfig(),
+      meta: makeTestMeta({ currentStage: "fix", requirementDoc: undefined }),
+      stageName: "fix",
+      failures: [failure("commit_exists", 'declared commit id "dead0001" something')],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.expectedDoc).toBe("(unresolvable — requirementDoc missing)");
+    expect(result!.message).not.toContain("_Develop_Commit.md");
+  });
 });
 
 // ─── 225 Phase 5 (T5): git_invariant corrective branches ─────────────────────

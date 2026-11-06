@@ -54,7 +54,7 @@ The pipeline plugin handles the following automatically. Do NOT duplicate or int
 
 **Model responsibilities** (you MUST do these):
 1. Call `stage_advance` tool to declare stage completion (especially `reviewConclusion` for review stage)
-2. Run `git add && git commit` before stage completion when the stage's commit contract is active (the plugin injects the effective capability); when git is read-only, do not attempt git writes
+2. Run `git add && git commit` before stage completion when the stage's commit contract is active (the plugin injects the effective capability — including a dedicated `Git:` line in the Loop Status of develop/fix and in the Stage Write Scope of every other stage); when git is read-only, do not attempt git writes
 3. Call `generate_stage_summary` with `commitIds` parameter after committing
 4. Follow SKILL output format requirements strictly
 5. Do NOT call stage_advance for stages that auto-advance via verify pass

@@ -548,6 +548,14 @@ export interface GitInvariantBaseline {
   headSha: string;
   /** Line count of `git stash list` at baseline time. */
   stashCount: number;
+  /**
+   * 225 code-review fix (issue 4 / F7.2): the allowed-git-write counter value
+   * captured AT the baseline sample. `gitAllowedWrites` on meta keeps
+   * accumulating across the whole period, so the unobserved-write warning
+   * must judge the DELTA `current - allowedWritesAtBaseline` — i.e. whether
+   * THIS stage visit recorded zero allowed writes — never the period total.
+   */
+  allowedWritesAtBaseline: number;
   /** Stage the baseline was recorded for. */
   stage: PipelineStage;
   /** Visit identity (a re-entered stage samples a fresh baseline). */

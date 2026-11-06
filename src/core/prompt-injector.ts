@@ -410,6 +410,13 @@ async function buildLoopStatus(
     `- Limit: After ${meta.maxLoops} failed attempts, the pipeline will freeze.\n` +
     `- ${scopeParts.join("\n- ")}\n` +
     `- Write Scope: ${buildWriteScopeLine(config.stages[meta.currentStage], meta)}\n` +
+    // 225 code-review fix (issue 3): loop stages carry the SAME tri-state Git
+    // line the non-loop Stage Write Scope uses — previously develop/fix (the
+    // only stages that must commit) went silent, contradicting sop.md's
+    // "the plugin injects the effective capability". The elevation ran before
+    // the prompt is composed (ensureCommitContractElevation), so this resolves
+    // the same effective allow the guard will enforce.
+    `${buildGitCapabilityLine(config, meta.currentStage)}\n` +
     // Phase 3 (143): develop/fix stages must carry commitIds in stage summary
     `- Summary Requirement: Stage summary MUST call \`generate_stage_summary\` with \`commitIds\` parameter (all git commit ids produced in this stage)`
   );
@@ -606,6 +613,29 @@ function buildWriteScopeLine(stageConfig: StageConfig, meta: SessionMeta): strin
 }
 
 /**
+ * 225 code-review fix (issue 3): the tri-state Git capability line, shared by
+ * BOTH render paths — the standalone Stage Write Scope section (non-loop
+ * stages) and the Loop Status block (develop/fix, Phase 0 T4). One builder
+ * guarantees the prompt layer and the guard layer answer the SAME question
+ * everywhere, including the two loop stages where commits are actually
+ * required; the wording lives here so the two call sites can never fork.
+ *
+ * @param config - Pipeline configuration (git capability resolution)
+ * @param stageName - Stage whose EFFECTIVE git policy is resolved
+ * @returns The exact injected `Git:` line (three states)
+ */
+function buildGitCapabilityLine(config: PipelineConfig, stageName: PipelineStage): string {
+  const capability = resolveGitCapability(config, stageName);
+  if (capability === "allow") {
+    return `- Git: writable (commit contract active) — \`git add <paths> && git commit\`; NEVER \`add -f/--force/--ignore-removal\`; gitignored files must never be committed.`;
+  }
+  if (capability === "ask") {
+    return `- Git: gated (each git write is asked; a denied/dismissed ask blocks it) — treat git as unavailable until approved.`;
+  }
+  return `- Git: read-only (add/commit/push forbidden)`;
+}
+
+/**
  * Builds the Stage Write Scope section for all stages.
  * Injected as a lightweight standalone section for non-loop stages,
  * and appended to Loop Status for develop/fix.
@@ -630,18 +660,7 @@ function buildStageWriteScope(
   ];
   if (includeGitHint) {
     // 225 Phase 0 (T4): three-state output, same effective policy as the guard.
-    const capability = resolveGitCapability(config, stageName);
-    if (capability === "allow") {
-      lines.push(
-        `- Git: writable (commit contract active) — \`git add <paths> && git commit\`; NEVER \`add -f/--force/--ignore-removal\`; gitignored files must never be committed.`,
-      );
-    } else if (capability === "ask") {
-      lines.push(
-        `- Git: gated (each git write is asked; a denied/dismissed ask blocks it) — treat git as unavailable until approved.`,
-      );
-    } else {
-      lines.push(`- Git: read-only (add/commit/push forbidden)`);
-    }
+    lines.push(buildGitCapabilityLine(config, stageName));
   }
   return lines.join("\n");
 }
@@ -982,8 +1001,16 @@ export function createPromptInjector(
               `Commit contract unsatisfied at stage '${meta.currentStage}': enable the stage commit capability ` +
                 `(remove the requireCommitContract opt-out) or drop requiredGit from ${elevation.contract.verifySpecPath}.`,
             );
-          } catch {
-            // Fail-open: the freeze entry already recorded the fact.
+          } catch (err) {
+            // Fail-open, but NOT silent: the notify failure is a diagnostics
+            // loss (code_spec §3 — every catch logs at error level).
+            const errMsg = err instanceof Error ? err.message : String(err);
+            console.error(`[pi-pipeline] prompt-injector notify failed at stage="${meta.currentStage}": ${errMsg}`);
+            await safeWriteAuditLog(
+              "commit_contract_notify_error",
+              { stage: meta.currentStage, error: errMsg },
+              "error",
+            );
           }
           return undefined;
         }

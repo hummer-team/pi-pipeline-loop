@@ -94,7 +94,6 @@ describe("resolveStageTargetDoc — D4 mapping", () => {
     const audit = audits.find((a) => a.event === "stage_target_doc_fallback");
     expect(audit?.fields.reason).toBe("no-review-round");
     expect(audit?.fields.stage).toBe("fix");
-    void metaFor;
   });
 
   it("a ledger entry exists but for ANOTHER stage visit → still used by fix (no requirement fallback)", async () => {

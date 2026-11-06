@@ -189,6 +189,7 @@ describe("reconcileGitInvariants — assertions", () => {
       branch: "fix/a",
       headSha: "aaa",
       stashCount: 0,
+      allowedWritesAtBaseline: 0,
       stage: "fix",
       stageStartTime: meta.stageStartTime,
       recordedAt: 1,
@@ -210,6 +211,7 @@ describe("reconcileGitInvariants — assertions", () => {
       branch: "",
       headSha: "aaa",
       stashCount: 0,
+      allowedWritesAtBaseline: 0,
       stage: "fix",
       stageStartTime: meta.stageStartTime,
       recordedAt: 1,
@@ -229,6 +231,7 @@ describe("reconcileGitInvariants — assertions", () => {
       branch: "fix/a",
       headSha: "aaa",
       stashCount: 1,
+      allowedWritesAtBaseline: 0,
       stage: "fix",
       stageStartTime: meta.stageStartTime,
       recordedAt: 1,
@@ -260,6 +263,7 @@ describe("reconcileGitInvariants — assertions", () => {
       branch: "fix/a",
       headSha: "aaa",
       stashCount: 0,
+      allowedWritesAtBaseline: 0,
       stage: "fix",
       stageStartTime: meta.stageStartTime,
       recordedAt: 1,
@@ -282,6 +286,7 @@ describe("reconcileGitInvariants — unobserved write warning", () => {
       branch: "fix/a",
       headSha: "aaaaaaaaaaaa",
       stashCount: 0,
+      allowedWritesAtBaseline: 0,
       stage: "fix",
       stageStartTime: meta.stageStartTime,
       recordedAt: 1,
@@ -310,6 +315,42 @@ describe("reconcileGitInvariants — unobserved write warning", () => {
     const { config, meta } = fixture();
     withBaseline(meta);
     meta.gitAllowedWrites = 2;
+    const { execFn } = makeGit(HEAD_MOVED);
+    const failures = await reconcileGitInvariants(config, meta, undefined, execFn);
+    expect(failures).toEqual([]);
+    expect(audits.some((a) => a.event === "git_write_unobserved")).toBe(false);
+  });
+
+  // 225 code-review fix (issue 4 / F7.2): writes from an EARLIER stage of the
+  // same period must NOT silence this visit's check — a stage with zero
+  // allowed writes of its own still warns when HEAD moved.
+  it("HEAD moved + writes accumulated in an EARLIER stage (zero in this visit) → WARN fires", async () => {
+    installAuditCapture();
+    const { config, meta } = fixture();
+    withBaseline(meta);
+    // The period counter already holds develop-stage writes; the baseline
+    // snapshot captured the SAME value at this visit's entry, so this readonly
+    // visit recorded nothing while HEAD still moved.
+    meta.gitAllowedWrites = 0;
+    meta.gitInvariantBaseline = {
+      ...meta.gitInvariantBaseline!,
+      headSha: "aaaaaaaaaaaa",
+      allowedWritesAtBaseline: 2,
+      stageStartTime: meta.stageStartTime,
+    };
+    const { execFn } = makeGit(HEAD_MOVED);
+    const failures = await reconcileGitInvariants(config, meta, undefined, execFn);
+    expect(failures).toEqual([]);
+    expect(audits.some((a) => a.event === "git_write_unobserved")).toBe(true);
+  });
+
+  it("HEAD moved + allowed writes DURING this visit (delta > 0) → silent", async () => {
+    installAuditCapture();
+    const { config, meta } = fixture();
+    withBaseline(meta);
+    // Earlier stage accumulated 2; this visit recorded 1 more (period total 3)
+    // → observed, no warning.
+    meta.gitAllowedWrites = 3;
     const { execFn } = makeGit(HEAD_MOVED);
     const failures = await reconcileGitInvariants(config, meta, undefined, execFn);
     expect(failures).toEqual([]);

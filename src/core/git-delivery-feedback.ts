@@ -12,7 +12,11 @@
 import type { PipelineConfig, PipelineStage, SessionMeta, VerifyFailureItem } from "../types";
 import { COMMIT_PROOF_GROUP, COMMIT_TIME_TOLERANCE_MS } from "./commit-proof";
 import { resolveCommitDocPath } from "./verify-path-resolver";
+import { docsDirsOf } from "../docs-paths";
 import { planDocRelPathFromRequirementDoc, reqBaseFromRequirementDoc } from "./naming/doc-naming";
+
+/** Marker copied when the requirement base cannot be resolved (never a fake path). */
+const UNRESOLVABLE_DOC = "(unresolvable — requirementDoc missing)";
 
 export interface GitDeliveryFeedback {
   /** Actionable, line-oriented corrective message for the model. */
@@ -54,7 +58,7 @@ export function buildGitDeliveryFeedback(opts: {
   stageName: PipelineStage;
   failures?: readonly VerifyFailureItem[];
 }): GitDeliveryFeedback | null {
-  const { meta, stageName, failures } = opts;
+  const { config, meta, stageName, failures } = opts;
   if (!failures || failures.length === 0) return null;
 
   const relevant = failures.filter(
@@ -64,14 +68,22 @@ export function buildGitDeliveryFeedback(opts: {
   );
   if (relevant.length === 0) return null;
 
-  const expectedDoc = resolveCommitDocPath(reqBaseFromRequirementDoc(meta?.requirementDoc ?? "") || "");
+  // 225 code-review fix (issue 15-①/②): the config parameter is no longer a
+  // dead declaration — the commit-doc path is resolved through the run's docs
+  // directory (`docsDirsOf(config).designDir`), and an unresolvable
+  // requirementDoc yields an explicit "(unresolvable)" marker instead of the
+  // fake `{designDir}/_Develop_Commit.md` path `reqBase ""` used to produce.
+  const reqBase = reqBaseFromRequirementDoc(meta?.requirementDoc ?? "");
+  const expectedDoc = reqBase
+    ? (config ? resolveCommitDocPath(reqBase, docsDirsOf(config).designDir) : resolveCommitDocPath(reqBase))
+    : UNRESOLVABLE_DOC;
   const ruleTypes = [...new Set(relevant.map((f) => f.ruleType))];
 
   // The plan-doc mismatch correction resolves again for its own message
   // (expected value, not the commit doc the ids live in).
   const expectedPlanDoc = meta?.requirementDoc
     ? planDocRelPathFromRequirementDoc(meta.requirementDoc)
-    : "(unresolvable — requirementDoc missing)";
+    : UNRESOLVABLE_DOC;
 
   const commitExists = relevant.find((f) => f.ruleType === "commit_exists");
   const planMismatch = relevant.find((f) => f.ruleType === "plan_doc_mismatch");

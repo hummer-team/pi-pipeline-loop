@@ -112,6 +112,10 @@ export async function ensureGitInvariantBaseline(
         branch,
         headSha: head,
         stashCount: stashes,
+        // 225 code-review fix (issue 4 / F7.2): snapshot the allowed-write
+        // counter here so the unobserved-write warning judges THIS visit's
+        // delta, not the whole period's accumulated count.
+        allowedWritesAtBaseline: getAllowedGitWriteCount(live),
         stage,
         stageStartTime: live.stageStartTime,
         recordedAt: Date.now(),
@@ -122,6 +126,7 @@ export async function ensureGitInvariantBaseline(
       stage,
       branch,
       stashCount: String(stashes),
+      allowedWritesAtBaseline: String(getAllowedGitWriteCount(live)),
     });
   } catch (err) {
     // Invariants are content verification — never alter the guard outcome.
@@ -190,8 +195,16 @@ export async function reconcileGitInvariants(
     }
 
     // 225 Phase 5 (T2/RC-1): HEAD moved but NO allowed git write was recorded
-    // — WARN ONLY (unobserved write audit), never a verify failure.
-    if (currentHead !== baseline.headSha && getAllowedGitWriteCount(meta) === 0) {
+    // DURING THIS STAGE VISIT (225 code-review fix, issue 4 / F7.2 semantics:
+    // `current - allowedWritesAtBaseline === 0`; the period counter
+    // `meta.gitAllowedWrites` keeps accumulating across stages, so judging it
+    // alone would silently disable the check after the first write of any
+    // earlier stage in the same period) — WARN ONLY (unobserved write audit),
+    // never a verify failure.
+    const allowedWritesThisVisit = getAllowedGitWriteCount(meta) - (baseline.allowedWritesAtBaseline ?? 0);
+    // A non-positive delta means NOTHING was recorded as an allowed write
+    // during this visit (defensive: the counter only ever increments).
+    if (currentHead !== baseline.headSha && allowedWritesThisVisit <= 0) {
       void safeWriteAuditLog("git_write_unobserved", {
         pipelineId: meta.pipelineId,
         stage: meta.currentStage,

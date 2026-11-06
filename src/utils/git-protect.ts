@@ -371,9 +371,9 @@ export const GIT_READONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
 const GIT_SECOND_LEVEL_READONLY: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["worktree", new Set(["list"])],
   ["remote", new Set(["show", "get-url"])],
-  // 225 Phase 4 (T1): `branch` is dual-nature too; its classification uses the
-  // dedicated `isBranchReadonly` evaluator (the value set is unused for it).
-  ["branch", new Set([])],
+  // 225 Phase 4 (T1): `branch` is dual-nature too; it is dispatched to the
+  // dedicated `isBranchReadonly` evaluator BEFORE this map is consulted
+  // (there is deliberately no dead map entry for it).
 ]);
 
 /** Log/list-only `git branch` flags: they never mutate branches or refs. */
@@ -485,6 +485,16 @@ export const GIT_FORBIDDEN_PATTERNS: ReadonlyArray<RegExp> = [
 ] as const;
 
 /**
+ * Dual-nature subcommands (dispatch into `isSecondLevelReadonly`): the two
+ * second-level map keys plus `branch` (whose dedicated `isBranchReadonly`
+ * evaluator replaces the map set entirely — the dead `new Set([])` value is
+ * gone, per the 225 review's code-smell list, while the dispatch survives).
+ */
+function isDualNatureSubcommand(subcmd: string): boolean {
+  return subcmd === "branch" || GIT_SECOND_LEVEL_READONLY.has(subcmd);
+}
+
+/**
  * Determines whether a git segment is a write operation.
  * Uses fail-closed classification: any git subcommand NOT in the confirmed
  * read-only set is treated as a write operation. This prevents unknown
@@ -503,7 +513,7 @@ export function isGitWriteCommand(segment: string): boolean {
   const subcmd = tokens[1];
   if (!subcmd) return false;
   // Phase 1 / 177 (D2): dual-nature subcommands use second-level classification.
-  if (GIT_SECOND_LEVEL_READONLY.has(subcmd)) {
+  if (isDualNatureSubcommand(subcmd)) {
     return !isSecondLevelReadonly(subcmd, tokens);
   }
   // Fail-closed: NOT in read-only set → treat as write
@@ -523,7 +533,7 @@ export function isGitReadonlyCommand(segment: string): boolean {
   const subcmd = tokens[1];
   if (!subcmd) return false;
   // Phase 1 / 177 (D2): mirror the dual-nature second-level classification.
-  if (GIT_SECOND_LEVEL_READONLY.has(subcmd)) {
+  if (isDualNatureSubcommand(subcmd)) {
     return isSecondLevelReadonly(subcmd, tokens);
   }
   return GIT_READONLY_SUBCOMMANDS.has(subcmd);
