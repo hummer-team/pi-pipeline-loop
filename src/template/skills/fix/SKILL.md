@@ -13,6 +13,7 @@ disable-model-invocation: true
 7. **Mandatory steps**:
    - Fix issues one‑by‑one
    - Commit code after fixes, complying with git commit conventions
+   - After committing, copy the exact id git printed (e.g. via `git rev-parse HEAD`) into the doc's `**dev commit id**` line; NEVER invent, reuse or hand-edit a commit id; do NOT use `git add -f` and do NOT commit gitignored files
    - Update the `Fixed‑status` or `是否修复` field of corresponding issues to: `Fixed` or `已修复`
 8. **Fallback rule**: If `{reqBase}_Develop_Commit.md` does not exist (not created during development), create it as a fallback per `develop_commit_template.md` contract, record the dev commit id, then continue.
 9. **Forbidden**: Modify issues unrelated to pending fixes

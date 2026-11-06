@@ -32,6 +32,8 @@ import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, is
 // 210 Phase 6: commit-proof reconciliation. `commit-proof` imports auto-verifier
 // only via `import type` (erased at compile), so this runtime edge stays acyclic.
 import { reconcileCommitProof } from "./commit-proof";
+// 225 Phase 1: contract-default judgement shared with Phase 0 (groups+flat).
+import { hasCommitRequirement } from "./commit-contract";
 import {
   deriveDomainVerificationContext,
   resolveDesignReviewConfirmMode,
@@ -900,7 +902,13 @@ async function runVerificationBase(
   // on the baseline. Switch ON: violations fold into the failure set and ride
   // the existing retry / circuit-breaker machinery. Absent evidence never
   // false-blocks (see commit-proof.ts fail-open rules).
-  const proofFailures = await reconcileCommitProof(config, meta, verifyConfig, options?.execFn);
+  //
+  // 225 Phase 1 (T2/Q2-A): the switch default binds to the COMMIT CONTRACT
+  // (same Phase 0 judgement, covers both flat and groups schemas) — a stage
+  // whose verify spec requires a commit now enforces proof by default.
+  const proofFailures = await reconcileCommitProof(config, meta, verifyConfig, options?.execFn, {
+    requiresCommit: hasCommitRequirement(resolvedRules),
+  });
   if (proofFailures.length > 0) {
     structuredResult = {
       ...structuredResult,

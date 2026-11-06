@@ -36,6 +36,7 @@ disable-model-invocation: true
 5. **Mandatory actions after each phase**:
    - **Commit must be recorded after each phase completes**
    - **Commit code following the commit instructions defined in the plan document**
+   - After committing, copy the exact id git printed (e.g. via `git rev-parse HEAD`) into the doc's `**dev commit id**` line; NEVER invent, reuse or hand-edit a commit id; do NOT use `git add -f` and do NOT commit gitignored files
    - `Read` the template [develop_commit_template](.pi/references/develop_commit_template.md)
 6. **Deliverable Specification**: `Read` the template [develop_deliverable_template](.pi/references/develop_deliverable_template.md)
 

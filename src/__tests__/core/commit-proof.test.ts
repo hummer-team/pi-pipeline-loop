@@ -20,6 +20,7 @@ import {
   checkCommitProof,
   reconcileCommitProof,
   resolveCommitProofClockBaseline,
+  resolveRequireCommitProof,
   parseDevCommitIds,
   parsePlanDocClaim,
   COMMIT_TIME_TOLERANCE_MS,
@@ -266,6 +267,10 @@ async function proofEnv(docContent: string | null): Promise<{ config: PipelineCo
 }
 
 const BAD_ID_DOC = "# plan & commit id's\n**plan doc**: `docs/design/210_Feat_Plan.md`\n**dev commit id**: dead0001\n";
+
+/** One real id (reaches git → checked > 0) + one hallucinated id. */
+const BAD_AND_GOOD_ID_DOC =
+  "# plan & commit id's\n**plan doc**: `docs/design/210_Feat_Plan.md`\n**dev commit id**: dead0001,aaaa1111\n";
 
 // ─── 210 review issue 1 (High): C2 clock baseline per stage / per visit ──────
 
@@ -743,5 +748,70 @@ describe("buildResumeMeta keeps the period clock (210 review issue 2)", () => {
     );
     expect(legacy.stageStats).toBeUndefined();
     expect(legacy.usageByStage).toBeUndefined();
+  });
+});
+
+// ─── 225 Phase 1 (T1/Q2-A): contract-driven requireCommitProof default chain ──
+
+describe("resolveRequireCommitProof / reconcileCommitProof — 225 Phase 1 default chain", () => {
+  it("stage-level true wins over everything", () => {
+    expect(resolveRequireCommitProof({ requireCommitProof: true }, makeTestConfig(), false)).toBe(true);
+    expect(resolveRequireCommitProof({ requireCommitProof: true }, { verify: { requireCommitProof: false } } as PipelineConfig, false)).toBe(true);
+  });
+
+  it("stage-level false wins over global and contract", () => {
+    expect(resolveRequireCommitProof({ requireCommitProof: false }, { verify: { requireCommitProof: true } } as PipelineConfig, true)).toBe(false);
+  });
+
+  it("global true wins over the contract default", () => {
+    expect(resolveRequireCommitProof(undefined, { verify: { requireCommitProof: true } } as PipelineConfig, false)).toBe(true);
+  });
+
+  it("global false wins over the contract default", () => {
+    expect(resolveRequireCommitProof(undefined, { verify: { requireCommitProof: false } } as PipelineConfig, true)).toBe(false);
+  });
+
+  it("both absent → the contract default (225: commit-contract stages enforce proof)", () => {
+    expect(resolveRequireCommitProof(undefined, makeTestConfig(), true)).toBe(true);
+    expect(resolveRequireCommitProof(undefined, makeTestConfig(), false)).toBe(false);
+  });
+
+  it("contract stage WITHOUT ids-proof config → violations returned (default ON) + contractRequired audit", async () => {
+    const sink: CapturedAudit[] = [];
+    captureAudits(sink);
+    const { config, meta, root } = await proofEnv(BAD_AND_GOOD_ID_DOC);
+    try {
+      const { execFn } = makeGit({
+        ...healthyRules(),
+        "cat-file -e dead0001": fail("fatal: Not a valid object name", 128),
+      });
+      const out = await reconcileCommitProof(config, meta, { require: true }, execFn, { requiresCommit: true });
+      expect(out.length).toBe(1);
+      expect(out[0].group).toBe("commit_proof");
+      const checked = sink.find((e) => e.event === "commit_proof_checked");
+      expect(checked?.fields.contractRequired).toBe("true");
+      expect(checked?.fields.enforced).toBe("true");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("explicit requireCommitProof: false on a contract stage → warn-only (regression guard)", async () => {
+    const sink: CapturedAudit[] = [];
+    captureAudits(sink);
+    const { config, meta, root } = await proofEnv(BAD_AND_GOOD_ID_DOC);
+    try {
+      const { execFn } = makeGit({
+        ...healthyRules(),
+        "cat-file -e dead0001": fail("fatal: Not a valid object name", 128),
+      });
+      const out = await reconcileCommitProof(config, meta, { require: true, requireCommitProof: false }, execFn, { requiresCommit: true });
+      expect(out).toEqual([]);
+      const checked = sink.find((e) => e.event === "commit_proof_checked");
+      expect(checked?.fields.contractRequired).toBe("true");
+      expect(checked?.fields.enforced).toBe("false");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

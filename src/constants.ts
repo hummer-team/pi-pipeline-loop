@@ -600,7 +600,7 @@ export const DEFAULT_VERIFY_FILE = ".pi/references/{stage}_spec/verify.md";
  * sees the constraint at the point of writing commit docs.
  */
 export const COMMIT_DOC_NAMING_CONSTRAINT =
-  "Commit doc file MUST be named exactly `{reqBase}_Develop_Commit.md` (e.g. `106_Feat.md` → `docs/design/106_Feat_Develop_Commit.md`). Per-phase commit ids MUST be appended to the single file's `**dev commit id**` line; NEVER create per-phase files (`_phase0_`, `_dev_`, `_develop_` suffixes forbidden).";
+  "Commit doc file MUST be named exactly `{reqBase}_Develop_Commit.md` (e.g. `106_Feat.md` → `docs/design/106_Feat_Develop_Commit.md`). Per-phase commit ids MUST be appended to the single file's `**dev commit id**` line; NEVER create per-phase files (`_phase0_`, `_dev_`, `_develop_` suffixes forbidden). Only ids printed by git (`git rev-parse HEAD`) may be registered; never invent, reuse or hand-edit a commit id.";
 
 /**
  * 204 Phase 2: plan-stage naming constraint, mirrored on COMMIT_DOC_NAMING_CONSTRAINT.

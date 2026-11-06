@@ -319,13 +319,20 @@ function firstLine(s: string): string {
 
 /**
  * Resolves the commit-proof switch with the plan's precedence chain:
- * stage-level wins over global; both absent → false (baseline behavior).
+ * stage-level wins over global; both absent → the contract default
+ * (`requiresCommit`) instead of hard-false.
+ *
+ * 225 Phase 1 (T1/Q2-A): when the stage's deployed verify spec carries
+ * `requiredGit` (its `requiresCommit` argument agrees with the Phase 0
+ * `hasCommitRequirement` judgement), proof reconciliation is ON unless an
+ * explicit switch turns it off. Explicit stage/global values always win.
  */
 export function resolveRequireCommitProof(
   verifyConfig: VerifyConfig | undefined,
   config: PipelineConfig,
+  requiresCommit = false,
 ): boolean {
-  return verifyConfig?.requireCommitProof ?? config.verify?.requireCommitProof ?? false;
+  return verifyConfig?.requireCommitProof ?? config.verify?.requireCommitProof ?? requiresCommit;
 }
 
 /**
@@ -344,8 +351,13 @@ export async function reconcileCommitProof(
   meta: SessionMeta,
   verifyConfig: VerifyConfig | undefined,
   execFn?: ExecFn,
+  opts?: {
+    /** 225 Phase 1: true when the stage carries a commit contract (requiredGit). */
+    requiresCommit?: boolean;
+  },
 ): Promise<VerifyFailure[]> {
-  const requireProof = resolveRequireCommitProof(verifyConfig, config);
+  const contractRequired = opts?.requiresCommit === true;
+  const requireProof = resolveRequireCommitProof(verifyConfig, config, contractRequired);
 
   // Without a requirement doc there is no canonical commit document to
   // reconcile — stay completely silent (keeps baseline audits unchanged for
@@ -446,6 +458,8 @@ export async function reconcileCommitProof(
         declared: String(commitIds.length),
         violations: String(result.violations.length),
         enforced: String(requireProof),
+        // 225 Phase 1: contract-driven observability (was the default ON).
+        contractRequired: String(contractRequired),
         commitIds: commitIds.join(","),
         c2Baseline: baseline.label,
         c2BaselineMs: String(baseline.baselineMs),

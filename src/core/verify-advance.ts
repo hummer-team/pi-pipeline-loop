@@ -22,6 +22,8 @@ import { armStageWatchdog } from "./stage-watchdog";
 // 193 Phase 0: report-domain failures carry the complete corrective template
 import { buildDesignReviewReportFeedback } from "./design-review/report-feedback";
 import { buildPlanDocFeedback } from "./plan-doc-feedback";
+// 225 Phase 1: commit-evidence corrective feedback (plan-doc-feedback pattern).
+import { buildGitDeliveryFeedback } from "./git-delivery-feedback";
 // 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
 import { checkRecheckForwardRelease } from "./design-review/flow-decision-guard";
 import { recordStageVisit, effectiveMax, remainingRoundsOf } from "../utils/stage-visit";
@@ -966,6 +968,26 @@ export async function applyVerifyFail(
     }, "warn");
   }
 
+  // 225 Phase 1 (T4): commit-evidence / git-invariant corrective feedback.
+  // Git feedback is structurally disjoint from report/plan feedback by stage
+  // in the common case, and keeps the documented `??` precedence (report >
+  // plan > git) when a stage could produce more than one.
+  const gitFeedback = buildGitDeliveryFeedback({
+    config,
+    meta,
+    stageName,
+    failures: verifyFailures,
+  });
+  if (gitFeedback) {
+    await safeWriteAuditLog("git_delivery_feedback", {
+      pipelineId: meta.pipelineId,
+      stage: stageName,
+      method,
+      ruleTypes: gitFeedback.ruleTypes.join(","),
+      expectedDoc: gitFeedback.expectedDoc,
+    }, "warn");
+  }
+
   // One corrective text for every consumer below (report wins over plan).
   //
   // 204 invariant (review issue 3): the `??` precedence is UNCONSTRUCTIBLE as a
@@ -975,10 +997,11 @@ export async function applyVerifyFail(
   // non-null here. Do NOT "fix" the ordering by adding a precedence test — a
   // test for it cannot exist. Keep the stage gates in those two builders as the
   // single source of this contract.
-  const correctiveMessage = reportFeedback?.message ?? planFeedback?.message;
+  const correctiveMessage = reportFeedback?.message ?? planFeedback?.message ?? gitFeedback?.message;
   let failLabel = "verify failed";
   if (planFeedback) failLabel = "plan doc invalid";
   if (reportFeedback) failLabel = "report format invalid";
+  if (gitFeedback) failLabel = "commit evidence invalid"; // 225 Phase 1 (T4)
 
   // TUI failure output (gated by output.pipelineStage)
   ui?.fail(ctx, stageName, failLabel);
