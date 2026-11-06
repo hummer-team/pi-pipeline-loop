@@ -158,6 +158,9 @@ export function buildNewPeriodResetFields(
     // starts at round 1 and no same-turn dispatch marker may survive it.
     reviewRound: undefined,
     reviewDispatchedAt: undefined,
+    // 225 Phase 3: a deferred fail declaration belongs to the period's review
+    // visit — a new period must not carry a routing debt into round 1.
+    reviewPendingFail: undefined,
 
     // 219 review issue 4 (High): the auto-job context and the continuity verdict
     // are PER-DOC facts. They must be cleared with every new period, otherwise

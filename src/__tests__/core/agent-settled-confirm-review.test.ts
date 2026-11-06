@@ -545,6 +545,9 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
       "# Review\n### 问题 1\n- 等级：Blocker\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
 
     const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+    // 225 Phase 3: the report must be FRESH for the gate to parse it — backdate
+    // the visit clock BEFORE the report's mtime (execution order in production).
+    meta.stageStartTime = Date.now() - 1_000_000;
     // User picks "Reject & Send to Fix" (which is first due to defaultReject=true)
     const ctx = createMockCtx(meta, { selectReturn: "Reject & Send to Fix" });
 
@@ -574,6 +577,8 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
       "# Review\n### 问题 1\n- 等级：Blocker\n- 是否修复：待修复\n\n## 结论\n- 结论：通过\n");
 
     const meta = makeTestMeta({ currentStage: "review", confirmRejections: 0 });
+    // 225 Phase 3: backdate the visit clock so the report on disk is FRESH.
+    meta.stageStartTime = Date.now() - 1_000_000;
     // User picks "Approve & Complete" (despite Reject being first)
     const ctx = createMockCtx(meta, { selectReturn: "Approve & Complete" });
 
@@ -589,6 +594,131 @@ describe("Bug 4: agent-settled manual mode review decision chain", () => {
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("confirm_approved");
 
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+});
+
+// ─── 225 Phase 3: gate wiring in the settle review chain ─────────────────────
+
+import { spawnSync } from "node:child_process";
+
+describe("225 Phase 3: review gate manual preselect & no-conclusion fall-through", () => {
+  /** Manual confirm review config (same shape as the manual fixtures above). */
+  function localManualConfig(stageTmp: string) {
+    const base = makeTestConfig({ projectRoot: stageTmp });
+    const reviewStage = {
+      ...base.stages.review,
+      nextStage: "completed" as PipelineStage,
+      verify: { require: true, verifyFile: "references/review_spec/verify.md", mode: "hook" as const },
+      confirm: { mode: "manual" as const },
+    };
+    return {
+      ...base,
+      stages: { ...base.stages, review: reviewStage } as typeof base.stages,
+    };
+  }
+
+  async function plantArtifacts(stageTmp: string, reportContent: string): Promise<void> {
+    await mkdir(join(stageTmp, "references", "review_spec"), { recursive: true });
+    // The verify rule pins the exact round-2 report, so the precheck veto can
+    // name the missing deliverable (225 Phase 2 T6 narrowing end-to-end).
+    await writeFile(
+      join(stageTmp, "references", "review_spec", "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"docs/review/Code_Review_77_Config_Develop_Commit_2.md\"\n---\nBody\n",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+    await mkdir(join(stageTmp, "docs", "review"), { recursive: true });
+    await mkdir(join(stageTmp, "docs", "design"), { recursive: true });
+    await writeFile(join(stageTmp, "docs", "design", "77_Config.md"), "# requirement\n", "utf-8");
+    await writeFile(join(stageTmp, "docs", "review", "Code_Review_77_Config_Develop_Commit_1.md"), reportContent, "utf-8");
+  }
+
+  async function plantRound2Artifacts(stageTmp: string, reportContent: string): Promise<void> {
+    await mkdir(join(stageTmp, "references", "review_spec"), { recursive: true });
+    await writeFile(
+      join(stageTmp, "references", "review_spec", "verify.md"),
+      "---\nrules:\n  requiredFiles:\n    - \"exists.md\"\n---\nBody\n",
+    );
+    await writeFile(join(stageTmp, "exists.md"), "content");
+    await mkdir(join(stageTmp, "docs", "review"), { recursive: true });
+    await mkdir(join(stageTmp, "docs", "design"), { recursive: true });
+    await writeFile(join(stageTmp, "docs", "design", "77_Config.md"), "# requirement\n", "utf-8");
+    await writeFile(join(stageTmp, "docs", "review", "Code_Review_77_Config_Develop_Commit_2.md"), reportContent, "utf-8");
+  }
+
+  it("no-conclusion/missing does NOT return early — the flow reaches the precheck (naming the exact report)", async () => {
+    const stageTmp = join(tmpdir(), "pi-manual-missing-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    // Fresh round-2 visit (stable clocks so the round IS the current visit);
+    // only the round-1 report exists on disk → the exact `_2.md` is missing.
+    const config = localManualConfig(stageTmp);
+    await plantArtifacts(stageTmp, "# Review\n- 结论：通过\n");
+    void spawnSync; // kept for parity with plan's tooling note (unused)
+
+    const T = Date.now() - 1000;
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-manual",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmRejections: 0,
+      stageStartTime: T,
+      reviewRound: { index: 2, stageStartTime: T, enteredAt: T + 1, pipelineId: "pipe-manual" },
+    });
+    const ctx = createMockCtx(meta);
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    // Gate missing → audited; flow fell through to the verify precheck (which
+    // names the exact `_2.md`), NOT a premature return.
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("review_verdict_no_fresh_report");
+    expect(logContent).toContain("reason=");
+    // Precheck ran inside the same settle (deferred / naming the exact file).
+    expect(logContent).toContain("verify_precheck_deferred");
+    void meta;
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
+  it("stale report blocks the stage through the existing precheckBlocked entry gate", async () => {
+    const stageTmp = join(tmpdir(), "pi-manual-stale-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    const config = localManualConfig(stageTmp);
+    await plantRound2Artifacts(stageTmp, "# Review\n- 结论：通过\n");
+
+    // Round-2 entry clock strictly AFTER the report's mtime: `_2.md` exists
+    // but predates the visit's entry clock → STALE.
+    const config2 = localManualConfig(stageTmp);
+    void config2;
+    const meta = makeTestMeta({
+      currentStage: "review",
+      pipelineId: "pipe-manual",
+      requirementDoc: "docs/design/77_Config.md",
+      confirmRejections: 0,
+      stageStartTime: Date.now() + 5_000_000,
+      reviewRound: {
+        index: 2,
+        stageStartTime: Date.now() + 5_000_000,
+        enteredAt: Date.now() + 5_000_000,
+        pipelineId: "pipe-manual",
+      },
+    });
+    const ctx = createMockCtx(meta);
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    // precheckBlocked carries the EXACT round-2 path; stage did NOT advance.
+    expect(meta.precheckBlocked?.stage).toBe("review");
+    expect(meta.precheckBlocked!.missing[0]).toContain("Code_Review_77_Config_Develop_Commit_2.md");
+    expect(meta.currentStage).toBe("review");
+    const logPath = auditLogFileFor(join(stageTmp, ".pi", "audit"));
+    const logContent = await readFile(logPath, "utf-8");
+    expect(logContent).toContain("review_verdict_no_fresh_report");
+    expect(logContent).toContain("reason=stale");
     await rm(stageTmp, { recursive: true, force: true });
   });
 });

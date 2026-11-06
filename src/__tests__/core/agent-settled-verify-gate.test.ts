@@ -338,6 +338,10 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
     );
 
     const meta = makeTestMeta({ currentStage: "review" });
+    // 225 Phase 3: the report must be FRESH for the gate to parse it — backdate
+    // the visit clock BEFORE the report's mtime (production always satisfies
+    // this: the executor writes the report after the stage starts).
+    meta.stageStartTime = Date.now() - 1_000_000;
     const ctx = createMockCtx(meta);
 
     const hook = createAgentSettled(config);
@@ -406,6 +410,10 @@ describe("Phase 2 / 176: contract-unavailable fail-open integration", () => {
     );
 
     const meta = makeTestMeta({ currentStage: "review" });
+    // 225 Phase 3: the report must be FRESH for the gate to parse it — backdate
+    // the visit clock BEFORE the report's mtime (production always satisfies
+    // this: the executor writes the report after the stage starts).
+    meta.stageStartTime = Date.now() - 1_000_000;
     const ctx = createMockCtx(meta);
 
     const hook = createAgentSettled(config);

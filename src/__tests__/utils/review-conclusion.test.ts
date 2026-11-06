@@ -378,3 +378,55 @@ describe("Phase 2 / 176: contract-unavailable (fail-open)", () => {
     await rm(TMP, { recursive: true, force: true });
   });
 });
+
+// ─── 225 Phase 3 (T2): expectedPath ← the exact current-round report ─────────
+
+describe("225 Phase 3: parseReviewConclusion expectedPath mode", () => {
+  const VERDICT_ANCHORS: VerifyContractAnchors = {
+    verdict: { patterns: ["Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}"], mode: "or" },
+  };
+
+  it("expected path present → verdict from THAT file (not the mtime-latest one)", async () => {
+    const TMP = join(tmpdir(), "pi-rc-expected-hit-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    // `_2.md` is written FIRST but `_1.md` is written LAST (mtime newer).
+    await writeFile(join(reviewDir, "Code_Review_R_Develop_Commit_2.md"), "- [ ] Blocker: x\n\nVerdict: FAIL\n");
+    await new Promise((r) => setTimeout(r, 10));
+    await writeFile(join(reviewDir, "Code_Review_R_Develop_Commit_1.md"), "Verdict: PASS\n");
+
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS, "docs/review", {
+      expectedPath: "docs/review/Code_Review_R_Develop_Commit_2.md",
+    });
+    // Round 2's file decides even though `_1.md` is mtime-newer.
+    expect(result!.verdict).toBe("fail");
+    expect(result!.source).toBe("blocker-section");
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("expected path missing → { verdict: null, source: missing-expected } (never a fail)", async () => {
+    const TMP = join(tmpdir(), "pi-rc-expected-miss-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "Code_Review_R_Develop_Commit_1.md"), "Verdict: PASS\n");
+
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS, "docs/review", {
+      expectedPath: "docs/review/Code_Review_R_Develop_Commit_2.md",
+    });
+    expect(result!.verdict).toBeNull();
+    expect(result!.source).toBe("missing-expected");
+    await rm(TMP, { recursive: true, force: true });
+  });
+
+  it("the 3-argument call shape stays available for non-round callers", async () => {
+    const TMP = join(tmpdir(), "pi-rc-3arg-" + Date.now());
+    const reviewDir = join(TMP, "docs", "review");
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(join(reviewDir, "code_review_1.md"), "Verdict: FAIL\n");
+
+    const result = await parseReviewConclusion(TMP, VERDICT_ANCHORS, "docs/review");
+    expect(result!.verdict).toBe("fail");
+    expect(result!.source).toBe("conclusion-line");
+    await rm(TMP, { recursive: true, force: true });
+  });
+});

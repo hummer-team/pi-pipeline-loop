@@ -1073,6 +1073,16 @@ export interface SessionMeta {
    * exit gate on first consumption. Absent = no same-turn dispatch pending.
    */
   reviewDispatchedAt?: { stageStartTime: number; at: number };
+
+  /**
+   * 225 Phase 3 (T4): PERSISTED declaration "review fail routed LATER".
+   * Written by stage-advance when the executor declares fail; routing fires
+   * at the next owner settle ONLY after the review executor is gone
+   * (`reviewPendingFail.declaredAt` is audit observability, never a timer).
+   * NOT the same flag as `reviewConclusionDeclared` (which also covers pass
+   * and "declared fail but verify failed" states).
+   */
+  reviewPendingFail?: { stageStartTime: number; declaredAt: number };
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────

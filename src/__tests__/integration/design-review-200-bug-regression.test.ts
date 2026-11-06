@@ -183,8 +183,13 @@ describe("200 Bug Phase 5 chain A: routed fix spawn wakes the idle owner once, r
     expect(reviewAgentId).toBeDefined();
 
     // ── The review executor declares FAIL through the REAL stage_advance
-    // tool with a CHILD runtime ctx — routing enqueues the fix spawn to the
-    // idle owner (pendingSpawns) instead of dispatching it.
+    // tool with a CHILD runtime ctx.
+    //
+    // 225 Phase 3 (22:18:04 replay): the review executor is STILL LIVE here —
+    // routing to fix in the same turn created the double-executor incident.
+    // The declaration is DEFERRED (`reviewPendingFail`) and routed at the
+    // next owner settle (after the executor's terminal), which this chain
+    // exercises right after the G1 wake assertions below.
     const statusTexts: string[] = [];
     const childCtx = {
       ...(h.childToolCtx() as Record<string, unknown>),
@@ -200,16 +205,14 @@ describe("200 Bug Phase 5 chain A: routed fix spawn wakes the idle owner once, r
     const routed = await exec(createStageAdvancer(h.config), { reviewConclusion: "fail" }, childCtx);
     expect(routed.success).toBe(true);
 
-    const afterRoute = h.meta();
-    expect(afterRoute.currentStage).toBe("fix");
-    // Bug premise holds: the fix spawn was ENQUEUED for the idle owner.
-    expect(Object.keys(afterRoute.pendingSpawns ?? {})).toContain("fix");
-    // G1-3: the status bar refreshed at the ROUTING point (before any settle).
-    expect(statusTexts.some((t) => t.includes("fix"))).toBe(true);
-    // Routing audit trail through the real advancer + real RPC enqueue.
-    const auditAfterRoute = readAudit(h.projectRoot);
-    expect(auditAfterRoute).toContain("review_auto_route_fix");
-    expect(auditAfterRoute).toContain("stage_spawn_routed_to_owner");
+    // Deferral contract: no route, no fix enqueue while the executor is live.
+    const afterDefer = h.meta();
+    expect(afterDefer.currentStage).toBe("review");
+    expect(afterDefer.reviewPendingFail?.stageStartTime).toBe(afterDefer.stageStartTime);
+    expect(Object.keys(afterDefer.pendingSpawns ?? {})).not.toContain("fix");
+    const auditAfterDefer = readAudit(h.projectRoot);
+    expect(auditAfterDefer).toContain("review_verdict_deferred_live_executor");
+    expect(auditAfterDefer).not.toContain("review_auto_route_fix");
 
     // ── G1: the review subagent's terminal event wakes the idle owner
     // exactly once via the event-driven path (the incident deadlock fix).
@@ -255,16 +258,20 @@ describe("200 Bug Phase 5 chain A: routed fix spawn wakes the idle owner once, r
     expect(terminalEntry?.status).toBe("terminal");
     expect(terminalEntry?.reason).toBe("completed");
 
-    // ── The wake lands on the idle owner; its next settle consumes the
-    // queued fix spawn through the EXISTING pull-based path (G1-1 minimal
-    // intervention: only the trigger point is new).
+    // ── The wake lands on the idle owner; its settle routes the DEFERRED
+    // fail declaration (executor gone) and lands the fix executor through
+    // the real RPC path (225 Phase 3: one deferred route, exactly once).
     const rpcBefore = h.rpcCount();
     await h.settle();
+    const auditAfterRoute = readAudit(h.projectRoot);
+    expect(auditAfterRoute).toContain("review_auto_route_fix");
     expect(h.rpcCount()).toBe(rpcBefore + 1);
     const fixed = h.meta();
     expect(fixed.currentStage).toBe("fix");
+    expect(fixed.reviewPendingFail).toBeUndefined();
     expect(fixed.activeSpawns?.fix?.agentId).toBeDefined();
     expect(Object.keys(fixed.pendingSpawns ?? {})).toHaveLength(0);
+    void statusTexts;
   });
 });
 

@@ -22,6 +22,8 @@
 
 import * as fs from "node:fs/promises";
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn, ConfirmMode, StageConfig } from "../types";
+// 225 Phase 3: review executor liveness (shared with the settle-side exit gate).
+import { isReviewExecutorLive } from "./review-exit-gate";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
 import { autoAdvanceAfterVerify } from "./verify-advance";
@@ -1900,6 +1902,31 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       } else if (currentStage === "review" && argReviewConclusion === "fail") {
         // Review declared fail → auto-route to fix (no counting, no overflow)
         // Bug 4 fix: explicit declaration also does not count, matching auto-route behavior
+        //
+        // 225 Phase 3 (T4, 22:18:04 replay): when the review EXECUTOR is still
+        // alive, routing to fix in the same turn created TWO concurrent
+        // executors. The declaration is persisted (`reviewPendingFail`) and the
+        // next owner settle routes ONCE after the executor is gone. The
+        // same-turn dispatch marker is CONSUMED first: an observed
+        // stage_advance call proves the executor is acting, so "dispatch in
+        // flight" no longer describes reality.
+        ctx.session.updateMeta({
+          reviewPendingFail: { stageStartTime: meta.stageStartTime, declaredAt: Date.now() },
+          ...(meta.reviewDispatchedAt?.stageStartTime === meta.stageStartTime
+            ? { reviewDispatchedAt: undefined }
+            : {}),
+        });
+        if (isReviewExecutorLive(meta)) {
+          await safeWriteStageAudit(config, "review_verdict_deferred_live_executor", meta, {
+            reason: "explicit-declaration",
+          });
+          return {
+            success: true,
+            message: "Review declared fail. Routing to fix is deferred until this review executor settles.",
+            currentStage: "review",
+          };
+        }
+        ctx.session.updateMeta({ reviewPendingFail: undefined });
         const routed = await routeConfirmReject(config, ctx, meta, "review", "fix", meta.confirmRejections ?? 0, {
           reason: "reviewConclusion declared fail (explicit, no count)",
           auditEvent: "review_auto_route_fix",

@@ -34,6 +34,8 @@ import {
 // 211 Phase 0: owner-side re-presentation entry for a child-suppressed confirm gate
 import { maybeRepromptOwnerConfirmGate } from "./confirm-gate-owner-reprompt";
 import { parseReviewConclusion } from "../utils/review-conclusion";
+// 225 Phase 3: review exit gate (freshness + round + liveness shared judgement).
+import { evaluateReviewExitGate, isReviewExecutorLive } from "./review-exit-gate";
 // 222 Phase 1: resolved docs directories (layer-neutral pure resolver).
 import { docsDirsOf } from "../docs-paths";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
@@ -703,63 +705,127 @@ export function createAgentSettled(
       let reviewDefaultReject: boolean | undefined;
       if (meta.currentStage === "review") {
         const reviewStageConfig = config.stages[meta.currentStage];
+
+        // 225 Phase 3 (T4a): explicit fail declaration deferred by the
+        // stage-advancer (executor was still live). Route ONCE, only after the
+        // review executor is gone — never concurrently with it.
+        if (meta.reviewPendingFail) {
+          if (isReviewExecutorLive(meta)) {
+            await writeAuditLog("review_verdict_deferred_live_executor", {
+              pipelineId: meta.pipelineId,
+              stage: "review",
+              reason: "pending-fail",
+            });
+            return; // keep waiting for the executor to settle
+          }
+          ctx.session.updateMeta({ reviewPendingFail: undefined, reviewConclusionDeclared: undefined });
+          await routeReviewFailAuto(config, ctx, meta, ui, {
+            reason: "reviewConclusion declared fail (deferred, routed at settle)",
+          });
+          return;
+        }
+
         if (meta.reviewConclusionDeclared === true) {
           // Declaration was made but stage did not advance — clear the consumed flag
           ctx.session.updateMeta({ reviewConclusionDeclared: undefined });
         } else {
           const confirmMode = reviewStageConfig?.confirm?.mode ?? "auto";
 
-          // Phase 2 / 176: load verdict anchors from the deployed verify.md.
-          const { anchors: reviewAnchors, issues: reviewAnchorIssues } =
-            await loadVerifyContractAnchors(config, "review");
-          const reviewVerdict = await parseReviewConclusion(
-            config.projectRoot,
-            reviewAnchors,
-            docsDirsOf(config).reviewDir,
-          );
-
-          if (reviewVerdict?.source === "contract-unavailable") {
-            // Fail-open: verdict anchor unavailable → fall back to the undeclared
-            // branch (audit + notify), then continue to verify + confirm gate.
-            await writeAuditLog("contract_anchor_unavailable", {
+          // 225 Phase 3 (T3): freshness+round+liveness gate — "今轮 + 新鲜" is
+          // the ONLY report that constitutes a conclusion.
+          const gate = await evaluateReviewExitGate(config, meta);
+          // Same-turn dispatch marker: first consumption clears it (scoped to
+          // the current stageStart — a cross-stage settle never wipes it).
+          if (meta.reviewDispatchedAt?.stageStartTime === meta.stageStartTime) {
+            ctx.session.updateMeta({ reviewDispatchedAt: undefined });
+          }
+          if (gate.state === "live-executor") {
+            await writeAuditLog("review_verdict_deferred_live_executor", {
               pipelineId: meta.pipelineId,
               stage: "review",
-              missingKeys: "verdict",
-              issues: reviewAnchorIssues.join("; "),
-            }, "error");
-            await writeAuditLog("review_declaration_missing", {
+              reason: "live",
+              expectedPath: gate.expectedPath ?? "",
+            });
+            if (shouldEmitWithinWindow(`review_gate:${meta.pipelineId}:${meta.stageStartTime}`, AUDIT_THROTTLE_WINDOW_MS)) {
+              ui.notify(ctx, "A review executor is still running; waiting for it to settle before drawing a verdict.");
+            }
+            return; // no verify, no routing, no count
+          }
+          if (gate.state === "no-conclusion") {
+            await writeAuditLog("review_verdict_no_fresh_report", {
               pipelineId: meta.pipelineId,
               stage: "review",
-              reason: "contract_anchor_unavailable",
-            }, "warn");
-            if (shouldEmitWithinWindow(`contract_anchor_unavailable:review:${meta.pipelineId}`, AUDIT_THROTTLE_WINDOW_MS)) {
-              ui.notify(ctx, "Review verdict runtime contract anchor unavailable in verify.md. Falling back to the undeclared reviewConclusion branch. Run /pipeline-init to restore the default declarations.");
-            }
-            if (confirmMode === "manual") {
-              reviewDefaultReject = true;
-            }
-          } else if (confirmMode !== "manual") {
-            // Auto mode (or unconfigured): parse report → route directly
-            if (reviewVerdict && reviewVerdict.verdict === "fail") {
-              await routeReviewFailAuto(config, ctx, meta, ui, {
-                reason: `review report parsed as fail (source: ${reviewVerdict.source})`,
+              reason: gate.reason,
+              expectedPath: gate.expectedPath ?? "",
+            });
+            if (gate.reason === "missing") {
+              // No return: fall through to precheckRequiredFiles below (225
+              // Phase 2 T6 narrowed the review requiredFiles to the exact
+              // `_N.md`), whose verify_precheck_deferred names that path.
+              const confirmModeManual = confirmMode === "manual";
+              if (confirmModeManual) reviewDefaultReject = true;
+              // Manual keeps its conservative preselect but stops here for the
+              // report-gate: the flow continues into verify (same as auto).
+            } else {
+              // stale: expected file exists but is older than this round's
+              // entry clock — continuing would advance on a stale report. Use
+              // the existing precheckBlocked entry gate (stage-advancer
+              // re-checks it and stage advance is blocked until it clears).
+              ctx.session.updateMeta({
+                precheckBlocked: { stage: "review", missing: [gate.expectedPath ?? ""], at: Date.now() },
               });
-              if (reviewVerdict.warn) {
-                await writeAuditLog("review_auto_route_warn", {
-                  pipelineId: meta.pipelineId,
-                  stage: "review",
-                  warn: reviewVerdict.warn,
-                }, "warn");
+              if (shouldEmitWithinWindow(`review_gate:${meta.pipelineId}:${meta.stageStartTime}`, AUDIT_THROTTLE_WINDOW_MS)) {
+                ui.notify(ctx, `Review report for this round is stale (${gate.expectedPath}); wait for the executor or rewrite that exact file.`);
               }
               return;
             }
-            // pass or null→already covered by fail → fall through to verify + autoAdvance
+            reviewDefaultReject = reviewDefaultReject; // keep manual preselect
           } else {
-            // Manual mode: parse report for preselect
-            // preselect: fail → defaultReject=true, pass → defaultReject=false, null → defaultReject=true
-            reviewDefaultReject = reviewVerdict
-              ? reviewVerdict.verdict === "fail"
-              : true; // No report → conservative reject default
+            // conclusion ⇒ gate.verdict drives the existing auto/manual routing
+            const reviewVerdict = gate.verdict;
+            if (reviewVerdict?.source === "contract-unavailable") {
+              // Fail-open: verdict anchor unavailable → fall back to the undeclared
+              // branch (audit + notify), then continue to verify + confirm gate.
+              await writeAuditLog("contract_anchor_unavailable", {
+                pipelineId: meta.pipelineId,
+                stage: "review",
+                missingKeys: "verdict",
+                issues: reviewVerdict.warn ?? "",
+              }, "error");
+              await writeAuditLog("review_declaration_missing", {
+                pipelineId: meta.pipelineId,
+                stage: "review",
+                reason: "contract_anchor_unavailable",
+              }, "warn");
+              if (shouldEmitWithinWindow(`contract_anchor_unavailable:review:${meta.pipelineId}`, AUDIT_THROTTLE_WINDOW_MS)) {
+                ui.notify(ctx, "Review verdict runtime contract anchor unavailable in verify.md. Falling back to the undeclared reviewConclusion branch. Run /pipeline-init to restore the default declarations.");
+              }
+              if (confirmMode === "manual") {
+                reviewDefaultReject = true;
+              }
+            } else if (confirmMode !== "manual") {
+              // Auto mode (or unconfigured): parse report → route directly
+              if (reviewVerdict && reviewVerdict.verdict === "fail") {
+                await routeReviewFailAuto(config, ctx, meta, ui, {
+                  reason: `review report parsed as fail (source: ${reviewVerdict.source})`,
+                });
+                if (reviewVerdict.warn) {
+                  await writeAuditLog("review_auto_route_warn", {
+                    pipelineId: meta.pipelineId,
+                    stage: "review",
+                    warn: reviewVerdict.warn,
+                  }, "warn");
+                }
+                return;
+              }
+              // pass or null→already covered by fail → fall through to verify + autoAdvance
+            } else {
+              // Manual mode: parse report for preselect
+              // preselect: fail → defaultReject=true, pass → defaultReject=false, null → defaultReject=true
+              reviewDefaultReject = reviewVerdict
+                ? reviewVerdict.verdict === "fail"
+                : true; // No report → conservative reject default
+            }
           }
         }
       }

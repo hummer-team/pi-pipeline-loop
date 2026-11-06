@@ -32,11 +32,13 @@ import type { VerifyContractAnchors } from "./contract-loader";
 export interface ReviewVerdict {
   /**
    * The extracted verdict. `null` only for the `contract-unavailable` state
-   * (verdict anchor missing from the deployed verify.md).
+   * (verdict anchor missing from the deployed verify.md) and for the
+   * `missing-expected` state (expected path is simply absent — the caller
+   * treats it as "no conclusion yet", never as a fail).
    */
   verdict: "fail" | "pass" | null;
   /** How the verdict was determined */
-  source: "blocker-section" | "conclusion-line" | "missing" | "contract-unavailable";
+  source: "blocker-section" | "conclusion-line" | "missing" | "contract-unavailable" | "missing-expected";
   /** Optional warning message (e.g., when verdict is inferred) */
   warn?: string;
 }
@@ -167,13 +169,32 @@ function parseConclusionLine(
  *   is returned so the caller can fall back to the undeclared branch (fail-open).
  * @param reviewDir - Project-relative review directory (222 Phase 1; default
  *   `docs/review`). Callers pass `docsDirsOf(config).reviewDir`.
+ * @param opts - 225 Phase 3 (T2): `expectedPath` selects the EXACT expected
+ *   report of the current round (no mtime scan). When that file is absent the
+ *   parser returns `{ verdict: null, source: "missing-expected" }` — the caller
+ *   handles it as "no conclusion yet" (no routing, no fail).
  * @returns ReviewVerdict with verdict + source, or null if no report exists
  */
 export async function parseReviewConclusion(
   projectRoot: string,
   anchors?: VerifyContractAnchors,
   reviewDir?: string,
+  opts?: { expectedPath?: string },
 ): Promise<ReviewVerdict | null> {
+  if (opts?.expectedPath) {
+    const absExpected = path.isAbsolute(opts.expectedPath)
+      ? opts.expectedPath
+      : path.join(projectRoot, opts.expectedPath);
+    let content: string;
+    try {
+      content = await fs.readFile(absExpected, "utf-8");
+    } catch {
+      // Expected path exists in the CONTRACT but not on disk: no conclusion.
+      return { verdict: null, source: "missing-expected" };
+    }
+    return parseVerdictFromContent(content, anchors);
+  }
+
   const reportPath = await findLatestReviewReport(projectRoot, reviewDir);
   if (!reportPath) return null;
 
@@ -184,6 +205,17 @@ export async function parseReviewConclusion(
     return null;
   }
 
+  return parseVerdictFromContent(content, anchors);
+}
+
+/**
+ * Parses a report body into a verdict (shared by the mtime-latest path and the
+ * exact expectedPath path).
+ */
+function parseVerdictFromContent(
+  content: string,
+  anchors?: VerifyContractAnchors,
+): ReviewVerdict | null {
   const lines = content.split("\n");
 
   // Priority 1: Check for Blocker/High/Medium open items.
