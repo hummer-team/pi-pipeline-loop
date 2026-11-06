@@ -161,6 +161,10 @@ export function buildNewPeriodResetFields(
     // 225 Phase 3: a deferred fail declaration belongs to the period's review
     // visit — a new period must not carry a routing debt into round 1.
     reviewPendingFail: undefined,
+    // 225 Phase 5: the git parity baseline is a PERIOD fact (R1/R2 must be
+    // re-sampled every stage visit; unobserved-write counting restarts).
+    gitInvariantBaseline: undefined,
+    gitAllowedWrites: 0,
 
     // 219 review issue 4 (High): the auto-job context and the continuity verdict
     // are PER-DOC facts. They must be cleared with every new period, otherwise

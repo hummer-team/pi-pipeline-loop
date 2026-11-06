@@ -187,7 +187,7 @@ export interface VerifyConfig {
   requireCommitProof?: boolean;
 
   /**
-   * 225 Phase 0 (T2): commit-contract opt-out switch (stage-level > global-level,
+   * 225 Phase 4: commit-contract opt-out switch (stage-level > global-level,
    * default true). When a stage's deployed verify spec carries `requiredGit`, the
    * plugin elevates the stage git capability UNLESS this switch explicitly turns
    * the contract off — in which case the prompt-injector entry gate freezes the
@@ -195,6 +195,13 @@ export interface VerifyConfig {
    * at every git write.
    */
   requireCommitContract?: boolean;
+
+  /**
+   * 225 Phase 5 (T1/Q9-A→D8): branch+stash invariant assertion switch
+   * (stage-level > global-level; the contract default feeds the fallback —
+   * a commit-contract stage records and asserts R1/R2 unless explicitly off).
+   */
+  requireGitInvariants?: boolean;
 }
 
 /**
@@ -527,6 +534,26 @@ export interface ReviewRoundState {
   enteredAt: number;
   /** Pipeline the round belongs to (cross-pipeline isolation). */
   pipelineId: string;
+}
+
+/**
+ * 225 Phase 5 (T1/D8): the recorded git state of a commit-contract stage visit
+ * (R1 branch + R2 stash fingerprint + the HEAD anchor for the unobserved-write
+ * warning). Recorded ONCE per visit (`stageStartTime` identity).
+ */
+export interface GitInvariantBaseline {
+  /** `git branch --show-current` output (detached HEAD = empty string). */
+  branch: string;
+  /** `git rev-parse HEAD` at baseline time. */
+  headSha: string;
+  /** Line count of `git stash list` at baseline time. */
+  stashCount: number;
+  /** Stage the baseline was recorded for. */
+  stage: PipelineStage;
+  /** Visit identity (a re-entered stage samples a fresh baseline). */
+  stageStartTime: number;
+  /** Recording clock (observability). */
+  recordedAt: number;
 }
 
 /**
@@ -1083,6 +1110,14 @@ export interface SessionMeta {
    * and "declared fail but verify failed" states).
    */
   reviewPendingFail?: { stageStartTime: number; declaredAt: number };
+
+  /**
+   * 225 Phase 5 (T1): R1/R2 baseline recorded at the commit-contract stage's
+   * FIRST allowed git write of the visit (branch / HEAD / stash fingerprint).
+   * Asserted by `reconcileGitInvariants` at verify time; RESET by the new
+   * period clears. Absent = never sampled (e.g. no git write happened).
+   */
+  gitInvariantBaseline?: GitInvariantBaseline;
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
@@ -2244,6 +2279,13 @@ export interface VerifyJsonConfig {
    * value; default true (contract stages elevate their git capability).
    */
   requireCommitContract?: boolean;
+
+  /**
+   * 225 Phase 5: global branch+stash invariant assertion switch (verify level).
+   * Stage-level wins; the contract default (commit-contract stage) feeds the
+   * fallback when both are unset.
+   */
+  requireGitInvariants?: boolean;
 }
 
 /**

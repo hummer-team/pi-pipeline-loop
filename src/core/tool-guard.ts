@@ -75,6 +75,8 @@ import { isDestructiveCommand, buildBlockedReason, isSystemPath } from "../utils
 import { askCommandDecision } from "../utils/protect-ask";
 // 225 Phase 0: positive audit for ALLOWED git writes (never intercepts).
 import { recordAllowedGitWrite } from "./git-write-observability";
+// 225 Phase 5: R1/R2 baseline sampling on allowed git writes (fail-open).
+import { ensureGitInvariantBaseline } from "./git-invariants";
 // 218 Phase 2 (T2.3): whitelist-miss mode resolution + merged write decision.
 import { resolveWhitelistMissMode } from "./write-scope/mode";
 import { applyCollectedWrites } from "./write-scope/decision";
@@ -1084,6 +1086,11 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
           const isGitCmd = /^rtk\s+git\s/.test(trimmedSegment) || trimmedSegment.startsWith("git ");
 
           if (isGitCmd) {
+            // 225 Phase 5 (T3): sample the branch/stash baseline BEFORE any
+            // policy verdict — allowed writes need the entry watermark.
+            // Contract + off-switch resolution live inside the module;
+            // failures are fail-open there and never affect the guard.
+            await ensureGitInvariantBaseline(config, meta, ctx.session, currentStage, execFn);
             // Hard blacklist: ALWAYS reject, even in allow stages
             if (isGitForbidden(segment)) {
               const reason = `FORBIDDEN: git command matches forbidden pattern in stage '${currentStage}' (stage git policy=${gitPolicy}).`;

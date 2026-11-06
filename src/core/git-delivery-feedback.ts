@@ -29,8 +29,16 @@ export interface GitDeliveryFeedback {
  * - `plan_doc_mismatch`: the commit doc binds to a foreign plan document.
  * - `commit_after_stage_start`: the commit predates the allowed time baseline
  *   (the requirement's ledger called this `commit_too_old`, historically).
+ * - `branch_drift` / `stash_hidden` (225 Phase 5): R1/R2 invariant breaks from
+ *   the phase-5 baseline assertion.
  */
-const GIT_DELIVERY_RULE_TYPES = new Set(["commit_exists", "plan_doc_mismatch", "commit_after_stage_start"]);
+const GIT_DELIVERY_RULE_TYPES = new Set([
+  "commit_exists",
+  "plan_doc_mismatch",
+  "commit_after_stage_start",
+  "branch_drift",
+  "stash_hidden",
+]);
 
 /**
  * Builds corrective feedback for git delivery failures, or `null` when none of
@@ -68,6 +76,8 @@ export function buildGitDeliveryFeedback(opts: {
   const commitExists = relevant.find((f) => f.ruleType === "commit_exists");
   const planMismatch = relevant.find((f) => f.ruleType === "plan_doc_mismatch");
   const commitTooOld = relevant.find((f) => f.ruleType === "commit_after_stage_start");
+  const branchDrift = relevant.find((f) => f.ruleType === "branch_drift");
+  const stashHidden = relevant.find((f) => f.ruleType === "stash_hidden");
 
   const lines: string[] = [];
   if (commitExists) {
@@ -83,6 +93,18 @@ export function buildGitDeliveryFeedback(opts: {
     lines.push(
       `Commit too old: commits must be at most ${COMMIT_TIME_TOLERANCE_MS / 1000}s older than the run's stage-start clock baseline. ` +
         `Re-run \`git commit\` for the pending work now — never re-register an old id.`,
+    );
+  }
+  if (branchDrift) {
+    lines.push(
+      `${branchDrift.detail}`,
+      `Switch back to the recorded branch (\`git checkout <baseline-branch>\`) and re-run the commit before completing this stage.`,
+    );
+  }
+  if (stashHidden) {
+    lines.push(
+      `${stashHidden.detail}`,
+      `Run \`git stash pop\` (or \`git stash apply\`) and commit the recovery before completing this stage — stashing the stage's work away makes the verify read a tree without your changes.`,
     );
   }
 

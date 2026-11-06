@@ -1100,12 +1100,14 @@ function parseTopLevelVerifyConfig(raw: unknown): VerifyJsonConfig | undefined {
     );
     return undefined;
   }
-  // 225 Phase 0 (T2b): consume BOTH switches at this level; either present
-  // makes the block reach `resolvePipelineConfig`.
+  // 225 Phase 0 (T2b): consume the switches at this level; either present
+  // makes the block reach `resolvePipelineConfig`. 225 Phase 5 adds
+  // `requireGitInvariants` to the same passthrough.
   const rawObj = raw as Record<string, unknown>;
   const entry = {
     ...parseVerifyBooleanSwitchEntry(rawObj.requireCommitProof, "requireCommitProof"),
     ...parseVerifyBooleanSwitchEntry(rawObj.requireCommitContract, "requireCommitContract"),
+    ...parseVerifyBooleanSwitchEntry(rawObj.requireGitInvariants, "requireGitInvariants"),
   };
   return Object.keys(entry).length > 0 ? (entry as VerifyJsonConfig) : undefined;
 }
@@ -1522,6 +1524,8 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
             // 225 Phase 0 (T2c): commit-contract opt-out switch (same
             // attach-only-when-configured convention).
             ...parseVerifyBooleanSwitchEntry(jsonStage.verify.requireCommitContract, "requireCommitContract"),
+            // 225 Phase 5 (T1): branch+stash invariant assertion switch.
+            ...parseVerifyBooleanSwitchEntry(jsonStage.verify.requireGitInvariants, "requireGitInvariants"),
           }
         : undefined,
       confirm: parseConfirmConfig(jsonStage.confirm),
@@ -1689,7 +1693,7 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
     // (same optional-field convention as the blocks above — deep-equality
     // config-shape assertions must not see an empty object). 225 Phase 0
     // (T2d): `requireCommitContract` rides the same block.
-    ...(json.verify && (json.verify.requireCommitProof !== undefined || json.verify.requireCommitContract !== undefined)
+    ...(json.verify && (json.verify.requireCommitProof !== undefined || json.verify.requireCommitContract !== undefined || json.verify.requireGitInvariants !== undefined)
       ? {
           verify: {
             ...(json.verify.requireCommitProof !== undefined
@@ -1697,6 +1701,9 @@ export function resolvePipelineConfig(json: PipelineJsonConfig): PipelineConfig 
               : {}),
             ...(json.verify.requireCommitContract !== undefined
               ? { requireCommitContract: json.verify.requireCommitContract }
+              : {}),
+            ...(json.verify.requireGitInvariants !== undefined
+              ? { requireGitInvariants: json.verify.requireGitInvariants }
               : {}),
           },
         }

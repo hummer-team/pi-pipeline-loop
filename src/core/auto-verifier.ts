@@ -34,6 +34,8 @@ import { resolvePlaceholders, resolvePlanDocPath, applyConcreteStageDocPaths, is
 import { reconcileCommitProof } from "./commit-proof";
 // 225 Phase 1: contract-default judgement shared with Phase 0 (groups+flat).
 import { hasCommitRequirement } from "./commit-contract";
+// 225 Phase 5: branch/stash invariant assertion (same failure set as proof).
+import { reconcileGitInvariants } from "./git-invariants";
 import {
   deriveDomainVerificationContext,
   resolveDesignReviewConfirmMode,
@@ -914,6 +916,17 @@ async function runVerificationBase(
       ...structuredResult,
       passed: false,
       failures: [...structuredResult.failures, ...proofFailures],
+    };
+  }
+
+  // 225 Phase 5 (T4/Q9-A): assert the branch/stash baselines folded into the
+  // SAME failure set (rides the existing retry / circuit-breaker machinery).
+  const invariantFailures = await reconcileGitInvariants(config, meta, verifyConfig, options?.execFn);
+  if (invariantFailures.length > 0) {
+    structuredResult = {
+      ...structuredResult,
+      passed: false,
+      failures: [...structuredResult.failures, ...invariantFailures],
     };
   }
 

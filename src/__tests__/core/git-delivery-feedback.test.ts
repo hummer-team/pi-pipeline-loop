@@ -100,3 +100,32 @@ describe("buildGitDeliveryFeedback", () => {
     expect(result!.message).toContain('declared id "dead0001"');
   });
 });
+
+// ─── 225 Phase 5 (T5): git_invariant corrective branches ─────────────────────
+
+describe("buildGitDeliveryFeedback — git_invariant ruleTypes (Phase 5)", () => {
+  it("branch_drift → switch-back correction", () => {
+    const result = buildGitDeliveryFeedback({
+      config: makeTestConfig(),
+      meta: META,
+      stageName: "fix",
+      failures: [failure("branch_drift", "expected branch 'fix/a', found 'fix/b'", "git_invariant")],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.message).toContain("expected branch 'fix/a', found 'fix/b'");
+    expect(result!.message).toContain("Switch back to the recorded branch");
+    expect(result!.message).toContain("re-run the commit");
+  });
+
+  it("stash_hidden → stash pop correction", () => {
+    const result = buildGitDeliveryFeedback({
+      config: makeTestConfig(),
+      meta: META,
+      stageName: "fix",
+      failures: [failure("stash_hidden", "work was stashed during this stage: stash entries 0 → 2", "git_invariant")],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.message).toContain("work was stashed during this stage");
+    expect(result!.message).toContain("Run `git stash pop`");
+  });
+});
