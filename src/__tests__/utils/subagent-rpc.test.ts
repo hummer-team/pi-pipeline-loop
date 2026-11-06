@@ -1072,7 +1072,9 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
 
       const description = (spawnPayload?.options as Record<string, unknown>)?.description as string | undefined;
-      expect(description).toBe("develop: docs/req.md");
+      // 225 Phase 2 (T5, registered change §8.2): the D4 resolver points the
+      // develop dispatch at the plan doc (same dir as the requirement doc).
+      expect(description).toBe("develop: docs/req_Plan.md");
     });
   });
 });
@@ -2381,7 +2383,7 @@ describe("G8 (188): fix stage spawn description", () => {
     } as any);
   }
 
-  it("fix + review report exists → description = review report path", async () => {
+  it("fix + review report exists on disk → description falls back to requirement (no mtime lookup, 225)", async () => {
     const tmpDir = path.join(tmpdir(), "pi-g8-fix-review-" + Date.now());
     fs.mkdirSync(tmpDir, { recursive: true });
     // Create a review report
@@ -2409,7 +2411,10 @@ describe("G8 (188): fix stage spawn description", () => {
     });
 
     const description = (getSpawnPayload()?.options as Record<string, unknown>)?.description as string | undefined;
-    expect(description).toContain("code_review_");
+    // 225 Phase 2 (T5, registered change §8.2): the mtime-latest lookup is
+    // RETIRED. Without a ledger entry the honest fallback is the requirement
+    // doc — a stale `_1.md` can never silently become the fix target again.
+    expect(description).toBe("fix: docs/req.md");
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -2483,7 +2488,9 @@ describe("G8 (188): fix stage spawn description", () => {
     });
 
     const description = (getSpawnPayload()?.options as Record<string, unknown>)?.description as string | undefined;
-    expect(description).toBe("develop: docs/req.md");
+    // 225 Phase 2 (T5, registered change §8.2): the develop dispatch points at
+    // the plan doc (D4 resolver), not the raw requirementDoc.
+    expect(description).toBe("develop: docs/req_Plan.md");
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

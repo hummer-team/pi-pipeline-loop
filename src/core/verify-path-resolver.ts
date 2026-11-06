@@ -29,7 +29,7 @@ import {
   docsDirsOf,
   winGlobVariant,
 } from "../docs-paths";
-import { commitDocFileName } from "./naming/doc-naming";
+import { commitDocFileName, codeReviewDocFileName } from "./naming/doc-naming";
 // 192 Phase 3: canonical report path derivation for the design-review stage
 /**
  * Resolve the commit document path for a given requirement base name.
@@ -284,8 +284,18 @@ export async function applyConcreteStageDocPaths(
     // 201 Phase 3: Narrow review doc glob to requirementDoc basename with the
     // NEW naming prefix; legacy authored `code_review_*` globs count too and
     // are narrowed to the same new concrete glob (dual read).
-    concreteGlob =
-      `${dirs.reviewDir.replace(/\/+$/, "")}/Code_Review_${reqBase}_Develop_Commit_*.md`;
+    //
+    // 225 Phase 2 (T6): when the ledger entry belongs to the CURRENT visit,
+    // narrow ALL THE WAY to this round's exact report path — the precheck
+    // fallback then names the precise `_N.md` instead of accepting a stale
+    // earlier round. Round unknown (legacy runs / resumes without the
+    // entry) → the wide glob keeps working, nothing mis-locks.
+    const round = meta.reviewRound;
+    const inVisit = !!round && round.stageStartTime === meta.stageStartTime;
+    const reviewDirNorm = dirs.reviewDir.replace(/\/+$/, "");
+    concreteGlob = inVisit
+      ? `${reviewDirNorm}/${codeReviewDocFileName(reqBase, round!.index)}`
+      : `${reviewDirNorm}/Code_Review_${reqBase}_Develop_Commit_*.md`;
     return replaceGlobInRules(result, (p) => isReviewDocGlob(p, dirs.reviewDir), concreteGlob);
   }
 

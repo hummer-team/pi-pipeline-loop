@@ -180,10 +180,9 @@ export interface VerifyConfig {
   completionMarker?: string | string[];
 
   /**
-   * 210 Phase 0: require git commit evidence reconciliation before verify passes.
-   * Default: undefined (= false, fail-open warn only); `true` folds commit-proof
-   * violations into the verify failure set. Resolution: stage-level value
-   * wins over the global `config.verify.requireCommitProof`.
+   * 225 Phase 1: resolve the commit-proof switch with the contract default.
+   * Stage-level value wins over the global `config.verify.requireCommitProof`;
+   * both absent → `requiresCommit` (commit-contract default ON, Q2-A).
    */
   requireCommitProof?: boolean;
 
@@ -510,6 +509,25 @@ export interface OwnerWriteApproval {
 }
 
 export type OwnerApprovalRequest = OwnerCommandApproval | OwnerWriteApproval;
+
+/**
+ * 225 Phase 2 (T1): the persisted review round ledger entry.
+ *
+ * `stageStartTime` is the IDENTITY KEY of the review visit that the round was
+ * allocated for; `enteredAt` is that round's true entry clock (a resume must
+ * NEVER rebase it — the freshness baseline lives here). `index` is 1-based
+ * and only ever advances via `allocateReviewRound`.
+ */
+export interface ReviewRoundState {
+  /** 1-based review round index. */
+  index: number;
+  /** `meta.stageStartTime` snapshot at the latest review dispatch. */
+  stageStartTime: number;
+  /** True entry clock of the round (resume-immutable freshness baseline). */
+  enteredAt: number;
+  /** Pipeline the round belongs to (cross-pipeline isolation). */
+  pipelineId: string;
+}
 
 /**
  * Runtime metadata stored in the pi session, tracking the pipeline's
@@ -1039,6 +1057,22 @@ export interface SessionMeta {
    * consume/clear it).
    */
   gitAllowedWrites?: number;
+
+  /**
+   * 225 Phase 2 (T1): the PERSISTED review round ledger entry.
+   * Allocated/advanced only when a review executor is dispatched; `index` is
+   * 1-based and never rewinds; `enteredAt` anchors the freshness baseline a
+   * resume must NOT rebase. Phase 3's exit gate consumes the pair.
+   */
+  reviewRound?: ReviewRoundState;
+
+  /**
+   * 225 Phase 2 (T5): "the current round's review executor was JUST dispatched
+   * in this turn" marker. Written by subagent-rpc's writeGuard for
+   * `stage === "review"` (fallback channel included), cleared by the Phase 3
+   * exit gate on first consumption. Absent = no same-turn dispatch pending.
+   */
+  reviewDispatchedAt?: { stageStartTime: number; at: number };
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────

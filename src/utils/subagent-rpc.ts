@@ -19,10 +19,12 @@ import { clearActiveSpawnRecord, removePendingSpawnsEntry } from "./spawn-cleanu
 import { isSubagentsReady } from "./subagent-availability";
 import { resolveClarifyDescription } from "./clarify-args";
 import { appendPipelineIdMarker } from "./pipeline-id-marker";
-import { findLatestReviewReport } from "./review-conclusion";
+// 225 Phase 2: review round ledger + 同一 resolver for description & prompt.
+import { ensureReviewRound } from "./review-round";
+import { resolveStageTargetDoc } from "./stage-target-doc";
 // 222 Phase 1: resolved docs directories — the layer-neutral `src/docs-paths.ts`
 // module (never `../core/`, which the static guard below forbids).
-import { docsDirsOf } from "../docs-paths";
+import { codeReviewDocFileName, docsDirsOf, reqBaseFromRequirementDoc } from "../docs-paths";
 import { probeAgentState, anyTopLevelRunning } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { checkDispatchConflicts } from "./guard-conflict-report";
@@ -804,14 +806,29 @@ export async function spawnStageSubagent(
     prompt += opts.extraArgs;
   }
   // Phase 7 (188) G8 / 192 Phase 1: description override support.
+  // 225 Phase 2 (T5): only REVIEW allocates/advances the round (retry-safe);
+  // fix reads `meta.reviewRound` inside the resolver — caller never picks a round.
+  const round = stage === "review"
+    ? ensureReviewRound(meta, opts?.session as { updateMeta(patch: Partial<SessionMeta>): unknown } | undefined, Date.now())
+    : undefined;
   let description = opts?.description ?? `${stage}: ${meta.requirementDoc ?? ""}`;
-  if (opts?.description === undefined && stage === "fix") {
-    const reviewReport = await findLatestReviewReport(
-      config.projectRoot,
-      docsDirsOf(config).reviewDir,
-    );
-    if (reviewReport) {
-      description = reviewReport;
+  let targetDoc: Awaited<ReturnType<typeof resolveStageTargetDoc>> | undefined;
+  if (opts?.exactPrompt === undefined) {
+    // D4: description and prompt point at the SAME target document (one resolver).
+    // Computed even when `opts.description` overrides the TUI text — the prompt
+    // target line stays同源 for every ordinary dispatch.
+    targetDoc = await resolveStageTargetDoc(config, meta, { reviewRound: round });
+    if (opts?.description === undefined && targetDoc.path) {
+      description = `${stage}: ${targetDoc.path}`;
+    }
+  }
+  if (opts?.exactPrompt === undefined && targetDoc?.path && targetDoc.source !== "requirement") {
+    // Same-source prompt target for the D4 TARGET stages only; requirement
+    // dispatches (clarify etc.) keep their verbatim baseline behaviour.
+    prompt += `\n\nTarget document: ${targetDoc.path} — read it first; do not glob or guess another round's file.`;
+    if (stage === "review" && round) {
+      const reviewDir = docsDirsOf(config).reviewDir;
+      prompt += `\nExpected report: ${reviewDir.replace(/\/+$/, "")}/${codeReviewDocFileName(reqBaseFromRequirementDoc(meta.requirementDoc ?? ""), round.index)} (write exactly this path).`;
     }
   }
 
@@ -843,6 +860,13 @@ export async function spawnStageSubagent(
           ...(opts.operationContext ? { operationContext: opts.operationContext } : {}),
         },
       };
+    }
+    // 225 Phase 2 (T5): same-turn dispatch marker for the review exit gate.
+    // NOT gated on subagentId — the fallback channel has no agentId, so the
+    // gate's probe evidence is empty there and only this marker identifies a
+    // just-dispatched executor. Cleared on first consumption (Phase 3).
+    if (stage === "review") {
+      patch.reviewDispatchedAt = { stageStartTime: currentMeta.stageStartTime, at: Date.now() };
     }
     opts.session.updateMeta(patch);
   };

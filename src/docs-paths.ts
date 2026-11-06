@@ -55,6 +55,71 @@ export function buildReviewDocGlob(dir: string, legacy = false): string {
   return `${trimTrailingSlashes(dir)}/${legacy ? "code_review_*" : "Code_Review_*"}.md`;
 }
 
+// ─── 225 Phase 2: designation-name constructors (sunk from core/naming) ─────
+//
+// Layer-neutrality sink: `reqBaseFromRequirementDoc` / `planDocRelPathFromRequirementDoc`
+// must be callable from `src/utils/stage-target-doc.ts` (utils may not import
+// `../core/*` at runtime), so the pure naming constructors live here and
+// `core/naming/doc-naming` re-exports them (public API unchanged).
+
+/**
+ * Strip a trailing `_Plan` / `_plan` marker from a plan document stem to get
+ * the requirement base name (`{reqBase}`).
+ *
+ * `195_Bug_Plan` / `195_Bug_plan` → `195_Bug`. Any other stem is returned
+ * verbatim (including empty string and stems without either suffix).
+ *
+ * @param stem - Plan document file name without extension
+ * @returns The requirement base name
+ */
+export function reqBaseFromPlanStem(stem: string): string {
+  if (stem.endsWith("_Plan")) return stem.slice(0, -"_Plan".length);
+  if (stem.endsWith("_plan")) return stem.slice(0, -"_plan".length);
+  return stem;
+}
+
+/** Plan document file name: `{reqBase}_Plan.md`. */
+export function planDocFileName(reqBase: string): string {
+  return `${reqBase}_Plan.md`;
+}
+
+/**
+ * 204 Phase 2: derives the requirement base from a requirement DOC path.
+ * `docs/design/204_Bug.md` → `204_Bug`; tolerates `.MD`, `\` separators and
+ * an already-`_Plan`-suffixed stem. Returns "" for empty / extension-less input.
+ */
+export function reqBaseFromRequirementDoc(reqDoc: string): string {
+  if (!reqDoc || typeof reqDoc !== "string") return "";
+  const normalized = reqDoc.replace(/\\/g, "/");
+  const base = normalized.split("/").pop() ?? "";
+  const m = /^(.+)\.(md|MD)$/.exec(base);
+  if (!m) return "";
+  return reqBaseFromPlanStem(m[1]);
+}
+
+/**
+ * 204 Phase 2: plan doc path relative to the requirement doc's directory.
+ * `docs/design/204_Bug.md` → `docs/design/204_Bug_Plan.md`;
+ * a bare `204_Bug.md` yields the bare file name.
+ */
+export function planDocRelPathFromRequirementDoc(reqDoc: string): string {
+  const normalized = String(reqDoc ?? "").replace(/\\/g, "/");
+  const idx = normalized.lastIndexOf("/");
+  const dir = idx === -1 ? "" : normalized.slice(0, idx + 1);
+  const name = planDocFileName(reqBaseFromRequirementDoc(normalized));
+  return `${dir}${name}`;
+}
+
+/** develop/fix commit document file name: `{reqBase}_Develop_Commit.md`. */
+export function commitDocFileName(reqBase: string): string {
+  return `${reqBase}_Develop_Commit.md`;
+}
+
+/** Code review report file name: `Code_Review_{reqBase}_Develop_Commit_{index}.md`. */
+export function codeReviewDocFileName(reqBase: string, index: number): string {
+  return `Code_Review_${reqBase}_Develop_Commit_${index}.md`;
+}
+
 // ─── Validation ─────────────────────────────────────────────────────────────
 
 const WIN_ABS_RE = /^[a-zA-Z]:[\\/]/;

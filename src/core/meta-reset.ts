@@ -154,6 +154,11 @@ export function buildNewPeriodResetFields(
     advancedThisTurn: undefined,
     reviewConclusionDeclared: undefined,
 
+    // 225 Phase 2: the review round ledger is a PERIOD fact — a new period
+    // starts at round 1 and no same-turn dispatch marker may survive it.
+    reviewRound: undefined,
+    reviewDispatchedAt: undefined,
+
     // 219 review issue 4 (High): the auto-job context and the continuity verdict
     // are PER-DOC facts. They must be cleared with every new period, otherwise
     // a human `/pipeline-start` in the same session inherits the previous job's

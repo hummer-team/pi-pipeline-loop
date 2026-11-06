@@ -824,3 +824,79 @@ describe("222 review issue 2 — archive scope after migration", () => {
     expect(new Set(relPaths).size).toBe(relPaths.length);
   });
 });
+// ─── 225 Phase 2 (T6): review verify narrowing to the CURRENT round ──────────
+
+describe("225 Phase 2: review requiredFiles narrowing", () => {
+  const createdRoots: string[] = [];
+
+  afterAll(async () => {
+    for (const root of createdRoots) {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /** Real loader: writes `.pi/pipeline_loop.json` with the given docs block. */
+  async function loadProject(
+    docs: Record<string, unknown>,
+  ): Promise<PipelineConfig> {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-review-narrow-"));
+    createdRoots.push(root);
+    const configPath = path.join(root, ".pi/pipeline_loop.json");
+    await fsp.mkdir(path.dirname(configPath), { recursive: true });
+    await fsp.writeFile(configPath, JSON.stringify({
+      stages: Object.fromEntries(ALL_STAGES.map((stage) => [stage, {}])),
+      docs,
+    }, null, 2), "utf8");
+    const json = loadJsonConfig(configPath);
+    json.projectRoot = root;
+    return resolvePipelineConfig(json);
+  }
+
+  it("same-visit reviewRound narrows to the EXACT `_N.md` report path", async () => {
+    const config = await loadProject({ designDir: "docs", reviewDir: "spec/review" });
+    const round = { index: 2, stageStartTime: 555, enteredAt: 500, pipelineId: "pipe-narrow" };
+    const narrowed = await applyConcreteStageDocPaths(
+      rulesWith("spec/review/Code_Review_*.md"),
+      config,
+      makeTestMeta({
+        currentStage: "review",
+        requirementDoc: "docs/222_Feat.md",
+        stageStartTime: 555,
+        reviewRound: round,
+      }),
+    );
+    expect(narrowed.path).toBe("spec/review/Code_Review_222_Feat_Develop_Commit_2.md");
+    expect(narrowed.requiredFiles).toEqual(["spec/review/Code_Review_222_Feat_Develop_Commit_2.md"]);
+  });
+
+  it("round unknown / ANOTHER visit keeps the wide glob (legacy runs never mis-lock)", async () => {
+    const config = await loadProject({ designDir: "docs", reviewDir: "spec/review" });
+    const narrowed = await applyConcreteStageDocPaths(
+      rulesWith("spec/review/Code_Review_*.md"),
+      config,
+      makeTestMeta({
+        currentStage: "review",
+        requirementDoc: "docs/222_Feat.md",
+        stageStartTime: 777,
+        reviewRound: { index: 1, stageStartTime: 555, enteredAt: 500, pipelineId: "pipe-narrow" },
+      }),
+    );
+    expect(narrowed.path).toBe("spec/review/Code_Review_222_Feat_Develop_Commit_*.md");
+  });
+
+  it("review verify narrowing serves the precheck fallback (requiredFiles carry the exact name)", async () => {
+    // `_1.md` no longer satisfies round 2's verify/precheck.
+    const config = await loadProject({ designDir: "docs", reviewDir: "spec/review" });
+    const narrowed = await applyConcreteStageDocPaths(
+      rulesWith("spec/review/Code_Review_*.md"),
+      config,
+      makeTestMeta({
+        currentStage: "review",
+        requirementDoc: "docs/222_Feat.md",
+        stageStartTime: 555,
+        reviewRound: { index: 2, stageStartTime: 555, enteredAt: 500, pipelineId: "pipe-narrow" },
+      }),
+    );
+    expect(narrowed.requiredFiles!.includes("spec/review/Code_Review_222_Feat_Develop_Commit_1.md")).toBe(false);
+  });
+});

@@ -6,7 +6,7 @@ disable-model-invocation: true
 ---
 
 ## workflow
-1. **Parse Input**: Extract file path `code‑review‑agent {file}_Develop_Commit.md` from task description passed by upstream Agent.
+1. **Parse Input**: The task description carries the target commit document path (`docs/design/{reqBase}_Develop_Commit.md`); read that exact file. Your report MUST be written to the `Expected report` path given in the prompt.
 2. Read `{file}_Develop_Commit.md`. Terminate review and output "Missing plan document, please supplement" if `plan doc` is absent; terminate review and report error if `commit id` is missing.
 3. Read references inside `{file}_Develop_Commit.md`
    - `plan doc`: Read and understand the plan

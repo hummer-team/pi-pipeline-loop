@@ -5,7 +5,7 @@ userInvocable: false
 disable-model-invocation: true
 ---
 ## workflow
-1. Check `To‑Fix` or `待修复` status issues in `<code review file>`
+1. Use the review file path given in the task prompt; do not search `docs/review/` yourself.
 2. Read the `# Summary` section of the plan document
 3. Fetch the code‑fix context: the review file itself, plus the `plan doc` referenced in its `# Summary` section.
 4. **Wait for user input only when a required input is missing** — specifically when the review file cannot be read, or the `plan doc` it 5. references does not exist. In that case output exactly `Insufficient context information, please supplement: <missing path>` and stop.

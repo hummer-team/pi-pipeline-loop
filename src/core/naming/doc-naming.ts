@@ -30,8 +30,27 @@ import {
   buildCommitDocGlob,
   buildPlanDocGlob,
   buildReviewDocGlob,
+  commitDocFileName,
+  codeReviewDocFileName,
+  planDocFileName,
+  planDocRelPathFromRequirementDoc,
+  reqBaseFromPlanStem,
+  reqBaseFromRequirementDoc,
   winGlobVariant,
 } from "../../docs-paths";
+
+// 225 Phase 2: the six pure naming constructors sank to the layer-neutral
+// src/docs-paths.ts (utils may import them without a core/ runtime dep).
+// Re-exported here as named bindings — the import (not bare `export ... from`)
+// keeps local binding available if future local functions re-derive names.
+export {
+  reqBaseFromPlanStem,
+  reqBaseFromRequirementDoc,
+  planDocFileName,
+  planDocRelPathFromRequirementDoc,
+  commitDocFileName,
+  codeReviewDocFileName,
+};
 
 export { buildCommitDocGlob, buildPlanDocGlob, buildReviewDocGlob, winGlobVariant };
 
@@ -42,60 +61,31 @@ export { buildCommitDocGlob, buildPlanDocGlob, buildReviewDocGlob, winGlobVarian
  * `195_Bug_Plan` / `195_Bug_plan` → `195_Bug`. Any other stem is returned
  * verbatim (including empty string and stems without either suffix).
  *
+ * 225 Phase 2: the implementation body SUNK to the layer-neutral
+ * `src/docs-paths.ts` (utils may import it without a `core/` runtime dep);
+ * re-exported above so every existing caller keeps importing from this module.
+ *
  * @param stem - Plan document file name without extension
  * @returns The requirement base name
  */
-export function reqBaseFromPlanStem(stem: string): string {
-  if (stem.endsWith("_Plan")) return stem.slice(0, -"_Plan".length);
-  if (stem.endsWith("_plan")) return stem.slice(0, -"_plan".length);
-  return stem;
-}
-
-/** Plan document file name: `{reqBase}_Plan.md`. */
-export function planDocFileName(reqBase: string): string {
-  return `${reqBase}_Plan.md`;
-}
 
 /**
  * 204 Phase 2: derives the requirement base from a requirement DOC path.
  * `docs/design/204_Bug.md` → `204_Bug`; tolerates `.MD`, `\` separators and
  * an already-`_Plan`-suffixed stem. Returns "" for empty / extension-less input.
+ * 225 Phase 2: implementation in `src/docs-paths.ts` (re-export above).
  */
-export function reqBaseFromRequirementDoc(reqDoc: string): string {
-  if (!reqDoc || typeof reqDoc !== "string") return "";
-  const normalized = reqDoc.replace(/\\/g, "/");
-  const base = normalized.split("/").pop() ?? "";
-  const m = /^(.+)\.(md|MD)$/.exec(base);
-  if (!m) return "";
-  return reqBaseFromPlanStem(m[1]);
-}
 
 /**
  * 204 Phase 2: plan doc path relative to the requirement doc's directory.
  * `docs/design/204_Bug.md` → `docs/design/204_Bug_Plan.md`;
  * a bare `204_Bug.md` yields the bare file name.
+ * 225 Phase 2: implementation in `src/docs-paths.ts` (re-export above).
  */
-export function planDocRelPathFromRequirementDoc(reqDoc: string): string {
-  const normalized = String(reqDoc ?? "").replace(/\\/g, "/");
-  const idx = normalized.lastIndexOf("/");
-  const dir = idx === -1 ? "" : normalized.slice(0, idx + 1);
-  const name = planDocFileName(reqBaseFromRequirementDoc(normalized));
-  return `${dir}${name}`;
-}
-
-/** develop/fix commit document file name: `{reqBase}_Develop_Commit.md`. */
-export function commitDocFileName(reqBase: string): string {
-  return `${reqBase}_Develop_Commit.md`;
-}
 
 /** Design review report file name: `Design_Review_{round}_{reqBase}_Design.md`. */
 export function designReviewDocFileName(reqBase: string, round: number): string {
   return `Design_Review_${round}_${reqBase}_Design.md`;
-}
-
-/** Code review report file name: `Code_Review_{reqBase}_Develop_Commit_{index}.md`. */
-export function codeReviewDocFileName(reqBase: string, index: number): string {
-  return `Code_Review_${reqBase}_Develop_Commit_${index}.md`;
 }
 
 /**
