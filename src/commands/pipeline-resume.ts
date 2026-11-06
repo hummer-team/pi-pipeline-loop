@@ -81,6 +81,11 @@ async function idempotentStageDispatch(
   forwardArgs?: string,
 ): Promise<void> {
   const stage = currentMeta.currentStage;
+  // Clarify is launched by the canonical entry (`dispatchAfterResume` →
+  // `maybeAutoLaunchClarify`), not by this aftermath helper. Keep the historical
+  // skip (226 D.1) so a human resume decision behaves exactly as before; the
+  // auto retry path uses the `resume` branch, never this one.
+  if (stage === "clarify") return;
   if (!isSpawnableStage(config, stage)) return;
 
   const activeSpawns = currentMeta.activeSpawns ?? {};

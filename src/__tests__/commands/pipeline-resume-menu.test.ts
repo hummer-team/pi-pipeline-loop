@@ -266,4 +266,34 @@ describe("208 Phase 3: /pipeline-resume menu semantics", () => {
     expect(ctx.notifyCalls.length).toBe(0);
     expect(__hasDecisionTimer(meta.pipelineId)).toBe(false);
   });
+
+  // ─── 226 Phase 0: clarify is never dispatched by the non-resume decided branch ──
+  it("test 8: 226 Phase 0 — restart lands on clarify and the decided branch does NOT dispatch clarify", async () => {
+    const meta = freshMeta({
+      // Required by the decision-wait deadline; keeps the standard 6-item menu.
+      pipelineDeadlineAt: Date.now() + 60_000,
+    });
+    const ctx = makeMenuCtx(meta);
+    q("Restart & New"); // non-resume decision → idempotentStageDispatch path
+    const config = makeTestConfig();
+    const cmd = createPipelineResumeCommand(config);
+    const result: any = await cmd.execute({}, ctx as any);
+
+    // Restart applied: new period at clarify, unfrozen → decided branch reached
+    expect((result as any).message).toContain("Decision executed");
+    expect(meta.currentStage).toBe("clarify");
+    expect(meta.flowState).toBe("running");
+
+    // 226 Phase 0 regression: `isSpawnableStage(clarify)` is TRUE now, but the
+    // aftermath helper must still skip clarify (canonical entry owns the spawn).
+    // Observable proof: ZERO clarify-tagged spawn audit events.
+    const clarifySpawnAudits = audits.filter(
+      (a) => a.message?.["stage"] === "clarify" && (
+        a.event === "stage_spawn_rpc" ||
+        a.event === "stage_spawn_fallback" ||
+        a.event === "stage_spawn_skipped"
+      ),
+    );
+    expect(clarifySpawnAudits).toEqual([]);
+  });
 });

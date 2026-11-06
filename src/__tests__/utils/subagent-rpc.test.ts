@@ -23,7 +23,7 @@ import {
   isSubagentsReady,
   __resetSubagentsReady,
 } from "../../utils/subagent-availability";
-import { initAuditLog, getDateAuditFileName, __resetAuditRoutingState } from "../../utils/auditLog";
+import { initAuditLog, getDateAuditFileName, __resetAuditRoutingState, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, createMockEventBus, makeStageConfig, makeRealisticManagerRegistry } from "../helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -272,11 +272,61 @@ describe("168 Phase 4: isSpawnableStage", () => {
     expect(isSpawnableStage(config, "fix")).toBe(true);
   });
 
-  it("returns false for clarify/completed/awaiting_human", () => {
+  it("226 Phase 0: returns true for clarify now that the gate is state-machine-derived", () => {
     const config = makeTestConfig();
-    expect(isSpawnableStage(config, "clarify")).toBe(false);
+    expect(isSpawnableStage(config, "clarify")).toBe(true);
+  });
+
+  it("226 Phase 0: terminal pseudo-stages stay false even with a configured agentPath", () => {
+    const config = makeTestConfig();
+    // The shared fixture configures agentPath for EVERY stage — including the
+    // terminal pseudo-stages — so gate truth must come from the stage machine.
     expect(isSpawnableStage(config, "completed")).toBe(false);
     expect(isSpawnableStage(config, "awaiting_human")).toBe(false);
+  });
+
+  it("226 Phase 0: enterable stage without an executor is not spawnable", () => {
+    const config = makeTestConfig({
+      stages: {
+        ...makeTestConfig().stages,
+        develop: { ...makeTestConfig().stages.develop, agentPath: "" },
+      },
+    } as any);
+    expect(isSpawnableStage(config, "develop")).toBe(false);
+  });
+});
+
+describe("226 Phase 0: non-spawnable early exit is audited", () => {
+  afterEach(() => {
+    __setSafeWriteAuditLogOverride(null);
+  });
+
+  it("audits stage_spawn_skipped reason=stage_not_spawnable and keeps the silent-ish return shape", async () => {
+    const captured: Array<{ event: string; message?: Record<string, unknown> }> = [];
+    __setSafeWriteAuditLogOverride(async (event, message) => {
+      captured.push({ event, message });
+    });
+    const config = makeTestConfig();
+    const meta = makeTestMeta();
+    const result = await spawnStageSubagent(null, config, "completed", meta);
+
+    expect(result.spawned).toBe(false);
+    expect(result.fallback).toBe(false);
+    const skip = captured.find((c) => c.event === "stage_spawn_skipped");
+    expect(skip).toBeDefined();
+    expect(skip?.message?.["reason"]).toBe("stage_not_spawnable");
+    expect(skip?.message?.["stage"]).toBe("completed");
+  });
+
+  it("does NOT audit the skip inside a spawnable stage flow (only the non-spawnable exit emits it)", async () => {
+    const captured: Array<{ event: string; message?: Record<string, unknown> }> = [];
+    __setSafeWriteAuditLogOverride(async (event, message) => {
+      captured.push({ event, message });
+    });
+    const config = makeTestConfig();
+    const meta = makeTestMeta({ currentStage: "develop" });
+    await spawnStageSubagent(null, config, "develop", meta);
+    expect(captured.find((c) => c.event === "stage_spawn_skipped" && c.message?.["reason"] === "stage_not_spawnable")).toBeUndefined();
   });
 });
 
@@ -954,9 +1004,10 @@ describe("Phase 1 (169) P1: spawn prompt + dual-trigger guard", () => {
 
   // ─── Phase 7 (172) G1: clarify description with round args ─────────────────
   describe("Phase 7 (172): clarify description derivation", () => {
-    // Note: clarify is NOT in isSpawnableStage, so spawnStageSubagent returns early
-    // for clarify. The description derivation for clarify uses deriveClarifyForwardArgs.
-    // We test the helper directly for the four states, and test the description format
+    // Note: clarify IS in isSpawnableStage since 226 Phase 0, but the generic
+    // compose path is not used for clarify in this suite; the description
+    // derivation for clarify uses deriveClarifyForwardArgs. We test the helper
+    // directly for the four states, and test the description format
     // for spawnable stages through spawnStageSubagent.
 
     /** Phase 2 / 176: anchors mirroring the v6 clarify verify.md declarations. */

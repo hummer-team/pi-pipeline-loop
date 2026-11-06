@@ -28,7 +28,11 @@ import { codeReviewDocFileName, docsDirsOf, reqBaseFromRequirementDoc } from "..
 import { probeAgentState, anyTopLevelRunning } from "./subagents-introspect";
 import { scanActiveSpawnEvidence, type SpawnEvidenceHit } from "./spawn-evidence";
 import { checkDispatchConflicts } from "./guard-conflict-report";
-import { DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DEFERRED_SPAWN_POLL_INTERVAL_MS } from "../constants";
+import {
+  DEFAULT_SPAWN_WAIT_TIMEOUT_MS,
+  DEFERRED_SPAWN_POLL_INTERVAL_MS,
+  RESUMABLE_STAGES,
+} from "../constants";
 // 210 Phase 2: idle-clock renewal on dispatch success (requirement 5.4 whitelist).
 // Routed through the leaf sink because this module must not import `core/` at
 // runtime (static guard: subagent-rpc.test.ts, Phase 0 / 189).
@@ -402,10 +406,9 @@ export function resolveAgentMention(
 /**
  * Checks whether a stage is eligible for automatic subagent spawning.
  *
- * Plan, develop, review, and fix stages are spawnable (they have dedicated
- * agent subagents). The stage must also have an agentPath configured.
- * Clarify is NOT spawnable here — it has its own auto-launch path via
- * /pipeline-start (maybeAutoLaunchClarify) with different idempotency semantics.
+ * Spawnability is a property of the stage machine: an enterable stage is
+ * spawnable iff its executor is configured. The old hand-written list drifted
+ * from this fact and silently blocked the clarify executor (226_Bug).
  *
  * @param config - Pipeline configuration
  * @param stage - The stage to check
@@ -415,9 +418,9 @@ export function isSpawnableStage(
   config: PipelineConfig,
   stage: PipelineStage,
 ): boolean {
-  const spawnableStages: PipelineStage[] = ["plan", "design-review", "develop", "review", "fix"];
-  if (!spawnableStages.includes(stage)) return false;
-  return !!config.stages[stage]?.agentPath;
+  // RESUMABLE_STAGES excludes the terminal pseudo-stages, which must never be
+  // spawn targets even when a config entry exists (test fixtures configure all).
+  return RESUMABLE_STAGES.includes(stage) && !!config.stages[stage]?.agentPath;
 }
 
 /**
@@ -561,7 +564,8 @@ export type StageDispatchOutcome =
  * Spawns a subagent for the given stage after stage transition.
  *
  * Three-tier dispatch (mirrors clarify auto-launch pattern):
- * 1. Non-spawnable stage → return { spawned: false } immediately
+ * 1. Non-spawnable stage → audit stage_spawn_skipped (reason=stage_not_spawnable)
+ *    + return { spawned: false } immediately
  * 2. Idempotency guard: if session provided and spawnedStages[stage] === stageStartTime
  *    → audit stage_spawn_skipped reason=duplicate_spawn_guarded, return { spawned: false }
  * 3. resolveAgentMention fails → notify + audit stage_spawn_skipped
@@ -627,8 +631,14 @@ export async function spawnStageSubagent(
    */
   queuedForOwner?: boolean;
 }> {
-  // 1. Non-spawnable stage → skip silently
+  // 1. Non-spawnable stage → skip (audited: a silent early-exit hid clarify
+  // dispatch failures from the audit trail — 226_Bug).
   if (!isSpawnableStage(config, stage)) {
+    await safeWriteAuditLog("stage_spawn_skipped", {
+      pipelineId: meta.pipelineId,
+      stage,
+      reason: "stage_not_spawnable",
+    });
     return {
       spawned: false,
       fallback: false,
@@ -1433,8 +1443,9 @@ export async function consumePendingSpawns(
       continue;
     }
 
-    // Phase 4 / 177 (D7): clarify is not in isSpawnableStage (its own spawn path),
-    // so route it through the dedicated clarify dispatcher.
+    // Phase 4 / 177 (D7): clarify has an executor and is spawnable now (226_Bug),
+    // but its plugin-contract title is derived differently — keep routing it to
+    // the dedicated clarify dispatcher instead of the generic stage path.
     const result = stage === "clarify"
       ? await spawnClarifyStageSubagent(pi, config, fresh, {
           ui: opts.ui,
@@ -1777,10 +1788,10 @@ function scheduleDeferredSpawn(
 /**
  * Phase 4 / 177 (D7): Spawns the clarify executor with a plugin-contract title.
  *
- * Clarify is intentionally excluded from `isSpawnableStage` (it has its own
- * auto-launch path), so the takeover consumer uses this dedicated dispatcher.
- * The description is derived two-state: verbatim user args win, otherwise a
- * document-derived title (no model free-form wording).
+ * Clarify is also spawnable through `isSpawnableStage` (226_Bug made the gate
+ * state-machine-derived), but the takeover consumer keeps using this dedicated
+ * dispatcher: the description is derived two-state (verbatim user args win,
+ * otherwise a document-derived title — no model free-form wording, 172).
  *
  * @param pi - Owner `pi` SDK handle
  * @param config - Pipeline configuration
