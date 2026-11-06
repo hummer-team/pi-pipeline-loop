@@ -1867,6 +1867,14 @@ export interface PipelineConfig {
   maxVerifyAttempts?: number;
 
   /**
+   * 225 Phase 4 (T3): diagnostic record of the config paths the ACTIVE auto
+   * job's overlay has written (memory only — never serialized). tool-guard's
+   * git-write block reason uses it to attribute the policy source to the
+   * live auto job (and suppress the stale /reload hint that no longer applies).
+   */
+  configOverlayKeys?: string[];
+
+  /**
    * 210 Phase 6: global (cross-stage) verification defaults from the JSON
    * `verify` block. Attached ONLY when configured, so existing config-shape
    * assertions stay untouched. 225 Phase 0 adds `requireCommitContract` to

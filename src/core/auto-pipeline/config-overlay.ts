@@ -419,6 +419,8 @@ export function applyOverlay(
     for (const entry of existingSnapshot.entries) {
       setLiveConfigPath(liveConfig, entry.configPath, entry.to);
     }
+    // 225 Phase 4 (T3): keep the attribution record (memory-only).
+    liveConfig.configOverlayKeys = [...new Set(existingSnapshot.entries.map((e) => e.configPath))];
     return existingSnapshot;
   }
 
@@ -436,6 +438,9 @@ export function applyOverlay(
     const value = entry.to === undefined ? undefined : resolvedValue ?? entry.to;
     setLiveConfigPath(liveConfig, entry.configPath, value);
   }
+  // 225 Phase 4 (T3): attribution record — which config paths THIS live auto
+  // job owns (consumed by tool-guard's git-write block reason).
+  liveConfig.configOverlayKeys = [...new Set(entries.map((e) => e.configPath))];
   const jobId = job.jobId ?? getActiveJobId() ?? "";
   return buildSnapshot(job, jobId, job.jobPath ?? "", before, entries);
 }
@@ -455,6 +460,9 @@ export function restoreOverlay(
     const preValue = snapshot.before[configPath];
     setLiveConfigPath(liveConfig, configPath, preValue === undefined ? undefined : deepCopy(preValue));
   }
+  // 225 Phase 4 (T3): the overlay is no longer active — clear the attribution
+  // record so the live config is byte-identical to the pre-overlay state.
+  liveConfig.configOverlayKeys = undefined;
 }
 
 // ─── Process-level lock ──────────────────────────────────────────────────────

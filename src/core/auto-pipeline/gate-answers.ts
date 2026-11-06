@@ -15,11 +15,11 @@
 
 import type { PipelineConfig, SessionMeta } from "../../types";
 import { isAutoJobActive } from "./config-overlay";
-import { resolveDestructiveCommandPolicy, resolveProtectedPathPolicy } from "../../utils/protect";
+import { resolveDestructiveCommandPolicy, resolveProtectedPathPolicy, resolveGitModifyPolicy } from "../../utils/protect";
 import { resolveWhitelistMissMode } from "../write-scope/mode";
 
-/** The three dialogs an auto job must answer without a human. */
-export type AutoGateKind = "protected_path" | "destructive_command" | "whitelist_miss";
+/** The dialogs an auto job must answer without a human (225 Phase 4 adds `git_modify`). */
+export type AutoGateKind = "protected_path" | "destructive_command" | "whitelist_miss" | "git_modify";
 
 /** Machine-readable verdict. `auto: false` ⇒ the caller keeps its dialog. */
 export type AutoGateVerdict =
@@ -68,6 +68,18 @@ export function resolveAutoGate(
       auto: true,
       decision: "block",
       reason: `destructive_command_policy=${policy}${target ? ` command=${target}` : ""}`,
+    };
+  }
+
+  // 225 Phase 4 (T2): the git policy gate is attributable on its own — the
+  // blocked git write reads the EFFECTIVE gitModify policy, not the
+  // destructive-command gate. Same rule as every ask: never becomes allow.
+  if (kind === "git_modify") {
+    const policy = resolveGitModifyPolicy(config, null, meta.currentStage);
+    return {
+      auto: true,
+      decision: "block",
+      reason: `git_modify_policy=${policy}${target ? ` command=${target}` : ""}`,
     };
   }
 

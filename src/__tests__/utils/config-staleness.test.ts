@@ -276,3 +276,26 @@ describe("production chain: loadPipelineConfigFromJson injects staleness fields"
     expect(typeof factory).toBe("function");
   });
 });
+
+// ─── 225 Phase 4 (T3): the active auto job's overlay suppresses stale hints ──
+
+describe("config-staleness + overlay attribution", () => {
+  it("overlay-owned config keeps the stale notice when the file drifted (job owns the value, /reload would revert it)", async () => {
+    const cfgPath = join(TMP, "pipeline_loop.json");
+    await writeFile(cfgPath, "{}", "utf-8");
+    const pastMtime = new Date(Date.now() - 10_000);
+    await utimes(cfgPath, pastMtime, pastMtime);
+    const config = makeTestConfig({
+      projectRoot: TMP,
+      configSourcePath: cfgPath,
+      configLoadedMtimeMs: Date.now() - 60_000,
+    }) as import("../../types").PipelineConfig;
+    // Simulate the ACTIVE job's overlay attribution.
+    config.configOverlayKeys = ["protect.gitModify", "stages.plan.confirm.mode"];
+    // The stale CONFIG notice itself stays fail-open (isConfigStale unchanged);
+    // the suppression lives in tool-guard's git block reason (see
+    // tool-guard-git-audit-source.test.ts), this file pins the data plumbing.
+    expect(isConfigStale(config)).toBe(true);
+    expect(config.configOverlayKeys?.includes("protect.gitModify")).toBe(true);
+  });
+});

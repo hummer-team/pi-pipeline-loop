@@ -124,12 +124,20 @@ function isLegitimateManualProgression(currentStage: PipelineStage, targetStage:
  * source (stage/global/matrix) and a stale-config notice. Shared by the
  * hard-block path and the ask-deny path to keep the message single-sourced.
  *
+ * 225 Phase 4 (T3): when the ACTIVE auto job's overlay owns this config value
+ * (`configOverlayKeys`), the policy comes from the RUNNING job — tell the user
+ * so, and drop the stale /reload hint that cannot change anything.
+ *
  * @param config - Pipeline configuration
  * @param currentStage - The stage being evaluated
  * @returns Human-readable block reason
  */
 function buildGitWriteBlockReason(config: PipelineConfig, currentStage: PipelineStage): string {
   const policySource = describeGitModifySource(config, currentStage);
+  // 225 Phase 4 (T3): attribution — the active auto job owns this value.
+  if (config.configOverlayKeys?.includes("protect.gitModify")) {
+    return `FORBIDDEN: git write command blocked in stage '${currentStage}'. Policy comes from the active auto job (writePolicy.gitModify); editing pipeline_loop.json will not change it.`;
+  }
   const staleNotice = staleConfigNotice(config);
   const sourceHint = policySource === "stage"
     ? `stages.${currentStage}.protect.gitModify`
@@ -1118,7 +1126,13 @@ export function createToolGuard(config: PipelineConfig, deps?: ToolGuardDeps): H
               const shouldAsk =
                 gitPolicy === "ask" || (gitPolicy === "block" && config.protect?.ask === true);
               if (shouldAsk) {
-                const outcome = await askCommandDecision(ctx, meta, segment, config);
+                // 225 Phase 4 (T2): the ask is attributable to the git policy
+                // gate — auto answers with the gitModify policy and the
+                // dialog title says "Git write command" (not destructive).
+                const outcome = await askCommandDecision(ctx, meta, segment, config, {
+                  gate: "git_modify",
+                  label: "Git write command",
+                });
                 if (outcome.decision === "allow") {
                   // Allowed for this command → fall through to content validation below.
                 } else {

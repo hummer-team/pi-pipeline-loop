@@ -239,6 +239,10 @@ export async function askProtectDecision(
  * @param meta - Current session metadata
  * @param command - The destructive command (for display + audit)
  * @param config - Pipeline configuration (for dismiss_overflow freeze)
+ * @param opts - 225 Phase 4 (T2): gate attribution overrides.
+ *   `gate` feeds the auto-job decision kind (a git write is answered by the
+ *   `git_modify` policy, not the destructive gate) and `label` retitles the
+ *   dialog so the user sees WHICH policy is asking.
  * @returns ProtectAskOutcome with decision and action
  */
 export async function askCommandDecision(
@@ -246,10 +250,16 @@ export async function askCommandDecision(
   meta: SessionMeta,
   command: string,
   config: PipelineConfig,
+  opts?: {
+    /** 225 Phase 4: auto-job gate kind (default "destructive_command"). */
+    gate?: "destructive_command" | "git_modify";
+    /** 225 Phase 4: dialog title prefix (default "Destructive command"). */
+    label?: string;
+  },
 ): Promise<ProtectAskOutcome> {
   // 219 Phase 3 (G5): an active auto job answers this gate without a dialog.
   const autoOutcome = await answerGateAutomatically({
-    kind: "destructive_command",
+    kind: opts?.gate ?? "destructive_command",
     ctx,
     meta,
     config,
@@ -274,7 +284,7 @@ export async function askCommandDecision(
     if (hasUi) {
       // Truncate long commands for display
       const displayCmd = command.length > 50 ? command.slice(0, 47) + "..." : command;
-      selection = await ctx.ui.select(`Destructive command: ${displayCmd}`, options);
+      selection = await ctx.ui.select(`${opts?.label ?? "Destructive command"}: ${displayCmd}`, options);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);

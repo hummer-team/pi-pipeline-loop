@@ -20,6 +20,7 @@ import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { initAuditLog } from "../../utils/auditLog";
 import { DEFAULT_MAX_DISMISS_COUNT, PROTECT_ASK_DISMISS_MS } from "../../constants";
 import { readFile, rm, mkdir } from "node:fs/promises";
+import fs2 from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { auditLogFileFor } from "../helpers";
@@ -262,5 +263,77 @@ describe("Phase 4 (173) C11: audit enrichment", () => {
     const logContent = await readFile(logPath, "utf-8");
     expect(logContent).toContain("pipeline_command_ask");
     expect(logContent).toContain("elapsedMs=");
+  });
+});
+
+// ─── 225 Phase 4 (T2): gate attribution (auto kind + dialog label) ───────────
+
+import {
+  resolveAutoGate,
+} from "../../core/auto-pipeline/gate-answers";
+import {
+  acquireJobLock,
+  releaseJobLock,
+  __resetAutoJobLockForTests,
+} from "../../core/auto-pipeline/config-overlay";
+
+describe("225 Phase 4: gate name + title attribution", () => {
+  it("dialog title is configurable (Git write command, not destructive)", async () => {
+    await setupTmp("gate-title");
+    const meta = makeTestMeta();
+    const ctx = createMockCtx(meta);
+    const titles: string[] = [];
+    ctx.ui.select = async (message: string) => {
+      titles.push(message);
+      return undefined;
+    };
+
+    await askCommandDecision(ctx, meta, "git commit -m x", config, {
+      gate: "git_modify",
+      label: "Git write command",
+    });
+
+    expect(titles).toHaveLength(1);
+    expect(titles[0]).toContain("Git write command");
+    expect(titles[0]).not.toContain("Destructive command");
+  });
+
+  it("default call keeps the destructive title verbatim (no regression)", async () => {
+    await setupTmp("gate-title-default");
+    const meta = makeTestMeta();
+    const ctx = createMockCtx(meta);
+    const titles: string[] = [];
+    ctx.ui.select = async (message: string) => {
+      titles.push(message);
+      return undefined;
+    };
+
+    await askCommandDecision(ctx, meta, "rm -rf /", config);
+    expect(titles[0]).toContain("Destructive command");
+  });
+
+  it("auto job answers the git_modify gate by the gitModify policy (ask → block)", () => {
+    __resetAutoJobLockForTests();
+    const ROOT = join(tmpdir(), `pi-gate-auto-${Date.now()}`);
+    fs2.mkdirSync(ROOT, { recursive: true });
+    try {
+      const acquired = acquireJobLock({ projectRoot: ROOT, jobId: "alpha_loop" });
+      if (!acquired.ok) throw new Error("lock acquire failed");
+      const autoConfig = makeTestConfig({
+        projectRoot: ROOT,
+        protect: { gitignore: true, paths: [], allow: [], gitModify: "ask" } as never,
+      });
+      const meta = makeTestMeta({ currentStage: "fix" });
+      const verdict = resolveAutoGate("git_modify", autoConfig, meta, { command: "git commit -m x" });
+      if (!verdict.auto) throw new Error("auto job gate answered inert");
+      expect(verdict.decision).toBe("block");
+      expect(verdict.reason).toContain("git_modify_policy=ask");
+      releaseJobLock({ projectRoot: ROOT, token: acquired.token });
+      // Inert again after release (same base semantics as the other kinds).
+      expect(resolveAutoGate("git_modify", autoConfig, meta, { command: "x" })).toEqual({ auto: false });
+    } finally {
+      __resetAutoJobLockForTests();
+      fs2.rmSync(ROOT, { recursive: true, force: true });
+    }
   });
 });

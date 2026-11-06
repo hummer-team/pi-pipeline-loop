@@ -363,21 +363,92 @@ export const GIT_READONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
  * `worktree` and `remote` can both read and write depending on their
  * sub-subcommand, so they use a bounded second-level lookup instead of the
  * top-level read-only set (R1Q2-A+B: limit complexity to these two).
+ *
+ * 225 Phase 4 (T1): `branch` joins this class as its own evaluator — the bare
+ * form and explicit list flags are READ-ONLY (the original bug report's
+ * "git branch 被判为写" noise), while everything else stays fail-closed.
  */
 const GIT_SECOND_LEVEL_READONLY: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["worktree", new Set(["list"])],
   ["remote", new Set(["show", "get-url"])],
+  // 225 Phase 4 (T1): `branch` is dual-nature too; its classification uses the
+  // dedicated `isBranchReadonly` evaluator (the value set is unused for it).
+  ["branch", new Set([])],
+]);
+
+/** Log/list-only `git branch` flags: they never mutate branches or refs. */
+const BRANCH_READONLY_FLAGS: ReadonlySet<string> = new Set([
+  "--show-current",
+  "-v", "-vv", "--verbose",
+  "-a", "--all",
+  "-r", "--remotes",
+  "-l", "--list",
+  "--no-color",
+]);
+
+const BRANCH_READONLY_COLOR_FLAG = /^--color(=.+)?$/;
+
+/** Write signs for `git branch`: deletion/rename/force + upstream targeting. */
+const BRANCH_WRITE_SIGNS: ReadonlySet<string> = new Set([
+  "-d", "-D", "-m", "-M", "-f",
+  "--set-upstream-to", "--unset-upstream",
 ]);
 
 /**
- * Phase 1 / 177 (D2): Classifies dual-nature subcommands (`worktree`, `remote`).
+ * 225 Phase 4 (T1) / `branch` second-level evaluator.
+ *
+ * READ-ONLY:
+ * - bare `git branch` (lists local branches);
+ * - only flags from { `--show-current` `-v` `-vv` `--verbose` `-a` `--all`
+ *   `-r` `--remotes` `-l` `--list` `--no-color` `--color[=…]` }.
+ *
+ * WRITE (fail-closed):
+ * - any `-d/-D/-m/-M/-f/--set-upstream-to/--unset-upstream` token;
+ * - any positional argument (a branch name / new branch / pattern) that is
+ *   NOT guarded by `-l/--list`.
+ */
+export function isBranchReadonly(tokens: string[]): boolean {
+  // tokens[0] = "git"; everything after tokens[1] ("branch") are arguments.
+  const args = tokens.slice(2);
+  if (args.length === 0) return true; // bare `git branch` lists branches
+
+  let hasPositional = false;
+  for (const arg of args) {
+    if (BRANCH_WRITE_SIGNS.has(arg)) return false;
+    if (arg === "--contains" || arg === "--merged" || arg === "--no-merged" || arg.startsWith("--contains=")) {
+      // `--contains <pattern>` alone is informational; a pattern is a
+      // positional that (without -l) may combine with creation in older git,
+      // so treat as fail-closed unless -l follows — simplest safe rule: these
+      // alone are readonly ONLY when every other token is a readonly flag.
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      if (BRANCH_READONLY_FLAGS.has(arg)) continue;
+      if (BRANCH_READONLY_COLOR_FLAG.test(arg)) continue;
+      // Unknown/compound flags (e.g. `-f` handled above, `-av` compound)
+      // fail closed: may embed write flags.
+      return false;
+    }
+    hasPositional = true;
+  }
+  if (!hasPositional) return true;
+  // Positional present: read-only ONLY under an explicit list guard.
+  return args.includes("-l") || args.includes("--list");
+}
+
+/**
+ * Phase 1 / 177 (D2): Classifies dual-nature subcommands (`worktree`, `remote`,
+ * and — 225 Phase 4 — `branch` via its dedicated evaluator).
  * Fail-closed: anything not explicitly known to be read-only is treated as a write.
  *
  * Read-only forms:
  * - `git worktree list`
  * - `git remote`, `git remote -v`/`--verbose`, `git remote show`, `git remote get-url`
+ * - `git branch`, `git branch --show-current`, `git branch -a/-r/-l/-v…` (225 Phase 4)
  */
 function isSecondLevelReadonly(subcmd: string, tokens: string[]): boolean {
+  // 225 Phase 4 (T1): dedicated `branch` evaluator (list-shaped forms only).
+  if (subcmd === "branch") return isBranchReadonly(tokens);
   const readonlySet = GIT_SECOND_LEVEL_READONLY.get(subcmd);
   if (!readonlySet) return false;
   const sub = tokens[2];

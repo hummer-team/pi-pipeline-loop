@@ -517,3 +517,57 @@ describe("checkGitAdd force bypass (Phase 0 / 182)", () => {
     expect(result.reason).toContain("protected path");
   });
 });
+
+// ─── 225 Phase 4 (T1): `git branch` second-level read-only classification ────
+
+describe("225 Phase 4: isBranchReadonly via isGitWriteCommand / isGitReadonlyCommand", () => {
+  const READONLY = [
+    "git branch",
+    "git branch --show-current",
+    "git branch -v",
+    "git branch -vv",
+    "git branch --verbose",
+    "git branch -a",
+    "git branch --all",
+    "git branch -r",
+    "git branch --remotes",
+    "git branch -l",
+    "git branch --list",
+    "git branch --no-color",
+    "git branch --color=always",
+    "git branch -l pattern",
+    "git branch --list foo",
+    "rtk git branch --show-current",
+  ];
+  const WRITTEN = [
+    "git branch -D x",
+    "git branch -d x",
+    "git branch -m a b",
+    "git branch -M a b",
+    "git branch -f x",
+    "git branch --set-upstream-to=origin/main",
+    "git branch --unset-upstream",
+    "git branch new-b",
+    "git branch --contains x",   // positional without -l guard → fail-closed
+    "git branch --merged main",
+    "git branch -av",            // compound flag with unknown letters → fail-closed
+  ];
+
+  for (const cmd of READONLY) {
+    it(`readonly: ${cmd}`, () => {
+      expect(isGitWriteCommand(cmd)).toBe(false);
+      expect(isGitReadonlyCommand(cmd)).toBe(true);
+    });
+  }
+  for (const cmd of WRITTEN) {
+    it(`still judged write: ${cmd}`, () => {
+      expect(isGitWriteCommand(cmd)).toBe(true);
+      expect(isGitReadonlyCommand(cmd)).toBe(false);
+    });
+  }
+
+  it("GIT_FORBIDDEN_PATTERNS semantics unchanged (branch -D handled by classification, not the blacklist)", () => {
+    expect(isGitForbidden("git branch -D x")).toBe(false);
+    expect(isGitForbidden("git filter-branch --all")).toBe(true);
+  });
+});
