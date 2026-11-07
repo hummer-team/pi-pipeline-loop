@@ -40,8 +40,10 @@ export function isClarifyRoundBudgetExhausted(usedRounds: number, maxRounds: num
 }
 
 /**
- * Record one dispatch. Same or lower round ⇒ no-op (returns the input object
- * unchanged so callers can detect "nothing to persist" by identity).
+ * Record one dispatch. 226 Phase 2: EVERY finite round counts — `maxRounds`
+ * is a budget over REAL dispatches, so a re-dispatched (rewound) round also
+ * consumes a round; the dedupe window (`CLARIFY_DISPATCH_DEDUPE_MS`) absorbs
+ * same-visit settle bursts, not this counter.
  */
 export function noteClarifyRoundDispatch(
   prev: ClarifyRoundStamp,
@@ -49,10 +51,9 @@ export function noteClarifyRoundDispatch(
   now: number,
 ): ClarifyRoundStamp {
   if (!Number.isFinite(round)) return prev;
-  if (prev.lastRound !== undefined && round <= prev.lastRound) return prev;
   return {
     usedRounds: prev.usedRounds + 1,
-    lastRound: round,
+    lastRound: Math.max(prev.lastRound ?? 0, round),
     lastDispatchedAt: now,
   };
 }

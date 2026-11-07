@@ -43,6 +43,7 @@ import { readActiveJobContext } from "../core/auto-pipeline/config-overlay";
 import { advanceConfirmedClarifyOnStartup } from "../core/clarify-startup-advance";
 import { docsDirsOf } from "../docs-paths";
 import { noteClarifyStartupDispatch } from "../core/auto-pipeline/clarify-entry";
+import { noteClarifyStartupChannelFailure } from "../core/auto-pipeline/clarify-dispatch-failure";
 // 210 Phase 7: restart/resume clears the in-process usage ledger.
 import { resetUsage } from "../core/usage-recorder";
 // Phase 0 (182): name-probe for out-of-band agent detection before dispatch
@@ -1599,7 +1600,15 @@ async function maybeAutoLaunchClarify(
   }
 
   if (!agentName) {
-    // No agentPath configured → notify fallback
+    // No agentPath configured → notify fallback. 226 Phase 2: when an auto job
+    // owned this launch, the failed dispatch is ACCOUNTED (stall++/freeze/
+    // terminal through the shared module) — never a silent no-op.
+    if (autoClarify) {
+      await noteClarifyStartupChannelFailure(ctx, config, meta, {
+        channel: "startup",
+        ...(autoDocIndex !== undefined && autoDocIndex >= 0 ? { docIndex: autoDocIndex } : {}),
+      });
+    }
     ui.notify(ctx, `Next: run @feat-design-plan-agent ${file} ${effectiveArgs}`);
     return {};
   }
@@ -1680,6 +1689,15 @@ async function maybeAutoLaunchClarify(
       config, doc: file,
       ...(autoDocIndex !== undefined && autoDocIndex >= 0 ? { docIndex: autoDocIndex } : {}),
       round: autoClarify.round,
+    });
+  }
+  // 226 Phase 2: RPC and the sendUserMessage fallback BOTH failed while an
+  // auto job owned this launch → account the failure (channel=startup) with
+  // the sidecar index of the document being started; never a silent exit.
+  if (!dispatched && autoClarify) {
+    await noteClarifyStartupChannelFailure(ctx, config, meta, {
+      channel: "startup",
+      ...(autoDocIndex !== undefined && autoDocIndex >= 0 ? { docIndex: autoDocIndex } : {}),
     });
   }
 

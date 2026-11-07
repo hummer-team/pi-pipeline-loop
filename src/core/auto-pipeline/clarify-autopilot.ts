@@ -31,6 +31,7 @@ import { readActiveJobContext } from "./config-overlay";
 import { auditAutoDecision } from "./auto-audit";
 import { auditAutoDiagnostic } from "./diagnostics";
 import { dispatchClarifyRound } from "./clarify-round-dispatch";
+import { noteClarifyDispatchFailure } from "./clarify-dispatch-failure";
 import {
   FORCED_FULL_UND_ARGS,
   buildClarifyDocState,
@@ -322,7 +323,7 @@ export async function handleClarifyBudgetExhausted(
     return true;
   }
 
-  const dispatched = await dispatchClarifyRound(
+  const forcedOutcome = await dispatchClarifyRound(
     ctx,
     config,
     meta,
@@ -333,10 +334,29 @@ export async function handleClarifyBudgetExhausted(
     FORCED_FULL_UND_ARGS,
     buildClarifyFinalisationInstruction(resolveClarifyPromptMarkers(config)),
   );
-  if (!dispatched) {
-    await handleDocFailure(ctx as never, config, state, job, {
-      outcome: "failed",
-      reason: "clarify_marker_missing",
+  if (forcedOutcome === "deferred") {
+    // 226 Phase 2: a live same-agent twin owns the spawn — pendingSpawns will
+    // execute it, so the forced round counts as dispatched.
+    return true;
+  }
+  if (forcedOutcome === "not_spawned") {
+    // 226 Phase 2 (review B-#6): the forced dispatch never launched, so the
+    // marker is NOT the doc's failure — reset the fallback flag (a not-really-
+    // dispatched round is not "used") and route the SAME dispatch failure.
+    const progress = state.docs[targetIndex];
+    if (progress) {
+      progress.clarifyFallbackUsed = undefined;
+      progress.updatedAt = Date.now();
+      state.updatedAt = progress.updatedAt;
+    }
+    await auditAutoDecision(config, {
+      gate: "clarify_fallback",
+      decision: "reset",
+      reason: "forced_round_never_dispatched",
+      round: String(decision.round),
+    });
+    await noteClarifyDispatchFailure(ctx, config, meta, state, job, docState, deps, {
+      channel: "settle",
       docIndex: targetIndex,
     });
   }

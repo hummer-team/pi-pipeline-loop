@@ -103,15 +103,19 @@ afterEach(() => {
 // ─── startup round accounting (issue 4) ─────────────────────────────────────
 
 describe("noteClarifyStartupDispatch — the startup round is charged", () => {
-  it("charges round 1 once and is monotonic for a repeated stamp", async () => {
+  it("charges round 1 and — 226 Phase 2 — a repeated stamp counts ANOTHER dispatch", async () => {
     await noteClarifyStartupDispatch({ config: harness.config, doc: DOC, round: 1, now: 1_000 });
     const first = harness.state().docs[0]!;
     expect(first.clarifyRounds).toBe(1);
     expect(first.clarifyLastRound).toBe(1);
     expect(first.clarifyDispatchedAt).toBe(1_000);
 
+    // 226 Phase 2: every dispatch consumes budget; `lastRound` keeps the max.
     await noteClarifyStartupDispatch({ config: harness.config, doc: DOC, round: 1, now: 2_000 });
-    expect(harness.state().docs[0]!.clarifyRounds).toBe(1);
+    const second = harness.state().docs[0]!;
+    expect(second.clarifyRounds).toBe(2);
+    expect(second.clarifyLastRound).toBe(1);
+    expect(second.clarifyDispatchedAt).toBe(2_000);
   });
 
   it("never charges a document the sidecar is not running", async () => {
@@ -160,7 +164,7 @@ describe("handleAutoClarifyMarkerMiss — unified dispatch channel", () => {
     expect(audits.some((line) => line.includes("clarify_completion_marker"))).toBe(true);
   });
 
-  it("a failed forced dispatch fails the document instead of staying silent", async () => {
+  it("a failed forced dispatch does NOT claim the marker failure — it resets the fallback and shares the dispatch-failure routing", async () => {
     appendJobYaml("clarify:\n  onExhausted: self-confirm");
     deps = {
       ...deps,
@@ -171,8 +175,19 @@ describe("handleAutoClarifyMarkerMiss — unified dispatch channel", () => {
 
     expect(await handleAutoClarifyMarkerMiss(ctx as never, harness.config, meta, deps)).toBe(true);
     const state = harness.state();
-    expect(state.docs[0]!.failReason).toBe("clarify_marker_missing");
-    expect(state.status).not.toBe("running");
+    // 226 Phase 2 (review B-#6/#8e): nothing really launched, so
+    // `clarify_marker_missing` must NOT be the reason and the one-shot
+    // fallback is made available again (a forced round that never ran is
+    // not "used").
+    expect(state.docs[0]!.failReason).toBeUndefined();
+    expect(state.docs[0]!.clarifyFallbackUsed).toBeUndefined();
+    // One failed dispatch = exactly ONE stall; under the limit → freeze
+    // (freeze is the retry trigger through freezePolicy).
+    expect(state.docs[0]!.clarifyStalls).toBe(1);
+    expect(freezeReasons).toEqual(["clarify_dispatch_failed"]);
+    expect(audits.some((line) => line.includes("clarify_dispatch_failed"))).toBe(true);
+    expect(audits.some((line) => line.includes("clarify_round_refund"))).toBe(true);
+    expect(state.status).toBe("running");
   });
 
   it("onExhausted=stop fails the document without dispatching", async () => {

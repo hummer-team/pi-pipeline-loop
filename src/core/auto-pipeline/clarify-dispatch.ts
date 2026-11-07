@@ -101,6 +101,25 @@ function isCoalesced(input: ClarifyDispatchInput, round: number): boolean {
   return input.now - input.lastDispatchedAt < CLARIFY_DISPATCH_DEDUPE_MS;
 }
 
+/**
+ * 226 Phase 2: a repeated `fresh` settle proposes `usedRounds + 1`, which is
+ * NOT the last dispatched round anymore once every dispatch charges. While the
+ * state has not advanced beyond the last dispatch (`usedRounds ===
+ * lastDispatchedRound`), that proposal is the SAME logical next-round request
+ * — coalesce it too; the 30s window absorbs one visit's settle burst.
+ * Derived rounds (heading present) keep EXACT round matching only.
+ */
+function isCoalescedIncludingNextRoundRequest(
+  input: ClarifyDispatchInput,
+  round: number,
+): boolean {
+  if (isCoalesced(input, round)) return true;
+  if (round !== input.usedRounds + 1 || input.usedRounds === 0) return false;
+  if (input.lastDispatchedRound === undefined || input.lastDispatchedAt === undefined) return false;
+  if (input.lastDispatchedRound !== input.usedRounds) return false;
+  return input.now - input.lastDispatchedAt < CLARIFY_DISPATCH_DEDUPE_MS;
+}
+
 /** Actions that really dispatch a subagent (only those can be coalesced). */
 const DISPATCH_ACTIONS: ReadonlySet<ClarifyDispatchAction> = new Set<ClarifyDispatchAction>([
   "fresh",
@@ -116,12 +135,17 @@ function dispatchDecision(
   round: number,
   reason: string,
   extraArgs?: string,
+  /** TRUE only for the fresh (next-round) request — see the coalescing note. */
+  nextRoundRequest = false,
 ): ClarifyDispatchDecision {
+  const coalescing = nextRoundRequest
+    ? isCoalescedIncludingNextRoundRequest(input, round)
+    : isCoalesced(input, round);
   return {
     action,
     round,
     ...(extraArgs !== undefined ? { extraArgs } : {}),
-    coalesced: DISPATCH_ACTIONS.has(action) ? isCoalesced(input, round) : false,
+    coalesced: DISPATCH_ACTIONS.has(action) ? coalescing : false,
     reason,
   };
 }
@@ -194,5 +218,5 @@ export function decideClarifyDispatch(input: ClarifyDispatchInput): ClarifyDispa
       ` ${derived.round} 答`,
     );
   }
-  return dispatchDecision(input, "fresh", derivedRound, "clarify_fresh_round", " 1");
+  return dispatchDecision(input, "fresh", derivedRound, "clarify_fresh_round", " 1", true);
 }

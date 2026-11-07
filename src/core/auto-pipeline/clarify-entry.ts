@@ -32,6 +32,7 @@ import {
   type ClarifyEntryDeps,
 } from "./clarify-state";
 import { dispatchClarifyRound } from "./clarify-round-dispatch";
+import { noteClarifyDispatchFailure } from "./clarify-dispatch-failure";
 import { handleClarifyBudgetExhausted } from "./clarify-autopilot";
 import { readActiveJobContext } from "./config-overlay";
 
@@ -125,10 +126,24 @@ export async function runAutoClarifyRound(
         });
         return "consumed";
       }
-      // A real dispatch consumes the settle; a FAILED one re-counted the stall
-      // and returns "pass-through" so the ordinary settle flow still runs (B1).
-      const dispatched = await dispatchClarifyRound(ctx, config, meta, state, job, docState, deps);
-      return dispatched ? "consumed" : "pass-through";
+      // 226 Phase 2: the dispatch reports a THREE-state outcome. `spawned`
+      // and `deferred` (a live same-agent twin owns the retry) both consume
+      // the settle; a failed dispatch is routed through the shared failure
+      // accounting (stall++, freeze or terminal) and ALSO consumes the
+      // settle — the settle flow must not re-enter the same settle.
+      const outcome = await dispatchClarifyRound(ctx, config, meta, state, job, docState, deps);
+      if (outcome === "spawned") return "consumed";
+      if (outcome === "deferred") {
+        // A live same-agent twin exists; pendingSpawns + the 217 watchdog own the retry.
+        await auditAutoDecision(config, {
+          gate: "clarify_dispatch_deferred",
+          decision: docState.decision.action,
+          round: String(docState.decision.round),
+        });
+        return "consumed";
+      }
+      await noteClarifyDispatchFailure(ctx, config, meta, state, job, docState, deps, { channel: "settle" });
+      return "consumed";
     }
   }
 }

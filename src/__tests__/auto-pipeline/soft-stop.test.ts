@@ -19,7 +19,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { makeTestMeta } from "../helpers";
-import { createAutoHarness, createSessionStub, HARNESS_DOCS, HARNESS_JOB_ID } from "./auto-harness";
+import { createAutoHarness, createSessionStub, deployHarnessAgents, HARNESS_DOCS, HARNESS_JOB_ID } from "./auto-harness";
 import { finalizeOnSoftStop } from "../../core/auto-pipeline/stop-policy";
 import { finalizeCurrentDoc, __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
 import { isAutoJobActive, readJobLock, __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
@@ -113,7 +113,17 @@ describe("soft stop — onFailure: continue", () => {
     ]);
     await harness.install();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    const stub = createSessionStub(makeTestMeta({ currentStage: "fix", pipelineId: "pipe-soft" }));
+    // 226 Phase 2: the next doc starts with a REAL startup clarify round —
+    // the configured executor must exist (otherwise it is a dispatch
+    // failure, which this test does not pin), and the stub needs a
+    // sendUserMessage channel for the fallback launch.
+    deployHarnessAgents(harness);
+    // The next doc's startup clarify round really dispatches through the
+    // sendUserMessage fallback (226 Phase 2 accounting needs a real launch or
+    // the failure route fires — neither is what this test pins).
+    const stub = createSessionStub(makeTestMeta({ currentStage: "fix", pipelineId: "pipe-soft" }), {
+      pi: { sendUserMessage: (): void => undefined },
+    });
 
     await finalizeOnSoftStop(stub, harness.config, SOFT_VERDICT);
 

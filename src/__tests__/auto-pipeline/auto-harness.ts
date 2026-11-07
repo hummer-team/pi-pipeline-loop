@@ -69,6 +69,29 @@ export interface AutoHarness {
   dispose: () => void;
 }
 
+/**
+ * 226 Phase 2: deploy the template agent files so the STARTUP clarify round
+ * resolves its configured executor (`.pi/agents/feat-design-plan-agent.md`).
+ * A harness without them now trips the startup dispatch-failure accounting
+ * (stall → freeze → job stop), which several invariants do not intend to pin.
+ */
+export function deployHarnessAgents(harness: { root: string }): void {
+  const dir = path.join(harness.root, ".pi", "agents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of [
+    "feat-design-plan-agent",
+    "design-review-agent",
+    "develop-agent",
+    "code-review-agent",
+    "code-review-withfix-agent",
+  ]) {
+    fs.copyFileSync(
+      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
+      path.join(dir, `${name}.md`),
+    );
+  }
+}
+
 export function createAutoHarness(): AutoHarness {
   const root = fs.mkdtempSync(path.join(tmpdir(), "pi-219-p5-"));
 
@@ -130,10 +153,11 @@ export function createAutoHarness(): AutoHarness {
 }
 
 /** Mutable session stub that records patches and can simulate newSession. */
-export function createSessionStub(initial?: SessionMeta) {
+export function createSessionStub(initial?: SessionMeta, opts?: { pi?: { sendUserMessage: (message: string) => void } }) {
   let meta: SessionMeta | undefined = initial;
   const patches: Partial<SessionMeta>[] = [];
   const notified: string[] = [];
+  const dispatched: string[] = [];
   let newSessionImpl: ((opts: { withSession: (replaced: unknown) => Promise<void> }) => Promise<unknown>) | undefined;
   return {
     session: {
@@ -145,6 +169,11 @@ export function createSessionStub(initial?: SessionMeta) {
       },
     },
     ui: { notify: (message: string) => notified.push(message) },
+    // 226 Phase 2: OPT-IN dispatch channel. A stub without `pi` behaves as
+    // before (the chain treats the hop as unavailable); only the tests that
+    // really launch the next session's clarify round attach one.
+    ...(opts?.pi ? { pi: { sendUserMessage: (message: string): void => { dispatched.push(message); } } } : {}),
+    dispatched,
     patches,
     notified,
     setNewSession: (impl: typeof newSessionImpl) => {

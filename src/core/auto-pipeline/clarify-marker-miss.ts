@@ -36,6 +36,7 @@ import {
   resolveClarifyPromptMarkers,
 } from "./clarify-autopilot";
 import { dispatchClarifyRound } from "./clarify-round-dispatch";
+import { noteClarifyDispatchFailure } from "./clarify-dispatch-failure";
 import {
   buildClarifyDocState,
   DEFAULT_CLARIFY_DEPS,
@@ -96,7 +97,7 @@ export async function handleAutoClarifyMarkerMiss(
   }
   // Forced finalisation round — the only place where the plugin asks for the
   // marker itself.
-  const dispatched = await dispatchClarifyRound(
+  const outcome = await dispatchClarifyRound(
     ctx as never,
     config,
     meta,
@@ -107,11 +108,42 @@ export async function handleAutoClarifyMarkerMiss(
     FORCED_FULL_UND_ARGS,
     buildClarifyFinalisationInstruction(resolveClarifyPromptMarkers(config)),
   );
-  if (!dispatched) {
-    await handleDocFailure(ctx, config, state, job, {
-      outcome: "failed",
-      reason: "clarify_marker_missing",
+  if (outcome === "deferred") {
+    // 226 Phase 2: a live same-agent twin owns the spawn — pendingSpawns will
+    // execute it, so the fallback round counts as dispatched (no second miss).
+    ctx.ui?.notify?.(
+      `Auto job "${state.jobId}": clarify answers are missing — one finalisation round is pending for ${doc ?? "the requirement doc"}.`,
+    );
+    return true;
+  }
+  if (outcome === "not_spawned") {
+    // 226 Phase 2 (review B-#6): the forced round NEVER launched, so the
+    // fallback was NOT really used — reset the flag and share the SAME
+    // failure accounting (stall++, freeze or terminal), with the settle
+    // channel. A doc failure with `clarify_marker_missing` here was a lie.
+    const progress = state.docs[state.docIndex];
+    if (progress) {
+      progress.clarifyFallbackUsed = undefined;
+      progress.updatedAt = Date.now();
+      state.updatedAt = progress.updatedAt;
+      await writeJobState(config.projectRoot, state);
+    }
+    await auditAutoDecision(config, {
+      gate: "clarify_fallback",
+      decision: "reset",
+      reason: "forced_round_never_dispatched",
+      round: String(docState.decision.round),
     });
+    await noteClarifyDispatchFailure(
+      ctx as never,
+      config,
+      meta,
+      state,
+      job,
+      docState,
+      deps,
+      { channel: "settle" },
+    );
     return true;
   }
 

@@ -188,7 +188,11 @@ describe("runAutoClarifyRound — forwarding states", () => {
   });
 
   it("a repeated identical round inside the 30s window coalesces", async () => {
-    writeDoc(FULL_UND_DOC);
+    // 226 Phase 2: a looping round (fresh) is used for the premise — a
+    // FINALISATION round changes the doc state after one dispatch
+    // (`clarifyFinalisationRound`), so it goes to `await-finalisation`
+    // instead of a second coalesced dispatch.
+    writeDoc(FRESH_DOC);
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
@@ -236,19 +240,32 @@ describe("220 Phase 1: 226 Phase 1 — finalisation fact + three-state boundary"
   });
 });
 
-describe("runAutoClarifyRound — dispatch failure is visible", () => {
-  it("spawned:false → NOT consumed (settle continues), stall +1 and clarify_dispatch_failed audited", async () => {
-    // 226 Phase 1 mapping: a failed dispatch still hands control back to the
-    // ordinary settle flow ("pass-through"); Phase 2 routes the failure
-    // itself through `noteClarifyDispatchFailure` (it becomes `"consumed"`).
+describe("runAutoClarifyRound — dispatch failure is routed (226 Phase 2)", () => {
+  it("spawned:false → consumed, budget refunded, one stall and clarify_dispatch_failed audited (freeze = retry trigger)", async () => {
     writeDoc(FRESH_DOC);
     spawnResult = { spawned: false, fallback: false };
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
-    expect(await runAutoClarifyRound(ctx, harness.config, meta, deps)).toBe("pass-through");
+    // A recording freeze deps (the suite default throws on any freeze).
+    const freezeCalls: string[] = [];
+    const failureDeps = {
+      ...deps,
+      freeze: (async (...args: Parameters<ClarifyEntryDeps["freeze"]>): Promise<void> => {
+        freezeCalls.push(args[2] as string);
+      }) as ClarifyEntryDeps["freeze"],
+    };
 
-    expect(harness.state().docs[0]!.clarifyStalls).toBe(1);
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, failureDeps)).toBe("consumed");
+
+    const doc = harness.state().docs[0]!;
+    // One failed dispatch = exactly ONE stall; under the limit → freeze (the
+    // job's freezePolicy — default resume — re-triggers the round).
+    expect(doc.clarifyStalls).toBe(1);
+    expect(freezeCalls).toEqual(["clarify_dispatch_failed"]);
+    // Budget reservation refunded + failure recorded (the settle-channel pair).
+    expect(doc.clarifyRounds ?? 0).toBe(0);
+    expect(gateEvents().some((line) => line.includes("clarify_round_refund"))).toBe(true);
     expect(gateEvents().some((line) => line.includes("clarify_dispatch_failed"))).toBe(true);
   });
 });

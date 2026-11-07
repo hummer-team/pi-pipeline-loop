@@ -344,6 +344,11 @@ describe("runner — startup metadata", () => {
   it("overlay is applied before the doc starts and its snapshot is persisted", async () => {
     writeJob(jobYaml(["docs/design/a.md"]));
     writeDoc("docs/design/a.md");
+    // 226 Phase 2: a clarify start with NO deployed executor is a REAL
+    // dispatch failure (stall → freeze → job stop). These tests pin the
+    // RUNNER invariants, so the clarify executor must exist for the startup
+    // round to just dispatch.
+    writeAgentFixtures();
     const cfg = config();
     const { ctx } = makeCtx();
     await startAutoJob({ config: cfg, ctx, jobId: JOB_ID });
@@ -359,6 +364,9 @@ describe("runner — lock guards", () => {
   it("a second job is refused while another is active (liveConfig untouched)", async () => {
     writeJob(jobYaml(["docs/design/a.md"]));
     writeDoc("docs/design/a.md");
+    // 226 Phase 2: the first job must STAY running — a clarify executor has
+    // to exist or the startup failure accounting would stop the job.
+    writeAgentFixtures();
     const cfg = config();
     const { ctx } = makeCtx();
     await startAutoJob({ config: cfg, ctx, jobId: JOB_ID });

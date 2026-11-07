@@ -74,10 +74,25 @@ function clearClarifySpawnGuards(ctx: ClarifyEntryCtx, meta: SessionMeta): void 
 }
 
 /**
+ * 226 Phase 2: outcome of one dispatch attempt.
+ * `spawned` — the subagent really spawned (round counted);
+ * `deferred` — a live same-agent twin postponed the spawn (pendingSpawns
+ *   consumes it later): NOT a failure, NOT a stall;
+ * `not_spawned` — nothing was sent: the reservation is refunded and the
+ *   caller routes the failure through `noteClarifyDispatchFailure`.
+ */
+export type ClarifyDispatchOutcome = "spawned" | "deferred" | "not_spawned";
+
+/**
  * Dispatch one clarify subagent through the EXISTING `extraArgs` channel.
  *
- * @returns TRUE when the subagent really spawned; FALSE otherwise (the caller
- *   keeps the failure visible instead of swallowing the settle).
+ * 226 Phase 2 accounting: the round is RESERVED before the dispatch (a crash
+ * can never refund it) and refunded with exactly ONE extra write when nothing
+ * was sent. The stall observation, the needs-clarify streak and the
+ * finalisation fact are written ONLY after a real spawn — a failed dispatch
+ * never fabricates progress evidence.
+ *
+ * @returns the three-state outcome (see `ClarifyDispatchOutcome`).
  */
 export async function dispatchClarifyRound(
   ctx: ClarifyEntryCtx,
@@ -89,7 +104,7 @@ export async function dispatchClarifyRound(
   deps: ClarifyEntryDeps,
   extraArgsOverride?: string,
   finalisationInstruction?: string,
-): Promise<boolean> {
+): Promise<ClarifyDispatchOutcome> {
   const { decision, doc, docText, progress } = docState;
   const now = Date.now();
   const composed = composeExtraArgs(decision, docText, job.tier, docState.anchors, extraArgsOverride);
@@ -103,26 +118,26 @@ export async function dispatchClarifyRound(
     });
   }
 
-  // ③ Monotonic round stamp — written BEFORE the dispatch so a crash can never
-  // refund a round. `clarifyDispatchedAt` follows every dispatch (dedupe ②).
-  stampClarifyRoundDispatch(progress, decision.round, now);
-  progress.updatedAt = now;
-
-  // Stall observation (single write point): growth resets, no-growth counts.
-  const previous = progress.clarifyStallSignature === undefined
+  // Account snapshot for the ONE-write refund on a failed dispatch (226 P2).
+  const beforeAccount = {
+    clarifyRounds: progress.clarifyRounds,
+    clarifyLastRound: progress.clarifyLastRound,
+    clarifyDispatchedAt: progress.clarifyDispatchedAt,
+  };
+  // Stall observation is computed BEFORE, folded in ONLY on success so a
+  // failure never writes a "no progress" observation for its own mistake
+  // (226 review #5: the observation is a success-side accounting entry).
+  const previousStall = progress.clarifyStallSignature === undefined
     ? undefined
     : {
         stalls: progress.clarifyStalls ?? 0,
         signature: progress.clarifyStallSignature,
         docLength: progress.clarifyStallDocLength ?? 0,
       };
-  const observation = nextClarifyStallState(previous, {
-    signature: `${decision.action}:${docState.assessmentVerdict}:${decision.round}`,
-    docLength: docText?.length ?? 0,
-  });
-  progress.clarifyStalls = observation.stalls;
-  progress.clarifyStallSignature = observation.signature;
-  progress.clarifyStallDocLength = observation.docLength;
+
+  // ③ Monotonic round stamp — written BEFORE the dispatch so a crash can never
+  // refund a round. `clarifyDispatchedAt` follows every dispatch (dedupe ②).
+  stampClarifyRoundDispatch(progress, decision.round, now);
   progress.updatedAt = now;
   state.updatedAt = now;
   await persistClarifyState(config, state);
@@ -145,20 +160,34 @@ export async function dispatchClarifyRound(
   );
 
   if (!spawned.spawned) {
-    // A failed dispatch is NOT a silent stop (B1): count one stall, audit, then
-    // hand control back so the ordinary settle flow still runs.
-    progress.clarifyStalls = observation.stalls + 1;
+    // Roll back the reservation (budget / round / dedupe) — exactly ONE extra
+    // write; then report the outcome. The failure ACCOUNTING (stall++, freeze
+    // or terminal) is the caller's job (`noteClarifyDispatchFailure`).
+    progress.clarifyRounds = beforeAccount.clarifyRounds;
+    progress.clarifyLastRound = beforeAccount.clarifyLastRound;
+    progress.clarifyDispatchedAt = beforeAccount.clarifyDispatchedAt;
     progress.updatedAt = Date.now();
     state.updatedAt = progress.updatedAt;
     await persistClarifyState(config, state);
     await auditAutoDecision(config, {
-      gate: "clarify_dispatch_failed",
+      gate: "clarify_round_refund",
       decision: decision.action,
-      reason: spawned.deferred ? "deferred" : "not_spawned",
+      reason: "reservation_refunded",
       round: String(decision.round),
-    }, "warn");
-    return false;
+    });
+    return spawned.deferred ? "deferred" : "not_spawned";
   }
+
+  // Success side: stall observation (single write point).
+  const observation = nextClarifyStallState(previousStall, {
+    signature: `${decision.action}:${docState.assessmentVerdict}:${decision.round}`,
+    docLength: docText?.length ?? 0,
+  });
+  progress.clarifyStalls = observation.stalls;
+  progress.clarifyStallSignature = observation.signature;
+  progress.clarifyStallDocLength = observation.docLength;
+  // 226 Phase 1: the finalisation fact is bound to a REAL dispatch only.
+  if (decision.action === "spawn-full-und") progress.clarifyFinalisationRound = decision.round;
 
   // Streak: consecutive rounds still needing clarification AND not growing.
   const nextStreak = docState.assessmentVerdict === "needs-clarify" && !docState.grew
@@ -175,6 +204,6 @@ export async function dispatchClarifyRound(
     round: String(decision.round),
     coalesced: decision.coalesced,
   });
-  return true;
+  return "spawned";
 }
 

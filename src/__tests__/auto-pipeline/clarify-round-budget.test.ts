@@ -3,8 +3,8 @@
  *
  * Key behaviors:
  * - `maxRounds` is the TOTAL allowance (`maxRounds: 1` still allows one round).
- * - Same round → no increment; a rewind never refunds.
- * - A strictly greater round increments exactly once.
+ * - 226 Phase 2: EVERY finite round counts — a repeated or rewound round is a
+ *   REAL re-dispatch and consumes budget (`lastRound` keeps the max).
  */
 import { describe, it, expect } from "bun:test";
 import {
@@ -41,15 +41,20 @@ describe("noteClarifyRoundDispatch", () => {
     });
   });
 
-  it("the same round twice is a no-op (identity preserved)", () => {
+  it("the same round twice counts TWICE (226: dispatch-charge semantics)", () => {
     const stamp = noteClarifyRoundDispatch(EMPTY, 1, 500);
-    expect(noteClarifyRoundDispatch(stamp, 1, 900)).toBe(stamp);
+    expect(noteClarifyRoundDispatch(stamp, 1, 900)).toEqual({
+      usedRounds: 2,
+      lastRound: 1,
+      lastDispatchedAt: 900,
+    });
   });
 
-  it("a rewind never refunds the budget", () => {
+  it("a rewound round consumes budget; the highest round number is kept", () => {
     const stamp = noteClarifyRoundDispatch(noteClarifyRoundDispatch(EMPTY, 3, 500), 2, 900);
-    expect(stamp.usedRounds).toBe(1);
+    expect(stamp.usedRounds).toBe(2);
     expect(stamp.lastRound).toBe(3);
+    expect(stamp.lastDispatchedAt).toBe(900);
   });
 
   it("a higher round increments and moves the timestamp", () => {
