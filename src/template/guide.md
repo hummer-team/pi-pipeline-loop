@@ -1259,7 +1259,7 @@ pi 提供多种机制控制 SKILL 在 `<available_skills>` 中的可见性，插
 
 - 手工脱困用上面的 `full-und?` 命令；若模型仍不写确认标记，检查 `.pi/skills/design/SKILL.md` 与 `.pi/references/clarify_template.md` 的确认标记是否被改过（见 §19.7）
 - 自动任务中若审计出现 `agent_settled_non_pipeline_turn` 而 stage 未动，说明唤醒文案没带前缀：确认 `meta.autoJob` 存在且 job 锁属于本进程
-- **失败审计配对口径（226）**：**settle 通道**的派发失败成对出现 `clarify_round_refund`（预留回滚）+ `clarify_dispatch_failed`（带 `channel: settle`）；**startup / resume 通道**只有 `clarify_dispatch_failed`（带 `channel: startup|resume`）——这两个通道从未预留轮次，没有回滚行可写。`deferred`（同 agent 孪生在飞）只产出 `clarify_dispatch_deferred`，不计 stall、不冻结。
+- **失败审计配对口径（226）**：**settle 通道**的派发失败成对出现 `clarify_round_refund`（预留回滚）+ `clarify_dispatch_failed`（带 `channel: settle`）；**startup / resume 通道**只有 `clarify_dispatch_failed`（带 `channel: startup|resume`）——这两个通道从未预留轮次，没有回滚行可写。`deferred`（同 agent 孪生在飞）只产出 `clarify_dispatch_deferred`，不计 stall、不冻结；该轮预留已保留（`pendingSpawns` 稍后派发的是**同一轮**，不再重复计费），`spawn-full-und` 的收尾事实同样在此刻落盘。
 
 ---
 

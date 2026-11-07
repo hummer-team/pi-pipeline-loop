@@ -842,6 +842,25 @@ async function startPendingDoc(input: {
     }),
   });
 
+  // 226 review #1 (High): the startup clarify round — and its failure
+  // accounting — writes the sidecar DURING `startNewPipeline`
+  // (`noteClarifyStartupDispatch` / `noteClarifyStartupChannelFailure`). The
+  // `state` read before the start is therefore STALE: writing it back would
+  // clobber `clarifyRounds` / `clarifyStalls` / freeze counters, and could even
+  // resurrect a job the accounting already finalised. Re-read the sidecar,
+  // adopt its facts, and never overwrite a state that left `running`.
+  const persisted = readJobState(projectRoot, jobId);
+  if (persisted && persisted.status !== "running") {
+    await safeWriteAuditLog("pipeline_auto_start_terminated", {
+      jobId,
+      doc: target.doc.doc,
+      status: persisted.status,
+      stopReason: persisted.stopReason ?? "",
+    }, "warn");
+    return { success: false, error: persisted.stopReason ?? "job_terminated_during_start" };
+  }
+  if (persisted) Object.assign(state, persisted);
+
   state.docs[target.index]!.pipelineId = started.pipelineId;
   state.docs[target.index]!.status = "running";
   state.docs[target.index]!.updatedAt = Date.now();

@@ -21,16 +21,21 @@
  */
 
 import type { PipelineConfig, SessionMeta } from "../../types";
-import { DEFAULT_CLARIFY_STALL_LIMIT } from "./clarify-stall";
-import { isClarifyStalled } from "./clarify-stall";
-import { freezeClarify, type ClarifyEntryCtx, type ClarifyEntryDeps, type ClarifyDocState } from "./clarify-state";
-import { DEFAULT_CLARIFY_DEPS, buildClarifyDocState } from "./clarify-state";
+import { DEFAULT_CLARIFY_STALL_LIMIT, isClarifyStalled } from "./clarify-stall";
+import {
+  buildClarifyDocState,
+  DEFAULT_CLARIFY_DEPS,
+  freezeClarify,
+  persistClarifyState,
+  type ClarifyDocState,
+  type ClarifyEntryCtx,
+  type ClarifyEntryDeps,
+} from "./clarify-state";
 import { auditAutoDecision } from "./auto-audit";
-import { readActiveJobContext, } from "./config-overlay";
+import { readActiveJobContext } from "./config-overlay";
 import { docsDirsOf } from "../../docs-paths";
 import type { AutoJobConfig } from "./job-schema";
 import type { AutoJobState } from "./job-state";
-import { persistClarifyState } from "./clarify-state";
 
 /** One failed dispatch = exactly ONE stall (the observation is written only on success). */
 export async function noteClarifyDispatchFailure(

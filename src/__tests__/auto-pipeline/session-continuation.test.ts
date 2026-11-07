@@ -17,6 +17,7 @@ import { makeTestMeta } from "../helpers";
 import {
   createAutoHarness,
   createSessionStub,
+  deployHarnessAgents,
   HARNESS_DOCS,
   HARNESS_JOB_ID,
   HARNESS_JOB_YAML,
@@ -76,7 +77,7 @@ async function installPending(): Promise<AutoJobState> {
   return state;
 }
 
-function sessionCtx(currentStage: "completed" | "develop" = "completed") {
+function sessionCtx(currentStage: "completed" | "develop" = "completed", dispatch = false) {
   const stub = createSessionStub(makeTestMeta({ currentStage }));
   return {
     stub,
@@ -93,6 +94,9 @@ function sessionCtx(currentStage: "completed" | "develop" = "completed") {
           notified.push(message);
         },
       },
+      // 226 review #1: a startup clarify round needs a delivery channel or the
+      // dispatch-failure accounting (not the continuation) would own the doc.
+      ...(dispatch ? { pi: { sendUserMessage: (): void => undefined } } : {}),
     },
   };
 }
@@ -134,7 +138,8 @@ describe("session_start continuation", () => {
   it("starts the pending doc once and clears the pending record", async () => {
     await installPending();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    const { ctx } = sessionCtx();
+    deployHarnessAgents(harness);
+    const { ctx } = sessionCtx("completed", true);
 
     expect(await resumePendingContinuationOnSessionStart(ctx as never, harness.config)).toBe(true);
 
@@ -148,7 +153,8 @@ describe("session_start continuation", () => {
   it("does not double-start on two concurrent session starts", async () => {
     await installPending();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    const { ctx } = sessionCtx();
+    deployHarnessAgents(harness);
+    const { ctx } = sessionCtx("completed", true);
 
     const [first, second] = await Promise.all([
       resumePendingContinuationOnSessionStart(ctx as never, harness.config),

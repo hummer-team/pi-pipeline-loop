@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import { makeTestMeta } from "../helpers";
-import { createAutoHarness, createSessionStub, HARNESS_JOB_ID, HARNESS_DOCS } from "./auto-harness";
+import { createAutoHarness, createSessionStub, deployHarnessAgents, HARNESS_JOB_ID, HARNESS_DOCS } from "./auto-harness";
 import {
   continueJobAfterCompleted,
   finalizeCurrentDoc,
@@ -94,7 +94,12 @@ describe("chain — success path", () => {
     await harness.install();
     await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    // 226 review #1: the startup clarify round needs a real executor + channel,
+    // otherwise the failure accounting owns the doc instead of the chain.
+    deployHarnessAgents(harness);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }), {
+      pi: { sendUserMessage: (): void => undefined },
+    });
     let calls = 0;
     stub.setNewSession(async ({ withSession }) => {
       calls += 1;
@@ -137,7 +142,9 @@ describe("chain — success path", () => {
     await harness.install();
     await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    const stub = createSessionStub();
+    // 226 review #1: a real startup clarify dispatch (executor + channel).
+    deployHarnessAgents(harness);
+    const stub = createSessionStub(undefined, { pi: { sendUserMessage: (): void => undefined } });
     const noNewSession = { ...harness.job, chain: { ...harness.job.chain, newSession: false } };
 
     const result = await continueJobAfterCompleted(stub, harness.config, noNewSession);
@@ -175,7 +182,10 @@ describe("chain — success path", () => {
     await harness.install();
     await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    deployHarnessAgents(harness);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }), {
+      pi: { sendUserMessage: (): void => undefined },
+    });
     stub.setNewSession(async ({ withSession }) => {
       await withSession({ sendUserMessage: () => undefined });
       return { cancelled: true };
@@ -270,7 +280,10 @@ describe("chain — dispatch channel bookkeeping (review round 2 issue 3)", () =
     await markRunningDocSettled();
     harness.writeDoc(HARNESS_DOCS[1]!);
     await agePendingContinuation();
-    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+    deployHarnessAgents(harness);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }), {
+      pi: { sendUserMessage: (): void => undefined },
+    });
 
     const owned = await reconcilePendingContinuation(stub, harness.config);
 
@@ -361,7 +374,8 @@ describe("chain — failure path (M1)", () => {
   it("M1: newSession throws → same-session serial succeeds → NO session_fail", async () => {
     const state = await harness.install();
     harness.writeDoc(HARNESS_DOCS[1]!);
-    const stub = createSessionStub();
+    deployHarnessAgents(harness);
+    const stub = createSessionStub(undefined, { pi: { sendUserMessage: (): void => undefined } });
     stub.setNewSession(async () => {
       throw new Error("host refused a new session");
     });

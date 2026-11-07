@@ -291,7 +291,7 @@ describe("168 Phase 4: isSpawnableStage", () => {
         ...makeTestConfig().stages,
         develop: { ...makeTestConfig().stages.develop, agentPath: "" },
       },
-    } as any);
+    });
     expect(isSpawnableStage(config, "develop")).toBe(false);
   });
 });

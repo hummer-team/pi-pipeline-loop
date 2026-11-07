@@ -221,6 +221,9 @@ describe("runner — start failure handling", () => {
   it("onFailure:continue + chain.newSession:false starts the next document in the same invocation", async () => {
     writeJob(jobYaml(["docs/design/missing.md", "docs/design/ok.md"], { onFailure: "continue", newSession: false }));
     writeDoc("docs/design/ok.md");
+    // 226 review #1: the second doc must really start — deploy the clarify
+    // executor so the startup round is a dispatch, not a failure accounting.
+    writeAgentFixtures();
     const { ctx, meta } = makeCtx();
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
 
@@ -267,6 +270,7 @@ describe("runner — skipCompleted", () => {
   it("a NEW_COMMIT_RE document is skipped and the next one starts", async () => {
     writeJob(jobYaml(["docs/design/100_Feat_Develop_Commit.md", "docs/design/101_Feat.md"]));
     writeDoc("docs/design/101_Feat.md");
+    writeAgentFixtures(); // the started doc's clarify round really dispatches
     const { ctx, meta } = makeCtx();
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
 
@@ -326,6 +330,7 @@ describe("runner — startup metadata", () => {
     writeJob(jobYaml(["docs/design/a.md", "docs/design/b.md"]));
     writeDoc("docs/design/a.md");
     writeDoc("docs/design/b.md");
+    writeAgentFixtures(); // both startups really dispatch their clarify round
     const cfg = config();
     const first = makeCtx();
     await startAutoJob({ config: cfg, ctx: first.ctx, jobId: JOB_ID });
@@ -382,6 +387,7 @@ describe("runner — lock guards", () => {
   it("a corrupt sidecar is read as missing state, never as a running job", async () => {
     writeJob(jobYaml(["docs/design/a.md"]));
     writeDoc("docs/design/a.md");
+    writeAgentFixtures();
     const statePath = resolveJobStatePath(ROOT, JOB_ID);
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
     fs.writeFileSync(statePath, "{ not json", "utf8");
@@ -396,6 +402,7 @@ describe("runner — lock guards", () => {
   it("a pre-existing completed sidecar is reused for the hash/progress rows", async () => {
     writeJob(jobYaml(["docs/design/a.md"]));
     writeDoc("docs/design/a.md");
+    writeAgentFixtures();
     const state = createJobState({
       jobId: JOB_ID,
       jobPath: `docs/jobs/${JOB_ID}.yaml`,

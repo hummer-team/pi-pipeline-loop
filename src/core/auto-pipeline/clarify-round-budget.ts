@@ -6,9 +6,10 @@
  * - This is an INDEPENDENT budget from the design-review one
  *   (`round-budget.ts`): sharing a counter would let one stage's retries
  *   consume the other's allowance.
- * - Counting is monotonic: dispatching the same round again (or a rewound
- *   round after the document was rolled back) never refunds nor consumes a
- *   round. Only a strictly greater round number increments `usedRounds`.
+ * - 226 Phase 2: EVERY real dispatch counts. A re-dispatched (rewound) round
+ *   after a document rollback consumes ONE more round, and only a failed
+ *   dispatch is refunded (`clarify_round_refund`) — `maxRounds` is a budget
+ *   over dispatched rounds, not over round NUMBERS.
  * - The predicate is `>=`, matching "maxRounds is the TOTAL number of rounds"
  *   (D6): `maxRounds: 1` still allows exactly one dispatch.
  */

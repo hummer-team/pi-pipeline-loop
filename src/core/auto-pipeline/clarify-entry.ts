@@ -134,7 +134,9 @@ export async function runAutoClarifyRound(
       const outcome = await dispatchClarifyRound(ctx, config, meta, state, job, docState, deps);
       if (outcome === "spawned") return "consumed";
       if (outcome === "deferred") {
-        // A live same-agent twin exists; pendingSpawns + the 217 watchdog own the retry.
+        // A live same-agent twin exists; pendingSpawns + the 217 watchdog own
+        // the retry. The round stays charged (it is the SAME round the dequeue
+        // dispatches), and a finalisation round keeps its marker debt.
         await auditAutoDecision(config, {
           gate: "clarify_dispatch_deferred",
           decision: docState.decision.action,

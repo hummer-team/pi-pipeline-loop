@@ -62,6 +62,24 @@ function writeFile(rel: string, content: string): void {
   fs.writeFileSync(abs, content, "utf8");
 }
 
+/** 226 review #1: deploy the clarify executor so the startup round really dispatches. */
+function writeAgentFixtures(): void {
+  const dir = path.join(ROOT, ".pi", "agents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of [
+    "feat-design-plan-agent",
+    "design-review-agent",
+    "develop-agent",
+    "code-review-agent",
+    "code-review-withfix-agent",
+  ]) {
+    fs.copyFileSync(
+      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
+      path.join(dir, `${name}.md`),
+    );
+  }
+}
+
 /** Resolved config with the design-review stage kept or dropped. */
 function config(opts: { designReview: boolean }): PipelineConfig {
   const json: PipelineJsonConfig = {
@@ -139,6 +157,7 @@ describe("tier precondition — assisted requires design-review", () => {
 
   it("assisted + design-review enabled → the job starts normally", async () => {
     writeFile(REQUIREMENT, "# requirement\n");
+    writeAgentFixtures();
     writeJob(jobYaml("assisted"));
     const { ctx, meta } = makeCtx();
 
@@ -154,6 +173,7 @@ describe("tier precondition — assisted requires design-review", () => {
 describe("tier precondition — rule never needs design-review", () => {
   it("rule + design-review disabled → the job starts normally", async () => {
     writeFile(REQUIREMENT, "# requirement\n");
+    writeAgentFixtures();
     writeJob(jobYaml("rule"));
     const { ctx, meta } = makeCtx();
 

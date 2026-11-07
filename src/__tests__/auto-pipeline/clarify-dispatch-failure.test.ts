@@ -12,7 +12,7 @@
  * - `deferred` is NOT a failure: no stall, no freeze;
  * - a throwing injected `deps.freeze` escapes (never swallowed).
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SessionMeta } from "../../types";
@@ -30,10 +30,26 @@ import { createAutoHarness, createSessionStub, deployHarnessAgents, HARNESS_DOCS
 const DOC = HARNESS_DOCS[0]!;
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
 
-type SpawnArgs = Parameters<ClarifyEntryDeps["spawn"]>;
 type SpawnResult = Awaited<ReturnType<ClarifyEntryDeps["spawn"]>>;
 
 const FRESH_DOC = ["# 200_Feat", "## 目标", "Ship the failure accounting.", "## 范围", "Dispatch failures only.", "## 验收标准", "One stall per failure."].join("\n");
+
+/** Answered + declared `ready` → the decision is the finalisation round (`full-und?`). */
+const READY_ANSWERED_DOC = [
+  "# 200_Feat",
+  "## 目标",
+  "Ship the failure accounting.",
+  "## 范围",
+  "Dispatch failures only.",
+  "## 验收标准",
+  "One stall per failure.",
+  "## 需求评估",
+  "ready",
+  "",
+  "# 第 1 轮澄清",
+  "- **方案 A** self-answer",
+  "答：方案 A",
+].join("\n");
 
 let harness: AutoHarness;
 let audits: string[];
@@ -73,7 +89,7 @@ function failingDeps(spawnResult: Partial<SpawnResult> = {}): ClarifyEntryDeps {
 
 beforeEach(async () => {
   // Some suites (index.test.ts) leave the process-level job lock held; this
-  // moduleUNDER test requires a CLEAN lock, so reset defensively.
+  // module-under-test suite requires a CLEAN lock, so reset defensively.
   __resetAutoJobLockForTests();
   harness = createAutoHarness();
   // Deploy the production clarify contract (the round derivation reads it).
@@ -155,6 +171,37 @@ describe("noteClarifyDispatchFailure — the deferred twin is not a failure", ()
     expect(freezeReasons).toEqual([]);
     expect(audits.some((line) => line.includes("clarify_dispatch_deferred"))).toBe(true);
     expect(audits.some((line) => line.includes("clarify_dispatch_failed"))).toBe(false);
+  });
+
+  it("deferred COMMITS the round reservation (charged once, no refund row)", async () => {
+    const meta = makeMeta();
+    const { ctx } = makeCtx(meta);
+
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, failingDeps({ deferred: true }))).toBe("consumed");
+
+    // 226 review #2: pendingSpawns dispatches the SAME round later, so the
+    // reservation is kept — the budget is a real dispatch budget and the
+    // deferred round is never charged twice.
+    const doc = harness.state().docs[0]!;
+    expect(doc.clarifyRounds).toBe(1);
+    expect(doc.clarifyLastRound).toBe(1);
+    expect(doc.clarifyDispatchedAt).toBeGreaterThan(0);
+    expect(audits.some((line) => line.includes("clarify_round_refund"))).toBe(false);
+  });
+
+  it("deferred finalisation round commits the marker debt (no repeated full-und? dispatch)", async () => {
+    writeDoc(READY_ANSWERED_DOC);
+    const meta = makeMeta();
+    const { ctx } = makeCtx(meta);
+
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, failingDeps({ deferred: true }))).toBe("consumed");
+
+    // The queued round IS the finalisation round: the fact is written now so the
+    // next settle defers to the marker gate instead of re-dispatching.
+    const doc = harness.state().docs[0]!;
+    expect(doc.clarifyRounds).toBe(1);
+    expect(doc.clarifyFinalisationRound).toBe(1);
+    expect(freezeReasons).toEqual([]);
   });
 });
 

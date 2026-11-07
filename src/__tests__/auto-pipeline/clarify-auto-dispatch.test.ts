@@ -207,7 +207,7 @@ describe("runAutoClarifyRound — forwarding states", () => {
 
 describe("220 Phase 1: 226 Phase 1 — finalisation fact + three-state boundary", () => {
   it("clarifyFinalisationRound is read into the decision: answered doc → defer-to-marker, no dispatch", async () => {
-    writeDoc(FULL_UND_DOC); // answered, not confirmed, NOT ready → looping doc
+    writeDoc(FULL_UND_DOC); // answered + `ready` → the finalisation round was dispatched, marker still missing
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 

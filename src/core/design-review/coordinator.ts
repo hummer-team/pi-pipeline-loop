@@ -1118,7 +1118,8 @@ async function handleFail(
 ): Promise<CoordinatorResult> {
   // 219 Phase 3 §4 (G4) / 220 D7: `designReview.onFail: "stop"` — the job asked
   // us NOT to revise. The doc failure must run the Phase 5 transaction
-  // (`handleDocFailure`, stopReason "budget_exhausted"), never a copied loop.
+  // (`handleDocFailure`, stopReason "doc_failed" since 226 Phase 3), never a
+  // copied loop.
   // Human mode is untouched: without an ACTIVE auto job this is a no-op.
   // Ordered before the budget predicates on purpose: an explicit "stop" is the
   // more specific instruction, and both outcomes are terminal for this doc.

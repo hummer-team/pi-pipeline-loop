@@ -8,8 +8,8 @@
  *   never blocks an auto round;
  * ② `CLARIFY_DISPATCH_DEDUPE_MS` (30s) absorbs the burst of settles one visit
  *   can produce for an unchanged round;
- * ③ `noteClarifyRoundDispatch` (monotonic) keeps a rewound round from refunding
- *   or re-consuming budget.
+ * ③ `noteClarifyRoundDispatch` counts EVERY real dispatch of the round (226
+ *   Phase 2: no rewind protection, no refund on a re-dispatched round).
  */
 
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
@@ -77,7 +77,8 @@ function clearClarifySpawnGuards(ctx: ClarifyEntryCtx, meta: SessionMeta): void 
  * 226 Phase 2: outcome of one dispatch attempt.
  * `spawned` — the subagent really spawned (round counted);
  * `deferred` — a live same-agent twin postponed the spawn (pendingSpawns
- *   consumes it later): NOT a failure, NOT a stall;
+ *   dispatches the SAME round later): NOT a failure, NOT a stall, but its
+ *   reservation is COMMITTED (the round is counted exactly once here);
  * `not_spawned` — nothing was sent: the reservation is refunded and the
  *   caller routes the failure through `noteClarifyDispatchFailure`.
  */
@@ -88,8 +89,9 @@ export type ClarifyDispatchOutcome = "spawned" | "deferred" | "not_spawned";
  *
  * 226 Phase 2 accounting: the round is RESERVED before the dispatch (a crash
  * can never refund it) and refunded with exactly ONE extra write when nothing
- * was sent. The stall observation, the needs-clarify streak and the
- * finalisation fact are written ONLY after a real spawn — a failed dispatch
+ * was sent (`not_spawned`). A `deferred` round keeps its reservation because
+ * `pendingSpawns` dispatches that same round; the stall observation and the
+ * needs-clarify streak are written ONLY after a real spawn — a failed dispatch
  * never fabricates progress evidence.
  *
  * @returns the three-state outcome (see `ClarifyDispatchOutcome`).
@@ -159,6 +161,22 @@ export async function dispatchClarifyRound(
     },
   );
 
+  if (spawned.deferred) {
+    // 226 review #2: a live same-agent twin postponed the spawn; the owner
+    // consumes `pendingSpawns` on its next settle and dispatches the SAME round.
+    // The reservation is therefore COMMITTED, never refunded: charging the round
+    // exactly once here keeps `maxRounds` a real dispatch budget (the dequeue
+    // side never charges again) and keeps the guide's "deferred only emits
+    // `clarify_dispatch_deferred`" contract true. The finalisation fact is bound
+    // to this committed round too, so the next settle defers to the marker gate
+    // instead of dispatching `full-und?` a second time.
+    if (decision.action === "spawn-full-und") progress.clarifyFinalisationRound = decision.round;
+    progress.updatedAt = Date.now();
+    state.updatedAt = progress.updatedAt;
+    await persistClarifyState(config, state);
+    return "deferred";
+  }
+
   if (!spawned.spawned) {
     // Roll back the reservation (budget / round / dedupe) — exactly ONE extra
     // write; then report the outcome. The failure ACCOUNTING (stall++, freeze
@@ -175,7 +193,7 @@ export async function dispatchClarifyRound(
       reason: "reservation_refunded",
       round: String(decision.round),
     });
-    return spawned.deferred ? "deferred" : "not_spawned";
+    return "not_spawned";
   }
 
   // Success side: stall observation (single write point).

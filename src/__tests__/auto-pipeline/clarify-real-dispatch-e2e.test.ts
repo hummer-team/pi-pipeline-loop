@@ -14,30 +14,32 @@
  *    INJECTED recording freeze so the reverse-proof never triggers the real
  *    freeze recursion.
  * 3. Finalisation reachability (review #1 / B-#3): a real `full-und?`
- *    dispatch stamps `clarifyFinalisationRound`; the next round cannot
- *    dispatch (`defer-to-marker`); the marker gate then owns the settle and
- *    the real `handleAutoClarifyMarkerMiss` fails the document with
+ *    dispatch stamps `clarifyFinalisationRound`; the NEXT settle — driven
+ *    through the REAL `agent_settled` handler, with an answered AND an
+ *    unanswered round — returns `defer-to-marker` (skipping the await-answer
+ *    precheck) and reaches the marker gate, which fails the document with
  *    `clarify_marker_missing` (`onExhausted: stop`).
  * 4. `self-confirm`: exactly ONE forced `full-und?` round; a SECOND missing
  *    marker is a doc failure — never a loop.
  * 5. Three-channel failure bookkeeping:
  *    - settle: covered in `clarify-dispatch-failure.test.ts` (refund pair);
- *    - startup: `/pipeline-auto` (startAutoJob) with NO deployed executor is
- *      accounted with `channel=startup` (never a silent launch), the job
- *      stays alive and the freezePolicy owns the retry;
+ *    - startup: `/pipeline-auto` (startAutoJob) charges the startup round on
+ *      success and accounts a missing executor with `channel=startup`; the
+ *      success/failure facts SURVIVE the runner's trailing start stamp
+ *      (226 review #1 — High);
  *    - resume: via the EXPORTED `dispatchAfterResume`, labelled
  *      `channel=resume`, with NO refund row (the startup/resume channel
  *      never reserved a round).
- * 6. `maxTotalFreezes` timing (review B-#5): the per-doc stall cap trajectory
- *    is not preempted by the freeze budget, and a settle AFTER a recovery
- *    (budget reached, no unresolvable freeze) hard-stops with
- *    `freeze_budget_exhausted`.
+ * 6. `maxTotalFreezes` timing (review B-#5): the per-doc stall cap is not
+ *    preempted by the freeze budget (the freeze stub BOOKS `totalFreezes`),
+ *    and a settle AFTER a recovery (budget reached, no unresolvable freeze)
+ *    hard-stops with `freeze_budget_exhausted` on the NEXT settle.
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { SessionMeta } from "../../types";
-import { makeTestMeta } from "../helpers";
+import { makeTestMeta, createMockCtx } from "../helpers";
 import {
   runAutoClarifyRound,
   type ClarifyEntryCtx,
@@ -49,6 +51,8 @@ import { dispatchAfterResume } from "../../commands/pipeline-start";
 import { handleAutoSettle } from "../../core/auto-pipeline/settle-seam";
 import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
+import { writeJobState } from "../../core/auto-pipeline/job-state";
+import { createAgentSettled } from "../../core/agent-settled";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import {
   createAutoHarness,
@@ -167,6 +171,71 @@ function cyclingFreeze(): ClarifyEntryDeps {
   };
 }
 
+/**
+ * Injected freeze that ALSO books the job-level freeze counter — the same
+ * single write point `freeze-autopilot` owns in production. Review B-#5 needs
+ * the freeze BUDGET to really move, otherwise "the budget never preempts the
+ * per-doc stall cap" would be an artefact of the stub.
+ */
+function countingFreeze(): ClarifyEntryDeps {
+  const deps = cyclingFreeze();
+  return {
+    ...deps,
+    freeze: (async (...args: Parameters<ClarifyEntryDeps["freeze"]>): Promise<void> => {
+      REC.reasons.push(args[2] as string);
+      const state = harness.state();
+      state.counters.totalFreezes = (state.counters.totalFreezes ?? 0) + 1;
+      await writeJobState(harness.root, state);
+    }) as ClarifyEntryDeps["freeze"],
+  };
+}
+
+/** Harness config with the clarify completion-marker verify block ENABLED. */
+function configWithClarifyMarker(): AutoHarness["config"] {
+  const clarify = harness.config.stages.clarify!;
+  return {
+    ...harness.config,
+    stages: {
+      ...harness.config.stages,
+      clarify: {
+        ...clarify,
+        verify: { ...(clarify.verify ?? {}), require: true, completionMarker: ["## 模型确认"] },
+      },
+    },
+  };
+}
+
+/** Meta of the OWNER session bound to the harness job (settle-side e2e). */
+function makeAutoJobMeta(): SessionMeta {
+  return {
+    pipelineId: "pipe-226-e2e-settle",
+    currentStage: "clarify",
+    flowState: "running",
+    stageStartTime: 1_000,
+    requirementDoc: DOC,
+    spawnedStages: {},
+    activeSpawns: {},
+    autoJob: {
+      jobId: HARNESS_JOB_ID,
+      jobPath: `docs/jobs/${HARNESS_JOB_ID}.yaml`,
+      docIndex: 0,
+      totalDocs: HARNESS_DOCS.length,
+      designReviewMaxRounds: 3,
+      designReviewRounds: 0,
+      lastCountedDesignReviewRound: 0,
+      totalLoopsBudget: 5,
+    },
+  } as SessionMeta;
+}
+
+/** Seed the sidecar as "the finalisation round was already dispatched". */
+async function seedFinalisationDispatched(): Promise<void> {
+  const state = harness.state();
+  state.docs[0]!.clarifyRounds = 1;
+  state.docs[0]!.clarifyFinalisationRound = 1;
+  await writeJobState(harness.root, state);
+}
+
 /** A session owner stub with a REAL sendUserMessage channel (dispatchAfterResume e2e). */
 function makeOwnerStub(meta: SessionMeta): Record<string, unknown> {
   const stub = createSessionStub(meta);
@@ -209,13 +278,10 @@ describe("226 Phase 4: real default deps dispatch", () => {
     deployHarnessAgents(harness);
     writeDoc(NEEDS_CLARIFY_DOC);
     const meta = makeMeta();
-    const { ctx } = makeRealCtx(meta);
+    const { ctx, stub } = makeRealCtx(meta);
 
     // NO deps injected: the REAL `spawnStageSubagent` + `freezeAndPrompt` run.
     expect(await runAutoClarifyRound(ctx, harness.config, meta)).toBe("consumed");
-
-    // eslint-disable-next-line no-console
-    console.log("DBG-AUDITS", audits.join("\n"));
     // The fallback lane produced a real dispatch: message carries the clarify
     // agent mention, the requirement doc and the round args.
     expect(sentMessages).toHaveLength(1);
@@ -224,6 +290,9 @@ describe("226 Phase 4: real default deps dispatch", () => {
     expect(sentMessages[0]!.includes(" 1 答")).toBe(true);
     // The dispatch itself is audited on the generic stage channel.
     expect(audits.some((line) => line.includes("stage_spawn_fallback"))).toBe(true);
+    // Plan Phase 4 task 1: the same-visit guard proves a REAL spawn happened
+    // (and is what suppresses a duplicate dispatch for the visit).
+    expect(stub.meta()?.spawnedStages?.clarify).toBe(meta.stageStartTime);
     // And the round was charged as a REAL dispatch.
     expect(harness.state().docs[0]!.clarifyRounds).toBe(1);
   });
@@ -247,8 +316,8 @@ describe("226 Phase 4: gate counter-proof (injected freeze stub, B-#8i)", () => 
   });
 });
 
-describe("226 Phase 4: finalisation reachability (review #1 / B-#3)", () => {
-  it("real full-und? dispatch stamps the fact; next round defers to the marker; a missing marker fails the doc", async () => {
+describe("226 Phase 4: finalisation fact + marker reachability (review #1 / B-#3)", () => {
+  it("a real full-und? dispatch stamps the fact; the next round defers instead of dispatching", async () => {
     deployHarnessAgents(harness);
     writeDoc(READY_FULL_UND_DOC);
     const meta = makeMeta();
@@ -257,24 +326,46 @@ describe("226 Phase 4: finalisation reachability (review #1 / B-#3)", () => {
     // Round 1: the converged document dispatches the FINALISATION round.
     expect(await runAutoClarifyRound(ctx, harness.config, meta)).toBe("consumed");
     expect(sentMessages[0]).toContain("full-und?");
-    const stamped = harness.state().docs[0]!;
-    expect(stamped.clarifyFinalisationRound).toBe(1);
+    expect(harness.state().docs[0]!.clarifyFinalisationRound).toBe(1);
 
-    // Round 2 settle: the fact blocks the dispatch and hands the settle to
-    // the marker gate (the await-answer precheck is skipped there).
+    // Round 2: the fact blocks the dispatch and hands the settle to the marker
+    // gate (no second dispatch).
     expect(await runAutoClarifyRound(ctx, harness.config, meta)).toBe("defer-to-marker");
-    expect(sentMessages).toHaveLength(1); // no second dispatch
-
-    // The marker gate (real deps, job default onExhausted: stop) owns the doc.
-    expect(await handleAutoClarifyMarkerMiss(ctx as never, harness.config, meta)).toBe(true);
-
-    const state = harness.state();
-    expect(state.docs[0]!.status).toBe("failed");
-    expect(state.docs[0]!.failReason).toBe("clarify_marker_missing");
-    // The doc failure with `stop` ends the job with the honest relabel.
-    expect(state.status).toBe("failed");
-    expect(state.stopReason).toBe("doc_failed");
+    expect(sentMessages).toHaveLength(1);
   });
+
+  // The deferral must survive the REAL settle chain: `agent_settled` skips the
+  // await-answer precheck and hands the settle to the marker gate. Both
+  // boundaries (answered / unanswered latest round) are driven through the hook.
+  for (const [boundary, docText] of [
+    ["answered", READY_FULL_UND_DOC],
+    ["unanswered", NEEDS_CLARIFY_DOC],
+  ] as const) {
+    it(`${boundary} round: agent_settled reaches clarify_marker_missing (precheck skipped)`, async () => {
+      writeDoc(docText);
+      await seedFinalisationDispatched();
+      const meta = makeAutoJobMeta();
+      const ctx = createMockCtx(meta);
+
+      await createAgentSettled(configWithClarifyMarker()).handler(ctx as never);
+
+      // No second dispatch: the finalisation fact alone cannot start a round.
+      expect(audits.some((line) => line.includes("stage_spawn_fallback"))).toBe(false);
+      expect(audits.some((line) => line.includes("clarify_dispatch_deferred"))).toBe(false);
+      // 226 review B-#3: the await-answer precheck is SKIPPED on
+      // `defer-to-marker` (the unanswered fixture would otherwise stop here).
+      expect(audits.some((line) => line.includes("verify_await_answer_deferred"))).toBe(false);
+      // The settle really reached the marker gate and failed the document.
+      expect(
+        audits.some((line) => line.includes("clarify_completion_marker") && line.includes('"decision":"fail"')),
+      ).toBe(true);
+      const state = harness.state();
+      expect(state.docs[0]!.status).toBe("failed");
+      expect(state.docs[0]!.failReason).toBe("clarify_marker_missing");
+      expect(state.status).toBe("failed");
+      expect(state.stopReason).toBe("doc_failed");
+    });
+  }
 });
 
 describe("226 Phase 4: self-confirm — exactly one forced round", () => {
@@ -306,7 +397,7 @@ describe("226 Phase 4: self-confirm — exactly one forced round", () => {
 });
 
 describe("226 Phase 4: three-channel failure bookkeeping", () => {
-  it("startup channel: /pipeline-auto with no deployed executor fails the doc — never silent", async () => {
+  it("startup failure channel: the accounting SURVIVES the runner's start stamp and fails the doc", async () => {
     // No agents deployed ⇒ the startup dispatch cannot resolve `agentName`.
     // Fixture: the sidecar doc is PENDING (the harness installs `running`
     // shapes for the settle-side suites) pre-charged to stall 2 so the FIRST
@@ -316,23 +407,57 @@ describe("226 Phase 4: three-channel failure bookkeeping", () => {
     const charged = harness.state();
     charged.docs[0]!.status = "pending";
     charged.docs[0]!.lastStage = undefined;
-    charged.docs[0]!.clarifyStalls = 0;
-    await (await import("../../core/auto-pipeline/job-state")).writeJobState(harness.root, charged);
+    charged.docs[0]!.clarifyStalls = 2;
+    await writeJobState(harness.root, charged);
     const stub = createSessionStub(makeTestMeta({ currentStage: "fix", pipelineId: "pipe-226-e2e-startup" }));
 
     const result = await startAutoJob({ config: harness.config, ctx: stub as never, jobId: HARNESS_JOB_ID });
-    expect(result.success).toBe(true); // the runner stamping continues; the launch failure is the ACCOUNTED shape below
 
+    // 226 review #1 (High): the runner must NOT stamp its stale in-memory state
+    // over the failure the startup channel already booked — the doc is really
+    // finalised and the job is never resurrected to `running`.
+    expect(result.success).toBe(false);
     const persisted = harness.state();
-    expect(persisted.docs[0]!.status).toBe("running");
-    // 226 Phase 2 startup-channel accounting is OBSERVABLE where the runner's
-    // trailing sidecar stamp cannot clobber it: the audit trail.
+    expect(persisted.status).toBe("failed");
+    expect(persisted.docs[0]!.status).toBe("failed");
+    expect(persisted.docs[0]!.failReason).toBe("clarify_dispatch_failed");
+    expect(persisted.docs[0]!.clarifyStalls).toBe(3);
+    expect(persisted.docs[1]!.status).toBe("pending");
+    // The failure is attributed to the startup channel; the exit is observable.
     expect(audits.some((line) => line.includes("clarify_dispatch_failed") && line.includes('"channel":"startup"'))).toBe(true);
-    expect(audits.some((line) => line.includes("clarify_freeze"))).toBe(true);
-    // The failure never charged nor fabricated a round (no success dispatch
-    // row, no refund row — the startup channel never reserved one).
+    expect(audits.some((line) => line.includes("pipeline_auto_start_terminated"))).toBe(true);
+    // The startup channel never reserved a round → no fake success, no refund.
     expect(audits.some((line) => line.includes('"gate":"clarify_dispatch"') && !line.includes("coalesced"))).toBe(false);
     expect(audits.some((line) => line.includes("clarify_round_refund"))).toBe(false);
+  });
+
+  it("startup success channel: the charged startup round survives the runner's start stamp", async () => {
+    deployHarnessAgents(harness);
+    writeDoc(["# 200_Feat", ...MANDATORY].join("\n"));
+    const charged = harness.state();
+    charged.docs[0]!.status = "pending";
+    charged.docs[0]!.lastStage = undefined;
+    await writeJobState(harness.root, charged);
+    const stub = createSessionStub(
+      makeTestMeta({ currentStage: "fix", pipelineId: "pipe-226-e2e-startup-ok" }),
+      { pi: { sendUserMessage: (): void => undefined } },
+    );
+
+    const result = await startAutoJob({ config: harness.config, ctx: stub as never, jobId: HARNESS_JOB_ID });
+
+    expect(result.success).toBe(true);
+    // The session stub records hand-offs on its own channel (`dispatched`).
+    expect(stub.dispatched).toHaveLength(1);
+    expect(stub.dispatched[0]).toContain("feat-design-plan-agent");
+    const persisted = harness.state();
+    expect(persisted.status).toBe("running");
+    expect(persisted.docs[0]!.status).toBe("running");
+    expect(persisted.docs[0]!.pipelineId).toBeTruthy();
+    expect(persisted.docIndex).toBe(0);
+    // 226 review #1 (High): the startup round is charged to the STARTED doc —
+    // it must survive the runner's trailing `state` write.
+    expect(persisted.docs[0]!.clarifyRounds).toBe(1);
+    expect(audits.some((line) => line.includes("clarify_dispatch") && line.includes("clarify_startup_round"))).toBe(true);
   });
 
   it("resume channel: via the EXPORTED dispatchAfterResume, labelled channel=resume, no refund row", async () => {
@@ -358,20 +483,26 @@ describe("226 Phase 4: three-channel failure bookkeeping", () => {
 describe("226 Phase 4: maxTotalFreezes timing (review B-#5)", () => {
   it("case A: consecutive failures reach the per-doc stall cap — the freeze budget does not preempt", async () => {
     deployHarnessAgents(harness);
+    // The freeze BUDGET is 1 while the per-doc stall cap is 3: if the budget
+    // preempted, the doc would stop as `freeze_budget_exhausted` after the
+    // first freeze instead of walking the fixed 1 → 2 → 3 stall trajectory.
     restateJob(["  maxTotalFreezes: 2", "  maxTotalFreezes: 1"]);
     writeDoc(NEEDS_CLARIFY_DOC);
     const meta = makeMeta();
     const { ctx } = makeRealCtx(meta);
-    const failingDeps = cyclingFreeze();
+    const failingDeps = countingFreeze();
 
     // Three failed settles: stall 1 → 2 → 3 (trajectory pinned in unit tests).
+    // The injected freeze books `totalFreezes`, so the budget really moves.
     for (let i = 0; i < 3; i++) {
       expect(await runAutoClarifyRound(ctx, configWithoutClarifyAgent(), meta, failingDeps)).toBe("consumed");
     }
     const state = harness.state();
+    expect(state.counters.totalFreezes).toBe(2); // two freezes, both within the trajectory
     expect(state.docs[0]!.clarifyStalls).toBe(3);
     expect(state.docs[0]!.failReason).toBe("clarify_dispatch_failed");
     expect(state.status).toBe("failed");
+    expect(audits.some((line) => line.includes("freeze_budget_exhausted"))).toBe(false);
   });
 
   it("case B: recovery then the NEXT settle with totalFreezes >= maxTotalFreezes → freeze_budget_exhausted", async () => {
@@ -381,7 +512,7 @@ describe("226 Phase 4: maxTotalFreezes timing (review B-#5)", () => {
     // was spent in the previous period.
     const state = harness.state();
     state.counters.totalFreezes = 1;
-    await (await import("../../core/auto-pipeline/job-state")).writeJobState(harness.root, state);
+    await writeJobState(harness.root, state);
 
     const meta = makeTestMeta({ currentStage: "develop", requirementDoc: DOC });
     expect(await handleAutoSettle(makeOwnerStub(meta) as never, harness.config, meta)).toBe(true);

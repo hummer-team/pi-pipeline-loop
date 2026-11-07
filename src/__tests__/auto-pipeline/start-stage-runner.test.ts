@@ -292,6 +292,8 @@ describe("start-stage runner — missing evidence is a doc failure, never a fall
       }),
     );
     writeFile("docs/design/201_Feat.md", "# second requirement\n");
+    // 226 review #1: the second doc's clarify round needs its executor.
+    writeAgentFixtures();
     const { ctx, meta } = makeCtx();
 
     const result = await startAutoJob({ config: config(), ctx, jobId: JOB_ID });
@@ -341,6 +343,7 @@ describe("start-stage runner — job-wide auto derivation", () => {
 
   it("auto + no plan → clarify, stamped derivation:auto", async () => {
     writeFile(REQUIREMENT, "# requirement\n");
+    writeAgentFixtures(); // the clarify startup round really dispatches
     writeJob(jobYaml({ defaultStartStage: "auto" }));
     const { ctx, meta } = makeCtx();
 
