@@ -675,7 +675,8 @@ export async function dispatchAfterResume(
   armStageWatchdog(ctx, config, { progressSource: "spawn" });
 
   if (stage === "clarify") {
-    const resumed = await maybeAutoLaunchClarify(ctx, config, ui, meta, doc, forwardArgs);
+    // 226 Phase 2 (review 8d): `dispatchAfterResume` IS the resume channel.
+    const resumed = await maybeAutoLaunchClarify(ctx, config, ui, meta, doc, forwardArgs, "resume");
     // 223 review issue 2 (M1): `/pipeline-resume` clears `autoJob` (like every
     // new period), so a confirmed document resolves to `confirmAdvancePending`
     // instead of an in-place advance. The auto runner's first start is consumed
@@ -1468,6 +1469,13 @@ async function maybeAutoLaunchClarify(
   meta: SessionMeta,
   file: string,
   forwardArgs?: string,
+  /**
+   * 226 Phase 2 (review 8d): which launch channel reached this helper —
+   * `startup` for `startNewPipeline`/`startPendingDoc`, `resume` for
+   * `dispatchAfterResume`. The failure accounting carries it in the
+   * `clarify_dispatch_failed` audit so the source channel is never guessed.
+   */
+  channel: "startup" | "resume" = "startup",
 ): Promise<{
   /** 223 Phase 2 (branch B): `startPendingDoc` must advance after autoJob is stamped. */
   confirmAdvancePending?: boolean;
@@ -1605,7 +1613,7 @@ async function maybeAutoLaunchClarify(
     // terminal through the shared module) — never a silent no-op.
     if (autoClarify) {
       await noteClarifyStartupChannelFailure(ctx, config, meta, {
-        channel: "startup",
+        channel,
         ...(autoDocIndex !== undefined && autoDocIndex >= 0 ? { docIndex: autoDocIndex } : {}),
       });
     }
@@ -1696,7 +1704,7 @@ async function maybeAutoLaunchClarify(
   // the sidecar index of the document being started; never a silent exit.
   if (!dispatched && autoClarify) {
     await noteClarifyStartupChannelFailure(ctx, config, meta, {
-      channel: "startup",
+      channel,
       ...(autoDocIndex !== undefined && autoDocIndex >= 0 ? { docIndex: autoDocIndex } : {}),
     });
   }
